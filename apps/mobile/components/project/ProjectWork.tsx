@@ -2,16 +2,18 @@ import {
   VerityApiError,
   inboxView,
   markerAttention,
+  projectDisplayName,
+  sessionWorkSections,
+  retainWorkMembers,
+  WORK_PROBLEM_LABELS,
+  type SessionWorkEntry,
   modelDisplayName,
   sessionAgentMark,
-  sessionAttention,
   sessionBadge,
   sessionLabel,
   sessionTile,
   showsSessionLabel,
   workOrder,
-  type AttentionFlag,
-  type AttentionKind,
   type InboxAction,
   type InboxItem,
   type ProjectRecord,
@@ -35,6 +37,7 @@ import { SessionSettingsDialog } from '../SessionSettingsDialog';
 import type { IconName } from '../Icon';
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import {
+  Button,
   FilterChips,
   Group,
   IconButton,
@@ -77,13 +80,7 @@ const TONE_INTENT: Record<InboxItem['tone'], StatusIntent> = {
   neutral: 'optional',
 };
 
-/** Pull request and sandbox problems that need the operator but have no inbox item. */
-const FLAG_TAG: Partial<Record<AttentionKind, string>> = {
-  sandbox_disconnected: 'Sandbox',
-  merge_conflict: 'Conflict',
-  ci_failed: 'CI failed',
-  merge_blocked: 'Blocked',
-};
+const FLAG_TAG = WORK_PROBLEM_LABELS;
 
 /** Answers a row can give in place. A permission opens its session instead: the
  *  row has no room for the request the operator has to read before allowing it. */
@@ -96,65 +93,8 @@ const IN_PLACE: ReadonlySet<InboxAction['kind']> = new Set([
 
 export { isActive };
 
-function hasRunningCi(session: SessionSummary): boolean {
-  const pr = session.pr ?? session.pullRequest;
-  return pr?.phase === 'open' && (pr.pipeline === 'running' || pr.pipeline === 'pending');
-}
-
-/** One row of "Needs you": a session with what it waits on, or a project's own item. */
-export type NeedsYouEntry =
-  | { kind: 'session'; session: SessionSummary; item?: InboxItem; flag?: AttentionFlag }
-  | { kind: 'project'; item: InboxItem };
-
-/**
- * The two sections of the Now filter. "Needs you" holds one entry per session
- * with a visible inbox item — its most pressing one, in inbox order — then the
- * sessions whose pull request or sandbox is stuck, then nothing else. A
- * dismissed item does not count, so a set-aside question leaves Now. "Running &
- * new" holds the rest that is moving, has CI in flight, or has an unread answer.
- */
-export function nowSections(
-  sessions: readonly SessionSummary[],
-  items: readonly InboxItem[],
-  /** Sessions with an answer the operator has not read ({@link useUnread}). */
-  unread: ReadonlySet<string>,
-  previous: readonly SessionSummary[] = [],
-): { needsYou: NeedsYouEntry[]; active: SessionSummary[] } {
-  const byId = new Map(sessions.map((session) => [session.sessionId, session]));
-  const needsYou: NeedsYouEntry[] = [];
-  const taken = new Set<string>();
-  for (const item of items) {
-    if (item.sessionId === undefined) {
-      if (item.kind !== 'meeting') needsYou.push({ kind: 'project', item });
-      continue;
-    }
-    const session = byId.get(item.sessionId);
-    if (session === undefined || taken.has(session.sessionId)) continue;
-    taken.add(session.sessionId);
-    needsYou.push({ kind: 'session', session, item });
-  }
-  for (const session of workOrder(sessions)) {
-    if (taken.has(session.sessionId)) continue;
-    const flag = sessionAttention({
-      status: session.status,
-      pr: session.pr,
-      attention: session.attention,
-    }).find((candidate) => FLAG_TAG[candidate.kind] !== undefined);
-    if (flag === undefined) continue;
-    taken.add(session.sessionId);
-    needsYou.push({ kind: 'session', session, flag });
-  }
-  const active = workOrder(
-    sessions.filter(
-      (session) =>
-        !taken.has(session.sessionId) &&
-        (isActive(session) || unread.has(session.sessionId) || hasRunningCi(session)),
-    ),
-    new Map(),
-    previous,
-  );
-  return { needsYou, active };
-}
+export type NeedsYouEntry = SessionWorkEntry;
+export const nowSections = sessionWorkSections;
 
 /** Which sessions the All and favorites filters keep. */
 export function workFilter(session: SessionSummary, filter: Exclude<WorkFilter, 'now'>): boolean {
@@ -199,7 +139,7 @@ const AGENT_MARK: Record<
 };
 
 /** The line under a session's name: its pull request and what it wants, else its model. */
-function workSubtitle(session: SessionSummary): string | undefined {
+function workSubtitle(session: SessionSummary, unread: boolean): string | undefined {
   const parts: string[] = [];
   const pr = session.pullRequest;
   if (pr) {
@@ -207,13 +147,17 @@ function workSubtitle(session: SessionSummary): string | undefined {
     if (pr.phase === 'merged') parts.push('merged');
     else if (pr.phase === 'closed') parts.push('closed');
   }
+  if (session.status === 'running' || session.backgroundWorking === true)
+    parts.push('Agent working');
+  else if (session.status === 'awaiting_dependency') parts.push('Waiting on another session');
   // The same PR signals the session list marks (CI failed, ready to merge, …).
   for (const flag of markerAttention({
     status: session.status,
-    pr: session.pr,
+    pr: session.pr ?? session.pullRequest,
     attention: session.attention,
   }))
     if (flag.kind !== 'unread') parts.push(flag.label);
+  if (unread) parts.push('Unread');
   if (parts.length > 0) return parts.join(' · ');
   return session.model ? modelDisplayName(session.model) : undefined;
 }
@@ -226,9 +170,8 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
 /**
  * A project's sessions, filtered and ordered by what they need.
  *
- * Now, the default, is one list in two sections: what waits on the operator,
- * each row tagged with what it waits for and offering the answers that can be
- * given in place, and below it what is running or has a new answer. A section
+ * Now shows live decisions, work in progress and unread results in separate
+ * sections. Home reuses this list, adding project context to the same rows. A section
  * with nothing in it is left out. All lists every session in {@link workOrder};
  * the star keeps the favorites.
  *
@@ -251,6 +194,11 @@ export function ProjectWork({
   leadingRows = [],
   initialFilter = 'now',
   layoutRevision = 0,
+  overview = false,
+  projects = [],
+  onSectionsChange,
+  renderProjectItem,
+  renderSessionItem,
   onOpenSession,
   selectedSessionId,
   onChanged,
@@ -267,7 +215,14 @@ export function ProjectWork({
   /** Rows the page adds at the top of "Needs you", such as severe findings. */
   leadingRows?: readonly ReactElement[];
   initialFilter?: WorkFilter;
-  /** Only explicit refreshes reset positions; live reloads keep the current visit. */
+  /** Home reuses the same list without the project-only toolbar. */
+  overview?: boolean;
+  projects?: readonly ProjectRecord[];
+  onSectionsChange?: (counts: { needs: number; active: number; results: number }) => void;
+  renderProjectItem?: (item: InboxItem) => ReactElement;
+  /** Home retains the complete request before offering permission actions. */
+  renderSessionItem?: (item: InboxItem) => ReactElement | undefined;
+  /** Explicit refreshes reset order; live reloads update group membership. */
   layoutRevision?: number | undefined;
   onOpenSession: (sessionId: string) => void;
   /** After a rename, favorite, move, link or delete of `sessionId`, so the page
@@ -340,30 +295,31 @@ export function ProjectWork({
     ids: freshListed.map((s) => s.sessionId),
     needs: freshNow.needsYou.flatMap((e) => (e.kind === 'session' ? [e.session.sessionId] : [])),
     active: freshNow.active.map((s) => s.sessionId),
+    results: freshNow.results.map((s) => s.sessionId),
   }));
   const reset =
     layout.filter !== filter ||
     layout.layoutRevision !== layoutRevision ||
     layout.projectId !== projectId;
   const live = new Map(sessions.map((s) => [s.sessionId, s]));
+  // Now membership follows live facts. Only the order of eligible rows survives.
+  const needs = retainWorkMembers(
+    reset ? [] : layout.needs,
+    freshNow.needsYou.flatMap((e) => (e.kind === 'session' ? [e.session.sessionId] : [])),
+  );
+  const active = retainWorkMembers(
+    reset ? [] : layout.active,
+    freshNow.active.map((s) => s.sessionId),
+  );
+  const results = retainWorkMembers(
+    reset ? [] : layout.results,
+    freshNow.results.map((s) => s.sessionId),
+  );
+  // All keeps its visit order even after a row finishes or is read.
   const retain = (previous: string[], candidates: string[]) => {
     const kept = reset ? [] : previous.filter((id) => live.has(id));
     return [...kept, ...candidates.filter((id) => !kept.includes(id))];
   };
-  const previousNeeds = reset ? [] : layout.needs.filter((id) => live.has(id));
-  const previousActive = reset ? [] : layout.active.filter((id) => live.has(id));
-  const needs = retain(
-    previousNeeds,
-    freshNow.needsYou.flatMap((e) =>
-      e.kind === 'session' && !previousActive.includes(e.session.sessionId)
-        ? [e.session.sessionId]
-        : [],
-    ),
-  );
-  const active = retain(
-    previousActive,
-    freshNow.active.map((s) => s.sessionId).filter((id) => !needs.includes(id)),
-  );
   const ids = retain(
     filter === 'favorites'
       ? layout.ids.filter((id) => live.get(id)?.favorite === true)
@@ -380,6 +336,7 @@ export function ProjectWork({
       ids,
       needs,
       active,
+      results,
     });
   }
   const currentNeeds = new Map(
@@ -390,15 +347,21 @@ export function ProjectWork({
   const now = {
     needsYou: [
       ...freshNow.needsYou.filter((e) => e.kind === 'project'),
-      ...needs.map(
-        (id) => currentNeeds.get(id) ?? { kind: 'session' as const, session: live.get(id)! },
-      ),
+      ...needs.map((id) => currentNeeds.get(id)!),
     ],
     active: active.map((id) => live.get(id)!),
+    results: results.map((id) => live.get(id)!),
   };
   const listed = ids.map((id) => live.get(id)!);
   const needsCount = leadingRows.length + now.needsYou.length;
-  const nowCount = needsCount + now.active.length;
+  const nowCount = needsCount + now.active.length + now.results.length;
+  useEffect(() => {
+    onSectionsChange?.({
+      needs: needsCount,
+      active: now.active.length,
+      results: now.results.length,
+    });
+  }, [onSectionsChange, needsCount, now.active.length, now.results.length]);
   const filters: readonly { value: WorkFilter; label: string; icon?: 'star' }[] = [
     { value: 'now', label: nowCount > 0 ? `Now · ${String(nowCount)}` : 'Now' },
     { value: 'all', label: 'All' },
@@ -488,9 +451,14 @@ export function ProjectWork({
     const needs = waiting?.needs === true;
     const label = sessionLabel(session);
     const working = isActive(session);
-    const unread = !working && unreadIds.has(session.sessionId);
+    const unread = unreadIds.has(session.sessionId);
+    const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
+    const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
+    const displaySubtitle = context
+      ? `${projectDisplayName(context)} · ${subtitle ?? ''}`
+      : subtitle;
     const item = waiting?.item;
-    const tile = sessionTile(session);
+    const tile = sessionTile({ ...session, pr: session.pr ?? session.pullRequest });
     const agent = sessionAgentMark({ status: session.status, working, unread });
     const result = tile.result !== undefined ? RESULT_MARK[tile.result] : undefined;
     const tileIntent = TILE_INTENT[tile.tone];
@@ -512,10 +480,12 @@ export function ProjectWork({
     });
     const spoken = [
       label,
+      context ? projectDisplayName(context) : null,
       waiting?.subtitle,
       // From the same mark the tile draws, so the screen and VoiceOver never
       // disagree; waiting is spoken by the tag that names what it waits for.
       agent === 'working' ? 'working' : agent === 'unread' ? 'new answer' : null,
+      unread && agent !== 'unread' ? 'unread messages' : null,
       // The row speaks one label, so the subtitle's PR verdict is not read on its
       // own; the tile says it instead, unless the tag already does.
       !needs &&
@@ -549,7 +519,7 @@ export function ProjectWork({
             statusTag === undefined &&
             session.favorite !== true
           }
-          subtitle={waiting?.subtitle ?? workSubtitle(session)}
+          subtitle={displaySubtitle}
           leading={
             needs && waiting !== undefined
               ? { dot: waiting.intent }
@@ -588,12 +558,35 @@ export function ProjectWork({
           // width the chevron leaves instead of wrapping beside the tag.
           tag={
             needs && statusTag !== undefined ? (
-              <StatusTag intent={statusTag.intent} label={statusTag.label} />
+              <View style={styles.trailing}>
+                <StatusTag intent={statusTag.intent} label={statusTag.label} />
+                {unread ? (
+                  <View accessibilityRole="image" accessibilityLabel="Unread messages">
+                    <TileMark tone="action" />
+                  </View>
+                ) : null}
+              </View>
+            ) : undefined
+          }
+          action={
+            item?.dismiss !== undefined && feed !== undefined ? (
+              <IconButton
+                icon="x"
+                accessibilityLabel="Dismiss"
+                onPress={() => feed.dismiss(item)}
+              />
             ) : undefined
           }
           trailing={
-            (!needs && statusTag !== undefined) || markers.length > 0 ? (
+            (!needs && statusTag !== undefined) ||
+            markers.length > 0 ||
+            (!needs && working && unread) ? (
               <View style={styles.trailing}>
+                {!needs && working && unread ? (
+                  <View accessibilityLabel="Unread messages" accessibilityRole="image">
+                    <TileMark tone="action" />
+                  </View>
+                ) : null}
                 {!needs && statusTag !== undefined ? (
                   <StatusTag intent={statusTag.intent} label={statusTag.label} />
                 ) : null}
@@ -632,22 +625,68 @@ export function ProjectWork({
   const answersFor = (item: InboxItem) => {
     if (feed === undefined) return undefined;
     const answers = answersOf(item);
-    if (answers.length === 0) return undefined;
+    const links = item.actions.filter(
+      (action) => action.kind === 'open_session' || action.kind === 'review_mockups',
+    );
+    if (answers.length === 0 && links.length === 0) return undefined;
     // Only this item's answers wait; the other rows stay answerable.
     const locked = feed.pending.has(item.key);
     return (
-      <AnswerButtons
-        answers={answers}
-        pending={feed.pending.get(item.key) ?? false}
-        disabled={locked}
-        onMore={() => setAnsweringKey(item.key)}
-        onAnswer={(action) => send(item, action)}
+      <View style={styles.answers}>
+        <AnswerButtons
+          answers={answers}
+          pending={feed.pending.get(item.key) ?? false}
+          disabled={locked}
+          onMore={() => setAnsweringKey(item.key)}
+          onAnswer={(action) => send(item, action)}
+        />
+        {links.map((action) => (
+          <Button
+            key={`${action.kind}:${action.label}`}
+            label={action.label}
+            variant="secondary"
+            size="small"
+            onPress={() => send(item, action)}
+          />
+        ))}
+      </View>
+    );
+  };
+  const decisionRow = (session: SessionSummary, item: InboxItem) => {
+    const custom = renderSessionItem?.(item);
+    if (custom !== undefined) return <View key={item.key}>{custom}</View>;
+    return (
+      <Row
+        key={item.key}
+        title={item.title}
+        subtitle={overview ? item.context : item.message}
+        tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
+        answers={answersFor(item)}
+        navigates
+        onPress={() => onOpenSession(session.sessionId)}
+        action={
+          item.dismiss !== undefined && feed !== undefined ? (
+            <IconButton icon="x" accessibilityLabel="Dismiss" onPress={() => feed.dismiss(item)} />
+          ) : undefined
+        }
       />
     );
   };
-  const needsYouRow = (entry: NeedsYouEntry) => {
+  const needsYouRow = (entry: NeedsYouEntry): ReactElement => {
+    if (entry.kind === 'session' && entry.additionalItems !== undefined) {
+      // One session position, with every live approval still reachable.
+      const { additionalItems, ...primary } = entry;
+      return (
+        <View key={entry.session.sessionId}>
+          {needsYouRow(primary)}
+          {additionalItems.map((item) => decisionRow(entry.session, item))}
+        </View>
+      );
+    }
     if (entry.kind === 'project') {
       const { item } = entry;
+      if (renderProjectItem !== undefined)
+        return <View key={item.key}>{renderProjectItem(item)}</View>;
       return (
         <Row
           key={item.key}
@@ -669,7 +708,22 @@ export function ProjectWork({
       );
     }
     const { session, item, flag } = entry;
-    if (item !== undefined)
+    if (item !== undefined) {
+      const custom = renderSessionItem?.(item);
+      if (custom !== undefined)
+        return (
+          <View key={session.sessionId}>
+            {unreadIds.has(session.sessionId) ? (
+              <View style={styles.trailing}>
+                <View accessibilityRole="image" accessibilityLabel="Unread messages">
+                  <TileMark tone="action" />
+                </View>
+                <Text variant="caption">Unread</Text>
+              </View>
+            ) : null}
+            {custom}
+          </View>
+        );
       return sessionRow(session, {
         tag: item.tag,
         intent: TONE_INTENT[item.tone],
@@ -677,6 +731,7 @@ export function ProjectWork({
         item,
         needs: true,
       });
+    }
     if (flag === undefined) return sessionRow(session);
     // The tag names the problem; the line under the name says where it is.
     const pr = session.pullRequest;
@@ -690,29 +745,31 @@ export function ProjectWork({
 
   return (
     <View style={styles.root} testID="project-work">
-      <View style={styles.toolbar}>
-        <View style={styles.flex}>
-          <FilterChips
-            options={filters}
-            value={filter}
-            onChange={setFilter}
-            accessibilityLabel="Filter sessions"
-            compact
+      {!overview ? (
+        <View style={styles.toolbar}>
+          <View style={styles.flex}>
+            <FilterChips
+              options={filters}
+              value={filter}
+              onChange={setFilter}
+              accessibilityLabel="Filter sessions"
+              compact
+            />
+          </View>
+          <IconButton
+            icon="plus"
+            accessibilityLabel="New session"
+            onPress={() =>
+              router.push(projectId ? { pathname: '/new', params: { projectId } } : '/new')
+            }
           />
         </View>
-        <IconButton
-          icon="plus"
-          accessibilityLabel="New session"
-          onPress={() =>
-            router.push(projectId ? { pathname: '/new', params: { projectId } } : '/new')
-          }
-        />
-      </View>
+      ) : null}
       {filter === 'now' ? (
         <>
           {needsCount > 0 ? (
             <View style={styles.section} testID="work-needs-you">
-              <SectionHeader title={`Needs you · ${String(needsCount)}`} flush />
+              <SectionHeader title={`Needs you · ${String(needsCount)}`} variant="eyebrow" flush />
               <Group>
                 {leadingRows}
                 {now.needsYou.map(needsYouRow)}
@@ -721,13 +778,22 @@ export function ProjectWork({
           ) : null}
           {now.active.length > 0 ? (
             <View style={styles.section} testID="work-active">
-              <SectionHeader title={`Running & new · ${String(now.active.length)}`} flush />
-              <Group>
-                {now.active.map((session) => {
-                  const entry = currentNeeds.get(session.sessionId);
-                  return entry ? needsYouRow(entry) : sessionRow(session);
-                })}
-              </Group>
+              <SectionHeader
+                title={`In progress · ${String(now.active.length)}`}
+                variant="eyebrow"
+                flush
+              />
+              <Group>{now.active.map((session) => sessionRow(session))}</Group>
+            </View>
+          ) : null}
+          {now.results.length > 0 ? (
+            <View style={styles.section} testID="work-results">
+              <SectionHeader
+                title={`New results · ${String(now.results.length)}`}
+                variant="eyebrow"
+                flush
+              />
+              <Group>{now.results.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}
         </>
@@ -829,5 +895,6 @@ const styles = StyleSheet.create((theme) => ({
   toolbar: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   section: { gap: theme.spacing.sm },
   empty: { paddingVertical: theme.spacing.md },
+  answers: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   trailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
 }));

@@ -1,4 +1,5 @@
 import { ProjectInquiryCards } from '../project/ProjectInquiryCards';
+import { ProjectWork } from '../project/ProjectWork';
 import {
   createPushReplyPerformer,
   formatChoiceAnswer,
@@ -46,12 +47,12 @@ const TAG_INTENT = {
 } as const;
 
 /**
- * Home: Verity's line and capture on top, then every item across all projects
- * that needs the operator, each with its answers in place
+ * Home: Verity's line and capture on top, then the same live work sections as
+ * the project view, across all projects and with their context
  * (docs/design-system.md § 5.8 "Home presence").
  *
- * Items come from {@link inboxItems}, so they follow the same rules as the
- * project list's markers; {@link useInboxFeed} answers and dismisses them.
+ * {@link ProjectWork} owns session placement and rows in both views;
+ * {@link useInboxFeed} answers and dismisses the explicit inbox decisions.
  */
 export function HomeInbox({
   client,
@@ -80,13 +81,21 @@ export function HomeInbox({
   /** Where "Open" on a project item leads; the project route when omitted. */
   onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
-  /** How many items Home shows, for the tab bar's count. */
+  /** How many entries need the user, excluding running work and unread results. */
   onCountChange?: (count: number) => void;
   /** Opens Verity's page from her header. */
   onOpenVerity?: (() => void) | undefined;
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
+  const workSessions = useMemo(() => {
+    const archived = new Set(
+      projects.filter((project) => project.archived === true).map((project) => project.id),
+    );
+    return sessions.filter(
+      (session) => session.projectId == null || !archived.has(session.projectId),
+    );
+  }, [sessions, projects]);
   const all = useMemo(
     () => inboxItems({ sessions, projects, meetings, now }),
     [sessions, projects, meetings, now],
@@ -103,7 +112,42 @@ export function HomeInbox({
     onOpenProject,
     onRepairProject,
   });
-  useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
+  const [counts, setCounts] = useState({ needs: 0, active: 0, results: 0 });
+  const onSectionsChange = useCallback((next: typeof counts) => {
+    setCounts((current) =>
+      current.needs === next.needs &&
+      current.active === next.active &&
+      current.results === next.results
+        ? current
+        : next,
+    );
+  }, []);
+  useEffect(() => onCountChange?.(counts.needs), [counts.needs, onCountChange]);
+  const changed = useCallback(() => onRefresh(), [onRefresh]);
+  const renderItem = (item: InboxItem) => (
+    <InboxCard
+      key={item.key}
+      item={item}
+      selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
+      pending={feed.pending.get(item.key) ?? false}
+      disabled={feed.pending.has(item.key)}
+      onDismiss={item.dismiss !== undefined ? () => feed.dismiss(item) : undefined}
+      onAction={(action) => {
+        feed.run(item, action).catch(() => {
+          Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
+        });
+      }}
+    />
+  );
+  const summaryParts = [
+    counts.needs === feed.items.length
+      ? inboxSummary(feed.items)
+      : counts.needs > 0
+        ? `${String(counts.needs)} need you`
+        : inboxSummary([]),
+    ...(counts.active > 0 ? [`${String(counts.active)} in progress`] : []),
+    ...(counts.results > 0 ? [`${String(counts.results)} new results`] : []),
+  ];
   // The watch lists the same items under "Needs you" (targets/VerityWatch).
   // The account the items were read for: taken when their sources arrive, so a
   // list still from the previous account is never sent under the next one.
@@ -123,14 +167,23 @@ export function HomeInbox({
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       testID="home-inbox"
     >
-      <VerityHeader summary={inboxSummary(feed.items)} onOpen={onOpenVerity} />
-      {feed.items.length > 0 ? (
-        <Text variant="eyebrow" style={styles.section}>
-          For you
-        </Text>
-      ) : null}
+      <VerityHeader summary={summaryParts.join(' · ')} onOpen={onOpenVerity} />
       <ProjectInquiryCards client={client} />
-      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
+      <ProjectWork
+        client={client}
+        sessions={workSessions}
+        projects={projects}
+        feed={feed}
+        overview
+        selectedSessionId={selectedSessionId}
+        leadingRows={feed.items.filter((item) => item.kind === 'meeting').map(renderItem)}
+        renderProjectItem={renderItem}
+        renderSessionItem={(item) => (item.kind === 'permission' ? renderItem(item) : undefined)}
+        onSectionsChange={onSectionsChange}
+        onOpenSession={onOpenSession}
+        onChanged={changed}
+      />
+      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} hiddenOnly />
     </ScrollView>
   );
 }
@@ -327,14 +380,16 @@ export function useInboxFeed({
 function InboxFeedList({
   feed,
   selectedSessionId,
+  hiddenOnly = false,
 }: {
   feed: InboxFeed;
   selectedSessionId?: string | null | undefined;
+  hiddenOnly?: boolean;
 }) {
   const { items, hidden, pending, showHidden, toggleHidden, run, dismiss, restore } = feed;
   return (
     <>
-      {items.map((item) => (
+      {(hiddenOnly ? [] : items).map((item) => (
         <InboxCard
           key={item.key}
           item={item}
@@ -660,7 +715,6 @@ const styles = StyleSheet.create((theme) => {
     identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
     capturePressed: { opacity: 0.7 },
-    section: { marginTop: theme.spacing.sm, marginBottom: theme.spacing.xs },
     hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   };
