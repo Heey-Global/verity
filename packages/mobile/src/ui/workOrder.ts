@@ -4,14 +4,14 @@ import { isUnread, type SeenOverrides } from '../unread.js';
 /** Working sessions, kept in a fixed order. */
 const ACTIVE_TIER = 1;
 /** The bottom tier: merged sessions nothing else holds up. */
-const MERGED_TIER = 5;
+const MERGED_TIER = 6;
 
 /**
  * Where a session stands in a project's Work list: lower comes first.
  *
  * What needs the operator or is moving leads, whether or not it is a favorite —
  * a favorite that waits for an answer must not sit below one that is idle. Then
- * favorites, then the rest. The tiers mirror the row's own markers (the
+ * unread answers and running CI, then favorites and the rest. The tiers mirror the row's own markers (the
  * Needs input/Crashed label, the working dot, the blue unread dot, the star), so
  * the order explains itself.
  *
@@ -29,9 +29,11 @@ function workTier(session: SessionSummary, overrides: SeenOverrides = new Map())
   )
     return ACTIVE_TIER;
   if (isUnread(session, overrides)) return 2;
-  if (session.favorite === true) return 3;
+  const pr = session.pr ?? session.pullRequest;
+  if (pr?.phase === 'open' && (pr.pipeline === 'running' || pr.pipeline === 'pending')) return 3;
+  if (session.favorite === true) return 4;
   if (isMerged(session)) return MERGED_TIER;
-  return 4;
+  return 5;
 }
 
 /** Whether the session's pull request has merged, by the same fields its tile reads. */

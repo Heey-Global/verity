@@ -5484,3 +5484,43 @@ migrations['0198_project_repository_instances'] = {
     await sql`alter table projects drop column repository_instance`.execute(db);
   },
 };
+
+migrations['0199_session_pr_visibility'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_pr_visibility (
+      session_id text not null references sessions(session_id) on delete cascade,
+      worktree text not null,
+      pr_url text not null,
+      fingerprint text not null,
+      hidden boolean not null default false,
+      primary key (session_id, worktree, pr_url)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_pr_visibility`.execute(db);
+  },
+};
+
+migrations['0200_wiki_occasions'] = {
+  // What happened in a project that its Wiki may need to reflect. A row stays
+  // open until a maintenance run has read it; closing it drops any text kept
+  // for that run, such as the messages of a session deleted as done.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_occasions (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      kind text not null check(kind in ('source','meeting','decision','chat','session','merge')),
+      ref text not null,
+      title text not null,
+      body text,
+      created_at timestamptz not null default now(),
+      closed_at timestamptz,
+      unique(project_id,kind,ref)
+    )`.execute(db);
+    await sql`create index wiki_occasions_open on wiki_occasions(project_id,created_at)
+      where closed_at is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_occasions`.execute(db);
+  },
+};

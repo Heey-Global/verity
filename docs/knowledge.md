@@ -44,8 +44,9 @@ read-only for project agents. Each session receives its own durable Documents
 working copy; local sessions start in it, and Code sessions receive its path in
 their instructions. Global files are available read-only at
 `/knowledge/shared`, with the same `sources/` and `insights/` organization. Agents use ordinary
-file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
-or Wiki maintenance flow.
+file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool.
+The built-in `wiki-maintain` Skill describes how agents set up and extend the Wiki
+(see [Wiki setup and change log](#wiki-setup-and-change-log)).
 
 Verity Control receives the Knowledge folder of its built-in `verity-control` project,
 plus Global knowledge. Control retains a writable `/knowledge/insights` mount. It does not mount other projects'
@@ -53,8 +54,9 @@ Knowledge. `verity-memory append` saves explicitly requested notes to Control's 
 project overview through its authenticated turn broker. Managed updates reconcile
 these mounts; legacy Compose deployments receive them when the updated stack is applied.
 
-Agents create or revise concise insights without asking first when their work produces a
-durable, reusable conclusion grounded in project sources. They prefer updating an existing
+Agents change Wiki content only when the user explicitly asks or confirms the concrete
+change. When their work produces a durable, reusable conclusion grounded in project
+sources, they offer it as a Wiki change and ask. They prefer updating an existing
 insight, cite relevant source paths, and mark uncertainty. They ask before preserving sensitive
 personal information or a disputed interpretation. Routine progress, transient state,
 unsupported speculation, and secrets do not belong in insights.
@@ -190,3 +192,43 @@ Settings > Shared knowledge is the central browser for cross-project reference m
 Active users can browse and download Shared files without selecting a project or session. Administrators can edit supported text files under Shared Wiki (`insights/`); writes require the version last read so concurrent changes cannot silently overwrite one another. Original sources and derived files remain protected in this editor. Publishing from a project continues to use the existing explicit publication approval.
 
 This navigation change does not move existing files, convert shared material into private context, or remove agent read access to `/knowledge/shared`.
+
+## Wiki setup and change log
+
+The project Wiki explains itself when it has no start page. An empty Wiki offers
+**Set up Wiki**; a Wiki with pages but without `insights/index.md` offers **Create
+overview** above its page list. Both open a project session with a prepared request:
+the agent asks what the project is for and what matters now, proposes topics with
+the existing pages they cover, and writes nothing until the user confirms. It then
+writes `index.md`, `wiki-conventions.md` (the project's own Wiki rules) and a
+`setup` entry in `log.md`. **How the Wiki works**, behind the ⓘ in the Wiki's
+header, explains the roles and links the conventions and the change log;
+**Rebuild overview…** runs the same setup again.
+
+`log.md` is append-only. An entry is a heading `## [YYYY-MM-DD] kind | Title` (UTC date), with
+kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the pages it
+changed and the sources it used. The Wiki catalog gives every page the latest entry
+that links to it, so **Recently updated** names where a change came from; pages the
+log never names fall back to their file age.
+
+## Wiki maintenance occasions
+
+The server notes what a project's Wiki may need to reflect, once per item, in
+`wiki_occasions`: an imported or uploaded source, a filed meeting transcript, a
+recorded decision, a changed chat day from a connected room, a merged pull request
+of a project session, and a session deleted as done. Noting never fails the event
+that caused it.
+
+Deleting a session can keep its conversation for the Wiki (`DELETE
+/sessions/:id?wiki=true`). The server then stores the plain messages of the user and
+Verity, without tool output, with the occasion and deletes the session as usual.
+Only the most recent 256 KiB of the conversation is read and kept, and a deletion
+waits at most five seconds for it; a slower store may still record it afterwards. Nothing is copied into the project's knowledge; reading the occasion in a
+maintenance run drops the stored text. Without `wiki=true`, which older clients
+never send, nothing is kept and an earlier occasion of that session is forgotten.
+A merged pull request is recorded once even when the status cache reports it again
+after a restart; a chat day or re-filed meeting opens its occasion again. A
+maintenance run closes only the version it read, so an occasion reopened while the
+run works stays open with its new text. Until a maintenance run reads them, open
+occasions and their kept text remain stored, also while a deleted project is
+hidden; they are removed only with the project's database row.

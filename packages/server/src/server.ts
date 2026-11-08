@@ -144,6 +144,12 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
+import {
+  knowledgeRef,
+  noteDeletedSession,
+  noteWikiOccasion,
+  occasionTitle,
+} from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -2669,11 +2675,70 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return null;
   };
+  const prCleanupPending = new Set<string>();
+  const prVisibilityWrites = new Map<string, Promise<void>>();
+  const withPrVisibility = async <T>(
+    session: SessionRecord,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    const key = session.worktree;
+    const previous = prVisibilityWrites.get(key);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    prVisibilityWrites.set(key, pending);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (prVisibilityWrites.get(key) === pending) prVisibilityWrites.delete(key);
+    }
+  };
   const sessionPrCache = createSessionPrCache({
     load: sessionPrStatus,
+    present: (session, status) =>
+      withPrVisibility(session, async () => {
+        if (!status || status.phase === 'open' || prCleanupPending.has(session.sessionId))
+          return status;
+        const saved = await deps.eventStore.getSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+        );
+        if (saved?.hidden) return null;
+        const branches = await branchesForSession(session);
+        const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+        // An unavailable workspace is not evidence that work resumed.
+        if (fingerprint === undefined) return status;
+        const hidden = await deps.eventStore.observeSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+          fingerprint,
+        );
+        return hidden ? null : status;
+      }),
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      // A merged change is when the product changed. The occasion is recorded once
+      // per pull request; a cache refilled after a restart reports it again. It
+      // names the pull request only: the session's conversation is kept for the
+      // Wiki solely when the user deletes the session as done.
+      if (status?.phase === 'merged' && session.projectId !== null)
+        void noteWikiOccasion(
+          deps.eventStore,
+          {
+            projectId: session.projectId,
+            kind: 'merge',
+            ref: status.url,
+            title: `#${String(status.number)} ${status.title}`,
+            body: `Merged pull request ${status.url} from session ${session.sessionId}.`,
+          },
+          app.log,
+        );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
       resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
@@ -2803,7 +2868,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       await maybeDispatchPrRepairTurns(session, status);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
-      prSummaryCache.set(worktree, { pr: compactPr(status), at: Date.now() });
+      prSummaryCache.set(worktree, {
+        pr: compactPr(sessionPrCache.peek(worktree) ?? null),
+        at: Date.now(),
+      });
     } catch {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       // Stamp the attempt time even on failure so the TTL guard still engages —
@@ -4032,6 +4100,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
   registerIntegrationRoutes(app, {
     store: deps.eventStore.integrations,
+    onChatDay: (projectId, path, room) =>
+      noteWikiOccasion(
+        deps.eventStore,
+        {
+          projectId,
+          kind: 'chat',
+          ref: knowledgeRef(path),
+          title: `${room} · ${occasionTitle(path)}`,
+          reopen: true,
+        },
+        app.log,
+      ),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { connectorToken: deps.matrixConnectorToken }
@@ -5081,6 +5161,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         dataRoot: deps.dataRoot,
         sessionId,
         meetingId,
+        log: app.log,
       }),
     onDiscarded: async (sessionId, meeting) => {
       // Independent steps, all attempted: a provider failure must not skip removing the
@@ -5540,7 +5621,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerSessionDeleteRoute(app, {
-    remove: async (request, reply, id, force) => {
+    remove: async (request, reply, id, force, options) => {
       if (conductor.isMovingSession?.(id)) {
         reply.code(409);
         return { error: 'Wait for the session move to finish before deleting.' };
@@ -5586,14 +5667,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
       deletionRequestIds.set(id, request.id);
+      // Read before the transcript goes with the session; only once deletion is admitted.
+      const noteForWiki = () =>
+        noteDeletedSession(deps.eventStore, session, options?.keepForWiki === true, request.log);
       try {
-        if (force) return await sessionDeletions.remove(session);
+        if (force) {
+          await noteForWiki();
+          return await sessionDeletions.remove(session);
+        }
         let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
         const admission = await conductor.tryRunExclusive(id, async () => {
           let release!: () => void;
           const admitted = new Promise<void>((resolve) => {
             release = resolve;
           });
+          await noteForWiki();
           removal = sessionDeletions.remove(session, release);
           // The HTTP deadline must not release an unfinished admission operation.
           void removal.catch(() => undefined);
@@ -6224,7 +6312,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // number-only dep. Newer deployments return the compact PR status for the
       // composer strip; older deps can still provide only the number. Failures
       // degrade to null, never failing the list.
-      const pullRequest =
+      const rawPullRequest =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
           ? await readStage('pr', () =>
               sessionPrCache.get(session, {
@@ -6233,6 +6321,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               }),
             )
           : undefined;
+      const pullRequest =
+        rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
@@ -6241,7 +6331,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 deps.branchPr!(current, session.worktree).catch(() => null),
               )
             : undefined;
-      await maybeDispatchPrRepairTurns(session, pullRequest);
+      await maybeDispatchPrRepairTurns(session, rawPullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
@@ -6323,6 +6413,36 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus,
     compactPr,
     applyPrSummaryAction,
+    beforePrCleanup: (session) => {
+      prCleanupPending.add(session.sessionId);
+    },
+    afterPrCleanup: (session, status) =>
+      withPrVisibility(session, async () => {
+        try {
+          if (status?.phase === 'merged') {
+            // Pre-cleanup evidence cannot identify later work, even if probing fails.
+            await deps.eventStore.clearSessionPrVisibility(
+              session.sessionId,
+              session.worktree,
+              status.url,
+            );
+            const branches = await branchesForSession(session);
+            const fingerprint = await branches
+              ?.worktreeFingerprint?.(session.worktree, false)
+              .catch(() => undefined);
+            if (fingerprint !== undefined)
+              await deps.eventStore.resetSessionPrVisibility(
+                session.sessionId,
+                session.worktree,
+                status.url,
+                fingerprint,
+              );
+          }
+        } finally {
+          prCleanupPending.delete(session.sessionId);
+          invalidatePrSummaryAction(session, true);
+        }
+      }),
     invalidatePrSummaryAction,
   });
 

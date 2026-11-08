@@ -86,6 +86,7 @@ export function ProjectCard({
   onToggle,
   onOpenSession,
   onSessionChanged,
+  layoutRevision,
 }: {
   group: SessionProjectGroup;
   client: VerityClient;
@@ -97,6 +98,7 @@ export function ProjectCard({
   reordering: boolean;
   /** For a group that opens in place: whether its sessions show. */
   expanded: boolean;
+  layoutRevision?: number;
   /** Opens the project page; absent for a group without one. */
   onOpen?: (() => void) | undefined;
   onToggle: () => void;
@@ -175,6 +177,7 @@ export function ProjectCard({
               client={client}
               projectId={group.project?.id}
               sessions={group.sessions}
+              layoutRevision={layoutRevision}
               // The card's head already says what waits and runs; opened, it
               // shows every session rather than a Now without in-place answers.
               initialFilter="all"

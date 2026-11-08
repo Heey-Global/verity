@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.86.3](https://github.com/Heey-Global/verity/compare/mobile-v1.86.2...mobile-v1.86.3) (2026-11-08)
+
+
+### Features
+
+* **files:** unify swipe actions and simplify knowledge navigation ([#2393](https://github.com/Heey-Global/verity/issues/2393)) ([7dd390d](https://github.com/Heey-Global/verity/commit/7dd390d537a9fa404e15d68b2d70d8065e888a14))
+* **mockups:** enlarge a screen from the review to full size ([#2402](https://github.com/Heey-Global/verity/issues/2402)) ([29f6cc3](https://github.com/Heey-Global/verity/commit/29f6cc37b1bde9d74afc1f4449e92bb490311826))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.7 ([#2397](https://github.com/Heey-Global/verity/issues/2397)) ([d8c8b56](https://github.com/Heey-Global/verity/commit/d8c8b56c856c5272e8c233244307ba47db602794))
+* **deps:** update dependency graphql to v17.1.0 ([#2399](https://github.com/Heey-Global/verity/issues/2399)) ([c78e43b](https://github.com/Heey-Global/verity/commit/c78e43b1b51a9281e2d408dff5a7e191109cc08e))
+* **deps:** update dependency sigstore to v5.0.1 ([#2398](https://github.com/Heey-Global/verity/issues/2398)) ([23c34c9](https://github.com/Heey-Global/verity/commit/23c34c917bb8652762cb40e7d7d34fd42a88112f))
+* **meetings:** allow early calendar joins and keep link entry above keyboard ([#2389](https://github.com/Heey-Global/verity/issues/2389)) ([1b031f2](https://github.com/Heey-Global/verity/commit/1b031f27a908680fdb351a67c4a6bd0124df0e7f))
+* **mobile:** show mockup reviews as blue action indicators ([#2403](https://github.com/Heey-Global/verity/issues/2403)) ([a7ff808](https://github.com/Heey-Global/verity/commit/a7ff808ff49ea9b0006a8225eb057973709fdcf4))
+* **mobile:** unify Home replies and recover stale mockup reviews ([#2386](https://github.com/Heey-Global/verity/issues/2386)) ([7f5e330](https://github.com/Heey-Global/verity/commit/7f5e3309ccddcb15ba128ca8a6e273492118e7e1))
+* **mobile:** unify vulnerabilities navigation and prevent header truncation ([#2400](https://github.com/Heey-Global/verity/issues/2400)) ([9428de9](https://github.com/Heey-Global/verity/commit/9428de9ec4c29c6880e0bf873ea6a9dde4e504bf))
+
 ## [1.86.2](https://github.com/Heey-Global/verity/compare/mobile-v1.86.1...mobile-v1.86.2) (2026-11-07)
 
 

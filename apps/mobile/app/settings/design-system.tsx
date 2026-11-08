@@ -300,7 +300,7 @@ export default function DesignSystemCatalog() {
             context: 'acme/website · PR #2031',
             message: 'Checks passed, no conflicts.',
             actions: [
-              { kind: 'merge', label: 'Squash & merge', sessionId: 's', number: 2031 },
+              { kind: 'merge', label: 'Merge', sessionId: 's', number: 2031 },
               { kind: 'open_session', label: 'Open', sessionId: 's' },
             ],
             at: 0,

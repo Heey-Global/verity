@@ -11,15 +11,57 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { KnowledgeEntryActions } from './KnowledgeEntryActions';
 import { MarkdownItem } from '../files/MarkdownItem';
-import { Card, FilterChips, Group, Row, SectionHeader, StatusTag, Text } from '../ui';
+import {
+  Button,
+  Card,
+  CardHead,
+  FilterChips,
+  Group,
+  Row,
+  SectionHeader,
+  StatusTag,
+  StepIntro,
+  Text,
+} from '../ui';
 import { fileMarkdownItems } from '../../lib/fileMarkdownPreview';
 import { DECISIONS, topicFolder, WIKI_FILES } from './knowledgeScope';
+import { WikiRoles, type WikiSetupMode } from './WikiGuide';
 
 /** How many decisions and recent pages the start page shows before "All". */
 const DECISIONS_SHOWN = 3;
 const RECENT_SHOWN = 5;
 
 type Open = { folder: (folder: string) => void; file: (file: string) => void };
+
+/**
+ * The log entry behind a page's latest change, when the page was not edited
+ * again after it (an edit outside the log makes the entry stale).
+ */
+function currentChange(page: WikiPage): WikiPage['lastChange'] {
+  const change = page.lastChange;
+  // An entry dated past tomorrow (UTC) was written wrong; it must not pin the page on top.
+  const tomorrow = new Date();
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  if (change && change.at > tomorrow.toISOString().slice(0, 10)) return undefined;
+  const edited = new Date(page.modifiedAt);
+  if (!change || Number.isNaN(edited.getTime())) return change;
+  // The entry's day is the writer's; a publish past midnight may land a day later.
+  edited.setUTCDate(edited.getUTCDate() - 1);
+  return change.at >= edited.toISOString().slice(0, 10) ? change : undefined;
+}
+
+/** When a page last changed: its current log entry, else its file age. */
+function changedAt(page: WikiPage): string {
+  const change = currentChange(page);
+  // A log day is read at noon UTC, so no time zone moves it to another day.
+  return change ? `${change.at}T12:00:00.000Z` : page.modifiedAt;
+}
+
+/** {@link changedAt} as a number, so log days and file times sort together. */
+function changedTime(page: WikiPage): number {
+  const time = Date.parse(changedAt(page));
+  return Number.isNaN(time) ? 0 : time;
+}
 
 /** "today", "yesterday" or the date, inside a sentence ("updated today"). */
 export function wikiDayInline(iso: string): string {
@@ -168,12 +210,57 @@ export function catalogTitle(catalog: WikiCatalog, path: string): string {
 }
 
 /**
- * The Wiki's start page: the overview and topics Verity maintains in index.md,
- * then what the app reads itself — decisions with their status, the pages
- * changed last, and what needs a look. Without index.md every page is listed
- * by its title instead of the topics.
+ * A Wiki without pages or decisions: what it is for and who does what, then
+ * setting it up in a session. Nothing is written before the user confirms there.
  */
-export function WikiHome({ catalog, open }: { catalog: WikiCatalog; open: Open }) {
+function WikiEmpty({ open, setup }: { open: Open; setup?: (mode: WikiSetupMode) => void }) {
+  return (
+    <View style={styles.root} testID="wiki-empty">
+      <StepIntro
+        headline="Your project,"
+        accent="explained."
+        lead="The Wiki answers what this project is, how it works and why things were decided, without digging through old chats."
+      />
+      <WikiRoles />
+      <View style={styles.setup}>
+        {setup ? (
+          <>
+            <Button label="Set up Wiki" icon="book-open" onPress={() => setup('setup')} fullWidth />
+            <Text variant="footnote" tone="muted" style={styles.center}>
+              Verity asks two short questions in a session, then proposes the first topics.
+            </Text>
+          </>
+        ) : null}
+        <View style={setup ? styles.secondary : undefined}>
+          <Button
+            label="Add a source first"
+            variant="secondary"
+            onPress={() => open.folder('sources')}
+            fullWidth
+          />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * The Wiki's start page: the overview and topics Verity maintains in index.md,
+ * what needs a look right under it, then what the app reads itself — decisions
+ * with their status and the pages changed last, named by where the change came
+ * from. Without index.md every page is listed by its title, below the offer to
+ * create the overview; a Wiki with nothing in it explains itself instead.
+ */
+export function WikiHome({
+  catalog,
+  open,
+  setup,
+}: {
+  catalog: WikiCatalog;
+  open: Open;
+  /** Starts a setup session; absent where the Wiki cannot be set up from here. */
+  setup?: (mode: WikiSetupMode) => void;
+}) {
   const { chips, shown } = useDecisionFilter(catalog.decisions);
   const title = (path: string) => catalogTitle(catalog, path);
   const index = catalog.index;
@@ -183,8 +270,22 @@ export function WikiHome({ catalog, open }: { catalog: WikiCatalog; open: Open }
     return target ? () => open.file(target) : undefined;
   };
   const recent = [...catalog.pages]
-    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
+    .sort((a, b) => changedTime(b) - changedTime(a))
     .slice(0, RECENT_SHOWN);
+  // A catalog cut short may hide pages; it shows its notice and All files instead.
+  const empty =
+    !index &&
+    !catalog.pages.length &&
+    !catalog.decisions.length &&
+    !catalog.review.length &&
+    !catalog.truncated;
+  if (empty) return <WikiEmpty open={open} {...(setup ? { setup } : {})} />;
+  const review = catalog.review.length ? (
+    <>
+      <SectionHeader title={`To review · ${String(catalog.review.length)}`} />
+      <Group>{catalog.review.map((item) => reviewRow(item, title, open))}</Group>
+    </>
+  ) : null;
   const topicOf = (path: string) => index?.topics.find((topic) => topic.pages.includes(path));
   return (
     <View style={styles.root} testID="wiki-home">
@@ -203,7 +304,25 @@ export function WikiHome({ catalog, open }: { catalog: WikiCatalog; open: Open }
             </Text>
           </Pressable>
         </Card>
+      ) : setup && catalog.pages.length ? (
+        <Card stacked>
+          <CardHead
+            title={`${String(catalog.pages.length)} ${catalog.pages.length === 1 ? 'page' : 'pages'}, no overview yet`}
+          />
+          <Text variant="bodySmall" tone="muted">
+            A start page explains the project and groups these pages into topics. Verity asks two
+            questions first, reads the pages and names gaps instead of filling them.
+          </Text>
+          <View style={styles.setup}>
+            <Button label="Create overview" onPress={() => setup('overview')} fullWidth />
+            <Text variant="footnote" tone="muted" style={styles.center}>
+              Opens a session · nothing is written until you confirm
+            </Text>
+          </View>
+        </Card>
       ) : null}
+
+      {review}
 
       {index?.topics.length ? (
         <>
@@ -269,23 +388,22 @@ export function WikiHome({ catalog, open }: { catalog: WikiCatalog; open: Open }
           <Group>
             {recent.map((page) => {
               const topic = topicOf(page.path);
+              const change = currentChange(page);
               return (
                 <PageRow
                   key={page.path}
                   page={page}
-                  subtitle={[wikiDay(page.modifiedAt), topic?.title].filter(Boolean).join(' · ')}
+                  subtitle={[
+                    wikiDay(changedAt(page)),
+                    change ? `from ${change.title}` : topic?.title,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                   onOpen={open.file}
                 />
               );
             })}
           </Group>
-        </>
-      ) : null}
-
-      {catalog.review.length ? (
-        <>
-          <SectionHeader title={`To review · ${String(catalog.review.length)}`} />
-          <Group>{catalog.review.map((item) => reviewRow(item, title, open))}</Group>
         </>
       ) : null}
 
@@ -389,4 +507,7 @@ export function WikiTopicPages({
 const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.md },
   footer: { marginTop: theme.spacing.md },
+  setup: { gap: theme.spacing.sm, marginTop: theme.spacing.sm },
+  secondary: { marginTop: theme.spacing.md },
+  center: { textAlign: 'center' },
 }));

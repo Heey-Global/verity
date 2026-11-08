@@ -2496,6 +2496,22 @@ describe('VerityClient.setSessionModel (switch engine)', () => {
 });
 
 describe('VerityClient.deleteSession', () => {
+  // The server keeps a deleted session's conversation for the Wiki only when
+  // asked; the flag must reach it, and must not be sent when not chosen.
+  it('asks the server to keep the conversation for the Wiki only when chosen', async () => {
+    const kept = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: kept.fetch }).deleteSession('s1', {
+      wiki: true,
+      force: true,
+    });
+    expect(kept.calls[0]?.url).toBe('http://host/sessions/s1?force=true&wiki=true');
+    const plain = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: plain.fetch }).deleteSession('s1', {
+      wiki: false,
+    });
+    expect(plain.calls[0]?.url).toBe('http://host/sessions/s1');
+  });
+
   it('DELETEs the session and returns the echoed id', async () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

@@ -1,4 +1,5 @@
 import { ProjectInquiryStore } from './project-inquiries.js';
+import { WikiOccasionStore } from './wiki-occasions.js';
 import {
   egressDestinationDb,
   withEgressDestinationTransaction,
@@ -1735,6 +1736,7 @@ export class EventStore implements EventSink {
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
+    this.wikiOccasions = new WikiOccasionStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
@@ -1750,6 +1752,8 @@ export class EventStore implements EventSink {
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly projectInquiries: ProjectInquiryStore;
+  /** What a project's Wiki may need to reflect, until a maintenance run read it. */
+  readonly wikiOccasions: WikiOccasionStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
@@ -3906,6 +3910,65 @@ export class EventStore implements EventSink {
       .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
       .executeTakeFirst();
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Keep a terminal PR hidden after the workspace first changes, across restarts. */
+  async observeSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<boolean> {
+    const result = await sql<{ hidden: boolean }>`
+      insert into session_pr_visibility(session_id, worktree, pr_url, fingerprint, hidden)
+      values (${sessionId}, ${worktree}, ${url}, ${fingerprint}, false)
+      on conflict (session_id, worktree, pr_url) do update set
+        hidden = session_pr_visibility.hidden or
+          session_pr_visibility.fingerprint <> excluded.fingerprint
+      returning hidden
+    `.execute(this.db);
+    return result.rows[0]!.hidden;
+  }
+
+  async getSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+  ): Promise<{ fingerprint: string; hidden: boolean } | undefined> {
+    return this.db
+      .selectFrom('session_pr_visibility')
+      .select(['fingerprint', 'hidden'])
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .executeTakeFirst();
+  }
+
+  /** Seed the final baseline after managed post-merge housekeeping has settled. */
+  async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_pr_visibility')
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .execute();
+  }
+
+  async resetSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('session_pr_visibility')
+      .values({ session_id: sessionId, worktree, pr_url: url, fingerprint, hidden: false })
+      .onConflict((oc) =>
+        oc
+          .columns(['session_id', 'worktree', 'pr_url'])
+          .doUpdateSet({ fingerprint, hidden: false }),
+      )
+      .execute();
   }
 
   /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */

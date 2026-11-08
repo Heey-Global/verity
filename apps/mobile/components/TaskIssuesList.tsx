@@ -253,7 +253,7 @@ export function TaskIssuesList({
                               <Button
                                 label="Retry"
                                 size="small"
-                                variant="secondary"
+                                variant="answer"
                                 disabled={busy}
                                 onPress={() => dispatch(repository, issue, retry.targetSessionId)}
                               />
@@ -262,7 +262,7 @@ export function TaskIssuesList({
                               <Button
                                 label="This session"
                                 size="small"
-                                variant="secondary"
+                                variant="answer"
                                 disabled={busy}
                                 onPress={() => dispatch(repository, issue, currentSessionId)}
                               />

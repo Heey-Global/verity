@@ -27,7 +27,7 @@ export function answerId(action: InboxAction): string {
   return `${action.kind}:${action.label}`;
 }
 
-/** Shared quiet answers for Home cards and project rows. */
+/** Shared answers for Home cards and project rows, outlined so they read as tappable. */
 export function AnswerButtons({
   answers,
   pending,
@@ -48,7 +48,7 @@ export function AnswerButtons({
         label={`${String(answers.length)} answers`}
         icon="chevron-down"
         size="small"
-        variant="secondary"
+        variant="answer"
         loading={pending !== false}
         disabled={disabled}
         onPress={onMore}
@@ -59,7 +59,7 @@ export function AnswerButtons({
       key={answerId(action)}
       label={action.label}
       size="small"
-      variant="secondary"
+      variant="answer"
       loading={pending === answerId(action)}
       disabled={disabled}
       onPress={() => onAnswer(action)}

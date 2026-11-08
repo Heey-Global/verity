@@ -15,6 +15,17 @@ export interface ProjectInquirySessionsTable {
   change_approved: Generated<boolean>;
 }
 
+export interface WikiOccasionsTable {
+  id: string;
+  project_id: string;
+  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
+  ref: string;
+  title: string;
+  body: string | null;
+  created_at: Generated<Date>;
+  closed_at: Date | null;
+}
+
 export interface ProjectInquiriesTable {
   id: string;
   source_session_id: string;
@@ -1015,6 +1026,15 @@ interface SessionPendingNoteTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Baselines and permanent retirement of completed PRs from active session UI. */
+interface SessionPrVisibilityTable {
+  session_id: string;
+  worktree: string;
+  pr_url: string;
+  fingerprint: string;
+  hidden: boolean;
+}
+
 /** Durable de-dupe markers for server-authored automatic turns. */
 interface SessionAutomationMarkerTable {
   session_id: string;
@@ -1748,6 +1768,7 @@ export interface Database {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
+  wiki_occasions: WikiOccasionsTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
@@ -1851,6 +1872,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  session_pr_visibility: SessionPrVisibilityTable;
   pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;

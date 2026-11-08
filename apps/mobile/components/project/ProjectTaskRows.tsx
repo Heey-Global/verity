@@ -100,14 +100,14 @@ export function ProjectTaskRow({
             <Button
               label="Keep my edit"
               size="small"
-              variant="secondary"
+              variant="answer"
               disabled={busy}
               onPress={() => onResolveConflict(true)}
             />
             <Button
               label="Use server version"
               size="small"
-              variant="secondary"
+              variant="answer"
               disabled={busy}
               onPress={() => onResolveConflict(false)}
             />
@@ -117,7 +117,7 @@ export function ProjectTaskRow({
           <Button
             label="Undo"
             size="small"
-            variant="secondary"
+            variant="answer"
             disabled={busy}
             onPress={onToggleDone}
           />
@@ -128,22 +128,16 @@ export function ProjectTaskRow({
               <Button
                 label={done ? 'Reopen' : 'Done'}
                 size="small"
-                variant="secondary"
+                variant="answer"
                 disabled={busy}
                 onPress={onToggleDone}
               />
             )}
-            <Button
-              label="Edit"
-              size="small"
-              variant="secondary"
-              disabled={busy}
-              onPress={onEdit}
-            />
+            <Button label="Edit" size="small" variant="answer" disabled={busy} onPress={onEdit} />
             <Button
               label="Delete"
               size="small"
-              variant="secondary"
+              variant="answer"
               disabled={busy}
               onPress={onDelete}
             />

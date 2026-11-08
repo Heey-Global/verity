@@ -118,16 +118,25 @@ export function ProjectPage({
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
   /** The knowledge area open in the wide layout's column, if any. */
   const [knowledgeArea, setKnowledgeArea] = useState<string>();
-  const security = useProjectSecurity(client, projectId, onOpenSession);
+  const security = useProjectSecurity(
+    client,
+    projectId,
+    onOpenSession,
+    detail?.project.kind === 'github' || detail?.project.kind === 'forgejo',
+  );
   const knowledgeScope = useMemo<KnowledgeScope>(
     () => ({ kind: 'project', projectId }),
     [projectId],
   );
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const reload = useCallback(() => void load(true), [load]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    void load(true).finally(() => setRefreshing(false));
+    void load(true).finally(() => {
+      setLayoutRevision((value) => value + 1);
+      setRefreshing(false);
+    });
   }, [load]);
   // Compared with the last value rather than skipping a first run: the mount
   // already loads, and a re-run with the same token (a re-mounted effect, a new
@@ -217,6 +226,7 @@ export function ProjectPage({
           client={client}
           projectId={projectId}
           sessions={detail.sessions}
+          layoutRevision={layoutRevision}
           selectedSessionId={selectedSessionId}
           feed={feed}
           leadingRows={securityRows(security)}
@@ -340,7 +350,7 @@ function ProjectContent({
       {security !== undefined ? (
         <Row
           leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}
-          title="Security"
+          title="Vulnerabilities"
           subtitle={packagesToUpdate(security.packages)}
           trailing={
             <StatusTag
