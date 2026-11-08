@@ -673,6 +673,31 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
       status: 'nothing_new',
       skipped: ['topics/billing.md'],
     });
+
+    // A page someone created by hand after the proposal is never overwritten.
+    const fresh = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'maintenance',
+      title: 'Glossary',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [{ path: 'glossary.md', content: '# Glossary\n', summary: 'Add a glossary' }],
+    });
+    const { proposalId } = JSON.parse(fresh.content[0]!.text) as { proposalId: string };
+    writeFileSync(join(h.dataRoot, 'knowledge/p/insights/glossary.md'), 'by hand\n');
+    const raced = await h.app.inject({
+      method: 'POST',
+      url: `/projects/p/knowledge/proposals/${proposalId}/apply`,
+      headers: auth,
+      payload: {},
+    });
+    expect(raced.json()).toMatchObject({ applied: [], stale: ['glossary.md'] });
+    expect(readFileSync(join(h.dataRoot, 'knowledge/p/insights/glossary.md'), 'utf8')).toBe(
+      'by hand\n',
+    );
+    // A deleted project only hides its row; its proposals cannot be decided.
+    await ctx.store.hideProject('p');
+    const hidden = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(hidden.statusCode).toBe(404);
   } finally {
     await h.close();
   }

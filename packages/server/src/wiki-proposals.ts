@@ -110,7 +110,7 @@ const fingerprint = (path: string, content: string) =>
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-/** One line of a log heading: no line breaks, no `|` that would end the kind. */
+/** One line of a log heading; the parser splits kind and title at the first `|`. */
 const logTitle = (title: string) => title.replace(/\s+/g, ' ').trim();
 
 /** A log link from `insights/log.md` to a knowledge path or a web source. */

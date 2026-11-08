@@ -3666,10 +3666,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   // Proposals write through the Wiki's file routes, which are registered further below.
-  let sessionFiles: ReturnType<typeof registerServerSessionFiles> | undefined;
+  const sessionFiles: { current?: ReturnType<typeof registerServerSessionFiles> } = {};
   const wikiFiles = () => {
-    if (!sessionFiles) throw new Error('Wiki files are not ready');
-    return sessionFiles;
+    if (!sessionFiles.current) throw new Error('Wiki files are not ready');
+    return sessionFiles.current;
   };
   const wikiProposals =
     deps.dataRoot === undefined
@@ -5276,8 +5276,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await attendeeMeetings.close();
   });
   meetingTranscripts.registerRoutes();
-  sessionFiles = registerServerSessionFiles(app, deps, conductor);
-  if (wikiProposals) registerWikiProposalRoutes(app, wikiProposals);
+  sessionFiles.current = registerServerSessionFiles(app, deps, conductor);
+  if (wikiProposals)
+    registerWikiProposalRoutes(app, wikiProposals, async (projectId) => {
+      const project = await deps.eventStore.getProject(projectId);
+      return project !== undefined && !project.hiddenAt;
+    });
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the

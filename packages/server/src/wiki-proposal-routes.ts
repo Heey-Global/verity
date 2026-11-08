@@ -16,13 +16,22 @@ const decideBody = z
  * Review of proposed Wiki changes. Reading follows the Wiki's read access;
  * applying and rejecting follow its edit access (see paired-route-policy).
  */
-export function registerWikiProposalRoutes(app: FastifyInstance, proposals: WikiProposals): void {
+export function registerWikiProposalRoutes(
+  app: FastifyInstance,
+  proposals: WikiProposals,
+  /** A deleted (hidden) project has no Wiki to review; applying must not recreate its folder. */
+  projectActive: (projectId: string) => Promise<boolean>,
+): void {
   void app.register((instance, _options, done) => {
     instance.setErrorHandler((error, _request, reply) => {
       if (error instanceof z.ZodError) return reply.code(400).send({ error: 'invalid request' });
       if (error instanceof WikiProposalError || error instanceof FileWriteError)
         return reply.code(error.status).send({ error: error.message });
       return reply.send(error);
+    });
+    instance.addHook('preHandler', async (request, reply) => {
+      const { id } = projectParams.parse(request.params);
+      if (!(await projectActive(id))) return reply.code(404).send({ error: 'project not found' });
     });
     instance.get('/projects/:id/knowledge/proposals', async (request) => {
       const { id } = projectParams.parse(request.params);

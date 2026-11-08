@@ -875,6 +875,14 @@ export function registerServerSessionFiles(
       content: string,
       expectedVersion: string | null,
     ) => {
+      // Folders are created before the slot validates the path, so only a plain
+      // relative path may reach them.
+      if (
+        path
+          .split('/')
+          .some((part) => !part || part === '.' || part === '..' || part.includes('\\'))
+      )
+        throw new FileWriteError(400, 'invalid Wiki path');
       const wiki = await projectWiki(projectId);
       await ensureWikiFolders(wiki.dir, path);
       const saved = await saveText(wiki, path, content, expectedVersion);
