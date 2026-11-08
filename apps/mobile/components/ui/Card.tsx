@@ -293,7 +293,7 @@ export function Row({
         action !== undefined ? styles.rowBesideAction : null,
         disabled ? styles.muted : settled ? styles.settled : null,
         pressed && !disabled ? styles.pressed : null,
-        active ? styles.rowActive : null,
+        active && strip === null && action === undefined ? styles.rowActive : null,
       ]}
     >
       {content}
@@ -302,7 +302,7 @@ export function Row({
   const body =
     action !== undefined ? (
       // The action dims itself when disabled; the wrapper must not dim it again.
-      <View style={styles.withAction}>
+      <View style={[styles.withAction, active && strip === null ? styles.rowActive : null]}>
         {pressable}
         <View style={styles.action}>{action}</View>
       </View>
@@ -310,7 +310,7 @@ export function Row({
       pressable
     );
   return strip ? (
-    <View>
+    <View style={active ? styles.rowActive : undefined}>
       {body}
       {strip}
     </View>
@@ -557,7 +557,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing.sm + theme.spacing.xxs,
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
-  rowActive: { backgroundColor: tint(theme.colors.action, 'fill') },
+  rowActive: { backgroundColor: theme.colors.surfaceAlt },
   withAction: { flexDirection: 'row', alignItems: 'center' },
   // The action brings the row's end padding; the pressable keeps its start.
   rowBesideAction: { flex: 1, paddingRight: 0 },

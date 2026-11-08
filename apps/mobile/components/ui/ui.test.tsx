@@ -107,7 +107,7 @@ describe('Row', () => {
     );
     const row = screen.getByRole('button', { name: 'Session, Running' });
     expect(row.props.accessibilityState).toMatchObject({ selected: true });
-    expect(row).toHaveStyle({ backgroundColor: tint(lightTheme.colors.action, 'fill') });
+    expect(row).toHaveStyle({ backgroundColor: lightTheme.colors.surfaceAlt });
     expect(screen.getByText('Running')).toBeOnTheScreen();
     rerender(<Row title="Session" onPress={jest.fn()} trailing="Running" />);
     expect(
@@ -116,8 +116,41 @@ describe('Row', () => {
       selected: false,
     });
     expect(screen.getByRole('button', { name: 'Session, Running' })).not.toHaveStyle({
-      backgroundColor: tint(lightTheme.colors.action, 'fill'),
+      backgroundColor: lightTheme.colors.surfaceAlt,
     });
+  });
+
+  it('highlights the whole active row while keeping answers independently pressable', () => {
+    const onOpen = jest.fn();
+    const onAnswer = jest.fn();
+    const { rerender } = render(
+      <Row
+        title="Question"
+        active
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    expect(StyleSheet.flatten(container.props.style)).toMatchObject({
+      backgroundColor: lightTheme.colors.surfaceAlt,
+    });
+    expect(container.findAllByProps({ accessibilityLabel: 'Answer' })).not.toHaveLength(0);
+    fireEvent.press(screen.getByRole('button', { name: 'Answer' }));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    rerender(
+      <Row
+        title="Question"
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    expect(StyleSheet.flatten(container.props.style)).toBeUndefined();
   });
 
   // The chevron promises navigation; a row that only acts in place must not show it.
