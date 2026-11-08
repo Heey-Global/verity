@@ -245,6 +245,24 @@ it('names where a page’s latest change came from, newest log entry first', asy
   expect(recent.indexOf('Assistant and roles')).toBeLessThan(recent.indexOf('Navigation concept'));
 });
 
+// An edit outside the log (an admin edit, a resolved conflict) is newer than the
+// log entry; the page must not keep the stale entry's day and origin.
+it('prefers a later edit of the file over an older log entry', async () => {
+  client({
+    ...catalog,
+    pages: [
+      {
+        ...catalog.pages[0]!,
+        lastChange: { at: '2020-01-01', kind: 'ingest', title: 'Old meeting' },
+      },
+      catalog.pages[1]!,
+    ],
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  await screen.findByTestId('wiki-home');
+  expect(screen.queryByText(/from Old meeting/)).toBeNull();
+});
+
 it('explains how the Wiki works and links its rules and change log', async () => {
   client({
     ...catalog,

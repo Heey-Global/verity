@@ -144,9 +144,6 @@ export const WIKI_LOG = 'insights/log.md';
 /** The project's own Wiki rules (the "schema"), written at setup and changed with Verity. */
 export const WIKI_CONVENTIONS = 'insights/wiki-conventions.md';
 
-/** The kinds of change log.md records, in its `## [YYYY-MM-DD] kind | Title` headings. */
-export const WIKI_LOG_KINDS = ['setup', 'ingest', 'chat', 'merge', 'lint'] as const;
-
 export interface WikiLogEntry {
   /** The entry's day, `YYYY-MM-DD`. */
   at: string;

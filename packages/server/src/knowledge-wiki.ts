@@ -26,6 +26,8 @@ import { projectDecisionSummaries } from './knowledge-decisions.js';
 const MAX_PAGES = 1000;
 const MAX_DEPTH = 6;
 const MAX_PAGE_BYTES = 512 * 1024;
+/** log.md only grows; it gets more room than a page so its entries outlive a page's cap. */
+const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_CONFLICTS = 50;
 /** Linked files the scan did not read, looked up on disk per request. */
@@ -223,7 +225,12 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
         if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue;
         try {
           const stat = await lstat(`/proc/self/fd/${handle.fd}/${entry.name}`);
-          const content = await readDocument(insights, rel, false, MAX_PAGE_BYTES);
+          const content = await readDocument(
+            insights,
+            rel,
+            false,
+            `insights/${rel}` === WIKI_LOG ? MAX_LOG_BYTES : MAX_PAGE_BYTES,
+          );
           if (!content || !isUtf8(content) || content.includes(0)) continue;
           bytes += content.length;
           const markdown = content.toString('utf8');

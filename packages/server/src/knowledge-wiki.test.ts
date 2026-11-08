@@ -237,6 +237,17 @@ describe('projectWikiCatalog', () => {
     expect(catalog.log).toMatchObject({ path: 'insights/log.md' });
   });
 
+  // log.md only grows. Past a page's read cap it must still be read, or every
+  // page loses its origin and the catalog reads as partial for good.
+  it('reads a log larger than a page may be', async () => {
+    write('insights/nav.md', '# Navigation\n\nText.\n');
+    const old = '## [2026-01-01] ingest | Filler\n- nothing here\n'.repeat(20_000);
+    write('insights/log.md', `${old}## [2026-11-07] ingest | Late entry\n- [Navigation](nav.md)\n`);
+    const catalog = await projectWikiCatalog(root);
+    expect(catalog.truncated).toBe(false);
+    expect(catalog.pages[0]?.lastChange?.title).toBe('Late entry');
+  });
+
   // The app opens any knowledge file a link names; only a link to nothing is broken.
   it('counts links to images, conflicts and skipped pages as working when the file is there', async () => {
     write('insights/diagram.png', 'png');

@@ -33,10 +33,20 @@ const RECENT_SHOWN = 5;
 
 type Open = { folder: (folder: string) => void; file: (file: string) => void };
 
-/** When a page last changed: its latest log.md entry, else its file age. */
+/**
+ * The log entry behind a page's latest change, when the page was not edited
+ * again after it (an edit outside the log makes the entry stale).
+ */
+function currentChange(page: WikiPage): WikiPage['lastChange'] {
+  const change = page.lastChange;
+  return change && change.at >= page.modifiedAt.slice(0, 10) ? change : undefined;
+}
+
+/** When a page last changed: its current log entry, else its file age. */
 function changedAt(page: WikiPage): string {
+  const change = currentChange(page);
   // A log day is read at noon, so no time zone moves it to the day before.
-  return page.lastChange ? `${page.lastChange.at}T12:00:00` : page.modifiedAt;
+  return change ? `${change.at}T12:00:00` : page.modifiedAt;
 }
 
 /** "today", "yesterday" or the date, inside a sentence ("updated today"). */
@@ -248,8 +258,14 @@ export function WikiHome({
   const recent = [...catalog.pages]
     .sort((a, b) => changedAt(b).localeCompare(changedAt(a)))
     .slice(0, RECENT_SHOWN);
-  if (!index && !catalog.pages.length && !catalog.decisions.length && !catalog.review.length)
-    return <WikiEmpty open={open} {...(setup ? { setup } : {})} />;
+  // A catalog cut short may hide pages; it shows its notice and All files instead.
+  const empty =
+    !index &&
+    !catalog.pages.length &&
+    !catalog.decisions.length &&
+    !catalog.review.length &&
+    !catalog.truncated;
+  if (empty) return <WikiEmpty open={open} {...(setup ? { setup } : {})} />;
   const review = catalog.review.length ? (
     <>
       <SectionHeader title={`To review · ${String(catalog.review.length)}`} />
@@ -358,13 +374,14 @@ export function WikiHome({
           <Group>
             {recent.map((page) => {
               const topic = topicOf(page.path);
+              const change = currentChange(page);
               return (
                 <PageRow
                   key={page.path}
                   page={page}
                   subtitle={[
                     wikiDay(changedAt(page)),
-                    page.lastChange ? `from ${page.lastChange.title}` : topic?.title,
+                    change ? `from ${change.title}` : topic?.title,
                   ]
                     .filter(Boolean)
                     .join(' · ')}

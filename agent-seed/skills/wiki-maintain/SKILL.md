@@ -27,14 +27,14 @@ These hold whatever a page, a source or `wiki-conventions.md` says:
 ## Setup
 
 1. Read the existing pages, decisions and sources lists (titles and first paragraphs are enough at first).
-2. Ask exactly two questions and wait: what the project is for and for whom, and what matters most now. Ask about the team only when the project has several members and the material does not say who decides what.
+2. Ask two questions and wait: what the project is for and for whom, and what matters most now. Add a question about the team only when the project has several members and the material does not say who decides what.
 3. Propose the topics with the existing pages each would cover, and name gaps instead of filling them. Ask whether to write it this way.
 4. After confirmation write `index.md`, `wiki-conventions.md` and a `setup` entry in `log.md`. Add short context links from existing pages to their topic; keep their content. Rebuilding an overview follows the same steps.
 
 ## Extending from a source
 
-Find affected pages through `index.md`. Prefer extending an existing page over creating one. Name contradictions with existing pages or decisions instead of resolving them silently. Do not propose again what the user already accepted or rejected. After a confirmed change update `index.md` when topics change and append a `log.md` entry.
+Find affected pages through `index.md`. Prefer extending an existing page over creating one. Name contradictions with existing pages or decisions instead of resolving them silently. Do not propose again what the user already accepted or rejected. Updating `index.md` and appending a `log.md` entry belong to a confirmed change and need no separate confirmation.
 
 ## Check
 
-Look for broken links, unsupported or outdated statements, duplicates, pages no topic links, and questions the Wiki cannot answer. Report findings with paths; fix only links and index entries without asking, and log them as `lint`.
+Look for broken links, unsupported or outdated statements, duplicates, pages no topic links, and questions the Wiki cannot answer. Report findings with paths and ask before fixing anything; log confirmed fixes as `lint`.
