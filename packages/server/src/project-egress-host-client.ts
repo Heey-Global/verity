@@ -151,6 +151,13 @@ export function createProjectEgressHostClient(options: {
                   throw new Error('Mismatched inventory acknowledgement');
               } else if (command.operation === 'health') {
                 if (result.state !== 'health') throw new Error('Mismatched host health');
+              } else if (command.operation === 'allocate-network') {
+                if (
+                  result.state !== 'network-allocated' ||
+                  result.binding.projectId !== command.projectId ||
+                  result.binding.generation !== command.generation
+                )
+                  throw new Error('Mismatched host allocation');
               } else if (command.operation === 'current') {
                 if (
                   result.state !== 'current' ||

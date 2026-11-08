@@ -817,6 +817,29 @@ it('retries a failed explicit retirement stop after restart before removing its 
   await expect(restarted.execute(start)).rejects.toThrow('Retired');
 });
 
+it('accepts a matching allocation acknowledgement through the authenticated host transport', async () => {
+  const root = await directory();
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    { ...deps, allocateNetwork: async () => binding },
+  );
+  servers.push(
+    await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+  );
+  const command = createProjectEgressHostClient({
+    socketPath: join(root, 'control.sock'),
+    token: 'a'.repeat(64),
+  });
+  await expect(
+    command({
+      operation: 'allocate-network',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).resolves.toEqual({ state: 'network-allocated', binding });
+});
+
 it('returns only a fixed address-pool diagnostic through authenticated network allocation', async () => {
   const root = await directory();
   const { deps } = fixture();
