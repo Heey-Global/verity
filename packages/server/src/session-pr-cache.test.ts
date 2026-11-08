@@ -49,6 +49,19 @@ describe('shared session PR cache', () => {
     expect(await cache.get(session)).toMatchObject({ number: 2, phase: 'open' });
   });
 
+  it('keeps hidden terminal PR status available to automation', async () => {
+    const terminal = { ...pr, phase: 'merged' as const };
+    const onChange = vi.fn();
+    const cache = createSessionPrCache({
+      load: async () => terminal,
+      present: async () => null,
+      onChange,
+    });
+    expect(await cache.get(session)).toEqual(terminal);
+    expect(cache.peek(session.worktree)).toBeNull();
+    expect(onChange).toHaveBeenCalledWith(session, null);
+  });
+
   it('shares an in-flight read and its result across foreground and background consumers', async () => {
     const read = deferred<PullRequestStatus>();
     const load = vi.fn(() => read.promise);

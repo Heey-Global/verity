@@ -79,6 +79,64 @@ describe('GET /sessions/:id/branches', () => {
     await withPr.close();
   });
 
+  it.each(['merged', 'closed'] as const)(
+    'hides a %s PR in both views after real work and keeps it hidden after restart',
+    async (phase) => {
+      await createExistingSession('s1');
+      branchSvc.current.mockResolvedValue('feat/continue');
+      let fingerprint: string | undefined = 'finished-work';
+      let now = 0;
+      let status: PullRequestStatus = {
+        number: 119,
+        title: 'Finished work',
+        url: 'https://example.test/pr/119',
+        phase,
+        pipeline: 'success',
+        mergeable: false,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      const makeApp = () =>
+        buildServer({
+          eventStore: ctx.store,
+          bus,
+          conductor,
+          branches: {
+            ...branchSvc,
+            worktreeFingerprint: async () => fingerprint,
+          } as unknown as NonNullable<ServerDeps['branches']>,
+          branchPrStatus: async () => status,
+          pullRequestCacheNow: () => now,
+        });
+      let server = makeApp();
+      try {
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(119);
+        // Another read with no changes must retain the completion marker.
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(119);
+        fingerprint = 'new-file-contents';
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json()).toMatchObject({
+          pullRequest: null,
+          currentPr: null,
+        });
+        let overview = (await server.inject('/sessions')).json()[0];
+        expect(overview.pr).toBeNull();
+        expect(overview.pullRequest).toBeNull();
+        await server.close();
+        server = makeApp();
+        fingerprint = undefined;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest).toBeNull();
+        status = { ...status, number: 120, url: 'https://example.test/pr/120', phase: 'open' };
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(120);
+        overview = (await server.inject('/sessions')).json()[0];
+        expect(overview.pr?.phase).toBe('open');
+      } finally {
+        await server.close();
+      }
+    },
+  );
+
   it('includes compact pullRequest status when configured', async () => {
     const worktree = await createExistingSession('s1');
     branchSvc.current.mockResolvedValue('feat/122-x');
@@ -1747,6 +1805,48 @@ describe('POST /sessions/:id/pull-request/merge', () => {
       expect.stringContaining('could not be refreshed'),
     ]);
     await withMerge.close();
+  });
+
+  it('seeds PR visibility after managed cleanup before admitting later work', async () => {
+    const worktree = await createExistingSession('s1');
+    let status = prStatus();
+    let fingerprint = 'before-cleanup';
+    await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: {
+        ...branchSvc,
+        worktreeFingerprint: async () => fingerprint,
+        resetToMergedBase: async () => {
+          fingerprint = 'settled-cleanup';
+          return { base: 'main' };
+        },
+      } as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus: async () => status,
+      mergePr: async () => {
+        status = { ...status, phase: 'merged' };
+        return true;
+      },
+    });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/sessions/s1/pull-request/merge',
+        payload: { number: 119 },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
+        fingerprint: 'settled-cleanup',
+        hidden: false,
+      });
+      expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+        'merged',
+      );
+    } finally {
+      await server.close();
+    }
   });
 
   it('resets the worktree to the merged base without dispatching a post-merge turn', async () => {

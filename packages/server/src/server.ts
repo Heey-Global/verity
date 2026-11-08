@@ -2669,8 +2669,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return null;
   };
+  const prCleanupPending = new Set<string>();
   const sessionPrCache = createSessionPrCache({
     load: sessionPrStatus,
+    present: async (session, status) => {
+      if (!status || status.phase === 'open' || prCleanupPending.has(session.sessionId))
+        return status;
+      const saved = await deps.eventStore.getSessionPrVisibility(
+        session.sessionId,
+        session.worktree,
+        status.url,
+      );
+      if (saved?.hidden) return null;
+      const branches = await branchesForSession(session);
+      const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+      // An unavailable workspace is not evidence that work resumed.
+      if (fingerprint === undefined) return status;
+      const hidden = await deps.eventStore.observeSessionPrVisibility(
+        session.sessionId,
+        session.worktree,
+        status.url,
+        fingerprint,
+      );
+      return hidden ? null : status;
+    },
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
@@ -2803,7 +2825,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       await maybeDispatchPrRepairTurns(session, status);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
-      prSummaryCache.set(worktree, { pr: compactPr(status), at: Date.now() });
+      prSummaryCache.set(worktree, {
+        pr: compactPr(sessionPrCache.peek(worktree) ?? null),
+        at: Date.now(),
+      });
     } catch {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       // Stamp the attempt time even on failure so the TTL guard still engages —
@@ -6224,7 +6249,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // number-only dep. Newer deployments return the compact PR status for the
       // composer strip; older deps can still provide only the number. Failures
       // degrade to null, never failing the list.
-      const pullRequest =
+      const rawPullRequest =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
           ? await readStage('pr', () =>
               sessionPrCache.get(session, {
@@ -6233,6 +6258,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               }),
             )
           : undefined;
+      const pullRequest =
+        rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
@@ -6241,7 +6268,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 deps.branchPr!(current, session.worktree).catch(() => null),
               )
             : undefined;
-      await maybeDispatchPrRepairTurns(session, pullRequest);
+      await maybeDispatchPrRepairTurns(session, rawPullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
@@ -6323,6 +6350,27 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus,
     compactPr,
     applyPrSummaryAction,
+    beforePrCleanup: (session) => {
+      prCleanupPending.add(session.sessionId);
+    },
+    afterPrCleanup: async (session, status) => {
+      try {
+        if (status?.phase === 'merged') {
+          const branches = await branchesForSession(session);
+          const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+          if (fingerprint !== undefined)
+            await deps.eventStore.resetSessionPrVisibility(
+              session.sessionId,
+              session.worktree,
+              status.url,
+              fingerprint,
+            );
+        }
+      } finally {
+        prCleanupPending.delete(session.sessionId);
+        invalidatePrSummaryAction(session, true);
+      }
+    },
     invalidatePrSummaryAction,
   });
 

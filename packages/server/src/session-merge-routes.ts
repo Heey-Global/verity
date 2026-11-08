@@ -38,6 +38,8 @@ export interface SessionMergeRouteDeps {
   sessionPrStatus: (session: SessionRecord) => Promise<PullRequestStatus | null>;
   compactPr: (status: PullRequestStatus | null) => PrSummary | null;
   applyPrSummaryAction: (session: SessionRecord, summary: PrSummary | null) => void;
+  beforePrCleanup?: (session: SessionRecord) => void;
+  afterPrCleanup?: (session: SessionRecord, status: PullRequestStatus | null) => Promise<void>;
   invalidatePrSummaryAction: (session: SessionRecord) => void;
 }
 
@@ -227,6 +229,7 @@ export function registerSessionMergeRoutes(
         reply.code(409);
         return { error: `pull request #${String(number)} could not be merged` };
       }
+      deps.beforePrCleanup?.(session);
       applyPrSummaryAction(session, {
         phase: 'merged',
         pipeline: 'success',
@@ -237,6 +240,13 @@ export function registerSessionMergeRoutes(
       // force-checks-out the worktree, so it must never run under a live turn. The
       // transcript marker and pending agent note are written only after the cleanup
       // attempt, so the next real turn sees the final post-merge state.
+      let cleanupObserved = false;
+      const finishCleanup = async (status: PullRequestStatus | null): Promise<void> => {
+        cleanupObserved = true;
+        await deps.afterPrCleanup?.(session, status).catch((err: unknown) => {
+          request.log.warn({ err, sessionId: id }, 'Post-merge PR visibility update failed');
+        });
+      };
       await conductor
         .runWhenIdle(id, async () => {
           let note = `Pull request #${String(number)} was merged.`;
@@ -282,6 +292,7 @@ export function registerSessionMergeRoutes(
             note +=
               " The project's managed default-branch checkout could not be refreshed automatically.";
           }
+          await finishCleanup(await sessionPrStatus(session).catch(() => null));
           // The merge and cleanup need no model reasoning. Keep the detail available
           // to the agent on its next genuine turn, while showing the user one concise
           // transcript marker now. Both are best-effort because the PR already landed.
@@ -289,6 +300,7 @@ export function registerSessionMergeRoutes(
           await conductor.emitMerged(id, number).catch(() => undefined);
         })
         .catch(() => undefined);
+      if (!cleanupObserved) await finishCleanup(null);
       return { merged: true };
     },
   );

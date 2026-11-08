@@ -1015,6 +1015,15 @@ interface SessionPendingNoteTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Baselines and permanent retirement of completed PRs from active session UI. */
+interface SessionPrVisibilityTable {
+  session_id: string;
+  worktree: string;
+  pr_url: string;
+  fingerprint: string;
+  hidden: boolean;
+}
+
 /** Durable de-dupe markers for server-authored automatic turns. */
 interface SessionAutomationMarkerTable {
   session_id: string;
@@ -1851,6 +1860,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  session_pr_visibility: SessionPrVisibilityTable;
   pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
