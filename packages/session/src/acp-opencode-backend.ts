@@ -148,6 +148,8 @@ const OPENCODE_ACP_PROFILE: AcpBackendProfile = {
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: 'opencode-acp',
   planningViaConfig: true,
+  enforcesGatewayToolsOnly: true,
+  gatewayToolsViaBroker: true,
   telemetryBackend: 'opencode-acp',
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the

@@ -75,6 +75,15 @@ describe('assertSafeArgs (§5b invariant — permission posture)', () => {
 });
 
 describe('nodeSpawner (real child process, integration)', () => {
+  it('refuses Verity-tools-only turns without the isolated broker', () => {
+    expect(() =>
+      nodeSpawner(process.execPath, ['-e', 'process.exit(0)'], {
+        cwd: process.cwd(),
+        env: process.env,
+        gatewayToolsOnly: true,
+      }),
+    ).toThrow('require the isolated agent spawn broker');
+  });
   it('pipes a real process stdout end-to-end and reports a clean exit', async () => {
     const proc = nodeSpawner('node', ['-e', `process.stdout.write('hello\\n')`], {
       cwd: process.cwd(),

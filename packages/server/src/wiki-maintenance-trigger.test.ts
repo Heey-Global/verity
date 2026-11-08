@@ -3,9 +3,11 @@
 // woken for one note, a paused project started at all, a claim that holds the
 // interval although no run started, and old occasions of a project without a
 // Wiki that are never discarded.
+import { WIKI_MAINTENANCE_SKILL } from '@verity/events';
 import type { ProjectRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  WIKI_MAINTENANCE_PROMPT,
   decideWikiMaintenance,
   startWikiMaintenanceTrigger,
   WIKI_MAINTENANCE_RULES as RULES,
@@ -16,6 +18,12 @@ const NOW = Date.parse('2026-11-08T12:00:00Z');
 const ago = (ms: number) => new Date(NOW - ms);
 
 describe('decideWikiMaintenance', () => {
+  it('supplies the trusted Skill without requiring a native tool to load it', () => {
+    expect(WIKI_MAINTENANCE_PROMPT).toContain(WIKI_MAINTENANCE_SKILL);
+    expect(WIKI_MAINTENANCE_PROMPT).toContain('already loaded');
+    expect(WIKI_MAINTENANCE_PROMPT).toContain('verity_wiki_read_page');
+  });
+
   const base = {
     state: 'active' as const,
     pending: { count: 3, oldestAt: ago(5 * HOUR), newestAt: ago(3 * HOUR) },

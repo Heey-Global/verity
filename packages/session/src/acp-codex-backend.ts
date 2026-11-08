@@ -55,7 +55,7 @@ async function selectModel(setup: AcpSessionSetup, opts: RunTurnOptions): Promis
   const wanted = parseCodexModel(opts.model);
   // `codex/default` — leave the account's own current model alone.
   if (wanted === undefined) return;
-  await applySelectOption(
+  const outcome = await applySelectOption(
     setup,
     MODEL_CONFIG_ID,
     wanted,
@@ -64,8 +64,14 @@ async function selectModel(setup: AcpSessionSetup, opts: RunTurnOptions): Promis
     // what the turn actually used. "Was not applied" covers both ways of getting
     // here — a value the session never offered, and one it took and then reported
     // itself off again — where "unavailable" would only be true of the first.
-    (value, current) => `Codex model "${value}" was not applied; this turn runs on "${current}".`,
+    (value, current) =>
+      opts.gatewayToolsOnly === true
+        ? undefined
+        : `Codex model "${value}" was not applied; this turn runs on "${current}".`,
+    { reassert: opts.gatewayToolsOnly === true },
   );
+  if (opts.gatewayToolsOnly === true && outcome !== 'set')
+    throw new Error('Codex did not confirm the restricted catalog model; refusing the turn.');
 }
 
 /** codex-acp answers a load of a thread Codex has no rollout for — one that was
@@ -85,6 +91,8 @@ function isMissingCodexThread(error: RequestError, requestedSessionId: string): 
 
 const CODEX_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'codex-acp',
+  enforcesGatewayToolsOnly: true,
+  gatewayToolsViaBroker: true,
   telemetryBackend: 'codex-acp',
   loadSessionUnsupported: 'Codex ACP adapter does not support persistent session loading',
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
@@ -119,6 +127,13 @@ export class AcpCodexBackend implements Backend {
   readonly runnerSupervisorBackend = 'codex-acp' as const;
 
   run(opts: RunTurnOptions): Promise<RunResult> {
+    if (opts.gatewayToolsOnly === true && parseCodexModel(opts.model) === undefined) {
+      return Promise.reject(
+        new Error(
+          'Verity-tools-only Codex turns require a concrete codex/<model> selection; codex/default cannot be isolated.',
+        ),
+      );
+    }
     return runAcpTurn(opts, CODEX_ACP_PROFILE);
   }
 }

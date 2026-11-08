@@ -456,7 +456,7 @@ describe('Conductor.sendTurn', () => {
 
   // The run reads untrusted transcripts unattended; a request for wider rights,
   // a recovered turn or a queued one must not lift its read-only posture.
-  it('runs the Wiki maintenance session read-only, without shell or web tools', async () => {
+  it('runs the Wiki maintenance session read-only with only Verity tools', async () => {
     await ctx.store.createProject({
       id: 'wp',
       owner: 'team',
@@ -483,6 +483,7 @@ describe('Conductor.sendTurn', () => {
       disallowedTools: ['Task'],
     });
     expect(fake.last().planning).toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
     expect(fake.last().permissionMode).toBe('plan');
     // Kept once although the request named one of them too.
     const disallowed = fake.last().disallowedTools ?? [];
@@ -491,6 +492,7 @@ describe('Conductor.sendTurn', () => {
       expect(disallowed).toContain(tool);
     await conductor.sendTurn('plain', 'Continue', { permissionMode: 'bypassPermissions' });
     expect(fake.last().planning).not.toBe(true);
+    expect(fake.last().gatewayToolsOnly).not.toBe(true);
     expect(fake.last().permissionMode).toBe('bypassPermissions');
   });
 

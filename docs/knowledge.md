@@ -253,8 +253,8 @@ The run is a turn in the project's quiet maintenance session, created on first
 use with the project's default model and recorded in `wiki_maintenance` together
 with the time the last run started. The slot is claimed before the run starts, so
 two server generations never both start one; a run that could not start gives the
-slot back. The session appears in no session list and sends no push
-notification; when it is gone, the next run creates a new
+slot back. The session appears in no session list or message search and sends
+no push notification; when it is gone, the next run creates a new
 one. Its fixed assignment points the agent to the `wiki-maintain` Skill, which
 reads the occasions with `verity_wiki_read_occasions` (a list, then each kept text
 in pages of 40,000 characters), proposes changes with `verity_wiki_propose` in
@@ -264,9 +264,18 @@ Only the maintenance session may read or close occasions.
 Because the run reads untrusted text with nobody watching, its posture belongs to
 the session, not to the request: every turn of the maintenance session runs with
 the same read-only isolation as planning (read-only file system, no Docker) and
-without shell, web, subagent or editing tools, also when it is recovered or queued.
-The gateway then refuses every external tool except the occasion operations and
-`propose_wiki`, and the project's connected MCP servers refuse the session. The results appear as
+with only Verity tools, also when it is recovered or queued. The agent's native
+execution tools are disabled on Claude, Codex and OpenCode. Wiki pages and source text are
+read through `verity_wiki_read_page` in bounded sections. The gateway refuses
+every external tool except this reader, the occasion operations and `propose_wiki`;
+the project's connected MCP servers refuse the session. A Sandbox toolkit without
+support for restricting native tools cannot start the run. Codex requires a concrete
+`codex/<model>` selection; `codex/default` is refused because its model metadata is
+not pinned. The broker supplies a restricted model catalog as well as disabling
+native-tool features. OpenCode denies native tool and Skill execution through
+broker-owned policies; its inert `skill` tool may remain advertised. The trusted
+maintenance Skill is included in the assignment, so loading it needs no native tool.
+The results appear as
 proposals to review on the Wiki; the run itself changes no page.
 
 ## Wiki proposals

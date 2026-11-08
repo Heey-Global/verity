@@ -25004,6 +25004,13 @@ var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
     }).strict()).min(1).max(20).refine((changes) => changes.reduce((total, change) => total + change.content.length, 0) <= 4e5, "a proposal holds at most 400,000 characters of page content")
   }).strict(),
   import_zod7.z.object({
+    operation: import_zod7.z.literal("read_wiki_page"),
+    // Relative to /knowledge; list a directory or read one text file.
+    path: import_zod7.z.string().trim().min(1).max(512),
+    list: import_zod7.z.boolean().optional(),
+    offset: import_zod7.z.number().int().min(0).max(4e6).optional()
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("read_wiki_occasions"),
     // Without an id: the open occasions. With one: its text from `offset` on.
     id: import_zod7.z.string().trim().min(1).max(100).optional(),
@@ -30700,6 +30707,8 @@ function killProcessGroup(child, signal = "SIGTERM") {
 var nodeSpawner = (command, args, options) => {
   if (options.planning === true)
     throw new Error("Planning requires the isolated agent spawn broker");
+  if (options.gatewayToolsOnly === true)
+    throw new Error("Verity-tools-only turns require the isolated agent spawn broker");
   const keepOpen = options.keepStdinOpen === true;
   const feedStdin = options.stdin !== void 0 || keepOpen;
   const child = spawn(command, args, {
@@ -31077,7 +31086,11 @@ async function runAcpTurn(opts, profile) {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     keepStdinOpen: true,
-    ...opts.planning === true ? { planning: true } : {}
+    ...opts.planning === true ? { planning: true } : {},
+    ...opts.gatewayToolsOnly === true && profile.gatewayToolsViaBroker === true ? {
+      gatewayToolsOnly: true,
+      ...opts.model !== void 0 ? { gatewayToolsModel: opts.model } : {}
+    } : {}
   });
   let child = spawn2();
   const startupRecoveryDeadline = Date.now() + 16 * 6e4;
@@ -31820,7 +31833,7 @@ async function selectModel(setup, opts) {
   const wanted = parseCodexModel(opts.model);
   if (wanted === void 0)
     return;
-  await applySelectOption(
+  const outcome = await applySelectOption(
     setup,
     MODEL_CONFIG_ID,
     wanted,
@@ -31829,8 +31842,11 @@ async function selectModel(setup, opts) {
     // what the turn actually used. "Was not applied" covers both ways of getting
     // here — a value the session never offered, and one it took and then reported
     // itself off again — where "unavailable" would only be true of the first.
-    (value, current) => `Codex model "${value}" was not applied; this turn runs on "${current}".`
+    (value, current) => opts.gatewayToolsOnly === true ? void 0 : `Codex model "${value}" was not applied; this turn runs on "${current}".`,
+    { reassert: opts.gatewayToolsOnly === true }
   );
+  if (opts.gatewayToolsOnly === true && outcome !== "set")
+    throw new Error("Codex did not confirm the restricted catalog model; refusing the turn.");
 }
 function isMissingCodexThread(error, requestedSessionId) {
   const details = error.data?.details;
@@ -31842,6 +31858,8 @@ function isMissingCodexThread(error, requestedSessionId) {
 }
 var CODEX_ACP_PROFILE = {
   defaultCommand: "codex-acp",
+  enforcesGatewayToolsOnly: true,
+  gatewayToolsViaBroker: true,
   telemetryBackend: "codex-acp",
   loadSessionUnsupported: "Codex ACP adapter does not support persistent session loading",
   // codex-acp advertises no tool `name`, only ACP's `kind` and a `title` that for
@@ -31865,6 +31883,9 @@ var CODEX_ACP_PROFILE = {
 var AcpCodexBackend = class {
   runnerSupervisorBackend = "codex-acp";
   run(opts) {
+    if (opts.gatewayToolsOnly === true && parseCodexModel(opts.model) === void 0) {
+      return Promise.reject(new Error("Verity-tools-only Codex turns require a concrete codex/<model> selection; codex/default cannot be isolated."));
+    }
     return runAcpTurn(opts, CODEX_ACP_PROFILE);
   }
 };
@@ -31936,6 +31957,8 @@ var OPENCODE_ACP_PROFILE = {
   // mode it starts in. The wrapper is installed by verity-sandbox-toolkit.
   defaultCommand: "opencode-acp",
   planningViaConfig: true,
+  enforcesGatewayToolsOnly: true,
+  gatewayToolsViaBroker: true,
   telemetryBackend: "opencode-acp",
   httpMcpWhenUnspecified: true,
   // Unreachable in practice — opencode-acp advertises `loadSession: true`, so the
@@ -32048,7 +32071,7 @@ function send(socket, frame) {
 `);
   return true;
 }
-async function requireBrokerIsolation(socketPath, planning) {
+async function requireBrokerIsolation(socketPath, planning, gatewayToolsOnly) {
   await new Promise((resolve4, reject) => {
     const peer2 = createConnection(socketPath);
     let buffered = "";
@@ -32071,7 +32094,7 @@ async function requireBrokerIsolation(socketPath, planning) {
         return;
       try {
         const status = JSON.parse(buffered.split("\n")[0]);
-        if (status["ok"] !== true || status["managedAgentConfig"] !== true || planning && status["planningIsolation"] !== true) {
+        if (status["ok"] !== true || status["managedAgentConfig"] !== true || planning && status["planningIsolation"] !== true || gatewayToolsOnly && status["gatewayToolsOnlyVersion"] !== 1) {
           return finish(new Error("Agent configuration or planning isolation is unavailable; update the Sandbox toolkit"));
         }
         finish();
@@ -32127,9 +32150,9 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
     };
     socket.once("connect", () => {
       void (async () => {
-        if (requireManagedConfiguration || options.planning === true) {
+        if (requireManagedConfiguration || options.planning === true || options.gatewayToolsOnly === true) {
           try {
-            await requireBrokerIsolation(socketPath, options.planning === true);
+            await requireBrokerIsolation(socketPath, options.planning === true, options.gatewayToolsOnly === true);
           } catch (error) {
             stderrTail.push(String(error));
             settle(1);
@@ -32146,6 +32169,10 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
           args,
           cwd: options.cwd,
           ...options.planning === true ? { planning: true } : {},
+          ...options.gatewayToolsOnly === true ? {
+            gatewayToolsOnly: true,
+            ...options.gatewayToolsModel !== void 0 ? { gatewayToolsModel: options.gatewayToolsModel } : {}
+          } : {},
           ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
         });
       })();

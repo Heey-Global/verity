@@ -62,13 +62,15 @@ export function capabilityVariants(legacyName: GatewayToolName, schema: Schema):
           : // A Wiki proposal belongs to the Wiki, though the knowledge broker carries it.
             value === 'propose_wiki'
             ? 'verity_wiki_propose'
-            : value === 'read_wiki_occasions'
-              ? 'verity_wiki_read_occasions'
-              : value === 'close_wiki_occasions'
-                ? 'verity_wiki_close_occasions'
-                : value
-                  ? `verity_${domain}_${verb}`
-                  : (renamed[legacyName] ?? legacyName);
+            : value === 'read_wiki_page'
+              ? 'verity_wiki_read_page'
+              : value === 'read_wiki_occasions'
+                ? 'verity_wiki_read_occasions'
+                : value === 'close_wiki_occasions'
+                  ? 'verity_wiki_close_occasions'
+                  : value
+                    ? `verity_${domain}_${verb}`
+                    : (renamed[legacyName] ?? legacyName);
       const inputSchema: Schema & { properties: Record<string, Schema> } = {
         ...branch,
         properties: { ...properties },
