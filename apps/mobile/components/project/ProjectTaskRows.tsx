@@ -109,7 +109,13 @@ export function ProjectTaskRow({
         />
       </>
     ) : undo ? (
-      <Button label="Undo" size="small" variant="secondary" onPress={onToggleDone} />
+      <Button
+        label="Undo"
+        size="small"
+        variant="secondary"
+        disabled={busy}
+        onPress={onToggleDone}
+      />
     ) : screenReader ? (
       <>
         <Button

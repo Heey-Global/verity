@@ -175,6 +175,25 @@ describe('project GitHub issues', () => {
     expect(list).not.toHaveBeenCalled();
     await app.close();
   });
+  // A local project has no code host; stray repository rows must not send its
+  // request to one, as the default-repository route never did.
+  it('lists no repositories for a local project', async () => {
+    const app = Fastify();
+    const list = vi.fn();
+    registerProjectGitHubIssueRoutes(app, {
+      store: {
+        getProject: async () => ({ ...project, kind: 'local' }),
+        listReadableProjectIds: async () => ['p'],
+        listProjectRepositories: async () => [repository({ id: 'site', name: 'Website' })],
+      },
+      list,
+    });
+    expect((await app.inject({ method: 'GET', url: '/projects/p/issues' })).json()).toEqual({
+      repositories: [],
+    });
+    expect(list).not.toHaveBeenCalled();
+    await app.close();
+  });
 });
 
 // Registering the handler without the paired route rule leaves project members

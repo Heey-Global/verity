@@ -11,7 +11,7 @@ import { createVerityClient } from '../lib/client';
 import {
   dispatchTaskIssue,
   taskIssueRetry,
-  taskIssueSession,
+  taskIssueSessions,
   type IssueRepository,
 } from '../lib/taskIssueDispatch';
 
@@ -53,7 +53,7 @@ export function TaskIssuesList({
   const [retries, setRetries] = useState<Record<string, Retry>>({});
   // Sessions started from here for other repositories' issues, which their
   // branch cannot name.
-  const [started, setStarted] = useState<Record<string, string>>({});
+  const [started, setStarted] = useState<Record<string, string[]>>({});
   const available = repositories.filter(
     (repository): repository is Extract<RepositoryIssues, { status: 'ok' }> =>
       repository.status === 'ok',
@@ -90,7 +90,7 @@ export function TaskIssuesList({
             async (issue) =>
               [
                 retryKey(repository, issue.number),
-                await taskIssueSession(projectId, issue.number, repository),
+                await taskIssueSessions(projectId, issue.number, repository),
               ] as const,
           ),
         ),
@@ -99,10 +99,7 @@ export function TaskIssuesList({
         // Merged: a hand-over that finished while these were read is newer.
         if (active)
           setStarted((value) => ({
-            ...(Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
-              string,
-              string
-            >),
+            ...Object.fromEntries(entries.filter((entry) => entry[1].length > 0)),
             ...value,
           }));
       })
@@ -136,8 +133,10 @@ export function TaskIssuesList({
     setBusy(true);
     void dispatchTaskIssue(projectId, issue, target, repository)
       .then((id) => {
-        if (target === undefined)
-          setStarted((value) => ({ ...value, [retryKey(repository, issue.number)]: id }));
+        // Also for "This session" and a targeted retry: either way this session
+        // now works on the issue.
+        const key = retryKey(repository, issue.number);
+        setStarted((value) => ({ ...value, [key]: [...(value[key] ?? []), id] }));
         onOpenSession(id);
       })
       .catch((error: unknown) => {
@@ -166,7 +165,7 @@ export function TaskIssuesList({
         item.resumable !== false &&
         (repository.isDefault
           ? item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number)
-          : item.sessionId === started[retryKey(repository, issue.number)]),
+          : (started[retryKey(repository, issue.number)] ?? []).includes(item.sessionId)),
     );
   // "Assigned to me" goes when no host names the viewer any more (after a
   // retry); a filter left on it would empty every section with no chip selected.

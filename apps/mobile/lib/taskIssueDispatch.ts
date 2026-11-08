@@ -68,24 +68,33 @@ export async function taskIssueRetry(
 }
 
 /**
- * The session this device started for an issue, once its turn was accepted.
- * Only the default repository's issues name their session's branch; for another
- * repository's issue this record is the only link back to its session.
+ * The sessions this device handed an issue to — a new one or an existing one —
+ * once the turn was accepted. Only the default repository's issues name their
+ * session's branch; for another repository's issue these records are the only
+ * link back to its sessions.
  */
-export async function taskIssueSession(
+export async function taskIssueSessions(
   projectId: string,
   issueNumber: number,
   repository?: IssueRepository,
-): Promise<string | null> {
+): Promise<string[]> {
   const scope = identity();
-  const saved = await AsyncStorage.getItem(dispatchKey(scope, projectId, repository, issueNumber));
-  if (identity() !== scope || !saved) return null;
-  try {
-    const value = JSON.parse(saved) as { sent?: unknown; sessionId?: unknown };
-    return value.sent === true && typeof value.sessionId === 'string' ? value.sessionId : null;
-  } catch {
-    return null;
+  const prefix = dispatchKey(scope, projectId, repository, issueNumber, '');
+  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
+  const sessions: string[] = [];
+  for (const key of keys) {
+    const saved = await AsyncStorage.getItem(key);
+    if (identity() !== scope) return [];
+    if (!saved) continue;
+    try {
+      const value = JSON.parse(saved) as { sent?: unknown; sessionId?: unknown };
+      if (value.sent === true && typeof value.sessionId === 'string')
+        sessions.push(value.sessionId);
+    } catch {
+      // One damaged record must not hide another hand-over.
+    }
   }
+  return sessions;
 }
 
 const pending = new Map<string, Promise<string>>();

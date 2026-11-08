@@ -166,6 +166,8 @@ export function registerProjectGitHubIssueRoutes(
     const project = await readable(request);
     if (!project) return reply.code(404).send({ error: 'project not found' });
     reply.header('cache-control', 'no-store');
+    // As the default-repository route: a local project has no code host to ask.
+    if (isLocalProject(project)) return { repositories: [] };
     return { repositories: await listProjectIssues(deps.store, project, deps.list) };
   });
 }
