@@ -132,6 +132,11 @@ import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
+  parseEgressReadiness,
+  waitForSandboxTurnReadiness,
+  type SandboxEgressProbe,
+} from './sandbox-turn-readiness.js';
+import {
   ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
   AcpCodexBackend,
@@ -1831,6 +1836,26 @@ export async function buildEmbeddedServer(
       return;
     }
   };
+  /** Ask the project's runner supervisor whether its agent connections accept
+   *  connects yet. A toolkit without the request keeps its previous behaviour. */
+  const probeSandboxEgressReadiness = async (
+    runnersVolumeRoot: string,
+    projectId: string,
+  ): Promise<SandboxEgressProbe> => {
+    try {
+      return parseEgressReadiness(
+        await requestRunnerSupervisor(
+          join(runnersVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+          { kind: 'egress-readiness' },
+          3_000,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error && /unknown supervisor request/u.test(error.message))
+        return { kind: 'unsupported' };
+      return { kind: 'unavailable' };
+    }
+  };
   const projectRelayControlRef: { current: ProjectRelayControl | undefined } = {
     current: undefined,
   };
@@ -2693,7 +2718,21 @@ export async function buildEmbeddedServer(
         listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
       },
-      onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
+      onSandboxLifecycle: (event) => {
+        projectSandboxLifecycleTelemetry.record(event);
+        // One line per transition, so a turn that failed right after a wake can be
+        // placed against it; the aggregate above cannot say which project woke.
+        app.log[event.outcome === 'failed' ? 'warn' : 'info'](
+          event,
+          'verity: project Sandbox lifecycle transition',
+        );
+      },
+      onSandboxRecreate: (event) => {
+        app.log[event.outcome === 'failed' ? 'warn' : 'info'](
+          event,
+          'verity: project Sandbox recreated',
+        );
+      },
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
@@ -4741,6 +4780,22 @@ export async function buildEmbeddedServer(
               // latest rotating credential and wait for the gateway to acknowledge
               // that exact cached identity configuration.
               await synchronizeAgentGatewayForTurn();
+              // The checks above trust Docker's `running`, which a relay reaches
+              // before its process listens. Confirm from inside the Sandbox that
+              // the connections this agent needs accept connects before launching
+              // it; until then the turn waits visibly instead of failing on a
+              // refused connection.
+              if (dataVolumeRoot !== undefined) {
+                await waitForSandboxTurnReadiness({
+                  projectId: project.id,
+                  sessionId: preparation.sessionId,
+                  agent: isClaudeSession ? 'claude' : isCodexSession ? 'codex' : 'opencode',
+                  canWait: preparation.canWait,
+                  waitingOn: (message) => preparation.waitingOn(message),
+                  probe: () => probeSandboxEgressReadiness(dataVolumeRoot, project.id),
+                  log: app.log,
+                });
+              }
             }
             // A Claude project agent is pointed at the sandbox connector with only the
             // placeholder, so the real token never enters the untrusted sandbox.

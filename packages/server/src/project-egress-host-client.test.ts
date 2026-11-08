@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server, type RequestListener } from 'node:http';
 import { join } from 'node:path';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
+import { ProjectEgressHealthError } from './project-egress-health.js';
 
 const servers: Server[] = [];
 const directories: string[] = [];
@@ -229,4 +230,20 @@ it('propagates only the fixed incomplete-inventory refusal for a read-only healt
     reason: 'mandatory_inventory_incomplete',
   });
   await expect(command(start)).rejects.toMatchObject({ reason: 'host_not_ready' });
+});
+// The failure is logged far from here (a wake, a relay start, inventory upkeep),
+// and without these fields every such line read alike and named no project.
+it('names the operation and project on a failed command, and nothing else', async () => {
+  const command = await fixture((req) => {
+    req.resume();
+  }, 30);
+  const failure = await command(start).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ProjectEgressHealthError);
+  expect({ ...(failure as object) }).toEqual({
+    reason: 'timeout',
+    operation: 'start',
+    projectId: start.projectId,
+  });
+  const health = await command({ operation: 'health' }).catch((error: unknown) => error);
+  expect({ ...(health as object) }).toEqual({ reason: 'timeout', operation: 'health' });
 });

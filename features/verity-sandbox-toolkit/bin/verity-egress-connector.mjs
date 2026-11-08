@@ -355,26 +355,28 @@ function hasErrorCode(error, code, depth = 0) {
 }
 
 /** The only thing the agent gets to see when a forward fails before headers, so
- *  it names the leg that broke and, where one cause dominates, the repair.
- *  Codex has two distinct states: no codex egress in this Sandbox's environment
- *  at all, because it was provisioned before the Codex gateway existed, versus a
- *  configured gateway the forward could not reach. Only a refused connection is
- *  told what to repair — nothing is listening, and in a Verity deployment the
- *  gateway opens its Codex listener only once a credential exists. Named as the
- *  likely cause rather than the certain one: the connector forwards to whatever
- *  `codexEgressUrl` points at, and a relay or a stopped sidecar in front of the
- *  gateway refuses the same way. A timeout, a
- *  DNS or a TLS fault gets the bare fact, because sending an operator to the
- *  credential settings for those is the misdiagnosis this whole change is about.
- *  A request the connector rejected itself, before the forward was attempted,
- *  names no gateway at all — blaming one for the connector's own verdict is the
- *  same misdirection in the other direction. Every case stays 502: codex treats
- *  it as terminal, and a 503 would send it round its reconnect loop before the
- *  text is ever read. */
+ *  it names the leg that broke and what is actually known about it. Codex has two
+ *  distinct states: no codex egress in this Sandbox's environment at all, because
+ *  it was provisioned before the Codex gateway existed, versus a configured
+ *  egress the forward could not reach.
+ *
+ *  A refused connection says only that nothing listened at the next hop. In a
+ *  relay deployment that hop is the project relay, which refuses while it is
+ *  still starting after a wake or recreate; elsewhere it may be the gateway. The
+ *  connector cannot tell which, nor why, so it states the refusal and the one
+ *  remedy that is right for the common, transient case. It never names missing
+ *  credentials: that guess sent operators to the credential settings while the
+ *  gateway was healthy and the relay had simply not finished starting. A
+ *  rejected credential is visible on its own, as the gateway's 401/403 that this
+ *  connector forwards unchanged. A timeout, a DNS or a TLS fault gets the bare
+ *  fact. A request the connector rejected itself, before the forward was
+ *  attempted, names no gateway at all. Every case stays 502: codex treats it as
+ *  terminal, and a 503 would send it round its reconnect loop before the text is
+ *  ever read. */
 function unavailableBody(leg, error) {
   if (leg === 'codex') {
     return hasErrorCode(error, 'ECONNREFUSED')
-      ? 'Codex egress unavailable: the configured Codex egress refused the connection. In a Verity deployment that most often means the agent gateway has no Codex credentials configured yet, because it opens its Codex listener only once they exist.'
+      ? 'Codex egress unavailable: the connection to the Codex egress was refused, so the request did not reach the agent gateway. The project environment may still be starting; try again in a moment.'
       : 'Codex egress unavailable: the Verity agent gateway did not serve the Codex request.';
   }
   if (leg === 'codex-unconfigured') {

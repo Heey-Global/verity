@@ -100,6 +100,99 @@ export async function runnerStackHealth(options = {}) {
   };
 }
 
+/**
+ * Whether the hops an agent turn depends on accept connections yet, seen from
+ * inside the Sandbox: the local egress connector, and the relay listeners behind
+ * it for Claude, Codex and the broker (which also carries the `verity` MCP
+ * gateway). A relay container is reported running by Docker before its process
+ * listens, so a turn admitted in that window fails with a refused connection.
+ *
+ * Only TCP connects, closed at once: no request, no TLS handshake and no model
+ * call leaves the Sandbox, so the probe is safe to repeat while the relay starts.
+ * Read-only; targets come from this container's own environment, never from the
+ * request.
+ */
+export async function runnerEgressReadiness(options = {}) {
+  const env = options.env ?? process.env;
+  const connect = options.connect ?? probeTcp;
+  const fetchReady = options.fetch ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? 1_000;
+  const hop = async (value) => {
+    if (!value) return 'not_configured';
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return 'invalid';
+    }
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    return await connect(url.hostname, port, timeoutMs);
+  };
+  const connector = async () => {
+    const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
+    if (!env.VERITY_CLAUDE_CONNECTOR_PORT) return 'not_configured';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return 'invalid';
+    try {
+      const response = await fetchReady(`http://127.0.0.1:${port}/__verity/ready`, {
+        signal: globalThis.AbortSignal.timeout(timeoutMs),
+        redirect: 'error',
+      });
+      return response.ok && (await response.text()).includes('"ready":true')
+        ? 'ready'
+        : 'unreachable';
+    } catch (error) {
+      return tcpFailure(error);
+    }
+  };
+  const [local, claude, codex, broker] = await Promise.all([
+    connector(),
+    hop(env.VERITY_CLAUDE_EGRESS_URL),
+    hop(env.VERITY_CODEX_EGRESS_URL),
+    hop(env.VERITY_MCP_GATEWAY_URL),
+  ]);
+  return {
+    ok: true,
+    egressReadinessVersion: 1,
+    connector: local,
+    claude,
+    codex,
+    broker,
+  };
+}
+
+function tcpFailure(error) {
+  const codes = [];
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    if (typeof current.code === 'string') codes.push(current.code);
+    if (Array.isArray(current.errors))
+      for (const nested of current.errors)
+        if (typeof nested?.code === 'string') codes.push(nested.code);
+    current = current.cause;
+  }
+  if (codes.includes('ECONNREFUSED')) return 'refused';
+  if (codes.includes('ENOTFOUND') || codes.includes('EAI_AGAIN')) return 'unresolved';
+  if (codes.includes('ETIMEDOUT') || error?.name === 'TimeoutError' || error?.name === 'AbortError')
+    return 'timeout';
+  return 'unreachable';
+}
+
+function probeTcp(host, port, timeoutMs) {
+  return new Promise((resolveProbe) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolveProbe(state);
+    };
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
+    socket.once('connect', () => finish('ready'));
+    socket.once('error', (error) => finish(tcpFailure(error)));
+  });
+}
+
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
  * Where `opencode acp` keeps everything that is not its config: session storage
@@ -3816,6 +3909,19 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
         ) {
           protocolFailed = true;
           send(socket, await runnerStackHealth({ ...options, controlDir }));
+          socket.end();
+          return;
+        }
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'egress-readiness'
+        ) {
+          protocolFailed = true;
+          send(
+            socket,
+            await runnerEgressReadiness({ env: options.env, ...options.egressReadiness }),
+          );
           socket.end();
           return;
         }

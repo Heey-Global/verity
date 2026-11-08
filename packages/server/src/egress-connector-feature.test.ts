@@ -154,7 +154,8 @@ describe('Sandbox-local Claude egress connector', () => {
     const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
     expect(codex.status).toBe(502);
     expect(codex.body).toContain('Codex egress unavailable');
-    expect(codex.body).toContain('has no Codex credentials configured yet');
+    expect(codex.body).toContain('connection to the Codex egress was refused');
+    expect(codex.body).not.toContain('credential');
     expect(codex.body).not.toContain('Claude');
 
     // The Claude leg keeps its own wording — the two failures are different repairs.
@@ -202,22 +203,26 @@ describe('Sandbox-local Claude egress connector', () => {
     }
   });
 
-  // A refused connection is the one Codex fault with a dominant cause. Anything
-  // else — timeout, DNS, TLS — must not send an operator to the credential page.
-  it('offers the credential repair only when the Codex gateway refused', async () => {
-    const connector = await runEgressConnector({
-      ...options(),
-      codexEgressUrl: 'https://relay.internal:8444',
-      codexEgressAuthority: 'codex-gateway.internal:9444',
-      forward: async () => {
-        throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
-      },
-    });
-    connectors.push(connector);
+  // No forward failure proves a missing credential: a refusal is what a relay
+  // that has not finished starting looks like, and that guess once sent an
+  // operator to the credential settings while the gateway was healthy. A
+  // rejected credential arrives as the gateway's own status, forwarded as-is.
+  it('never blames credentials for a Codex forward failure', async () => {
+    for (const code of ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET']) {
+      const connector = await runEgressConnector({
+        ...options(),
+        codexEgressUrl: 'https://relay.internal:8444',
+        codexEgressAuthority: 'codex-gateway.internal:9444',
+        forward: async () => {
+          throw Object.assign(new Error(`connect ${code}`), { code });
+        },
+      });
+      connectors.push(connector);
 
-    const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
-    expect(codex.body).toContain('Codex egress unavailable');
-    expect(codex.body).not.toContain('credentials');
+      const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
+      expect(codex.body).toContain('Codex egress unavailable');
+      expect(codex.body).not.toMatch(/credential/iu);
+    }
   });
 
   // The repair line may not depend on how the connection was attempted: node
@@ -249,7 +254,8 @@ describe('Sandbox-local Claude egress connector', () => {
       connectors.push(connector);
 
       const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
-      expect(codex.body).toContain('has no Codex credentials configured yet');
+      expect(codex.body).toContain('connection to the Codex egress was refused');
+      expect(codex.body).toContain('may still be starting');
     }
   });
 
