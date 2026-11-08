@@ -213,7 +213,9 @@ export function VerityPanel({
       }
     >
       <View style={styles.body}>
-        {/* One continuing conversation, oldest first: the sheet opens at its end. */}
+        {/* One continuing conversation, oldest first: the sheet opens at its end. The
+            server's projection holds the latest 40 entries (ASSISTANT_CONVERSATION_ITEMS);
+            the session behind the expand button keeps the rest. */}
         {(conversation?.items ?? []).map((item, index, items) => (
           <View key={item.id} style={styles.body}>
             <DayHeading at={item.at} previous={items[index - 1]?.at} />
@@ -385,7 +387,11 @@ function ItemView({
           <CardHead
             title={item.title}
             subtitle={
-              item.state === 'failed' ? 'Could not save the task' : 'Task · no work started'
+              item.state === 'failed'
+                ? 'Could not save the task'
+                : item.state === 'pending'
+                  ? 'Saving task…'
+                  : 'Task · no work started'
             }
             trailing={
               item.state === 'saved' ? (

@@ -103,10 +103,16 @@ export function HomeInbox({
   });
   useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
   // The watch lists the same items under "Needs you" (targets/VerityWatch).
-  // Items belong to the account of this client; read it with the client, not later.
-  const watchScope = useMemo(() => taskAccountScope(), [client]);
+  // The account the items were read for: taken when their sources arrive, so a
+  // list still from the previous account is never sent under the next one.
+  const itemsScope = useMemo(() => taskAccountScope(), [sessions, projects]);
   // The clock tick resends an unchanged list now and then, so its time stays true.
-  useEffect(() => syncWatchInbox(feed.items, watchScope), [feed.items, watchScope, now]);
+  useEffect(() => {
+    const signedIn = taskAccountScope();
+    // Signed out, or switched before the new account's lists arrived: clear it.
+    if (signedIn !== itemsScope) syncWatchInbox([], null);
+    else syncWatchInbox(feed.items, itemsScope);
+  }, [feed.items, itemsScope, now]);
 
   return (
     <ScrollView

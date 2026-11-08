@@ -330,7 +330,8 @@ it('renders her replies as the session chat does, not as raw Markdown', () => {
   const reply = screen.getByTestId('verity-reply');
   // A plain Text showed the markers; the reply must read as a list with bold dates.
   expect(reply).not.toHaveTextContent(/\*\*/);
-  expect(reply).not.toHaveTextContent(/^- /m);
+  expect(reply).not.toHaveTextContent(/^- /m, { normalizeWhitespace: false });
+  expect(reply).not.toHaveTextContent(/\n- /, { normalizeWhitespace: false });
   expect(screen.getAllByText('•')).toHaveLength(2);
   expect(screen.getByText('Wed, 11.11.:')).toBeTruthy();
 });
