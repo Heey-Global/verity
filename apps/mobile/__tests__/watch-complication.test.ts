@@ -38,7 +38,7 @@ describe('Watch complication capture entry', () => {
     );
   });
 
-  it('packages all mockup families with the vector Verity mark', () => {
+  it('packages original full-color artwork and vector monochrome families', () => {
     const families = widget.match(/\.supportedFamilies\(\[([^\]]+)\]/)![1];
     for (const family of [
       'accessoryCircular',
@@ -48,10 +48,16 @@ describe('Watch complication capture entry', () => {
     ]) {
       expect(families).toContain(`.${family}`);
     }
-    // The bitmap asset rendered as a solid rectangle on device; every family draws the vector V.
-    expect(widget).not.toMatch(/Image\("[^"]+"\)|image: "/);
+    // Template rendering of the full-color PNG used to produce an opaque rectangle.
+    const assetName = widget.match(/Image\("([^"]+)"\)\s*\.renderingMode\(\.original\)/)![1];
     const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
-    expect(config.images).toBeUndefined();
+    const asset = resolve(targetRoot, 'VerityWatchComplication', config.images[assetName]);
+    expect(readFileSync(asset)).toEqual(
+      readFileSync(resolve(__dirname, '../assets/brand/verity-v-mark.png')),
+    );
+    expect(widget).toContain('if renderingMode == .fullColor');
+    expect(widget).toContain('VerityMarkShape().fill(Color.white)');
+    expect(widget).not.toContain('AccessoryWidgetBackground()');
     // The Watch app draws the same mark, so it lives with the sources both targets link.
     expect(mark).toContain('#if os(watchOS)');
     expect(mark).toContain('struct VerityMarkShape: Shape');
@@ -68,7 +74,7 @@ describe('Watch complication capture entry', () => {
       expect(coordinate).toBeGreaterThanOrEqual(0);
       expect(coordinate).toBeLessThanOrEqual(1);
     }
-    expect(widget.match(/VerityMarkShape\(\)/g)!.length).toBeGreaterThanOrEqual(3);
+    expect(widget.match(/VerityMarkShape\(\)/g)!.length).toBeGreaterThanOrEqual(2);
     expect(widget).toContain('icon: { inlineMark }');
   });
 

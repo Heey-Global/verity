@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import OSLog
 import WatchConnectivity
 import WatchKit
 
@@ -9,7 +10,7 @@ import WatchKit
 /// phone, a relaunch, a watch restart or an iPhone that could not store the
 /// file, and is offered again from `resend()`. The iPhone passes the transcript
 /// to Verity under the capture's id, so a capture sent twice reaches her once.
-struct Capture: Codable, Identifiable, Equatable {
+struct Capture: Codable, Identifiable, Equatable, Sendable {
   enum State: String, Codable {
     /// Recorded; waiting for WatchConnectivity to deliver the file.
     case queued
@@ -91,6 +92,8 @@ struct VeritySnapshot: Equatable, Sendable {
   /// `idle`, `working`, `needs_you` or `failed`.
   let state: String
   let reply: String?
+  let replyId: String?
+  let replyMessageId: String?
   let question: Question?
   let approvals: Int
   let scope: String?
@@ -104,6 +107,8 @@ struct VeritySnapshot: Equatable, Sendable {
     self.availability = availability
     self.state = state
     reply = verity["reply"] as? String
+    replyId = verity["replyId"] as? String
+    replyMessageId = verity["replyMessageId"] as? String
     approvals = verity["approvals"] as? Int ?? 0
     scope = verity["scope"] as? String
     if let question = verity["question"] as? [String: Any], let id = question["id"] as? String,
@@ -151,6 +156,10 @@ final class CaptureStore: NSObject, ObservableObject {
   private let indexURL: URL
   private let projectsURL: URL
   private let answeredKey = "verity.answeredQuestions"
+  private var displayedMessageId: String?
+  private let timingLog = Logger(subsystem: "build.verity.watch", category: "capture-timing")
+  private var immediateFallbacks: [String: Task<Void, Never>] = [:]
+  private var stoppedAt: [String: TimeInterval] = [:]
   private var confirmationReset: Task<Void, Never>?
 
   private override init() {
@@ -291,6 +300,25 @@ final class CaptureStore: NSObject, ObservableObject {
     }
   }
 
+  /// Called by the visible reply row, not by background snapshot delivery.
+  func recordDisplayedReply() {
+    if let snapshot = verity, let replyId = snapshot.replyId, let messageId = snapshot.replyMessageId, messageId != displayedMessageId,
+      snapshot.reply?.isEmpty == false
+    {
+      displayedMessageId = messageId
+      let uptime = ProcessInfo.processInfo.systemUptime
+      timingLog.info("stage=first_answer_displayed message=\(messageId, privacy: .public) reply=\(replyId, privacy: .public) uptime=\(uptime)")
+      // IDs only: the phone can join m-<seq> to the server's request timing.
+      let session = WCSession.default
+      if session.activationState == .activated, session.isReachable {
+        session.sendMessage([
+          "v": WatchProtocol.version, "kind": "displayTiming", "messageId": messageId,
+          "replyId": replyId, "watchUptime": uptime,
+        ], replyHandler: nil, errorHandler: nil)
+      }
+    }
+  }
+
   private func receive(_ list: ProjectList) {
     var next = list
     // A pick on the watch only means something within the same account.
@@ -371,6 +399,9 @@ final class CaptureStore: NSObject, ObservableObject {
       id: current.id, createdAt: current.start,
       durationMs: Int(Date().timeIntervalSince(current.start) * 1000), state: .queued,
       scope: current.scope)
+    stoppedAt[capture.id] = ProcessInfo.processInfo.systemUptime
+    let uptime = ProcessInfo.processInfo.systemUptime
+    timingLog.info("request=\(capture.id, privacy: .public) stage=recording_stopped uptime=\(uptime)")
     captures.insert(capture, at: 0)
     persist()
     send(capture)
@@ -421,7 +452,64 @@ final class CaptureStore: NSObject, ObservableObject {
     ]
     if let projectId = capture.projectId { metadata["projectId"] = projectId }
     if let scope = capture.scope { metadata["scope"] = scope }
-    session.transferFile(url, metadata: metadata)
+    guard immediateFallbacks[capture.id] == nil else { return }
+    // Try live delivery once; only failures use the durable transfer queue.
+    // Bound audio before reading and the entire property list before sending.
+    guard session.isReachable,
+      let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+      size > 0, size <= 48 * 1024,
+      let audio = try? Data(contentsOf: url), audio.count <= 48 * 1024
+    else { return queueFile(capture, metadata: metadata) }
+    var message = metadata
+    message["audio"] = audio
+    guard let encoded = try? PropertyListSerialization.data(
+      fromPropertyList: message, format: .binary, options: 0), encoded.count <= 60 * 1024
+    else { return queueFile(capture, metadata: metadata) }
+    // A suspended process retains the indexed audio; activation retries it.
+    // An old phone's unrecognized reply also falls back to file delivery.
+    immediateFallbacks[capture.id] = Task {
+      try? await Task.sleep(for: .seconds(5))
+      guard !Task.isCancelled else { return }
+      self.fallbackToFile(capture.id)
+    }
+    session.sendMessage(message, replyHandler: { @Sendable reply in
+      let accepted = reply["v"] as? Int == WatchProtocol.version
+        && reply["kind"] as? String == "received" && reply["id"] as? String == capture.id
+      Task { @MainActor in
+        guard accepted else { return self.fallbackToFile(capture.id) }
+        self.immediateFallbacks.removeValue(forKey: capture.id)?.cancel()
+        self.recordTiming(capture.id, stage: "iphone_received_round_trip")
+        self.update(capture.id) { if $0.state == .queued { $0.state = .delivered } }
+      }
+    }, errorHandler: { _ in
+      Task { @MainActor in self.fallbackToFile(capture.id) }
+    })
+  }
+
+  private func fallbackToFile(_ id: String) {
+    guard let task = immediateFallbacks.removeValue(forKey: id) else { return }
+    task.cancel()
+    guard let capture = captures.first(where: { $0.id == id }),
+      capture.state == .queued || capture.state == .delivered
+    else { return }
+    // Force the queued path without attempting another live message.
+    var metadata: [String: Any] = [
+      "v": WatchProtocol.version, "kind": "capture", "id": capture.id,
+      "createdAt": ISO8601DateFormatter().string(from: capture.createdAt),
+      "durationMs": capture.durationMs, "target": "verity",
+    ]
+    if let scope = capture.scope { metadata["scope"] = scope }
+    if let projectId = capture.projectId { metadata["projectId"] = projectId }
+    queueFile(capture, metadata: metadata)
+  }
+
+  private func queueFile(_ capture: Capture, metadata: [String: Any]) {
+    let session = WCSession.default
+    guard session.activationState == .activated,
+      FileManager.default.fileExists(atPath: audioURL(capture.id).path),
+      !session.outstandingFileTransfers.contains(where: { $0.file.metadata?["id"] as? String == capture.id })
+    else { return }
+    session.transferFile(audioURL(capture.id), metadata: metadata)
   }
 
   /// Re-offer every queued capture that the system is not already transferring.
@@ -462,6 +550,12 @@ final class CaptureStore: NSObject, ObservableObject {
     }
     guard let data = try? JSONEncoder().encode(captures) else { return }
     try? data.write(to: indexURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+  }
+
+  private func recordTiming(_ id: String, stage: String) {
+    guard let start = stoppedAt[id] else { return }
+    let elapsed = Int((ProcessInfo.processInfo.systemUptime - start) * 1000)
+    timingLog.info("request=\(id, privacy: .public) stage=\(stage, privacy: .public) sinceStopMs=\(elapsed)")
   }
 
   private func audioURL(_ id: String) -> URL {
@@ -509,11 +603,13 @@ extension CaptureStore: WCSessionDelegate {
     }
   }
 
-  /// Verity's state sent the fast way while this app is open.
+  /// Conversation state and capture feedback use live messaging when reachable.
   nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-    guard message["kind"] as? String == "verity", let snapshot = VeritySnapshot(context: message)
-    else { return }
-    Task { @MainActor in self.receive(snapshot) }
+    if message["kind"] as? String == "verity", let snapshot = VeritySnapshot(context: message) {
+      Task { @MainActor in self.receive(snapshot) }
+    } else {
+      receiveCaptureFeedback(message)
+    }
   }
 
   nonisolated func session(
@@ -531,16 +627,27 @@ extension CaptureStore: WCSessionDelegate {
   }
 
   nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+    receiveCaptureFeedback(userInfo)
+  }
+
+  private nonisolated func receiveCaptureFeedback(_ userInfo: [String: Any]) {
     guard userInfo["v"] as? Int == WatchProtocol.version, let id = userInfo["id"] as? String
     else { return }
     let kind = userInfo["kind"] as? String
     let text = userInfo["text"] as? String
     Task { @MainActor in
+      if kind == "transcript" {
+        self.immediateFallbacks.removeValue(forKey: id)?.cancel()
+        self.recordTiming(id, stage: "transcript_received")
+      }
       self.update(id) { capture in
+        // A late queued refusal must not undo a transcript received live.
+        if capture.state == .transcribed { return }
         switch kind {
         case "transcript":
           capture.state = .transcribed
           capture.text = text
+          self.stoppedAt.removeValue(forKey: id)
           try? FileManager.default.removeItem(at: self.audioURL(id))
         case "rejected":
           // The iPhone could not store the file: queue it for the next launch.

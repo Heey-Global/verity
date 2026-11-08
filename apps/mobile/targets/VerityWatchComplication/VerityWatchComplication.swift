@@ -33,9 +33,11 @@ private struct CaptureComplicationView: View {
   private var mark: some View {
     Group {
       if renderingMode == .fullColor {
-        VerityMarkShape().fill(LinearGradient(
-          colors: [Color(red: 1, green: 0.09, blue: 0.72), Color(red: 0.66, green: 0.31, blue: 0.91), Color(red: 0.09, green: 0.78, blue: 0.96)],
-          startPoint: .leading, endPoint: .trailing))
+        // Preserve the original artwork's shading instead of recreating a gradient.
+        Image("VerityMarkOriginal")
+          .renderingMode(.original)
+          .resizable()
+          .scaledToFit()
       } else {
         VerityMarkShape().fill(Color.white)
       }
@@ -70,10 +72,7 @@ private struct CaptureComplicationView: View {
           Text("Talk to Verity").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
         }
       default:
-        ZStack {
-          AccessoryWidgetBackground()
-          mark.padding(10)
-        }
+        mark.padding(10)
       }
     }
     .containerBackground(for: .widget) { Color.clear }

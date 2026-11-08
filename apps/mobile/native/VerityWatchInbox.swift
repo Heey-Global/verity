@@ -274,6 +274,20 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     replyHandler: @escaping ([String: Any]) -> Void
   ) {
     guard message["v"] as? Int == Self.protocolVersion else { return replyHandler([:]) }
+    if message["kind"] as? String == "capture" {
+      let background = applicationIsBackground()
+      queue.async {
+        guard let audio = message["audio"] as? Data, !audio.isEmpty, audio.count <= 48 * 1024,
+          let encoded = try? PropertyListSerialization.data(
+            fromPropertyList: message, format: .binary, options: 0), encoded.count <= 60 * 1024
+        else { return replyHandler([:]) }
+        let accepted = self.ingest(message, background: background, transport: "immediate") { url in
+          try audio.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        replyHandler(accepted ? ["v": Self.protocolVersion, "kind": "received", "id": message["id"] as? String ?? ""] : [:])
+      }
+      return
+    }
     if message["kind"] as? String == "answer" {
       receiveAnswer(message)
       return replyHandler(["v": Self.protocolVersion, "kind": "received"])
@@ -289,6 +303,16 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
 
   func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
     if message["kind"] as? String == "answer" { receiveAnswer(message) }
+    if message["v"] as? Int == Self.protocolVersion,
+      message["kind"] as? String == "displayTiming",
+      let messageId = message["messageId"] as? String,
+      let replyId = message["replyId"] as? String,
+      messageId.range(of: #"^m-[0-9]{1,20}$"#, options: .regularExpression) != nil,
+      replyId.range(of: #"^r-[0-9]{1,20}$"#, options: .regularExpression) != nil,
+      let uptime = message["watchUptime"] as? Double, uptime.isFinite, uptime >= 0
+    {
+      queue.async { self.log("stage=watch_display message=\(messageId) reply=\(replyId) watchUptime=\(uptime)") }
+    }
   }
 
   func sessionWatchStateDidChange(_ session: WCSession) {
@@ -305,47 +329,52 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     let background = applicationIsBackground()
     // The system deletes the file when this method returns: move it now.
     queue.sync {
-      guard let metadata = file.metadata,
-        metadata["v"] as? Int == Self.protocolVersion,
-        metadata["kind"] as? String == "capture",
-        let id = metadata["id"] as? String, isCaptureId(id)
-      else {
-        log("ignored a file with unknown metadata")
-        // Let the watch keep its copy and offer it again after an update.
-        if let id = file.metadata?["id"] as? String { reply(["kind": "rejected", "id": id]) }
-        return
+      guard let metadata = file.metadata else { return }
+      _ = ingest(metadata, background: background, transport: "file") { url in
+        try FileManager.default.moveItem(at: file.fileURL, to: url)
       }
-      // A resent capture that already arrived: keep the first copy, and repeat
-      // the transcript in case the watch never received it.
-      if let existing = load(id) {
-        log("\(id.prefix(8)) duplicate ignored")
-        if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
-          reply(["kind": "transcript", "id": id, "text": text])
-        } else if existing.state == .failed, (existing.attempts ?? 0) >= Self.maxAttempts {
-          reply(["kind": "failed", "id": id, "text": existing.error ?? "Transcription failed"])
-        }
-        return
+    }
+  }
+
+  /// Both transports serialize ingestion on queue. Persist before acknowledging;
+  /// a second arrival never overwrites audio or starts another transcription.
+  private func ingest(
+    _ metadata: [String: Any], background: Bool, transport: String,
+    storeAudio: (URL) throws -> Void
+  ) -> Bool {
+    guard metadata["v"] as? Int == Self.protocolVersion,
+      metadata["kind"] as? String == "capture",
+      let id = metadata["id"] as? String, isCaptureId(id)
+    else {
+      log("ignored capture with unknown metadata")
+      return false
+    }
+    if let existing = load(id) {
+      if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
+        reply(["kind": "transcript", "id": id, "text": text])
+      } else if existing.state == .failed, (existing.attempts ?? 0) >= Self.maxAttempts {
+        reply(["kind": "failed", "id": id, "text": existing.error ?? "Transcription failed"])
       }
-      do {
-        // Audio without an entry is a leftover from a failed earlier save.
-        try? FileManager.default.removeItem(at: audioURL(id))
-        try FileManager.default.moveItem(at: file.fileURL, to: audioURL(id))
-        let entry = WatchInboxEntry(
-          id: id, createdAt: metadata["createdAt"] as? String ?? "",
-          durationMs: metadata["durationMs"] as? Int ?? 0, receivedAt: Date(),
-          receivedInBackground: background, state: .received,
-          projectId: metadata["projectId"] as? String, scope: metadata["scope"] as? String)
-        try save(entry)
-        log("\(id.prefix(8)) received \(entry.durationMs) ms audio, app \(background ? "background" : "foreground")")
-        transcribe(id)
-        // A wake for a new recording is also a chance for earlier failures.
-        retry()
-      } catch {
-        log("\(id.prefix(8)) could not be stored: \(error.localizedDescription)")
-        remove(id)
-        // The watch still holds the audio; this sends it back into its queue.
-        reply(["kind": "rejected", "id": id])
-      }
+      return true
+    }
+    do {
+      try? FileManager.default.removeItem(at: audioURL(id))
+      try storeAudio(audioURL(id))
+      let entry = WatchInboxEntry(
+        id: id, createdAt: metadata["createdAt"] as? String ?? "",
+        durationMs: metadata["durationMs"] as? Int ?? 0, receivedAt: Date(),
+        receivedInBackground: background, state: .received,
+        projectId: metadata["projectId"] as? String, scope: metadata["scope"] as? String)
+      try save(entry)
+      log("request=\(id) stage=iphone_received transport=\(transport) background=\(background)")
+      transcribe(id)
+      retry()
+      return true
+    } catch {
+      log("request=\(id) stage=storage_failed")
+      remove(id)
+      reply(["kind": "rejected", "id": id])
+      return false
     }
   }
 
@@ -365,7 +394,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     }
     let audio = audioURL(id)
     Task {
-      let started = Date()
+      let started = ProcessInfo.processInfo.systemUptime
       let result: Result<String, Error>
       do {
         result = .success(try await Self.transcribeFile(audio, log: { message in
@@ -374,7 +403,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       } catch {
         result = .failure(error)
       }
-      let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+      let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
       self.queue.async {
         self.transcribing.remove(id)
         self.finish(id, result, elapsed: elapsed)
@@ -393,7 +422,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       entry.text = text
       reply["kind"] = "transcript"
       reply["text"] = text
-      log("\(id.prefix(8)) transcribed in \(elapsed) ms")
+      log("request=\(id) stage=transcription_complete transcriptionMs=\(elapsed)")
     case .success:
       entry.state = .failed
       entry.error = "No speech recognised"
@@ -496,11 +525,12 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     else { return }
     forwarding.insert(id)
     let backgroundTime = BackgroundTime("verity-send") {}
-    let started = Date()
+    let started = ProcessInfo.processInfo.systemUptime
+    log("request=\(id) stage=server_send")
     Task {
       let delivery = await self.link.sendMessage(
         requestId: id, text: text, projectId: entry.projectId)
-      let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+      let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
       self.queue.async {
         self.forwarding.remove(id)
         defer { backgroundTime.end() }
@@ -509,7 +539,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           guard var entry = self.load(id) else { return }
           entry.state = .stored
           try? self.save(entry)
-          self.log("\(id.prefix(8)) sent to Verity in \(elapsed) ms")
+          self.log("request=\(id) stage=server_accepted roundTripMs=\(elapsed)")
           self.follow(for: 90)
           let notify = self.onChange
           DispatchQueue.main.async { notify?() }
@@ -687,7 +717,12 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
 
   private func reply(_ payload: [String: Any]) {
     guard WCSession.default.activationState == .activated else { return }
-    WCSession.default.transferUserInfo(payload.merging(["v": Self.protocolVersion]) { new, _ in new })
+    let message = payload.merging(["v": Self.protocolVersion]) { new, _ in new }
+    // Queue before sending live: a reachability race must not lose feedback.
+    WCSession.default.transferUserInfo(message)
+    if WCSession.default.isReachable {
+      WCSession.default.sendMessage(message, replyHandler: nil, errorHandler: nil)
+    }
   }
 
   private func remove(_ id: String) {
