@@ -5524,3 +5524,14 @@ migrations['0200_wiki_occasions'] = {
     await sql`drop table wiki_occasions`.execute(db);
   },
 };
+
+migrations['0201_project_description'] = {
+  // One line under the project's name on its page, written by its managers.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings add column description text
+      check (char_length(description) <= 200)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings drop column description`.execute(db);
+  },
+};

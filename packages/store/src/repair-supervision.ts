@@ -437,6 +437,42 @@ export class RepairSupervisionStore {
       )
     ).rows[0]?.session_id;
   }
+  /** Every originating session of a project, for lists that show who owns each resource. */
+  async sessionOrigins(projectId: string): Promise<{ resource: string; sessionId: string }[]> {
+    return (
+      await sql<{
+        resource: string;
+        session_id: string;
+      }>`select resource, session_id from repair_session_origins where project_id=${projectId}`.execute(
+        this.db,
+      )
+    ).rows.map((row) => ({ resource: row.resource, sessionId: row.session_id }));
+  }
+  /**
+   * Hands a resource to a new session once its originating session is gone (deleted).
+   * Compare-and-set on the stale owner, so two callers cannot both take over; returns
+   * the owner afterwards, which differs from `sessionId` when another caller won.
+   */
+  async replaceSessionOrigin(
+    projectId: string,
+    resource: string,
+    staleSessionId: string,
+    sessionId: string,
+  ): Promise<string | undefined> {
+    return this.db.transaction().execute(async (trx) => {
+      await sql`select pg_advisory_xact_lock(712843, 1)`.execute(trx);
+      await sql`update repair_session_origins set session_id=${sessionId} where project_id=${projectId} and resource=${resource} and session_id=${staleSessionId}`.execute(
+        trx,
+      );
+      return (
+        await sql<{
+          session_id: string;
+        }>`select session_id from repair_session_origins where project_id=${projectId} and resource=${resource}`.execute(
+          trx,
+        )
+      ).rows[0]?.session_id;
+    });
+  }
   async associate(projectId: string, resource: string, sessionId: string): Promise<void> {
     await sql`insert into repair_session_history (project_id, resource, session_id) values (${projectId}, ${resource}, ${sessionId}) on conflict do nothing`.execute(
       this.db,

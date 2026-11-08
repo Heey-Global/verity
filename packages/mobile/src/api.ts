@@ -3,6 +3,7 @@ import {
   projectInquirySchema,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
+import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -726,6 +727,8 @@ export const projectSettingsSchema = z.object({
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
   // When accepted plans stop for mockups; absent on an older server.
   designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
+  // One line under the project's name; absent on an older server, null when unset.
+  description: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -737,7 +740,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveAccessMode'
   | 'allowedAgents'
-  | 'designLevel';
+  | 'designLevel'
+  | 'description';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -5023,6 +5027,54 @@ export class VerityClient {
       .repositories;
   }
 
+  /** Every connected repository with its open pull requests, as the code host reports
+   *  them; `refresh` asks the host again instead of the server's recent answer. */
+  async getProjectPullRequests(id: string, options: { refresh?: boolean } = {}) {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests${options.refresh ? '?refresh=1' : ''}`,
+      { method: 'GET' },
+    );
+    return z.object({ repositories: z.array(repositoryPullRequestsSchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  /** Merges a pull request that no session owns, at the commit the list showed. */
+  async mergeProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    head: { branch: string; expectedHeadSha: string },
+  ): Promise<{ merged: true }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/merge`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(head),
+      },
+    );
+    return z.object({ merged: z.literal(true) }).parse(await res.json());
+  }
+
+  /** Starts the session that fixes a failing or conflicting pull request, or returns
+   *  the one already working on it. */
+  async fixProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    branch: string,
+  ): Promise<{ sessionId: string; created: boolean }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/fix`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch }),
+      },
+    );
+    return z.object({ sessionId: z.string(), created: z.boolean() }).parse(await res.json());
+  }
+
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
       method: 'PUT',
@@ -6620,11 +6672,18 @@ export class VerityClient {
     return branchSwitchedSchema.parse(await res.json());
   }
 
-  async mergePullRequest(id: string, number: number): Promise<PullRequestMerged> {
+  /** `expectedHeadSha` merges only that commit; the server refuses a branch that moved. */
+  async mergePullRequest(
+    id: string,
+    number: number,
+    expectedHeadSha?: string,
+  ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ number }),
+      body: JSON.stringify(
+        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
+      ),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }

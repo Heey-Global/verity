@@ -2,8 +2,8 @@ import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
-  providerName,
   type InboxItem,
+  type RepositoryPullRequests,
   type ProjectDetail,
   type ProjectRecord,
   type SessionSummary,
@@ -26,6 +26,9 @@ import { Button, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '
 import { tint } from '../ui/tint';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectTasksRow } from './ProjectTasksRow';
+import { ProjectRepositoriesRow } from './ProjectRepositoriesRow';
+import { projectLine } from '../../lib/projectRepositories';
+import { useProjectPullRequests } from '../../lib/useProjectPullRequests';
 import { ProjectWork } from './ProjectWork';
 import {
   packagesToUpdate,
@@ -33,22 +36,6 @@ import {
   useProjectSecurity,
   type ProjectSecurity,
 } from '../vulnerability/ProjectSecurity';
-
-/** How many of the project's sessions have an open pull request. */
-function openPullRequests(sessions: readonly SessionSummary[]): number {
-  return sessions.filter((session) => session.pullRequest?.phase === 'open').length;
-}
-
-/** The line under the project's name: where its code lives and what is open. */
-export function projectLine(project: ProjectRecord, sessions: readonly SessionSummary[]): string {
-  const open = openPullRequests(sessions);
-  const parts =
-    project.kind === 'github' || project.kind === 'forgejo'
-      ? [providerName(project.kind), `${project.owner}/${project.repo}`]
-      : ['Local project'];
-  if (open > 0) parts.push(open === 1 ? '1 open PR' : `${String(open)} open PRs`);
-  return parts.join(' · ');
-}
 
 /**
  * The inbox items that belong to one project: its sessions' questions,
@@ -116,6 +103,7 @@ export function ProjectPage({
 }) {
   const { theme } = useUnistyles();
   const { detail, loading, error, load } = useProjectDetail(client, projectId);
+  const pullRequests = useProjectPullRequests(client, projectId);
   /** The knowledge area open in the wide layout's column, if any. */
   const [knowledgeArea, setKnowledgeArea] = useState<string>();
   const security = useProjectSecurity(
@@ -130,14 +118,18 @@ export function ProjectPage({
   );
   const [layoutRevision, setLayoutRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const reload = useCallback(() => void load(true), [load]);
+  const reloadPullRequests = pullRequests.reload;
+  const reload = useCallback(() => {
+    void load(true);
+    void reloadPullRequests();
+  }, [load, reloadPullRequests]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    void load(true).finally(() => {
+    void Promise.all([load(true), reloadPullRequests(true)]).finally(() => {
       setLayoutRevision((value) => value + 1);
       setRefreshing(false);
     });
-  }, [load]);
+  }, [load, reloadPullRequests]);
   // Compared with the last value rather than skipping a first run: the mount
   // already loads, and a re-run with the same token (a re-mounted effect, a new
   // `reload`) must not read again.
@@ -221,7 +213,14 @@ export function ProjectPage({
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
       >
-        <ProjectHero project={detail.project} sessions={detail.sessions} />
+        <ProjectHero
+          project={detail.project}
+          line={projectLine(
+            detail.project,
+            detail.settings?.description,
+            pullRequests.repositories?.length,
+          )}
+        />
         <ProjectWork
           client={client}
           projectId={projectId}
@@ -240,6 +239,7 @@ export function ProjectPage({
           detail={detail}
           scope={knowledgeScope}
           security={security}
+          repositories={pullRequests.repositories}
           onOpenKnowledge={openKnowledge}
         />
       </ScrollView>
@@ -281,13 +281,7 @@ export function ProjectPage({
   );
 }
 
-function ProjectHero({
-  project,
-  sessions,
-}: {
-  project: ProjectRecord;
-  sessions: readonly SessionSummary[];
-}) {
+function ProjectHero({ project, line }: { project: ProjectRecord; line: string }) {
   return (
     <View style={styles.hero}>
       <View style={styles.initial}>
@@ -299,8 +293,8 @@ function ProjectHero({
         <Text variant="title" accessibilityRole="header" numberOfLines={1}>
           {project.repo}
         </Text>
-        <Text variant="subtitle" numberOfLines={1} testID="project-line">
-          {projectLine(project, sessions)}
+        <Text variant="subtitle" numberOfLines={2} testID="project-line">
+          {line}
         </Text>
       </View>
     </View>
@@ -324,12 +318,14 @@ function ProjectContent({
   detail,
   scope,
   security,
+  repositories,
   onOpenKnowledge,
 }: {
   client: VerityClient;
   detail: ProjectDetail;
   scope: KnowledgeScope;
   security: ProjectSecurity | undefined;
+  repositories: readonly RepositoryPullRequests[] | undefined;
   onOpenKnowledge: (folder: string) => void;
 }) {
   const id = detail.project.id;
@@ -347,6 +343,9 @@ function ProjectContent({
         />
       ))}
       <ProjectTasksRow client={client} projectId={id} />
+      {repositories !== undefined && repositories.length > 0 ? (
+        <ProjectRepositoriesRow projectId={id} repositories={repositories} />
+      ) : null}
       {security !== undefined ? (
         <Row
           leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}

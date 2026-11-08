@@ -1343,6 +1343,42 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
+  it('refuses a confirmed commit the branch has moved past, and merges only that commit', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feat/119-ready');
+    const mergePr = vi
+      .fn<(number: number, wt: string, sha?: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn().mockResolvedValue(prStatus({ headSha: 'abc1234' })),
+      mergePr,
+    });
+
+    // A fix session pushed after the list was shown: nothing unseen merges.
+    const moved = await withMerge.inject({
+      method: 'POST',
+      url: '/sessions/s1/pull-request/merge',
+      payload: { number: 119, expectedHeadSha: 'def5678' },
+    });
+    expect(moved.statusCode).toBe(409);
+    expect(moved.json()).toMatchObject({ code: 'merge_head_changed' });
+    expect(mergePr).not.toHaveBeenCalled();
+
+    const same = await withMerge.inject({
+      method: 'POST',
+      url: '/sessions/s1/pull-request/merge',
+      payload: { number: 119, expectedHeadSha: 'abc1234' },
+    });
+    expect(same.statusCode).toBe(200);
+    // The code host enforces it too, against a push between the check and the merge.
+    expect(mergePr).toHaveBeenCalledWith(119, '/wt/s1', 'abc1234');
+    await withMerge.close();
+  });
+
   it('updates the overview PR projection as part of a successful merge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     branchSvc.current.mockResolvedValue('feat/119-ready');
