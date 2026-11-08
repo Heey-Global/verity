@@ -1,3 +1,4 @@
+import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
@@ -10,6 +11,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  sessionGroupsSpec,
   factorySpec,
   homeAnswersSpec,
   mockupReviewSpec,

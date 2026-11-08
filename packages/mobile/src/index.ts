@@ -798,3 +798,13 @@ export {
   type WikiReviewItem,
   type WikiTopic,
 } from '@verity/events';
+
+export {
+  sessionWorkSections,
+  sessionAgentWorking,
+  sessionWorkActive,
+  retainWorkMembers,
+  WORK_PROBLEM_LABELS,
+  type SessionWorkEntry,
+  type SessionWorkSections,
+} from './ui/sessionWork.js';

@@ -84,7 +84,7 @@ const question = session('form', {
 });
 const running = session('login', { status: 'running' });
 const favorite = session('blog', { status: 'idle', favorite: true });
-const merged = session('landing', {
+const openPullRequest = session('landing', {
   pullRequest: {
     number: 2040,
     title: 'Landing',
@@ -98,7 +98,7 @@ const merged = session('landing', {
 // The compact PR state is what marks a session; the full status only names it.
 const failing = session('ci', {
   pr: { phase: 'open', pipeline: 'failure', mergeable: true },
-  pullRequest: { ...merged.pullRequest!, number: 2041, title: 'Checkout' },
+  pullRequest: { ...openPullRequest.pullRequest!, number: 2041, title: 'Checkout' },
 });
 
 function clientWith(sessions: SessionSummary[], extra: Record<string, unknown> = {}) {
@@ -217,10 +217,10 @@ describe('project page', () => {
       />,
     );
     view.rerender(<ProjectWork {...props} sessions={[z, { ...a, status: 'running' }]} />);
-    expect(workingNames()).toEqual(['z, working', 'a, working']);
+    expect(workingNames()).toEqual(['a, working', 'z, working']);
   });
 
-  it('keeps CI visible through completion and rebuilds on explicit refresh', async () => {
+  it('removes settled CI from Now without requiring a refresh', async () => {
     const client = clientWith([]);
     const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
     const ci = session('checks', { pr: { phase: 'open', pipeline: 'running', mergeable: null } });
@@ -235,10 +235,10 @@ describe('project page', () => {
       { ...ci, pr: { ...ci.pr!, phase: 'merged' as const, pipeline: 'success' as const } },
     ];
     view.rerender(<ProjectWork {...props} sessions={finished} />);
-    expect(screen.getByText('checks')).toBeTruthy();
-    expect(screen.queryByText('queued')).toBeNull();
-    view.rerender(<ProjectWork {...props} sessions={finished} layoutRevision={1} />);
     expect(screen.queryByText('checks')).toBeNull();
+    expect(screen.queryByText('queued')).toBeNull();
+    expect(screen.queryByTestId('work-active')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Now' })).toBeTruthy();
   });
 
   it('retains All positions through merge and removes stale actions in Needs you', async () => {
@@ -274,7 +274,7 @@ describe('project page', () => {
     expect(names()[0]).toMatch(/^quiet/);
   });
 
-  it('retains a resolved question without stale answers or duplicate rows', async () => {
+  it('moves a resolved question to work and a new question back without duplicate rows', async () => {
     const client = clientWith([]);
     const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
     const view = render(<ProjectWork {...props} sessions={[question]} />);
@@ -283,19 +283,18 @@ describe('project page', () => {
     view.rerender(<ProjectWork {...props} sessions={[session('form', { status: 'running' })]} />);
     expect(screen.queryByText('Which validation library?')).toBeNull();
     expect(screen.getAllByText('form')).toHaveLength(1);
-    expect(within(screen.getByTestId('work-needs-you')).getByText('form')).toBeTruthy();
-    view.rerender(
-      <ProjectWork
-        {...props}
-        sessions={[session('form', { status: 'running' })]}
-        projectId="another"
-      />,
-    );
     expect(screen.queryByTestId('work-needs-you')).toBeNull();
     expect(within(screen.getByTestId('work-active')).getByText('form')).toBeTruthy();
+    view.rerender(<ProjectWork {...props} sessions={[question]} />);
+    expect(screen.queryByTestId('work-active')).toBeNull();
+    expect(
+      within(screen.getByTestId('work-needs-you')).getByText('Which validation library?'),
+    ).toBeTruthy();
+    expect(screen.getAllByText('form')).toHaveLength(1);
+    expect(screen.getByRole('tab', { name: 'Now · 1' })).toBeTruthy();
   });
 
-  it('keeps the visit through live reloads and resets on pull to refresh', async () => {
+  it('removes a read answer from Now on opening and on live reload', async () => {
     const unread = session('read-me', { eventCount: 5, lastSeenEventCount: 3 });
     const client = clientWith([unread]);
     const onOpenSession = jest.fn();
@@ -311,7 +310,7 @@ describe('project page', () => {
     await screen.findByTestId('project-line');
     await act(async () => undefined);
     fireEvent.press(screen.getByLabelText('read-me, new answer'));
-    expect(screen.getByText('read-me')).toBeTruthy();
+    expect(screen.queryByText('read-me')).toBeNull();
     const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
     (client.getProject as jest.Mock).mockResolvedValue({
       ...detail,
@@ -319,7 +318,7 @@ describe('project page', () => {
     });
     view.rerender(page(2));
     await act(async () => undefined);
-    expect(screen.getByText('read-me')).toBeTruthy();
+    expect(screen.queryByText('read-me')).toBeNull();
     const scroll = view
       .UNSAFE_getAllByType(ScrollView)
       .find((node) => node.props.refreshControl !== undefined)!;
@@ -346,7 +345,7 @@ describe('project page', () => {
     expect(screen.queryByText('form')).toBeNull();
   });
 
-  it('shows new question actions without moving a retained running row', async () => {
+  it('moves new questions out of work and removes their answered actions', async () => {
     const client = clientWith([session('form', { status: 'running' })]);
     Object.assign(client, { sendTurn: jest.fn().mockResolvedValue({ queued: false }) });
     const page = (reloadOn: number) => (
@@ -359,16 +358,16 @@ describe('project page', () => {
     (client.getProject as jest.Mock).mockResolvedValue({ ...detail, sessions: [question] });
     view.rerender(page(2));
     await act(async () => undefined);
-    const active = within(screen.getByTestId('work-active'));
-    expect(active.getByText('Which validation library?')).toBeTruthy();
-    expect(screen.queryByTestId('work-needs-you')).toBeNull();
-    await act(async () => fireEvent.press(active.getByRole('button', { name: 'Zod' })));
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getByText('Which validation library?')).toBeTruthy();
+    expect(screen.queryByTestId('work-active')).toBeNull();
+    await act(async () => fireEvent.press(needs.getByRole('button', { name: 'Zod' })));
     expect(client.sendTurn).toHaveBeenCalledWith(
       'form',
       expect.objectContaining({ prompt: expect.stringContaining('Zod') }),
     );
-    expect(active.queryByRole('button', { name: 'Zod' })).toBeNull();
-    expect(active.getByText('form')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
   });
 
   it('removes a deliberately unfavorited session from Favorites', async () => {
@@ -389,7 +388,7 @@ describe('project page', () => {
   it('names where the code lives without counting pull requests from sessions', async () => {
     // A session's open PR is one of many; the header never counts them, since
     // Renovate's and external pull requests would be missing from that number.
-    await renderPage([merged, running]);
+    await renderPage([openPullRequest, running]);
     expect(screen.getByTestId('project-line')).toHaveTextContent('GitHub · heey-global/verity');
     expect(screen.getByTestId('project-line')).not.toHaveTextContent(/PR/);
   });
@@ -422,7 +421,7 @@ describe('project page', () => {
       viewerCanMerge: true,
       origin,
     });
-    const client = clientWith([merged], {
+    const client = clientWith([openPullRequest], {
       getProjectPullRequests: jest.fn().mockResolvedValue([
         {
           id: 'default:p/1',
@@ -484,8 +483,9 @@ describe('project page', () => {
       'form',
       expect.objectContaining({ prompt: expect.stringContaining('Zod') }),
     );
-    // Keep the row reachable, but never offer its already submitted answer again.
-    expect(within(screen.getByTestId('work-needs-you')).getByText('form')).toBeTruthy();
+    // A stale summary must not keep the answered question under Needs you.
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    expect(screen.queryByText('form')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
   });
 
@@ -643,7 +643,13 @@ describe('project page', () => {
   });
 
   it('filters by what a session needs and opens a session', async () => {
-    const { onOpenSession } = await renderPage([question, running, favorite, merged, failing]);
+    const { onOpenSession } = await renderPage([
+      question,
+      running,
+      favorite,
+      openPullRequest,
+      failing,
+    ]);
     expect(screen.getByTestId('project-work')).toBeTruthy();
     // Waiting first, each with what it waits for; then what is moving.
     expect(
@@ -651,7 +657,11 @@ describe('project page', () => {
         .getAllByRole('button')
         .map((row) => row.props.accessibilityLabel as string | undefined)
         .filter((label) => label?.includes(',')),
-    ).toEqual(['form, Which validation library?, Question', 'ci, PR #2041 · Checkout, CI failed']);
+    ).toEqual([
+      'form, Which validation library?, Question',
+      'landing, PR #2040 · Landing, CI failed',
+      'ci, PR #2041 · Checkout, CI failed',
+    ]);
     expect(screen.queryByLabelText(/blog/)).toBeNull();
     // A star, named for VoiceOver: the word no longer fits beside "+" on a phone.
     fireEvent.press(screen.getByRole('tab', { name: 'Favorites' }));
@@ -672,15 +682,36 @@ describe('project page', () => {
       }),
     ]);
     expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+    expect(within(screen.getByTestId('work-results')).getByText('answered')).toBeTruthy();
+    expect(screen.queryByTestId('work-active')).toBeNull();
     fireEvent.press(screen.getByLabelText('answered, new answer'));
     expect(onOpenSession).toHaveBeenCalledWith('answered');
     expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
     expect(screen.queryByLabelText('Unread messages')).toBeNull();
-    expect(within(screen.getByTestId('work-active')).getByText('answered')).toBeTruthy();
+    expect(screen.queryByTestId('work-results')).toBeNull();
+    expect(screen.queryByText('answered')).toBeNull();
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     fireEvent.press(screen.getByRole('tab', { name: /^Now/ }));
     expect(screen.queryByText('answered')).toBeNull();
     await act(async () => undefined);
+  });
+
+  it('keeps unread visible on a dismissible question while background work continues', async () => {
+    const pending = {
+      ...question,
+      backgroundWorking: true,
+      eventCount: 9,
+      lastSeenEventCount: 2,
+      inboxDismissed: [],
+    };
+    const { client } = await renderPage([pending]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getByLabelText('Unread messages')).toBeTruthy();
+    expect(needs.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    fireEvent.press(needs.getByRole('button', { name: /form, Which validation library/ }));
+    expect(client.setSessionSeen).toHaveBeenCalledWith('form', 9, undefined);
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    expect(screen.getByTestId('work-needs-you')).toBeTruthy();
   });
 
   it('marks and orders Work the way the session list marks it', async () => {
@@ -723,7 +754,7 @@ describe('project page', () => {
     const mergedPr = (number: number, updatedAt: string) =>
       ({
         pr: { phase: 'merged', pipeline: 'success', mergeable: null },
-        pullRequest: { ...merged.pullRequest!, number, phase: 'merged', updatedAt },
+        pullRequest: { ...openPullRequest.pullRequest!, number, phase: 'merged', updatedAt },
       }) as Partial<SessionSummary>;
     const shippedLater = session('shipped-later', {
       ...mergedPr(7, '2026-11-02T00:00:00Z'),
