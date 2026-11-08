@@ -293,3 +293,11 @@ export {
   type WikiReviewItem,
   type WikiTopic,
 } from './knowledge-wiki.js';
+export {
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from './wiki-proposals.js';

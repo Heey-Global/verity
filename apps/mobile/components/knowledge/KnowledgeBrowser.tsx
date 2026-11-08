@@ -18,6 +18,7 @@ import {
   type KnowledgeScope,
 } from './knowledgeScope';
 import { WikiInfoButton } from './WikiGuide';
+import { WikiProposalScreen } from './WikiProposal';
 
 /**
  * A knowledge route: one folder or one file per screen, so the header's back
@@ -28,10 +29,13 @@ export function KnowledgeScreen({
   scope,
   folder = '',
   file,
+  proposal,
 }: {
   scope: KnowledgeScope;
   folder?: string | undefined;
   file?: string | undefined;
+  /** A proposed Wiki change to review, by id. */
+  proposal?: string | undefined;
 }) {
   const client = useMemo(() => createVerityClient(), []);
   if (!client)
@@ -42,6 +46,8 @@ export function KnowledgeScreen({
         subtitle={`Connect to your Verity server to browse ${scopeTitle(scope)}.`}
       />
     );
+  if (proposal && scope.kind === 'project')
+    return <WikiProposalScreen client={client} projectId={scope.projectId} proposalId={proposal} />;
   if (file !== undefined && file !== '')
     return <KnowledgeFileView client={client} scope={scope} file={file} chrome="stack" />;
   return (
