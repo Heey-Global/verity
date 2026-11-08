@@ -6192,8 +6192,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         for (const id of await deps.eventStore.wikiMaintenance.sessionIds())
           wikiMaintenanceSessions.add(id);
       } catch (err) {
+        // The session list reads them again on every load; the runs still start.
         app.log.warn({ err }, 'wiki maintenance sessions could not be read');
-        return;
       }
       wikiMaintenance = startWikiMaintenanceTrigger({
         store: deps.eventStore,

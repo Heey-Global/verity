@@ -264,7 +264,7 @@ Only the maintenance session may read or close occasions.
 Because the run reads untrusted text with nobody watching, its posture belongs to
 the session, not to the request: every turn of the maintenance session runs with
 the same read-only isolation as planning (read-only file system, no Docker) and
-without web tools, also when it is recovered or queued. The gateway then refuses
+without shell or web tools, also when it is recovered or queued. The gateway then refuses
 every external tool except the occasion operations and `propose_wiki`. The results appear as
 proposals to review on the Wiki; the run itself changes no page.
 

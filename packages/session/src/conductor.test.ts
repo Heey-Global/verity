@@ -456,7 +456,7 @@ describe('Conductor.sendTurn', () => {
 
   // The run reads untrusted transcripts unattended; a request for wider rights,
   // a recovered turn or a queued one must not lift its read-only posture.
-  it('runs the Wiki maintenance session read-only and without web tools', async () => {
+  it('runs the Wiki maintenance session read-only, without shell or web tools', async () => {
     await ctx.store.createProject({
       id: 'wp',
       owner: 'team',
@@ -484,7 +484,7 @@ describe('Conductor.sendTurn', () => {
     });
     expect(fake.last().planning).toBe(true);
     expect(fake.last().permissionMode).toBe('plan');
-    expect(fake.last().disallowedTools).toEqual(['Task', 'WebFetch', 'WebSearch']);
+    expect(fake.last().disallowedTools).toEqual(['Task', 'Bash', 'WebFetch', 'WebSearch']);
     await conductor.sendTurn('plain', 'Continue', { permissionMode: 'bypassPermissions' });
     expect(fake.last().planning).not.toBe(true);
     expect(fake.last().permissionMode).toBe('bypassPermissions');
