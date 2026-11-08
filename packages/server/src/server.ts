@@ -190,6 +190,10 @@ import {
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
+import {
+  registerProjectPullRequestRoutes,
+  type SessionPullRequestLink,
+} from './project-pull-requests.js';
 import { registerProjectCollectionRoutes, repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -239,6 +243,8 @@ import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { createMeetingTranscriptController } from './server-meeting-transcripts.js';
 import { registerServerSessionFiles } from './server-session-files.js';
+import { WikiProposals } from './wiki-proposals.js';
+import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import type {
   ActivityProjection,
@@ -3663,7 +3669,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  // Proposals write through the Wiki's file routes, which are registered further below.
+  const sessionFiles: { current?: ReturnType<typeof registerServerSessionFiles> } = {};
+  const wikiFiles = () => {
+    if (!sessionFiles.current) throw new Error('Wiki files are not ready');
+    return sessionFiles.current;
+  };
+  const wikiProposals =
+    deps.dataRoot === undefined
+      ? undefined
+      : new WikiProposals(deps.dataRoot, {
+          readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
+          writeProjectWiki: (projectId, path, content, version) =>
+            wikiFiles().writeProjectWiki(projectId, path, content, version),
+          onFailure: (err, details) =>
+            app.log.warn({ err, ...details }, 'Wiki proposal page could not be written'),
+          onChange: (projectId) =>
+            resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
+        });
   const decidePendingLinkedMessage = registerServerMcpRoutes({
+    wikiProposals,
     inquiryTool: async (sessionId, userId, input) => {
       const request = input as { operation: string; inquiryId: string; answer: string };
       if (request.operation === 'list') {
@@ -5257,7 +5282,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await attendeeMeetings.close();
   });
   meetingTranscripts.registerRoutes();
-  registerServerSessionFiles(app, deps, conductor);
+  sessionFiles.current = registerServerSessionFiles(app, deps, conductor);
+  if (wikiProposals)
+    registerWikiProposalRoutes(app, wikiProposals, async (projectId) => {
+      const project = await deps.eventStore.getProject(projectId);
+      return project !== undefined && !project.hiddenAt;
+    });
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the
@@ -5867,6 +5897,115 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       log: app.log,
     }),
   );
+  // One fix session per pull request: concurrent taps of "Fix" in this process
+  // wait for the first, and the durable origin record covers everything else.
+  const pullRequestFixes = new Map<string, Promise<{ sessionId: string; created: boolean }>>();
+  registerProjectPullRequestRoutes(app, {
+    store: deps.eventStore,
+    backend: deps.projectPullRequests,
+    sessionLinks: async (projectId) => {
+      const sessions = (await deps.eventStore.listSessions()).filter(
+        (session) => session.projectId === projectId,
+      );
+      // One lookup per session, read together rather than one after another.
+      const workspaces = await Promise.all(
+        sessions.map((session) =>
+          deps.eventStore.listSessionRepositoryWorkspaces(session.sessionId),
+        ),
+      );
+      return sessions.flatMap((session, index): SessionPullRequestLink[] => {
+        // Only what is already known: the project page reads every session's PR
+        // status, so asking the code host again here would double that traffic.
+        const pr = sessionPrCache.peek(session.worktree);
+        return [
+          {
+            sessionId: session.sessionId,
+            repositoryId: `default:${projectId}`,
+            ...(pr ? { number: pr.number } : {}),
+            name: session.name,
+          },
+          ...workspaces[index]!.map((workspace): SessionPullRequestLink => {
+            const number = (workspace.pullRequest as { number?: unknown } | null | undefined)
+              ?.number;
+            return {
+              sessionId: session.sessionId,
+              repositoryId: workspace.repositoryId,
+              branch: workspace.branch,
+              ...(typeof number === 'number' ? { number } : {}),
+              name: session.name,
+            };
+          }),
+        ];
+      });
+    },
+    startFix: (input) => {
+      const key = `${input.project.id}\u0000${input.resource}`;
+      const running = pullRequestFixes.get(key);
+      if (running) return running;
+      const start = async () => {
+        const repairs = deps.eventStore.repairs;
+        const existing = await repairs.sessionOrigin(input.project.id, input.resource);
+        if (existing && (await deps.eventStore.getSession(existing)))
+          return { sessionId: existing, created: false };
+        const sessionId = randomUUID();
+        const spawned = await sessionCreate.spawn(
+          {
+            projectId: input.project.id,
+            sessionId,
+            name: `Fix PR #${String(input.status.number)}`,
+          },
+          app.log,
+        );
+        if (spawned.statusCode >= 300)
+          throw Object.assign(new Error('The fix session could not be created'), {
+            statusCode: spawned.statusCode >= 500 ? 503 : spawned.statusCode,
+          });
+        // A session that never got its prompt, or lost the claim to another
+        // process, is removed again: a durable origin pointing at it would turn
+        // every later tap into "already fixing", and a duplicate helps no one.
+        const discard = () =>
+          deleteSessionEverywhere(sessionId).catch((error: unknown) => {
+            app.log.warn({ err: error, sessionId }, 'could not remove an unused fix session');
+            return false;
+          });
+        try {
+          const owner = existing
+            ? await repairs.replaceSessionOrigin(
+                input.project.id,
+                input.resource,
+                existing,
+                sessionId,
+              )
+            : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
+          if (owner === undefined)
+            throw Object.assign(new Error('The fix session could not be recorded'), {
+              statusCode: 503,
+            });
+          if (owner !== sessionId) {
+            await discard();
+            return { sessionId: owner, created: false };
+          }
+          await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
+            displayPrompt: `Fix pull request #${String(input.status.number)}`,
+            ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
+          });
+        } catch (error) {
+          // The origin, if recorded, now names a missing session; the next tap
+          // replaces it.
+          await discard();
+          if (typeof (error as { statusCode?: unknown }).statusCode === 'number') throw error;
+          app.log.error({ err: error, sessionId }, 'fix session could not be started');
+          throw Object.assign(new Error('The fix session could not be started. Try again.'), {
+            statusCode: 503,
+          });
+        }
+        return { sessionId, created: true };
+      };
+      const promise = start().finally(() => pullRequestFixes.delete(key));
+      pullRequestFixes.set(key, promise);
+      return promise;
+    },
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();

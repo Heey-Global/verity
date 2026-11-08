@@ -17,11 +17,19 @@ import {
   type VerityState,
 } from '../lib/verityConversation';
 import { subscribeVerityShortcut } from '../lib/voiceShortcut';
-import { Button, CaptureField, Card, Sheet, SheetHeaderButton, StatusDot, Text } from './ui';
+import { MarkdownText } from './chat/MarkdownText';
+import {
+  Button,
+  CaptureField,
+  Card,
+  CardHead,
+  Sheet,
+  SheetHeaderButton,
+  StatusDot,
+  StatusTag,
+  Text,
+} from './ui';
 import { VerityMark } from './VerityMark';
-
-/** Newest items shown in the panel; the full conversation is one tap away. */
-const RECENT = 8;
 
 /** How old a meeting still being readied may be to open by itself once it is ready. */
 const RECENT_MEETING_MS = 2 * 60_000;
@@ -167,6 +175,7 @@ export function VerityPanel({
   return (
     <Sheet
       visible
+      anchorEnd
       title="Verity"
       titleLeading={<VerityMark size={32} glow={false} />}
       headerAction={
@@ -204,23 +213,17 @@ export function VerityPanel({
       }
     >
       <View style={styles.body}>
-        <StateLine verity={verity} listening={voice.state === 'recording'} />
-        {voice.error ? (
-          <Text variant="subtitle" tone="attention">
-            {voice.error} You can type instead.
-          </Text>
-        ) : null}
-        {verity.notice ? (
-          <Card>
-            <Text variant="bodySmall">{verity.notice}</Text>
-            <Button label="OK" variant="text" size="compact" onPress={dismissVerityNotice} />
-          </Card>
-        ) : null}
+        {/* One continuing conversation, oldest first: the sheet opens at its end. The
+            server's projection holds the latest 40 entries (ASSISTANT_CONVERSATION_ITEMS);
+            the session behind the expand button keeps the rest. */}
+        {(conversation?.items ?? []).map((item, index, items) => (
+          <View key={item.id} style={styles.body}>
+            <DayHeading at={item.at} previous={items[index - 1]?.at} />
+            <ItemView item={item} onOpenMeeting={sessionId ? openMeeting : null} />
+          </View>
+        ))}
         {verity.outbox.map((entry) => (
           <OutgoingCard key={entry.requestId} entry={entry} />
-        ))}
-        {(conversation?.items ?? []).slice(-RECENT).map((item) => (
-          <ItemView key={item.id} item={item} onOpenMeeting={sessionId ? openMeeting : null} />
         ))}
         {conversation?.question ? (
           <QuestionCard
@@ -232,13 +235,16 @@ export function VerityPanel({
           />
         ) : null}
         {conversation && conversation.approvals.length > 0 && sessionId ? (
-          <Card attention>
-            <Text variant="row">Verity needs your approval</Text>
-            <Text variant="subtitle">
-              {conversation.approvals.length === 1
-                ? 'One step waits for you, for example a mail to send.'
-                : `${String(conversation.approvals.length)} steps wait for you.`}
-            </Text>
+          <Card stacked>
+            <CardHead
+              title="Verity needs your approval"
+              subtitle={
+                conversation.approvals.length === 1
+                  ? 'One step waits for you, for example a mail to send.'
+                  : `${String(conversation.approvals.length)} steps wait for you.`
+              }
+              trailing={<StatusTag intent="action" label="Approval" />}
+            />
             <Button
               label="Review"
               size="compact"
@@ -248,6 +254,18 @@ export function VerityPanel({
               }}
             />
           </Card>
+        ) : null}
+        {verity.notice ? (
+          <Card>
+            <Text variant="bodySmall">{verity.notice}</Text>
+            <Button label="OK" variant="text" size="compact" onPress={dismissVerityNotice} />
+          </Card>
+        ) : null}
+        <StateLine verity={verity} listening={voice.state === 'recording'} />
+        {voice.error ? (
+          <Text variant="subtitle" tone="attention">
+            {voice.error} You can type instead.
+          </Text>
         ) : null}
       </View>
     </Sheet>
@@ -291,12 +309,16 @@ function StateLine({ verity, listening }: { verity: VerityState; listening: bool
   switch (conversation.state) {
     case 'working':
       return <StatusDot intent="transient" label="Working" />;
+    // Waiting on an answer is a normal next step, not a problem (design system § 8).
     case 'needs_you':
-      return <StatusDot intent="needsSetup" label="Needs you" />;
+      return <StatusDot intent="action" label="Needs you" />;
     case 'failed':
       return <StatusDot intent="needsSetup" label="Stopped with an error" />;
     default:
-      return <StatusDot intent="ready" label="Ready" />;
+      // Idle needs no line: the conversation above says what happened last.
+      return conversation.items.length === 0 ? (
+        <Text variant="subtitle">Ask her something or tell her what needs doing.</Text>
+      ) : null;
   }
 }
 
@@ -347,35 +369,59 @@ function ItemView({
       return (
         <View style={styles.reply} testID="verity-reply">
           <VerityMark size={22} glow={false} />
-          <Text variant="body" style={styles.flex}>
-            {item.text}
-          </Text>
+          {/* Rendered like an agent's reply in a session: lists, bold, links. */}
+          <View style={styles.replyText}>
+            <MarkdownText
+              content={item.text}
+              onOpenLocalFile={null}
+              onOpenAppLink={null}
+              sessionFileImageSource={null}
+              onOpenImage={ignoreImage}
+            />
+          </View>
         </View>
       );
     case 'task':
       return (
-        <Card>
-          <Text variant="row">{item.title}</Text>
-          <Text variant="subtitle">
-            {item.state === 'saved'
-              ? 'Saved as a task · no work started'
-              : item.state === 'failed'
+        <Card stacked>
+          <CardHead
+            title={item.title}
+            subtitle={
+              item.state === 'failed'
                 ? 'Could not save the task'
-                : 'Saving task…'}
-          </Text>
+                : item.state === 'pending'
+                  ? 'Saving task…'
+                  : 'Task · no work started'
+            }
+            trailing={
+              item.state === 'saved' ? (
+                <StatusTag intent="ready" label="Saved" />
+              ) : item.state === 'failed' ? (
+                <StatusTag intent="needsSetup" label="Failed" />
+              ) : (
+                <StatusDot intent="transient" label="Saving" />
+              )
+            }
+          />
         </Card>
       );
+    // A case Verity handed to a project; while it needs the user it is also on Home.
     case 'assignment':
       return (
-        <Card>
-          <Text variant="row">{item.title}</Text>
-          <Text variant="subtitle">
-            {item.state === 'sent'
-              ? `Assigned${item.project ? ` · ${item.project}` : ''}`
-              : item.state === 'failed'
-                ? 'Not assigned'
-                : 'Assigning…'}
-          </Text>
+        <Card stacked>
+          <CardHead
+            title={item.title}
+            subtitle={item.state === 'failed' ? 'Not handed over' : (item.project ?? 'Project')}
+            trailing={
+              item.state === 'sent' ? (
+                <StatusTag intent="ready" label="Handed over" />
+              ) : item.state === 'failed' ? (
+                <StatusTag intent="needsSetup" label="Failed" />
+              ) : (
+                <StatusDot intent="transient" label="Handing over" />
+              )
+            }
+          />
         </Card>
       );
     case 'meeting':
@@ -439,8 +485,11 @@ function QuestionCard({
     );
   };
   return (
-    <Card attention>
-      <Text variant="row">{question.question ?? 'Verity asks'}</Text>
+    <Card stacked>
+      <CardHead
+        title={question.question ?? 'Verity asks'}
+        trailing={<StatusTag intent="action" label="Question" />}
+      />
       <View style={styles.options}>
         {question.options.map((option) => {
           const selected = picked.includes(option.label);
@@ -448,8 +497,8 @@ function QuestionCard({
             <Button
               key={option.label}
               label={option.label}
-              size="compact"
-              variant={question.multiSelect ? (selected ? 'primary' : 'secondary') : 'secondary'}
+              size="small"
+              variant={selected ? 'primary' : 'answer'}
               disabled={answering}
               onPress={() =>
                 question.multiSelect
@@ -477,11 +526,47 @@ function QuestionCard({
   );
 }
 
+const ignoreImage = () => undefined;
+
+/** "Today", "Yesterday" or the date, when an entry starts a new day; otherwise null. */
+export function dayLabel(
+  at: number,
+  previous: number | undefined,
+  now = Date.now(),
+): string | null {
+  const day = new Date(at).toDateString();
+  if (previous !== undefined && new Date(previous).toDateString() === day) return null;
+  const today = new Date(now);
+  if (today.toDateString() === day) return 'Today';
+  // Calendar arithmetic: a day around a clock change is not 24 hours long.
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (yesterday.toDateString() === day) return 'Yesterday';
+  return new Date(at).toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+function DayHeading({ at, previous }: { at: number; previous: number | undefined }) {
+  const label = dayLabel(at, previous);
+  return label === null ? null : (
+    <Text variant="footnote" style={styles.day} accessibilityRole="header">
+      {label}
+    </Text>
+  );
+}
+
 const styles = StyleSheet.create((theme) => ({
   body: { gap: theme.spacing.md },
+  day: { alignSelf: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   reply: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   flex: { flex: 1 },
+  // As the transcript's list slot: without minWidth, selectable Text in a row
+  // measures as one wide line on iOS and clips at the right edge.
+  replyText: { flex: 1, minWidth: 0 },
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   mine: {
     alignSelf: 'flex-end',

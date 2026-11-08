@@ -775,6 +775,16 @@ export {
   type RepositoryInstructions,
 } from './projectCollaboration.js';
 export {
+  PULL_REQUEST_STATES,
+  pullRequestAction,
+  pullRequestCounts,
+  pullRequestSummary,
+  type ProjectPullRequest,
+  type PullRequestCounts,
+  type PullRequestState,
+  type RepositoryPullRequests,
+} from './projectPullRequests.js';
+export {
   resolveKnowledgeLink,
   WIKI_INDEX,
   WIKI_LOG,
@@ -782,6 +792,9 @@ export {
   type WikiCatalog,
   type WikiDecision,
   type WikiPage,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
   type WikiReviewItem,
   type WikiTopic,
 } from '@verity/events';

@@ -1,4 +1,5 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
@@ -200,6 +201,8 @@ export interface ControlPlaneDeps {
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
+  /** Open pull requests of a project's repositories, with merge, for its Repositories page. */
+  projectPullRequests?: ProjectPullRequestBackend;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
   /** Compact PR strip status for a multi-branch session — the most-recently-updated
@@ -499,6 +502,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
+    ...(deps.projectPullRequests !== undefined
+      ? { projectPullRequests: deps.projectPullRequests }
+      : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
     ...(deps.branchPrStatusForBranches !== undefined

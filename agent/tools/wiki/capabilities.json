@@ -1,0 +1,14 @@
+[
+  {
+    "name": "verity_wiki_propose",
+    "title": "Verity · Wiki · Propose",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "propose_wiki"
+    }
+  }
+]

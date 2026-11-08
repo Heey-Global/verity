@@ -702,9 +702,14 @@ describe('AcpCodexBackend', () => {
     },
   );
 
-  it('reports an explicit memory guard kill without calling it a provider usage limit', async () => {
+  it.each([
+    ['\nVERITY_MEMORY_GUARD_KILL\n', 'memory_limit'],
+    ['possible memory pressure', 'acp'],
+    ['quoted VERITY_MEMORY_GUARD_KILL text', 'acp'],
+  ])('attributes exit 137 only with an exact memory guard sentinel: %s', async (stderr, kind) => {
+    // A killed reviewer is not proof that the memory guard chose this agent.
     const fake = acpSpawner({
-      promptFailure: '\nVERITY_MEMORY_GUARD_KILL\n',
+      promptFailure: stderr,
       processExit: { code: 137, signal: null },
     });
     const result = await new AcpCodexBackend().run({
@@ -715,11 +720,17 @@ describe('AcpCodexBackend', () => {
       spawner: fake.spawner,
     });
     expect(result.exitCode).toBe(137);
-    expect(await ctx.store.getEvents('codex-session-1')).toContainEqual({
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events).toContainEqual({
       t: 'error',
-      kind: 'memory_limit',
-      message: 'Memory limit reached — the memory guard stopped the agent.',
+      kind,
+      message:
+        kind === 'memory_limit'
+          ? 'Memory limit reached — the memory guard stopped the agent.'
+          : 'Agent was killed (SIGKILL, exit 137); possible memory pressure.',
     });
+    expect(events.filter((event) => event.t === 'error')).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({ t: 'status', state: 'crashed' }));
   });
 
   it.each([false, true])(

@@ -45,6 +45,12 @@ export interface SessionMergeRouteDeps {
 
 const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
+  // The commit the operator confirmed. When given, a branch that moved since
+  // (for example a fix session pushing) is refused rather than merged unseen.
+  expectedHeadSha: z
+    .string()
+    .regex(/^[0-9a-f]{7,64}$/u)
+    .optional(),
 });
 
 function buildLocalMergeDisplayPrompt(): string {
@@ -95,7 +101,7 @@ export function registerSessionMergeRoutes(
     '/sessions/:id/pull-request/merge',
     async (request, reply): Promise<{ merged: true } | { error: string; code?: string }> => {
       const { id } = sessionParams.parse(request.params);
-      const { number } = mergePullRequestBody.parse(request.body);
+      const { number, expectedHeadSha } = mergePullRequestBody.parse(request.body);
       if (!deps.mergePr) {
         reply.code(503);
         return { error: 'pull request merging is not configured' };
@@ -184,6 +190,18 @@ export function registerSessionMergeRoutes(
           reply.code(409);
           return { error: `pull request #${String(number)} is no longer ready to merge` };
         }
+        if (
+          expectedHeadSha !== undefined &&
+          current.headSha !== undefined &&
+          current.headSha !== expectedHeadSha
+        ) {
+          applyPrSummaryAction(session, compactPr(current));
+          reply.code(409);
+          return {
+            error: `pull request #${String(number)} changed since it was shown; refresh before merging`,
+            code: 'merge_head_changed',
+          };
+        }
         if (current.viewerCanMerge === false) {
           reply.code(403);
           return {
@@ -197,7 +215,11 @@ export function registerSessionMergeRoutes(
       }
       let permissionDenied = false;
       let unknownError = false;
-      const merged = await deps.mergePr(number, session.worktree).catch((error: unknown) => {
+      const merging =
+        expectedHeadSha === undefined
+          ? deps.mergePr(number, session.worktree)
+          : deps.mergePr(number, session.worktree, expectedHeadSha);
+      const merged = await merging.catch((error: unknown) => {
         permissionDenied = error instanceof ForgeMergePermissionError;
         unknownError = !permissionDenied;
         return false;

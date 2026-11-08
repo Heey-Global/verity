@@ -16,6 +16,7 @@ export function makeDetail(
     defaultModel?: string | null;
     allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
     kind?: 'github' | 'forgejo' | 'local';
+    description?: string | null;
   } = {},
 ): ProjectDetail {
   return {
@@ -39,6 +40,7 @@ export function makeDetail(
       defaultBranch: 'main',
       defaultModel: overrides.defaultModel ?? null,
       allowedAgents: overrides.allowedAgents ?? null,
+      description: overrides.description ?? null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     },

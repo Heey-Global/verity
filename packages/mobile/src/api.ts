@@ -3,6 +3,7 @@ import {
   projectInquirySchema,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
+import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -49,7 +50,16 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
-import { wikiCatalogSchema, type WikiCatalog } from '@verity/events';
+import {
+  wikiCatalogSchema,
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiCatalog,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -737,6 +747,8 @@ export const projectSettingsSchema = z.object({
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
   // When accepted plans stop for mockups; absent on an older server.
   designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
+  // One line under the project's name; absent on an older server, null when unset.
+  description: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -748,7 +760,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveAccessMode'
   | 'allowedAgents'
-  | 'designLevel';
+  | 'designLevel'
+  | 'description';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -5074,6 +5087,54 @@ export class VerityClient {
       .repositories;
   }
 
+  /** Every connected repository with its open pull requests, as the code host reports
+   *  them; `refresh` asks the host again instead of the server's recent answer. */
+  async getProjectPullRequests(id: string, options: { refresh?: boolean } = {}) {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests${options.refresh ? '?refresh=1' : ''}`,
+      { method: 'GET' },
+    );
+    return z.object({ repositories: z.array(repositoryPullRequestsSchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  /** Merges a pull request that no session owns, at the commit the list showed. */
+  async mergeProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    head: { branch: string; expectedHeadSha: string },
+  ): Promise<{ merged: true }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/merge`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(head),
+      },
+    );
+    return z.object({ merged: z.literal(true) }).parse(await res.json());
+  }
+
+  /** Starts the session that fixes a failing or conflicting pull request, or returns
+   *  the one already working on it. */
+  async fixProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    branch: string,
+  ): Promise<{ sessionId: string; created: boolean }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/fix`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch }),
+      },
+    );
+    return z.object({ sessionId: z.string(), created: z.boolean() }).parse(await res.json());
+  }
+
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
       method: 'PUT',
@@ -6341,6 +6402,48 @@ export class VerityClient {
     }
   }
 
+  /** Proposed Wiki changes waiting for review, or null from a server without proposals. */
+  async listWikiProposals(projectId: string): Promise<WikiProposalSummary[] | null> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/proposals`,
+        { method: 'GET' },
+      );
+      return wikiProposalListSchema.parse(await res.json()).proposals;
+    } catch (err) {
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
+  /** One proposal with each page's proposed and current text. */
+  async getWikiProposal(projectId: string, proposalId: string): Promise<WikiProposal> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}`,
+      { method: 'GET' },
+    );
+    return wikiProposalSchema.parse(await res.json());
+  }
+
+  /** Applies or rejects a proposal's pending pages, or only the `paths` named. */
+  async decideWikiProposal(
+    projectId: string,
+    proposalId: string,
+    decision: 'apply' | 'reject',
+    paths?: readonly string[],
+  ): Promise<WikiProposalDecision> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}/${decision}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(paths ? { paths } : {}),
+      },
+    );
+    return wikiProposalDecisionSchema.parse(await res.json());
+  }
+
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
@@ -6629,11 +6732,18 @@ export class VerityClient {
     return branchSwitchedSchema.parse(await res.json());
   }
 
-  async mergePullRequest(id: string, number: number): Promise<PullRequestMerged> {
+  /** `expectedHeadSha` merges only that commit; the server refuses a branch that moved. */
+  async mergePullRequest(
+    id: string,
+    number: number,
+    expectedHeadSha?: string,
+  ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ number }),
+      body: JSON.stringify(
+        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
+      ),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }

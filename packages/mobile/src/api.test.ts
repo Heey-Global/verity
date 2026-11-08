@@ -2739,6 +2739,63 @@ describe('VerityClient.mergePullRequest', () => {
   });
 });
 
+describe('VerityClient project pull requests', () => {
+  const repository = {
+    id: 'default:p',
+    name: 'team/site',
+    kind: 'github',
+    owner: 'team',
+    repo: 'site',
+    isDefault: true,
+    status: 'ok',
+    webUrl: 'https://github.com/team/site',
+    pullRequests: [
+      {
+        number: 5,
+        title: 'Update graphql',
+        url: null,
+        author: 'renovate[bot]',
+        branch: 'renovate/graphql',
+        headSha: 'abc1234',
+        baseRef: 'main',
+        fork: false,
+        // A state a newer server adds must not drop the whole list.
+        state: 'queued-for-merge',
+        checks: null,
+        viewerCanMerge: true,
+        origin: { kind: 'bot', name: 'dependabot' },
+      },
+    ],
+  };
+
+  it('reads every repository and keeps a list with states this app does not know', async () => {
+    const { fetch, calls } = fakeFetch(json({ repositories: [repository] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const [read] = await client.getProjectPullRequests('p', { refresh: true });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests?refresh=1');
+    expect(read?.pullRequests[0]).toMatchObject({ state: 'unknown', origin: { kind: 'external' } });
+  });
+
+  it('addresses the repository by its encoded id and sends the shown head', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ merged: true }),
+      json({ sessionId: 's9', created: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.mergeProjectPullRequest('p', 'default:p', 5, {
+      branch: 'renovate/graphql',
+      expectedHeadSha: 'abc1234',
+    });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/merge');
+    expect(jsonBody(calls[0])).toEqual({ branch: 'renovate/graphql', expectedHeadSha: 'abc1234' });
+    expect(await client.fixProjectPullRequest('p', 'default:p', 5, 'renovate/graphql')).toEqual({
+      sessionId: 's9',
+      created: true,
+    });
+    expect(calls[1]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/fix');
+  });
+});
+
 describe('VerityClient.mergeSessionBranch', () => {
   it('starts the local save workflow', async () => {
     const { fetch, calls } = fakeFetch(json({ accepted: true }));
@@ -4905,6 +4962,42 @@ it('reads the project Wiki catalog and treats a server without it as none', asyn
   expect(await client.getProjectWiki('p/1')).toBeNull();
   // A project that is gone is not an old server: the app says so.
   await expect(client.getProjectWiki('p/1')).rejects.toThrow('Project knowledge not found');
+});
+
+// Proposals reach the review screen only through these calls; a server that
+// predates them must leave the Wiki working, and a partial decision must name
+// exactly the pages the user kept.
+it('lists, reads and decides proposed Wiki changes', async () => {
+  const head = {
+    id: 'a1',
+    mode: 'inline',
+    logKind: 'chat',
+    title: 'Billing',
+    sources: ['sources/a.md'],
+    createdAt: '2026-11-08T10:00:00.000Z',
+    decidedAt: null,
+  };
+  const change = { path: 'billing.md', summary: 'Explain', status: 'pending', stale: false };
+  const { fetch, calls } = fakeFetchSequence(
+    json({ proposals: [{ ...head, changes: [change] }] }),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p/knowledge/proposals not found' },
+      404,
+    ),
+    json({ ...head, changes: [{ ...change, content: '# Billing', current: null }] }),
+    json({ applied: ['billing.md'], stale: [] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listWikiProposals('p')).toEqual([{ ...head, changes: [change] }]);
+  expect(await client.listWikiProposals('p')).toBeNull();
+  expect((await client.getWikiProposal('p', 'a1')).changes[0]?.content).toBe('# Billing');
+  expect(await client.decideWikiProposal('p', 'a1', 'apply', ['billing.md'])).toEqual({
+    applied: ['billing.md'],
+    stale: [],
+    failed: [],
+  });
+  expect(calls[3]?.url).toBe('http://host/projects/p/knowledge/proposals/a1/apply');
+  expect(JSON.parse(calls[3]?.init?.body as string)).toEqual({ paths: ['billing.md'] });
 });
 
 it('browses Shared without a session and sends the revision for edits', async () => {

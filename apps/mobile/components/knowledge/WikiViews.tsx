@@ -3,6 +3,7 @@ import {
   type WikiCatalog,
   type WikiDecision,
   type WikiPage,
+  type WikiProposalSummary,
   type WikiReviewItem,
 } from '@verity/mobile';
 import { useMemo, useState } from 'react';
@@ -31,7 +32,12 @@ import { WikiRoles, type WikiSetupMode } from './WikiGuide';
 const DECISIONS_SHOWN = 3;
 const RECENT_SHOWN = 5;
 
-type Open = { folder: (folder: string) => void; file: (file: string) => void };
+type Open = {
+  folder: (folder: string) => void;
+  file: (file: string) => void;
+  /** Opens a proposed change for review; absent where it cannot be reviewed. */
+  proposal?: (id: string) => void;
+};
 
 /**
  * The log entry behind a page's latest change, when the page was not edited
@@ -200,6 +206,37 @@ function reviewRow(item: WikiReviewItem, title: (path: string) => string, open: 
   );
 }
 
+/** Where a proposal came from, as its row's icon: a meeting, a chat, or upkeep. */
+function proposalIcon(proposal: WikiProposalSummary) {
+  if (proposal.sources.some((source) => /(^|\/)sources\/meetings\//.test(source))) return 'mic';
+  return proposal.mode === 'inline' ? 'message-circle' : 'book-open';
+}
+
+/** "2 changes on 2 pages · prepared today", or that its pages changed since. */
+function proposalSubtitle(proposal: WikiProposalSummary): string {
+  const pending = proposal.changes.filter((change) => change.status === 'pending');
+  const stale = pending.filter((change) => change.stale).length;
+  const count = `${String(pending.length)} ${pending.length === 1 ? 'change' : 'changes'}`;
+  const state =
+    stale === pending.length && stale > 0
+      ? 'page changed since'
+      : `prepared ${wikiDayInline(proposal.createdAt)}`;
+  return `${count} · ${state}`;
+}
+
+function proposalRow(proposal: WikiProposalSummary, open: Open) {
+  const review = open.proposal;
+  return (
+    <Row
+      key={`proposal:${proposal.id}`}
+      leading={{ icon: proposalIcon(proposal) }}
+      title={proposal.title}
+      subtitle={proposalSubtitle(proposal)}
+      {...(review ? { navigates: true, onPress: () => review(proposal.id) } : {})}
+    />
+  );
+}
+
 /** A page's title from the catalog, or its file name where the catalog has none. */
 export function catalogTitle(catalog: WikiCatalog, path: string): string {
   return (
@@ -255,9 +292,12 @@ export function WikiHome({
   catalog,
   open,
   setup,
+  proposals = [],
 }: {
   catalog: WikiCatalog;
   open: Open;
+  /** Proposed changes waiting for review, listed first under To review. */
+  proposals?: readonly WikiProposalSummary[];
   /** Starts a setup session; absent where the Wiki cannot be set up from here. */
   setup?: (mode: WikiSetupMode) => void;
 }) {
@@ -278,12 +318,17 @@ export function WikiHome({
     !catalog.pages.length &&
     !catalog.decisions.length &&
     !catalog.review.length &&
+    !proposals.length &&
     !catalog.truncated;
   if (empty) return <WikiEmpty open={open} {...(setup ? { setup } : {})} />;
-  const review = catalog.review.length ? (
+  const toReview = proposals.length + catalog.review.length;
+  const review = toReview ? (
     <>
-      <SectionHeader title={`To review · ${String(catalog.review.length)}`} />
-      <Group>{catalog.review.map((item) => reviewRow(item, title, open))}</Group>
+      <SectionHeader title={`To review · ${String(toReview)}`} />
+      <Group>
+        {proposals.map((proposal) => proposalRow(proposal, open))}
+        {catalog.review.map((item) => reviewRow(item, title, open))}
+      </Group>
     </>
   ) : null;
   const topicOf = (path: string) => index?.topics.find((topic) => topic.pages.includes(path));

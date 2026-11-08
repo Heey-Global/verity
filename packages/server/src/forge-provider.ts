@@ -217,7 +217,16 @@ export function forgeContentsPath(path: string): string {
 
 export interface ForgeDiscoveryPage {
   errors?: { category: string; step: string; checkedAt: string; retryAt?: string | undefined }[];
-  pulls: { number: number; branch: string; sha: string; fork: boolean }[];
+  pulls: {
+    number: number;
+    branch: string;
+    sha: string;
+    fork: boolean;
+    /** Present when the host's list row carries them; untrusted display text. */
+    title?: string;
+    author?: string;
+    url?: string;
+  }[];
   runs: {
     id: string;
     workflow: string;

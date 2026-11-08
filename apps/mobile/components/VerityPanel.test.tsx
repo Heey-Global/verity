@@ -16,12 +16,12 @@ const mockVoice = {
 };
 jest.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => mockVoice }));
 
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, within } from '@testing-library/react-native';
 import type { AssistantConversationItem } from '@verity/mobile';
 import { router } from 'expo-router';
 
 import { answerVerity, sendToVerity, useVerity, type VerityState } from '../lib/verityConversation';
-import { VerityPanel } from './VerityPanel';
+import { dayLabel, VerityPanel } from './VerityPanel';
 
 const ready: VerityState = {
   access: 'ready',
@@ -59,7 +59,8 @@ it('starts listening when opened from a tap and sends with the project as contex
   const screen = render(<VerityPanel mode="voice" projectId="site" onClose={jest.fn()} />);
   expect(mockVoice.toggle).toHaveBeenCalledTimes(1);
   // A task is an outcome Verity reports, and saying so is part of the outcome.
-  expect(screen.getByText('Saved as a task · no work started')).toBeTruthy();
+  expect(screen.getByText('Task · no work started')).toBeTruthy();
+  expect(screen.getByLabelText('Saved, ready')).toBeTruthy();
   fireEvent.changeText(screen.getByLabelText('Message to Verity'), 'Is Hansen done?');
   fireEvent.press(screen.getByLabelText('Send to Verity'));
   expect(sendToVerity).toHaveBeenCalledWith({
@@ -308,4 +309,76 @@ describe('meetings Verity prepares', () => {
       },
     });
   });
+});
+
+it('renders her replies as the session chat does, not as raw Markdown', () => {
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: {
+      ...ready.conversation!,
+      items: [
+        {
+          kind: 'reply',
+          id: 'r-1',
+          at: 1,
+          text: 'Two meetings:\n\n- **Wed, 11.11.:** Deep OCR\n- **Fri, 13.11.:** Swimshorts',
+        },
+      ],
+    },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  const reply = screen.getByTestId('verity-reply');
+  // A plain Text showed the markers; the reply must read as a list with bold dates.
+  expect(reply).not.toHaveTextContent(/\*\*/);
+  // Each line is its own text: none may still start with the list marker.
+  expect(within(reply).queryAllByText(/^\s*- /)).toHaveLength(0);
+  expect(screen.getAllByText('•')).toHaveLength(2);
+  expect(screen.getByText('Wed, 11.11.:')).toBeTruthy();
+});
+
+it('shows the whole conversation, with a heading where a new day starts', () => {
+  const now = new Date(2026, 10, 8, 12).getTime();
+  const yesterday = new Date(2026, 10, 7, 9).getTime();
+  const items: AssistantConversationItem[] = Array.from({ length: 12 }, (_, index) => ({
+    kind: 'message',
+    id: `m-${String(index)}`,
+    at: index < 6 ? yesterday + index : now + index,
+    text: `Message ${String(index)}`,
+  }));
+  const clock = jest.spyOn(Date, 'now').mockReturnValue(now + 100);
+  try {
+    jest.mocked(useVerity).mockReturnValue({
+      ...ready,
+      conversation: { ...ready.conversation!, items },
+    });
+    const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+    // The panel used to cut the conversation to its last eight entries.
+    expect(screen.getByText('Message 0')).toBeTruthy();
+    expect(screen.getByText('Message 11')).toBeTruthy();
+    expect(screen.getAllByText('Yesterday')).toHaveLength(1);
+    expect(screen.getAllByText('Today')).toHaveLength(1);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it('labels a day once, by name for today and yesterday', () => {
+  const now = new Date(2026, 10, 8, 12).getTime();
+  const morning = new Date(2026, 10, 8, 8).getTime();
+  const yesterday = new Date(2026, 10, 7, 23).getTime();
+  const older = new Date(2026, 10, 2, 10).getTime();
+  expect(dayLabel(morning, undefined, now)).toBe('Today');
+  expect(dayLabel(now, morning, now)).toBeNull();
+  expect(dayLabel(morning, yesterday, now)).toBe('Today');
+  expect(dayLabel(yesterday, older, now)).toBe('Yesterday');
+  expect(dayLabel(older, undefined, now)).not.toMatch(/Today|Yesterday/);
+});
+
+it('marks a waiting question as a normal next step, not as a problem', () => {
+  jest.mocked(useVerity).mockReturnValue({
+    ...ready,
+    conversation: { ...ready.conversation!, state: 'needs_you' },
+  });
+  const screen = render(<VerityPanel mode="text" projectId={null} onClose={jest.fn()} />);
+  expect(screen.getByLabelText('Needs you, waiting for you')).toBeTruthy();
 });
