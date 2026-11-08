@@ -167,6 +167,8 @@ it('retries failed audio once per explicit token while retaining server deduplic
   expect(retry).toContain('$0.retryId = UUID().uuidString');
   expect(retry).not.toContain('Capture(id:');
   expect(inbox).toContain('retryId != existing.retryId');
+  expect(inbox).toContain('!(existing.consumedRetryIds ?? []).contains(retryId)');
+  expect(inbox).toContain('retry.consumedRetryIds = Array(Set(');
   expect(inbox).toContain(
     'existing.state == .failed, existing.scope == metadata["scope"] as? String',
   );

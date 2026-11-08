@@ -25,6 +25,8 @@ private struct WatchInboxEntry: Codable {
   var attempts: Int?
   var lastAttemptAt: Date?
   var retryId: String?
+  /// Retain consumed tokens so old file/message arrivals cannot restart a later retry.
+  var consumedRetryIds: [String]?
   /// The project picked on the watch and the account its project list came
   /// from; JavaScript only saves the task when both still match.
   var projectId: String?
@@ -451,12 +453,13 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       // fresh bounded attempt budget once. Duplicate deliveries cannot reset it.
       if existing.state == .failed, existing.scope == metadata["scope"] as? String,
         let retryId = metadata["retryId"] as? String, UUID(uuidString: retryId) != nil,
-        retryId != existing.retryId {
+        retryId != existing.retryId, !(existing.consumedRetryIds ?? []).contains(retryId) {
         var retry = existing
         do {
           if !FileManager.default.fileExists(atPath: audioURL(id).path) {
             try storeAudio(audioURL(id))
           }
+          retry.consumedRetryIds = Array(Set((existing.consumedRetryIds ?? []) + [existing.retryId, retryId].compactMap { $0 }))
           retry.retryId = retryId
           retry.attempts = 0
           retry.lastAttemptAt = nil
