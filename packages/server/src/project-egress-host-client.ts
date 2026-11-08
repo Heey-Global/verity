@@ -43,6 +43,15 @@ export function createProjectEgressHostClient(options: {
     if (!/^[a-f0-9]{64}$/u.test(token)) throw new ProjectEgressHealthError('invalid_configuration');
     const command = projectEgressHostRequest.parse(input);
     const body = JSON.stringify(command);
+    const context = {
+      operation: command.operation,
+      projectId:
+        'projectId' in command
+          ? command.projectId
+          : 'binding' in command
+            ? command.binding.projectId
+            : undefined,
+    };
     return new Promise<ProjectEgressHostResponse>((resolve, reject) => {
       const abort = new AbortController();
       // A total deadline, including response reads, not an inactivity timeout.
@@ -50,7 +59,7 @@ export function createProjectEgressHostClient(options: {
       const fail = (reason: ProjectEgressHealthReason) => {
         clearTimeout(timer);
         abort.abort();
-        reject(new ProjectEgressHealthError(reason));
+        reject(new ProjectEgressHealthError(reason, context));
       };
       const call = request(
         {

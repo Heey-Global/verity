@@ -62,6 +62,8 @@ export interface AgentSpawnBrokerOptions {
   runtimeAdmissionLockFd?: number;
   controlDir?: string;
   enforceRoot?: boolean;
+  /** Test seam for the `egress-readiness` request; production reads the container environment. */
+  egressReadiness?: Parameters<typeof runnerEgressReadiness>[0];
   agentUid: number;
   agentGid: number;
   runnerUid?: number;
@@ -279,6 +281,23 @@ export function prepareSessionHome(
   sessionId: string,
   options: AgentSpawnBrokerOptions,
 ): Promise<string>;
+
+export type EgressHopState =
+  'ready' | 'refused' | 'unresolved' | 'timeout' | 'unreachable' | 'invalid' | 'not_configured';
+
+export function runnerEgressReadiness(options?: {
+  env?: NodeJS.ProcessEnv;
+  connect?: (host: string, port: number, timeoutMs: number) => Promise<EgressHopState>;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{
+  ok: true;
+  egressReadinessVersion: 1;
+  connector: EgressHopState;
+  claude: EgressHopState;
+  codex: EgressHopState;
+  broker: EgressHopState;
+}>;
 
 export function runnerStackHealth(options?: {
   env?: NodeJS.ProcessEnv;
