@@ -51,6 +51,11 @@ cat > /etc/systemd/system/verity-egress-host.service.d/packet-fixture.conf <<'UN
 ConditionPathExists=/var/lib/verity-egress-fixture/controller-enabled
 RequiresMountsFor=/sys/fs/bpf
 After=systemd-tmpfiles-setup.service
+
+[Service]
+# The controller initializes protected-build state even before any build request.
+# StateDirectory creates it and keeps it writable under ProtectSystem=strict.
+StateDirectory=verity/protected-build
 UNIT
 install -m 0644 "$assets/units/verity-egress-bootstrap.service" "$assets/units/verity-egress-host.service" /etc/systemd/system/
 mkdir -p /etc/systemd/system/docker.service.d

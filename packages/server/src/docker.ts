@@ -56,7 +56,7 @@ export interface ContainerReplacementConfig {
 }
 
 /** Identity of a local image, for the durable audit trail. */
-interface DockerImageIdentity {
+export interface DockerImageIdentity {
   id: string;
   sizeBytes: number | null;
   repoDigests: string[];

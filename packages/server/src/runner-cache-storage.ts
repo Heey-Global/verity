@@ -1,3 +1,4 @@
+import { MaintenanceImageError } from './maintenance-image.js';
 import type { RunnerCacheReclamationReport } from '@verity/events';
 import { z } from 'zod';
 
@@ -53,6 +54,7 @@ const maintenanceFailure = z.object({
     .optional(),
 });
 function failureReason(error: unknown): string {
+  if (error instanceof MaintenanceImageError) return `[${error.code}]`;
   const record = typeof error === 'object' && error !== null ? error : {};
   const parsed = maintenanceFailure.safeParse(
     'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,

@@ -1,3 +1,4 @@
+import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -2172,6 +2173,10 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  const maintenanceImages = projectDocker
+    ? new MaintenanceImages(projectDocker, imageReferences)
+    : undefined;
+  const preparedWorktreeImages = new Map<string, string>();
   // Durable audit trail for project image builds (ADR 0028). The Server generation is
   // read from this container's own label once; outside a managed deployment it is null.
   let auditServer: AuditServerIdentity | undefined;
@@ -3301,27 +3306,59 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: (projectId, sessionId, operation, signal) =>
-            // Wait for the project owner before taking preview locks: that owner
-            // may itself need preview teardown in order to finish.
-            provisioner.withProjectExclusiveMutation(
-              projectId,
-              () =>
-                withStorageProjectMutation(projectId, async () => {
-                  if (managedDevServerManager?.hasRunningServers(projectId))
-                    throw new Error('Managed dev server is active');
-                  if (
-                    (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
-                    (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
-                      ['creating', 'active', 'revoking'].includes(s.state),
+          mutate: async (projectId, sessionId, operation, signal) => {
+            const run = (imageId?: string, recheck?: () => Promise<void>) =>
+              // Wait for the project owner before taking preview locks: that owner
+              // may itself need preview teardown in order to finish.
+              provisioner.withProjectExclusiveMutation(
+                projectId,
+                () =>
+                  withStorageProjectMutation(projectId, async () => {
+                    if (managedDevServerManager?.hasRunningServers(projectId))
+                      throw new Error('Managed dev server is active');
+                    if (
+                      (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+                      (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
+                        ['creating', 'active', 'revoking'].includes(s.state),
+                      )
                     )
-                  )
-                    throw new Error('Public preview is active');
-                  await operation();
-                }),
-              sessionId ? new Set([sessionId]) : undefined,
-              signal,
-            ),
+                      throw new Error('Public preview is active');
+                    await recheck?.();
+                    if (imageId) preparedWorktreeImages.set(projectId, imageId);
+                    try {
+                      await operation();
+                    } finally {
+                      preparedWorktreeImages.delete(projectId);
+                    }
+                  }),
+                sessionId ? new Set([sessionId]) : undefined,
+                signal,
+              );
+            const project = await eventStore.getProject(projectId);
+            if (project?.state === 'sleeping') {
+              const parent = await projectDocker
+                .inspectContainer(project.containerName)
+                .catch((error: unknown) => {
+                  if (error instanceof DockerError && error.kind === 'container_not_found')
+                    return undefined;
+                  throw error;
+                });
+              if (!parent) {
+                const selected =
+                  typeof defaultProjectImage === 'function'
+                    ? await defaultProjectImage()
+                    : defaultProjectImage;
+                if (!selected || !maintenanceImages)
+                  throw new MaintenanceImageError('image-unavailable');
+                return maintenanceImages.withImage(
+                  selected,
+                  (image, recheck) => run(image.id, recheck),
+                  signal,
+                );
+              }
+            }
+            return run();
+          },
           withGit: async (project, operation) => {
             if (config.dataVolume && !dataVolumeRoot)
               throw new Error('Data volume root is unavailable');
@@ -3362,16 +3399,17 @@ export async function buildEmbeddedServer(
                   hostRoot,
                   dockerBaseUrl: config.dockerBaseUrl!,
                   maintenance: {
-                    fallback: {
-                      imageId:
-                        typeof defaultProjectImage === 'function'
-                          ? await defaultProjectImage()
-                          : defaultProjectImage,
-                      runtime: PROJECT_RUNSC_RUNTIME,
-                      memoryBytes: 512 * 1024 ** 2,
-                      nanoCpus: 1_000_000_000,
-                      pidsLimit: 128,
-                    },
+                    ...(preparedWorktreeImages.has(project.id)
+                      ? {
+                          fallback: {
+                            imageId: preparedWorktreeImages.get(project.id)!,
+                            runtime: PROJECT_RUNSC_RUNTIME,
+                            memoryBytes: 512 * 1024 ** 2,
+                            nanoCpus: 1_000_000_000,
+                            pidsLimit: 128,
+                          },
+                        }
+                      : {}),
                   },
                   ...(config.dataVolume && dataVolumeRoot
                     ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
@@ -3414,55 +3452,61 @@ export async function buildEmbeddedServer(
         projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
       )
         throw cacheMaintenanceFailure('runtime-not-idle');
-      return provisioner.withProjectExclusiveMutation(projectId, () =>
-        withStorageProjectMutation(projectId, async () => {
-          const assertIdle = async () => {
-            const project = await eventStore.getProject(projectId);
-            if (
-              project?.state !== 'sleeping' ||
-              project.imageOverrideRef ||
-              managedDevServerManager?.hasRunningServers(projectId) ||
-              (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
-              (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
-                ['creating', 'active', 'revoking'].includes(share.state),
+      const project = await eventStore.getProject(projectId);
+      if (project?.state !== 'sleeping' || project.imageOverrideRef)
+        throw cacheMaintenanceFailure('runtime-not-idle');
+      const selected =
+        typeof defaultProjectImage === 'function'
+          ? await defaultProjectImage()
+          : defaultProjectImage;
+      if (!selected || !maintenanceImages) throw new MaintenanceImageError('image-unavailable');
+      return maintenanceImages.withImage(selected, (image, recheck) =>
+        provisioner.withProjectExclusiveMutation(projectId, () =>
+          withStorageProjectMutation(projectId, async () => {
+            const assertIdle = async () => {
+              const project = await eventStore.getProject(projectId);
+              if (
+                project?.state !== 'sleeping' ||
+                project.imageOverrideRef ||
+                managedDevServerManager?.hasRunningServers(projectId) ||
+                (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+                (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
+                  ['creating', 'active', 'revoking'].includes(share.state),
+                )
               )
-            )
-              throw cacheMaintenanceFailure('runtime-not-idle');
-            const sessions = new Set(
-              (await eventStore.listSessions())
-                .filter((session) => session.projectId === projectId)
-                .map((session) => session.sessionId),
-            );
-            if (sessions.size !== sessionIds.length || sessionIds.some((id) => !sessions.has(id)))
-              throw cacheMaintenanceFailure('runtime-not-idle');
-            if ((await eventStore.listRunningTurns()).some((turn) => sessions.has(turn.sessionId)))
-              throw cacheMaintenanceFailure('runtime-not-idle');
-          };
-          await assertIdle();
-          const selected =
-            typeof defaultProjectImage === 'function'
-              ? await defaultProjectImage()
-              : defaultProjectImage;
-          if (!selected) throw cacheMaintenanceFailure('unsupported');
-          const image = await projectDocker.inspectImageIdentity?.(selected);
-          if (!image) throw cacheMaintenanceFailure('unsupported');
-          const self = await projectDocker.inspectContainer(hostname());
-          return reclaimSleepingRunnerCaches({
-            docker: projectDocker,
-            projectId,
-            runtimeRoot: join(dataVolumeRoot, 'runners', projectId),
-            image: image.id,
-            runtime: PROJECT_RUNSC_RUNTIME,
-            serverContainerId: self.id,
-            runtimeGid: config.runnerRuntimeGid ?? 1101,
-            ...(config.dataVolume
-              ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
-              : {}),
-            sessionIds,
-            maxBytes,
-            assertIdle,
-          });
-        }),
+                throw cacheMaintenanceFailure('runtime-not-idle');
+              const sessions = new Set(
+                (await eventStore.listSessions())
+                  .filter((session) => session.projectId === projectId)
+                  .map((session) => session.sessionId),
+              );
+              if (sessions.size !== sessionIds.length || sessionIds.some((id) => !sessions.has(id)))
+                throw cacheMaintenanceFailure('runtime-not-idle');
+              if (
+                (await eventStore.listRunningTurns()).some((turn) => sessions.has(turn.sessionId))
+              )
+                throw cacheMaintenanceFailure('runtime-not-idle');
+            };
+            await assertIdle();
+            await recheck();
+            const self = await projectDocker.inspectContainer(hostname());
+            return reclaimSleepingRunnerCaches({
+              docker: projectDocker,
+              projectId,
+              runtimeRoot: join(dataVolumeRoot, 'runners', projectId),
+              image: image.id,
+              runtime: PROJECT_RUNSC_RUNTIME,
+              serverContainerId: self.id,
+              runtimeGid: config.runnerRuntimeGid ?? 1101,
+              ...(config.dataVolume
+                ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                : {}),
+              sessionIds,
+              maxBytes,
+              assertIdle,
+            });
+          }),
+        ),
       );
     },
   });
@@ -4795,7 +4839,9 @@ export async function buildEmbeddedServer(
   };
 
   app.addHook('onClose', async () => {
+    maintenanceImages?.abort();
     await runnerCacheStorage?.stop();
+    await sessionStorage?.stop();
   });
 
   if (embeddedSecretJobs !== undefined) {
