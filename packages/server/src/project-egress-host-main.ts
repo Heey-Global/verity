@@ -1,3 +1,4 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   createNativeProtectedBuildHost,
   protectedBuildBootstrapRules,
@@ -116,6 +117,7 @@ const { resolve, resolveProtected } =
       });
 const inventoryHistory = await openProjectEgressInventoryHistory('/var/lib/verity-egress');
 let inventoryPersistenceFailed = false;
+let inventoryPersistenceFailures = 0;
 const resolveInventory: typeof resolveProtected = async (host) => {
   try {
     const result = await resolveProtected(host);
@@ -123,6 +125,7 @@ const resolveInventory: typeof resolveProtected = async (host) => {
       await inventoryHistory.addAddresses(result.addresses);
     } catch (error) {
       inventoryPersistenceFailed = true;
+      inventoryPersistenceFailures++;
       throw error;
     }
     return result;
@@ -139,6 +142,7 @@ const resolveInventory: typeof resolveProtected = async (host) => {
         await inventoryHistory.addAddresses(addresses);
       } catch (failure) {
         inventoryPersistenceFailed = true;
+        inventoryPersistenceFailures++;
         throw failure;
       }
     }
@@ -151,8 +155,8 @@ let protectedAddresses = createProtectedAddressInventory({
   configuredHosts: [
     ...new Set([...inventoryHistory.hosts(), ...(authority?.mandatoryHosts ?? [])]),
   ],
-  reportConfiguredFailure: (host, error) => {
-    console.error(`Configured broker host ${host} could not be resolved`, error);
+  reportConfiguredFailure: () => {
+    console.error('verity: protected inventory DNS refresh failed');
   },
 });
 const managedInventory = authority?.managedInventoryComplete === false;
@@ -164,19 +168,29 @@ const systemInventory = createManagedSystemInventory({
     if (managedInventory && authority) authority.managedInventoryComplete = false;
   },
   replace: async (hosts, addresses) => {
-    if (!authority) throw new Error('Direct authority is not configured');
+    if (!authority) throw new ProjectEgressInventoryError('inventory_not_configured');
     try {
       await inventoryHistory.addHosts([...deploymentMandatoryHosts, ...hosts]);
       await inventoryHistory.addAddresses(addresses);
-    } catch (error) {
+    } catch {
       inventoryPersistenceFailed = true;
-      throw error;
+      inventoryPersistenceFailures++;
+      throw new ProjectEgressInventoryError('inventory_persistence_failed');
     }
     const next = createProtectedAddressInventory({
       resolve: resolveInventory,
       configuredHosts: inventoryHistory.dnsHosts([...deploymentMandatoryHosts, ...hosts]),
     });
-    await next.refresh();
+    const persistenceFailuresBeforeRefresh = inventoryPersistenceFailures;
+    try {
+      await next.refresh();
+    } catch {
+      throw new ProjectEgressInventoryError(
+        inventoryPersistenceFailures !== persistenceFailuresBeforeRefresh
+          ? 'inventory_persistence_failed'
+          : 'inventory_dns_failed',
+      );
+    }
     protectedAddresses = next;
     inventoryPersistenceFailed = false;
     authority.mandatoryHosts = inventoryHistory.hosts();
@@ -303,9 +317,13 @@ if (mode === 'restore') {
   await database?.destroy();
 } else {
   const refreshProtected = () =>
-    protectedAddresses.refresh().catch((error: unknown) => {
+    protectedAddresses.refresh().catch(() => {
       // The previous complete inventory ages out; direct admission then fails closed.
-      console.error('Protected destination inventory refresh failed', error);
+      console.error('verity: protected destination inventory refresh failed', {
+        reason: inventoryPersistenceFailed
+          ? 'inventory_persistence_failed'
+          : 'inventory_dns_failed',
+      });
     });
   if (authority !== undefined) await refreshProtected();
   const inventoryTimer =

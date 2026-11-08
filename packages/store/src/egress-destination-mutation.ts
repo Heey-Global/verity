@@ -2,7 +2,11 @@
  * The barrier must fence direct corridors before action, then synchronize the
  * committed authoritative snapshot before returning. It must never swallow errors.
  */
-export type EgressDestinationMutation = <T>(action: () => Promise<T>) => Promise<T>;
+export type EgressDestinationMutation = <T>(
+  action: () => Promise<T>,
+  /** Evaluate inside the serialized destination transaction, before fencing. */
+  changesDestinations?: () => Promise<boolean>,
+) => Promise<T>;
 export const unguardedEgressDestinationMutation: EgressDestinationMutation = (action) => action();
 
 import { AsyncLocalStorage } from 'node:async_hooks';
