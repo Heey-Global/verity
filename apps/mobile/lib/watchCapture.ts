@@ -1,4 +1,9 @@
-import type { AssistantConversation, InboxItem } from '@verity/mobile';
+import {
+  createPushReplyPerformer,
+  type AssistantConversation,
+  type InboxItem,
+  type VerityClient,
+} from '@verity/mobile';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { AppState, Platform } from 'react-native';
 
@@ -8,7 +13,7 @@ import {
   subscribeAuthToken,
   subscribeBiometricUnlock,
 } from './authToken';
-import { getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
+import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
 import { getServerProfile } from './serverProfile';
 import { taskAccountScope } from './tasksStore';
 import {
@@ -77,6 +82,7 @@ interface WatchInboxItem {
   tag: string;
   tone: InboxItem['tone'];
   message?: string;
+  actions: { kind: 'resume' | 'merge'; label: string; sessionId: string; number?: number }[];
 }
 
 /** Home's open items for the watch, with when the iPhone last read them. */
@@ -92,8 +98,18 @@ export interface WatchInboxPayload {
 /** How many open items the wrist lists; the rest wait on the iPhone. */
 export const WATCH_INBOX_LIMIT = 12;
 
+export interface WatchInboxActionRequest {
+  id: string;
+  scope: string;
+  key: string;
+  action: { kind: 'resume' | 'merge'; sessionId: string; number?: number };
+  expiresAt: number;
+}
+
 interface NativeWatchBridge {
   pending(): Promise<WatchCapture[]>;
+  pendingInboxActions?(): Promise<WatchInboxActionRequest[]>;
+  completeInboxAction?(id: string, result: { status: string; message?: string }): Promise<void>;
   acknowledge(id: string): Promise<void>;
   pendingAnswers(): Promise<WatchAnswer[]>;
   acknowledgeAnswer(id: string): Promise<void>;
@@ -256,6 +272,9 @@ export function watchInbox(
       tag: item.tag,
       tone: item.tone,
       ...(item.message ? { message: item.message.slice(0, 400) } : {}),
+      actions: item.actions.flatMap((action) =>
+        action.kind === 'resume' || action.kind === 'merge' ? [action] : [],
+      ),
     })),
   };
 }
@@ -330,6 +349,69 @@ function syncLink(): void {
     .catch(() => undefined);
 }
 
+/** Immediate only: do not persist a merge until a later app launch. */
+export async function performWatchInboxAction(
+  request: WatchInboxActionRequest,
+  client: VerityClient | null,
+  scope: () => string | null = taskAccountScope,
+  now: () => number = Date.now,
+): Promise<{ status: string; message?: string }> {
+  if (!client || scope() !== request.scope || now() > request.expiresAt)
+    return { status: 'error', message: 'Open Verity on iPhone and try again.' };
+  try {
+    const session = await client.getSession(request.action.sessionId);
+    if (scope() !== request.scope || now() > request.expiresAt)
+      return { status: 'error', message: 'Account changed or action expired. Try again.' };
+    if (
+      request.action.kind === 'resume' &&
+      (session.status !== 'crashed' ||
+        session.resumable === false ||
+        (session.eventCount !== undefined &&
+          request.key !== `crashed:${request.action.sessionId}:${String(session.eventCount)}`))
+    )
+      return { status: 'error', message: 'This session can no longer be resumed. Refresh Home.' };
+    if (
+      request.action.kind === 'merge' &&
+      (!session.pullRequest ||
+        session.pullRequest.number !== request.action.number ||
+        session.pullRequest.phase !== 'open' ||
+        session.pullRequest.mergeable !== true ||
+        !session.pullRequest.headSha ||
+        request.key !==
+          `merge:${request.action.sessionId}:${String(request.action.number)}:${session.pullRequest.headSha ?? ''}`)
+    )
+      return {
+        status: 'error',
+        message: 'This pull request is no longer ready to merge. Refresh Home.',
+      };
+    if (request.action.kind === 'merge') {
+      await client.mergePullRequest(
+        request.action.sessionId,
+        request.action.number!,
+        session.pullRequest!.headSha!,
+      );
+      return { status: 'done' };
+    }
+    const action = {
+      type: 'send-turn' as const,
+      sessionId: request.action.sessionId,
+      prompt: 'Continue where you stopped.',
+    };
+    const result = await createPushReplyPerformer(client)(action, request.id);
+    return result === 'done'
+      ? { status: 'done' }
+      : {
+          status: 'error',
+          message:
+            result === 'stale'
+              ? 'This item changed. Refresh Home.'
+              : 'Could not complete this action. Try again.',
+        };
+  } catch {
+    return { status: 'error', message: 'Could not refresh this item. Try again.' };
+  }
+}
+
 /**
  * Connects the watch to Verity while the app runs: hands over what the watch
  * said, keeps the native connection current, tells the watch which account is
@@ -340,6 +422,17 @@ export function startWatchInbox(): () => void {
   const run = () => {
     void drainCaptures().catch(() => undefined);
     void drainAnswers().catch(() => undefined);
+    if (native.pendingInboxActions && native.completeInboxAction) {
+      void native
+        .pendingInboxActions()
+        .then(async (requests) => {
+          for (const request of requests) {
+            const result = await performWatchInboxAction(request, createVerityClient());
+            await native.completeInboxAction!(request.id, result);
+          }
+        })
+        .catch(() => undefined);
+    }
   };
   let scope: string | null | undefined;
   const syncAccount = () => {

@@ -45,4 +45,24 @@ struct VerityMarkShape: Shape {
     return path
   }
 }
+/// Full-color mark sampled directly from the launcher artwork. The transparent
+/// mark supplies only alpha, so small asset exports cannot change its shading.
+struct VerityOriginalMark: View {
+  var body: some View {
+    GeometryReader { geometry in
+      Image("VerityLauncherArtwork")
+        .renderingMode(.original)
+        .resizable()
+        // Artwork bounds in the 1254px launcher source: x=300, y=412, 652×456.
+        .frame(width: geometry.size.width * 1254 / 652,
+          height: geometry.size.height * 1254 / 456)
+        .offset(x: -geometry.size.width * 300 / 652,
+          y: -geometry.size.height * 412 / 456)
+        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        .clipped()
+        .mask(Image("VerityMarkOriginal").resizable())
+    }
+    .aspectRatio(652.0 / 456.0, contentMode: .fit)
+  }
+}
 #endif
