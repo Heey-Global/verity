@@ -780,6 +780,16 @@ export interface ProvisionerOptions {
   beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
+  /** Data-minimised record of every Sandbox recreate: who asked, how long it took
+   *  and whether it worked. It must never affect the recreate. */
+  onSandboxRecreate?:
+    | ((event: {
+        projectId: string;
+        initiator: AuditInitiator;
+        outcome: 'succeeded' | 'failed';
+        durationMs: number;
+      }) => void)
+    | undefined;
   /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
   onSandboxWakeFallback?:
     ((event: { projectId: string; reason: SandboxWakeFallbackReason }) => void) | undefined;
@@ -4806,7 +4816,39 @@ export class ProvisionerImpl implements Provisioner {
       // Recreate promises a fresh replacement and cannot join another provision.
       if (this.inFlightProvisions.has(projectId))
         throw new ProvisioningError(`project ${projectId} is already provisioning`);
-      return this.trackProvision(projectId, this.recreateContainerOnce(projectId, opts));
+      return this.observeSandboxRecreate(
+        projectId,
+        opts.initiator,
+        this.trackProvision(projectId, this.recreateContainerOnce(projectId, opts)),
+      );
+    }
+  }
+
+  private async observeSandboxRecreate(
+    projectId: string,
+    initiator: AuditInitiator | undefined,
+    recreate: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const startedAt = Date.now();
+    const report = (outcome: 'succeeded' | 'failed'): void => {
+      try {
+        this.opts.onSandboxRecreate?.({
+          projectId,
+          initiator: initiator ?? UNKNOWN_INITIATOR,
+          outcome,
+          durationMs: Math.max(0, Date.now() - startedAt),
+        });
+      } catch {
+        // Observability never changes Sandbox lifecycle behavior.
+      }
+    };
+    try {
+      const project = await recreate;
+      report('succeeded');
+      return project;
+    } catch (error) {
+      report('failed');
+      throw error;
     }
   }
 

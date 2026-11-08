@@ -109,6 +109,7 @@ import {
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
+  splitNoticeText,
   briefingExtent,
   engineLabel,
   groupModelsByEngine,
@@ -180,7 +181,6 @@ import {
   type PlanView,
   type PullRequestBlockReason,
   trustedCliUnlockCandidate,
-  type AgentEventTone,
   type FrozenTranscriptTail,
   type GmailSessionConnection,
   type CalendarSessionConnection,
@@ -240,7 +240,7 @@ import { openFailureAlert, RunningServerCard } from '../../components/project/Ru
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
-import { useConfirm } from '../../components/ui';
+import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../components/ui';
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
@@ -631,6 +631,9 @@ interface SessionActions {
   focusInput: () => void;
   /** Put a failed optimistic message back into the input for editing. */
   recoverPending: (id: string) => void;
+  /** The operator's newest text-only message, for resending a turn that never
+   *  reached the agent. Null when it carried attachments a resend would drop. */
+  lastUserPrompt: string | null;
   /** Save a proposed automation after the operator confirms it. */
   confirmAutomation: (proposal: AutomationProposalMessage['proposal']) => Promise<void>;
   /** The automation this session has now, so a proposal card knows whether it
@@ -3563,6 +3566,16 @@ export const SessionChat = memo(function SessionChat({
     },
     [scrollToLatest, sendTurn],
   );
+  const lastUserPrompt = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const message = session.messages[i];
+      if (message?.kind !== 'user-text') continue;
+      return (message.attachments?.length ?? 0) === 0 && message.text.trim() !== ''
+        ? message.text
+        : null;
+    }
+    return null;
+  }, [session.messages]);
   const latestAutomationProposalId = useMemo(() => {
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
       const message = session.messages[i];
@@ -3636,6 +3649,7 @@ export const SessionChat = memo(function SessionChat({
       dead,
       focusInput,
       recoverPending: onDismissPendingEcho,
+      lastUserPrompt,
       confirmAutomation,
       automation,
       automationReady,
@@ -3654,6 +3668,7 @@ export const SessionChat = memo(function SessionChat({
       dead,
       focusInput,
       onDismissPendingEcho,
+      lastUserPrompt,
       confirmAutomation,
       automation,
       automationReady,
@@ -6974,7 +6989,10 @@ function UserBubble({ message }: { message: UserTextMessage }) {
             </Text>
           ) : null}
           {pending === 'sending' ? (
-            <Text style={styles.userPendingTag}>◌ sending…</Text>
+            <View style={styles.userPendingStatus}>
+              <SystemNoticeIndicator intent="transient" />
+              <Text style={styles.userPendingTag}>Sending…</Text>
+            </View>
           ) : pending === 'failed' ? (
             <Pressable
               onPress={recoverable ? () => actions.recoverPending(message.id) : undefined}
@@ -6987,9 +7005,12 @@ function UserBubble({ message }: { message: UserTextMessage }) {
                   : undefined
               }
             >
-              <Text style={styles.userPendingTag}>
-                {recoverable ? '✕ not sent · tap to edit' : '✕ not sent'}
-              </Text>
+              <View style={styles.userPendingStatus}>
+                <SystemNoticeIndicator intent="needsSetup" />
+                <Text style={styles.userPendingTag}>
+                  {recoverable ? 'Not sent · tap to edit' : 'Not sent'}
+                </Text>
+              </View>
             </Pressable>
           ) : null}
         </View>
@@ -7922,99 +7943,81 @@ function PlanProposalCard({
 const RETRY_PROMPT = 'Try again';
 
 function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest: boolean }) {
-  const { theme } = useUnistyles();
   const actions = useContext(SessionActionsContext);
-  const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
-  // A task change is bookkeeping, not conversation: one muted line that opens
+  // A task change is bookkeeping, not conversation: one quiet line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
     return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+      <SystemNotice
+        intent="unknown"
+        title={descriptor.label}
+        link="Tasks"
         onPress={openTasksPanel}
-        style={({ pressed }) => [styles.eventRow, pressed ? styles.eventActionPressed : null]}
-      >
-        <Text style={styles.eventDetail}>{descriptor.label}</Text>
-        <Text style={styles.eventTasksLink}>Tasks ›</Text>
-      </Pressable>
+        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+      />
     );
   }
   const repeats = message.repeatCount ?? 1;
   // Only the newest failure offers a resend: an older one was already followed
   // by something, and resending from it would answer a stale state.
+  // A turn that never started is repeated verbatim; asking the agent to "try
+  // again" would send a follow-up to a request it never received. Without a
+  // text-only message to repeat (attachments), no button is better than that.
+  const resendable = descriptor.action !== 'resend' || Boolean(actions?.lastUserPrompt);
   const canRetry =
-    descriptor.action === 'retry' &&
+    (descriptor.action === 'retry' || descriptor.action === 'resend') &&
+    resendable &&
     isLatest &&
     actions !== null &&
     !actions.sending &&
     !actions.dead;
-  const expandable = descriptor.technical !== undefined;
-  return (
-    <View
-      style={[styles.eventRow, descriptor.action || expandable ? styles.eventRowActionable : null]}
-    >
-      <Text style={[styles.eventLabel, { color }]}>
-        {repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
-      </Text>
-      {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
-      {canRetry || expandable ? (
-        <View style={styles.eventFailureActions}>
-          {canRetry ? (
-            <Button
-              label="Try again"
-              icon="rotate-cw"
-              variant="secondary"
-              size="compact"
-              onPress={() => actions.sendTurn(RETRY_PROMPT)}
-              accessibilityHint="Sends a new turn asking the agent to continue"
-            />
-          ) : null}
-          {expandable ? (
-            <Pressable
-              onPress={() => setShowTechnical((open) => !open)}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: showTechnical }}
-              accessibilityLabel={showTechnical ? 'Hide details' : 'Show details'}
-              hitSlop={8}
-              style={({ pressed }) => (pressed ? styles.eventActionPressed : null)}
-            >
-              <Text style={styles.eventTasksLink}>
-                {showTechnical ? 'Hide details' : 'Details'}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-      {expandable && showTechnical ? (
-        <View style={styles.eventTechnical}>
-          <Text selectable style={styles.toolPreview}>
-            {descriptor.technical}
-          </Text>
-        </View>
-      ) : null}
-      {descriptor.action === 'claude-login' ? (
-        <View style={styles.eventActionRow}>
+  const resend =
+    descriptor.action === 'resend' && actions?.lastUserPrompt
+      ? actions.lastUserPrompt
+      : RETRY_PROMPT;
+  const recovery =
+    canRetry || descriptor.action === 'claude-login' ? (
+      <>
+        {canRetry ? (
+          <Button
+            label="Try again"
+            icon="rotate-cw"
+            variant="secondary"
+            size="compact"
+            onPress={() => actions.sendTurn(resend)}
+            accessibilityHint={
+              descriptor.action === 'resend'
+                ? 'Sends your last message again'
+                : 'Sends a new turn asking the agent to continue'
+            }
+          />
+        ) : null}
+        {descriptor.action === 'claude-login' ? (
           <Button
             label="Sign in to Claude"
             size="compact"
             onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
           />
-        </View>
-      ) : null}
-    </View>
+        ) : null}
+      </>
+    ) : undefined;
+  return (
+    <SystemNotice
+      intent={descriptor.tone === 'neutral' ? 'unknown' : 'needsSetup'}
+      title={repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
+      detail={descriptor.detail}
+      actions={recovery}
+      technical={descriptor.technical}
+    />
   );
 }
 
+/** A preparation wait the server reported. Its first sentence is the headline,
+ *  the rest explains; the row disappears once the turn starts. */
 function DependencyStatusRow({ text }: { text: string }) {
-  return (
-    <View style={styles.dependencyStatusRow} accessible accessibilityLabel={text}>
-      <WorkingDot size={7} />
-      <Text style={styles.dependencyStatusText}>{text}</Text>
-    </View>
-  );
+  const { title, detail } = splitNoticeText(text);
+  return <SystemNotice intent="transient" title={title} detail={detail} />;
 }
 
 // Quick-Action chips (issue #97): the agent's end-of-turn decision rendered as
@@ -10399,10 +10402,6 @@ function toolToneColor(tone: ToolCallTone): 'active' | 'done' | 'danger' {
   return tone === 'error' ? 'danger' : tone === 'done' ? 'done' : 'active';
 }
 
-function eventToneColor(tone: AgentEventTone): 'idle' | 'attention' | 'danger' {
-  return tone === 'danger' ? 'danger' : tone === 'warning' ? 'attention' : 'idle';
-}
-
 /** A short header label: the model name, falling back to a truncated session id. */
 function shortLabel(model: string | undefined, sessionId: string): string {
   if (model) return model;
@@ -11271,12 +11270,16 @@ const styles = StyleSheet.create((theme) => ({
     borderStyle: 'dashed',
     opacity: 0.75,
   },
-  userPendingTag: {
-    color: theme.colors.textFaint,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
+  userPendingStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
     alignSelf: 'flex-end',
-    marginTop: 2,
+    gap: theme.spacing.xs,
+    marginTop: theme.spacing.xs,
+  },
+  userPendingTag: {
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   userText: {
     color: theme.colors.text,
@@ -11557,55 +11560,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.sm,
   },
-  dependencyStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
-  },
-  dependencyStatusText: {
-    flex: 1,
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.bodySmall.fontSize,
-    lineHeight: 20 * theme.fontScale,
-  },
-  eventRowActionable: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-  },
-  eventFailureActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    marginTop: theme.spacing.xs,
-  },
-  eventTechnical: {
-    alignSelf: 'stretch',
-    marginTop: theme.spacing.xs,
-    padding: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  eventLabel: {
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   eventDetail: {
     color: theme.colors.textFaint,
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
-  },
-  eventTasksLink: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
-  eventActionPressed: {
-    opacity: 0.72,
   },
   // The whole bottom bar: an optional attachment-preview strip stacked above the
   // input row. The surface + top border live here so the strip and row read as one

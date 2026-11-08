@@ -29,9 +29,24 @@ export interface ProjectEgressHealth {
   available: boolean;
   reason: ProjectEgressHealthReason;
 }
+/** Which host-control command failed, for logs. Only the fixed operation name and
+ *  the project it concerned: never a binding, address, token or host detail. */
+export interface ProjectEgressOperationContext {
+  operation?: string | undefined;
+  projectId?: string | undefined;
+}
 export class ProjectEgressHealthError extends Error {
-  constructor(readonly reason: ProjectEgressHealthReason) {
+  /** Enumerable so a logged `err` names the operation and project it belongs to;
+   *  without them a timed-out start cannot be told apart from inventory upkeep. */
+  declare readonly operation?: string;
+  declare readonly projectId?: string;
+  constructor(
+    readonly reason: ProjectEgressHealthReason,
+    context: ProjectEgressOperationContext = {},
+  ) {
     super('Host control operation failed; execution outcome may be unknown');
+    if (context.operation !== undefined) this.operation = context.operation;
+    if (context.projectId !== undefined) this.projectId = context.projectId;
   }
 }
 export function projectEgressFailure(error: unknown): ProjectEgressHealth {

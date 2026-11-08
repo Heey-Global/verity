@@ -20,7 +20,9 @@ export interface AgentEventDescriptor {
   detail?: string;
   tone: AgentEventTone;
   /** Optional recovery action rendered by the native transcript row. */
-  action?: 'claude-login' | 'tasks' | 'retry';
+  /** `resend` repeats the operator's last message: the turn never reached the
+   *  agent, so asking it to "try again" would lose the request itself. */
+  action?: 'claude-login' | 'tasks' | 'retry' | 'resend';
   /** Raw failure text for a collapsed "Details" section. Never the headline:
    *  it carries stderr tails, request ids and loader logs. */
   technical?: string;
@@ -109,6 +111,7 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
       if (LIMIT_REACHED.test(event.message)) {
         return { kind: 'limit-reached', label: 'Usage limit reached', tone: 'neutral' };
       }
+      if (event.kind === SANDBOX_NOT_READY_KIND) return describeNotStarted(event.message);
       return describeFailure(event.kind, event.message);
     case 'raw': {
       // Name the event kind, not just the backend. Without it every unmapped
@@ -128,6 +131,41 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
   }
 }
 
+/** Mirrors `SANDBOX_NOT_READY_ERROR_KIND` in `@verity/events`: the turn failed
+ *  before the agent was launched, so nothing ran and nothing has to be undone. */
+const SANDBOX_NOT_READY_KIND = 'sandbox_not_ready';
+
+function describeNotStarted(message: string): AgentEventDescriptor {
+  const text = stripControl(message).trim();
+  const [first = '', ...rest] = text.split(/\r?\n/u);
+  // Server-written explanations are sentences; the older lifecycle refusals are
+  // terse fragments ("project Sandbox is cloning") and read better behind a
+  // fixed explanation than as one.
+  const sentence = /^[A-Z].*[.!?]$/u.test(first.trim());
+  return {
+    kind: 'agent-not-started',
+    label: 'Agent couldn’t start',
+    detail: sentence
+      ? first.trim()
+      : 'The project environment wasn’t ready. Your message wasn’t sent to the agent.',
+    tone: 'warning',
+    action: 'resend',
+    ...(sentence && rest.length === 0
+      ? {}
+      : { technical: technicalText(SANDBOX_NOT_READY_KIND, text) }),
+  };
+}
+
+// The Sandbox's egress connector answers a request it could not complete with a
+// 502 whose body names what happened. The agent reports that as a bad gateway,
+// which would otherwise read as the model provider being down while the
+// provider was never reached. The three cases need different remedies, so they
+// are told apart rather than all offered a retry.
+const SANDBOX_EGRESS_UNAVAILABLE =
+  /\b(?:Codex egress unavailable|Claude connector upstream unavailable)\b/u;
+const SANDBOX_CODEX_UNCONFIGURED = /\bCodex egress is not configured for this Sandbox\b/u;
+const SANDBOX_CONNECTOR_REJECTED = /\bVerity sandbox connector rejected the request\b/u;
+
 // Transport and provider outages: the agent never got an answer to act on, so
 // the remedy is to wait and resend — not to inspect the session.
 const PROVIDER_UNREACHABLE =
@@ -140,6 +178,38 @@ const TECHNICAL_LIMIT = 2_000;
 
 function describeFailure(kind: string, message: string): AgentEventDescriptor {
   const technical = technicalText(kind, message);
+  // Provisioned before the Codex gateway existed: retrying cannot add the leg.
+  if (SANDBOX_CODEX_UNCONFIGURED.test(message)) {
+    return {
+      kind: 'codex-unconfigured',
+      label: 'Codex isn’t set up in this environment',
+      detail: 'The project environment has no Codex connection. Rebuilding it adds one.',
+      tone: 'warning',
+      technical,
+    };
+  }
+  // Refused inside the Sandbox before any gateway was involved; the same
+  // request would be refused again.
+  if (SANDBOX_CONNECTOR_REJECTED.test(message)) {
+    return {
+      kind: 'egress-rejected',
+      label: 'Agent request rejected',
+      detail: 'The project environment refused the request before it reached the agent gateway.',
+      tone: 'warning',
+      technical,
+    };
+  }
+  if (SANDBOX_EGRESS_UNAVAILABLE.test(message)) {
+    return {
+      kind: 'egress-unavailable',
+      label: 'Agent connection unavailable',
+      detail:
+        'The project environment couldn’t reach the agent gateway. Try again; if it keeps failing, check the agent gateway.',
+      tone: 'warning',
+      action: 'retry',
+      technical,
+    };
+  }
   if (PROVIDER_UNREACHABLE.test(message)) {
     return {
       kind: 'provider-unreachable',

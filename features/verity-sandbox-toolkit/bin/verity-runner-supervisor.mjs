@@ -2943,6 +2943,8 @@ export async function handleSupervisorRequest(
   switch (request.kind) {
     case 'stack-health':
       return await brokerStorageRequest({ protocolVersion: 1, kind: 'stack-health' });
+    case 'egress-readiness':
+      return await brokerStorageRequest({ protocolVersion: 1, kind: 'egress-readiness' });
     case 'status':
       return {
         ok: true,
