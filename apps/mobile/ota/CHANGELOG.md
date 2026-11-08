@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.86.4](https://github.com/Heey-Global/verity/compare/mobile-v1.86.3...mobile-v1.86.4) (2026-11-08)
+
+
+### Features
+
+* **knowledge:** let agents propose Wiki changes for review ([#2412](https://github.com/Heey-Global/verity/issues/2412)) ([0d61e4f](https://github.com/Heey-Global/verity/commit/0d61e4fedf2f34da808f7bf0dc82f485d7431322))
+* **knowledge:** let the Wiki explain itself and set it up with the user ([#2404](https://github.com/Heey-Global/verity/issues/2404)) ([36f082e](https://github.com/Heey-Global/verity/commit/36f082e2f45f82d48b160b8d3bd6cde869992c08))
+* **knowledge:** note what a project's Wiki may need to reflect ([#2411](https://github.com/Heey-Global/verity/issues/2411)) ([4a117a6](https://github.com/Heey-Global/verity/commit/4a117a6c7288c77b6506cf08e841b6586118a58f))
+
+
+### Bug Fixes
+
+* **mobile:** keep needs-you subtitles readable and make answers look tappable ([#2405](https://github.com/Heey-Global/verity/issues/2405)) ([fbbc06a](https://github.com/Heey-Global/verity/commit/fbbc06a549051a82f75b277a5112b6125b0d9d22))
+* **mobile:** keep session lists stable and include running CI ([#2406](https://github.com/Heey-Global/verity/issues/2406)) ([9ed0790](https://github.com/Heey-Global/verity/commit/9ed0790445631ddebea7cd7654d781a2252cd5ae))
+* **mobile:** match capture fields to the session composer ([#2414](https://github.com/Heey-Global/verity/issues/2414)) ([49901f9](https://github.com/Heey-Global/verity/commit/49901f96feb99893c0627dea4d88a4587e0dc7f8))
+
 ## [1.86.3](https://github.com/Heey-Global/verity/compare/mobile-v1.86.2...mobile-v1.86.3) (2026-11-08)
 
 
