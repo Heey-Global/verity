@@ -279,7 +279,9 @@ export function WikiProposalScreen({
           {pending.map((change) => {
             const passages = proposalPassages(change.current, change.content ?? '');
             // Text that only differs in spacing still changes the page.
-            const spacing = !passages.length && change.current !== change.content;
+            const spacing =
+              !passages.length && change.current !== null && change.current !== change.content;
+            const empty = !passages.length && change.current === null;
             return (
               <Group key={change.path}>
                 <ToggleRow
@@ -311,6 +313,13 @@ export function WikiProposalScreen({
                   <View style={styles.passage}>
                     <Text variant="footnote" tone="muted">
                       Only spacing and line breaks change
+                    </Text>
+                  </View>
+                ) : null}
+                {empty ? (
+                  <View style={styles.passage}>
+                    <Text variant="footnote" tone="muted">
+                      A new, empty page
                     </Text>
                   </View>
                 ) : null}
