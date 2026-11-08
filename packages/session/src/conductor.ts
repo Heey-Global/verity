@@ -21,9 +21,21 @@ import {
 import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 
-/** Built-in tools a Wiki maintenance run never gets: it reads files, it neither runs
- *  commands nor fetches, so injected text has no way to send anything out. */
-const WIKI_MAINTENANCE_DISALLOWED_TOOLS = ['Bash', 'WebFetch', 'WebSearch'] as const;
+/** Built-in tools a Wiki maintenance run never gets: it reads files with Read, Grep and
+ *  Glob, and neither runs commands, fetches, starts subagents nor edits. */
+const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'Agent',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+] as const;
 import type {
   EventStore,
   PlanningConsent,

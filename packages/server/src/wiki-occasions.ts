@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { WIKI_INDEX, type knowledgeToolRequestSchema } from '@verity/events';
 import type { z } from 'zod';
 import type { EventStore, RecordWikiOccasion } from '@verity/store';
-import { projectKnowledgeDir } from './knowledge-folder.js';
+import { knowledgeRootDir, projectKnowledgeDir } from './knowledge-folder.js';
 
 type OccasionStore = Pick<EventStore, 'wikiOccasions'>;
 type SessionOccasionStore = Pick<EventStore, 'wikiOccasions' | 'wikiMaintenance'>;
@@ -101,15 +101,17 @@ async function noteSession(
 
 /** A Wiki counts as set up once its start page `index.md` exists. */
 export async function hasProjectWiki(dataRoot: string, projectId: string): Promise<boolean> {
+  const root = projectKnowledgeDir(dataRoot, projectId);
   try {
-    await access(join(projectKnowledgeDir(dataRoot, projectId), WIKI_INDEX));
+    await access(join(root, WIKI_INDEX));
     return true;
   } catch (error) {
-    // Only a missing file means no Wiki: an unreadable or unmounted volume must
-    // not count as one, or its occasions would be discarded as unused.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+  // "No Wiki" discards occasions, so it needs the knowledge volume to be really
+  // there: an empty mount point or a volume not attached yet is not that.
+  await access(knowledgeRootDir(dataRoot));
+  return false;
 }
 
 /** How much kept text one read returns; a deleted session can hold far more. */

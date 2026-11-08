@@ -239,7 +239,7 @@ A run starts only when something new happened, never on a fixed schedule. Every
 15 minutes the server looks at projects with open occasions and starts a run when
 all of these hold:
 
-- The project's Wiki is set up (`insights/index.md` exists). Without it no run
+- The project's Wiki is set up (`insights/index.md` exists while the knowledge volume is present). Without it no run
   starts, and open occasions older than 30 days are discarded.
 - The project is active or sleeping, and not deleted. A paused, failed or still
   provisioning project is never started for its Wiki; Verity Control has none.
@@ -264,8 +264,9 @@ Only the maintenance session may read or close occasions.
 Because the run reads untrusted text with nobody watching, its posture belongs to
 the session, not to the request: every turn of the maintenance session runs with
 the same read-only isolation as planning (read-only file system, no Docker) and
-without shell or web tools, also when it is recovered or queued. The gateway then refuses
-every external tool except the occasion operations and `propose_wiki`. The results appear as
+without shell, web, subagent or editing tools, also when it is recovered or queued.
+The gateway then refuses every external tool except the occasion operations and
+`propose_wiki`, and the project's connected MCP servers refuse the session. The results appear as
 proposals to review on the Wiki; the run itself changes no page.
 
 ## Wiki proposals

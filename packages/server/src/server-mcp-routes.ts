@@ -552,6 +552,9 @@ export function registerServerMcpRoutes({
         if (!caller) return undefined;
         const session = await deps.eventStore.getSession(caller.sessionId);
         if (session?.projectId !== input.projectId) return undefined;
+        // The Wiki maintenance run reads untrusted text unattended; the project's
+        // connected MCP servers are a way out it must not have.
+        if (await deps.eventStore.wikiMaintenance.isSession(caller.sessionId)) return undefined;
         if (deps.authRegistry?.isEnabled() === true) {
           const principal = await runningTurnInitiator(caller.sessionId, caller.turnId);
           if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))

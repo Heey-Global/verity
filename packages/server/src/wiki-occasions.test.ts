@@ -118,6 +118,9 @@ describe('hasProjectWiki', () => {
 
   it('finds a Wiki by its start page', async () => {
     const dataRoot = root();
+    // No knowledge folder at all (an unattached volume) is not "no Wiki".
+    await expect(hasProjectWiki(dataRoot, 'p')).rejects.toThrow();
+    mkdirSync(join(dataRoot, 'knowledge'));
     expect(await hasProjectWiki(dataRoot, 'p')).toBe(false);
     mkdirSync(join(dataRoot, 'knowledge/p/insights'), { recursive: true });
     writeFileSync(join(dataRoot, 'knowledge/p/insights/index.md'), '# P\n');
