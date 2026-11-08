@@ -59,9 +59,12 @@ export function capabilityVariants(legacyName: GatewayToolName, schema: Schema):
       const name =
         legacyName === 'verity_end_planning'
           ? `verity_planning_${verb}`
-          : value
-            ? `verity_${domain}_${verb}`
-            : (renamed[legacyName] ?? legacyName);
+          : // A Wiki proposal belongs to the Wiki, though the knowledge broker carries it.
+            value === 'propose_wiki'
+            ? 'verity_wiki_propose'
+            : value
+              ? `verity_${domain}_${verb}`
+              : (renamed[legacyName] ?? legacyName);
       const inputSchema: Schema & { properties: Record<string, Schema> } = {
         ...branch,
         properties: { ...properties },

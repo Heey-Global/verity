@@ -1,6 +1,14 @@
 import { createAuthTokenRegistry } from './auth.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { request, type Server } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
@@ -590,6 +598,81 @@ it('rejects peer-origin prompts as user decision confirmations', async () => {
     expect(implicit.isError).toBe(true);
     const records = await h.agent({ operation: 'lookup_decisions' });
     expect(JSON.parse(records.content[0]!.text)).toMatchObject({ total: 0 });
+  } finally {
+    await h.close();
+  }
+});
+
+// A proposal is only a proposal: the page stays as it was until a Wiki editor
+// applies it, the applied change lands in log.md, and the same change offered
+// again later is not put in front of the user a second time.
+it('proposes a Wiki change for review and applies it with a log entry', async () => {
+  const h = await setup();
+  const auth = { authorization: 'Bearer device-token' };
+  try {
+    const page = join(h.dataRoot, 'knowledge/p/insights/topics/billing.md');
+    const change = {
+      path: 'topics/billing.md',
+      content: '# Billing\n\nInvoices go out monthly.\n',
+      summary: 'Explain the billing cycle',
+    };
+    const proposed = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'inline',
+      title: 'Billing cycle',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [change],
+    });
+    expect(proposed.isError).toBeUndefined();
+    expect(JSON.parse(proposed.content[0]!.text)).toMatchObject({
+      status: 'awaiting_review',
+      proposed: ['topics/billing.md'],
+    });
+    expect(existsSync(page)).toBe(false);
+    // The proposal lives beside the knowledge, never where agents read the Wiki.
+    expect(readdirSync(join(h.dataRoot, 'knowledge/p/insights'))).not.toContain('proposals');
+    const second = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'inline',
+      title: 'Another',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [{ ...change, path: 'topics/other.md' }],
+    });
+    expect(second.isError).toBe(true);
+
+    const list = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(list.statusCode).toBe(200);
+    const [open] = list.json<{ proposals: { id: string; changes: unknown[] }[] }>().proposals;
+    expect(open!.changes).toMatchObject([
+      { path: 'topics/billing.md', stale: false, current: null },
+    ]);
+    const applied = await h.app.inject({
+      method: 'POST',
+      url: `/projects/p/knowledge/proposals/${open!.id}/apply`,
+      headers: auth,
+      payload: {},
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({ applied: ['topics/billing.md'], stale: [] });
+    expect(readFileSync(page, 'utf8')).toBe(change.content);
+    const log = readFileSync(join(h.dataRoot, 'knowledge/p/insights/log.md'), 'utf8');
+    expect(log).toMatch(/^## \[\d{4}-\d{2}-\d{2}\] chat \| Billing cycle$/m);
+    expect(log).toContain('(topics/billing.md)');
+    expect(log).toContain('(../sources/documents/contract.pdf)');
+    const after = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(after.json()).toEqual({ proposals: [] });
+
+    const again = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'maintenance',
+      title: 'Billing cycle',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [change],
+    });
+    expect(JSON.parse(again.content[0]!.text)).toMatchObject({
+      status: 'nothing_new',
+      skipped: ['topics/billing.md'],
+    });
   } finally {
     await h.close();
   }

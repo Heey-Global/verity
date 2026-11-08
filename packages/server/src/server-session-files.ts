@@ -114,6 +114,62 @@ export function registerServerSessionFiles(
     root.root === 'documents' || root.root === 'sources' ? `${basename(root.dir)}/${path}` : path,
   ];
 
+  /**
+   * Saves a text file through the explorer's write path: version check, file
+   * history and the knowledge refresh. A rejected path is returned, a failed
+   * save throws {@link FileWriteError}.
+   */
+  const saveText = async (
+    root: { root: SessionFileRootName; dir: string },
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+  ) => {
+    let slot;
+    try {
+      slot = await openKnowledgeFileSlot(root, path);
+    } catch (error) {
+      return { slotError: error };
+    }
+    const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+    try {
+      if (
+        root.root === 'knowledge' &&
+        slot.rel === 'overview.md' &&
+        content.length > PROJECT_MEMORY_MAX_CHARS
+      )
+        throw new FileWriteError(413, 'overview.md exceeds the project overview limit');
+      if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
+        await excludeFileHistoryFromGit(root.dir);
+      const creationMode =
+        root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+          ? 0o666
+          : 0o644;
+      const saved = await writeSessionText(slot, content, expectedVersion, creationMode);
+      let warning: string | undefined;
+      const updates: Array<() => Promise<unknown>> = [];
+      if (root.root === 'knowledge' && slot.rel === 'overview.md')
+        updates.push(() => markProjectOverviewAuthoritative(root.dir));
+      if (root.root !== 'worktree')
+        updates.push(() => extractKnowledgeFile(...extractionArgs(root, slot.rel)));
+      for (const update of updates) {
+        try {
+          await update();
+        } catch (err) {
+          app.log.warn(
+            { err, path: slot.rel, root: root.root },
+            'saved file Knowledge refresh failed',
+          );
+          warning = 'The file was saved. Knowledge search and context may be out of date.';
+        }
+      }
+      return warning ? { ...saved, warning } : saved;
+    } finally {
+      release();
+      await slot.close();
+    }
+  };
+
   registerSessionFileRoutes(app, {
     resolveProjectRoot: async (id) => {
       if (!deps.dataRoot || !(await deps.eventStore.getProject(id))) return undefined;
@@ -557,61 +613,15 @@ export function registerServerSessionFiles(
       }
     },
     write: async (reply, root, body) => {
-      let slot;
       try {
-        slot = await openKnowledgeFileSlot(root, body.path);
-      } catch (error) {
-        return knowledgeSlotFailure(reply, error);
-      }
-      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
-      try {
-        if (
-          root.root === 'knowledge' &&
-          slot.rel === 'overview.md' &&
-          body.content.length > PROJECT_MEMORY_MAX_CHARS
-        ) {
-          reply.code(413);
-          return { error: 'overview.md exceeds the project overview limit' };
-        }
-        if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
-          await excludeFileHistoryFromGit(root.dir);
-        const creationMode =
-          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
-            ? 0o666
-            : 0o644;
-        const saved = await writeSessionText(
-          slot,
-          body.content,
-          body.expectedVersion,
-          creationMode,
-        );
-        let warning: string | undefined;
-        const updates: Array<() => Promise<unknown>> = [];
-        if (root.root === 'knowledge' && slot.rel === 'overview.md')
-          updates.push(() => markProjectOverviewAuthoritative(root.dir));
-        if (root.root !== 'worktree')
-          updates.push(() => extractKnowledgeFile(...extractionArgs(root, slot.rel)));
-        for (const update of updates) {
-          try {
-            await update();
-          } catch (err) {
-            app.log.warn(
-              { err, path: slot.rel, root: root.root },
-              'saved file Knowledge refresh failed',
-            );
-            warning = 'The file was saved. Knowledge search and context may be out of date.';
-          }
-        }
-        return warning ? { ...saved, warning } : saved;
+        const saved = await saveText(root, body.path, body.content, body.expectedVersion);
+        return 'slotError' in saved ? knowledgeSlotFailure(reply, saved.slotError) : saved;
       } catch (error) {
         if (error instanceof FileWriteError) {
           reply.code(error.status);
           return { error: error.message };
         }
         throw error;
-      } finally {
-        release();
-        await slot.close();
       }
     },
     download: async (reply, root, path) => {
@@ -819,4 +829,75 @@ export function registerServerSessionFiles(
       }
     },
   });
+
+  /** The project's Wiki as the explorer writes it: `path` is relative to `insights/`. */
+  const projectWiki = async (projectId: string) => {
+    if (!deps.dataRoot) throw new FileWriteError(503, 'Knowledge storage is unavailable');
+    const dir = join(
+      await ensureProjectKnowledge(deps.dataRoot, projectId),
+      KNOWLEDGE_INSIGHTS_DIR,
+    );
+    return { root: 'documents' as const, dir, protectedPaths: ['decisions'] };
+  };
+  return {
+    /** The page's text and version, or `null` when it does not exist yet. */
+    readProjectWiki: async (projectId: string, path: string) => {
+      const slot = await openKnowledgeFileSlot(await projectWiki(projectId), path).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+          throw error;
+        },
+      );
+      if (!slot) return null;
+      try {
+        const handle = await open(
+          `${slot.directoryPath}/${slot.name}`,
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        ).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+          throw error;
+        });
+        if (!handle) return null;
+        try {
+          const bytes = await handle.readFile();
+          return { content: bytes.toString('utf8'), version: fileVersion(bytes) };
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await slot.close();
+      }
+    },
+    /** Saves a page against the version it was based on; a new page needs `null`. */
+    writeProjectWiki: async (
+      projectId: string,
+      path: string,
+      content: string,
+      expectedVersion: string | null,
+    ) => {
+      const wiki = await projectWiki(projectId);
+      await ensureWikiFolders(wiki.dir, path);
+      const saved = await saveText(wiki, path, content, expectedVersion);
+      if ('slotError' in saved) throw new FileWriteError(400, 'invalid Wiki path');
+      return saved;
+    },
+  };
+}
+
+/**
+ * Creates the folders a new Wiki page needs. A folder that is not a real
+ * directory (a symlink) stops it; the write then refuses the path.
+ */
+async function ensureWikiFolders(dir: string, path: string): Promise<void> {
+  const parts = path.split('/').slice(0, -1);
+  let current = dir;
+  for (const part of parts) {
+    current = join(current, part);
+    const stats = await lstat(current).catch(() => null);
+    if (stats?.isDirectory()) continue;
+    if (stats) return;
+    await mkdir(current, { mode: 0o777 }).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    });
+  }
 }

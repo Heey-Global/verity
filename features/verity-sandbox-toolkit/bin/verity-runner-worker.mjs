@@ -24976,6 +24976,18 @@ var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
     path: sourcePath
   }).strict(),
   import_zod7.z.object({
+    operation: import_zod7.z.literal("propose_wiki"),
+    mode: import_zod7.z.enum(["inline", "maintenance"]),
+    logKind: import_zod7.z.enum(["setup", "ingest", "chat", "merge", "lint"]).optional(),
+    title: import_zod7.z.string().trim().min(1).max(160),
+    sources: import_zod7.z.array(import_zod7.z.string().trim().min(1).max(512)).min(1).max(20),
+    changes: import_zod7.z.array(import_zod7.z.object({
+      path: import_zod7.z.string().trim().min(1).max(512),
+      content: import_zod7.z.string().max(2e5),
+      summary: import_zod7.z.string().trim().min(1).max(500)
+    }).strict()).min(1).max(20)
+  }).strict(),
+  import_zod7.z.object({
     operation: import_zod7.z.literal("publish_shared"),
     path: import_zod7.z.string().trim().min(1).max(512),
     sharedPath: import_zod7.z.string().trim().min(1).max(512).optional(),

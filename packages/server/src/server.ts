@@ -239,6 +239,8 @@ import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { createMeetingTranscriptController } from './server-meeting-transcripts.js';
 import { registerServerSessionFiles } from './server-session-files.js';
+import { WikiProposals } from './wiki-proposals.js';
+import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import type {
   ActivityProjection,
@@ -3663,7 +3665,24 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  // Proposals write through the Wiki's file routes, which are registered further below.
+  let sessionFiles: ReturnType<typeof registerServerSessionFiles> | undefined;
+  const wikiFiles = () => {
+    if (!sessionFiles) throw new Error('Wiki files are not ready');
+    return sessionFiles;
+  };
+  const wikiProposals =
+    deps.dataRoot === undefined
+      ? undefined
+      : new WikiProposals(deps.dataRoot, {
+          readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
+          writeProjectWiki: (projectId, path, content, version) =>
+            wikiFiles().writeProjectWiki(projectId, path, content, version),
+          onChange: (projectId) =>
+            resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
+        });
   const decidePendingLinkedMessage = registerServerMcpRoutes({
+    wikiProposals,
     inquiryTool: async (sessionId, userId, input) => {
       const request = input as { operation: string; inquiryId: string; answer: string };
       if (request.operation === 'list') {
@@ -5257,7 +5276,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await attendeeMeetings.close();
   });
   meetingTranscripts.registerRoutes();
-  registerServerSessionFiles(app, deps, conductor);
+  sessionFiles = registerServerSessionFiles(app, deps, conductor);
+  if (wikiProposals) registerWikiProposalRoutes(app, wikiProposals);
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the
