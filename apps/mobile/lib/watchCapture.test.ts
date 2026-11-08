@@ -147,6 +147,8 @@ describe('watch snapshot', () => {
       approvals: 1,
       scope: 'account-1',
       reply: 'Which client?',
+      replyId: 'r-2',
+      replyMessageId: 'm-1',
       question: {
         id: 'q-4',
         text: 'Which client?',
@@ -154,6 +156,24 @@ describe('watch snapshot', () => {
         multiSelect: false,
       },
     });
+  });
+
+  it('does not associate an earlier reply with a newer unanswered message', () => {
+    const snapshot = watchSnapshot(
+      {
+        ...conversation,
+        items: [
+          ...conversation.items,
+          { kind: 'message', id: 'm-10', at: 10, text: 'Another question' },
+        ],
+      },
+      'ready',
+      'account-1',
+    );
+    expect(snapshot).toMatchObject({ replyId: 'r-2', replyMessageId: 'm-1' });
+    expect(watchSnapshot({ ...conversation, items: [] }, 'ready', 'account-1')).not.toHaveProperty(
+      'replyId',
+    );
   });
 
   it('tells the watch when Verity is not this account’s, and nothing when signed out', () => {

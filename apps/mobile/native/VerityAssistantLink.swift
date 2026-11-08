@@ -209,7 +209,11 @@ final class VerityAssistantLink: @unchecked Sendable {
     ]
     if let scope { snapshot["scope"] = scope }
     let items = conversation["items"] as? [[String: Any]] ?? []
-    if let reply = items.last(where: { $0["kind"] as? String == "reply" })?["text"] as? String {
+    if let index = items.lastIndex(where: { $0["kind"] as? String == "reply" }),
+      let reply = items[index]["text"] as? String
+    {
+      snapshot["replyId"] = items[index]["id"] as? String
+      snapshot["replyMessageId"] = items[..<index].last(where: { $0["kind"] as? String == "message" })?["id"] as? String
       // The wrist shows the start; the full reply stays on the iPhone.
       snapshot["reply"] = String(reply.prefix(600))
     }

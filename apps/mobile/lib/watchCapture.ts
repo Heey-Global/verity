@@ -64,6 +64,8 @@ export interface WatchSnapshot {
   approvals: number;
   scope?: string;
   reply?: string;
+  replyId?: string;
+  replyMessageId?: string;
   question?: { id: string; text?: string; options: string[]; multiSelect: boolean };
 }
 
@@ -204,7 +206,11 @@ export function watchSnapshot(
   if (access === 'denied')
     return { availability: 'denied', state: 'idle', revision: 0, approvals: 0, scope };
   if (conversation === null) return null;
-  const reply = conversation.items.findLast((item) => item.kind === 'reply');
+  const replyIndex = conversation.items.findLastIndex((item) => item.kind === 'reply');
+  const reply = conversation.items[replyIndex];
+  const replyMessage = conversation.items
+    .slice(0, replyIndex)
+    .findLast((item) => item.kind === 'message');
   const question = conversation.question;
   return {
     availability: conversation.availability,
@@ -212,7 +218,13 @@ export function watchSnapshot(
     revision: conversation.revision,
     approvals: conversation.approvals.length,
     scope,
-    ...(reply?.kind === 'reply' ? { reply: reply.text.slice(0, 600) } : {}),
+    ...(reply?.kind === 'reply'
+      ? {
+          reply: reply.text.slice(0, 600),
+          replyId: reply.id,
+          ...(replyMessage ? { replyMessageId: replyMessage.id } : {}),
+        }
+      : {}),
     ...(question
       ? {
           question: {

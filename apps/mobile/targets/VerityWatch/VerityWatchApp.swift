@@ -50,6 +50,7 @@ struct CaptureView: View {
 /// its answers, and what was said here. The V in the title bar starts talking.
 private struct HomeView: View {
   @EnvironmentObject private var store: CaptureStore
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     NavigationStack {
@@ -75,6 +76,13 @@ private struct HomeView: View {
           Section {
             NavigationLink { ReplyDetail(text: reply) } label: {
               Text(reply).font(.footnote).lineLimit(3)
+                .onAppear { if scenePhase == .active { store.recordDisplayedReply() } }
+                .onChange(of: store.verity?.replyId) { _, _ in
+                  if scenePhase == .active { store.recordDisplayedReply() }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                  if phase == .active { store.recordDisplayedReply() }
+                }
             }
           } header: {
             Text("Verity").textCase(nil)
