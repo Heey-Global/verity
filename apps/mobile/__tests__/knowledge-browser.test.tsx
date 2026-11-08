@@ -405,7 +405,7 @@ it('renames a source, reloads the folder and keeps the open file on its new path
     ],
     truncated: false,
   });
-  const rename = jest.fn().mockResolvedValue('sources/documents/kickoff.md');
+  const rename = jest.fn().mockResolvedValue({ path: 'sources/documents/kickoff.md' });
   const api = client({ listProjectKnowledgeFiles: list, renameProjectKnowledgeFile: rename });
   const moved = jest.fn();
   render(

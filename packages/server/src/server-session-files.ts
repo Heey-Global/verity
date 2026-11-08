@@ -889,50 +889,74 @@ export function registerServerSessionFiles(
       }
       const sourcePath = `${source.directoryPath}/${source.name}`;
       const destinationPath = `${destination.directoryPath}/${destination.name}`;
-      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+      let release: (() => void) | undefined;
       try {
+        release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
         if (destination.rel === source.rel) return { path: source.rel };
         const stats = await lstat(sourcePath).catch(() => undefined);
         if (stats === undefined) {
           reply.code(404);
           return { error: 'file not found' };
         }
-        if (stats.isFile()) {
-          // Link-then-unlink: `rename` would silently replace a file that already
-          // has the new name.
-          await link(sourcePath, destinationPath);
-          await unlink(sourcePath);
-          const moved = await moveKnowledgeExtraction(
-            ...extractionArgs(root, source.rel),
-            ...extractionArgs(root, destination.rel),
-          );
-          if (!moved) await extractKnowledgeFile(...extractionArgs(root, destination.rel));
-        } else if (stats.isDirectory()) {
-          // Reserve the new name as an empty folder first: renaming a folder onto
-          // an empty one succeeds, onto anything else it fails, so an entry that
-          // already has the name — or appears meanwhile — is never replaced.
-          await mkdir(destinationPath);
-          try {
-            await renamePath(sourcePath, destinationPath);
-          } catch (error) {
-            await rmdir(destinationPath).catch(() => undefined);
-            throw error;
-          }
-          await renameExtractionTree(root, source.rel, destination.rel);
-        } else {
+        if (!stats.isFile() && !stats.isDirectory()) {
           reply.code(400);
           return { error: 'only files and folders can be renamed' };
         }
-        return { path: destination.rel };
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === 'EEXIST' || code === 'ENOTEMPTY') {
-          reply.code(409);
-          return { error: `"${destination.name}" already exists` };
+        try {
+          if (stats.isFile()) {
+            // Link-then-unlink: `rename` would silently replace a file that
+            // already has the new name.
+            await link(sourcePath, destinationPath);
+            try {
+              await unlink(sourcePath);
+            } catch (error) {
+              // Never leave the file under both names.
+              await unlink(destinationPath).catch(() => undefined);
+              throw error;
+            }
+          } else {
+            // Reserve the new name as an empty folder first: renaming a folder
+            // onto an empty one succeeds, onto anything else it fails, so an
+            // entry that already has the name — or appears meanwhile — is never
+            // replaced.
+            await mkdir(destinationPath);
+            try {
+              await renamePath(sourcePath, destinationPath);
+            } catch (error) {
+              await rmdir(destinationPath).catch(() => undefined);
+              throw error;
+            }
+          }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+            reply.code(409);
+            return { error: `"${destination.name}" already exists` };
+          }
+          throw error;
         }
-        throw error;
+        // The entry has its new name now; a failure past this point must not
+        // read as a failed rename, or the app would keep offering the old name.
+        try {
+          if (stats.isFile()) {
+            const moved = await moveKnowledgeExtraction(
+              ...extractionArgs(root, source.rel),
+              ...extractionArgs(root, destination.rel),
+            );
+            if (!moved) await extractKnowledgeFile(...extractionArgs(root, destination.rel));
+          } else {
+            await renameExtractionTree(root, source.rel, destination.rel);
+          }
+        } catch (err) {
+          app.log.warn({ err, path: destination.rel }, 'renamed source text refresh failed');
+          return {
+            path: destination.rel,
+            warning: 'Renamed. Knowledge search may show the old name until its text is refreshed.',
+          };
+        }
+        return { path: destination.rel };
       } finally {
-        release();
+        release?.();
         await source.close();
         await destination.close();
       }

@@ -6487,8 +6487,13 @@ export class VerityClient {
   }
 
   /** Gives a Sources file or folder a new name in its folder; resolves to its
-   *  new path. A name that is taken is refused (409), never replaced. */
-  async renameProjectKnowledgeFile(projectId: string, path: string, name: string): Promise<string> {
+   *  new path, with a warning when its search text could not follow. A name
+   *  that is taken is refused (409), never replaced. */
+  async renameProjectKnowledgeFile(
+    projectId: string,
+    path: string,
+    name: string,
+  ): Promise<{ path: string; warning?: string | undefined }> {
     try {
       const res = await this.request(
         `/projects/${encodeURIComponent(projectId)}/knowledge/files/rename`,
@@ -6498,7 +6503,7 @@ export class VerityClient {
           body: JSON.stringify({ path, name }),
         },
       );
-      return z.object({ path: z.string() }).parse(await res.json()).path;
+      return z.object({ path: z.string(), warning: z.string().optional() }).parse(await res.json());
     } catch (err) {
       // The router's own 404, not a missing file: a server without this route.
       if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')

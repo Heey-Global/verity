@@ -4945,7 +4945,7 @@ it('renames a Sources entry and tells an older server apart from a name that is 
   const client = new VerityClient({ baseUrl: 'http://host', fetch });
   expect(
     await client.renameProjectKnowledgeFile('p/1', 'sources/documents/call.md', 'kickoff.md'),
-  ).toBe('sources/documents/kickoff.md');
+  ).toEqual({ path: 'sources/documents/kickoff.md' });
   expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/files/rename');
   expect(jsonBody(calls[0])).toEqual({ path: 'sources/documents/call.md', name: 'kickoff.md' });
   await expect(

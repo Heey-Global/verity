@@ -156,10 +156,11 @@ export function KnowledgeFolder({
       : undefined;
   const submitRename = async (name: string) => {
     if (!renaming || scope.kind !== 'project') return;
-    const to = await client.renameProjectKnowledgeFile(scope.projectId, renaming.path, name);
+    const renamed = await client.renameProjectKnowledgeFile(scope.projectId, renaming.path, name);
     setRenaming(null);
     retry();
-    pane?.moved?.(scope, renaming.path, to);
+    pane?.moved?.(scope, renaming.path, renamed.path);
+    if (renamed.warning) Alert.alert('Renamed', renamed.warning);
   };
 
   return (
@@ -290,6 +291,8 @@ export function validateSourceName(name: string): string | null {
   if (trimmed !== name) return 'Remove the spaces at the start or end.';
   if (/[\\/\0]/.test(name)) return 'Use a name without slashes.';
   if (name === '.' || name === '..' || name === '.text') return 'This name is reserved.';
+  // The app addresses its own virtual sections with a leading colon.
+  if (name.startsWith(':')) return 'Use a name that does not start with “:”.';
   return null;
 }
 

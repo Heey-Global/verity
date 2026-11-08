@@ -616,6 +616,30 @@ describe('session explorer knowledge roots', () => {
     expect((await rename('sources/documents/kickoff.md', 'nested/name.md')).statusCode).toBe(400);
   });
 
+  it('reports a rename that happened even when its text cannot be refreshed', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    writeFileSync(join(dir, 'sources/documents/scan.pdf'), 'binary');
+    observation.extractionFailure = true;
+    try {
+      const renamed = await app.inject({
+        method: 'POST',
+        url: '/projects/p-1/knowledge/files/rename',
+        payload: { path: 'sources/documents/scan.pdf', name: 'contract.pdf' },
+      });
+      // A 500 here would leave the app offering the old name, which is gone.
+      expect(renamed.statusCode).toBe(200);
+      expect(renamed.json()).toMatchObject({
+        path: 'sources/documents/contract.pdf',
+        warning: expect.stringContaining('Renamed'),
+      });
+      expect(existsSync(join(dir, 'sources/documents/contract.pdf'))).toBe(true);
+      expect(existsSync(join(dir, 'sources/documents/scan.pdf'))).toBe(false);
+    } finally {
+      observation.extractionFailure = false;
+    }
+  });
+
   it('renames a Sources folder with the extracted text of everything inside', async () => {
     const dir = projectKnowledgeDir(dataRoot, 'p-1');
     await app.inject('/projects/p-1/knowledge/files');
