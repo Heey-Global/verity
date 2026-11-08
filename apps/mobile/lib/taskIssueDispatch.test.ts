@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dispatchTaskIssue, taskIssueRetry } from './taskIssueDispatch';
+import { dispatchTaskIssue, taskIssueRetry, taskIssueSession } from './taskIssueDispatch';
 import { createSessionConfirmingWarnings } from './startSession';
 const mockClient = {
   sendTurn: jest.fn(async () => ({ accepted: true })),
@@ -166,6 +166,19 @@ describe('issues of several repositories', () => {
     mockClient.sendTurn.mockRejectedValueOnce(new Error('Network lost'));
     await expect(dispatchTaskIssue('p', issue)).rejects.toThrow('Network lost');
     expect(await taskIssueRetry('p', issue.number, main)).toEqual({});
+  });
+
+  it('remembers the session a sent issue turn went to, per repository', async () => {
+    mockClient.sendTurn.mockRejectedValueOnce(new Error('Network lost'));
+    await expect(dispatchTaskIssue('p', issue, undefined, site)).rejects.toThrow('Network lost');
+    // Not yet: the turn was not accepted.
+    expect(await taskIssueSession('p', issue.number, site)).toBeNull();
+    mockClient.listSessions.mockResolvedValue([
+      { sessionId: 'uuid-1', projectId: 'p', resumable: true },
+    ]);
+    await dispatchTaskIssue('p', issue, undefined, site);
+    expect(await taskIssueSession('p', issue.number, site)).toBe('uuid-1');
+    expect(await taskIssueSession('p', issue.number, main)).toBeNull();
   });
 
   it('names the repository and leaves the branch unnumbered for another repository', async () => {

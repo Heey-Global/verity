@@ -241,8 +241,12 @@ export function Row({
           selected ? (
             <Icon name="check" size={18} color={theme.colors.action} />
           ) : undefined
-        ) : onPress === undefined && action !== undefined ? (
-          action
+        ) : action !== undefined ? (
+          // Beside a pressable row the action is drawn outside it, below; in a
+          // plain row it simply is the trailing element. Either way it replaces it.
+          onPress === undefined ? (
+            action
+          ) : undefined
         ) : (
           trailing
         )

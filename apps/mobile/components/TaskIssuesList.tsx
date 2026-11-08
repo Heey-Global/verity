@@ -8,7 +8,12 @@ import { HandOffRow, handOffSession } from './HandOffRow';
 import { Icon } from './Icon';
 import { Button, FilterChips, Group, StatusTag, Text } from './ui';
 import { createVerityClient } from '../lib/client';
-import { dispatchTaskIssue, taskIssueRetry, type IssueRepository } from '../lib/taskIssueDispatch';
+import {
+  dispatchTaskIssue,
+  taskIssueRetry,
+  taskIssueSession,
+  type IssueRepository,
+} from '../lib/taskIssueDispatch';
 
 type Issue = Extract<RepositoryIssues, { status: 'ok' }>['issues'][number];
 type Retry = { targetSessionId?: string };
@@ -46,6 +51,9 @@ export function TaskIssuesList({
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [retries, setRetries] = useState<Record<string, Retry>>({});
+  // Sessions started from here for other repositories' issues, which their
+  // branch cannot name.
+  const [started, setStarted] = useState<Record<string, string>>({});
   const available = repositories.filter(
     (repository): repository is Extract<RepositoryIssues, { status: 'ok' }> =>
       repository.status === 'ok',
@@ -70,6 +78,29 @@ export function TaskIssuesList({
             Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
               string,
               Retry
+            >,
+          );
+      })
+      .catch(() => undefined);
+    void Promise.all(
+      available
+        .filter((repository) => !repository.isDefault)
+        .flatMap((repository) =>
+          repository.issues.map(
+            async (issue) =>
+              [
+                retryKey(repository, issue.number),
+                await taskIssueSession(projectId, issue.number, repository),
+              ] as const,
+          ),
+        ),
+    )
+      .then((entries) => {
+        if (active)
+          setStarted(
+            Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
+              string,
+              string
             >,
           );
       })
@@ -101,7 +132,11 @@ export function TaskIssuesList({
     if (busy) return;
     setBusy(true);
     void dispatchTaskIssue(projectId, issue, target, repository)
-      .then(onOpenSession)
+      .then((id) => {
+        if (target === undefined)
+          setStarted((value) => ({ ...value, [retryKey(repository, issue.number)]: id }));
+        onOpenSession(id);
+      })
       .catch((error: unknown) => {
         void taskIssueRetry(projectId, issue.number, repository)
           .then((retry) => {
@@ -119,16 +154,17 @@ export function TaskIssuesList({
       .finally(() => setBusy(false));
   };
   // Sessions name their branch after the issue they were started for; branches
-  // come from the default repository, so only its issues can be matched.
+  // come from the default repository, so another repository's issue finds its
+  // session through the record of the hand-over instead.
   const sessionFor = (repository: IssueRepository, issue: Issue) =>
-    repository.isDefault
-      ? sessions.find(
-          (item) =>
-            item.projectId === projectId &&
-            item.resumable !== false &&
-            item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number),
-        )
-      : undefined;
+    sessions.find(
+      (item) =>
+        item.projectId === projectId &&
+        item.resumable !== false &&
+        (repository.isDefault
+          ? item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number)
+          : item.sessionId === started[retryKey(repository, issue.number)]),
+    );
   const several = repositories.length > 1;
   return (
     <View style={styles.list}>

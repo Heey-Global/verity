@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, StyleSheet, Text, View } from 'react-native';
 
 import {
   Button,
@@ -40,6 +40,36 @@ describe('Button', () => {
 });
 
 describe('Row', () => {
+  // The action sits beside the pressable area so VoiceOver reaches both; drawn
+  // inside as well, the row would show it twice or bury it in the row's label.
+  it('draws its action once, outside the pressable area, in place of trailing', () => {
+    const onPress = jest.fn();
+    const onAct = jest.fn();
+    render(
+      <Row
+        title="Ship it"
+        onPress={onPress}
+        trailing={<Text>Trailing value</Text>}
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+    expect(screen.queryByText('Trailing value')).toBeNull();
+    fireEvent.press(screen.getByText('Act'));
+    expect(onAct).toHaveBeenCalled();
+    expect(onPress).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Ship it'));
+    expect(onPress).toHaveBeenCalled();
+    screen.unmount();
+    render(
+      <Row
+        title="Ship it"
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+  });
+
   it('highlights the active destination and keeps its trailing content', () => {
     const { rerender } = render(
       <Row title="Session" active onPress={jest.fn()} trailing="Running" />,

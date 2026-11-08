@@ -291,3 +291,33 @@ it('adds a task through Verity from the screen’s header', () => {
   fireEvent.press(screen.getByLabelText('Add task'));
   expect(dispatchVerityShortcut).toHaveBeenCalledWith({ mode: 'text' });
 });
+
+// The server reports a failing host as an unavailable repository, not as an
+// error; hiding the tab then left a single-repository project without a retry.
+it('keeps the Issues tab and its retry when no host answered, and keeps it while retrying', async () => {
+  mockTab.value = 'issues';
+  const listProjectIssues = jest
+    .fn()
+    .mockResolvedValueOnce([repository('site', 'github', null)])
+    .mockReturnValueOnce(new Promise(() => undefined));
+  jest.mocked(createVerityClient).mockReturnValue({
+    listProjectIssues,
+    listSessions: jest.fn(async () => []),
+  } as never);
+  render(
+    <TaskListBody
+      context={{ projectId: 'p1', sessionId: null }}
+      projects={projects}
+      scope="project"
+      onLeave={jest.fn()}
+    />,
+  );
+  await act(async () => undefined);
+  expect(screen.getByRole('tab', { name: 'Issues' })).toBeTruthy();
+  expect(screen.getByText('Could not load issues')).toBeTruthy();
+  await act(async () => fireEvent.press(screen.getByText('Retry')));
+  expect(listProjectIssues).toHaveBeenCalledTimes(2);
+  // Still on the tab while the retry is on its way.
+  expect(screen.getByText('Could not load issues')).toBeTruthy();
+  jest.mocked(createVerityClient).mockReturnValue(null);
+});

@@ -67,6 +67,27 @@ export async function taskIssueRetry(
   return null;
 }
 
+/**
+ * The session this device started for an issue, once its turn was accepted.
+ * Only the default repository's issues name their session's branch; for another
+ * repository's issue this record is the only link back to its session.
+ */
+export async function taskIssueSession(
+  projectId: string,
+  issueNumber: number,
+  repository?: IssueRepository,
+): Promise<string | null> {
+  const scope = identity();
+  const saved = await AsyncStorage.getItem(dispatchKey(scope, projectId, repository, issueNumber));
+  if (identity() !== scope || !saved) return null;
+  try {
+    const value = JSON.parse(saved) as { sent?: unknown; sessionId?: unknown };
+    return value.sent === true && typeof value.sessionId === 'string' ? value.sessionId : null;
+  } catch {
+    return null;
+  }
+}
+
 const pending = new Map<string, Promise<string>>();
 /** Retry the same persisted session/turn after a lost response without starting duplicate work. */
 export function dispatchTaskIssue(

@@ -99,7 +99,9 @@ export function TaskListBody({
   const issueProject = projects.find((project) => project.id === context.projectId);
   useEffect(() => {
     let active = true;
-    setIssues(null);
+    // A retry keeps the list it is retrying, so the tab and its healthy
+    // sections stay while the answer is on its way; another project starts empty.
+    setIssues((current) => (current?.projectId === issueProject?.id ? current : null));
     setIssuesError(null);
     if (issueProject) {
       const projectId = issueProject.id;
@@ -122,14 +124,19 @@ export function TaskListBody({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issueProject?.id, issueProject?.kind, issueProject?.owner, issueProject?.repo, issuesRetry]);
   const repositories = issues?.projectId === context.projectId ? issues.repositories : [];
-  // A tab appears once a repository answered; an unavailable one alone shows its
-  // retry inside the tab rather than hiding the tab.
-  const issuesShown = repositories.some((repository) => repository.status === 'ok');
+  // The tab appears once the server listed a repository, even one whose host
+  // did not answer: its section carries the retry, which a hidden tab would not.
+  const issuesShown = repositories.length > 0;
   const issueCount = repositories.reduce(
     (sum, repository) => sum + (repository.status === 'ok' ? repository.issues.length : 0),
     0,
   );
-  const issueKinds = new Set(repositories.map((repository) => repository.kind));
+  // Named as the Overview names them: by the hosts that answered.
+  const issueKinds = new Set(
+    repositories
+      .filter((repository) => repository.status === 'ok')
+      .map((repository) => repository.kind),
+  );
   const issuesLabel =
     issueKinds.size === 1 ? `${issueKinds.has('forgejo') ? 'Forgejo' : 'GitHub'} Issues` : 'Issues';
   const screenReader = useScreenReader();

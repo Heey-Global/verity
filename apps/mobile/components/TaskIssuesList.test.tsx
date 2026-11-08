@@ -2,11 +2,12 @@ import { act, fireEvent, render } from '@testing-library/react-native';
 import type { RepositoryIssues } from '@verity/mobile';
 import { FIRST_ISSUES, TaskIssuesList } from './TaskIssuesList';
 import { createVerityClient } from '../lib/client';
-import { dispatchTaskIssue, taskIssueRetry } from '../lib/taskIssueDispatch';
+import { dispatchTaskIssue, taskIssueRetry, taskIssueSession } from '../lib/taskIssueDispatch';
 jest.mock('../lib/client', () => ({ createVerityClient: jest.fn(() => null) }));
 jest.mock('../lib/taskIssueDispatch', () => ({
   dispatchTaskIssue: jest.fn(),
   taskIssueRetry: jest.fn(async () => null),
+  taskIssueSession: jest.fn(async () => null),
 }));
 const issues = Array.from({ length: FIRST_ISSUES + 1 }, (_, index) => ({
   number: index + 1,
@@ -41,6 +42,7 @@ const list = (repositories: RepositoryIssues[], extra: { currentSessionId?: stri
 beforeEach(() => {
   jest.mocked(createVerityClient).mockReturnValue(null);
   jest.mocked(taskIssueRetry).mockResolvedValue(null);
+  jest.mocked(taskIssueSession).mockResolvedValue(null);
 });
 
 it('shows the first issues then expands and filters the API results', async () => {
@@ -149,4 +151,30 @@ it('shows an unavailable repository in its own section and retries it', async ()
   // With several repositories each section folds.
   fireEvent.press(ui.getByLabelText('GitHub test/repo · 1 open'));
   expect(ui.queryByText('Issue 1')).toBeNull();
+});
+
+// Another repository's issue cannot name its session's branch; without the
+// hand-over record its row would keep offering the V for work already running.
+it('finds the session started for another repository’s issue', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    listSessions: jest.fn(async () => [
+      { sessionId: 'started', projectId: 'p', branch: 'verity/abc', resumable: true },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  jest.mocked(taskIssueSession).mockResolvedValue('started');
+  const onOpen = jest.fn();
+  const site = repository({ id: 'site', isDefault: false, issues: [issues[0]!] });
+  const ui = render(
+    <TaskIssuesList
+      projectId="p"
+      repositories={[repository({ issues: [] }), site]}
+      onRetry={jest.fn()}
+      onOpenSession={onOpen}
+    />,
+  );
+  await act(async () => {});
+  expect(taskIssueSession).toHaveBeenCalledWith('p', 1, site);
+  expect(ui.queryByLabelText('Let Verity fix: Issue 1')).toBeNull();
+  fireEvent.press(ui.getByText('Issue 1'));
+  expect(onOpen).toHaveBeenCalledWith('started');
 });
