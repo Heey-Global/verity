@@ -32,7 +32,7 @@ function canDeleteKnowledgeEntry(path: string): boolean {
 }
 
 /** Only Sources: a renamed Wiki page would break every link to it. */
-export function canRenameKnowledgeEntry(path: string): boolean {
+function canRenameKnowledgeEntry(path: string): boolean {
   return path.startsWith('sources/') && !SOURCE_ENTRY_FOLDERS.has(path) && ordinaryPath(path);
 }
 

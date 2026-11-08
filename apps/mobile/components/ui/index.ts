@@ -14,14 +14,6 @@ export { Text } from './Text';
 export { LogList, LogRow } from './LogList';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
-export {
-  SWIPE_ACTION_WIDTH,
-  SwipeActionButton,
-  SwipeActionLane,
-  mixColor,
-  type SwipeActionTone,
-  type SwipeLaneAction,
-} from './SwipeActions';
 export { UsageRing, type UsageRingLevel } from './UsageRing';
 export { CaptureField } from './CaptureField';
 

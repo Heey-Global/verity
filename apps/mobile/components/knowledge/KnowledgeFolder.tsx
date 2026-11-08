@@ -285,7 +285,7 @@ export function KnowledgeFolder({
 }
 
 /** What the server would refuse anyway, said before the request. */
-export function validateSourceName(name: string): string | null {
+function validateSourceName(name: string): string | null {
   const trimmed = name.trim();
   if (trimmed === '') return 'Enter a name.';
   if (trimmed !== name) return 'Remove the spaces at the start or end.';

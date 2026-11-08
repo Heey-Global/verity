@@ -3,7 +3,8 @@ import { ScrollView, View, useWindowDimensions } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
-import { Button, SwipeActionLane, Text } from '../../components/ui';
+import { Button, Text } from '../../components/ui';
+import { SwipeActionLane } from '../../components/ui/SwipeActions';
 
 const ignore = () => undefined;
 
