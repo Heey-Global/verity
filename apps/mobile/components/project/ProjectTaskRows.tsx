@@ -158,7 +158,7 @@ export function ProjectTaskRow({
       onEdit={onEdit}
       onDelete={onDelete}
     >
-      <View testID={`project-task-${task.id}`} style={done ? styles.done : null}>
+      <View testID={`project-task-${task.id}`} style={done ? styles.done : undefined}>
         <HandOffRow
           title={text}
           subtitle={conflict ?? subtitle}
