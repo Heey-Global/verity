@@ -174,3 +174,10 @@ it('retries failed audio once per explicit token while retaining server deduplic
     inbox.indexOf('transcribe(id)', inbox.indexOf('try save(retry)')),
   );
 });
+
+it('ignores failure feedback from an older explicit retry', () => {
+  expect(inbox).toContain('reply["retryId"] = retryId');
+  expect(store).toContain(
+    'if kind == "failed" || kind == "rejected", capture.retryId != retryId { return }',
+  );
+});

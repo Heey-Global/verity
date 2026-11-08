@@ -376,6 +376,7 @@ export async function performWatchInboxAction(
         session.pullRequest.number !== request.action.number ||
         session.pullRequest.phase !== 'open' ||
         session.pullRequest.mergeable !== true ||
+        !session.pullRequest.headSha ||
         request.key !==
           `merge:${request.action.sessionId}:${String(request.action.number)}:${session.pullRequest.headSha ?? ''}`)
     )
@@ -383,21 +384,19 @@ export async function performWatchInboxAction(
         status: 'error',
         message: 'This pull request is no longer ready to merge. Refresh Home.',
       };
-    const action =
-      request.action.kind === 'resume'
-        ? {
-            type: 'send-turn' as const,
-            sessionId: request.action.sessionId,
-            prompt: 'Continue where you stopped.',
-          }
-        : request.action.kind === 'merge' && request.action.number !== undefined
-          ? {
-              type: 'merge-pull-request' as const,
-              sessionId: request.action.sessionId,
-              pullRequestNumber: request.action.number,
-            }
-          : null;
-    if (!action) return { status: 'error', message: 'Unsupported action.' };
+    if (request.action.kind === 'merge') {
+      await client.mergePullRequest(
+        request.action.sessionId,
+        request.action.number!,
+        session.pullRequest!.headSha!,
+      );
+      return { status: 'done' };
+    }
+    const action = {
+      type: 'send-turn' as const,
+      sessionId: request.action.sessionId,
+      prompt: 'Continue where you stopped.',
+    };
     const result = await createPushReplyPerformer(client)(action, request.id);
     return result === 'done'
       ? { status: 'done' }

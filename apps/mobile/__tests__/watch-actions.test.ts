@@ -48,5 +48,6 @@ describe('native Watch Home action contract', () => {
     expect(action).toContain('session["resumable"] as? Bool != false');
     expect(action).toContain('"clientReplyId": requestId');
     expect(action).toContain('/pull-request/merge');
+    expect(action).toContain('\"expectedHeadSha\": expectedHeadSha');
   });
 });

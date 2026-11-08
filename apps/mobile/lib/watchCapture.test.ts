@@ -415,10 +415,12 @@ describe('immediate Watch Home actions', () => {
     expect(api.sendTurn).not.toHaveBeenCalled();
   });
   it('merges only a freshly eligible matching PR', async () => {
-    const api = client({ pullRequest: { number: 42, phase: 'open', mergeable: true } });
+    const api = client({
+      pullRequest: { number: 42, phase: 'open', mergeable: true, headSha: 'reviewed-head' },
+    });
     const merge = {
       ...request,
-      key: 'merge:s:42:',
+      key: 'merge:s:42:reviewed-head',
       action: { kind: 'merge' as const, sessionId: 's', number: 42 },
     };
     expect(
@@ -429,7 +431,7 @@ describe('immediate Watch Home actions', () => {
         () => 1,
       ),
     ).toEqual({ status: 'done' });
-    expect(api.mergePullRequest).toHaveBeenCalledWith('s', 42);
+    expect(api.mergePullRequest).toHaveBeenCalledWith('s', 42, 'reviewed-head');
     api.getSession.mockResolvedValue({
       pullRequest: { number: 43, phase: 'open', mergeable: true },
     });

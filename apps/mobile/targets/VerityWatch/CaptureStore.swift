@@ -805,6 +805,7 @@ extension CaptureStore: WCSessionDelegate {
     else { return }
     let kind = userInfo["kind"] as? String
     let text = userInfo["text"] as? String
+    let retryId = (userInfo["retryId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
     Task { @MainActor in
       if kind == "transcript" {
         self.immediateFallbacks.removeValue(forKey: id)?.cancel()
@@ -813,6 +814,7 @@ extension CaptureStore: WCSessionDelegate {
       self.update(id) { capture in
         // A late queued refusal must not undo a transcript received live.
         if capture.state == .transcribed { return }
+        if kind == "failed" || kind == "rejected", capture.retryId != retryId { return }
         switch kind {
         case "transcript":
           capture.state = .transcribed

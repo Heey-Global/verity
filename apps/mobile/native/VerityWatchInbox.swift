@@ -464,13 +464,13 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
           retry.state = .received
           try save(retry)
           transcribe(id)
-        } catch { reply(["kind": "failed", "id": id, "text": "Could not retry recording"] ) }
+        } catch { reply(["kind": "failed", "id": id, "text": "Could not retry recording", "retryId": retryId]) }
         return true
       }
       if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
         reply(["kind": "transcript", "id": id, "text": text])
       } else if existing.state == .failed, (existing.attempts ?? 0) >= Self.maxAttempts {
-        reply(["kind": "failed", "id": id, "text": existing.error ?? "Transcription failed"])
+        reply(["kind": "failed", "id": id, "text": existing.error ?? "Transcription failed", "retryId": existing.retryId ?? ""])
       }
       return true
     }
@@ -491,7 +491,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     } catch {
       log("request=\(id) stage=storage_failed")
       remove(id)
-      reply(["kind": "rejected", "id": id])
+      reply(["kind": "rejected", "id": id, "retryId": metadata["retryId"] as? String ?? ""])
       return false
     }
   }
@@ -534,6 +534,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     guard var entry = load(id) else { return }
     entry.transcribeMs = elapsed
     var reply: [String: Any] = ["v": Self.protocolVersion, "id": id]
+    if let retryId = entry.retryId { reply["retryId"] = retryId }
     switch result {
     case .success(let text) where !text.isEmpty:
       entry.state = .transcribed

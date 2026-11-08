@@ -160,11 +160,14 @@ final class VerityAssistantLink: @unchecked Sendable {
           let pr = session["pullRequest"] as? [String: Any],
           pr["number"] as? Int == number, pr["phase"] as? String == "open",
           pr["mergeable"] as? Bool == true,
+          let headSha = pr["headSha"] as? String, !headSha.isEmpty,
           itemKey == "merge:\(sessionId):\(number):\(pr["headSha"] as? String ?? "")"
         else { return .refused("This pull request changed. Refresh Home on iPhone.") }
       } catch { return .later("Could not refresh pull request. Try again.") }
       guard config?.scope == scope else { return .refused("Account changed") }
-      return await deliver("/sessions/\(encoded)/pull-request/merge", ["number": number])
+      // Bind the mutation itself to the commit the Watch user reviewed.
+      let expectedHeadSha = String(itemKey.split(separator: ":", omittingEmptySubsequences: false).last ?? "")
+      return await deliver("/sessions/\(encoded)/pull-request/merge", ["number": number, "expectedHeadSha": expectedHeadSha])
     }
     return .refused("Unsupported action")
   }
