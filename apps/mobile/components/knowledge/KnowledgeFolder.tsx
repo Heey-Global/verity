@@ -172,7 +172,9 @@ export function KnowledgeFolder({
             <WikiHome
               catalog={wiki.catalog}
               open={open}
-              proposals={proposals ?? []}
+              proposals={(proposals ?? []).filter((proposal) =>
+                proposal.changes.some((change) => change.status === 'pending'),
+              )}
               {...(scope.kind === 'project'
                 ? { setup: (mode: WikiSetupMode) => startWikiSetup(scope.projectId, mode) }
                 : {})}

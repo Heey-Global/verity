@@ -577,4 +577,22 @@ describe('proposed Wiki changes', () => {
     expect(decideWikiProposal).toHaveBeenCalledWith('p', 'a1', 'apply', ['nav.md']);
     expect(decideWikiProposal).toHaveBeenCalledWith('p', 'a1', 'reject', ['faq.md', 'roles.md']);
   });
+
+  it('keeps a failed decision on screen while the proposal is read again', async () => {
+    client(catalog, {
+      getWikiProposal: jest.fn().mockResolvedValue({
+        ...head,
+        changes: [
+          { ...pending, path: 'faq.md', summary: 'Add FAQ', current: null, content: '# FAQ' },
+        ],
+      }),
+      decideWikiProposal: jest
+        .fn()
+        .mockRejectedValue(new Error('Project management access required')),
+    });
+    render(<KnowledgeScreen scope={PROJECT} proposal="a1" />);
+    fireEvent.press(await screen.findByText('Apply 1 change'));
+    await act(async () => {});
+    expect(await screen.findByText(/Project management access required/)).toBeTruthy();
+  });
 });

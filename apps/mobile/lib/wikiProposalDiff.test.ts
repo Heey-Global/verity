@@ -22,5 +22,9 @@ describe('proposalPassages', () => {
   it('shows a removed paragraph and nothing for an unchanged page', () => {
     expect(proposalPassages('A\n\nB\n\nC', 'A\n\nC')).toEqual([{ before: 'B' }]);
     expect(proposalPassages('A\r\n\r\nB', 'A\n\nB')).toEqual([]);
+    // Indentation is content: a nested list level or code block changes the page.
+    expect(proposalPassages('- a\n- b', '- a\n  - b')).toEqual([
+      { before: '- a\n- b', after: '- a\n  - b' },
+    ]);
   });
 });

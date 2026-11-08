@@ -98,6 +98,8 @@ export function WikiProposalScreen({
   const [confirm, confirmSheet] = useConfirm();
   const [proposal, setProposal] = useState<WikiProposal>();
   const [error, setError] = useState<string>();
+  // A failed decision stays on screen while the proposal is read again.
+  const [decisionError, setDecisionError] = useState<string>();
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
@@ -141,27 +143,29 @@ export function WikiProposalScreen({
   const decide = useCallback(
     async (apply: readonly string[], reject: readonly string[]) => {
       setSaving(true);
-      setError(undefined);
+      setDecisionError(undefined);
+      let notes = '';
+      let failed = false;
       try {
-        let notes = '';
         if (apply.length)
           notes = decisionNotice(
             await client.decideWikiProposal(projectId, proposalId, 'apply', apply),
           );
         if (reject.length) await client.decideWikiProposal(projectId, proposalId, 'reject', reject);
+      } catch (failure) {
+        failed = true;
+        setDecisionError(
+          failure instanceof Error ? failure.message : 'Could not save the decision',
+        );
+      } finally {
+        // Pages may have been written even when a later step failed.
         invalidateWikiCatalog(projectId);
         invalidateWikiProposals(projectId);
-        if (notes) {
-          setNotice(notes);
-          setAttempt((value) => value + 1);
-        } else if (router.canGoBack()) router.back();
-        else setAttempt((value) => value + 1);
-      } catch (failure) {
-        setError(failure instanceof Error ? failure.message : 'Could not save the decision');
-        setAttempt((value) => value + 1);
-      } finally {
         setSaving(false);
       }
+      if (notes) setNotice(notes);
+      if (failed || notes || !router.canGoBack()) setAttempt((value) => value + 1);
+      else router.back();
     },
     [client, projectId, proposalId],
   );
@@ -205,7 +209,7 @@ export function WikiProposalScreen({
     <SettingsScaffold
       title="Proposed change"
       detail
-      state={{ error, saving }}
+      state={{ error: decisionError ?? error, saving }}
       onRetry={() => setAttempt((value) => value + 1)}
       {...(footer ? { footer } : {})}
     >
@@ -239,6 +243,8 @@ export function WikiProposalScreen({
           ) : null}
           {pending.map((change) => {
             const passages = proposalPassages(change.current, change.content ?? '');
+            // Text that only differs in spacing still changes the page.
+            const spacing = !passages.length && change.current !== change.content;
             return (
               <Group key={change.path}>
                 <ToggleRow
@@ -264,6 +270,13 @@ export function WikiProposalScreen({
                 {passages.slice(0, PASSAGES_SHOWN).map((passage, position) => (
                   <Passage key={position} passage={passage} />
                 ))}
+                {spacing ? (
+                  <View style={styles.passage}>
+                    <Text variant="footnote" tone="muted">
+                      Only spacing and line breaks change
+                    </Text>
+                  </View>
+                ) : null}
                 {passages.length > PASSAGES_SHOWN ? (
                   <View style={styles.passage}>
                     <Text variant="footnote" tone="muted">

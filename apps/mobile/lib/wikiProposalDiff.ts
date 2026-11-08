@@ -17,8 +17,9 @@ const paragraphs = (text: string) =>
   text
     .replace(/\r\n?/g, '\n')
     .split(/\n[ \t]*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+    // Only surrounding line breaks go: indentation and trailing spaces are content.
+    .map((paragraph) => paragraph.replace(/^\n+|\n+$/g, ''))
+    .filter((paragraph) => paragraph.trim() !== '');
 
 export function proposalPassages(current: string | null, proposed: string): ProposalPassage[] {
   const after = paragraphs(proposed);
