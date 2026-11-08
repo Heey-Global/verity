@@ -15,7 +15,7 @@ import {
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -65,8 +65,10 @@ export function HomeInbox({
   onRepairProject,
   onCountChange,
   onOpenVerity,
+  scrollRef,
 }: {
   client: VerityClient;
+  scrollRef?: Ref<ScrollView>;
   sessions: readonly SessionSummary[];
   projects: readonly ProjectRecord[];
   /** The session shown in the wide layout's right pane, drawn as selected. */
@@ -116,6 +118,7 @@ export function HomeInbox({
 
   return (
     <ScrollView
+      ref={scrollRef}
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       testID="home-inbox"

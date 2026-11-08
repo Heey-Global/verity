@@ -83,6 +83,7 @@ import {
   occasionTitle,
   wikiOccasionTool,
 } from './wiki-occasions.js';
+import { readWikiPage } from './wiki-page-reader.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
@@ -167,6 +168,7 @@ interface ServerMcpRouteDeps {
 
 /** The knowledge operations a Wiki maintenance run may call from its isolated turn. */
 const WIKI_MAINTENANCE_OPERATIONS: ReadonlySet<string> = new Set([
+  'read_wiki_page',
   'read_wiki_occasions',
   'close_wiki_occasions',
   'propose_wiki',
@@ -1096,6 +1098,13 @@ export function registerServerMcpRoutes({
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
         if (
+          (await deps.eventStore.wikiMaintenance.isSession(sessionId)) &&
+          !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; Wiki maintenance allows only Wiki operations.',
+          );
+        if (
           (await deps.eventStore.repairs.qa()).session_id === sessionId &&
           toolName !== 'verity_qa_analysis'
         )
@@ -1645,6 +1654,19 @@ export function registerServerMcpRoutes({
           ? schedulingTool.approvedEdits(request, updatedInput)
           : undefined,
       invokeTool: async (input) => {
+        // Recheck at execution too: a pending approval cannot widen a maintenance turn.
+        if (
+          (await deps.eventStore.wikiMaintenance.isSession(input.sessionId)) &&
+          !(await isWikiMaintenanceCall(
+            deps.eventStore,
+            input.toolName,
+            input.request,
+            input.sessionId,
+          ))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'Wiki maintenance allows only Wiki operations.',
+          );
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
@@ -1868,6 +1890,8 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Knowledge access requires an active session in the calling project',
               );
+            if (request.operation === 'read_wiki_page')
+              return readWikiPage(deps.dataRoot, input.projectId, request);
             if (request.operation === 'import_source') {
               const imported = await importProjectSource(
                 deps.dataRoot,

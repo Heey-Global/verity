@@ -110,6 +110,15 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('read_wiki_page'),
+      // Relative to /knowledge; list a directory or read one text file.
+      path: z.string().trim().min(1).max(512),
+      list: z.boolean().optional(),
+      offset: z.number().int().min(0).max(4_000_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('read_wiki_occasions'),
       // Without an id: the open occasions. With one: its text from `offset` on.
       id: z.string().trim().min(1).max(100).optional(),
@@ -156,7 +165,8 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
   'Propose Wiki changes with propose_wiki instead of writing them when the user has not confirmed the concrete change: mode inline offers one change in chat at a natural conclusion (at most one per answer), mode maintenance is for maintenance runs. Each change names a Wiki page path (relative to `/knowledge/insights`, Markdown, never log.md or decisions), its complete new content and a one-line summary; sources cite the knowledge paths or URLs it rests on. The server records the base version and appends log.md when a person applies it; changes already applied, rejected or proposed are skipped. ' +
   "In a Wiki maintenance run, read_wiki_occasions without id lists what happened in the project since the last run (oldest first); with an id it returns that occasion and a page of its kept text from offset, with nextOffset while more follows. close_wiki_occasions marks the read versions (id and createdAt as listed) done after their proposals were made; it also drops their kept text. Both work only in the project's maintenance session. " +
-  'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
+  'Use read_wiki_page to read a relevant text file by its /knowledge-relative path (insights, sources, .text, or shared equivalents); set list to true to list a directory. Follow nextOffset for bounded pages. Maintenance runs use this tool instead of filesystem tools. ' +
+  'Outside maintenance runs, read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   'When the user explicitly confirms a project decision, record it in the current turn using verity_knowledge record_decision, without requiring a separate save request. Preserve the stated rationale and confirmation reference; do not treat suggestions or hypotheses as decisions. Ask before storing sensitive information or disputed interpretations. Look up related decisions first and use predecessor id and digest only when replacement is confirmed; ask when the relationship is uncertain. Acknowledge persistence only after the tool succeeds, linking its returned path. Before answering project decision questions, use lookup_decisions to read relevant current records and cite their document paths and provenance. Surface unresolved conflicts, invalid records, missing evidence and persistence errors. Recognition and retrieval still depend on the model; a successful receipt proves storage only. ' +

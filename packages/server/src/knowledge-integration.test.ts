@@ -792,6 +792,11 @@ it('admits only the Wiki operations from the isolated maintenance turn', async (
   try {
     const listed = await h.agent({ operation: 'read_wiki_occasions' });
     expect(listed.isError).toBeUndefined();
+    mkdirSync(join(h.dataRoot, 'knowledge/p/insights'), { recursive: true });
+    writeFileSync(join(h.dataRoot, 'knowledge/p/insights/index.md'), '# Project Wiki');
+    const page = await h.agent({ operation: 'read_wiki_page', path: 'insights/index.md' });
+    expect(page.isError).toBeUndefined();
+    expect(JSON.parse(page.content[0]!.text)).toMatchObject({ text: '# Project Wiki' });
     const lookup = await h.agent({ operation: 'lookup_decisions' });
     expect(lookup.isError).toBe(true);
     expect(lookup.content[0]!.text).toContain('planning mode');

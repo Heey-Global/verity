@@ -7,6 +7,10 @@ module.exports = {
   bundleIdentifier: '.watchkitapp',
   deploymentTarget: '11.0',
   icon: '../../assets/brand/verity-v-app-icon-source.png',
+  images: {
+    VerityMarkOriginal: '../../assets/brand/verity-v-mark.png',
+    VerityLauncherArtwork: '../../assets/brand/verity-v-app-icon-source.png',
+  },
   colors: { $accent: '#ff35da' },
   frameworks: ['SwiftUI', 'AVFoundation', 'WatchConnectivity'],
 };

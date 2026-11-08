@@ -9,6 +9,8 @@ function fixture() {
   let networkName = '';
   let bridge = '';
   let removed = false;
+  let networkRemoved = false;
+  let failRemoval = false;
   let foreign = false;
   let replaced = false;
   let denyFails = false;
@@ -39,7 +41,16 @@ function fixture() {
     },
     async docker(args) {
       calls.push([...args]);
-      if (args[0] === 'network' && args[1] === 'ls') return '';
+      if (args[0] === 'network' && args[1] === 'ls')
+        return args.includes('--filter') && !networkRemoved ? networkId : '';
+      if (args[0] === 'container' && args[1] === 'ls') return removed ? '' : containerId;
+      if (args[0] === 'network' && args[1] === 'rm') {
+        if (failRemoval) {
+          failRemoval = false;
+          throw new Error('removal reply lost');
+        }
+        networkRemoved = true;
+      }
       if (args[0] === 'network' && args[1] === 'create') {
         networkName = args.at(-1)!;
         bridge = args[args.indexOf('--opt') + 1]!.split('=')[1]!;
@@ -57,6 +68,8 @@ function fixture() {
           },
         ]);
       if (args[0] === 'container' && args[1] === 'create') return containerId;
+      if (args[0] === 'container' && args[1] === 'inspect' && removed)
+        throw new Error('No such container');
       if (args[0] === 'container' && args[1] === 'inspect')
         return JSON.stringify([
           {
@@ -107,6 +120,9 @@ function fixture() {
   return {
     io,
     calls,
+    failRemoval() {
+      failRemoval = true;
+    },
     failDeny() {
       denyFails = true;
     },
@@ -236,4 +252,40 @@ it('removes owned stopped anchors after reboot without requiring the old namespa
   f.replace();
   await network.remove(anchor, async () => true);
   expect(f.calls.at(-1)).toEqual(['remove-deny']);
+});
+
+it('resumes cleanup after removing the anchor and failing network removal', async () => {
+  const f = fixture();
+  const networks = new ProtectedBuildNetworks(f.io);
+  const anchor = await networks.create('project-a', 'attempt-a');
+  f.failRemoval();
+  await expect(networks.remove(anchor, async () => true)).rejects.toThrow('reply lost');
+  expect(f.calls.some((call) => call[0] === 'remove-deny')).toBe(false);
+  await networks.remove(anchor, async () => true);
+  await networks.remove(anchor, async () => true);
+  expect(f.calls.filter((call) => call[0] === 'container' && call[1] === 'rm')).toHaveLength(1);
+  expect(f.calls.at(-1)).toEqual(['remove-deny']);
+});
+
+it('retains denial on an inventory query failure during cleanup', async () => {
+  const f = fixture();
+  const networks = new ProtectedBuildNetworks(f.io);
+  const anchor = await networks.create('project-a', 'attempt-a');
+  const docker = f.io.docker.bind(f.io);
+  f.io.docker = async (args) => {
+    if (args[1] === 'ls') throw new Error('daemon unreachable');
+    return docker(args);
+  };
+  await expect(networks.remove(anchor, async () => true)).rejects.toThrow('daemon unreachable');
+  expect(f.calls.some((call) => call[0] === 'remove-deny')).toBe(false);
+});
+it('rechecks foreign network attachments after partial cleanup', async () => {
+  const f = fixture();
+  const networks = new ProtectedBuildNetworks(f.io);
+  const anchor = await networks.create('project-a', 'attempt-a');
+  f.failRemoval();
+  await expect(networks.remove(anchor, async () => true)).rejects.toThrow('reply lost');
+  f.foreign();
+  await expect(networks.remove(anchor, async () => true)).rejects.toThrow('attachment mismatch');
+  expect(f.calls.some((call) => call[0] === 'remove-deny')).toBe(false);
 });

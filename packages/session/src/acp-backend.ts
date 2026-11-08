@@ -140,8 +140,10 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
-  /** The agent enforces {@link RunTurnOptions.gatewayToolsOnly} through `sessionMeta`. */
+  /** The profile enforces {@link RunTurnOptions.gatewayToolsOnly} via metadata or broker policy. */
   readonly enforcesGatewayToolsOnly?: boolean | undefined;
+  /** Native tool restrictions are installed by the spawn broker, not ACP metadata. */
+  readonly gatewayToolsViaBroker?: boolean | undefined;
   /** An answered `session/load` error that, besides `resourceNotFound`, names a
    *  conversation the agent does not have — for an adapter that reports it some
    *  other way. Only for answers that are about the conversation itself. */
@@ -593,6 +595,12 @@ export async function runAcpTurn(
       env: opts.env ?? process.env,
       keepStdinOpen: true,
       ...(opts.planning === true ? { planning: true } : {}),
+      ...(opts.gatewayToolsOnly === true && profile.gatewayToolsViaBroker === true
+        ? {
+            gatewayToolsOnly: true,
+            ...(opts.model !== undefined ? { gatewayToolsModel: opts.model } : {}),
+          }
+        : {}),
     });
   let child = spawn();
   const startupRecoveryDeadline = Date.now() + 16 * 60_000;

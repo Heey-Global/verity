@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.88.0](https://github.com/Heey-Global/verity/compare/mobile-v1.87.0...mobile-v1.88.0) (2026-11-08)
+
+
+### Bug Fixes
+
+* **mobile:** highlight the complete selected session row ([#2427](https://github.com/Heey-Global/verity/issues/2427)) ([479361b](https://github.com/Heey-Global/verity/commit/479361bda6e8986eb50ab590cc2885c654b6f5b3))
+* **mobile:** return reselected tabs to their root ([#2429](https://github.com/Heey-Global/verity/issues/2429)) ([8af19f1](https://github.com/Heey-Global/verity/commit/8af19f194f17a68807cf6ce83e049ea0d526a136))
+* **watch:** align branding and add actionable Home items ([#2430](https://github.com/Heey-Global/verity/issues/2430)) ([146926d](https://github.com/Heey-Global/verity/commit/146926d7edb7959925d93467a4cce829dd3936d5))
+
 ## [1.87.0](https://github.com/Heey-Global/verity/compare/mobile-v1.86.0...mobile-v1.87.0) (2026-11-08)
 
 

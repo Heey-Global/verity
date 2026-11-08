@@ -1,3 +1,7 @@
+import {
+  inventoryFailureReason,
+  ProjectEgressInventoryError,
+} from './project-egress-inventory-error.js';
 import { request } from 'node:http';
 import {
   ProjectEgressHealthError,
@@ -95,6 +99,23 @@ export function createProjectEgressHostClient(options: {
                   typeof refused === 'object' && refused !== null && 'reason' in refused
                     ? refused.reason
                     : undefined;
+                const inventoryReason = inventoryFailureReason(reason);
+                if (command.operation.startsWith('inventory-') && inventoryReason) {
+                  clearTimeout(timer);
+                  abort.abort();
+                  const correlationId =
+                    typeof refused === 'object' &&
+                    refused !== null &&
+                    'correlationId' in refused &&
+                    typeof refused.correlationId === 'string' &&
+                    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(
+                      refused.correlationId,
+                    )
+                      ? refused.correlationId
+                      : undefined;
+                  reject(new ProjectEgressInventoryError(inventoryReason, correlationId));
+                  return;
+                }
                 fail(
                   command.operation === 'health' && reason === 'mandatory_inventory_incomplete'
                     ? reason
@@ -107,15 +128,18 @@ export function createProjectEgressHostClient(options: {
               );
               if (
                 command.operation === 'inventory-begin' ||
+                command.operation === 'inventory-abort' ||
                 command.operation === 'inventory-commit' ||
                 command.operation === 'inventory-renew'
               ) {
                 if (
                   !('token' in result) ||
                   result.state !==
-                    (command.operation === 'inventory-begin'
-                      ? 'inventory-denied'
-                      : 'inventory-ready') ||
+                    (command.operation === 'inventory-abort'
+                      ? 'inventory-aborted'
+                      : command.operation === 'inventory-begin'
+                        ? 'inventory-denied'
+                        : 'inventory-ready') ||
                   result.token !== command.token
                 )
                   throw new Error('Mismatched inventory acknowledgement');

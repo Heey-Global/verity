@@ -247,3 +247,60 @@ it('names the operation and project on a failed command, and nothing else', asyn
   const health = await command({ operation: 'health' }).catch((error: unknown) => error);
   expect({ ...(health as object) }).toStrictEqual({ reason: 'timeout', operation: 'health' });
 });
+
+it.each([
+  'inventory_busy',
+  'inventory_lease_expired',
+  'inventory_dns_failed',
+  'inventory_persistence_failed',
+  'inventory_fencing_failed',
+])('preserves fixed non-health refusal %s without disclosing raw host errors', async (reason) => {
+  const command = await fixture((req, res) => {
+    req.resume();
+    res.writeHead(409).end(JSON.stringify({ reason, error: 'private endpoint token' }));
+  });
+  await expect(
+    command({ operation: 'inventory-begin', token: '12345678-1234-4234-8234-123456789012' }),
+  ).rejects.toMatchObject({ reason, message: reason });
+  await expect(command(start)).rejects.toMatchObject({ reason: 'host_not_ready' });
+});
+it('rejects unknown inventory reasons and malformed refusal JSON safely', async () => {
+  for (const body of [JSON.stringify({ reason: 'private secret' }), '{']) {
+    const command = await fixture((req, res) => {
+      req.resume();
+      res.writeHead(409).end(body);
+    });
+    await expect(
+      command({ operation: 'inventory-begin', token: '12345678-1234-4234-8234-123456789012' }),
+    ).rejects.toMatchObject({ reason: body === '{' ? 'protocol_mismatch' : 'host_not_ready' });
+  }
+});
+
+it('requires a matching cancellation acknowledgement without claiming global denial', async () => {
+  const token = '12345678-1234-4234-8234-123456789012';
+  let state = 'inventory-aborted';
+  const command = await fixture((req, res) => {
+    req.resume();
+    res.end(JSON.stringify({ state, token }));
+  });
+  await expect(command({ operation: 'inventory-abort', token })).resolves.toEqual({ state, token });
+  state = 'inventory-denied';
+  await expect(command({ operation: 'inventory-abort', token })).rejects.toMatchObject({
+    reason: 'protocol_mismatch',
+  });
+});
+
+it('retains only bounded correlation IDs from inventory refusals', async () => {
+  for (const correlationId of ['12345678-1234-4234-8234-123456789012', 'private endpoint query']) {
+    const command = await fixture((req, res) => {
+      req.resume();
+      res.writeHead(409).end(JSON.stringify({ reason: 'inventory_busy', correlationId }));
+    });
+    await expect(
+      command({ operation: 'inventory-begin', token: '12345678-1234-4234-8234-123456789012' }),
+    ).rejects.toMatchObject({
+      reason: 'inventory_busy',
+      correlationId: correlationId.startsWith('1234') ? correlationId : undefined,
+    });
+  }
+});

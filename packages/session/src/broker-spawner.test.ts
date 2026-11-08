@@ -19,6 +19,8 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   materializeTrustedCliEntryScript,
+  materializeManagedAgentHome,
+  restrictedCodexModelCatalog,
   sessionHomePath,
   validateTrustedCliArguments,
   agentLaunchSpec,
@@ -1425,7 +1427,11 @@ function base64(text: string): string {
 }
 
 async function startScriptedBroker(
-  capabilities: Record<string, unknown> = { managedAgentConfig: true, planningIsolation: true },
+  capabilities: Record<string, unknown> = {
+    managedAgentConfig: true,
+    planningIsolation: true,
+    gatewayToolsOnlyVersion: 1,
+  },
 ): Promise<ScriptedBroker> {
   const socketPath = join(scriptedDir, `scripted-${randomUUID().slice(0, 8)}.sock`);
   const requests: Record<string, unknown>[] = [];
@@ -1489,7 +1495,12 @@ describe('broker spawner protocol handling', () => {
   /** Connect the spawner to `broker` and wait until its `spawn-agent` frame lands. */
   async function connect(
     broker: ScriptedBroker,
-    options: { keepStdinOpen?: boolean; stdin?: string; planning?: boolean } = {},
+    options: {
+      keepStdinOpen?: boolean;
+      stdin?: string;
+      planning?: boolean;
+      gatewayToolsOnly?: boolean;
+    } = {},
   ) {
     const handle = createBrokerSpawner(broker.socketPath)('claude-agent-acp', [], {
       cwd: scriptedDir,
@@ -1506,6 +1517,26 @@ describe('broker spawner protocol handling', () => {
     expect(await broker.spawnRequest).toMatchObject({ planning: true });
     broker.send({ ok: true, kind: 'exit', code: 0 });
     await handle.exited;
+  });
+
+  it('carries native tool isolation through the broker frame', async () => {
+    const broker = await startScriptedBroker();
+    const handle = await connect(broker, { gatewayToolsOnly: true });
+    expect(await broker.spawnRequest).toMatchObject({ gatewayToolsOnly: true });
+    broker.send({ ok: true, kind: 'exit', code: 0 });
+    await handle.exited;
+  });
+
+  it('refuses tool isolation on a broker that only supports managed homes', async () => {
+    const broker = await startScriptedBroker({ managedAgentConfig: true });
+    const handle = createBrokerSpawner(broker.socketPath)('codex-acp', [], {
+      cwd: scriptedDir,
+      env: {},
+      gatewayToolsOnly: true,
+      gatewayToolsModel: 'codex/gpt-6.1',
+    });
+    await expect(handle.exited).resolves.toBe(1);
+    expect(broker.requests.some((frame) => frame.kind === 'spawn-agent')).toBe(false);
   });
 
   it('refuses a stale broker without starting an agent', async () => {
@@ -1916,6 +1947,110 @@ describe('private trusted CLI workspace reads', () => {
       } finally {
         getuid.mockRestore();
         await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe('broker-owned native tool restrictions', () => {
+  it('rejects native tool policy combined with the separate knowledge runtime', async () => {
+    const spawnChild = vi.fn();
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      spawnChild,
+    });
+    try {
+      const response = await new Promise<string>((done, reject) => {
+        let text = '';
+        const socket = createConnection(broker.socketPath);
+        socket.on('error', reject);
+        socket.on('data', (chunk: Buffer) => {
+          text += chunk.toString();
+        });
+        socket.on('close', () => done(text));
+        socket.on('connect', () =>
+          socket.write(
+            JSON.stringify({
+              protocolVersion: 1,
+              kind: 'spawn-agent',
+              command: 'codex-acp',
+              args: [],
+              cwd: runtimeDir,
+              knowledgeIsolation: true,
+              gatewayToolsOnly: true,
+              gatewayToolsModel: 'codex/gpt-6.1',
+            }) + '\n',
+          ),
+        );
+      });
+      expect(response).toContain('Native tool isolation cannot use the separate knowledge runtime');
+      expect(spawnChild).not.toHaveBeenCalled();
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it.each(['codex-acp', 'opencode-acp'] as const)(
+    'materializes restrictive policy for %s',
+    async (command) => {
+      const models = join(runtimeDir, 'models.json');
+      await writeFile(models, JSON.stringify({ provider: { verity: { models: { probe: {} } } } }));
+      const isolated = await materializeManagedAgentHome(
+        {
+          command,
+          gatewayToolsOnly: true,
+          gatewayToolsModel: 'codex/gpt-6.1',
+        },
+        {
+          runtimeDir,
+          enforceRoot: false,
+          agentUid: process.getuid!(),
+          agentGid: process.getgid!(),
+          env: { OPENCODE_CONFIG: models },
+        },
+        'http://127.0.0.1:1',
+      );
+      try {
+        if (command === 'codex-acp') {
+          const config = await readFile(join(isolated.home, 'codex', 'config.toml'), 'utf8');
+          expect(config).toContain('shell_tool = false');
+          expect(config).toContain('web_search = "disabled"');
+          expect(config).toContain('[tools.experimental_request_user_input]\nenabled = false');
+          const catalog = JSON.parse(
+            await readFile(join(isolated.home, 'codex', 'restricted-models.json'), 'utf8'),
+          ) as { models: Record<string, unknown>[] };
+          expect(catalog).toEqual(restrictedCodexModelCatalog('codex/gpt-6.1'));
+          expect(catalog.models).toEqual([
+            expect.objectContaining({
+              shell_type: 'disabled',
+              apply_patch_tool_type: null,
+              tool_mode: null,
+              experimental_supported_tools: [],
+            }),
+          ]);
+        } else {
+          const config = JSON.parse(
+            await readFile(join(isolated.home, 'config', 'opencode.json'), 'utf8'),
+          ) as { policies: unknown[]; permissions: unknown[] };
+          expect(config.policies).toEqual(
+            expect.arrayContaining([
+              { action: 'tool.use', resource: '*', effect: 'deny' },
+              { action: 'tool.use', resource: 'verity_*:*', effect: 'allow' },
+              { action: 'skill.use', resource: '*', effect: 'deny' },
+              { action: 'plugin.use', resource: '*', effect: 'deny' },
+            ]),
+          );
+          expect(config.permissions).toEqual([
+            { action: '*', resource: '*', effect: 'deny' },
+            { action: 'verity_*', resource: '*', effect: 'allow' },
+          ]);
+        }
+      } finally {
+        await isolated.cleanup();
       }
     },
   );

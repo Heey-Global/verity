@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.87.1](https://github.com/Heey-Global/verity/compare/mobile-v1.87.0...mobile-v1.87.1) (2026-11-08)
+
+
+### Features
+
+* **wiki:** run Wiki maintenance when something new happened ([#2423](https://github.com/Heey-Global/verity/issues/2423)) ([9e49efa](https://github.com/Heey-Global/verity/commit/9e49efab816364fe05bd52723d3063fa1826c703))
+
+
+### Bug Fixes
+
+* **mobile:** highlight the complete selected session row ([#2427](https://github.com/Heey-Global/verity/issues/2427)) ([479361b](https://github.com/Heey-Global/verity/commit/479361bda6e8986eb50ab590cc2885c654b6f5b3))
+* **mobile:** return reselected tabs to their root ([#2429](https://github.com/Heey-Global/verity/issues/2429)) ([8af19f1](https://github.com/Heey-Global/verity/commit/8af19f194f17a68807cf6ce83e049ea0d526a136))
+* **wiki:** restrict maintenance to Verity tools across backends ([#2428](https://github.com/Heey-Global/verity/issues/2428)) ([00fcae0](https://github.com/Heey-Global/verity/commit/00fcae027545df6263e41a3453e25b700e687358))
+
 ## [1.86.3](https://github.com/Heey-Global/verity/compare/mobile-v1.86.2...mobile-v1.86.3) (2026-11-08)
 
 

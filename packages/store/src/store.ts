@@ -1728,8 +1728,8 @@ export class EventStore implements EventSink {
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher, (action) =>
-      this.egressDestinationMutation(action),
+    this.integrations = new IntegrationStore(db, cipher, (action, changesDestinations) =>
+      this.egressDestinationMutation(action, changesDestinations),
     );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
@@ -4210,7 +4210,11 @@ export class EventStore implements EventSink {
         ),
       ])
       .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`);
+      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
+      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
+      .where(
+        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
+      );
     if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
     if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
     if (input.cursor !== undefined) {

@@ -124,6 +124,8 @@ export function agentLaunchSpec(
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     knowledgeIsolation?: boolean;
     planning?: boolean;
+    gatewayToolsOnly?: boolean;
+    gatewayToolsModel?: string;
     knowledgeHome?: string;
     managedHome?: string;
     args: string[];
@@ -136,6 +138,8 @@ export function materializeManagedAgentHome(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     planning?: boolean;
+    gatewayToolsOnly?: boolean;
+    gatewayToolsModel?: string;
     sessionEnv?: Record<string, string>;
   },
   options: AgentSpawnBrokerOptions,
@@ -307,3 +311,15 @@ export function runnerStackHealth(options?: {
   memoryGuard: boolean;
   connector: boolean;
 }>;
+
+export function restrictedCodexModelCatalog(model: string): { models: Record<string, unknown>[] };
+export function restrictedOpenCodePermissions(): {
+  action: string;
+  resource: string;
+  effect: string;
+}[];
+export function restrictedOpenCodePolicies(): {
+  action: string;
+  resource: string;
+  effect: string;
+}[];

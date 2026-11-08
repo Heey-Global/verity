@@ -1,3 +1,4 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { expect, it, vi } from 'vitest';
 import {
   createManagedSystemInventory,
@@ -152,7 +153,10 @@ it('leaves the host fenced when the source transaction fails', async () => {
   await expect(synchronize.mutate(() => Promise.reject(new Error('write failed')))).rejects.toThrow(
     'write failed',
   );
-  expect(command.mock.calls.map(([request]) => request.operation)).toEqual(['inventory-begin']);
+  expect(command.mock.calls.map(([request]) => request.operation)).toEqual([
+    'inventory-begin',
+    'inventory-abort',
+  ]);
 });
 
 it('serializes preactivation writes with opt-in and skips controller and DB work while disabled', async () => {
@@ -211,4 +215,223 @@ it('does not persist or renew when the inventory contract cannot be read', async
   await expect(synchronize.refresh()).rejects.toThrow('invalid contract');
   expect(action).not.toHaveBeenCalled();
   expect(transaction).not.toHaveBeenCalled();
+});
+
+it('releases failed replacement immediately while preserving denial and fixed reasons', async () => {
+  const replace = vi.fn<() => Promise<void>>(async () => {
+    throw new Error('private DNS or disk details');
+  });
+  const inventory = createManagedSystemInventory({ managed: true, replace, invalidate: vi.fn() });
+  inventory.begin('one');
+  await expect(inventory.commit('one', [])).rejects.toMatchObject({
+    reason: 'inventory_replace_failed',
+  });
+  expect(inventory.ready()).toBe(false);
+  inventory.begin('two');
+  inventory.abort('one');
+  expect(() => inventory.begin('three')).toThrow('inventory_busy');
+  replace.mockResolvedValue(undefined);
+  await inventory.commit('two', []);
+  expect(inventory.ready()).toBe(true);
+  inventory.abort('one');
+  expect(inventory.ready()).toBe(true);
+  inventory.abort('two');
+  expect(inventory.ready()).toBe(false);
+  expect(() => inventory.renew(projectEgressSystemInventoryHash([]))).toThrow();
+  inventory.begin('three');
+});
+
+it('does not release a newer lease or acknowledge a late commit', async () => {
+  let now = 0;
+  let release!: () => void;
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    now: () => now,
+    invalidate: vi.fn(),
+    replace: () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  });
+  inventory.begin('old');
+  const commit = inventory.commit('old', []);
+  now = 30_001;
+  inventory.begin('new');
+  release();
+  await expect(commit).rejects.toMatchObject({ reason: 'inventory_lease_expired' });
+  inventory.abort('old');
+  expect(() => inventory.begin('third')).toThrow('inventory_busy');
+  expect(inventory.ready()).toBe(false);
+  inventory.abort('new');
+  inventory.begin('third');
+});
+
+it('retries after source rollback without waiting for the host lease', async () => {
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    invalidate: vi.fn(),
+    replace: async () => undefined,
+  });
+  const operations: string[] = [];
+  const sync = createProjectEgressInventorySynchronizer({
+    transaction: (action) => action(),
+    readUrls: async () => [],
+    command: async (request) => {
+      operations.push(request.operation);
+      if (request.operation === 'inventory-begin') inventory.begin(request.token);
+      else if (request.operation === 'inventory-abort') inventory.abort(request.token);
+      else if (request.operation === 'inventory-commit')
+        await inventory.commit(request.token, request.hosts, request.addresses);
+      else throw new Error('Unexpected operation');
+      return {
+        state: request.operation === 'inventory-commit' ? 'inventory-ready' : 'inventory-denied',
+        token: request.token,
+      };
+    },
+  });
+  await expect(
+    sync.mutate(async () => {
+      throw new Error('rollback');
+    }),
+  ).rejects.toThrow('rollback');
+  expect(inventory.ready()).toBe(false);
+  await sync.mutate(async () => undefined);
+  expect(inventory.ready()).toBe(true);
+  expect(operations).toEqual([
+    'inventory-begin',
+    'inventory-abort',
+    'inventory-begin',
+    'inventory-commit',
+  ]);
+});
+
+it('aborts a host commit if the surrounding SQL commit fails', async () => {
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    invalidate: vi.fn(),
+    replace: async () => undefined,
+  });
+  const sync = createProjectEgressInventorySynchronizer({
+    readUrls: async () => [],
+    transaction: async (action) => {
+      await action();
+      throw new Error('SQL commit failed');
+    },
+    command: async (request) => {
+      if (request.operation === 'inventory-begin') inventory.begin(request.token);
+      else if (request.operation === 'inventory-commit')
+        await inventory.commit(request.token, request.hosts, request.addresses);
+      else if (request.operation === 'inventory-abort') inventory.abort(request.token);
+      else throw new Error('Unexpected');
+      return {
+        state: request.operation === 'inventory-commit' ? 'inventory-ready' : 'inventory-denied',
+        token: request.token,
+      };
+    },
+  });
+  await expect(sync.mutate(async () => undefined)).rejects.toThrow('SQL commit failed');
+  expect(inventory.ready()).toBe(false);
+  inventory.begin('retry');
+});
+
+it('evaluates unchanged-destination predicates under the serialized transaction without host commands', async () => {
+  const command = vi.fn();
+  let locked = false;
+  const sync = createProjectEgressInventorySynchronizer({
+    command,
+    readUrls: async () => [],
+    transaction: async (action) => {
+      locked = true;
+      try {
+        return await action();
+      } finally {
+        locked = false;
+      }
+    },
+  });
+  const changes = vi.fn(async () => {
+    expect(locked).toBe(true);
+    return false;
+  });
+  await expect(
+    sync.mutate(async () => {
+      expect(locked).toBe(true);
+      return 'updated';
+    }, changes),
+  ).resolves.toBe('updated');
+  expect(changes).toHaveBeenCalledOnce();
+  expect(command).not.toHaveBeenCalled();
+});
+
+it.each(['inventory_dns_failed', 'inventory_persistence_failed'] as const)(
+  'preserves %s and retries immediately after a failed host replacement',
+  async (reason) => {
+    const replace = vi.fn<() => Promise<void>>(async () => {
+      throw new ProjectEgressInventoryError(reason);
+    });
+    const inventory = createManagedSystemInventory({ managed: true, replace, invalidate: vi.fn() });
+    inventory.begin('failed');
+    await expect(inventory.commit('failed', [])).rejects.toMatchObject({ reason });
+    expect(inventory.ready()).toBe(false);
+    inventory.begin('retry');
+    replace.mockResolvedValue(undefined);
+    await inventory.commit('retry', []);
+    expect(inventory.ready()).toBe(true);
+  },
+);
+
+it('retains denial and bounded expiry when the connection loses Begin and Abort acknowledgements', async () => {
+  let now = 0;
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    now: () => now,
+    replace: async () => undefined,
+    invalidate: vi.fn(),
+  });
+  const sync = createProjectEgressInventorySynchronizer({
+    transaction: (action) => action(),
+    readUrls: async () => [],
+    command: async (request) => {
+      if (request.operation === 'inventory-begin') inventory.begin(request.token);
+      throw new Error('connection lost');
+    },
+  });
+  await expect(sync.mutate(async () => undefined)).rejects.toThrow('connection lost');
+  expect(inventory.ready()).toBe(false);
+  expect(() => inventory.begin('retry')).toThrow('inventory_busy');
+  now = 30_001;
+  inventory.begin('retry');
+  await inventory.commit('retry', []);
+  expect(inventory.ready()).toBe(true);
+});
+
+it('does not revoke a newer completed snapshot when an older replacement finishes late', async () => {
+  let now = 0;
+  let release!: () => void;
+  const replace = vi
+    .fn<() => Promise<void>>()
+    .mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    )
+    .mockResolvedValue(undefined);
+  const inventory = createManagedSystemInventory({
+    managed: true,
+    now: () => now,
+    replace,
+    invalidate: vi.fn(),
+  });
+  inventory.begin('old');
+  const oldCommit = inventory.commit('old', []);
+  now = 30_001;
+  inventory.begin('new');
+  await inventory.commit('new', []);
+  expect(inventory.ready()).toBe(true);
+  release();
+  await expect(oldCommit).rejects.toMatchObject({ reason: 'inventory_lease_expired' });
+  expect(inventory.ready()).toBe(true);
+  inventory.abort('old');
+  expect(inventory.ready()).toBe(true);
 });

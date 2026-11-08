@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { protectedBuildAttemptDirectory } from '../packages/server/src/project-egress-build-host.js';
 const helper = resolve('deploy/buildkit/protected-build-attempt');
 
 describe('fixed protected build native helper', () => {
@@ -86,9 +87,9 @@ else: raise AssertionError('empty whitelist falsely accepted')
   });
   it('uses a private metadata daemon endpoint and never imports through the host Engine', () => {
     const source = readFileSync(helper, 'utf8');
-    expect(source).toContain("'DOCKER_HOST': 'unix://' + str(directory / 'docker.sock')");
+    expect(source).toContain("'DOCKER_HOST': 'unix://' + str(directory / 'd')");
     expect(source).toContain("'--host', env['DOCKER_HOST']");
-    expect(source).toContain("'unix://' + str(directory / 'buildkit.sock')");
+    expect(source).toContain("'unix://' + str(directory / 'b')");
     expect(source).toContain("'type=docker,dest=' + str(directory / 'image.tar')");
     expect(source).not.toContain("['/usr/bin/docker', 'load'");
   });
@@ -190,4 +191,22 @@ print('network-tools-inherited')
     { encoding: 'utf8' },
   );
   expect(output.trim()).toBe('network-tools-inherited');
+});
+
+it('keeps every native Unix socket pathname within the Linux address limit', () => {
+  const directory = protectedBuildAttemptDirectory({
+    projectId: 'a'.repeat(128),
+    attemptId: 'b'.repeat(128),
+  });
+  const source = readFileSync(helper, 'utf8');
+  const sockets = [...source.matchAll(/directory \/ '([^']+)'/gu)]
+    .map((match) => match[1]!)
+    .filter((name) => ['n', 'd', 'b', 'o'].includes(name) || name.endsWith('.sock'));
+  expect(new Set(sockets).size).toBe(4);
+  for (const name of sockets)
+    expect(Buffer.byteLength(directory + '/' + name)).toBeLessThanOrEqual(107);
+  const host = readFileSync(resolve('packages/server/src/project-egress-build-host.ts'), 'utf8');
+  const dnsName = /const path = join\(folder\(request\), '([^']+)'\)/u.exec(host)![1]!;
+  expect(source).toContain("start_dns(directory / '" + dnsName + "')");
+  expect(Buffer.byteLength(directory + '/' + dnsName)).toBeLessThanOrEqual(107);
 });
