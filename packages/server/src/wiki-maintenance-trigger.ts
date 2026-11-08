@@ -35,8 +35,9 @@ export const WIKI_MAINTENANCE_PROMPT =
   'Skill and follow its "Maintenance run" steps: read the open occasions with ' +
   'verity_wiki_read_occasions, turn what belongs in the Wiki into proposals with ' +
   'verity_wiki_propose in mode maintenance, then close the occasions you read with ' +
-  'verity_wiki_close_occasions. Never change Wiki files directly in this run and do not ask ' +
-  'questions; end with one short sentence on what you proposed.';
+  'verity_wiki_close_occasions. This turn is read-only: read Wiki pages and sources with ' +
+  'ordinary file tools under /knowledge, change no file, do not try to leave plan mode or ' +
+  'present a plan, and ask no questions. End with one short sentence on what you proposed.';
 
 export type WikiMaintenanceDecision =
   | { run: true }

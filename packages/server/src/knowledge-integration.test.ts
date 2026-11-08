@@ -59,7 +59,7 @@ beforeEach(async () => {
 });
 afterEach(() => rmSync(sessionWorktree, { recursive: true, force: true }));
 
-async function setup() {
+async function setup(options: { planningTurn?: boolean } = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'verity-knowledge-data-'));
   const authRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
   await authRegistry.register('device-token', 'knowledge-test-device');
@@ -88,6 +88,7 @@ async function setup() {
       runBackendHandoff: async (_id: string, operation: () => Promise<unknown>) => operation(),
       clearQueue: async () => {},
       closeSession,
+      isPlanningTurn: () => options.planningTurn === true,
     } as unknown as Conductor,
     internalPathGuard: requestArrivedInternally,
     authRegistry,
@@ -778,6 +779,22 @@ it('lets only the Wiki maintenance run read and close occasions, and hides its s
     });
     expect(sessions.statusCode).toBe(200);
     expect(sessions.json()).toEqual([]);
+  } finally {
+    await h.close();
+  }
+});
+
+// The run is isolated like planning. Its Wiki operations still reach the server;
+// every other external tool, including the rest of the knowledge tool, does not.
+it('admits only the Wiki operations from the isolated maintenance turn', async () => {
+  await ctx.store.wikiMaintenance.setSession('p', 's');
+  const h = await setup({ planningTurn: true });
+  try {
+    const listed = await h.agent({ operation: 'read_wiki_occasions' });
+    expect(listed.isError).toBeUndefined();
+    const lookup = await h.agent({ operation: 'lookup_decisions' });
+    expect(lookup.isError).toBe(true);
+    expect(lookup.content[0]!.text).toContain('planning mode');
   } finally {
     await h.close();
   }

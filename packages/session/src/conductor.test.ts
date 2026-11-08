@@ -454,6 +454,42 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().gatewayToolsOnly).not.toBe(true);
   });
 
+  // The run reads untrusted transcripts unattended; a request for wider rights,
+  // a recovered turn or a queued one must not lift its read-only posture.
+  it('runs the Wiki maintenance session read-only and without web tools', async () => {
+    await ctx.store.createProject({
+      id: 'wp',
+      owner: 'team',
+      repo: 'wp',
+      containerName: 'wp',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'wiki',
+      worktree: '/wt/wiki',
+      model: 'm',
+      projectId: 'wp',
+    });
+    await ctx.store.wikiMaintenance.setSession('wp', 'wiki');
+    await ctx.store.createSession({ sessionId: 'plain', worktree: '/wt/plain', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('wiki', 'Maintain the Wiki', {
+      permissionMode: 'bypassPermissions',
+      disallowedTools: ['Task'],
+    });
+    expect(fake.last().planning).toBe(true);
+    expect(fake.last().permissionMode).toBe('plan');
+    expect(fake.last().disallowedTools).toEqual(['Task', 'WebFetch', 'WebSearch']);
+    await conductor.sendTurn('plain', 'Continue', { permissionMode: 'bypassPermissions' });
+    expect(fake.last().planning).not.toBe(true);
+    expect(fake.last().permissionMode).toBe('bypassPermissions');
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi

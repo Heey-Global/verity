@@ -259,7 +259,13 @@ one. Its fixed assignment points the agent to the `wiki-maintain` Skill, which
 reads the occasions with `verity_wiki_read_occasions` (a list, then each kept text
 in pages of 40,000 characters), proposes changes with `verity_wiki_propose` in
 mode `maintenance` and closes what it read with `verity_wiki_close_occasions`.
-Only the maintenance session may read or close occasions. The results appear as
+Only the maintenance session may read or close occasions.
+
+Because the run reads untrusted text with nobody watching, its posture belongs to
+the session, not to the request: every turn of the maintenance session runs with
+the same read-only isolation as planning (read-only file system, no Docker) and
+without web tools, also when it is recovered or queued. The gateway then refuses
+every external tool except the occasion operations and `propose_wiki`. The results appear as
 proposals to review on the Wiki; the run itself changes no page.
 
 ## Wiki proposals
