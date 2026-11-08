@@ -105,7 +105,7 @@ export function HomeInbox({
   // The watch lists the same items under "Needs you" (targets/VerityWatch).
   // The account the items were read for: taken when their sources arrive, so a
   // list still from the previous account is never sent under the next one.
-  const itemsScope = useMemo(() => taskAccountScope(), [sessions, projects]);
+  const itemsScope = useMemo(() => taskAccountScope(), [sessions, projects, meetings]);
   // The clock tick resends an unchanged list now and then, so its time stays true.
   useEffect(() => {
     const signedIn = taskAccountScope();
