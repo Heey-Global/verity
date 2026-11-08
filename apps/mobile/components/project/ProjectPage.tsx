@@ -342,7 +342,7 @@ function ProjectContent({
           onPress={() => onOpenKnowledge(area)}
         />
       ))}
-      <ProjectTasksRow client={client} projectId={id} />
+      <ProjectTasksRow client={client} project={detail.project} />
       {repositories !== undefined && repositories.length > 0 ? (
         <ProjectRepositoriesRow projectId={id} repositories={repositories} />
       ) : null}

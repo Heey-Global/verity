@@ -173,6 +173,7 @@ export function Row({
   expanded,
   tag,
   answers,
+  action,
   wrap = false,
 }: {
   title: string;
@@ -204,6 +205,10 @@ export function Row({
   /** Compact buttons that answer what the row waits on, in a strip under it and
    *  outside its pressable area, so VoiceOver reaches each one. */
   answers?: ReactNode;
+  /** One icon button at the row's end, beside its pressable area rather than
+   *  inside it, so a row that opens its subject can still offer one action and
+   *  VoiceOver reaches both. Takes the place of `trailing`. */
+  action?: ReactNode;
   /** Shows the whole title however many lines it takes, for a row whose title
    *  is the thing to read and decide on — an answer in full. */
   wrap?: boolean;
@@ -235,6 +240,12 @@ export function Row({
         choice ? (
           selected ? (
             <Icon name="check" size={18} color={theme.colors.action} />
+          ) : undefined
+        ) : action !== undefined ? (
+          // Beside a pressable row the action is drawn outside it, below; in a
+          // plain row it simply is the trailing element. Either way it replaces it.
+          onPress === undefined ? (
+            action
           ) : undefined
         ) : (
           trailing
@@ -279,6 +290,7 @@ export function Row({
       }
       style={({ pressed }) => [
         styles.row,
+        action !== undefined ? styles.rowBesideAction : null,
         disabled ? styles.muted : settled ? styles.settled : null,
         pressed && !disabled ? styles.pressed : null,
         active ? styles.rowActive : null,
@@ -287,13 +299,23 @@ export function Row({
       {content}
     </Pressable>
   );
+  const body =
+    action !== undefined ? (
+      // The action dims itself when disabled; the wrapper must not dim it again.
+      <View style={styles.withAction}>
+        {pressable}
+        <View style={styles.action}>{action}</View>
+      </View>
+    ) : (
+      pressable
+    );
   return strip ? (
     <View>
-      {pressable}
+      {body}
       {strip}
     </View>
   ) : (
-    pressable
+    body
   );
 }
 
@@ -536,6 +558,13 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing.md + theme.spacing.xxs,
   },
   rowActive: { backgroundColor: tint(theme.colors.action, 'fill') },
+  withAction: { flexDirection: 'row', alignItems: 'center' },
+  // The action brings the row's end padding; the pressable keeps its start.
+  rowBesideAction: { flex: 1, paddingRight: 0 },
+  action: {
+    paddingLeft: theme.spacing.md,
+    paddingRight: theme.spacing.md + theme.spacing.xxs,
+  },
   pressed: { backgroundColor: tint(theme.colors.text, 'neutral') },
   // Under the row's text, so the answers read as belonging to it.
   answers: {

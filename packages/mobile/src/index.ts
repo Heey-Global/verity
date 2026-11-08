@@ -694,7 +694,7 @@ export {
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
 
-export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {
   cancelSessionSwitch,
   exportSessionSwitchTimings,

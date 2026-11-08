@@ -191,6 +191,10 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     at the start of the subtitle line instead (`tag`), so the title keeps the full width
     beside the chevron. A subtitle that does not fit beside the tag continues on the next
     line at the full width rather than wrapping into a narrow column next to it.
+  - **Action (optional):** a row that opens its subject may still offer one icon button at
+    its end (`action`), drawn beside the pressable area rather than inside it, so
+    VoiceOver reaches both. It takes the place of the trailing element. The hand-over to
+    Verity on a task or issue row is the one use today.
   - **Answers (optional):** a row that waits on a decision the operator can make in place
     (a question's options, a repair) shows those answers as small answer buttons (an
     `action` outline and label without the primary's tonal fill, so they read as
@@ -210,6 +214,12 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 - A row that opens something may keep its secondary actions (rename, favorite, delete)
   behind a long press (`onLongPress`), never behind a second button in the row. The
   `accessibilityHint` names them, since a long press is invisible.
+- **Swipe actions** (`SwipeableSessionRow`): rows of things the operator keeps — sessions,
+  tasks — swipe like an iOS list. Left reveals Edit and Delete; right reveals the leading
+  action, which is the favorite star on a session and Done (or Reopen) on a task. A long
+  swipe fires the outermost action; a browser's right-click opens the same actions as a
+  menu. With a screen reader on, a task row shows its actions as answers under it, since
+  a swipe is out of reach.
 
 ### 5.2a Log list
 
@@ -376,6 +386,12 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   answers there.
 - **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
   half outside it. On a phone's Home it steps back, since Home has her header and field.
+- **Hand-over:** her flat V in the square icon button (40, `control` corners, the default
+  border) at the end of a task or issue row hands the item to her; a tap starts the work
+  at once, with no confirmation. This and the floating V are the only places her
+  `signature` mark is tappable. Its label names the action and the item ("Let Verity
+  start: …"). Once a session has the item, the button gives way: the row's tile carries
+  the session's state mark and the row opens the session.
 - **Attribution:** a small V mark may identify Verity's recommendation inside an inbox
   item. Keep the originating project and role visible. Meeting-specific newest-answer
   borders do not automatically apply to inbox cards.

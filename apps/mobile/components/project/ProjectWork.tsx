@@ -27,6 +27,7 @@ import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import type { InboxFeed } from '../home/HomeInbox';
+import { isActive } from '../../lib/sessionActivity';
 import { AnswerButtons, AnswerSheet } from './AnswerSheet';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
 import { SwipeableSessionRow } from '../SessionRowActions';
@@ -91,14 +92,7 @@ const IN_PLACE: ReadonlySet<InboxAction['kind']> = new Set([
   'repair_project',
 ]);
 
-/** Working on a turn or a background task, or waiting on another session. */
-export function isActive(session: SessionSummary): boolean {
-  return (
-    session.status === 'running' ||
-    session.status === 'awaiting_dependency' ||
-    session.backgroundWorking === true
-  );
-}
+export { isActive };
 
 function hasRunningCi(session: SessionSummary): boolean {
   const pr = session.pr ?? session.pullRequest;
