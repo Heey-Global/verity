@@ -34,7 +34,7 @@ describe('Sheet anchored at its end', () => {
     // A conversation that opened at its top showed old entries instead of the last answer.
     fireEvent(scroll, 'contentSizeChange', 390, 2000);
     expect(toEnd).toHaveBeenLastCalledWith({ animated: false });
-    fireEvent.scroll(scroll, scrollEvent(1400 - 10));
+    fireEvent(scroll, 'scrollEndDrag', scrollEvent(1400 - 10));
     fireEvent(scroll, 'contentSizeChange', 390, 2200);
     expect(toEnd).toHaveBeenLastCalledWith({ animated: true });
     expect(toEnd).toHaveBeenCalledTimes(2);
@@ -43,7 +43,7 @@ describe('Sheet anchored at its end', () => {
   it('leaves a reader who scrolled up where they are', () => {
     const { toEnd, scroll } = renderSheet(true);
     fireEvent(scroll, 'contentSizeChange', 390, 2000);
-    fireEvent.scroll(scroll, scrollEvent(200));
+    fireEvent(scroll, 'momentumScrollEnd', scrollEvent(200));
     fireEvent(scroll, 'contentSizeChange', 390, 2200);
     expect(toEnd).toHaveBeenCalledTimes(1);
   });
@@ -52,5 +52,15 @@ describe('Sheet anchored at its end', () => {
     const { toEnd, scroll } = renderSheet(false);
     fireEvent(scroll, 'contentSizeChange', 390, 2000);
     expect(toEnd).not.toHaveBeenCalled();
+  });
+
+  it('keeps following while its own scroll to the end is still under way', () => {
+    const { toEnd, scroll } = renderSheet(true);
+    fireEvent(scroll, 'contentSizeChange', 390, 2000);
+    fireEvent(scroll, 'contentSizeChange', 390, 2200);
+    // Mid-animation the offset is far from the end; that is not the reader leaving.
+    fireEvent.scroll(scroll, scrollEvent(200));
+    fireEvent(scroll, 'contentSizeChange', 390, 2400);
+    expect(toEnd).toHaveBeenCalledTimes(3);
   });
 });

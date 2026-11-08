@@ -65,6 +65,11 @@ export function Sheet({
   // Until the reader scrolls away from the end, growing content keeps it in view.
   const following = useRef(true);
   const placed = useRef(false);
+  const settleFollowing = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    following.current =
+      contentSize.height - contentOffset.y - layoutMeasurement.height < FOLLOW_DISTANCE;
+  };
   useEffect(() => {
     if (!visible) {
       following.current = true;
@@ -156,13 +161,10 @@ export function Sheet({
             bounces={false}
             {...(anchorEnd
               ? {
-                  scrollEventThrottle: 64,
-                  onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-                    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-                    following.current =
-                      contentSize.height - contentOffset.y - layoutMeasurement.height <
-                      FOLLOW_DISTANCE;
-                  },
+                  // Only where the reader stops scrolling decides; the sheet's own
+                  // animated scroll to the end must not switch following off.
+                  onScrollEndDrag: settleFollowing,
+                  onMomentumScrollEnd: settleFollowing,
                   onContentSizeChange: () => {
                     if (!following.current) return;
                     // The first placement jumps; later growth scrolls visibly.

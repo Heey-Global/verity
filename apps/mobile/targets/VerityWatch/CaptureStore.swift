@@ -305,8 +305,9 @@ final class CaptureStore: NSObject, ObservableObject {
         let inbox = WatchInbox(context: reply)
         Task { @MainActor in
           if let snapshot { self.receive(snapshot) }
-          // The iPhone leaves `inbox` out when it has none (signed out).
-          self.inbox = inbox
+          // No `inbox` part only means the iPhone has none yet (a background
+          // launch); a sign-out is hidden by the account check in the view.
+          if let inbox { self.inbox = inbox }
         }
       }, errorHandler: nil)
   }
@@ -529,7 +530,7 @@ extension CaptureStore: WCSessionDelegate {
       self.phoneReachable = reachable
       if let list { self.receive(list) }
       self.receive(snapshot)
-      self.inbox = inbox
+      if let inbox { self.inbox = inbox }
       if activationState == .activated {
         self.resend()
         self.refreshVerity()
@@ -542,12 +543,13 @@ extension CaptureStore: WCSessionDelegate {
   ) {
     let list = ProjectList(context: applicationContext)
     let snapshot = VeritySnapshot(context: applicationContext)
-    // Without an `inbox` part the iPhone signed out or has none to send.
+    // Without an `inbox` part the iPhone has not listed Home yet; keep the last
+    // list. After a sign-out the account check in the view hides it.
     let inbox = WatchInbox(context: applicationContext)
     Task { @MainActor in
       if let list { self.receive(list) }
       self.receive(snapshot)
-      self.inbox = inbox
+      if let inbox { self.inbox = inbox }
     }
   }
 
