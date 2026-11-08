@@ -24939,6 +24939,7 @@ var FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
 // node_modules/@verity/events/dist/knowledge-tool.js
 var import_zod7 = __toESM(require_zod(), 1);
 var sourcePath = import_zod7.z.string().trim().min(1).max(512).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.startsWith(".") && !part.includes("\\") && !part.includes("\0")));
+var singleLine = import_zod7.z.string().trim().min(1).regex(/^[^\p{Cc}]*$/u, "must be a single line without control characters");
 var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
   import_zod7.z.object({
     operation: import_zod7.z.literal("record_decision"),
@@ -24980,12 +24981,13 @@ var knowledgeToolRequestSchema = import_zod7.z.discriminatedUnion("operation", [
     mode: import_zod7.z.enum(["inline", "maintenance"]),
     logKind: import_zod7.z.enum(["setup", "ingest", "chat", "merge", "lint"]).optional(),
     title: import_zod7.z.string().trim().min(1).max(160),
-    sources: import_zod7.z.array(import_zod7.z.string().trim().min(1).max(512)).min(1).max(20),
+    // Sources and summaries become lines of log.md and the review: one line each.
+    sources: import_zod7.z.array(singleLine.max(512)).min(1).max(20),
     changes: import_zod7.z.array(import_zod7.z.object({
-      path: import_zod7.z.string().trim().min(1).max(512),
-      content: import_zod7.z.string().max(2e5),
-      summary: import_zod7.z.string().trim().min(1).max(500)
-    }).strict()).min(1).max(20)
+      path: singleLine.max(512),
+      content: import_zod7.z.string().max(1e5),
+      summary: singleLine.max(500)
+    }).strict()).min(1).max(20).refine((changes) => changes.reduce((total, change) => total + change.content.length, 0) <= 4e5, "a proposal holds at most 400,000 characters of page content")
   }).strict(),
   import_zod7.z.object({
     operation: import_zod7.z.literal("publish_shared"),

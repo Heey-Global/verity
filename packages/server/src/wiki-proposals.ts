@@ -91,7 +91,7 @@ const RESERVED = new Set([posix.basename(WIKI_LOG)]);
  * `insights/x.md` and `x.md`.
  */
 export function proposalPagePath(path: string): string {
-  const trimmed = path.trim().replace(/^\/knowledge\//, '');
+  const trimmed = path.trim().replace(/^\/?knowledge\//, '');
   const relative = trimmed.startsWith('insights/') ? trimmed.slice('insights/'.length) : trimmed;
   const parts = relative.split('/');
   if (
@@ -115,7 +115,7 @@ const logTitle = (title: string) => title.replace(/\s+/g, ' ').trim();
 
 /** A log link from `insights/log.md` to a knowledge path or a web source. */
 function logLink(target: string, text: string): string {
-  const label = text.replace(/[[\]]/g, '\\$&');
+  const label = logTitle(text).replace(/[[\]]/g, '\\$&');
   if (/^https?:\/\/[^\s()<>]+$/i.test(target)) return `- [${label}](${target})`;
   const knowledge = target.replace(/^\/knowledge\//, '');
   const href = knowledge.startsWith('insights/')
@@ -245,9 +245,19 @@ export class WikiProposals {
   }
 
   async get(projectId: string, id: string) {
-    const proposal = (await this.all(projectId)).find((candidate) => candidate.id === id);
-    if (!proposal) throw new WikiProposalError(404, 'Wiki proposal not found');
-    return this.view(proposal);
+    return this.view(await this.one(projectId, id));
+  }
+
+  /** One proposal, read from its own file. */
+  private async one(projectId: string, id: string): Promise<WikiProposal> {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new WikiProposalError(404, 'Wiki proposal not found');
+    try {
+      return JSON.parse(
+        await readFile(join(this.dir(projectId), `${id}.json`), 'utf8'),
+      ) as WikiProposal;
+    } catch {
+      throw new WikiProposalError(404, 'Wiki proposal not found');
+    }
   }
 
   /** A proposal with each pending change's current page, to compare and to tell stale. */
@@ -302,9 +312,7 @@ export class WikiProposals {
   ) {
     const release = await this.lock(projectId);
     try {
-      const existing = await this.all(projectId);
-      const proposal = existing.find((candidate) => candidate.id === id);
-      if (!proposal) throw new WikiProposalError(404, 'Wiki proposal not found');
+      const proposal = await this.one(projectId, id);
       const selected = paths?.map(proposalPagePath);
       const targets = proposal.changes.filter(
         (change) => change.status === 'pending' && (!selected || selected.includes(change.path)),
@@ -340,7 +348,7 @@ export class WikiProposals {
         await this.appendLog(proposal, applied).catch((error: unknown) => {
           failure ??= error instanceof Error ? error : new Error(String(error));
         });
-      if (proposal.decidedAt) await this.prune(projectId, [...existing]);
+      if (proposal.decidedAt) await this.prune(projectId);
       this.wiki.onChange?.(projectId);
       if (failure) throw failure;
       return { applied, stale, proposal: await this.view(proposal) };
@@ -373,8 +381,8 @@ export class WikiProposals {
   }
 
   /** Keeps the newest decided proposals; older ones no longer block a repeat. */
-  private async prune(projectId: string, proposals: WikiProposal[]): Promise<void> {
-    const decided = proposals.filter((proposal) => proposal.decidedAt !== null);
+  private async prune(projectId: string): Promise<void> {
+    const decided = (await this.all(projectId)).filter((proposal) => proposal.decidedAt !== null);
     for (const old of decided.slice(0, Math.max(0, decided.length - MAX_DECIDED_WIKI_PROPOSALS)))
       await unlink(join(this.dir(projectId), `${old.id}.json`)).catch(() => undefined);
   }

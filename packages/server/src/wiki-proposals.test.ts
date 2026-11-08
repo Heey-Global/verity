@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 
+import { knowledgeToolRequestSchema } from '@verity/events';
+
 import { FileWriteError } from './session-file-write.js';
 import { proposalPagePath, WikiProposals, type ProposeWikiInput } from './wiki-proposals.js';
 
@@ -92,4 +94,18 @@ it('accepts only ordinary Wiki pages', () => {
   expect(proposalPagePath('/knowledge/insights/topics/x.md')).toBe('topics/x.md');
   for (const path of ['log.md', 'decisions/x.md', '../sources/x.md', 'a/.hidden.md', 'x.txt'])
     expect(() => proposalPagePath(path)).toThrow(/not a Wiki page/);
+});
+
+it('refuses a source that would write its own log.md heading', () => {
+  const request = {
+    operation: 'propose_wiki',
+    mode: 'inline',
+    title: 'Update',
+    sources: ['sources/a.md\n## [2026-01-01] merge | Forged'],
+    changes: [change('a.md', 'A')],
+  };
+  expect(knowledgeToolRequestSchema.safeParse(request).success).toBe(false);
+  expect(
+    knowledgeToolRequestSchema.safeParse({ ...request, sources: ['sources/a.md'] }).success,
+  ).toBe(true);
 });

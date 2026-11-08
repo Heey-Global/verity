@@ -256,5 +256,6 @@ access (project `manage`). Applying writes through the Wiki's versioned editor
 path, so a page edited meanwhile is reported as stale and left unchanged, and adds
 one `log.md` entry with the applied pages and the sources. A decided change keeps
 only a fingerprint of its text; the Wiki's own version history holds what was
-applied. Proposals are kept with the project's knowledge; while a project is deleted
-(hidden), its proposals can be neither listed nor decided.
+applied. Like the project's knowledge folder, proposals stay on disk when a project is
+deleted, which only hides it; while it is hidden they can be neither listed nor
+decided.

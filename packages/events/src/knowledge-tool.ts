@@ -19,6 +19,12 @@ const sourcePath = z
       ),
   );
 
+const singleLine = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[^\p{Cc}]*$/u, 'must be a single line without control characters');
+
 /**
  * Agents read and write project knowledge as files under `/knowledge`; this tool
  * brokers the two writes that cross read-only knowledge mount boundaries.
@@ -81,19 +87,25 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
       mode: z.enum(['inline', 'maintenance']),
       logKind: z.enum(['setup', 'ingest', 'chat', 'merge', 'lint']).optional(),
       title: z.string().trim().min(1).max(160),
-      sources: z.array(z.string().trim().min(1).max(512)).min(1).max(20),
+      // Sources and summaries become lines of log.md and the review: one line each.
+      sources: z.array(singleLine.max(512)).min(1).max(20),
       changes: z
         .array(
           z
             .object({
-              path: z.string().trim().min(1).max(512),
-              content: z.string().max(200_000),
-              summary: z.string().trim().min(1).max(500),
+              path: singleLine.max(512),
+              content: z.string().max(100_000),
+              summary: singleLine.max(500),
             })
             .strict(),
         )
         .min(1)
-        .max(20),
+        .max(20)
+        .refine(
+          (changes) =>
+            changes.reduce((total, change) => total + change.content.length, 0) <= 400_000,
+          'a proposal holds at most 400,000 characters of page content',
+        ),
     })
     .strict(),
   z
