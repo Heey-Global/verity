@@ -230,4 +230,5 @@ A merged pull request is recorded once even when the status cache reports it aga
 after a restart; a chat day or re-filed meeting opens its occasion again. A
 maintenance run closes only the version it read, so an occasion reopened while the
 run works stays open with its new text. Until a maintenance run reads them, open
-occasions and their kept text remain stored; deleting the project removes them.
+occasions and their kept text remain stored, also while a deleted project is
+hidden; they are removed only with the project's database row.
