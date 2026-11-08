@@ -147,7 +147,8 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 | Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
 - Sizes: **large 48** (full width, pinned at the bottom of a flow), **compact 36** (inside
-  cards and rows, as wide as its label), **icon 40** (square, one symbol).
+  cards and rows, as wide as its label), **small 32** (a row's answers, 13 semibold),
+  **icon 40** (square, one symbol).
 - States: default, pressed, disabled, loading. Loading keeps the label, adds a spinner in
   front and keeps the width; the button is locked while loading.
 - At most one primary button per screen. Labels are verbs ("Activate", "Copy", "Remove key"),
@@ -185,14 +186,24 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
     title never wraps to make room. The trailing side takes at most 45 % of the row; a
     status longer than that truncates, so the title is never squeezed. The chevron `›`
-    appears only when the row navigates.
+    appears only when the row navigates. An inbox row ("Needs you") puts its status tag
+    at the start of the subtitle line instead (`tag`), so the title keeps the full width
+    beside the chevron.
   - **Answers (optional):** a row that waits on a decision the operator can make in place
-    (a question's options, a repair) shows those answers as compact buttons in a strip
-    under it, aligned with the title, the first one primary. The strip sits outside the
+    (a question's options, a repair) shows those answers as small secondary buttons in a
+    strip under it, aligned with the title. None is primary: a list holds many such rows,
+    and a primary in each would leave the screen without a single main action. Sending one
+    answer locks only that row's answers; the other rows stay answerable. Up to three answers
+    of at most 24 characters show as buttons; otherwise the strip holds one "N answers"
+    button that opens a sheet listing every answer in full under the question, since a
+    sentence cut or wrapped into a pill is nothing to decide from. A row's answers move
+    together, never half in place and half in the sheet. The strip sits outside the
     row's pressable area, so VoiceOver reaches each button; the row itself still opens
     its subject. Rows without such a decision never carry one.
-- States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
-  border with glow).
+- States: default, pressed (slightly darker surface), disabled (40 %), settled (60 %),
+  selected (`action` border with glow). Settled marks a row whose subject is finished and
+  only kept around — a session whose pull request merged — so it recedes while staying
+  fully usable.
 - A row that opens something may keep its secondary actions (rename, favorite, delete)
   behind a long press (`onLongPress`), never behind a second button in the row. The
   `accessibilityHint` names them, since a long press is invisible.
@@ -274,14 +285,19 @@ title; a log list keeps them dense and scannable.
 
 ### 5.5b Usage ring
 
-- One quota window as a small ring (`UsageRing`): the arc is the share used, a short
-  notch across the ring marks where usage would sit now at an even pace, and the window's
+- One quota window as a small ring (`UsageRing`): the arc is the share used, filling
+  clockwise from 12 o'clock, a short line across the ring in `textMuted` marks how much
+  of the window has passed (where usage would sit now at an even pace), and the window's
   name (`5h`, `W`) sits inside in `Caption`.
-- A meter is a state, never an action or brand moment: the arc is `textMuted` while there
-  is room, `text` from 90 % and `attention` once the window is spent. A spent window has
-  no pace left to keep and draws no notch.
-- The reset time stands beside the ring. A figure appears only from 90 % (`93%`) or as
-  `Limit` in `attention`; below that the ring and notch carry the reading.
+- The arc is the reading, so it is the brightest mark: `text` while there is room and
+  `attention` once the window is spent. Both ends are round and inset by half a stroke,
+  so the arc starts exactly at 12 o'clock and ends exactly at the used share; a full ring
+  and a sliver shorter than the stroke have straight ends instead. The pace
+  line cuts a gap in `surface` through the arc so it stays readable on top of it. A spent
+  window has no pace left to keep and draws no line.
+- A meter is a state, never an action or brand moment. The reset time stands beside the
+  ring. A figure appears only from 90 % (`93%`) or as `Limit` in `attention`; below that
+  the ring and pace line carry the reading.
 - A window a provider does not report is left out, not drawn empty. Provider marks are
   monochrome in `text`.
 - The ring is decoration for the text beside it; the group around it carries the spoken

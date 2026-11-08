@@ -277,3 +277,16 @@ export {
   AGENT_SKILL_CATALOG,
   AGENT_SKILL_MANIFEST_HASH,
 } from './agent-assets.generated.js';
+export {
+  markdownLinks,
+  resolveKnowledgeLink,
+  WIKI_INDEX,
+  WIKI_LOG,
+  wikiCatalogSchema,
+  type KnowledgePath,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiReviewItem,
+  type WikiTopic,
+} from './knowledge-wiki.js';

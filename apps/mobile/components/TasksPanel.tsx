@@ -1,4 +1,6 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Icon } from './Icon';
+import { FileRowActions } from './files/FileRowActions';
 import { TaskIssuesList } from './TaskIssuesList';
 import { createVerityClient } from '../lib/client';
 import {
@@ -16,7 +18,6 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  PanResponder,
   Pressable,
   Text,
   TextInput,
@@ -27,8 +28,6 @@ import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyb
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { openTaskAttachment } from '../lib/taskAttachments';
-import type { AttachAnchor } from '../lib/attachMenu';
-import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 import { dispatchTasks } from '../lib/taskDispatch';
 import { patchTask, removeTask, resolveTaskConflict, useTasks } from '../lib/tasksStore';
 
@@ -73,15 +72,6 @@ export function TaskListBody({
   const busyRef = useRef(false);
   const [dispatching, setDispatching] = useState<'new' | 'existing' | null>(null);
   const [undo, setUndo] = useState<string[]>([]);
-  const [menu, setMenu] = useState<{ task: Task; anchor: AttachAnchor } | null>(null);
-  const anchors = useRef(new Map<string, View>());
-  // The "…" card opens pinned to the row's own button, like the chat's message menu.
-  const openMenu = (task: Task) =>
-    anchors.current
-      .get(task.id)
-      ?.measureInWindow((x, y, width, height) =>
-        setMenu({ task, anchor: { x, y, width, height } }),
-      );
   const preferences = useTaskPreferences();
   const selectedProjectId =
     suppliedContext.projectId ??
@@ -272,12 +262,6 @@ export function TaskListBody({
     </Pressable>
   );
   const row = (task: Task) => {
-    const pan = PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 20 && Math.abs(g.dx) > Math.abs(g.dy),
-      onPanResponderRelease: (_, g) => {
-        if (Math.abs(g.dx) > 40) openMenu(task);
-      },
-    });
     const isDone = task.status === 'done';
     const descriptionFirst =
       !!task.detail &&
@@ -302,201 +286,210 @@ export function TaskListBody({
     const canImplement = implementable(task);
     const inThisProject = context.sessionId !== null && task.projectId === context.projectId;
     return (
-      <View key={task.id} {...pan.panHandlers} style={styles.row}>
-        <View style={styles.rowMain}>
-          <Pressable
-            disabled={busy}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: isDone }}
-            accessibilityLabel={isDone ? 'Reopen task' : 'Complete task'}
-            hitSlop={8}
-            onPress={() => complete(task)}
-            style={styles.check}
-          >
-            <Icon
-              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
-              size={20}
-              color={
-                isDone
-                  ? theme.colors.success
-                  : task.status === 'in_progress'
-                    ? theme.colors.action
-                    : theme.colors.textFaint
-              }
-            />
-          </Pressable>
-          {/* The text is the editor: tap to change it, leave the field to save. */}
-          <View style={styles.rowBody}>
-            {descriptionFirst && isDone ? (
-              <Text selectable style={styles.title}>
-                {task.detail}
-              </Text>
-            ) : descriptionFirst ? (
-              <TaskTitleInput
-                key="description"
-                task={{ ...task, title: task.detail! }}
-                onSave={(detail) => patchTask(task, { detail })}
-              />
-            ) : isDone ? (
-              <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
-            ) : (
-              <TaskTitleInput
-                key="title"
-                task={task}
-                onSave={(title) =>
-                  patchTask(task, { title }).catch((error: unknown) => {
-                    Alert.alert(
-                      'Could not save task',
-                      error instanceof Error ? error.message : 'Try again',
-                    );
-                    throw error;
-                  })
+      <FileRowActions
+        key={task.id}
+        label={task.title}
+        disabled={busy}
+        onMove={() => setMoving(task)}
+        onDelete={() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))}
+      >
+        <View style={styles.row}>
+          <View style={styles.rowMain}>
+            <Pressable
+              disabled={busy}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: isDone }}
+              accessibilityLabel={isDone ? 'Reopen task' : 'Complete task'}
+              hitSlop={8}
+              onPress={() => complete(task)}
+              style={styles.check}
+            >
+              <Icon
+                name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
+                size={20}
+                color={
+                  isDone
+                    ? theme.colors.success
+                    : task.status === 'in_progress'
+                      ? theme.colors.action
+                      : theme.colors.textFaint
                 }
               />
-            )}
-            <Text style={styles.meta}>{meta}</Text>
-            {task.detail && !descriptionFirst ? (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ expanded: descriptions.includes(task.id) }}
-                  onPress={() =>
-                    setDescriptions((ids) =>
-                      ids.includes(task.id)
-                        ? ids.filter((id) => id !== task.id)
-                        : [...ids, task.id],
-                    )
+            </Pressable>
+            {/* The text is the editor: tap to change it, leave the field to save. */}
+            <View style={styles.rowBody}>
+              {descriptionFirst && isDone ? (
+                <Text selectable style={styles.title}>
+                  {task.detail}
+                </Text>
+              ) : descriptionFirst ? (
+                <TaskTitleInput
+                  key="description"
+                  task={{ ...task, title: task.detail! }}
+                  onSave={(detail) => patchTask(task, { detail })}
+                />
+              ) : isDone ? (
+                <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
+              ) : (
+                <TaskTitleInput
+                  key="title"
+                  task={task}
+                  onSave={(title) =>
+                    patchTask(task, { title }).catch((error: unknown) => {
+                      Alert.alert(
+                        'Could not save task',
+                        error instanceof Error ? error.message : 'Try again',
+                      );
+                      throw error;
+                    })
                   }
-                >
-                  <Text style={styles.link}>
-                    {descriptions.includes(task.id) ? 'Hide description' : 'Show description'}
-                  </Text>
-                </Pressable>
-                {descriptions.includes(task.id) ? (
-                  <Text selectable style={styles.description}>
-                    {task.detail}
-                  </Text>
-                ) : null}
-              </>
-            ) : null}
-          </View>
-          <Pressable
-            ref={(node) => {
-              if (node) anchors.current.set(task.id, node);
-              else anchors.current.delete(task.id);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Task actions"
-            hitSlop={8}
-            onPress={() => openMenu(task)}
-            style={styles.more}
-          >
-            <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
-          </Pressable>
-        </View>
-        {conflicts.includes(task.id) ? (
-          <View style={styles.indent}>
-            <Text accessibilityRole="alert" style={styles.conflict}>
-              {errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.'}
-            </Text>
-            <View style={styles.chips}>
-              {chip('Keep my edit', () => {
-                void run(() => resolveTaskConflict(task.id, true));
-              })}
-              {chip('Use server version', () => {
-                void run(() => resolveTaskConflict(task.id, false));
-              })}
+                />
+              )}
+              <Text style={styles.meta}>{meta}</Text>
+              {task.detail && !descriptionFirst ? (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: descriptions.includes(task.id) }}
+                    onPress={() =>
+                      setDescriptions((ids) =>
+                        ids.includes(task.id)
+                          ? ids.filter((id) => id !== task.id)
+                          : [...ids, task.id],
+                      )
+                    }
+                  >
+                    <Text style={styles.link}>
+                      {descriptions.includes(task.id) ? 'Hide description' : 'Show description'}
+                    </Text>
+                  </Pressable>
+                  {descriptions.includes(task.id) ? (
+                    <Text selectable style={styles.description}>
+                      {task.detail}
+                    </Text>
+                  ) : null}
+                </>
+              ) : null}
             </View>
           </View>
-        ) : null}
-        {undo.includes(task.id) ? (
-          <Pressable style={styles.indent} onPress={() => complete(task)}>
-            <Text style={styles.link}>Undo</Text>
-          </Pressable>
-        ) : null}
-        {task.attachments.map((attachment, index) => (
-          <Pressable
-            key={attachment.hash}
-            style={styles.indent}
-            onPress={() => {
-              void run(() => openTaskAttachment(task, index, pending));
-            }}
-          >
-            <Text style={styles.link} numberOfLines={1}>
-              ↗ {attachment.filename}
-            </Text>
-          </Pressable>
-        ))}
-        {task.sessionId && task.sessionId !== context.sessionId ? (
-          <Pressable
-            style={styles.indent}
-            onPress={() => {
-              onLeave();
-              router.push({ pathname: '/session/[id]', params: { id: task.sessionId! } });
-            }}
-          >
-            <Text style={styles.link}>↳ Open session</Text>
-          </Pressable>
-        ) : null}
-        {canImplement ? (
-          <View style={[styles.chips, styles.indent]}>
-            {inThisProject
-              ? chip('↳ This Session', () => implement([task], context.sessionId!), {
-                  accent: true,
-                })
-              : null}
-            {chip('+ New Session', () => implement([task]))}
-          </View>
-        ) : null}
-      </View>
+          {conflicts.includes(task.id) ? (
+            <View style={styles.indent}>
+              <Text accessibilityRole="alert" style={styles.conflict}>
+                {errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.'}
+              </Text>
+              <View style={styles.chips}>
+                {chip('Keep my edit', () => {
+                  void run(() => resolveTaskConflict(task.id, true));
+                })}
+                {chip('Use server version', () => {
+                  void run(() => resolveTaskConflict(task.id, false));
+                })}
+              </View>
+            </View>
+          ) : null}
+          {undo.includes(task.id) ? (
+            <Pressable style={styles.indent} onPress={() => complete(task)}>
+              <Text style={styles.link}>Undo</Text>
+            </Pressable>
+          ) : null}
+          {task.attachments.map((attachment, index) => (
+            <Pressable
+              key={attachment.hash}
+              style={styles.indent}
+              onPress={() => {
+                void run(() => openTaskAttachment(task, index, pending));
+              }}
+            >
+              <Text style={styles.link} numberOfLines={1}>
+                ↗ {attachment.filename}
+              </Text>
+            </Pressable>
+          ))}
+          {task.sessionId && task.sessionId !== context.sessionId ? (
+            <Pressable
+              style={styles.indent}
+              onPress={() => {
+                onLeave();
+                router.push({ pathname: '/session/[id]', params: { id: task.sessionId! } });
+              }}
+            >
+              <Text style={styles.link}>↳ Open session</Text>
+            </Pressable>
+          ) : null}
+          {canImplement ? (
+            <View style={[styles.chips, styles.indent]}>
+              {inThisProject
+                ? chip('↳ This Session', () => implement([task], context.sessionId!), {
+                    accent: true,
+                  })
+                : null}
+              {chip('+ New Session', () => implement([task]))}
+            </View>
+          ) : null}
+        </View>
+      </FileRowActions>
     );
   };
   const agentRow = (task: Task) => {
     const isDone = task.status === 'done';
     return (
-      <View key={task.id} style={styles.row}>
-        <View style={styles.rowMain}>
-          <View style={styles.check}>
-            <Icon
-              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
-              size={20}
-              color={
-                isDone
-                  ? theme.colors.success
-                  : task.status === 'in_progress'
-                    ? theme.colors.action
-                    : theme.colors.textFaint
-              }
-            />
+      <FileRowActions
+        key={task.id}
+        label={task.title}
+        disabled={busy}
+        deleteLabel="Drop step"
+        moveLabel="Move to my tasks"
+        onMove={() => {
+          void run(() =>
+            patchTask(task, {
+              origin: 'user',
+              sessionId: null,
+              ...(isDone ? {} : { status: 'open' as const }),
+            }),
+          );
+        }}
+        onDelete={() =>
+          confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' }))
+        }
+      >
+        <View style={styles.row}>
+          <View style={styles.rowMain}>
+            <Pressable
+              disabled={busy}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: isDone }}
+              accessibilityLabel={isDone ? 'Reopen step' : 'Complete step'}
+              onPress={() => complete(task)}
+              hitSlop={8}
+              style={styles.check}
+            >
+              <Icon
+                name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
+                size={20}
+                color={
+                  isDone
+                    ? theme.colors.success
+                    : task.status === 'in_progress'
+                      ? theme.colors.action
+                      : theme.colors.textFaint
+                }
+              />
+            </Pressable>
+            <View style={styles.rowBody}>
+              <Text style={[styles.title, isDone ? styles.titleDone : null]}>{task.title}</Text>
+              <Text style={styles.meta}>
+                {isDone ? 'done' : task.status === 'in_progress' ? 'in progress' : 'open'} ·{' '}
+                {taskAge(task.createdAt)}
+              </Text>
+            </View>
           </View>
-          <View style={styles.rowBody}>
-            <Text style={[styles.title, isDone ? styles.titleDone : null]}>{task.title}</Text>
-            <Text style={styles.meta}>
-              {isDone ? 'done' : task.status === 'in_progress' ? 'in progress' : 'open'} ·{' '}
-              {taskAge(task.createdAt)}
-            </Text>
-          </View>
-          <Pressable
-            ref={(node) => {
-              if (node) anchors.current.set(task.id, node);
-              else anchors.current.delete(task.id);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Step actions"
-            accessibilityHint="Opens step actions"
-            onPress={() => openMenu(task)}
-            style={styles.more}
-            hitSlop={8}
-          >
-            <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
-          </Pressable>
+          {undo.includes(task.id) ? (
+            <Pressable style={styles.indent} onPress={() => complete(task)}>
+              <Text style={styles.link}>Undo</Text>
+            </Pressable>
+          ) : null}
         </View>
-        {undo.includes(task.id) ? (
-          <Pressable style={styles.indent} onPress={() => complete(task)}>
-            <Text style={styles.link}>Undo</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      </FileRowActions>
     );
   };
   // iOS will not present an alert while the menu's modal is still fading out,
@@ -519,71 +512,7 @@ export function TaskListBody({
       350,
     );
   };
-  const menuItems = (task: Task): ActionMenuItem[] => {
-    const isDone = task.status === 'done';
-    const close = (work: () => void) => () => {
-      setMenu(null);
-      work();
-    };
-    if (task.origin === 'agent')
-      return [
-        ...(isDone
-          ? []
-          : [
-              {
-                icon: 'check-circle' as const,
-                title: 'Mark done',
-                subtitle: 'The agent no longer needs to do this',
-                onPress: close(() => complete(task)),
-              },
-            ]),
-        {
-          icon: 'corner-up-left',
-          title: 'Move to my tasks',
-          subtitle: 'Keep it in your own list',
-          onPress: close(() => {
-            void run(() =>
-              patchTask(task, {
-                origin: 'user',
-                sessionId: null,
-                // Adopted work starts fresh in the operator's list.
-                ...(isDone ? {} : { status: 'open' as const }),
-              }),
-            );
-          }),
-        },
-        {
-          icon: 'x-circle',
-          title: 'Drop step',
-          subtitle: 'Remove it from the agent’s plan',
-          destructive: true,
-          onPress: close(() =>
-            confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' })),
-          ),
-        },
-      ];
-    return [
-      {
-        icon: isDone ? 'rotate-ccw' : 'check-circle',
-        title: isDone ? 'Reopen' : 'Mark done',
-        subtitle: isDone ? 'Put it back on your list' : 'Tick it off your list',
-        onPress: close(() => complete(task)),
-      },
-      {
-        icon: 'folder',
-        title: 'Move',
-        subtitle: 'To another project',
-        onPress: close(() => setMoving(task)),
-      },
-      {
-        icon: 'trash-2',
-        title: 'Delete',
-        subtitle: 'Remove the task for good',
-        destructive: true,
-        onPress: close(() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))),
-      },
-    ];
-  };
+
   return (
     <>
       {suppliedContext.projectId === null ? (
@@ -771,14 +700,6 @@ export function TaskListBody({
           </Text>
         </Pressable>
       ) : null}
-      {menu ? (
-        <ActionMenu
-          anchor={menu.anchor}
-          label="Task actions"
-          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
-          onClose={() => setMenu(null)}
-        />
-      ) : null}
     </>
   );
 }
@@ -817,44 +738,46 @@ export function TasksPanel({
   );
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={[styles.backdrop, wide ? styles.backdropWide : null]}
-      >
-        <Pressable
-          accessibilityLabel="Close Tasks"
-          onPress={onClose}
-          style={StyleSheet.absoluteFill}
-        />
-        <View
-          style={[
-            styles.panel,
-            { height: height * 0.7, maxHeight: '100%' },
-            wide
-              ? {
-                  width: 380,
-                  marginTop: Math.min(y, height * 0.25),
-                  marginLeft: side === 'left' ? 38 : width - 418,
-                }
-              : styles.panelSheet,
-          ]}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={[styles.backdrop, wide ? styles.backdropWide : null]}
         >
-          {wide ? null : <View style={styles.grabber} />}
-          <View style={styles.head}>
-            <Text style={styles.heading} accessibilityRole="header">
-              Tasks
-            </Text>
-            {headerButton('Capture task', 'mic', onCapture)}
-            {headerButton('Close', 'x', onClose)}
-          </View>
-          <TaskListBody
-            context={context}
-            projects={projects}
-            sessions={sessions}
-            onLeave={onClose}
+          <Pressable
+            accessibilityLabel="Close Tasks"
+            onPress={onClose}
+            style={StyleSheet.absoluteFill}
           />
-        </View>
-      </KeyboardAvoidingView>
+          <View
+            style={[
+              styles.panel,
+              { height: height * 0.7, maxHeight: '100%' },
+              wide
+                ? {
+                    width: 380,
+                    marginTop: Math.min(y, height * 0.25),
+                    marginLeft: side === 'left' ? 38 : width - 418,
+                  }
+                : styles.panelSheet,
+            ]}
+          >
+            {wide ? null : <View style={styles.grabber} />}
+            <View style={styles.head}>
+              <Text style={styles.heading} accessibilityRole="header">
+                Tasks
+              </Text>
+              {headerButton('Capture task', 'mic', onCapture)}
+              {headerButton('Close', 'x', onClose)}
+            </View>
+            <TaskListBody
+              context={context}
+              projects={projects}
+              sessions={sessions}
+              onLeave={onClose}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

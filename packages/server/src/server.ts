@@ -48,7 +48,6 @@ import type {
   VeritySettingsPatch,
 } from '@verity/store';
 import {
-  isInstallationPlaceholder,
   isLocalProject,
   LOCAL_PROJECT_OWNER,
   measureLatencyPhase,
@@ -185,7 +184,7 @@ import {
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
-import { registerProjectCollectionRoutes } from './project-collection-routes.js';
+import { registerProjectCollectionRoutes, repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
@@ -271,6 +270,7 @@ import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { createSessionPrCache } from './session-pr-cache.js';
+import { createPrActivityRefresh } from './pr-activity-refresh.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
@@ -2729,21 +2729,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     clearInterval(prRepairTimer);
     await prRepairSweep;
   });
-  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
-    if (event.t !== 'result') return;
-    // A completed turn may have pushed a new head or opened its first PR. Drop
-    // quiet-session backoff so discovery resumes on the next foreground/background poll.
-    void deps.eventStore
-      .getSession(sessionId)
-      .then((session) => {
-        if (prRepairStopped || session === undefined) return;
-        invalidateBranchCache(session.worktree);
-        invalidatePrSummaryAction(session);
+  const prActivityRefresh = createPrActivityRefresh({
+    refresh: async (sessionId) => {
+      const session = await deps.eventStore.getSession(sessionId);
+      if (prRepairStopped || session === undefined) return;
+      invalidateBranchCache(session.worktree);
+      if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
-      })
-      .catch((err) => app.log.warn({ err, sessionId }, 'PR cache invalidation failed'));
+        return;
+      }
+      if (!invalidatePrSummaryAction(session, true)) return;
+      await sessionPrCache.get(session);
+      resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
+    },
+    onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),
   });
-  app.addHook('onClose', () => unsubscribePrChanges());
+  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
+    if (event.t === 'tool_result' || event.t === 'result')
+      prActivityRefresh.notify(sessionId, event.t === 'result');
+  });
+  app.addHook('onClose', async () => {
+    unsubscribePrChanges();
+    await prActivityRefresh.close();
+  });
   const pullRequestReadyMonitor =
     pushRouter !== undefined &&
     deps.branches !== undefined &&
@@ -2817,12 +2825,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord): void => {
+  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
     const { worktree } = session;
-    sessionPrCache.invalidate(worktree);
+    if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
     if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
-    prSummaryCache.delete(worktree);
+    if (!retainStatus) prSummaryCache.delete(worktree);
+    return true;
   };
   // Read the cached PR summary and schedule a background refresh if stale. Never
   // awaits git/GitHub, so the 2s list poll stays cheap.
@@ -3432,9 +3441,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const projects = deps.listAvailableRepositories
         ? await deps.listAvailableRepositories()
         : await deps.eventStore.listProjects({ includeHidden: true });
-      return projects
-        .filter((project) => project.kind === 'github')
-        .map((project) => ({ owner: project.owner, repo: project.repo }));
+      return repositoryCatalog(projects).map((project) => ({
+        owner: project.owner,
+        repo: project.repo,
+      }));
     },
     deps.forgejoEnabled === true,
   );
@@ -4658,29 +4668,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         target.forgeConnectionId = connection.id;
         target.kind = connection.provider;
       }
-      // `(owner, repo)` is UNIQUE, so a taken pair would surface as an opaque DB
-      // error AFTER the push already happened. Check first and fail clean.
-      //
-      // Installation-sync placeholders are NOT such a conflict: the sync mints a
-      // row for every repository the GitHub App can see, which includes every
-      // repository this route could ever push to, so treating them as taken
-      // makes linking impossible rather than safe. They are adopted instead —
-      // the reservation below retires the placeholder and, if it turns out to
-      // carry sessions after all, declines with this very same 409 while the
-      // push still has not happened.
-      const conflict = (await deps.eventStore.listProjects({ includeHidden: true })).find(
-        (candidate) =>
-          candidate.id !== project.id &&
-          (candidate.forgeConnectionId ?? 'legacy-github') ===
-            (target.forgeConnectionId ?? 'legacy-github') &&
-          candidate.owner === target.owner &&
-          candidate.repo === target.repo &&
-          !isInstallationPlaceholder(candidate),
-      );
-      if (conflict !== undefined) {
-        reply.code(409);
-        return { error: `${target.owner}/${target.repo} is already registered as a project` };
-      }
+      // The repository may already back other projects: the reservation below
+      // either adopts its installation placeholder or reserves another instance
+      // of it, so this project stays separate from every existing one.
       const performLink = async (): Promise<LinkGitHubResponse | { error: string }> => {
         // Scoped to the TARGET repo, not the project's current (local) identity.
         const token = await deps.ghTokenMint?.(target);

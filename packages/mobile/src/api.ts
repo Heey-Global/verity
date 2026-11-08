@@ -1,4 +1,8 @@
-import { projectRepositorySchema, projectInquirySchema } from './projectCollaboration.js';
+import {
+  projectRepositorySchema,
+  projectInquirySchema,
+  repositoryInstructionsSchema,
+} from './projectCollaboration.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -45,6 +49,7 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
+import { wikiCatalogSchema, type WikiCatalog } from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -4291,6 +4296,30 @@ export class VerityClient {
     return driveFileListSchema.parse(await res.json());
   }
 
+  async getProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+  ): Promise<DriveFile> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'GET' },
+    );
+    return z.object({ file: driveFileSchema }).parse(await res.json()).file;
+  }
+
+  async trashProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+    expectedVersion: string,
+  ): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'DELETE', body: JSON.stringify({ expectedVersion, confirmed: true }) },
+    );
+  }
+
   async uploadProjectGoogleDriveFile(
     projectId: string,
     folderId: string,
@@ -4974,6 +5003,15 @@ export class VerityClient {
       method: 'GET',
     });
     return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
+  }
+
+  /** The root AGENTS.md of each connected repository, read-only, with where it came from. */
+  async getProjectRepositoryInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/repository-instructions`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(repositoryInstructionsSchema) }).parse(await res.json())
+      .repositories;
   }
 
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
@@ -6094,6 +6132,16 @@ export class VerityClient {
     return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
   }
 
+  /** End only the displayed review round, keeping images and marks. Starts no work. */
+  async completeMockups(id: string, revision: number): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'complete', revision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -6209,6 +6257,23 @@ export class VerityClient {
     return branchListSchema.parse(await res.json());
   }
 
+  /** The project Wiki's catalog for its start page, or null from a server that
+   *  predates it — the app then shows the Wiki as a folder, as before. */
+  async getProjectWiki(projectId: string): Promise<WikiCatalog | null> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(projectId)}/knowledge/wiki`, {
+        method: 'GET',
+      });
+      return wikiCatalogSchema.parse(await res.json());
+    } catch (err) {
+      // Only the router's own not-found means an older server; a missing
+      // project is a 404 that names it, and stays an error.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
@@ -6242,6 +6307,13 @@ export class VerityClient {
       { method: 'GET' },
     );
     return res.blob();
+  }
+
+  async deleteProjectKnowledgeFile(projectId: string, path: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
   }
 
   async writeProjectKnowledgeFile(

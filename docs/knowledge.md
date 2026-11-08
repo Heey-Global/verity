@@ -183,7 +183,7 @@ second database. Structured writes do not migrate existing free-form documents.
 
 ## Shared knowledge in the app
 
-Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory.
+Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory; Instructions also show the read-only `AGENTS.md` of connected repositories (see [project repositories](project-collaboration.md#instructions-across-repositories)).
 
 Settings > Shared knowledge is the central browser for cross-project reference material. Personal Instructions and Memory remain separate under Settings > Personal context; project Instructions and Memory remain in project settings. Project and session file browsers show project files only. Existing Shared file links open the central Settings view.
 

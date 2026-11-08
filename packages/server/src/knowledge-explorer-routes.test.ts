@@ -248,6 +248,25 @@ describe('session explorer knowledge roots', () => {
     ).toBe(400);
   });
 
+  it('serves the project Wiki catalog to the app', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    mkdirSync(join(dir, 'insights'), { recursive: true });
+    writeFileSync(join(dir, 'insights/plan.md'), '# The plan\n\nWhat we build next.');
+    const res = await app.inject('/projects/p-1/knowledge/wiki');
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      pages: [{ path: 'insights/plan.md', title: 'The plan', summary: 'What we build next.' }],
+      index: null,
+      decisions: [],
+      review: [],
+    });
+    // A named 404: the app falls back to the folder view only for the router's
+    // own "Not Found", which means a server without this route.
+    const missing = await app.inject('/projects/missing/knowledge/wiki');
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'Project knowledge not found' });
+  });
+
   it('browses project knowledge without sessions and confines edits to its Wiki', async () => {
     await ctx.store.deleteSession('s-knowledge');
     const base = '/projects/p-1/knowledge/files';
@@ -301,6 +320,164 @@ describe('session explorer knowledge roots', () => {
     expect(
       listing.json<{ entries: { name: string }[] }>().entries.map((entry) => entry.name),
     ).not.toContain('shared');
+  });
+
+  it('deletes ordinary Wiki entries without sessions and protects library roots and decisions', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    writeFileSync(join(dir, 'insights/deletable.md'), 'Temporary');
+    writeFileSync(join(dir, 'sources/documents/original.txt'), 'Original');
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('insights/deletable.md')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/deletable.md'))).toBe(false);
+    for (const path of [
+      'sources',
+      'insights',
+      'insights/decisions',
+      'insights/decisions/record.md',
+      'insights/./decisions/record.md',
+      'insights/../sources/documents/original.txt',
+    ]) {
+      expect((await remove(path)).statusCode).toBe(403);
+    }
+    symlinkSync('../sources', join(dir, 'insights/deletion-alias'));
+    expect((await remove('insights/deletion-alias/documents/original.txt')).statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'sources/documents/original.txt'), 'utf8')).toBe('Original');
+  });
+
+  it('deletes an edited Wiki folder together with its saved history', async () => {
+    await app.inject('/projects/p-1/knowledge/files');
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    mkdirSync(join(dir, 'insights/edited'), { recursive: true });
+    writeFileSync(join(dir, 'insights/edited/note.md'), '# Original');
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/projects/p-1/knowledge/files/content',
+      payload: {
+        path: 'insights/edited/note.md',
+        content: '# Updated',
+        expectedVersion: fileVersion(Buffer.from('# Original')),
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/edited/.verity-file-history'))).toBe(true);
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/projects/p-1/knowledge/files?path=insights/edited',
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(existsSync(join(dir, 'insights/edited'))).toBe(false);
+    expect(existsSync(knowledgeExtractionPath(dir, 'insights/edited/note.md'))).toBe(false);
+  });
+
+  it('protects decisions reached through intermediate Wiki aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const topic = join(dir, 'insights/decisions/topic');
+    mkdirSync(join(topic, 'nested'), { recursive: true });
+    writeFileSync(join(topic, 'record.md'), 'Protected decision');
+    writeFileSync(join(topic, 'nested/another.md'), 'Another decision');
+    symlinkSync('decisions', join(dir, 'insights/alias'));
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('insights/alias/topic/record.md')).statusCode).toBe(400);
+    expect((await remove('insights/alias/topic/nested')).statusCode).toBe(400);
+    expect(readFileSync(join(topic, 'record.md'), 'utf8')).toBe('Protected decision');
+    expect(readFileSync(join(topic, 'nested/another.md'), 'utf8')).toBe('Another decision');
+  });
+
+  it('protects decisions across session delete roots and intermediate aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const topic = join(dir, 'insights/decisions/topic');
+    mkdirSync(join(topic, 'nested'), { recursive: true });
+    writeFileSync(join(topic, 'record.md'), 'Protected decision');
+    writeFileSync(join(topic, 'nested/another.md'), 'Another decision');
+    symlinkSync('decisions', join(dir, 'insights/session-alias'));
+    const remove = (root: string, path: string, id = 's-knowledge') =>
+      app.inject({
+        method: 'DELETE',
+        url: `/sessions/${id}/files?root=${root}&path=${encodeURIComponent(path)}`,
+      });
+    for (const [root, path] of [
+      ['documents', 'decisions'],
+      ['wiki', 'decisions/topic'],
+      ['documents', 'session-alias/topic/record.md'],
+      ['documents', 'session-alias/topic/nested'],
+      ['knowledge', 'insights/decisions/topic/record.md'],
+      ['knowledge', 'insights/session-alias/topic/record.md'],
+    ] as const)
+      expect((await remove(root, path)).statusCode).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-wiki',
+      projectId: 'p-1',
+      worktree: join(dir, 'insights'),
+      model: 'm',
+    });
+    expect((await remove('worktree', 'decisions', 's-canonical-wiki')).statusCode).toBe(400);
+    expect(
+      (await remove('worktree', 'session-alias/topic/record.md', 's-canonical-wiki')).statusCode,
+    ).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-knowledge',
+      projectId: 'p-1',
+      worktree: dir,
+      model: 'm',
+    });
+    expect((await remove('worktree', 'insights', 's-canonical-knowledge')).statusCode).toBe(400);
+    await ctx.store.createSession({
+      sessionId: 's-canonical-decision',
+      projectId: 'p-1',
+      worktree: topic,
+      model: 'm',
+    });
+    expect((await remove('worktree', 'record.md', 's-canonical-decision')).statusCode).toBe(400);
+    expect(readFileSync(join(topic, 'record.md'), 'utf8')).toBe('Protected decision');
+    expect(readFileSync(join(topic, 'nested/another.md'), 'utf8')).toBe('Another decision');
+    // The same name in an ordinary code checkout is not a project decision directory.
+    mkdirSync(join(worktree, 'decisions'), { recursive: true });
+    writeFileSync(join(worktree, 'decisions/design.md'), 'Code design');
+    expect((await remove('worktree', 'decisions')).statusCode).toBe(200);
+  });
+
+  it('deletes Sources files and folders with their extracted text without following aliases', async () => {
+    const dir = projectKnowledgeDir(dataRoot, 'p-1');
+    await app.inject('/projects/p-1/knowledge/files');
+    const sourcePath = 'sources/documents/import/batch/original.txt';
+    mkdirSync(join(dir, 'sources/documents/import/batch'), { recursive: true });
+    writeFileSync(join(dir, sourcePath), 'Original');
+    const extracted = knowledgeExtractionPath(dir, sourcePath);
+    mkdirSync(join(extracted, '..'), { recursive: true });
+    writeFileSync(extracted, 'Extracted original');
+    writeFileSync(`${extracted}.meta.json`, '{}');
+    writeFileSync(join(dir, 'insights/retained.md'), 'Retained Wiki');
+    symlinkSync('../../../insights', join(dir, 'sources/documents/import/wiki-alias'));
+    const remove = (path: string) =>
+      app.inject({
+        method: 'DELETE',
+        url: `/projects/p-1/knowledge/files?path=${encodeURIComponent(path)}`,
+      });
+    expect((await remove('sources/documents/import')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'sources/documents/import'))).toBe(false);
+    expect(existsSync(extracted)).toBe(false);
+    expect(existsSync(`${extracted}.meta.json`)).toBe(false);
+    expect(readFileSync(join(dir, 'insights/retained.md'), 'utf8')).toBe('Retained Wiki');
+    writeFileSync(join(dir, 'sources/documents/another.txt'), 'Another');
+    expect((await remove('sources/documents/another.txt')).statusCode).toBe(200);
+    expect(existsSync(join(dir, 'sources/documents/another.txt'))).toBe(false);
+    expect((await remove('sources/../insights/retained.md')).statusCode).toBe(403);
+    expect((await remove('sources\\..\\insights\\retained.md')).statusCode).toBe(403);
+    expect((await remove('sources/documents\\..\\..\\insights/retained.md')).statusCode).toBe(403);
+    symlinkSync('../../insights', join(dir, 'sources/documents/wiki-alias'));
+    expect((await remove('sources/documents/wiki-alias/retained.md')).statusCode).toBe(400);
+    expect(readFileSync(join(dir, 'insights/retained.md'), 'utf8')).toBe('Retained Wiki');
   });
 
   it('keeps the worktree root exactly what it was', async () => {
@@ -363,6 +540,21 @@ describe('session explorer knowledge roots', () => {
     expect(readFileSync(join(worktree, EXTRACTED_TEXT_DIR, 'ok.txt.md'), 'utf8')).toBe(
       'unrelated worktree file',
     );
+  });
+
+  it('deletes a worktree folder recursively and preserves external symlink targets', async () => {
+    mkdirSync(join(worktree, 'remove/nested'), { recursive: true });
+    mkdirSync(join(worktree, 'keep'), { recursive: true });
+    writeFileSync(join(worktree, 'remove/nested/note.md'), 'remove');
+    writeFileSync(join(worktree, 'keep/note.md'), 'keep');
+    symlinkSync(join(worktree, 'keep'), join(worktree, 'remove/link'));
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/sessions/s-knowledge/files?root=worktree&path=remove',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(existsSync(join(worktree, 'remove'))).toBe(false);
+    expect(readFileSync(join(worktree, 'keep/note.md'), 'utf8')).toBe('keep');
   });
 
   it('refuses to delete derived text or the shared mount point', async () => {

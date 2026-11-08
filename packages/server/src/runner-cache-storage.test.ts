@@ -1,3 +1,4 @@
+import { MaintenanceImageError } from './maintenance-image.js';
 import { describe, expect, it, vi } from 'vitest';
 import { RunnerCacheStorage, runnerCacheTargetFromEnv } from './runner-cache-storage.js';
 
@@ -19,6 +20,25 @@ function response(overrides = {}) {
 }
 
 describe('runner cache storage', () => {
+  it.each([
+    'image-unavailable',
+    'image-preparation-failed',
+    'image-preparation-timeout',
+    'image-preparation-cancelled',
+  ] as const)('reports %s separately from unsupported capabilities', async (code) => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request: async () => {
+        throw new MaintenanceImageError(code);
+      },
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers).toEqual([
+      `Project one: [${code}] runner cache maintenance unavailable or invalid; caches retained where unverified.`,
+    ]);
+    expect(storage.lastReport?.removedBytes).toBe(0);
+  });
+
   it('collects sequentially with a shared default target and aggregates retained usage separately from removals', async () => {
     let active = 0;
     const request = vi.fn(async (id: string) => {

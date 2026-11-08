@@ -14,6 +14,10 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('POST', '/sessions/:id/mockups'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/inquiry-grants'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
@@ -35,6 +39,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   ],
   [
     routeScopeKey('GET', '/projects/:id/repositories'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repository-instructions'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
@@ -82,8 +90,16 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/knowledge/wiki'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/knowledge/files/download'),
     { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
     routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),

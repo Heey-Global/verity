@@ -2,7 +2,7 @@ import { parseSpawnRequestBody, type SpawnBody } from './session-create-schema.j
 import { isLocalProject } from '@verity/store';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { DeletedProjectError, type ProjectRecord } from '@verity/store';
+import { DeletedProjectError, isInstallationPlaceholder, type ProjectRecord } from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import { parseOwnerRepo } from './canonical.js';
 import {
@@ -185,10 +185,27 @@ export function registerSessionCreateRoute(
           reply.code(503);
           return { error: 'multi-repo provisioning is not configured' };
         }
-        const project =
-          body.projectId !== undefined
-            ? await deps.eventStore.getProject(body.projectId)
-            : await deps.eventStore.getProjectByOwnerRepo(parsed!.owner, parsed!.repo);
+        let project: ProjectRecord | undefined;
+        if (body.projectId !== undefined) {
+          project = await deps.eventStore.getProject(body.projectId);
+        } else {
+          const matches = await deps.eventStore.listProjectsByOwnerRepo(
+            parsed!.owner,
+            parsed!.repo,
+          );
+          // A repository can back several projects; never pick one of them.
+          // Installation placeholders are not projects and do not count.
+          const projects = matches.filter(
+            (match) => match.hiddenAt === null && !isInstallationPlaceholder(match),
+          );
+          if (projects.length > 1) {
+            reply.code(409);
+            return {
+              error: `several projects use ${parsed!.owner}/${parsed!.repo}; choose one by projectId`,
+            };
+          }
+          project = projects[0] ?? matches.find((match) => match.hiddenAt === null) ?? matches[0];
+        }
         // A soft-deleted project is gone as far as every caller is concerned:
         // `getProject` still returns the row (the hide keeps it so the
         // installation sync can't resurrect it), but spawning against it would

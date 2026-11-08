@@ -485,6 +485,41 @@ describe('owned attempt recovery and cancellation', () => {
 });
 
 describe('durable remote operation guard', () => {
+  it('retains protected work after a failed local worker, even with daemon-looking output', async () => {
+    const f = fixture();
+    const manager = f.manager();
+    const lease = manager.acquire();
+    await expect(
+      lease.run(
+        process.execPath,
+        [
+          '-e',
+          'console.error("ERROR: failed to solve: process exited; buildkit idle"); process.exit(1)',
+        ],
+        { ...commandOptions, remoteOperation: 'protected-build' },
+      ),
+    ).rejects.toThrow();
+    lease.dispose();
+    manager.acquire().dispose();
+    expect(manager.unresolvedAttempts()).toEqual([
+      expect.objectContaining({ operation: 'protected-build' }),
+    ]);
+    expect(remoteOperationEnded('protected-build', '{"success":true}')).toBe(false);
+  });
+
+  it('releases protected work after the trusted worker confirms remote termination', async () => {
+    const f = fixture();
+    const manager = f.manager();
+    const lease = manager.acquire();
+    await lease.run(process.execPath, ['-e', 'console.log("confirmed by fixed worker")'], {
+      ...commandOptions,
+      remoteOperation: 'protected-build',
+    });
+    expect(manager.unresolvedAttempts()).toEqual([]);
+    lease.dispose();
+    expect(existsSync(lease.directory)).toBe(false);
+  });
+
   it.each(['timeout', 'abort', 'failure'] as const)(
     'retains reservation and artifacts after remote %s',
     async (reason) => {

@@ -7172,7 +7172,7 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
         );
-        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
+        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 7 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
           expect(spec.binds).toContain(`${caPath}:/run/verity/forge-proxy/ca.crt:ro`);
@@ -7186,6 +7186,7 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
+          expect(gitConfigEnv(spec.env ?? [])[`http.${origin}.version`]).toBe('HTTP/1.1');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
         expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
@@ -8205,6 +8206,67 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
     return { root, clonePath };
   }
+
+  it('uses only the protected executor and does not trust a tag-only cache hit', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const openBuild = vi.fn<DevcontainerBuildSpawner>();
+      const protectedBuild = vi.fn<DevcontainerBuildSpawner>(async () => {
+        throw new Error('protected-executor-reached');
+      });
+      const imageExists = vi.fn(async () => true);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+        projectEgressEnabled: async () => true,
+        projectEgress: {} as ProjectEgressLifecycle,
+        devcontainerBuild: openBuild,
+        protectedDevcontainerBuild: protectedBuild,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow('protected-executor-reached');
+      expect(protectedBuild).toHaveBeenCalledWith(expect.objectContaining({ projectId: id }));
+      expect(openBuild).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a missing protected executor without falling back to the open builder', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const openBuild = vi.fn<DevcontainerBuildSpawner>();
+      const imageExists = vi.fn(async () => true);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+        projectEgressEnabled: async () => true,
+        projectEgress: {} as ProjectEgressLifecycle,
+        devcontainerBuild: openBuild,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        'protected devcontainer builder is not ready',
+      );
+      expect(openBuild).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it.each(['measured', 'previous', 'missing', 'unavailable'] as const)(
     'retains the production snapshot and admission after uncertain remote failure (%s image)',

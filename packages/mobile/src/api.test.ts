@@ -4769,6 +4769,40 @@ it('browses project knowledge without a session and sends the revision for edits
   await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
 });
 
+it('reads the project Wiki catalog and treats a server without it as none', async () => {
+  const catalog = {
+    pages: [
+      {
+        path: 'insights/plan.md',
+        title: 'The plan',
+        summary: 'Next.',
+        modifiedAt: '2026-11-07T10:00:00.000Z',
+        links: [],
+        linkedFrom: [],
+      },
+    ],
+    index: null,
+    decisions: [],
+    review: [],
+    truncated: false,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(catalog),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p%2F1/knowledge/wiki not found' },
+      404,
+    ),
+    json({ error: 'Project knowledge not found' }, 404),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectWiki('p/1')).toEqual(catalog);
+  expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/wiki');
+  // An older server has no catalog: the app falls back to the folder view.
+  expect(await client.getProjectWiki('p/1')).toBeNull();
+  // A project that is gone is not an old server: the app says so.
+  await expect(client.getProjectWiki('p/1')).rejects.toThrow('Project knowledge not found');
+});
+
 it('browses Shared without a session and sends the revision for edits', async () => {
   const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
   const file = {
@@ -4943,4 +4977,29 @@ it('uses a distinct marking action that older servers cannot interpret as build 
       verdict: 'approved',
     }),
   );
+});
+
+it('ends only the displayed mockup revision without changing screen marks', async () => {
+  const review = { state: 'approved', revision: 7, screens: [] };
+  const { fetch, calls } = fakeFetch(json({ mockupReview: review }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.completeMockups('session/id', 7)).toEqual(review);
+  expect(calls[0]).toMatchObject({
+    url: 'http://host/sessions/session%2Fid/mockups',
+    init: { method: 'POST', body: JSON.stringify({ action: 'complete', revision: 7 }) },
+  });
+});
+
+it('reads a Drive snapshot and preserves its version when moving it to trash', async () => {
+  const file = { id: 'file/1', name: 'Note', mimeType: 'text/plain', version: '"v1"' };
+  const { fetch, calls } = fakeFetchSequence(json({ file }), new Response(null, { status: 204 }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectGoogleDriveFile('p/1', 'root/1', file.id)).toEqual(file);
+  await client.trashProjectGoogleDriveFile('p/1', 'root/1', file.id, file.version);
+  expect(calls.map(({ url }) => url)).toEqual([
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+  ]);
+  expect(calls[1]?.init?.method).toBe('DELETE');
+  expect(jsonBody(calls[1])).toEqual({ confirmed: true, expectedVersion: '"v1"' });
 });

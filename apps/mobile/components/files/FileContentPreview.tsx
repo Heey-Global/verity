@@ -1,5 +1,5 @@
 import { chunkFilePreview } from '@verity/mobile';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactElement, type ReactNode } from 'react';
 import {
   FlatList,
   Pressable,
@@ -24,6 +24,8 @@ export function FileContentPreview({
   listStyle,
   bodyStyle,
   textStyle,
+  header,
+  footer,
 }: {
   path: string;
   content: string;
@@ -31,17 +33,30 @@ export function FileContentPreview({
   listStyle?: StyleProp<ViewStyle>;
   bodyStyle?: StyleProp<ViewStyle>;
   textStyle?: StyleProp<TextStyle>;
+  /** Drawn in place of the page's own leading `# Title` in Preview. */
+  header?: ReactElement | undefined;
+  /** Drawn after the page in Preview. */
+  footer?: ReactElement | undefined;
 }) {
   const [source, setSource] = useState(false);
   const markdown = isMarkdownFile(path);
   const formatted = markdown && !source;
-  const items = useMemo(
-    () =>
-      formatted
-        ? fileMarkdownItems(content)
-        : chunkFilePreview(content).map((content): FileMarkdownItem => ({ type: 'line', content })),
-    [content, formatted],
-  );
+  // Whether there is a header, not which element: a new one each render must
+  // not parse the whole file again.
+  const withHeader = header !== undefined;
+  const items = useMemo(() => {
+    if (!formatted)
+      return chunkFilePreview(content).map((content): FileMarkdownItem => ({
+        type: 'line',
+        content,
+      }));
+    const all = fileMarkdownItems(content);
+    if (!withHeader) return all;
+    // The header names the page; its own title line would say it twice.
+    const first = all.findIndex((item) => item.type !== 'line' || item.content.trim() !== '');
+    const title = all[first];
+    return title?.type === 'line' && /^#\s/.test(title.content) ? all.slice(first + 1) : all;
+  }, [content, formatted, withHeader]);
   return (
     <>
       {markdown ? (
@@ -87,7 +102,12 @@ export function FileContentPreview({
             </Text>
           )
         }
-        ListEmptyComponent={<Text style={textStyle}>Empty file</Text>}
+        // With a header the page has its title even when nothing follows it.
+        ListEmptyComponent={
+          content.trim() === '' && !withHeader ? <Text style={textStyle}>Empty file</Text> : null
+        }
+        ListHeaderComponent={formatted ? header : undefined}
+        ListFooterComponent={formatted ? footer : undefined}
       />
     </>
   );

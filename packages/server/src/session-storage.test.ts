@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import { WORKTREE_SIDECAR } from './worktree.js';
 import { SessionStorage, compareDependencyTrees } from './session-storage.js';
@@ -419,5 +419,55 @@ describe('safe session storage reclamation', () => {
     expect(existsSync(f.path)).toBe(false);
     await f.service.ensureWorkspace(f.session);
     expect(existsSync(f.path)).toBe(true);
+  });
+});
+
+describe('storage shutdown', () => {
+  it('cancels active preparation, drains it and admits no new pass', async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const mutate = vi.fn(async (_projectId, _sessionId, _operation, signal?: AbortSignal) => {
+      entered();
+      await new Promise<void>((resolve) =>
+        signal!.addEventListener('abort', () => resolve(), { once: true }),
+      );
+      await held;
+    });
+    const service = new SessionStorage({
+      listProjects: async () => [{ id: 'p', kind: 'github' } as ProjectRecord],
+      listSessions: async () => [
+        { sessionId: 's', projectId: 'p', worktree: '/unused' } as SessionRecord,
+      ],
+      activity: async () => Date.now(),
+      root: () => '/unused',
+      withGit: async () => {
+        throw new Error('shutdown must not reach Git');
+      },
+      pr: async () => null,
+      mutate,
+    });
+    service.bind(
+      async (_id, run) => ({ ran: true, value: await run() }),
+      () => false,
+    );
+    const pass = service.runOnce();
+    await started;
+    let closed = false;
+    const closing = service.stop().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    finish();
+    await closing;
+    await pass;
+    await service.runOnce();
+    expect(mutate).toHaveBeenCalledTimes(1);
   });
 });

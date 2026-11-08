@@ -222,6 +222,23 @@ describe('ToggleRow', () => {
 });
 
 describe('TextField', () => {
+  // Inline text sits in a card whose head already names it: a second visible
+  // label repeats the head, but VoiceOver still needs the field's name.
+  it('drops the visible label and field chrome inline, but keeps the field named', () => {
+    render(
+      <TextField label="Project instructions" value="Rules" onChangeText={jest.fn()} inline />,
+    );
+    expect(screen.queryByText('Project instructions')).toBeNull();
+    const input = screen.getByLabelText('Project instructions');
+    let ancestor = input.parent;
+    while (ancestor && ancestor.type !== View) ancestor = ancestor.parent;
+    const field = StyleSheet.flatten(ancestor!.props.style);
+    expect(field.borderWidth).toBe(0);
+    expect(field.backgroundColor).toBe('transparent');
+    fireEvent(input, 'focus');
+    expect(StyleSheet.flatten(ancestor!.props.style).borderWidth).toBe(0);
+  });
+
   it('keeps a native stacking context around the input before and after focus', () => {
     render(<TextField label="Meeting link" value="" onChangeText={jest.fn()} keyboardType="url" />);
     const input = screen.getByLabelText('Meeting link');
@@ -529,6 +546,13 @@ describe('toneColor', () => {
 });
 
 describe('CardHead', () => {
+  it('draws a leading mark in the same tile a row uses', () => {
+    render(<CardHead title="acme/api" leading={{ element: <View testID="host-mark" /> }} />);
+    let tile = screen.getByTestId('host-mark').parent;
+    while (tile && (tile.type !== View || tile.props.style === undefined)) tile = tile.parent;
+    expect(StyleSheet.flatten(tile!.props.style)).toMatchObject({ width: 32, height: 32 });
+  });
+
   // Sharing the row's trailing rule (shrink, at most 45 %) cut a card's tag to
   // "PERMISSI…" beside the dismiss button; the tag is the card's verdict.
   it('keeps the status tag whole and lets the title give way', () => {

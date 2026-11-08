@@ -120,6 +120,7 @@ export {
   planProposalContent,
   planProposalCounts,
   planDecisionAnswer,
+  planDecisionAnswers,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,
@@ -768,4 +769,19 @@ export type {
   AssistantQuestion,
 } from '@verity/events';
 
-export { type ProjectRepository, type ProjectInquiry } from './projectCollaboration.js';
+export {
+  type ProjectRepository,
+  type ProjectInquiry,
+  type RepositoryInstructions,
+} from './projectCollaboration.js';
+export {
+  resolveKnowledgeLink,
+  WIKI_INDEX,
+  WIKI_LOG,
+  type KnowledgePath,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiReviewItem,
+  type WikiTopic,
+} from '@verity/events';

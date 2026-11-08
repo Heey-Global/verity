@@ -1185,6 +1185,8 @@ describe('brokered forge TLS boundary', () => {
         '-c',
         `http.${origin}.proxy=http://127.0.0.1:${h.port}`,
         '-c',
+        `http.${origin}.version=HTTP/1.1`,
+        '-c',
         `http.${origin}.sslCAInfo=${join(dir, 'ca.crt')}`,
         '-c',
         `credential.helper=${join(seed, 'verity-gh-cred')}`,

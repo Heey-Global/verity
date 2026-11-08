@@ -137,8 +137,8 @@ export function useSessionList(client: VerityClient): UseSessionList {
 
   useEffect(
     () =>
-      subscribePullRequestStatusMutations(({ sessionId, pr }) => {
-        if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr);
+      subscribePullRequestStatusMutations(({ sessionId, pr, number }) => {
+        if (pr !== undefined) model.applyPullRequestStatus(sessionId, pr, number);
         if (focused.current) void model.refresh({ silent: true });
       }),
     [model],

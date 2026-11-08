@@ -278,6 +278,11 @@ describe('createPushReplyPerformer', () => {
     const action = { type: 'merge-pull-request', sessionId: 's1', pullRequestNumber: 831 } as const;
     expect(await perform(action, 'r1')).toBe('done');
     expect(mergePullRequest).toHaveBeenCalledWith('s1', 831);
+    expect(mutations).toHaveBeenCalledWith({
+      sessionId: 's1',
+      number: 831,
+      pr: { phase: 'merged', pipeline: 'success', mergeable: false },
+    });
 
     mergePullRequest.mockRejectedValueOnce(new VerityApiError(409, 'no longer mergeable'));
     expect(await perform(action, 'r2')).toBe('stale');

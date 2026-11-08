@@ -137,7 +137,7 @@ export class ManagedKnowledgePathError extends Error {}
  * {@link KnowledgeFileSlot.close}.
  */
 export async function openKnowledgeFileSlot(
-  target: { root: SessionFileRootName; dir: string },
+  target: { root: SessionFileRootName; dir: string; protectedPaths?: readonly string[] },
   path: string,
 ): Promise<KnowledgeFileSlot> {
   const { rel } = sessionFilePath(target.dir, path);
@@ -155,7 +155,25 @@ export async function openKnowledgeFileSlot(
     await handle.close().catch(() => undefined);
   };
   try {
-    await assertSessionRealPath(target.dir, await realpath(directoryPath));
+    const resolvedParent = await realpath(directoryPath);
+    await assertSessionRealPath(target.dir, resolvedParent);
+    // Check the pinned parent rather than the requested spelling: an intermediate
+    // alias within the Wiki can otherwise hide a path into protected decisions.
+    if (target.protectedPaths?.length) {
+      const rootReal = await realpath(target.dir);
+      const resolvedPath = resolve(resolvedParent, name);
+      if (
+        target.protectedPaths.some((path) => {
+          const protectedPath = resolve(rootReal, path);
+          return (
+            resolvedPath === protectedPath ||
+            resolvedPath.startsWith(`${protectedPath}${sep}`) ||
+            protectedPath.startsWith(`${resolvedPath}${sep}`)
+          );
+        })
+      )
+        throw new ManagedKnowledgePathError('this path is managed by Verity');
+    }
   } catch (error) {
     await close();
     throw error;
