@@ -7,7 +7,7 @@ export { OptionList } from './OptionList';
 export { SearchField } from './SearchField';
 export { SectionHeader } from './SectionHeader';
 export { ConfirmSheet, Sheet, SheetHeaderButton, useConfirm, type ConfirmRequest } from './Sheet';
-export { StatusDot, StatusTag } from './Status';
+export { CountBadge, StatusDot, StatusTag } from './Status';
 export { SystemNotice, SystemNoticeIndicator } from './SystemNotice';
 export { TileMark, type TileMarkGlyph, type TileMarkTone } from './TileMark';
 export { StepIntro, SuccessHero } from './StepHero';

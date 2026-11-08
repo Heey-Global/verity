@@ -266,8 +266,18 @@ title; a log list keeps them dense and scannable.
   (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
+- **Count** (`CountBadge`) — how many items wait for the person: the number in `Label` on
+  a 14 % `attention` tint, the same drawing as the Home tab's count. Its spoken label names
+  what is counted.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
+- **Project cards** reuse the session rows' marks (§ 5.2): the initial's top corner
+  carries a pulsing `signature` mark while any session works, else an `action` mark when
+  an idle session has something unread; a project waiting for the person shows its count
+  before the chevron instead of that `action` mark. A project's own work in progress
+  (updating, rebuilding) is the pulsing `signature` dot and its word rather than the
+  `transient` spinner, so all work in progress reads the same. The subtitle repeats every
+  signal in words.
 - Mapping from the status intents in [§ 8](#8-status-intents):
 
   | Intent       | Tag                                                      | Dot and word         |
