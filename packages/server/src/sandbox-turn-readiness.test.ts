@@ -153,6 +153,14 @@ describe('waitForSandboxTurnReadiness', () => {
     expect(h.waitingOn).not.toHaveBeenCalled();
   });
 
+  // Without a relay the Codex leg is the gateway itself, whose refusal may mean
+  // no credential: the turn must meet that at once, not after the deadline.
+  it('does not wait on a gateway leg that is not behind a project relay', async () => {
+    const h = harness([readiness({ codex: 'refused' })], { relayed: false });
+    await expect(waitForSandboxTurnReadiness(h.input)).resolves.toMatchObject({ attempts: 1 });
+    expect(h.waitingOn).not.toHaveBeenCalled();
+  });
+
   it('only waits on the hops the agent uses', async () => {
     const codex = harness([readiness({ claude: 'refused' })]);
     await expect(waitForSandboxTurnReadiness(codex.input)).resolves.toMatchObject({ attempts: 1 });

@@ -288,7 +288,7 @@ describe('turn start failures', () => {
       t: 'error',
       kind: 'acp',
       message:
-        'unexpected status 502 Bad Gateway: Codex egress unavailable: the connection to the Codex egress was refused, so the request did not reach the agent gateway., url: http://127.0.0.1:47821/codex/responses',
+        'unexpected status 502 Bad Gateway: Codex egress unavailable: nothing accepted the connection at the Codex egress., url: http://127.0.0.1:47821/codex/responses',
     });
     expect(descriptor).toMatchObject({
       kind: 'egress-unavailable',

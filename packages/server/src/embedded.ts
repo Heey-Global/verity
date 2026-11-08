@@ -4796,6 +4796,7 @@ export async function buildEmbeddedServer(
                   projectId: project.id,
                   sessionId: preparation.sessionId,
                   agent: isClaudeSession ? 'claude' : isCodexSession ? 'codex' : 'opencode',
+                  relayed: projectRelayEnabled,
                   canWait: preparation.canWait,
                   waitingOn: (message) => preparation.waitingOn(message),
                   probe: () => probeSandboxEgressReadiness(dataVolumeRoot, project.id),

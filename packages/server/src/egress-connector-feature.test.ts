@@ -155,7 +155,7 @@ describe('Sandbox-local Claude egress connector', () => {
     const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
     expect(codex.status).toBe(502);
     expect(codex.body).toContain('Codex egress unavailable');
-    expect(codex.body).toContain('connection to the Codex egress was refused');
+    expect(codex.body).toContain('nothing accepted the connection at the Codex egress');
     expect(codex.body).not.toContain('credential');
     expect(codex.body).not.toContain('Claude');
 
@@ -255,7 +255,7 @@ describe('Sandbox-local Claude egress connector', () => {
       connectors.push(connector);
 
       const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
-      expect(codex.body).toContain('connection to the Codex egress was refused');
+      expect(codex.body).toContain('nothing accepted the connection at the Codex egress');
       expect(codex.body).toContain('may still be starting');
     }
   });

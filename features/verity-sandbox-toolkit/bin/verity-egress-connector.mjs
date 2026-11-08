@@ -376,7 +376,7 @@ function hasErrorCode(error, code, depth = 0) {
 function unavailableBody(leg, error) {
   if (leg === 'codex') {
     return hasErrorCode(error, 'ECONNREFUSED')
-      ? 'Codex egress unavailable: the connection to the Codex egress was refused, so the request did not reach the agent gateway. The project environment may still be starting; try again in a moment.'
+      ? 'Codex egress unavailable: nothing accepted the connection at the Codex egress. The project environment may still be starting; try again in a moment.'
       : 'Codex egress unavailable: the Verity agent gateway did not serve the Codex request.';
   }
   if (leg === 'codex-unconfigured') {

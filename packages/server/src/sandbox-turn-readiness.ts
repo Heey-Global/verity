@@ -41,8 +41,17 @@ export type SandboxEgressProbe =
 export type TurnAgent = 'claude' | 'codex' | 'opencode';
 
 /** The hops a turn of this agent cannot start without. OpenCode reaches its
- *  provider through the Codex leg (`/opencode` on the connector). */
-export function requiredEgressHops(agent: TurnAgent): readonly EgressHop[] {
+ *  provider through the Codex leg (`/opencode` on the connector).
+ *
+ *  The gateway legs are waited on only behind a project relay, where a refusal
+ *  is the relay still starting. Without one they point straight at the gateway,
+ *  which opens its Codex listener only once a credential exists: a refusal there
+ *  can be permanent, and the turn should meet it at once as it always did. */
+export function requiredEgressHops(
+  agent: TurnAgent,
+  options: { relayed?: boolean } = {},
+): readonly EgressHop[] {
+  if (options.relayed === false) return ['connector', 'broker'];
   return agent === 'claude' ? ['connector', 'claude', 'broker'] : ['connector', 'codex', 'broker'];
 }
 
@@ -112,6 +121,8 @@ export interface TurnReadinessInput {
   projectId: string;
   sessionId: string;
   agent: TurnAgent;
+  /** Whether the gateway legs run through a project relay; see {@link requiredEgressHops}. */
+  relayed?: boolean;
   probe: () => Promise<SandboxEgressProbe>;
   canWait: boolean;
   waitingOn: (message: string) => void;
@@ -138,7 +149,10 @@ export async function waitForSandboxTurnReadiness(
   const sleep = input.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const timeoutMs = input.timeoutMs ?? TURN_READINESS_TIMEOUT_MS;
   const delays = input.delaysMs ?? TURN_READINESS_DELAYS_MS;
-  const required = requiredEgressHops(input.agent);
+  const required = requiredEgressHops(
+    input.agent,
+    input.relayed === undefined ? {} : { relayed: input.relayed },
+  );
   const startedAt = now();
   const context = { projectId: input.projectId, sessionId: input.sessionId, agent: input.agent };
   let attempts = 0;
