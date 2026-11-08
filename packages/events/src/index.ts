@@ -274,6 +274,7 @@ export { actionTitle } from './action-title.js';
 
 export {
   AGENT_CORE_PROMPT,
+  WIKI_MAINTENANCE_SKILL,
   AGENT_SKILL_CATALOG,
   AGENT_SKILL_MANIFEST_HASH,
 } from './agent-assets.generated.js';

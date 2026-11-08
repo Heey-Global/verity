@@ -21,6 +21,18 @@ describe('knowledge tool boundary', () => {
     ])
       expect(knowledgeToolRequestSchema.safeParse(invalid).success).toBe(false);
   });
+  it('bounds page requests and refuses caller-supplied authority', () => {
+    const request = { operation: 'read_wiki_page', path: 'insights/index.md' };
+    expect(knowledgeToolRequestSchema.safeParse(request).success).toBe(true);
+    for (const invalid of [
+      { ...request, projectId: 'other' },
+      { ...request, offset: -1 },
+      { ...request, offset: 4_000_001 },
+      { ...request, path: 'x'.repeat(513) },
+    ])
+      expect(knowledgeToolRequestSchema.safeParse(invalid).success).toBe(false);
+  });
+
   it('accepts a bounded project source import and rejects destination traversal', () => {
     expect(
       knowledgeToolRequestSchema.parse({

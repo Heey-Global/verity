@@ -21,8 +21,7 @@ import {
 import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
 
-/** Built-in tools a Wiki maintenance run never gets: it reads files with Read, Grep and
- *  Glob, and neither runs commands, fetches, starts subagents nor edits. */
+/** Additional Claude restrictions alongside the backend-specific Verity tool boundary. */
 const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
   'Bash',
   'BashOutput',
@@ -1611,6 +1610,7 @@ export class Conductor {
     // gateway then admits only its Wiki operations) and without web access.
     if (await this.deps.store.wikiMaintenance.isSession(sessionId)) {
       builtRunOpts.planning = true;
+      builtRunOpts.gatewayToolsOnly = true;
       builtRunOpts.permissionMode = PLANNING_PERMISSION_MODE;
       builtRunOpts.disallowedTools = [
         ...new Set([...(builtRunOpts.disallowedTools ?? []), ...WIKI_MAINTENANCE_DISALLOWED_TOOLS]),

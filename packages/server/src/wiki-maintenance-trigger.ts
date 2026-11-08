@@ -2,6 +2,7 @@
 // never on a fixed schedule. A project with no open occasions costs one query
 // per pass and no model call. The house pattern for periodic server work: one
 // unref'd timer, an overlap guard, state read at run time and a stop function.
+import { WIKI_MAINTENANCE_SKILL } from '@verity/events';
 import type { EventStore, ProjectRecord } from '@verity/store';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -31,13 +32,15 @@ export const WIKI_MAINTENANCE_DISPLAY_PROMPT = 'Wiki maintenance run';
  * Skill so they change with it; this only starts them.
  */
 export const WIKI_MAINTENANCE_PROMPT =
-  'This is an automatic Wiki maintenance run; nobody is reading along. Load the wiki-maintain ' +
-  'Skill and follow its "Maintenance run" steps: read the open occasions with ' +
-  'verity_wiki_read_occasions, turn what belongs in the Wiki into proposals with ' +
-  'verity_wiki_propose in mode maintenance, then close the occasions you read with ' +
-  'verity_wiki_close_occasions. This turn is read-only: read Wiki pages and sources with ' +
-  'ordinary file tools under /knowledge, change no file, do not try to leave plan mode or ' +
-  'present a plan, and ask no questions. End with one short sentence on what you proposed.';
+  'This is an automatic Wiki maintenance run; nobody is reading along. The trusted built-in ' +
+  'wiki-maintain Skill is already loaded below; do not run the CLI to load it. Follow its ' +
+  '"Maintenance run" steps. Use only Verity tools: read Wiki pages and sources with ' +
+  'verity_wiki_read_page (paths relative to /knowledge, for example insights/index.md); ' +
+  'read the open occasions with verity_wiki_read_occasions, propose with verity_wiki_propose ' +
+  'in mode maintenance, then close the occasions you read with verity_wiki_close_occasions. ' +
+  'Change no file, do not leave plan mode or present a plan, and ask no questions. ' +
+  'End with one short sentence on what you proposed.\n\n' +
+  WIKI_MAINTENANCE_SKILL;
 
 export type WikiMaintenanceDecision =
   | { run: true }

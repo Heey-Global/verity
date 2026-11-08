@@ -34,5 +34,17 @@
       "name": "verity_knowledge",
       "operation": "close_wiki_occasions"
     }
+  },
+  {
+    "name": "verity_wiki_read_page",
+    "title": "Verity \u00b7 Wiki \u00b7 Read Page",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "read_wiki_page"
+    }
   }
 ]

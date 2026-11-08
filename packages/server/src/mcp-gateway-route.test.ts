@@ -745,6 +745,46 @@ describe('mockup presentation through the project gateway', () => {
   );
 });
 
+it('refuses planning exceptions to the Wiki maintenance session', async () => {
+  const harness = build({ planningTools: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-wiki-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.wikiMaintenance.setSession('p1', 's1');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_tasks', { action: 'list' }],
+      ['verity_repairs', { action: 'status' }],
+      ['verity_app_help', { topic: 'github' }],
+      ['verity_start_planning', {}],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = JSON.parse(response.body) as { result: { isError?: boolean } };
+      expect(result.result.isError, name).toBe(true);
+      expect(response.body).toContain('Wiki maintenance allows only Wiki operations');
+    }
+  });
+  expect(harness.approvals).toHaveLength(0);
+});
+
 it('keeps the session task list available while planning, unlike external tools', async () => {
   const harness = build({ planningTools: true });
   await harness.store.createProject({
