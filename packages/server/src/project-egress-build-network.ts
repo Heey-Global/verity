@@ -295,40 +295,71 @@ export class ProtectedBuildNetworks {
   ): Promise<void> {
     await this.io.deny(expected.binding);
     if (!(await workloadEnded())) throw new Error('Protected build termination is unconfirmed');
-    const raw: unknown = JSON.parse(
-      await this.io.docker(['container', 'inspect', expected.containerId]),
-    );
-    const stopped = containerSchema.element
-      .omit({ State: true, NetworkSettings: true })
-      .extend({
-        State: z.object({ Running: z.literal(false) }),
-      })
-      .array()
-      .length(1)
-      .safeParse(raw);
-    if (stopped.success) {
-      const value = stopped.data[0]!;
-      const config = value.HostConfig;
-      if (
-        value.Id !== expected.containerId ||
-        value.Config.Image !== this.io.imageRef ||
-        value.Config.Entrypoint.join('\0') !== '/nodejs/bin/node' ||
-        value.Config.Cmd.join('\0') !== '-e\0setInterval(() => {}, 2147483647)' ||
-        config.NetworkMode !== expected.binding.networkId ||
-        (config.CapAdd?.length ?? 0) !== 0 ||
-        config.CapDrop.join('\0') !== 'ALL' ||
-        !['no-new-privileges', 'no-new-privileges=true'].includes(config.SecurityOpt.join('\0')) ||
-        (config.Binds?.length ?? 0) !== 0 ||
-        (config.Devices?.length ?? 0) !== 0 ||
-        Object.keys(config.PortBindings ?? {}).length !== 0
+    // A failed or lost removal reply can leave either object already absent.
+    // List exact immutable IDs; inspection failures are never evidence of absence.
+    const exists = async (kind: 'container' | 'network', objectId: string) => {
+      const ids = (
+        await this.io.docker([
+          kind,
+          'ls',
+          ...(kind === 'container' ? ['--all'] : []),
+          '--quiet',
+          '--no-trunc',
+          '--filter',
+          `id=${objectId}`,
+        ])
       )
-        throw new Error('Stopped protected build anchor contract mismatch');
-      await this.inspectNetwork(expected.binding, [expected.containerId]);
-    } else await this.inspect(expected);
-    await this.io.docker(['container', 'stop', expected.containerId]);
-    await this.io.docker(['container', 'rm', expected.containerId]);
-    await this.inspectNetwork(expected.binding, []);
-    await this.io.docker(['network', 'rm', expected.binding.networkId]);
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      if (ids.some((value) => value !== objectId))
+        throw new Error('Protected build cleanup identity mismatch');
+      return ids.length > 0;
+    };
+    const containerExists = await exists('container', expected.containerId);
+    const networkExists = await exists('network', expected.binding.networkId);
+    if (containerExists && !networkExists)
+      throw new Error('Protected build anchor network missing');
+    if (containerExists) {
+      const raw: unknown = JSON.parse(
+        await this.io.docker(['container', 'inspect', expected.containerId]),
+      );
+      const stopped = containerSchema.element
+        .omit({ State: true, NetworkSettings: true })
+        .extend({
+          State: z.object({ Running: z.literal(false) }),
+        })
+        .array()
+        .length(1)
+        .safeParse(raw);
+      if (stopped.success) {
+        const value = stopped.data[0]!;
+        const config = value.HostConfig;
+        if (
+          value.Id !== expected.containerId ||
+          value.Config.Image !== this.io.imageRef ||
+          value.Config.Entrypoint.join('\0') !== '/nodejs/bin/node' ||
+          value.Config.Cmd.join('\0') !== '-e\0setInterval(() => {}, 2147483647)' ||
+          config.NetworkMode !== expected.binding.networkId ||
+          (config.CapAdd?.length ?? 0) !== 0 ||
+          config.CapDrop.join('\0') !== 'ALL' ||
+          !['no-new-privileges', 'no-new-privileges=true'].includes(
+            config.SecurityOpt.join('\0'),
+          ) ||
+          (config.Binds?.length ?? 0) !== 0 ||
+          (config.Devices?.length ?? 0) !== 0 ||
+          Object.keys(config.PortBindings ?? {}).length !== 0
+        )
+          throw new Error('Stopped protected build anchor contract mismatch');
+        await this.inspectNetwork(expected.binding, [expected.containerId]);
+      } else await this.inspect(expected);
+      await this.io.docker(['container', 'stop', expected.containerId]);
+      await this.io.docker(['container', 'rm', expected.containerId]);
+    }
+    if (networkExists) {
+      await this.inspectNetwork(expected.binding, []);
+      await this.io.docker(['network', 'rm', expected.binding.networkId]);
+    }
     await this.io.removeDeny(expected.binding);
   }
 }

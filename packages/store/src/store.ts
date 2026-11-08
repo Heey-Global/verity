@@ -1728,8 +1728,8 @@ export class EventStore implements EventSink {
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher, (action) =>
-      this.egressDestinationMutation(action),
+    this.integrations = new IntegrationStore(db, cipher, (action, changesDestinations) =>
+      this.egressDestinationMutation(action, changesDestinations),
     );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);

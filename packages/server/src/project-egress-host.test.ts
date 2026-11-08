@@ -1,3 +1,5 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
+import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { ProtectedBuildHost } from './project-egress-build.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, chmod, symlink, writeFile } from 'node:fs/promises';
@@ -682,5 +684,42 @@ it('secures a fresh Docker bind directory before reading the missing host regist
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('carries sanitized inventory errors through the authenticated real listener with safe correlation', async () => {
+  const root = await directory();
+  const { host } = fixture();
+  vi.spyOn(host, 'execute').mockRejectedValue(
+    new ProjectEgressInventoryError('inventory_dns_failed'),
+  );
+  const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    servers.push(
+      await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+    );
+    const command = createProjectEgressHostClient({
+      socketPath: join(root, 'control.sock'),
+      token: 'a'.repeat(64),
+    });
+    const refused = await command({
+      operation: 'inventory-commit',
+      token: '00000000-0000-4000-8000-000000000001',
+      hosts: ['private.example.org'],
+      addresses: [],
+    }).catch((error: unknown) => error);
+    if (!(refused instanceof ProjectEgressInventoryError))
+      throw new Error('Expected inventory refusal');
+    expect(refused.reason).toBe('inventory_dns_failed');
+    expect(refused.correlationId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(log).toHaveBeenCalledWith('verity: inventory command refused', {
+      operation: 'inventory-commit',
+      reason: 'inventory_dns_failed',
+      correlationId: refused.correlationId,
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private.example.org');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('00000000-0000-4000-8000-000000000001');
+  } finally {
+    log.mockRestore();
   }
 });

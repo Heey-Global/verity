@@ -1,4 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -468,8 +469,14 @@ export async function buildEmbeddedServer(
   // A controller restart starts incomplete; periodic re-synchronization repairs
   // that state. Configuration writes always use the synchronous prechange barrier.
   const synchronizeSystemInventory = () =>
-    systemInventorySync?.refresh().catch(() => {
-      console.warn('verity: system destination inventory synchronization unavailable');
+    systemInventorySync?.refresh().catch((error: unknown) => {
+      console.warn('verity: system destination inventory synchronization unavailable', {
+        operation: 'inventory-refresh',
+        reason: error instanceof ProjectEgressInventoryError ? error.reason : 'host_not_ready',
+        ...(error instanceof ProjectEgressInventoryError && error.correlationId
+          ? { correlationId: error.correlationId }
+          : {}),
+      });
     });
   await synchronizeSystemInventory();
   const systemInventoryTimer = systemInventorySync
