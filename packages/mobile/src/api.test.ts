@@ -1429,6 +1429,16 @@ describe('VerityClient.listProjects (#174)', () => {
     ]);
   });
 
+  it('falls back when an older server’s paired gate refuses the unknown route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ error: 'forbidden' }, 403),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toHaveLength(1);
+    expect(calls[1]?.url).toBe('http://host/projects/p/github/issues');
+  });
+
   it('names the fallback repository neutrally without the project record', async () => {
     const { fetch } = fakeFetchSequence(
       json({ message: 'Route GET:/projects/p/issues not found' }, 404),

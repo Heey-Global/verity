@@ -96,12 +96,14 @@ export function TaskIssuesList({
         ),
     )
       .then((entries) => {
-        // Merged: a hand-over that finished while these were read is newer.
+        // A union: a hand-over that finished while these were read adds to them.
         if (active)
-          setStarted((value) => ({
-            ...Object.fromEntries(entries.filter((entry) => entry[1].length > 0)),
-            ...value,
-          }));
+          setStarted((value) => {
+            const next = { ...value };
+            for (const [key, ids] of entries)
+              if (ids.length > 0) next[key] = [...new Set([...ids, ...(value[key] ?? [])])];
+            return next;
+          });
       })
       .catch(() => undefined);
     return () => {
@@ -137,6 +139,12 @@ export function TaskIssuesList({
         // now works on the issue.
         const key = retryKey(repository, issue.number);
         setStarted((value) => ({ ...value, [key]: [...(value[key] ?? []), id] }));
+        // A new session is not in the list read on opening; without it the row
+        // would offer the V again where the list stays on screen (a wide layout).
+        void createVerityClient()
+          ?.listSessions()
+          .then(setSessions)
+          .catch(() => undefined);
         onOpenSession(id);
       })
       .catch((error: unknown) => {

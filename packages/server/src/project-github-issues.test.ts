@@ -80,8 +80,11 @@ describe('issues of every project repository', () => {
       if (bound.repo === 'docs') return new Promise<never>(() => undefined);
       return { connected: true, viewerLogin: null, issues: [issue(1)] };
     });
-    const result = await listProjectIssues(store, project, list, 20);
+    const onError = vi.fn();
+    const result = await listProjectIssues(store, project, list, 20, onError);
     expect(result.map((entry) => entry.status)).toEqual(['ok', 'unavailable', 'unavailable']);
+    // The entry only says unavailable; the reason goes to the server's log.
+    expect(onError.mock.calls.map(([id]) => id).sort()).toEqual(['docs', 'site']);
     expect(result[0]).toMatchObject({ issues: [issue(1)] });
   });
 

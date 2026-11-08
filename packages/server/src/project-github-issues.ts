@@ -93,6 +93,8 @@ export async function listProjectIssues(
   project: ProjectRecord,
   list: ((repository: ProjectRecord) => Promise<ForgeIssueList>) | undefined,
   timeoutMs = REPOSITORY_ISSUES_TIMEOUT_MS,
+  /** Told why a repository is unavailable, which its entry does not say. */
+  onError?: (repositoryId: string, error: unknown) => void,
 ): Promise<RepositoryIssues[]> {
   if (!list) return [];
   const repositories = (await store.listProjectRepositories(project.id))
@@ -117,7 +119,10 @@ export async function listProjectIssues(
             timer = setTimeout(() => resolve('timeout'), timeoutMs);
           }),
         ]);
-        if (result === 'timeout') return unavailable;
+        if (result === 'timeout') {
+          onError?.(repository.id, new Error('timed out'));
+          return unavailable;
+        }
         if (!result.connected) return undefined;
         return {
           ...identity,
@@ -125,7 +130,8 @@ export async function listProjectIssues(
           viewerLogin: result.viewerLogin,
           issues: result.issues,
         };
-      } catch {
+      } catch (error) {
+        onError?.(repository.id, error);
         return unavailable;
       } finally {
         clearTimeout(timer);
@@ -168,6 +174,18 @@ export function registerProjectGitHubIssueRoutes(
     reply.header('cache-control', 'no-store');
     // As the default-repository route: a local project has no code host to ask.
     if (isLocalProject(project)) return { repositories: [] };
-    return { repositories: await listProjectIssues(deps.store, project, deps.list) };
+    return {
+      repositories: await listProjectIssues(
+        deps.store,
+        project,
+        deps.list,
+        undefined,
+        (repositoryId, error) =>
+          request.log.warn(
+            { err: error, projectId: project.id, repositoryId },
+            'repository issues unavailable',
+          ),
+      ),
+    };
   });
 }

@@ -3759,7 +3759,9 @@ export class VerityClient {
       return z.object({ repositories: z.array(repositoryIssuesSchema) }).parse(await res.json())
         .repositories;
     } catch (err) {
-      if (!(err instanceof VerityApiError) || err.status !== 404) throw err;
+      // An older server does not know the route: 404, or 403 where its paired
+      // gate refuses an unlisted route. A real refusal fails the old route too.
+      if (!(err instanceof VerityApiError) || (err.status !== 404 && err.status !== 403)) throw err;
     }
     const legacy = await this.listProjectGitHubIssues(project.id);
     // The old route answers for GitHub projects; without the record, assume one.
