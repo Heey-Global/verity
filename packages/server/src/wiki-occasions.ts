@@ -9,6 +9,7 @@ import type { EventStore, RecordWikiOccasion } from '@verity/store';
 import { projectKnowledgeDir } from './knowledge-folder.js';
 
 type OccasionStore = Pick<EventStore, 'wikiOccasions'>;
+type SessionOccasionStore = Pick<EventStore, 'wikiOccasions' | 'wikiMaintenance'>;
 type Log = { warn: (details: object, message: string) => void };
 
 export async function noteWikiOccasion(
@@ -44,7 +45,7 @@ const DELETED_SESSION_NOTE_TIMEOUT_MS = 5_000;
  * occasion it already had.
  */
 export async function noteDeletedSession(
-  store: OccasionStore,
+  store: SessionOccasionStore,
   session: { sessionId: string; projectId: string | null; name?: string | null },
   keepForWiki: boolean,
   log?: Log,
@@ -73,11 +74,13 @@ export async function noteDeletedSession(
 }
 
 async function noteSession(
-  store: OccasionStore,
+  store: SessionOccasionStore,
   projectId: string,
   session: { sessionId: string; name?: string | null },
   keepForWiki: boolean,
 ): Promise<'done'> {
+  // A maintenance run reading its own conversation would start the next run.
+  if (await store.wikiMaintenance.isSession(session.sessionId)) return 'done';
   if (!keepForWiki) {
     await store.wikiOccasions.forgetSession(projectId, session.sessionId);
     return 'done';
@@ -101,8 +104,11 @@ export async function hasProjectWiki(dataRoot: string, projectId: string): Promi
   try {
     await access(join(projectKnowledgeDir(dataRoot, projectId), WIKI_INDEX));
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only a missing file means no Wiki: an unreadable or unmounted volume must
+    // not count as one, or its occasions would be discarded as unused.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
   }
 }
 

@@ -3450,7 +3450,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pruneBranchCache,
     summarizeSessions,
     collectAttention,
-    hiddenSessionIds: () => wikiMaintenanceSessions,
+    // From the store, so a session another server generation created is hidden
+    // too; the local set covers one created moments ago and not yet recorded.
+    hiddenSessionIds: async () => {
+      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
+      for (const id of recorded) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) recorded.add(id);
+      return recorded;
+    },
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
@@ -6214,7 +6221,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             wikiMaintenanceSessions.delete(sessionId);
             return undefined;
           }
-          await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
+          try {
+            await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
+          } catch (err) {
+            // Unrecorded, it would show up in lists after a restart and never be reused.
+            await deleteSessionEverywhere(sessionId).catch(() => false);
+            throw err;
+          }
           return sessionId;
         },
         dispatch: (sessionId) =>

@@ -2,19 +2,30 @@
 // green elsewhere: an event that stops recording one (its call removed in a
 // refactor), a session deleted without review whose messages are kept anyway,
 // and a failing store that takes the user's import or deletion down with it.
-import { readdirSync, readFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { noteDeletedSession, noteWikiOccasion } from './wiki-occasions.js';
+import { hasProjectWiki, noteDeletedSession, noteWikiOccasion } from './wiki-occasions.js';
 
 type Store = Parameters<typeof noteDeletedSession>[0];
 
-function store(transcript = 'User: Fix it\n\nVerity: Fixed') {
+function store(transcript = 'User: Fix it\n\nVerity: Fixed', maintenance = false) {
   const record = vi.fn().mockResolvedValue(true);
   const forgetSession = vi.fn().mockResolvedValue(undefined);
   const sessionTranscript = vi.fn().mockResolvedValue(transcript);
-  const value = { wikiOccasions: { record, forgetSession, sessionTranscript } } as unknown as Store;
+  const value = {
+    wikiOccasions: { record, forgetSession, sessionTranscript },
+    wikiMaintenance: { isSession: vi.fn().mockResolvedValue(maintenance) },
+  } as unknown as Store;
   return { value, record, forgetSession, sessionTranscript };
 }
 
@@ -40,6 +51,13 @@ describe('noteDeletedSession', () => {
     expect(record).not.toHaveBeenCalled();
     expect(sessionTranscript).not.toHaveBeenCalled();
     expect(forgetSession).toHaveBeenCalledWith('p', 's1');
+  });
+
+  // Its own run as an occasion would start the next run, and so on.
+  it('never keeps the Wiki maintenance session for the Wiki', async () => {
+    const { value, record } = store(undefined, true);
+    await noteDeletedSession(value, session, true);
+    expect(record).not.toHaveBeenCalled();
   });
 
   it('records nothing for an empty conversation or a session outside a project', async () => {
@@ -93,4 +111,31 @@ it('records every kind of occasion somewhere in the server', () => {
         : new RegExp(`kind: '${kind}'`).test(sources);
     expect(recorded, `no occasion of kind ${kind} is recorded`).toBe(true);
   }
+});
+
+describe('hasProjectWiki', () => {
+  const root = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'wiki-'));
+
+  it('finds a Wiki by its start page', async () => {
+    const dataRoot = root();
+    expect(await hasProjectWiki(dataRoot, 'p')).toBe(false);
+    mkdirSync(join(dataRoot, 'knowledge/p/insights'), { recursive: true });
+    writeFileSync(join(dataRoot, 'knowledge/p/insights/index.md'), '# P\n');
+    expect(await hasProjectWiki(dataRoot, 'p')).toBe(true);
+  });
+
+  // "No Wiki" discards occasions; a folder it cannot read is not that.
+  it.skipIf(process.getuid?.() === 0)(
+    'fails rather than reporting no Wiki when unreadable',
+    async () => {
+      const dataRoot = root();
+      mkdirSync(join(dataRoot, 'knowledge/p/insights'), { recursive: true });
+      chmodSync(join(dataRoot, 'knowledge/p'), 0o000);
+      try {
+        await expect(hasProjectWiki(dataRoot, 'p')).rejects.toThrow();
+      } finally {
+        chmodSync(join(dataRoot, 'knowledge/p'), 0o755);
+      }
+    },
+  );
 });

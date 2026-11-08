@@ -1856,7 +1856,10 @@ export function registerServerMcpRoutes({
             ) {
               // What happened in a project includes the conversations of deleted
               // sessions; only the run the server started for it reads and closes them.
-              if (!(await deps.eventStore.wikiMaintenance.isSession(input.sessionId)))
+              if (
+                (await deps.eventStore.wikiMaintenance.get(input.projectId))?.sessionId !==
+                input.sessionId
+              )
                 throw new ControlPlaneSessionAuthorityError(
                   'Wiki occasions are read only in the Wiki maintenance run',
                 );
