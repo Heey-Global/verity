@@ -7987,9 +7987,9 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
             size="compact"
             onPress={() => actions.sendTurn(resend)}
             accessibilityHint={
-              resend === RETRY_PROMPT
-                ? 'Sends a new turn asking the agent to continue'
-                : 'Sends your last message again'
+              descriptor.action === 'resend'
+                ? 'Sends your last message again'
+                : 'Sends a new turn asking the agent to continue'
             }
           />
         ) : null}

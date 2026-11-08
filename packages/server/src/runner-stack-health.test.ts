@@ -345,3 +345,23 @@ it('reads a supervisor that does not know the readiness request as an older tool
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+// The gate waits only on a supervisor that timed out, so the timeout the real
+// client raises has to be the one the classification recognises.
+it('reads a supervisor that does not answer in time as still starting', async () => {
+  const directory = await mkdtemp('/tmp/verity-egress-slow-');
+  const socketPath = join(directory, 'supervisor.sock');
+  const silent = createServer(() => undefined);
+  await new Promise<void>((done) => silent.listen(socketPath, done));
+  try {
+    const timeout = await requestRunnerSupervisor(
+      socketPath,
+      { kind: 'egress-readiness' },
+      50,
+    ).catch((error: unknown) => error);
+    expect(classifyProbeError(timeout)).toEqual({ kind: 'unavailable' });
+  } finally {
+    silent.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

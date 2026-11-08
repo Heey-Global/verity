@@ -22,4 +22,11 @@ describe('splitNoticeText', () => {
       title: 'Waiting for the Sandbox',
     });
   });
+
+  it('keeps an ellipsis or an abbreviation inside the headline', () => {
+    expect(splitNoticeText('Cloning repository...')).toEqual({ title: 'Cloning repository...' });
+    expect(splitNoticeText('Waiting for e.g. the Sandbox')).toEqual({
+      title: 'Waiting for e.g. the Sandbox',
+    });
+  });
 });
