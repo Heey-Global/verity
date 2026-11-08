@@ -1,4 +1,4 @@
-import type { AssistantConversation } from '@verity/mobile';
+import type { AssistantConversation, InboxItem } from '@verity/mobile';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { AppState, Platform } from 'react-native';
 
@@ -67,6 +67,29 @@ export interface WatchSnapshot {
   question?: { id: string; text?: string; options: string[]; multiSelect: boolean };
 }
 
+/** One open item from Home as the watch lists it (`WatchInbox` on the watch). */
+interface WatchInboxItem {
+  key: string;
+  title: string;
+  context: string;
+  tag: string;
+  tone: InboxItem['tone'];
+  message?: string;
+}
+
+/** Home's open items for the watch, with when the iPhone last read them. */
+export interface WatchInboxPayload {
+  scope: string;
+  /** Milliseconds since the epoch; the watch says "as of" when this is old. */
+  at: number;
+  items: WatchInboxItem[];
+  /** All of Home's items; the wrist lists at most {@link WATCH_INBOX_LIMIT}. */
+  total: number;
+}
+
+/** How many open items the wrist lists; the rest wait on the iPhone. */
+export const WATCH_INBOX_LIMIT = 12;
+
 interface NativeWatchBridge {
   pending(): Promise<WatchCapture[]>;
   acknowledge(id: string): Promise<void>;
@@ -74,6 +97,8 @@ interface NativeWatchBridge {
   acknowledgeAnswer(id: string): Promise<void>;
   setLink(link: WatchLink | null): Promise<void>;
   setVerity(snapshot: WatchSnapshot | null): Promise<void>;
+  /** Missing on native builds older than the watch's "Needs you" list. */
+  setInbox?(inbox: WatchInboxPayload | null): Promise<void>;
   log(): Promise<string[]>;
   status(): Promise<WatchStatus>;
   discardWaiting(): Promise<number>;
@@ -201,6 +226,68 @@ export function watchSnapshot(
   };
 }
 
+/** Home's items cut to what the wrist shows; property lists hold no undefined. */
+export function watchInbox(
+  items: readonly InboxItem[],
+  scope: string | null,
+  at: number,
+): WatchInboxPayload | null {
+  if (scope === null) return null;
+  return {
+    scope,
+    at,
+    total: items.length,
+    items: items.slice(0, WATCH_INBOX_LIMIT).map((item) => ({
+      key: item.key,
+      title: item.title.slice(0, 160),
+      context: item.context.slice(0, 120),
+      tag: item.tag,
+      tone: item.tone,
+      ...(item.message ? { message: item.message.slice(0, 400) } : {}),
+    })),
+  };
+}
+
+/** Unchanged items are sent again after this long, so "as of" stays honest. */
+const INBOX_REFRESH_MS = 5 * 60_000;
+
+/**
+ * Sends Home's items on a change, and an unchanged list again once it has aged,
+ * so the watch's "as of" time stays true without a send on every render.
+ */
+export function createWatchInboxSync(
+  send: (payload: WatchInboxPayload | null) => Promise<void>,
+): (items: readonly InboxItem[], scope: string | null, now?: number) => void {
+  let last: { key: string; at: number } | null = null;
+  return (items, scope, now = Date.now()) => {
+    const payload = watchInbox(items, scope, now);
+    const key = JSON.stringify(
+      payload === null ? null : [payload.scope, payload.total, payload.items],
+    );
+    if (last?.key === key && now - last.at < INBOX_REFRESH_MS) return;
+    const sent = { key, at: now };
+    last = sent;
+    // A send that failed (watch session not active yet) is tried again on the
+    // next change instead of waiting out the refresh interval.
+    void send(payload).catch(() => {
+      if (last === sent) last = null;
+    });
+  };
+}
+
+/**
+ * Hands the watch the items Home shows under "For you", under the account they
+ * were read for (not whichever is signed in when the call runs, which may
+ * already be the next one). The watch keeps the latest list with its time.
+ */
+export const syncWatchInbox: (
+  items: readonly InboxItem[],
+  scope: string | null,
+  now?: number,
+) => void = native?.setInbox
+  ? createWatchInboxSync((payload) => native.setInbox!(payload))
+  : () => undefined;
+
 /**
  * The direct connection for native code, or null. Only a certificate-pinned
  * direct endpoint qualifies, and only when the sign-in is not held behind Face
@@ -249,6 +336,9 @@ export function startWatchInbox(): () => void {
     scope = next;
     // The watch only needs the account now; it has no project picker.
     void native.setProjects(next, [], null).catch(() => undefined);
+    // Home may be gone before it could send an empty list: never leave another
+    // account's items on the iPhone's side of the link.
+    if (next === null) syncWatchInbox([], null);
     syncLink();
     run();
   };

@@ -4,6 +4,8 @@ import {
   Animated,
   Modal,
   PanResponder,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -19,6 +21,8 @@ import { Button } from './Button';
 
 // How far the sheet has to be dragged down before letting go closes it.
 const DISMISS_DISTANCE = 80;
+// How close to the end an anchored sheet counts as "at the newest entry".
+const FOLLOW_DISTANCE = 48;
 
 /**
  * The one bottom sheet (docs/design-system.md § 5.6): a single scrim, a grab
@@ -37,6 +41,7 @@ export function Sheet({
   dismissible = true,
   titleLeading,
   headerAction,
+  anchorEnd = false,
 }: {
   visible: boolean;
   title: string;
@@ -49,10 +54,28 @@ export function Sheet({
   footer?: ReactNode;
   showClose?: boolean;
   dismissible?: boolean;
+  /** A conversation: opens at its newest entry and follows new ones while the
+   *  reader is at the end, without pulling back someone reading further up. */
+  anchorEnd?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const drag = useRef(new Animated.Value(0)).current;
+  const scroll = useRef<ScrollView>(null);
+  // Until the reader scrolls away from the end, growing content keeps it in view.
+  const following = useRef(true);
+  const placed = useRef(false);
+  const settleFollowing = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    following.current =
+      contentSize.height - contentOffset.y - layoutMeasurement.height < FOLLOW_DISTANCE;
+  };
+  useEffect(() => {
+    if (!visible) {
+      following.current = true;
+      placed.current = false;
+    }
+  }, [visible]);
   const close = () => {
     if (dismissible) onClose();
   };
@@ -131,10 +154,25 @@ export function Sheet({
           {/* Tall content scrolls so the footer action stays reachable, also
               above the keyboard. */}
           <ScrollView
+            ref={scroll}
             style={styles.scroll}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
             bounces={false}
+            {...(anchorEnd
+              ? {
+                  // Only where the reader stops scrolling decides; the sheet's own
+                  // animated scroll to the end must not switch following off.
+                  onScrollEndDrag: settleFollowing,
+                  onMomentumScrollEnd: settleFollowing,
+                  onContentSizeChange: () => {
+                    if (!following.current) return;
+                    // The first placement jumps; later growth scrolls visibly.
+                    scroll.current?.scrollToEnd({ animated: placed.current });
+                    placed.current = true;
+                  },
+                }
+              : {})}
           >
             {children}
           </ScrollView>

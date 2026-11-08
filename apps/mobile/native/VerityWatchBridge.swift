@@ -46,6 +46,9 @@ class VerityWatchBridge: Module {
     AsyncFunction("setVerity") { (snapshot: [String: Any]?) in
       VerityWatchInbox.shared.setVerity(snapshot)
     }
+    AsyncFunction("setInbox") { (inbox: [String: Any]?) in
+      VerityWatchInbox.shared.setInbox(inbox)
+    }
     AsyncFunction("discardWaiting") { () -> Int in
       VerityWatchInbox.shared.discardWaiting()
     }
