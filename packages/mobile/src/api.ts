@@ -6227,9 +6227,17 @@ export class VerityClient {
   /** Permanently delete a session: drops its history and removes its worktree on
    * the server. Non-2xx (404 unknown, 409 busy) throws a {@link VerityApiError}
    * carrying the server's status + message. `force` bypasses the busy guard after
-   * an explicit destructive confirmation. Returns the deleted session id. */
-  async deleteSession(id: string, opts: { force?: boolean } = {}): Promise<SessionDeleted> {
-    const query = opts.force ? '?force=true' : '';
+   * an explicit destructive confirmation. `wiki` keeps the conversation for the
+   * project's Wiki maintenance until it was read (the session was done, not
+   * worthless). Returns the deleted session id. */
+  async deleteSession(
+    id: string,
+    opts: { force?: boolean; wiki?: boolean } = {},
+  ): Promise<SessionDeleted> {
+    const params = new URLSearchParams();
+    if (opts.force) params.set('force', 'true');
+    if (opts.wiki) params.set('wiki', 'true');
+    const query = params.size ? `?${params.toString()}` : '';
     const res = await this.request(`/sessions/${encodeURIComponent(id)}${query}`, {
       method: 'DELETE',
     });

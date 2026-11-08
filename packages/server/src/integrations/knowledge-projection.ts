@@ -142,7 +142,7 @@ export async function projectChatHistory(
   store: IntegrationStore,
   dataRoot: string,
   input: Parameters<typeof projectChatDay>[2] & { originalId: string },
-): Promise<void> {
+): Promise<string[]> {
   // Late originals and reordered edits can move an inferred entry to another day.
   const changes = await store.listChangesForTargets(input.accountId, input.sourceId, [
     input.originalId,
@@ -151,7 +151,9 @@ export async function projectChatHistory(
   for (const change of changes) {
     if (change.kind === 'edit') days.add(dayOf(change.occurredAt));
   }
-  for (const day of days) await projectChatDay(store, dataRoot, { ...input, day });
+  const written: string[] = [];
+  for (const day of days) written.push(await projectChatDay(store, dataRoot, { ...input, day }));
+  return written;
 }
 
 export function affectedChatDay(

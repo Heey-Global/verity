@@ -144,6 +144,7 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
+import { noteDeletedSession, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -2717,6 +2718,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      // A merged change is when the product changed. The occasion is recorded once
+      // per pull request; a cache refilled after a restart reports it again.
+      if (status?.phase === 'merged' && session.projectId !== null) {
+        const projectId = session.projectId;
+        void (async () => {
+          const conversation = await deps.eventStore.wikiOccasions
+            .sessionTranscript(session.sessionId)
+            .catch(() => '');
+          await noteWikiOccasion(
+            deps.eventStore,
+            {
+              projectId,
+              kind: 'merge',
+              ref: status.url,
+              title: `#${String(status.number)} ${status.title}`,
+              body: [`Merged pull request ${status.url}`, conversation]
+                .filter(Boolean)
+                .join('\n\n'),
+            },
+            app.log,
+          );
+        })();
+      }
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
       resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
@@ -4078,6 +4102,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
   registerIntegrationRoutes(app, {
     store: deps.eventStore.integrations,
+    onChatDay: (projectId, path, room) =>
+      noteWikiOccasion(
+        deps.eventStore,
+        {
+          projectId,
+          kind: 'chat',
+          ref: path,
+          title: `${room} · ${occasionTitle(path)}`,
+          reopen: true,
+        },
+        app.log,
+      ),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { connectorToken: deps.matrixConnectorToken }
@@ -5586,7 +5622,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerSessionDeleteRoute(app, {
-    remove: async (request, reply, id, force) => {
+    remove: async (request, reply, id, force, options) => {
       if (conductor.isMovingSession?.(id)) {
         reply.code(409);
         return { error: 'Wait for the session move to finish before deleting.' };
@@ -5632,14 +5668,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
       deletionRequestIds.set(id, request.id);
+      // Read before the transcript goes with the session; only once deletion is admitted.
+      const noteForWiki = () =>
+        noteDeletedSession(deps.eventStore, session, options?.keepForWiki === true, request.log);
       try {
-        if (force) return await sessionDeletions.remove(session);
+        if (force) {
+          await noteForWiki();
+          return await sessionDeletions.remove(session);
+        }
         let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
         const admission = await conductor.tryRunExclusive(id, async () => {
           let release!: () => void;
           const admitted = new Promise<void>((resolve) => {
             release = resolve;
           });
+          await noteForWiki();
           removal = sessionDeletions.remove(session, release);
           // The HTTP deadline must not release an unfinished admission operation.
           void removal.catch(() => undefined);

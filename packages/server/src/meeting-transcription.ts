@@ -39,6 +39,7 @@ import {
 } from './live-meeting-export.js';
 import { emitNotice } from './session-event-writer.js';
 import { assertSessionRealPath, sessionFilePath } from './session-files.js';
+import { noteWikiOccasion } from './wiki-occasions.js';
 
 interface MeetingTranscriptSegment {
   speaker: string;
@@ -217,6 +218,17 @@ export async function emitMeetingTranscriptSaved(input: {
   title: string;
   segments: number;
 }): Promise<void> {
+  // A transcript filed into the project's Sources is new material for its Wiki.
+  if (input.path.startsWith(`${KNOWLEDGE_MEETINGS_DIR}/`)) {
+    const session = await input.eventStore.getSession(input.sessionId);
+    if (session?.projectId)
+      await noteWikiOccasion(input.eventStore, {
+        projectId: session.projectId,
+        kind: 'meeting',
+        ref: input.path,
+        title: input.title,
+      });
+  }
   await emitNotice({
     ...input,
     role: 'agent',
@@ -419,6 +431,15 @@ export async function fileLiveMeeting(input: {
     }
     {
       await appendMeetingIndex(meetingDir, relPath, title);
+      if (knowledge && session.projectId)
+        await noteWikiOccasion(input.eventStore, {
+          projectId: session.projectId,
+          kind: 'meeting',
+          ref: relPath,
+          title,
+          // A meeting filed again (an edit, a later summary) is new material.
+          reopen: true,
+        });
       const events = await input.eventStore.getEvents(input.sessionId);
       const savedLink = knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath;
       const details = {
