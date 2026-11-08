@@ -493,4 +493,5 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 /** The reply text style, shared with the session transcript's other prose. */
-export const markdownStyles = { agentText: styles.agentText };
+// The style sheet itself: Unistyles resolves theme and font scale on access.
+export const markdownStyles = styles;

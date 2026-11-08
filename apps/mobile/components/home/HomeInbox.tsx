@@ -103,7 +103,8 @@ export function HomeInbox({
   });
   useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
   // The watch lists the same items under "Needs you" (targets/VerityWatch).
-  useEffect(() => syncWatchInbox(feed.items), [feed.items]);
+  // The clock tick resends an unchanged list now and then, so its time stays true.
+  useEffect(() => syncWatchInbox(feed.items), [feed.items, now]);
 
   return (
     <ScrollView

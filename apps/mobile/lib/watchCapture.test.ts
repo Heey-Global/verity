@@ -271,4 +271,18 @@ describe('watch "Needs you" list', () => {
     sync([item(0)], 1_000);
     expect(send).toHaveBeenCalledTimes(2);
   });
+
+  it('sends the same list again after a sign-out cleared it', () => {
+    let scope: string | null = 'account-1';
+    const send = jest.fn(async () => undefined);
+    const sync = createWatchInboxSync(send, () => scope);
+    sync([item(0)], 0);
+    scope = null;
+    sync([], 1_000);
+    expect(send).toHaveBeenLastCalledWith(null);
+    // Signing back in shows the same items; skipping them left the watch empty.
+    scope = 'account-1';
+    sync([item(0)], 2_000);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
 });

@@ -329,7 +329,7 @@ export function startWatchInbox(): () => void {
     void native.setProjects(next, [], null).catch(() => undefined);
     // Home may be gone before it could send an empty list: never leave another
     // account's items on the iPhone's side of the link.
-    if (next === null) void native.setInbox?.(null).catch(() => undefined);
+    if (next === null) syncWatchInbox([]);
     syncLink();
     run();
   };
