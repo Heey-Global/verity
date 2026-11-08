@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL } from 'node:url';
+import { classifyInstall } from './verity-package-policy.mjs';
 
 /** Select only the provisioned broker. This config grants no script network access. */
 export function configurePackageArtifacts(manager, args, environment) {
@@ -21,10 +22,12 @@ export function configurePackageArtifacts(manager, args, environment) {
     throw new Error('Invalid provisioned package artifact broker.');
   if (!['npm', 'pnpm', 'yarn', 'bun', 'pip', 'uv'].includes(manager))
     throw new Error('This package manager has no protected artifact adapter yet.');
-  const capability = readFileSync(
-    environment.VERITY_GH_BROKER_CAPABILITY_FILE ?? '/run/verity/gh-token-capability',
-    'utf8',
-  ).trim();
+  const capability =
+    environment.VERITY_PACKAGE_INSTALL_TOKEN ??
+    readFileSync(
+      environment.VERITY_GH_BROKER_CAPABILITY_FILE ?? '/run/verity/gh-token-capability',
+      'utf8',
+    ).trim();
   if (!/^[A-Za-z0-9_-]+$/.test(capability)) throw new Error('Invalid package artifact capability.');
   if (manager === 'pip' || manager === 'uv') {
     const index = new URL(`${base}/pypi/simple/`);
@@ -85,12 +88,19 @@ export function configurePackageArtifacts(manager, args, environment) {
     return {
       args:
         manager === 'yarn' ||
-        !['install', 'i', 'ci', 'add', 'update', 'up', 'upgrade', 'fetch'].includes(args[0])
+        !(manager === 'npm'
+          ? classifyInstall(manager, args)
+          : ['install', 'i', 'ci', 'add', 'update', 'up', 'upgrade', 'fetch'].includes(args[0]))
           ? args
           : (() => {
               const separator = args.indexOf('--');
               const at = separator < 0 ? args.length : separator;
-              return [...args.slice(0, at), `--registry=${registry}`, ...args.slice(at)];
+              return [
+                ...args.slice(0, at),
+                `--registry=${registry}`,
+                ...(manager === 'npm' ? [`--userconfig=${path}`] : []),
+                ...args.slice(at),
+              ];
             })(),
       cleanup() {
         rmSync(directory, { recursive: true, force: true });
