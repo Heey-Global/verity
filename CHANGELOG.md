@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.87.0](https://github.com/Heey-Global/verity/compare/v4.86.0...v4.87.0) (2026-11-08)
+
+
+### Features
+
+* **knowledge:** let agents propose Wiki changes for review ([#2412](https://github.com/Heey-Global/verity/issues/2412)) ([0d61e4f](https://github.com/Heey-Global/verity/commit/0d61e4fedf2f34da808f7bf0dc82f485d7431322))
+* **knowledge:** let the Wiki explain itself and set it up with the user ([#2404](https://github.com/Heey-Global/verity/issues/2404)) ([36f082e](https://github.com/Heey-Global/verity/commit/36f082e2f45f82d48b160b8d3bd6cde869992c08))
+* **knowledge:** note what a project's Wiki may need to reflect ([#2411](https://github.com/Heey-Global/verity/issues/2411)) ([4a117a6](https://github.com/Heey-Global/verity/commit/4a117a6c7288c77b6506cf08e841b6586118a58f))
+* **project:** show repositories with their open pull requests ([#2413](https://github.com/Heey-Global/verity/issues/2413)) ([b5e3a69](https://github.com/Heey-Global/verity/commit/b5e3a69eb9ece0b7acab1b7bdd7145ef2e58dcdd))
+* **tasks:** list issues of every project repository and hand tasks to Verity ([#2416](https://github.com/Heey-Global/verity/issues/2416)) ([27c28b6](https://github.com/Heey-Global/verity/commit/27c28b69440dda0b5d3da6964dd5d428b1d68aa9))
+
+
+### Bug Fixes
+
+* **session:** wait for reviews and tests before ending turns ([#2417](https://github.com/Heey-Global/verity/issues/2417)) ([7780f5f](https://github.com/Heey-Global/verity/commit/7780f5f1afa4d7b212c0e59cd5694887b1d0aaa2))
+* **watch:** preserve original logo and reduce voice delivery latency ([#2419](https://github.com/Heey-Global/verity/issues/2419)) ([71f3ab0](https://github.com/Heey-Global/verity/commit/71f3ab0ce6a4bcbb89fe5a17554fa9dceab8effd))
+
 ## [4.86.0](https://github.com/Heey-Global/verity/compare/v4.85.0...v4.86.0) (2026-11-08)
 
 
