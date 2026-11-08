@@ -38,8 +38,8 @@ export interface ProjectEgressOperationContext {
 export class ProjectEgressHealthError extends Error {
   /** Enumerable so a logged `err` names the operation and project it belongs to;
    *  without them a timed-out start cannot be told apart from inventory upkeep. */
-  readonly operation?: string;
-  readonly projectId?: string;
+  declare readonly operation?: string;
+  declare readonly projectId?: string;
   constructor(
     readonly reason: ProjectEgressHealthReason,
     context: ProjectEgressOperationContext = {},

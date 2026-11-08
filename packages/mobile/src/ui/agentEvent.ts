@@ -203,7 +203,8 @@ function describeFailure(kind: string, message: string): AgentEventDescriptor {
     return {
       kind: 'egress-unavailable',
       label: 'Agent connection unavailable',
-      detail: 'The project environment couldn’t reach the agent gateway. Try again in a moment.',
+      detail:
+        'The project environment couldn’t reach the agent gateway. Try again; if it keeps failing, check the agent gateway.',
       tone: 'warning',
       action: 'retry',
       technical,

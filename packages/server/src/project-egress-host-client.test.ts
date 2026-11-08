@@ -239,11 +239,11 @@ it('names the operation and project on a failed command, and nothing else', asyn
   }, 30);
   const failure = await command(start).catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(ProjectEgressHealthError);
-  expect({ ...(failure as object) }).toEqual({
+  expect({ ...(failure as object) }).toStrictEqual({
     reason: 'timeout',
     operation: 'start',
     projectId: start.projectId,
   });
   const health = await command({ operation: 'health' }).catch((error: unknown) => error);
-  expect({ ...(health as object) }).toEqual({ reason: 'timeout', operation: 'health' });
+  expect({ ...(health as object) }).toStrictEqual({ reason: 'timeout', operation: 'health' });
 });
