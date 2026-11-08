@@ -9,7 +9,7 @@ import { Text } from './Text';
 import { tint } from './tint';
 
 /** The intents a system message can carry (docs/design-system.md § 5.9). */
-export type SystemNoticeIntent = Extract<StatusIntent, 'transient' | 'needsSetup' | 'unknown'>;
+type SystemNoticeIntent = Extract<StatusIntent, 'transient' | 'needsSetup' | 'unknown'>;
 
 const INDICATOR = 20;
 

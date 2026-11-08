@@ -29,7 +29,7 @@ const HOP_STATES = [
 ] as const;
 export type EgressHopState = (typeof HOP_STATES)[number];
 
-export type SandboxEgressReadiness = Record<EgressHop, EgressHopState>;
+type SandboxEgressReadiness = Record<EgressHop, EgressHopState>;
 
 export type SandboxEgressProbe =
   /** The Sandbox's toolkit predates the probe; the turn proceeds as before. */
@@ -107,14 +107,14 @@ export function pendingEgressHops(
   });
 }
 
-export const TURN_READINESS_TIMEOUT_MS = 90_000;
-export const TURN_READINESS_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
+const TURN_READINESS_TIMEOUT_MS = 90_000;
+const TURN_READINESS_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
 
 /** The transcript note while the turn waits; its first sentence is the headline. */
 export const TURN_READINESS_WAITING_MESSAGE =
   'Preparing project environment. Checking the agent connection and tools. Your message continues automatically when they’re ready.';
 
-export interface TurnReadinessLog {
+interface TurnReadinessLog {
   info(fields: Record<string, unknown>, message: string): void;
   warn(fields: Record<string, unknown>, message: string): void;
 }
@@ -210,7 +210,7 @@ const HOP_NAMES: Record<EgressHop, string> = {
  * was not ready and that nothing ran; the app shows it as the explanation and
  * keeps the lines after it behind "Details".
  */
-export function timeoutMessage(
+function timeoutMessage(
   agent: TurnAgent,
   pending: readonly EgressHop[] | 'supervisor',
   last: SandboxEgressProbe,
