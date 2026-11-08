@@ -34,7 +34,7 @@ const SESSION: Record<HandOffSession, { subtitle: string; mark?: ReactNode; labe
  * Verity's V in the square icon button (docs/design-system.md § 5.2): the one
  * control that hands an item to her. A tap starts the work right away.
  */
-export function VerityHandOffButton({
+function VerityHandOffButton({
   accessibilityLabel,
   onPress,
   disabled = false,
