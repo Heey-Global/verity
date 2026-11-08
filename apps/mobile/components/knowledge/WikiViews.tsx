@@ -49,8 +49,14 @@ function currentChange(page: WikiPage): WikiPage['lastChange'] {
 /** When a page last changed: its current log entry, else its file age. */
 function changedAt(page: WikiPage): string {
   const change = currentChange(page);
-  // A log day is read at noon, so no time zone moves it to the day before.
-  return change ? `${change.at}T12:00:00` : page.modifiedAt;
+  // A log day is read at noon UTC, so no time zone moves it to another day.
+  return change ? `${change.at}T12:00:00.000Z` : page.modifiedAt;
+}
+
+/** {@link changedAt} as a number, so log days and file times sort together. */
+function changedTime(page: WikiPage): number {
+  const time = Date.parse(changedAt(page));
+  return Number.isNaN(time) ? 0 : time;
 }
 
 /** "today", "yesterday" or the date, inside a sentence ("updated today"). */
@@ -260,7 +266,7 @@ export function WikiHome({
     return target ? () => open.file(target) : undefined;
   };
   const recent = [...catalog.pages]
-    .sort((a, b) => changedAt(b).localeCompare(changedAt(a)))
+    .sort((a, b) => changedTime(b) - changedTime(a))
     .slice(0, RECENT_SHOWN);
   // A catalog cut short may hide pages; it shows its notice and All files instead.
   const empty =

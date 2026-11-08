@@ -263,6 +263,30 @@ it('prefers a later edit of the file over an older log entry', async () => {
   expect(screen.queryByText(/from Old meeting/)).toBeNull();
 });
 
+// The log's day is the writer's, so an entry one day older than the file still
+// stands; two days older, the file was edited after it.
+it('keeps a log entry one day older than the file, not two', async () => {
+  const day = (offset: number) => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() + offset);
+    return date.toISOString().slice(0, 10);
+  };
+  client({
+    ...catalog,
+    pages: [
+      { ...catalog.pages[0]!, lastChange: { at: day(-1), kind: 'ingest', title: 'Yesterday' } },
+      {
+        ...catalog.pages[1]!,
+        modifiedAt: today,
+        lastChange: { at: day(-2), kind: 'chat', title: 'Earlier' },
+      },
+    ],
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  expect(await screen.findByText(/from Yesterday/)).toBeTruthy();
+  expect(screen.queryByText(/from Earlier/)).toBeNull();
+});
+
 it('explains how the Wiki works and links its rules and change log', async () => {
   client({
     ...catalog,
