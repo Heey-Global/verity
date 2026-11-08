@@ -231,6 +231,8 @@ export async function emitMeetingTranscriptSaved(input: {
           kind: 'meeting',
           ref: input.path,
           title: input.title,
+          // A transcript saved again over the same file is new material.
+          reopen: true,
         },
         input.log,
       );

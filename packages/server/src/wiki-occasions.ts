@@ -59,7 +59,7 @@ export async function noteDeletedSession(
       timeout,
     ]);
     if (outcome === 'timeout')
-      log?.warn({ sessionId: session.sessionId }, 'wiki occasion lost: deletion did not wait');
+      log?.warn({ sessionId: session.sessionId }, 'wiki occasion not awaited: deletion went ahead');
   } catch (error) {
     log?.warn({ err: error, sessionId: session.sessionId }, 'wiki occasion lost');
   } finally {

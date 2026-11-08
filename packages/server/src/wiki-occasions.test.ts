@@ -62,7 +62,7 @@ describe('noteDeletedSession', () => {
     sessionTranscript.mockReturnValue(new Promise(() => undefined));
     const warn = vi.fn();
     await expect(noteDeletedSession(value, session, true, { warn }, 10)).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledWith({ sessionId: 's1' }, expect.stringContaining('did not wait'));
+    expect(warn).toHaveBeenCalledWith({ sessionId: 's1' }, expect.stringContaining('not awaited'));
   });
 });
 
