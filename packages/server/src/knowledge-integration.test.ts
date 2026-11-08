@@ -1,6 +1,15 @@
 import { createAuthTokenRegistry } from './auth.js';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { request, type Server } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
@@ -9,6 +18,12 @@ import { join } from 'node:path';
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import {
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+} from '@verity/events';
+
 import { buildServer } from './server.js';
 import {
   markInternalConnections,
@@ -590,6 +605,120 @@ it('rejects peer-origin prompts as user decision confirmations', async () => {
     expect(implicit.isError).toBe(true);
     const records = await h.agent({ operation: 'lookup_decisions' });
     expect(JSON.parse(records.content[0]!.text)).toMatchObject({ total: 0 });
+  } finally {
+    await h.close();
+  }
+});
+
+// A proposal is only a proposal: the page stays as it was until a Wiki editor
+// applies it, the applied change lands in log.md, and the same change offered
+// again later is not put in front of the user a second time.
+it('proposes a Wiki change for review and applies it with a log entry', async () => {
+  const h = await setup();
+  const auth = { authorization: 'Bearer device-token' };
+  try {
+    const page = join(h.dataRoot, 'knowledge/p/insights/topics/billing.md');
+    const change = {
+      path: 'topics/billing.md',
+      content: '# Billing\n\nInvoices go out monthly.\n',
+      summary: 'Explain the billing cycle',
+    };
+    const proposed = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'inline',
+      title: 'Billing cycle',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [change],
+    });
+    expect(proposed.isError).toBeUndefined();
+    expect(JSON.parse(proposed.content[0]!.text)).toMatchObject({
+      status: 'awaiting_review',
+      proposed: ['topics/billing.md'],
+    });
+    expect(existsSync(page)).toBe(false);
+    // The proposal lives beside the knowledge, never where agents read the Wiki.
+    expect(readdirSync(join(h.dataRoot, 'knowledge/p/insights'))).not.toContain('proposals');
+    const second = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'inline',
+      title: 'Another',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [{ ...change, path: 'topics/other.md' }],
+    });
+    expect(second.isError).toBe(true);
+
+    const list = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(list.statusCode).toBe(200);
+    // The app reads these replies with the shared schemas; a field renamed here breaks it.
+    const [open] = wikiProposalListSchema.parse(list.json()).proposals;
+    expect(open).not.toHaveProperty('sessionId');
+    expect(open!.changes).toMatchObject([{ path: 'topics/billing.md', stale: false }]);
+    const detail = await h.app.inject({
+      url: `/projects/p/knowledge/proposals/${open!.id}`,
+      headers: auth,
+    });
+    expect(wikiProposalSchema.parse(detail.json()).changes[0]).toMatchObject({
+      content: change.content,
+      current: null,
+    });
+    const applied = await h.app.inject({
+      method: 'POST',
+      url: `/projects/p/knowledge/proposals/${open!.id}/apply`,
+      headers: auth,
+      payload: {},
+    });
+    expect(applied.statusCode).toBe(200);
+    expect(wikiProposalDecisionSchema.parse(applied.json())).toMatchObject({
+      applied: ['topics/billing.md'],
+      stale: [],
+    });
+    expect(readFileSync(page, 'utf8')).toBe(change.content);
+    // Agents write the Wiki as another user; a page created by applying stays writable.
+    expect(statSync(page).mode & 0o777).toBe(0o666);
+    expect(statSync(join(page, '..')).mode & 0o777).toBe(0o777);
+    const log = readFileSync(join(h.dataRoot, 'knowledge/p/insights/log.md'), 'utf8');
+    expect(log).toMatch(/^## \[\d{4}-\d{2}-\d{2}\] chat \| Billing cycle$/m);
+    expect(log).toContain('(topics/billing.md)');
+    expect(log).toContain('(../sources/documents/contract.pdf)');
+    const after = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(after.json()).toEqual({ proposals: [] });
+
+    const again = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'maintenance',
+      title: 'Billing cycle',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [change],
+    });
+    expect(JSON.parse(again.content[0]!.text)).toMatchObject({
+      status: 'nothing_new',
+      skipped: ['topics/billing.md'],
+    });
+
+    // A page someone created by hand after the proposal is never overwritten.
+    const fresh = await h.agent({
+      operation: 'propose_wiki',
+      mode: 'maintenance',
+      title: 'Glossary',
+      sources: ['sources/documents/contract.pdf'],
+      changes: [{ path: 'glossary.md', content: '# Glossary\n', summary: 'Add a glossary' }],
+    });
+    const { proposalId } = JSON.parse(fresh.content[0]!.text) as { proposalId: string };
+    writeFileSync(join(h.dataRoot, 'knowledge/p/insights/glossary.md'), 'by hand\n');
+    const raced = await h.app.inject({
+      method: 'POST',
+      url: `/projects/p/knowledge/proposals/${proposalId}/apply`,
+      headers: auth,
+      payload: {},
+    });
+    expect(raced.json()).toMatchObject({ applied: [], stale: ['glossary.md'] });
+    expect(readFileSync(join(h.dataRoot, 'knowledge/p/insights/glossary.md'), 'utf8')).toBe(
+      'by hand\n',
+    );
+    // A deleted project only hides its row; its proposals cannot be decided.
+    await ctx.store.hideProject('p');
+    const hidden = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
+    expect(hidden.statusCode).toBe(404);
   } finally {
     await h.close();
   }

@@ -19,9 +19,15 @@ const sourcePath = z
       ),
   );
 
+const singleLine = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[^\p{Cc}]*$/u, 'must be a single line without control characters');
+
 /**
  * Agents read and write project knowledge as files under `/knowledge`; this tool
- * brokers the two writes that cross read-only knowledge mount boundaries.
+ * brokers the writes that cross read-only knowledge mount boundaries.
  */
 export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
   z
@@ -77,6 +83,33 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('propose_wiki'),
+      mode: z.enum(['inline', 'maintenance']),
+      logKind: z.enum(['setup', 'ingest', 'chat', 'merge', 'lint']).optional(),
+      title: z.string().trim().min(1).max(160),
+      // Sources and summaries become lines of log.md and the review: one line each.
+      sources: z.array(singleLine.max(512)).min(1).max(20),
+      changes: z
+        .array(
+          z
+            .object({
+              path: singleLine.max(512),
+              content: z.string().max(100_000),
+              summary: singleLine.max(500),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(20)
+        .refine(
+          (changes) =>
+            changes.reduce((total, change) => total + change.content.length, 0) <= 400_000,
+          'a proposal holds at most 400,000 characters of page content',
+        ),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('publish_shared'),
       path: z.string().trim().min(1).max(512),
       sharedPath: z.string().trim().min(1).max(512).optional(),
@@ -99,6 +132,7 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. Each publication requires a separate approval. ' +
   'For publish_shared, path is relative to the session Documents working copy when supplied, otherwise `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
+  'Propose Wiki changes with propose_wiki instead of writing them when the user has not confirmed the concrete change: mode inline offers one change in chat at a natural conclusion (at most one per answer), mode maintenance is for maintenance runs. Each change names a Wiki page path (relative to `/knowledge/insights`, Markdown, never log.md or decisions), its complete new content and a one-line summary; sources cite the knowledge paths or URLs it rests on. The server records the base version and appends log.md when a person applies it; changes already applied, rejected or proposed are skipped. ' +
   'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
