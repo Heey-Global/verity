@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { knowledgeToolRequestSchema } from '@verity/events';
 
@@ -162,6 +162,7 @@ it('keeps the review usable when a proposed page can no longer be read', async (
 
 it('reports a page that could not be written and decides the others', async () => {
   const { proposal } = await proposals.propose(input([change('a.md', 'A'), change('b.md', 'B')]));
+  const onFailure = vi.fn();
   const flaky = new WikiProposals(dataRoot, {
     readProjectWiki: async (_project, path) => {
       const content = pages.get(path);
@@ -171,10 +172,16 @@ it('reports a page that could not be written and decides the others', async () =
       if (path === 'a.md') throw new FileWriteError(400, 'invalid Wiki path');
       pages.set(path, content);
     },
+    onFailure,
   });
   expect(await flaky.apply('p', proposal!.id)).toMatchObject({
     applied: ['b.md'],
     failed: ['a.md'],
+  });
+  // The reason reaches the server log, not only "could not be saved".
+  expect(onFailure).toHaveBeenCalledWith(expect.any(FileWriteError), {
+    projectId: 'p',
+    path: 'a.md',
   });
   expect((await proposals.listOpen('p'))[0]!.changes[0]).toEqual({
     path: 'a.md',

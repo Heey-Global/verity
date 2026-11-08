@@ -3678,6 +3678,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
           writeProjectWiki: (projectId, path, content, version) =>
             wikiFiles().writeProjectWiki(projectId, path, content, version),
+          onFailure: (err, details) =>
+            app.log.warn({ err, ...details }, 'Wiki proposal page could not be written'),
           onChange: (projectId) =>
             resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
         });

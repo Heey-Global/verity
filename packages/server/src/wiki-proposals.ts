@@ -66,6 +66,8 @@ export interface WikiFiles {
   ) => Promise<unknown>;
   /** Told after a proposal was recorded or decided, to refresh open review screens. */
   onChange?: (projectId: string) => void;
+  /** Told when a page could not be written, so the reason reaches the server log. */
+  onFailure?: (error: unknown, details: { projectId: string; path: string }) => void;
 }
 
 /** Open proposals per project; more must wait until earlier ones are decided. */
@@ -391,8 +393,9 @@ export class WikiProposals {
         let outcome: WikiChangeStatus | 'stale';
         try {
           outcome = await act(proposal, change);
-        } catch {
+        } catch (error) {
           // The page stays pending; the others are still decided.
+          this.wiki.onFailure?.(error, { projectId, path: change.path });
           failed.push(change.path);
           continue;
         }
