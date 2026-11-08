@@ -11,6 +11,8 @@ import {
   runAgentSpawnBroker,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { runSupervisor } from '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
+import { requestRunnerSupervisor } from '@verity/session';
+import { classifyProbeError } from './sandbox-turn-readiness.js';
 
 const execFileAsync = promisify(execFile);
 const controlDir = '/fixed-broker';
@@ -311,6 +313,35 @@ it('exposes egress readiness through the broker and supervisor sockets', async (
     else process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET = previousSocket;
     await supervisor?.close();
     await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A Sandbox built from a toolkit without `egress-readiness` refuses it the way
+// it refuses any request it does not know. That refusal must let the turn
+// through as before, never park it on a 90 second wait.
+it('reads a supervisor that does not know the readiness request as an older toolkit', async () => {
+  const directory = await mkdtemp('/tmp/verity-egress-old-');
+  await chmod(directory, 0o770);
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const supervisor = await runSupervisor({
+    runtimeDir: directory,
+    uid,
+    gid,
+    scriptIsolation: { available: true },
+    brokerSocket: join(directory, 'absent-broker.sock'),
+  });
+  try {
+    const refusal = await requestRunnerSupervisor(
+      supervisor.socketPath,
+      { kind: 'egress-readiness-from-a-later-release' },
+      2_000,
+    ).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(classifyProbeError(refusal)).toEqual({ kind: 'unsupported' });
+  } finally {
+    await supervisor.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

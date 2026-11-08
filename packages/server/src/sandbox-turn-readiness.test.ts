@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   EGRESS_HOPS,
+  classifyProbeError,
   TURN_READINESS_WAITING_MESSAGE,
   parseEgressReadiness,
   pendingEgressHops,
@@ -183,5 +184,25 @@ describe('egress readiness parsing', () => {
         broker: 'timeout',
       }),
     ).toEqual(readiness({ claude: 'refused', broker: 'timeout' }));
+  });
+});
+
+describe('classifyProbeError', () => {
+  it('waits only on a supervisor that timed out', () => {
+    expect(
+      classifyProbeError(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })),
+    ).toEqual({ kind: 'unavailable' });
+  });
+
+  it('lets every other failure through as before', () => {
+    for (const error of [
+      Object.assign(new Error('connect ENOENT'), { code: 'ENOENT' }),
+      Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+      Object.assign(new Error('connect EACCES'), { code: 'EACCES' }),
+      new Error('unsupported supervisor protocol'),
+      'not an error',
+    ]) {
+      expect(classifyProbeError(error)).toEqual({ kind: 'unsupported' });
+    }
   });
 });

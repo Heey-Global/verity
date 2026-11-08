@@ -297,4 +297,22 @@ describe('turn start failures', () => {
     });
     expect(descriptor.detail).not.toMatch(/credential/iu);
   });
+  it('does not offer a retry that cannot help', () => {
+    const unconfigured = agentEventDescriptor({
+      t: 'error',
+      kind: 'acp',
+      message:
+        'unexpected status 502 Bad Gateway: Codex egress is not configured for this Sandbox: it was provisioned without a Codex gateway.',
+    });
+    expect(unconfigured.kind).toBe('codex-unconfigured');
+    expect(unconfigured.action).toBeUndefined();
+    const rejected = agentEventDescriptor({
+      t: 'error',
+      kind: 'acp',
+      message:
+        'unexpected status 502 Bad Gateway: Verity sandbox connector rejected the request before any gateway was reached.',
+    });
+    expect(rejected.kind).toBe('egress-rejected');
+    expect(rejected.action).toBeUndefined();
+  });
 });

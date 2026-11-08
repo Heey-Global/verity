@@ -61,6 +61,22 @@ export function parseEgressReadiness(reply: Record<string, unknown>): SandboxEgr
   return { kind: 'readiness', readiness };
 }
 
+/**
+ * Read a failed supervisor request. Only a timeout is a Sandbox that may still
+ * be coming up: the supervisor is there and did not answer in time. Anything
+ * else — no socket, a refused or denied connect, an older toolkit's refusal of
+ * the request, a malformed reply — says nothing about the agent connections, so
+ * the turn proceeds exactly as it did before this gate existed and meets the
+ * same failure it always would, rather than stalling first.
+ */
+export function classifyProbeError(error: unknown): SandboxEgressProbe {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+  return code === 'ETIMEDOUT' ? { kind: 'unavailable' } : { kind: 'unsupported' };
+}
+
 /** Hops still in the way. `not_configured` is not waited on: a Sandbox
  *  provisioned without that leg will not grow one, and the connector already
  *  answers such a request with its own specific message. */

@@ -7961,14 +7961,17 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
   const repeats = message.repeatCount ?? 1;
   // Only the newest failure offers a resend: an older one was already followed
   // by something, and resending from it would answer a stale state.
+  // A turn that never started is repeated verbatim; asking the agent to "try
+  // again" would send a follow-up to a request it never received. Without a
+  // text-only message to repeat (attachments), no button is better than that.
+  const resendable = descriptor.action !== 'resend' || Boolean(actions?.lastUserPrompt);
   const canRetry =
     (descriptor.action === 'retry' || descriptor.action === 'resend') &&
+    resendable &&
     isLatest &&
     actions !== null &&
     !actions.sending &&
     !actions.dead;
-  // A turn that never started is repeated verbatim; asking the agent to "try
-  // again" would send a follow-up to a request it never received.
   const resend =
     descriptor.action === 'resend' && actions?.lastUserPrompt
       ? actions.lastUserPrompt

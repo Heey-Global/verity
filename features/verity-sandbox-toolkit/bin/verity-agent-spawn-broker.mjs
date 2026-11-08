@@ -126,7 +126,8 @@ export async function runnerEgressReadiness(options = {}) {
       return 'invalid';
     }
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
-    return await connect(url.hostname, port, timeoutMs);
+    // A URL keeps an IPv6 literal bracketed; a socket connect wants it bare.
+    return await connect(url.hostname.replace(/^\[(.*)\]$/u, '$1'), port, timeoutMs);
   };
   const connector = async () => {
     const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
@@ -137,7 +138,9 @@ export async function runnerEgressReadiness(options = {}) {
         signal: globalThis.AbortSignal.timeout(timeoutMs),
         redirect: 'error',
       });
-      return response.ok && (await response.text()).includes('"ready":true')
+      if (!response.ok) return 'unreachable';
+      const body = JSON.parse(await response.text());
+      return body !== null && typeof body === 'object' && body.ready === true
         ? 'ready'
         : 'unreachable';
     } catch (error) {

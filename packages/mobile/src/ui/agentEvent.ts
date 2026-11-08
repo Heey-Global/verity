@@ -156,12 +156,15 @@ function describeNotStarted(message: string): AgentEventDescriptor {
   };
 }
 
-// The Sandbox's egress connector answers a forward it could not complete with a
-// 502 whose body names the leg. The agent reports that as a bad gateway, which
-// would otherwise read as the model provider being down while the provider was
-// never reached.
+// The Sandbox's egress connector answers a request it could not complete with a
+// 502 whose body names what happened. The agent reports that as a bad gateway,
+// which would otherwise read as the model provider being down while the
+// provider was never reached. The three cases need different remedies, so they
+// are told apart rather than all offered a retry.
 const SANDBOX_EGRESS_UNAVAILABLE =
-  /\b(?:Codex egress (?:unavailable|is not configured)|Claude connector upstream unavailable|Verity sandbox connector rejected)\b/u;
+  /\b(?:Codex egress unavailable|Claude connector upstream unavailable)\b/u;
+const SANDBOX_CODEX_UNCONFIGURED = /\bCodex egress is not configured for this Sandbox\b/u;
+const SANDBOX_CONNECTOR_REJECTED = /\bVerity sandbox connector rejected the request\b/u;
 
 // Transport and provider outages: the agent never got an answer to act on, so
 // the remedy is to wait and resend — not to inspect the session.
@@ -175,6 +178,27 @@ const TECHNICAL_LIMIT = 2_000;
 
 function describeFailure(kind: string, message: string): AgentEventDescriptor {
   const technical = technicalText(kind, message);
+  // Provisioned before the Codex gateway existed: retrying cannot add the leg.
+  if (SANDBOX_CODEX_UNCONFIGURED.test(message)) {
+    return {
+      kind: 'codex-unconfigured',
+      label: 'Codex isn’t set up in this environment',
+      detail: 'The project environment has no Codex connection. Rebuilding it adds one.',
+      tone: 'warning',
+      technical,
+    };
+  }
+  // Refused inside the Sandbox before any gateway was involved; the same
+  // request would be refused again.
+  if (SANDBOX_CONNECTOR_REJECTED.test(message)) {
+    return {
+      kind: 'egress-rejected',
+      label: 'Agent request rejected',
+      detail: 'The project environment refused the request before it reached the agent gateway.',
+      tone: 'warning',
+      technical,
+    };
+  }
   if (SANDBOX_EGRESS_UNAVAILABLE.test(message)) {
     return {
       kind: 'egress-unavailable',

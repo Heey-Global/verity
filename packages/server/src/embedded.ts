@@ -132,6 +132,7 @@ import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
+  classifyProbeError,
   parseEgressReadiness,
   waitForSandboxTurnReadiness,
   type SandboxEgressProbe,
@@ -1851,9 +1852,7 @@ export async function buildEmbeddedServer(
         ),
       );
     } catch (error) {
-      if (error instanceof Error && /unknown supervisor request/u.test(error.message))
-        return { kind: 'unsupported' };
-      return { kind: 'unavailable' };
+      return classifyProbeError(error);
     }
   };
   const projectRelayControlRef: { current: ProjectRelayControl | undefined } = {
@@ -2727,9 +2726,16 @@ export async function buildEmbeddedServer(
           'verity: project Sandbox lifecycle transition',
         );
       },
-      onSandboxRecreate: (event) => {
+      onSandboxRecreate: ({ initiator, ...event }) => {
+        // The cause without the person: which trigger or session asked, never a user id.
+        const cause =
+          initiator.kind === 'system'
+            ? { initiator: initiator.kind, trigger: initiator.trigger }
+            : initiator.kind === 'session'
+              ? { initiator: initiator.kind, sessionId: initiator.sessionId }
+              : { initiator: initiator.kind };
         app.log[event.outcome === 'failed' ? 'warn' : 'info'](
-          event,
+          { ...event, ...cause },
           'verity: project Sandbox recreated',
         );
       },

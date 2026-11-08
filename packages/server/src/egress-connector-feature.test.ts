@@ -9,6 +9,7 @@ import {
   validateEgressConnectorOptions,
   type EgressConnectorOptions,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs';
+import { runnerEgressReadiness } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { CLAUDE_EGRESS_PLACEHOLDER } from './claude-egress-policy.js';
 
 const LOCAL_AUTHORITY = '127.0.0.1:43123';
@@ -648,3 +649,19 @@ function rawCall(port: number, raw: string): Promise<string> {
     socket.once('connect', () => socket.end(raw));
   });
 }
+
+// The turn-start gate requires this leg for every agent, so it is checked
+// against the connector itself: a renamed route or a reshaped reply would
+// otherwise stall every turn on a healthy Sandbox until the gate gives up.
+it('answers the Sandbox readiness probe the turn-start gate relies on', async () => {
+  const connector = await runEgressConnector({
+    ...options(),
+    localAuthority: `${CONNECTOR_HOST}:0`,
+    forward: vi.fn(),
+  });
+  connectors.push(connector);
+  const result = await runnerEgressReadiness({
+    env: { VERITY_CLAUDE_CONNECTOR_PORT: String(connector.port) },
+  });
+  expect(result.connector).toBe('ready');
+});
