@@ -4210,7 +4210,11 @@ export class EventStore implements EventSink {
         ),
       ])
       .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`);
+      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
+      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
+      .where(
+        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
+      );
     if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
     if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
     if (input.cursor !== undefined) {

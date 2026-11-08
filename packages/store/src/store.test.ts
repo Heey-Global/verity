@@ -786,6 +786,33 @@ describe('EventStore — message search projection', () => {
     expect(new Set([row!.id, ...second.map((item) => item.id)]).size).toBe(3);
   });
 
+  // The maintenance run quotes deleted sessions' transcripts; it appears in no list
+  // and must not resurface through search either.
+  it('never finds messages of the Wiki maintenance session', async () => {
+    await ctx.store.createProject({
+      id: 'wp',
+      owner: 'team',
+      repo: 'wp',
+      containerName: 'wp',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      ...session,
+      sessionId: 'wiki',
+      worktree: '/wt/wiki',
+      projectId: 'wp',
+    });
+    await ctx.store.createSession(session);
+    await ctx.store.appendEvent('wiki', { t: 'prompt', text: 'hidden-needle from the run' });
+    await ctx.store.appendEvent('s1', { t: 'prompt', text: 'hidden-needle in a chat' });
+    expect((await search({ query: 'hidden-needle' })).map((hit) => hit.sessionId).sort()).toEqual([
+      's1',
+      'wiki',
+    ]);
+    await ctx.store.wikiMaintenance.setSession('wp', 'wiki');
+    expect((await search({ query: 'hidden-needle' })).map((hit) => hit.sessionId)).toEqual(['s1']);
+  });
+
   it('returns a bounded snippet instead of the complete message body', async () => {
     await ctx.store.createSession(session);
     const padding = Array.from({ length: 300 }, (_, index) => `word${index}`).join(' ');

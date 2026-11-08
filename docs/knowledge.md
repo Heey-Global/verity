@@ -253,8 +253,8 @@ The run is a turn in the project's quiet maintenance session, created on first
 use with the project's default model and recorded in `wiki_maintenance` together
 with the time the last run started. The slot is claimed before the run starts, so
 two server generations never both start one; a run that could not start gives the
-slot back. The session appears in no session list and sends no push
-notification; when it is gone, the next run creates a new
+slot back. The session appears in no session list or message search and sends
+no push notification; when it is gone, the next run creates a new
 one. Its fixed assignment points the agent to the `wiki-maintain` Skill, which
 reads the occasions with `verity_wiki_read_occasions` (a list, then each kept text
 in pages of 40,000 characters), proposes changes with `verity_wiki_propose` in
