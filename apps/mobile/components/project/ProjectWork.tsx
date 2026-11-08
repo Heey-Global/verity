@@ -99,6 +99,11 @@ export function isActive(session: SessionSummary): boolean {
   );
 }
 
+function hasRunningCi(session: SessionSummary): boolean {
+  const pr = session.pr ?? session.pullRequest;
+  return pr?.phase === 'open' && (pr.pipeline === 'running' || pr.pipeline === 'pending');
+}
+
 /** One row of "Needs you": a session with what it waits on, or a project's own item. */
 export type NeedsYouEntry =
   | { kind: 'session'; session: SessionSummary; item?: InboxItem; flag?: AttentionFlag }
@@ -109,7 +114,7 @@ export type NeedsYouEntry =
  * with a visible inbox item — its most pressing one, in inbox order — then the
  * sessions whose pull request or sandbox is stuck, then nothing else. A
  * dismissed item does not count, so a set-aside question leaves Now. "Running &
- * new" holds the rest that is moving or has an answer the operator has not read.
+ * new" holds the rest that is moving, has CI in flight, or has an unread answer.
  */
 export function nowSections(
   sessions: readonly SessionSummary[],
@@ -145,7 +150,8 @@ export function nowSections(
   const active = workOrder(
     sessions.filter(
       (session) =>
-        !taken.has(session.sessionId) && (isActive(session) || unread.has(session.sessionId)),
+        !taken.has(session.sessionId) &&
+        (isActive(session) || unread.has(session.sessionId) || hasRunningCi(session)),
     ),
     new Map(),
     previous,
@@ -247,6 +253,7 @@ export function ProjectWork({
   feed,
   leadingRows = [],
   initialFilter = 'now',
+  layoutRevision = 0,
   onOpenSession,
   selectedSessionId,
   onChanged,
@@ -263,6 +270,8 @@ export function ProjectWork({
   /** Rows the page adds at the top of "Needs you", such as severe findings. */
   leadingRows?: readonly ReactElement[];
   initialFilter?: WorkFilter;
+  /** Only explicit refreshes reset positions; live reloads keep the current visit. */
+  layoutRevision?: number | undefined;
   onOpenSession: (sessionId: string) => void;
   /** After a rename, favorite, move, link or delete of `sessionId`, so the page
    *  and its host (the wide layout's list and session pane) catch up. */
@@ -275,23 +284,26 @@ export function ProjectWork({
     () => serverSessions.filter((session) => !removedIds.has(session.sessionId)),
     [serverSessions, removedIds],
   );
-  // Derive from the last snapshot so activity updates and newly started turns
-  // cannot insert rows ahead of sessions already working.
-  const [workSnapshot, setWorkSnapshot] = useState(() => ({
-    source: sessions,
-    ordered: workOrder(sessions),
-  }));
-  let ordered = workSnapshot.ordered;
-  if (workSnapshot.source !== sessions) {
-    ordered = workOrder(sessions, new Map(), workSnapshot.ordered);
-    setWorkSnapshot({ source: sessions, ordered });
-  }
   const [filter, setFilter] = useState<WorkFilter>(initialFilter);
   // The key, not the item: the sheet follows the live feed, so a question
   // answered elsewhere while it is open closes it instead of offering stale
   // answers to a session that no longer waits.
   const [answeringKey, setAnsweringKey] = useState<string | null>(null);
   const { unread: unreadIds, markSeen } = useUnread(client, sessions);
+  const ordered = useMemo(
+    () =>
+      workOrder(
+        sessions,
+        new Map(
+          sessions.flatMap((session) =>
+            !unreadIds.has(session.sessionId) && session.eventCount !== undefined
+              ? [[session.sessionId, session.eventCount] as const]
+              : [],
+          ),
+        ),
+      ),
+    [sessions, unreadIds],
+  );
   const previews = useSessionPreviews();
   const derived = useMemo(
     () =>
@@ -306,7 +318,7 @@ export function ProjectWork({
   useEffect(() => {
     if (answeringKey !== null && answering === null) setAnsweringKey(null);
   }, [answeringKey, answering]);
-  const now = useMemo(
+  const freshNow = useMemo(
     () => nowSections(sessions, items ?? [], unreadIds, ordered),
     [sessions, items, unreadIds, ordered],
   );
@@ -317,17 +329,75 @@ export function ProjectWork({
       if (item.sessionId !== undefined && !map.has(item.sessionId)) map.set(item.sessionId, item);
     return map;
   }, [items]);
-  const listed = useMemo(
-    () =>
-      filter === 'now'
-        ? []
-        : workOrder(
-            sessions.filter((session) => workFilter(session, filter)),
-            new Map(),
-            ordered,
-          ),
-    [sessions, filter, ordered],
+  const freshListed = useMemo(
+    () => (filter === 'now' ? [] : ordered.filter((session) => workFilter(session, filter))),
+    [filter, ordered],
   );
+  // Store identity and placement only: every row still reads live status/actions.
+  const [layout, setLayout] = useState(() => ({
+    filter,
+    layoutRevision,
+    projectId,
+    source: sessions,
+    nowSource: freshNow,
+    ids: freshListed.map((s) => s.sessionId),
+    needs: freshNow.needsYou.flatMap((e) => (e.kind === 'session' ? [e.session.sessionId] : [])),
+    active: freshNow.active.map((s) => s.sessionId),
+  }));
+  const reset =
+    layout.filter !== filter ||
+    layout.layoutRevision !== layoutRevision ||
+    layout.projectId !== projectId;
+  const live = new Map(sessions.map((s) => [s.sessionId, s]));
+  const retain = (previous: string[], candidates: string[]) => {
+    const kept = reset ? [] : previous.filter((id) => live.has(id));
+    return [...kept, ...candidates.filter((id) => !kept.includes(id))];
+  };
+  const previousNeeds = reset ? [] : layout.needs.filter((id) => live.has(id));
+  const previousActive = reset ? [] : layout.active.filter((id) => live.has(id));
+  const needs = retain(
+    previousNeeds,
+    freshNow.needsYou.flatMap((e) =>
+      e.kind === 'session' && !previousActive.includes(e.session.sessionId)
+        ? [e.session.sessionId]
+        : [],
+    ),
+  );
+  const active = retain(
+    previousActive,
+    freshNow.active.map((s) => s.sessionId).filter((id) => !needs.includes(id)),
+  );
+  const ids = retain(
+    layout.ids,
+    freshListed.map((s) => s.sessionId),
+  );
+  if (reset || layout.source !== sessions || layout.nowSource !== freshNow) {
+    setLayout({
+      filter,
+      layoutRevision,
+      projectId,
+      source: sessions,
+      nowSource: freshNow,
+      ids,
+      needs,
+      active,
+    });
+  }
+  const currentNeeds = new Map(
+    freshNow.needsYou.flatMap((e) =>
+      e.kind === 'session' ? [[e.session.sessionId, e] as const] : [],
+    ),
+  );
+  const now = {
+    needsYou: [
+      ...freshNow.needsYou.filter((e) => e.kind === 'project'),
+      ...needs.map(
+        (id) => currentNeeds.get(id) ?? { kind: 'session' as const, session: live.get(id)! },
+      ),
+    ],
+    active: active.map((id) => live.get(id)!),
+  };
+  const listed = ids.map((id) => live.get(id)!);
   const needsCount = leadingRows.length + now.needsYou.length;
   const nowCount = needsCount + now.active.length;
   const filters: readonly { value: WorkFilter; label: string; icon?: 'star' }[] = [
@@ -595,6 +665,7 @@ export function ProjectWork({
         item,
         needs: true,
       });
+    if (flag === undefined) return sessionRow(session);
     // The tag names the problem; the line under the name says where it is.
     const pr = session.pullRequest;
     return sessionRow(session, {

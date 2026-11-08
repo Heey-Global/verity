@@ -528,6 +528,7 @@ function SessionList({ client }: { client: VerityClient }) {
       setDragOrder(null);
     }
   }, [projects, draggingProjectId, dragOrder]);
+  const [overviewLayoutRevision, setOverviewLayoutRevision] = useState(0);
   const [refreshingOverview, setRefreshingOverview] = useState(false);
   const [updatingProjectIds, setUpdatingProjectIds] = useState<Set<string>>(() => new Set());
   const updatingProjectIdsRef = useRef(new Set<string>());
@@ -843,6 +844,7 @@ function SessionList({ client }: { client: VerityClient }) {
             group={item}
             client={client}
             now={Date.now()}
+            layoutRevision={overviewLayoutRevision}
             reorder={reorder}
             renderedOrder={activeGroupIds}
             sortable={isReorderableGroup(item)}
@@ -894,6 +896,7 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [
       activeGroupIds,
+      overviewLayoutRevision,
       collapsedOverride,
       toggleProjectGroup,
       draggingProjectId,
@@ -948,6 +951,7 @@ function SessionList({ client }: { client: VerityClient }) {
     try {
       await Promise.allSettled([refresh(), refreshProjects()]);
     } finally {
+      setOverviewLayoutRevision((value) => value + 1);
       setRefreshingOverview(false);
     }
   }, [refresh, refreshProjects]);

@@ -36,7 +36,7 @@ jest.mock('../lib/homePreferences', () => ({
 import type { SessionSummary, VerityClient } from '@verity/mobile';
 import { inboxItems, VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import { Alert, ScrollView } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
@@ -216,7 +216,133 @@ describe('project page', () => {
       />,
     );
     view.rerender(<ProjectWork {...props} sessions={[z, { ...a, status: 'running' }]} />);
-    expect(workingNames()).toEqual(['a, working', 'z, working']);
+    expect(workingNames()).toEqual(['z, working', 'a, working']);
+  });
+
+  it('keeps CI visible through completion and rebuilds on explicit refresh', async () => {
+    const client = clientWith([]);
+    const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const ci = session('checks', { pr: { phase: 'open', pipeline: 'running', mergeable: null } });
+    const pending = session('queued', {
+      pr: { phase: 'open', pipeline: 'pending', mergeable: null },
+    });
+    const view = render(<ProjectWork {...props} sessions={[ci, pending]} />);
+    await act(async () => undefined);
+    expect(within(screen.getByTestId('work-active')).getByText('checks')).toBeTruthy();
+    expect(within(screen.getByTestId('work-active')).getByText('queued')).toBeTruthy();
+    const finished = [
+      { ...ci, pr: { ...ci.pr!, phase: 'merged' as const, pipeline: 'success' as const } },
+    ];
+    view.rerender(<ProjectWork {...props} sessions={finished} />);
+    expect(screen.getByText('checks')).toBeTruthy();
+    expect(screen.queryByText('queued')).toBeNull();
+    view.rerender(<ProjectWork {...props} sessions={finished} layoutRevision={1} />);
+    expect(screen.queryByText('checks')).toBeNull();
+  });
+
+  it('retains All positions through merge and removes stale actions in Needs you', async () => {
+    const client = clientWith([]);
+    const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const fresh = session('answer', { eventCount: 7, lastSeenEventCount: 3 });
+    const quiet = session('quiet');
+    const view = render(<ProjectWork {...props} sessions={[quiet, fresh]} initialFilter="all" />);
+    await act(async () => undefined);
+    const names = () =>
+      within(screen.getByTestId('project-work'))
+        .getAllByRole('button')
+        .map((row) => row.props.accessibilityLabel as string)
+        .filter((label) => /^(answer|quiet)/.test(label));
+    expect(names()[0]).toMatch(/^answer/);
+    view.rerender(
+      <ProjectWork
+        {...props}
+        initialFilter="all"
+        sessions={[
+          quiet,
+          {
+            ...fresh,
+            lastSeenEventCount: 7,
+            pr: { phase: 'merged', pipeline: 'success', mergeable: null },
+          },
+        ]}
+      />,
+    );
+    expect(names()[0]).toMatch(/^answer/);
+    fireEvent.press(screen.getByRole('tab', { name: /^Now/ }));
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    expect(names()[0]).toMatch(/^quiet/);
+  });
+
+  it('retains a resolved question without stale answers or duplicate rows', async () => {
+    const client = clientWith([]);
+    const props = { client, onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const view = render(<ProjectWork {...props} sessions={[question]} />);
+    await act(async () => undefined);
+    expect(screen.getByText('Which validation library?')).toBeTruthy();
+    view.rerender(<ProjectWork {...props} sessions={[session('form', { status: 'running' })]} />);
+    expect(screen.queryByText('Which validation library?')).toBeNull();
+    expect(screen.getAllByText('form')).toHaveLength(1);
+    expect(within(screen.getByTestId('work-needs-you')).getByText('form')).toBeTruthy();
+    view.rerender(
+      <ProjectWork
+        {...props}
+        sessions={[session('form', { status: 'running' })]}
+        projectId="another"
+      />,
+    );
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    expect(within(screen.getByTestId('work-active')).getByText('form')).toBeTruthy();
+  });
+
+  it('keeps the visit through live reloads and resets on pull to refresh', async () => {
+    const unread = session('read-me', { eventCount: 5, lastSeenEventCount: 3 });
+    const client = clientWith([unread]);
+    const onOpenSession = jest.fn();
+    const page = (reloadOn: number) => (
+      <ProjectPage
+        client={client}
+        projectId="p/1"
+        onOpenSession={onOpenSession}
+        reloadOn={reloadOn}
+      />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    await act(async () => undefined);
+    fireEvent.press(screen.getByLabelText('read-me, new answer'));
+    expect(screen.getByText('read-me')).toBeTruthy();
+    const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
+    (client.getProject as jest.Mock).mockResolvedValue({
+      ...detail,
+      sessions: [{ ...unread, lastSeenEventCount: 5 }],
+    });
+    view.rerender(page(2));
+    await act(async () => undefined);
+    expect(screen.getByText('read-me')).toBeTruthy();
+    const scroll = view
+      .UNSAFE_getAllByType(ScrollView)
+      .find((node) => node.props.refreshControl !== undefined)!;
+    await act(async () => scroll.props.refreshControl.props.onRefresh());
+    expect(screen.queryByText('read-me')).toBeNull();
+  });
+
+  it('appends newly eligible sessions without moving existing rows', async () => {
+    const props = { client: clientWith([]), onOpenSession: jest.fn(), onChanged: jest.fn() };
+    const z = session('z', { status: 'running' });
+    const view = render(<ProjectWork {...props} sessions={[z]} />);
+    await act(async () => undefined);
+    const ci = session('a', { pr: { phase: 'open', pipeline: 'running', mergeable: null } });
+    view.rerender(<ProjectWork {...props} sessions={[ci, z, question]} />);
+    const rows = within(screen.getByTestId('work-active')).getAllByRole('button');
+    expect(
+      rows
+        .map((row) => row.props.accessibilityLabel as string)
+        .filter((label) => label.includes(',')),
+    ).toEqual(['z, working', 'a, CI running']);
+    expect(screen.getAllByText('form')).toHaveLength(1);
+    view.rerender(<ProjectWork {...props} sessions={[ci]} />);
+    expect(screen.queryByText('z')).toBeNull();
+    expect(screen.queryByText('form')).toBeNull();
   });
 
   it('names where the code lives and how many pull requests are open', async () => {
@@ -247,8 +373,9 @@ describe('project page', () => {
       'form',
       expect.objectContaining({ prompt: expect.stringContaining('Zod') }),
     );
-    // Answered, it leaves Now at once rather than waiting for the next poll.
-    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    // Keep the row reachable, but never offer its already submitted answer again.
+    expect(within(screen.getByTestId('work-needs-you')).getByText('form')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
   });
 
   it('locks only the answered row while its answer is on the way', async () => {
@@ -438,6 +565,10 @@ describe('project page', () => {
     expect(onOpenSession).toHaveBeenCalledWith('answered');
     expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
     expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    expect(within(screen.getByTestId('work-active')).getByText('answered')).toBeTruthy();
+    fireEvent.press(screen.getByRole('tab', { name: 'All' }));
+    fireEvent.press(screen.getByRole('tab', { name: /^Now/ }));
+    expect(screen.queryByText('answered')).toBeNull();
     await act(async () => undefined);
   });
 
