@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.87.0](https://github.com/Heey-Global/verity/compare/mobile-v1.86.0...mobile-v1.87.0) (2026-11-08)
+
+
+### Features
+
+* **files:** unify swipe actions and simplify knowledge navigation ([#2393](https://github.com/Heey-Global/verity/issues/2393)) ([7dd390d](https://github.com/Heey-Global/verity/commit/7dd390d537a9fa404e15d68b2d70d8065e888a14))
+* **instructions:** show repository AGENTS.md beside project Instructions ([#2381](https://github.com/Heey-Global/verity/issues/2381)) ([17f7cd6](https://github.com/Heey-Global/verity/commit/17f7cd646124c208d1579f5d6c9ff58324fcc289))
+* **knowledge:** let agents propose Wiki changes for review ([#2412](https://github.com/Heey-Global/verity/issues/2412)) ([0d61e4f](https://github.com/Heey-Global/verity/commit/0d61e4fedf2f34da808f7bf0dc82f485d7431322))
+* **knowledge:** let the Wiki explain itself and set it up with the user ([#2404](https://github.com/Heey-Global/verity/issues/2404)) ([36f082e](https://github.com/Heey-Global/verity/commit/36f082e2f45f82d48b160b8d3bd6cde869992c08))
+* **mobile:** list Wiki, Sources, Tasks and Security under project Content ([#2366](https://github.com/Heey-Global/verity/issues/2366)) ([19db886](https://github.com/Heey-Global/verity/commit/19db886425b96a7e787d13eb67ed0c8baba09018))
+* **mobile:** offer a deleted project session for its Wiki ([#2421](https://github.com/Heey-Global/verity/issues/2421)) ([5c5e72e](https://github.com/Heey-Global/verity/commit/5c5e72e56a0bf4fe57c0b46551e0f27a92e6cb62))
+* **mobile:** open the project Wiki on a start page with readable, linked pages ([#2380](https://github.com/Heey-Global/verity/issues/2380)) ([a616825](https://github.com/Heey-Global/verity/commit/a616825d76b8bdc2429ec400da1510bcfc532bd9))
+* **mobile:** show Verity as one conversation and list Home items on the Watch ([#2418](https://github.com/Heey-Global/verity/issues/2418)) ([a0e79ba](https://github.com/Heey-Global/verity/commit/a0e79bac7e8f4a52a03a6a8505e0986b80cc4237))
+* **mobile:** sink merged sessions and append status changes to their tier ([#2378](https://github.com/Heey-Global/verity/issues/2378)) ([4287a7a](https://github.com/Heey-Global/verity/commit/4287a7a46e50a776f8b49a55bf63aec59b6772c9))
+* **mockups:** enlarge a screen from the review to full size ([#2402](https://github.com/Heey-Global/verity/issues/2402)) ([29f6cc3](https://github.com/Heey-Global/verity/commit/29f6cc37b1bde9d74afc1f4449e92bb490311826))
+* **mockups:** mark screens and end the review from the chat ([#2379](https://github.com/Heey-Global/verity/issues/2379)) ([8bc4cdf](https://github.com/Heey-Global/verity/commit/8bc4cdf273ee3733b60c81fc7b81425936d6de72))
+* **projects:** allow one repository to back several projects ([#2377](https://github.com/Heey-Global/verity/issues/2377)) ([fa79ed1](https://github.com/Heey-Global/verity/commit/fa79ed1f1a3ceb8ed850e4945a6e387b9bf630f3))
+* **project:** show repositories with their open pull requests ([#2413](https://github.com/Heey-Global/verity/issues/2413)) ([b5e3a69](https://github.com/Heey-Global/verity/commit/b5e3a69eb9ece0b7acab1b7bdd7145ef2e58dcdd))
+* **tasks:** list issues of every project repository and hand tasks to Verity ([#2416](https://github.com/Heey-Global/verity/issues/2416)) ([27c28b6](https://github.com/Heey-Global/verity/commit/27c28b69440dda0b5d3da6964dd5d428b1d68aa9))
+
+
+### Bug Fixes
+
+* **meetings:** allow early calendar joins and keep link entry above keyboard ([#2389](https://github.com/Heey-Global/verity/issues/2389)) ([1b031f2](https://github.com/Heey-Global/verity/commit/1b031f27a908680fdb351a67c4a6bd0124df0e7f))
+* **mobile:** append newly active sessions to stable work order ([#2376](https://github.com/Heey-Global/verity/issues/2376)) ([27c44d4](https://github.com/Heey-Global/verity/commit/27c44d4a09afb2f197e33433e008d607eea83d7e))
+* **mobile:** avoid premature session inquiry errors and excessive polling ([#2368](https://github.com/Heey-Global/verity/issues/2368)) ([648895a](https://github.com/Heey-Global/verity/commit/648895a955d4bfb07227b90282642a3bdbe86de7))
+* **mobile:** calm the Needs you answers and stop one answer locking all ([#2372](https://github.com/Heey-Global/verity/issues/2372)) ([d31e442](https://github.com/Heey-Global/verity/commit/d31e442b35db7276d4b43a7da86e788e440cdaef))
+* **mobile:** hide deleted project sessions immediately ([#2367](https://github.com/Heey-Global/verity/issues/2367)) ([70a9673](https://github.com/Heey-Global/verity/commit/70a96730fd5bb1ee7e0e30f3507131a559337f73))
+* **mobile:** keep needs-you subtitles readable and make answers look tappable ([#2405](https://github.com/Heey-Global/verity/issues/2405)) ([fbbc06a](https://github.com/Heey-Global/verity/commit/fbbc06a549051a82f75b277a5112b6125b0d9d22))
+* **mobile:** keep session lists stable and include running CI ([#2406](https://github.com/Heey-Global/verity/issues/2406)) ([9ed0790](https://github.com/Heey-Global/verity/commit/9ed0790445631ddebea7cd7654d781a2252cd5ae))
+* **mobile:** keep the plan card on screen and answer decisions together ([#2373](https://github.com/Heey-Global/verity/issues/2373)) ([46ebbb8](https://github.com/Heey-Global/verity/commit/46ebbb802d0dc774789d0bf53453ed3c15d1c1a7))
+* **mobile:** make the usage ring read from 12 o'clock with a clear pace line ([#2369](https://github.com/Heey-Global/verity/issues/2369)) ([22f5688](https://github.com/Heey-Global/verity/commit/22f5688b8ea4a3418de2f9b139307231a4612c4e))
+* **mobile:** match capture fields to the session composer ([#2414](https://github.com/Heey-Global/verity/issues/2414)) ([49901f9](https://github.com/Heey-Global/verity/commit/49901f96feb99893c0627dea4d88a4587e0dc7f8))
+* **mobile:** show mockup reviews as blue action indicators ([#2403](https://github.com/Heey-Global/verity/issues/2403)) ([a7ff808](https://github.com/Heey-Global/verity/commit/a7ff808ff49ea9b0006a8225eb057973709fdcf4))
+* **mobile:** unify Home replies and recover stale mockup reviews ([#2386](https://github.com/Heey-Global/verity/issues/2386)) ([7f5e330](https://github.com/Heey-Global/verity/commit/7f5e3309ccddcb15ba128ca8a6e273492118e7e1))
+* **mobile:** unify vulnerabilities navigation and prevent header truncation ([#2400](https://github.com/Heey-Global/verity/issues/2400)) ([9428de9](https://github.com/Heey-Global/verity/commit/9428de9ec4c29c6880e0bf873ea6a9dde4e504bf))
+* **sessions:** refresh pull request status during active turns ([#2371](https://github.com/Heey-Global/verity/issues/2371)) ([2e08681](https://github.com/Heey-Global/verity/commit/2e086813a957d379fc52485deca20240a3baca5f))
+* **watch:** preserve original logo and reduce voice delivery latency ([#2419](https://github.com/Heey-Global/verity/issues/2419)) ([71f3ab0](https://github.com/Heey-Global/verity/commit/71f3ab0ce6a4bcbb89fe5a17554fa9dceab8effd))
+
 ## [1.86.0](https://github.com/Heey-Global/verity/compare/mobile-v1.85.0...mobile-v1.86.0) (2026-11-06)
 
 
