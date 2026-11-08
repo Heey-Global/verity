@@ -250,6 +250,17 @@ describe('POST merge', () => {
     );
   });
 
+  // The list hides a removed repository; an old screen must not act on it.
+  it('refuses to merge in a repository the project has removed', async () => {
+    const { app, backend } = setup({
+      repositories: [{ ...SITE, removedAt: new Date('2026-01-01T00:00:00Z') }],
+      backend: { status: vi.fn().mockResolvedValue(status(5)) },
+    });
+    const response = await merge(app);
+    expect(response.statusCode).toBe(404);
+    expect(backend.merge).not.toHaveBeenCalled();
+  });
+
   it('merges nothing when the head moved since the list was shown', async () => {
     const { app, backend } = setup({
       backend: { status: vi.fn().mockResolvedValue(status(5, { headSha: 'def50000' })) },

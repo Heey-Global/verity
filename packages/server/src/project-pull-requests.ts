@@ -327,7 +327,12 @@ export function registerProjectPullRequestRoutes(
     const project = await deps.store.getProject(projectId);
     if (!project) return undefined;
     const repository = await deps.store.getProjectRepository(projectId, repositoryId);
-    if (!repository || (repository.kind !== 'github' && repository.kind !== 'forgejo'))
+    // A removed repository is gone from the list, so it takes no actions either.
+    if (
+      !repository ||
+      repository.removedAt !== null ||
+      (repository.kind !== 'github' && repository.kind !== 'forgejo')
+    )
       return undefined;
     return { project, repository, remote: projectForRepository(project, repository) };
   };
