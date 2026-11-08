@@ -5501,7 +5501,31 @@ migrations['0199_session_pr_visibility'] = {
   },
 };
 
-migrations['0200_project_description'] = {
+migrations['0200_wiki_occasions'] = {
+  // What happened in a project that its Wiki may need to reflect. A row stays
+  // open until a maintenance run has read it; closing it drops any text kept
+  // for that run, such as the messages of a session deleted as done.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_occasions (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      kind text not null check(kind in ('source','meeting','decision','chat','session','merge')),
+      ref text not null,
+      title text not null,
+      body text,
+      created_at timestamptz not null default now(),
+      closed_at timestamptz,
+      unique(project_id,kind,ref)
+    )`.execute(db);
+    await sql`create index wiki_occasions_open on wiki_occasions(project_id,created_at)
+      where closed_at is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_occasions`.execute(db);
+  },
+};
+
+migrations['0201_project_description'] = {
   // One line under the project's name on its page, written by its managers.
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table project_settings add column description text

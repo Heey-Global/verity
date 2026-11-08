@@ -38,3 +38,25 @@ it('bounds even a stalled initial lookup and returns a retryable response', asyn
     await app.close();
   }
 });
+
+// Keeping a deleted session for the Wiki needs the user's choice; a client that
+// never offered it (an older app) must keep nothing.
+it('keeps a session for the Wiki only when the request asks for it', async () => {
+  const app = Fastify();
+  const seen: unknown[] = [];
+  registerSessionDeleteRoute(app, {
+    remove: async (_request, _reply, _id, _force, options) => {
+      seen.push(options?.keepForWiki);
+      return { sessionId: 's', cleanup: 'pending' };
+    },
+  });
+  await app.ready();
+  try {
+    await app.inject({ method: 'DELETE', url: '/sessions/s?wiki=true' });
+    await app.inject({ method: 'DELETE', url: '/sessions/s?wiki=false' });
+    await app.inject({ method: 'DELETE', url: '/sessions/s' });
+    expect(seen).toEqual([true, false, false]);
+  } finally {
+    await app.close();
+  }
+});

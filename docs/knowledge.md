@@ -210,3 +210,25 @@ kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the page
 changed and the sources it used. The Wiki catalog gives every page the latest entry
 that links to it, so **Recently updated** names where a change came from; pages the
 log never names fall back to their file age.
+
+## Wiki maintenance occasions
+
+The server notes what a project's Wiki may need to reflect, once per item, in
+`wiki_occasions`: an imported or uploaded source, a filed meeting transcript, a
+recorded decision, a changed chat day from a connected room, a merged pull request
+of a project session, and a session deleted as done. Noting never fails the event
+that caused it.
+
+Deleting a session can keep its conversation for the Wiki (`DELETE
+/sessions/:id?wiki=true`). The server then stores the plain messages of the user and
+Verity, without tool output, with the occasion and deletes the session as usual.
+Only the most recent 256 KiB of the conversation is read and kept, and a deletion
+waits at most five seconds for it; a slower store may still record it afterwards. Nothing is copied into the project's knowledge; reading the occasion in a
+maintenance run drops the stored text. Without `wiki=true`, which older clients
+never send, nothing is kept and an earlier occasion of that session is forgotten.
+A merged pull request is recorded once even when the status cache reports it again
+after a restart; a chat day or re-filed meeting opens its occasion again. A
+maintenance run closes only the version it read, so an occasion reopened while the
+run works stays open with its new text. Until a maintenance run reads them, open
+occasions and their kept text remain stored, also while a deleted project is
+hidden; they are removed only with the project's database row.
