@@ -794,6 +794,29 @@ it('retries retired cleanup after failure while retaining deny fences and perman
   await expect(host.execute(start)).rejects.toThrow('Retired');
 });
 
+it('retries a failed explicit retirement stop after restart before removing its network', async () => {
+  const f = fixture();
+  await f.host.execute({ operation: 'register', binding });
+  await f.host.execute(start);
+  f.deps.stopContainer.mockRejectedValueOnce(new Error('Docker temporarily unavailable'));
+  await expect(
+    f.host.execute({
+      operation: 'retire',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).rejects.toThrow('container stop failed');
+  const cleanupNetwork = vi.fn(async () => {
+    expect(f.deps.stopContainer).toHaveBeenCalledTimes(2);
+    return true;
+  });
+  const restarted = new ProjectEgressHost(f.saved(), { ...f.deps, cleanupNetwork });
+  await restarted.cleanupNetworks();
+  expect(cleanupNetwork).toHaveBeenCalledWith(binding, { sandbox: id }, undefined);
+  expect(f.saved().records[0]?.networkRemoved).toBe(true);
+  await expect(restarted.execute(start)).rejects.toThrow('Retired');
+});
+
 it('returns only a fixed address-pool diagnostic through authenticated network allocation', async () => {
   const root = await directory();
   const { deps } = fixture();

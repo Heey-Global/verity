@@ -434,7 +434,7 @@ export class ProjectEgressHost {
         if (!permitted) continue;
         // Retired identities cannot start or be reassigned. Slow Docker housekeeping must
         // not occupy the global admission/renewal queue used by other generations.
-        if (record.allocationAbandoned)
+        if (record.cleanupContainers)
           for (const id of containerIds(record)) await this.deps.stopContainer(id);
         const removed = await this.deps.cleanupNetwork!(
           record.binding,
