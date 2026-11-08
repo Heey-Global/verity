@@ -143,6 +143,7 @@ export function startWikiMaintenanceTrigger(
           { projectId, sessionId, open: pending.count },
           'wiki maintenance run started',
         );
+      else deps.log.warn({ projectId, sessionId }, 'wiki maintenance run could not start');
     } finally {
       // A run that never started must not hold the interval for 20 hours.
       if (!started) await deps.store.wikiMaintenance.releaseRun(projectId, claimedAt, previous);

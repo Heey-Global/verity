@@ -130,8 +130,8 @@ export async function wikiOccasionTool(
     const closed = await store.wikiOccasions.close(projectId, request.occasions);
     return { closed, open: await store.wikiOccasions.countOpen(projectId) };
   }
-  const open = await store.wikiOccasions.open(projectId);
   if (request.id === undefined) {
+    const open = await store.wikiOccasions.open(projectId);
     return {
       occasions: open.map(({ body, ...occasion }) => ({
         id: occasion.id,
@@ -144,7 +144,7 @@ export async function wikiOccasionTool(
       more: open.length < (await store.wikiOccasions.countOpen(projectId)),
     };
   }
-  const occasion = open.find((candidate) => candidate.id === request.id);
+  const occasion = await store.wikiOccasions.openOne(projectId, request.id);
   if (!occasion) throw new Error('No open occasion with this id');
   const offset = request.offset ?? 0;
   const body = occasion.body ?? '';

@@ -112,6 +112,15 @@ export class WikiOccasionStore {
     return Number(result.numAffectedRows ?? 0);
   }
 
+  /** One open occasion with its kept text. */
+  async openOne(projectId: string, id: string): Promise<WikiOccasion | undefined> {
+    const result = await sql<Row>`select id,project_id,kind,ref,title,body,created_at
+      from wiki_occasions where project_id=${projectId} and id=${id}
+        and closed_at is null`.execute(this.db);
+    const row = result.rows[0];
+    return row ? record(row) : undefined;
+  }
+
   async countOpen(projectId: string): Promise<number> {
     const result = await sql<{ count: string | number }>`select count(*) as count
       from wiki_occasions where project_id=${projectId} and closed_at is null`.execute(this.db);
