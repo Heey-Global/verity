@@ -299,8 +299,9 @@ export function registerSessionMergeRoutes(
           await deps.eventStore.appendPendingNote(id, note).catch(() => undefined);
           await conductor.emitMerged(id, number).catch(() => undefined);
         })
-        .catch(() => undefined);
-      if (!cleanupObserved) await finishCleanup(null);
+        .catch(async () => {
+          if (!cleanupObserved) await finishCleanup(null);
+        });
       return { merged: true };
     },
   );

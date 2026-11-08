@@ -1807,47 +1807,65 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it('seeds PR visibility after managed cleanup before admitting later work', async () => {
-    const worktree = await createExistingSession('s1');
-    let status = prStatus();
-    let fingerprint = 'before-cleanup';
-    await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
-    const server = buildServer({
-      eventStore: ctx.store,
-      bus,
-      conductor,
-      branches: {
-        ...branchSvc,
-        worktreeFingerprint: async () => fingerprint,
-        resetToMergedBase: async () => {
-          fingerprint = 'settled-cleanup';
-          return { base: 'main' };
+  it.each([false, true])(
+    'seeds PR visibility after managed cleanup before admitting later work (deferred: %s)',
+    async (deferred) => {
+      const worktree = await createExistingSession('s1');
+      isBusy.mockReturnValue(deferred);
+      let status = prStatus();
+      let fingerprint = 'before-cleanup';
+      await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: {
+          ...branchSvc,
+          worktreeFingerprint: async () => fingerprint,
+          resetToMergedBase: async () => {
+            fingerprint = 'settled-cleanup';
+            return { base: 'main' };
+          },
+        } as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus: async () => status,
+        mergePr: async () => {
+          status = { ...status, phase: 'merged' };
+          return true;
         },
-      } as unknown as NonNullable<ServerDeps['branches']>,
-      branchPrStatus: async () => status,
-      mergePr: async () => {
-        status = { ...status, phase: 'merged' };
-        return true;
-      },
-    });
-    try {
-      const response = await server.inject({
-        method: 'POST',
-        url: '/sessions/s1/pull-request/merge',
-        payload: { number: 119 },
       });
-      expect(response.statusCode).toBe(200);
-      expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
-        fingerprint: 'settled-cleanup',
-        hidden: false,
-      });
-      expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
-        'merged',
-      );
-    } finally {
-      await server.close();
-    }
-  });
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(200);
+        if (deferred) {
+          fingerprint = 'intermediate-work';
+          // A viewed terminal PR must not adopt or compare an intermediate baseline.
+          expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+            'merged',
+          );
+          expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
+            fingerprint: 'before-cleanup',
+            hidden: false,
+          });
+          const cleanup = runWhenIdle.mock.calls.at(-1)?.[1];
+          expect(cleanup).toBeTypeOf('function');
+          await cleanup!();
+        }
+        expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
+          fingerprint: 'settled-cleanup',
+          hidden: false,
+        });
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+          'merged',
+        );
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it('resets the worktree to the merged base without dispatching a post-merge turn', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
