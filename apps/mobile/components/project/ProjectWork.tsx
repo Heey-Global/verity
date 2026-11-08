@@ -710,7 +710,12 @@ export function ProjectWork({
           {now.active.length > 0 ? (
             <View style={styles.section} testID="work-active">
               <SectionHeader title={`Running & new · ${String(now.active.length)}`} flush />
-              <Group>{now.active.map((session) => sessionRow(session))}</Group>
+              <Group>
+                {now.active.map((session) => {
+                  const entry = currentNeeds.get(session.sessionId);
+                  return entry ? needsYouRow(entry) : sessionRow(session);
+                })}
+              </Group>
             </View>
           ) : null}
         </>

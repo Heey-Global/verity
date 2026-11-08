@@ -345,6 +345,31 @@ describe('project page', () => {
     expect(screen.queryByText('form')).toBeNull();
   });
 
+  it('shows new question actions without moving a retained running row', async () => {
+    const client = clientWith([session('form', { status: 'running' })]);
+    Object.assign(client, { sendTurn: jest.fn().mockResolvedValue({ queued: false }) });
+    const page = (reloadOn: number) => (
+      <ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} reloadOn={reloadOn} />
+    );
+    const view = render(page(1));
+    await screen.findByTestId('project-line');
+    await act(async () => undefined);
+    const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
+    (client.getProject as jest.Mock).mockResolvedValue({ ...detail, sessions: [question] });
+    view.rerender(page(2));
+    await act(async () => undefined);
+    const active = within(screen.getByTestId('work-active'));
+    expect(active.getByText('Which validation library?')).toBeTruthy();
+    expect(screen.queryByTestId('work-needs-you')).toBeNull();
+    await act(async () => fireEvent.press(active.getByRole('button', { name: 'Zod' })));
+    expect(client.sendTurn).toHaveBeenCalledWith(
+      'form',
+      expect.objectContaining({ prompt: expect.stringContaining('Zod') }),
+    );
+    expect(active.queryByRole('button', { name: 'Zod' })).toBeNull();
+    expect(active.getByText('form')).toBeTruthy();
+  });
+
   it('names where the code lives and how many pull requests are open', async () => {
     await renderPage([merged, running]);
     expect(screen.getByTestId('project-line')).toHaveTextContent(
