@@ -32,7 +32,7 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('diagnosis is not completion');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('Verity Quick Actions');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('without asking again');
-    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(1300);
+    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(650);
   });
 
   it.each([AUTONOMY_SYSTEM_PROMPT, AUTONOMY_RESUME_SYSTEM_PROMPT])(
@@ -52,7 +52,7 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
       expect(prompt).toContain('Wait for required reviews and tests to finish');
       expect(prompt).toContain('wait or poll');
       expect(prompt).toContain('exit status');
-      expect(prompt).toContain('turn completion can terminate its processes');
+      expect(prompt).toMatch(/turn completion can (terminate its processes|kill background work)/i);
       expect(prompt).toContain('managed continuation');
       expect(prompt).toContain('report the concrete failure');
     },
