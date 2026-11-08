@@ -1,3 +1,4 @@
+import { generationNetworkIdentity } from './project-network-cleanup.js';
 import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
@@ -599,6 +600,79 @@ describe('ProvisionerImpl (#174)', () => {
     return id;
   }
 
+  it.each(['absent', 'failed', 'active', 'cloning', 'container_starting'] as const)(
+    'network reconciliation preserves retained projects and cleans only abandoned empty networks (%s)',
+    async (state) => {
+      const id = await seedProject(state);
+      if (state === 'active')
+        await ctx.store.updateProjectSleepState(id, 'sleeping', {
+          sleepCompatibilityFingerprint: 'retained',
+          sleepingSince: new Date(),
+          wakeStartedAt: null,
+        });
+      const network = {
+        Id: 'a'.repeat(64),
+        Name: projectNetworkName(id),
+        Driver: 'bridge' as const,
+        Labels: { 'verity.project-id': id },
+        Options: {},
+        Containers: {},
+      };
+      const removeNetwork = vi.fn(async () => {});
+      const { client: docker } = fakeDocker({
+        listNetworks: async () => [network],
+        inspectNetwork: async () => network,
+        listContainers: async () => [],
+        removeNetwork,
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+      });
+      await provisioner.reconcileProjectNetworks();
+      expect(removeNetwork).toHaveBeenCalledTimes(['absent', 'failed'].includes(state) ? 1 : 0);
+    },
+  );
+  it('network reconciliation waits for a later pass while a project mutation owns admission', async () => {
+    const id = await seedProject();
+    const network = {
+      Id: 'a'.repeat(64),
+      Name: projectNetworkName(id),
+      Driver: 'bridge' as const,
+      Labels: { 'verity.project-id': id },
+      Options: {},
+      Containers: {},
+    };
+    const removeNetwork = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      listNetworks: async () => [network],
+      inspectNetwork: async () => network,
+      listContainers: async () => [],
+      removeNetwork,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mutation = provisioner.withProjectExclusiveMutation(id, () => wait);
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).not.toHaveBeenCalled();
+    release();
+    await mutation;
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).toHaveBeenCalledExactlyOnceWith(network.Id);
+  });
+
   it.each(['running', 'restarting', 'created', 'paused', 'unknown', undefined])(
     'blocks a retained wake while a labelled cache helper is %s',
     async (state) => {
@@ -929,6 +1003,16 @@ describe('ProvisionerImpl (#174)', () => {
       const host = new ProjectEgressHost(
         { version: 1, records: [] },
         {
+          allocateNetwork: async (identity) => {
+            const names = generationNetworkIdentity(identity.projectId, identity.generation);
+            networkName = names.networkName;
+            events.push('network.create');
+            return {
+              ...identity,
+              ...names,
+              networkId: (++sequence).toString(16).padStart(64, '0'),
+            };
+          },
           save: async () => {},
           apply: async () => {
             events.push('deny');
@@ -5730,7 +5814,7 @@ describe('ProvisionerImpl (#174)', () => {
 
       await expect(provisioner.provision(id)).resolves.toMatchObject({ state: 'active' });
       expect(ensureNetwork).toHaveBeenCalledWith(projectNetworkName(id), {
-        labels: { 'verity.project-id': id },
+        labels: { 'verity.project-id': id, 'verity.component': 'project-network' },
       });
       const created = dockerCalls.find((c) => c.method === 'createContainer');
       expect((created?.payload as ContainerSpec).network).toBe(projectNetworkName(id));
@@ -9935,6 +10019,59 @@ describe('DeprovisionerImpl (#174)', () => {
     await ctx.store.upsertProject({ id, ...baseInput, state: stateOverride });
     return id;
   }
+
+  it('retries an interrupted deprovision network cleanup through reconciliation without purging project files', async () => {
+    const id = await seedProject();
+    const order: string[] = [];
+    const network = {
+      Id: 'a'.repeat(64),
+      Name: projectNetworkName(id),
+      Driver: 'bridge' as const,
+      Labels: { 'verity.project-id': id },
+      Options: {},
+      Containers: {},
+    };
+    const removeNetwork = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Docker offline'))
+      .mockResolvedValue(undefined);
+    const { client: docker } = fakeDocker({
+      stopContainer: async () => {
+        order.push('stop');
+      },
+      removeContainer: async () => {
+        order.push('remove');
+      },
+      inspectNetwork: async () => network,
+      listContainers: async () => [],
+      listNetworks: async () => [network],
+      removeNetwork,
+    });
+    const removeDir = vi.fn();
+    const deprovisioner = new DeprovisionerImpl(
+      ctx.store,
+      ctx.db,
+      docker,
+      '/data/dev',
+      undefined,
+      removeDir,
+    );
+    await expect(deprovisioner.deprovision(id, { purge: false })).resolves.toMatchObject({
+      state: 'absent',
+    });
+    expect(order).toEqual(['stop', 'remove']);
+    expect(removeNetwork).toHaveBeenCalledExactlyOnceWith(network.Id);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).toHaveBeenCalledTimes(2);
+    expect(removeDir).not.toHaveBeenCalled();
+  });
 
   it('revokes public previews before mutating the project container', async () => {
     const id = await seedProject();

@@ -1,3 +1,5 @@
+import { createDockerClient, DockerError } from './docker.js';
+import { createHostProjectNetworks } from './project-egress-network-cleanup.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   createNativeProtectedBuildHost,
@@ -256,7 +258,15 @@ const verifyHost = async () => {
   const info: unknown = JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .}}'));
   verifyProjectEgressDockerHost(info);
 };
+const hostNetworkDocker = createDockerClient({
+  baseUrl: 'unix:///var/run/docker.sock:/v1.47',
+  timeoutMs: 3000,
+});
 const controller = new ProjectEgressHost(await store.load(), {
+  ...createHostProjectNetworks(
+    createDockerClient({ baseUrl: 'unix:///var/run/docker.sock:/v1.47', timeoutMs: 250 }),
+    hostNetworkDocker,
+  ),
   ...(managedInventory ? { systemInventory } : {}),
   verifyHealth: async () => {
     if (inventoryPersistenceFailed)
@@ -291,7 +301,21 @@ const controller = new ProjectEgressHost(await store.load(), {
     await projectEgressHostDocker('container', 'start', id);
   },
   stopContainer: async (id) => {
-    await projectEgressHostDocker('container', 'stop', '--time', '1', id);
+    try {
+      await projectEgressHostDocker('container', 'stop', '--time', '1', id);
+    } catch (error) {
+      // A concurrent retired-generation cleanup may already have removed this exact ID.
+      try {
+        await hostNetworkDocker.inspectContainer(id);
+      } catch (inspectionError) {
+        if (
+          inspectionError instanceof DockerError &&
+          inspectionError.kind === 'container_not_found'
+        )
+          return;
+      }
+      throw error;
+    }
   },
 });
 const builds =
@@ -359,6 +383,21 @@ if (mode === 'restore') {
       });
     },
   });
+  let networkSweepRunning = false;
+  const sweepNetworks = async () => {
+    if (networkSweepRunning) return;
+    networkSweepRunning = true;
+    try {
+      await controller.cleanupNetworks();
+    } catch (error) {
+      console.error('Project network cleanup deferred', error);
+    } finally {
+      networkSweepRunning = false;
+    }
+  };
+  await sweepNetworks();
+  const networkSweep = setInterval(() => void sweepNetworks(), 60_000);
+  networkSweep.unref();
   let sweeping = false;
   const buildSweep = builds
     ? setInterval(() => {
@@ -377,6 +416,7 @@ if (mode === 'restore') {
   buildSweep?.unref();
   const stop = () => {
     clearInterval(buildSweep);
+    clearInterval(networkSweep);
     clearInterval(inventoryTimer);
     void service.stop().then(
       async () => {

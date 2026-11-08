@@ -120,6 +120,34 @@ describe('startProjectRelayMigrationScheduler', () => {
     stop();
   });
 
+  it('runs network cleanup without relay migration and retries failures on the next tick', async () => {
+    vi.useFakeTimers();
+    const reconcileProjectNetworks = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Docker offline'))
+      .mockResolvedValue(undefined);
+    const warn = vi.fn();
+    const stop = startProjectRelayMigrationScheduler(
+      {
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        provisioner: { provision: vi.fn(), reconcileProjectNetworks },
+      },
+      { info: vi.fn(), warn } as unknown as FastifyBaseLogger,
+      vi.fn(async () => false),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcileProjectNetworks).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'project network cleanup deferred',
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reconcileProjectNetworks.mock.calls.length).toBeGreaterThan(1);
+    stop();
+  });
+
   it('hands available sandbox images to the busy-safe reconcile queue', async () => {
     vi.useFakeTimers();
     await ctx.store.upsertProject(activeProject);

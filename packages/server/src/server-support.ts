@@ -128,8 +128,9 @@ export function startProjectRelayMigrationScheduler(
   isProjectBusy: (projectId: string) => Promise<boolean>,
 ): () => void {
   const provisioner = deps.provisioner;
-  if (provisioner?.reconcileRelays === undefined) return () => undefined;
-  const reconcileRelays = provisioner.reconcileRelays.bind(provisioner);
+  if (!provisioner || (!provisioner.reconcileRelays && !provisioner.reconcileProjectNetworks))
+    return () => undefined;
+  const reconcileRelays = provisioner.reconcileRelays?.bind(provisioner);
   provisioner.attachProjectBusyProbe?.(isProjectBusy);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -152,6 +153,9 @@ export function startProjectRelayMigrationScheduler(
       const projects = await measureLatencyPhase('project_list', () =>
         deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
       );
+      await provisioner.reconcileProjectNetworks?.().catch((err: unknown) => {
+        log.warn({ err }, 'project network cleanup deferred');
+      });
       const updateStatuses = await deps.sandboxUpdates
         ?.statusAll(projects.filter((project) => project.kind !== 'control_plane'))
         .catch((err: unknown) => {
@@ -165,7 +169,7 @@ export function startProjectRelayMigrationScheduler(
           .filter(([, status]) => status.state === 'available')
           .map(([projectId]) => projectId),
       );
-      await reconcileRelays(projects, {
+      await reconcileRelays?.(projects, {
         updateAvailable,
         onDeferred: (projectId, info) =>
           log.info(

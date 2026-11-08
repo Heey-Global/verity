@@ -1,3 +1,4 @@
+import { DockerError, DOCKER_ADDRESS_POOL_EXHAUSTED } from './docker.js';
 import {
   inventoryFailureReason,
   ProjectEgressInventoryError,
@@ -90,6 +91,20 @@ export function createProjectEgressHostClient(options: {
                   typeof refused === 'object' && refused !== null && 'reason' in refused
                     ? refused.reason
                     : undefined;
+                if (
+                  command.operation === 'allocate-network' &&
+                  reason === 'address_pool_exhausted'
+                ) {
+                  clearTimeout(timer);
+                  abort.abort();
+                  reject(
+                    new DockerError({
+                      kind: 'address_pool_exhausted',
+                      message: DOCKER_ADDRESS_POOL_EXHAUSTED,
+                    }),
+                  );
+                  return;
+                }
                 const inventoryReason = inventoryFailureReason(reason);
                 if (command.operation.startsWith('inventory-') && inventoryReason) {
                   clearTimeout(timer);

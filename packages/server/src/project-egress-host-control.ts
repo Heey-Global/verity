@@ -1,3 +1,4 @@
+import { DockerError } from './docker.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { createServer, type Server } from 'node:http';
 import { lstat, chmod } from 'node:fs/promises';
@@ -90,6 +91,9 @@ export async function listenProjectEgressHost(options: {
           response.end(
             JSON.stringify({
               error: 'host operation refused',
+              ...(error instanceof DockerError && error.kind === 'address_pool_exhausted'
+                ? { reason: 'address_pool_exhausted' }
+                : {}),
               ...(error instanceof ProjectEgressInventoryError ? { correlationId } : {}),
               ...(error instanceof ProjectEgressHealthError ||
               error instanceof ProjectEgressInventoryError
