@@ -87,7 +87,7 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
 async function renderInbox(
   sessions: SessionSummary[],
   client = fakeClient(),
-  extra: { selectedSessionId?: string; onOpenVerity?: () => void } = {},
+  extra: { selectedSessionId?: string; onOpenVerity?: () => void; projects?: ProjectRecord[] } = {},
 ) {
   const onOpenSession = jest.fn();
   const onRepairProject = jest.fn();
@@ -660,4 +660,24 @@ it('keeps simultaneous permission and question decisions visible in one session 
   expect(needs.getByText(/Which validation library\?$/)).toBeTruthy();
   expect(needs.getByRole('button', { name: 'Zod' })).toBeTruthy();
   expect(onCountChange).toHaveBeenLastCalledWith(1);
+});
+
+it('keeps archived project problems, running work and unread results out of Home', async () => {
+  const archived = { ...project, archived: true };
+  const sessions = [
+    session('failed', { pr: { phase: 'open', pipeline: 'failure', mergeable: false } }),
+    session('conflict', {
+      pr: { phase: 'open', pipeline: 'unknown', mergeable: false, mergeState: 'dirty' },
+    }),
+    session('disconnected', {
+      attention: [{ code: 'sandbox_disconnected', message: 'Connection lost' }],
+    }),
+    session('working', { status: 'running' }),
+    session('unread', { eventCount: 8, lastSeenEventCount: 2 }),
+  ];
+  const { onCountChange } = await renderInbox(sessions, fakeClient(), { projects: [archived] });
+  expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  expect(screen.queryByTestId('work-active')).toBeNull();
+  expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(onCountChange).toHaveBeenLastCalledWith(0);
 });

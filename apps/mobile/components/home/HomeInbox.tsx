@@ -88,6 +88,14 @@ export function HomeInbox({
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
+  const workSessions = useMemo(() => {
+    const archived = new Set(
+      projects.filter((project) => project.archived === true).map((project) => project.id),
+    );
+    return sessions.filter(
+      (session) => session.projectId == null || !archived.has(session.projectId),
+    );
+  }, [sessions, projects]);
   const all = useMemo(
     () => inboxItems({ sessions, projects, meetings, now }),
     [sessions, projects, meetings, now],
@@ -163,7 +171,7 @@ export function HomeInbox({
       <ProjectInquiryCards client={client} />
       <ProjectWork
         client={client}
-        sessions={sessions}
+        sessions={workSessions}
         projects={projects}
         feed={feed}
         overview
