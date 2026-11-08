@@ -364,10 +364,13 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
 - **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
-  panel) and the panel's composer: the shared field with a tonal microphone that turns
-  into a tonal stop while dictating, and a tonal send. Signature identifies Verity;
-  typing, microphone and send controls use `action`. Listening is said once, in the
-  field. The meeting's model selector is not part of this Home pattern.
+  panel) and the panel's composer. Match the session chat composer: full-width text
+  above a row of circular microphone and send controls. Idle controls use `surface`
+  with a border and muted icons; enabled send uses `action` with an `onAction` arrow.
+  While dictating, the microphone uses `action` with an `onAction` check to finish
+  dictation and keep the text. The Home doorway retains its inline layout with the
+  same circular microphone. Signature identifies Verity. Listening is said once,
+  in the field. The meeting's model selector is not part of this Home pattern.
 - **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
   Home and her page, flat on the floating V, in her panel's header and before her
   answers there.
