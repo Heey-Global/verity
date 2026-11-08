@@ -96,13 +96,15 @@ export function TaskIssuesList({
         ),
     )
       .then((entries) => {
+        // Merged: a hand-over that finished while these were read is newer.
         if (active)
-          setStarted(
-            Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
+          setStarted((value) => ({
+            ...(Object.fromEntries(entries.filter((entry) => entry[1] !== null)) as Record<
               string,
               string
-            >,
-          );
+            >),
+            ...value,
+          }));
       })
       .catch(() => undefined);
     return () => {
@@ -114,6 +116,7 @@ export function TaskIssuesList({
   useEffect(() => {
     let active = true;
     setSessions([]);
+    setStarted({});
     setFilter('all');
     setExpanded([]);
     setFolded([]);

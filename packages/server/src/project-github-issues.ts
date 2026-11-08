@@ -84,7 +84,9 @@ const REPOSITORY_ISSUES_TIMEOUT_MS = 20_000;
 /**
  * Open issues of every GitHub or Forgejo repository connected to the project,
  * the default repository first. Each repository is asked on its own, so one
- * failing host marks only its own entry unavailable.
+ * failing host marks only its own entry unavailable. A repository the server
+ * has no credentials for is left out, as the single-repository route reported
+ * it disconnected: a retry could never reach it.
  */
 export async function listProjectIssues(
   store: Pick<EventStore, 'listProjectRepositories'>,
@@ -92,11 +94,12 @@ export async function listProjectIssues(
   list: ((repository: ProjectRecord) => Promise<ForgeIssueList>) | undefined,
   timeoutMs = REPOSITORY_ISSUES_TIMEOUT_MS,
 ): Promise<RepositoryIssues[]> {
+  if (!list) return [];
   const repositories = (await store.listProjectRepositories(project.id))
     .filter((repository) => repository.kind === 'github' || repository.kind === 'forgejo')
     .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
-  return Promise.all(
-    repositories.map(async (repository): Promise<RepositoryIssues> => {
+  const listed = await Promise.all(
+    repositories.map(async (repository): Promise<RepositoryIssues | undefined> => {
       const identity = {
         id: repository.id,
         name: repository.isDefault ? `${repository.owner}/${repository.repo}` : repository.name,
@@ -106,16 +109,16 @@ export async function listProjectIssues(
         isDefault: repository.isDefault,
       };
       const unavailable = { ...identity, status: 'unavailable' as const };
-      if (!list) return unavailable;
       let timer: NodeJS.Timeout | undefined;
       try {
         const result = await Promise.race([
           list(projectForRepository(project, repository)),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), timeoutMs);
+          new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), timeoutMs);
           }),
         ]);
-        if (!result?.connected) return unavailable;
+        if (result === 'timeout') return unavailable;
+        if (!result.connected) return undefined;
         return {
           ...identity,
           status: 'ok',
@@ -129,6 +132,7 @@ export async function listProjectIssues(
       }
     }),
   );
+  return listed.filter((entry) => entry !== undefined);
 }
 
 export function registerProjectGitHubIssueRoutes(

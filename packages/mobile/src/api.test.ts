@@ -1429,6 +1429,17 @@ describe('VerityClient.listProjects (#174)', () => {
     ]);
   });
 
+  it('names the fallback repository neutrally without the project record', async () => {
+    const { fetch } = fakeFetchSequence(
+      json({ message: 'Route GET:/projects/p/issues not found' }, 404),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toMatchObject([
+      { id: 'default:p', name: 'Issues', kind: 'github', status: 'ok' },
+    ]);
+  });
+
   it('fetches available GitHub repositories separately from created projects', async () => {
     const { fetch, calls } = fakeFetch(json([project]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });

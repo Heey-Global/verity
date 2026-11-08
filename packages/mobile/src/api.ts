@@ -3750,7 +3750,7 @@ export class VerityClient {
    * default repository only.
    */
   async listProjectIssues(
-    project: Pick<ProjectRecord, 'id' | 'kind' | 'owner' | 'repo'>,
+    project: Pick<ProjectRecord, 'id'> & Partial<Pick<ProjectRecord, 'kind' | 'owner' | 'repo'>>,
   ): Promise<RepositoryIssues[]> {
     try {
       const res = await this.request(`/projects/${encodeURIComponent(project.id)}/issues`, {
@@ -3762,14 +3762,18 @@ export class VerityClient {
       if (!(err instanceof VerityApiError) || err.status !== 404) throw err;
     }
     const legacy = await this.listProjectGitHubIssues(project.id);
-    if (!legacy.connected || (project.kind !== 'github' && project.kind !== 'forgejo')) return [];
+    // The old route answers for GitHub projects; without the record, assume one.
+    const kind = project.kind ?? 'github';
+    if (!legacy.connected || (kind !== 'github' && kind !== 'forgejo')) return [];
+    const owner = project.owner ?? '';
+    const repo = project.repo ?? '';
     return [
       {
         id: `default:${project.id}`,
-        name: `${project.owner}/${project.repo}`,
-        kind: project.kind,
-        owner: project.owner,
-        repo: project.repo,
+        name: owner && repo ? `${owner}/${repo}` : 'Issues',
+        kind,
+        owner,
+        repo,
         isDefault: true,
         status: 'ok',
         viewerLogin: legacy.viewerLogin,

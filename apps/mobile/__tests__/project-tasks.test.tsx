@@ -321,3 +321,25 @@ it('keeps the Issues tab and its retry when no host answered, and keeps it while
   expect(screen.getByText('Could not load issues')).toBeTruthy();
   jest.mocked(createVerityClient).mockReturnValue(null);
 });
+
+// The project list can still be loading; the read needs only the project's id.
+it('loads the issues before the project list arrived', async () => {
+  mockTab.value = 'issues';
+  const listProjectIssues = jest.fn().mockResolvedValue([repository('site', 'github', 1)]);
+  jest.mocked(createVerityClient).mockReturnValue({
+    listProjectIssues,
+    listSessions: jest.fn(async () => []),
+  } as never);
+  render(
+    <TaskListBody
+      context={{ projectId: 'p1', sessionId: null }}
+      projects={[]}
+      scope="project"
+      onLeave={jest.fn()}
+    />,
+  );
+  await act(async () => undefined);
+  expect(listProjectIssues).toHaveBeenCalledWith({ id: 'p1' });
+  expect(screen.getByText('site issue 1')).toBeTruthy();
+  jest.mocked(createVerityClient).mockReturnValue(null);
+});

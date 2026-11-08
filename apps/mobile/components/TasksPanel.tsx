@@ -96,7 +96,14 @@ export function TaskListBody({
   } | null>(null);
   const [issuesError, setIssuesError] = useState<string | null>(null);
   const [issuesRetry, setIssuesRetry] = useState(0);
-  const issueProject = projects.find((project) => project.id === context.projectId);
+  // The record names the default repository for servers without per-repository
+  // issues; the read itself needs only the id, so a list still loading does not
+  // hide the issues.
+  const issueProject:
+    | (Pick<ProjectRecord, 'id'> & Partial<Pick<ProjectRecord, 'kind' | 'owner' | 'repo'>>)
+    | undefined =
+    projects.find((project) => project.id === context.projectId) ??
+    (context.projectId !== null ? { id: context.projectId } : undefined);
   useEffect(() => {
     let active = true;
     // A retry keeps the list it is retrying, so the tab and its healthy

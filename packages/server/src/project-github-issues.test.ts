@@ -85,10 +85,17 @@ describe('issues of every project repository', () => {
     expect(result[0]).toMatchObject({ issues: [issue(1)] });
   });
 
-  it('never reports a repository without credentials as having no issues', async () => {
-    const list = vi.fn(async () => ({ connected: false, viewerLogin: null, issues: [] }));
+  // Reported as unavailable, a repository without credentials would offer a
+  // retry that can never succeed; the old route hid it as disconnected.
+  it('leaves out repositories the server has no credentials for', async () => {
+    const list = vi.fn(async (bound: ProjectRecord) => ({
+      connected: bound.repo !== 'site',
+      viewerLogin: null,
+      issues: [],
+    }));
     const result = await listProjectIssues(store, project, list);
-    expect(result.every((entry) => entry.status === 'unavailable')).toBe(true);
+    expect(result.map((entry) => entry.id)).toEqual(['default:p', 'docs']);
+    expect(await listProjectIssues(store, project, undefined)).toEqual([]);
   });
 });
 
