@@ -4417,8 +4417,9 @@ export const SessionChat = memo(function SessionChat({
             confirmDelete(
               deleteSessionRequest(
                 { label: sessionFallback, projectId: projectId ?? null },
+                // Not awaited: a failure is reported after the sheet has closed.
                 ({ wiki }) =>
-                  client
+                  void client
                     .deleteSession(sessionId, wiki ? { wiki } : {})
                     .then(() => router.replace('/'))
                     .catch((error: unknown) =>

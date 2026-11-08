@@ -15,8 +15,9 @@ export function deleteSessionRequest(
 ): ConfirmRequest {
   return {
     title: 'Delete session?',
-    // The switch below says what stays for the Wiki; the session itself is gone.
-    message: `This removes "${session.label}" from your sessions with its${session.automation ? ' automation and' : ''} worktree. This can't be undone.`,
+    // The history goes; only the switch, where offered, keeps the conversation
+    // for a while, and says so itself.
+    message: `This permanently removes "${session.label}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
     ...(afterSheet ? { afterSheet } : {}),
     confirmLabel: 'Delete',
     destructive: true,
@@ -24,7 +25,7 @@ export function deleteSessionRequest(
       ? {
           option: {
             title: 'Use for the Wiki',
-            subtitle: 'Its conversation is kept until Verity has reviewed it for the Wiki',
+            subtitle: 'Its conversation is kept only until Verity has reviewed it for the Wiki',
             initial: true,
           },
         }
