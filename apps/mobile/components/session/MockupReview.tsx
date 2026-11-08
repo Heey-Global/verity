@@ -20,6 +20,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useAttachmentImageSource } from '../../hooks/useAttachmentImageSource';
 import { Icon, type IconName } from '../Icon';
+import { ImageLightbox } from '../ImageLightbox';
 import { Button, IconButton, StatusTag, Text } from '../ui';
 import { Image } from '../ui/Image';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../ui/SessionBar';
@@ -66,6 +67,14 @@ function MockupPicture({
       accessibilityLabel={`${screen.name} mockup`}
     />
   );
+}
+
+/** One screen in the app's full-screen image viewer, larger than the review stage
+ *  leaves room for: on a phone the mark bar and header take a good part of it. */
+function MockupLightbox({ screen, onClose }: { screen: MockupReviewScreen; onClose: () => void }) {
+  const source = useAttachmentImageSource({ id: screen.attachment, mediaType: screen.mediaType });
+  if (source === undefined) return null;
+  return <ImageLightbox source={source} label={screen.name} onClose={onClose} />;
 }
 
 /** Which page a horizontal pager settled on. */
@@ -257,9 +266,14 @@ export function MockupReviewSheet({
   const [index, setIndex] = useState(0);
   const [width, setWidth] = useState(0);
   const [scroller, setScroller] = useState<ScrollView | null>(null);
+  const [enlarged, setEnlarged] = useState<MockupReviewScreen | undefined>(undefined);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      // A viewer left open must not reappear over the next review.
+      setEnlarged(undefined);
+      return;
+    }
     const at =
       initialScreen === undefined ? -1 : screens.findIndex((s) => s.name === initialScreen);
     setIndex(Math.max(0, at));
@@ -311,9 +325,15 @@ export function MockupReviewSheet({
           >
             {screens.map((screen) => (
               <View key={screen.name} style={[styles.stage, { width }]}>
-                <View style={[styles.flex, screen.verdict === 'discarded' ? styles.dimmed : null]}>
+                <Pressable
+                  accessibilityRole="imagebutton"
+                  accessibilityLabel={`Enlarge ${screen.name}`}
+                  accessibilityHint="Shows the screen full size"
+                  onPress={() => setEnlarged(screen)}
+                  style={[styles.flex, screen.verdict === 'discarded' ? styles.dimmed : null]}
+                >
                   <MockupPicture screen={screen} style={styles.image} />
-                </View>
+                </Pressable>
               </View>
             ))}
           </ScrollView>
@@ -371,6 +391,9 @@ export function MockupReviewSheet({
           />
         </View>
       </View>
+      {enlarged !== undefined ? (
+        <MockupLightbox screen={enlarged} onClose={() => setEnlarged(undefined)} />
+      ) : null}
     </Modal>
   );
 }

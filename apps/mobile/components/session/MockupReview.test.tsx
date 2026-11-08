@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 jest.mock('../../hooks/useAttachmentImageSource', () => ({
-  useAttachmentImageSource: () => undefined,
+  // A real source, so the full-size viewer (which needs one) renders too.
+  useAttachmentImageSource: () => ({ uri: 'https://verity.test/attachments/a' }),
 }));
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
@@ -146,4 +147,26 @@ it('opens a revised round at its first screen when the host keys it by revision'
   );
   // A kept position would mark a screen of the new round the user has not seen.
   expect(screen.getByText('Review flow · 1 of 2')).toBeTruthy();
+});
+
+it('enlarges the tapped screen in the full-screen viewer and closes it again', () => {
+  render(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  expect(screen.getByLabelText('Close image')).toBeTruthy();
+  // Enlarging is only for looking: it marks nothing and leaves the review open.
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
+
+  fireEvent.press(screen.getByLabelText('Close image'));
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+});
+
+it('does not bring back an enlarged screen when the review is reopened', () => {
+  const view = render(<MockupReviewSheet {...props} />);
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  view.rerender(<MockupReviewSheet {...props} visible={false} />);
+  view.rerender(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
 });
