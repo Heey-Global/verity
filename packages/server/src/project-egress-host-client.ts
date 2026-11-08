@@ -1,3 +1,4 @@
+import { DockerError, DOCKER_ADDRESS_POOL_EXHAUSTED } from './docker.js';
 import {
   inventoryFailureReason,
   ProjectEgressInventoryError,
@@ -99,6 +100,20 @@ export function createProjectEgressHostClient(options: {
                   typeof refused === 'object' && refused !== null && 'reason' in refused
                     ? refused.reason
                     : undefined;
+                if (
+                  command.operation === 'allocate-network' &&
+                  reason === 'address_pool_exhausted'
+                ) {
+                  clearTimeout(timer);
+                  abort.abort();
+                  reject(
+                    new DockerError({
+                      kind: 'address_pool_exhausted',
+                      message: DOCKER_ADDRESS_POOL_EXHAUSTED,
+                    }),
+                  );
+                  return;
+                }
                 const inventoryReason = inventoryFailureReason(reason);
                 if (command.operation.startsWith('inventory-') && inventoryReason) {
                   clearTimeout(timer);
@@ -145,6 +160,13 @@ export function createProjectEgressHostClient(options: {
                   throw new Error('Mismatched inventory acknowledgement');
               } else if (command.operation === 'health') {
                 if (result.state !== 'health') throw new Error('Mismatched host health');
+              } else if (command.operation === 'allocate-network') {
+                if (
+                  result.state !== 'network-allocated' ||
+                  result.binding.projectId !== command.projectId ||
+                  result.binding.generation !== command.generation
+                )
+                  throw new Error('Mismatched host allocation');
               } else if (command.operation === 'current') {
                 if (
                   result.state !== 'current' ||

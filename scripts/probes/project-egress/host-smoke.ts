@@ -16,6 +16,7 @@ import {
 import { createDockerClient, type ContainerSpec } from '../../../packages/server/src/docker.js';
 import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
 import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
+import { createHostProjectNetworks } from '../../../packages/server/src/project-egress-network-cleanup.js';
 /** Deny-before-first-instruction fixture; no production daemon or credentials. */
 import assert from 'node:assert/strict';
 import { createServer, request, type Server } from 'node:http';
@@ -170,6 +171,7 @@ const dependencies = {
         throw error;
       },
     ),
+  ...createHostProjectNetworks(createDockerClient({ baseUrl: 'unix:///var/run/docker.sock' })),
   save: (state: Parameters<typeof store.save>[0]) => store.save(state),
   apply: async (script: string) => {
     try {

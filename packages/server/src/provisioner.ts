@@ -1,3 +1,4 @@
+import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
@@ -1975,6 +1976,8 @@ export interface Provisioner {
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
+  /** Retry proven-owned abandoned networks without disturbing retained Sandboxes. */
+  reconcileProjectNetworks?(): Promise<void>;
   /** Stage 5 (Temporary Public Previews): migrate legacy shared-network sandboxes
    * onto their relay + project network rather than silently reusing them. No-op
    * unless relay mode is configured. */
@@ -4342,6 +4345,38 @@ export class ProvisionerImpl implements Provisioner {
     };
   }
 
+  private networkCleanupCursor = 0;
+  async reconcileProjectNetworks(): Promise<void> {
+    const docker = this.opts.docker;
+    if (!docker.listNetworks || !docker.inspectNetwork || !docker.removeNetwork) return;
+    const failures: unknown[] = [];
+    const inventory = await docker.listNetworks();
+    const candidates = Array.from(
+      { length: Math.min(inventory.length, 16) },
+      (_, index) => inventory[(this.networkCleanupCursor + index) % inventory.length]!,
+    );
+    this.networkCleanupCursor = inventory.length
+      ? (this.networkCleanupCursor + candidates.length) % inventory.length
+      : 0;
+    for (const candidate of candidates) {
+      const projectId = candidate.Labels?.['verity.project-id'];
+      if (!projectId || candidate.Name !== projectNetworkName(projectId)) continue;
+      if (this.inFlightProvisions.has(projectId) || this.turnSandboxRepairs.has(projectId))
+        continue;
+      try {
+        await this.withProjectExclusiveMutation(projectId, async () => {
+          const project = await this.opts.store.getProject(projectId);
+          // Active, retained and transitional projects own their network even with no endpoints.
+          if (project && project.state !== 'absent' && project.state !== 'failed') return;
+          await removeLegacyProjectNetwork(docker, projectId, candidate.Id);
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Project network cleanup deferred');
+  }
+
   /**
    * Stage 5 reconciliation (Temporary Public Previews spike §6/§7.5). Once relay
    * mode is on, existing shared-network sandboxes must be RECREATED onto their own
@@ -5800,7 +5835,7 @@ export class ProvisionerImpl implements Provisioner {
     opts: RecreateContainerOptions = {},
     preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
-    const relayAttempt = { started: false };
+    const relayAttempt: { started: boolean; generation?: string } = { started: false };
     try {
       return await this.runContainerPhaseAttempt(
         project,
@@ -5820,6 +5855,23 @@ export class ProvisionerImpl implements Provisioner {
             { cause: cleanupError },
           );
         }
+      }
+      try {
+        if (relayAttempt.generation) {
+          const binding = await this.opts.projectEgress?.current(project.id);
+          if (binding?.generation === relayAttempt.generation)
+            await this.opts.projectEgress?.retire({
+              projectId: project.id,
+              containerGeneration: binding.generation,
+            });
+        }
+        await removeLegacyProjectNetwork(this.opts.docker, project.id);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Project provisioning and network cleanup failed',
+          { cause: cleanupError },
+        );
       }
       throw error;
     }
@@ -5846,7 +5898,7 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     forcePull = false,
     opts: RecreateContainerOptions = {},
-    relayAttempt: { started: boolean } = { started: false },
+    relayAttempt: { started: boolean; generation?: string } = { started: false },
     preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
@@ -5969,6 +6021,7 @@ export class ProvisionerImpl implements Provisioner {
     // A fenced predecessor is retired either way; a switched-off server starts open.
     await this.retireEgressGeneration(project.id);
     if (egress !== undefined) {
+      relayAttempt.generation = generation;
       sandboxNetwork = (
         await egress.create({
           projectId: project.id,
@@ -5978,7 +6031,7 @@ export class ProvisionerImpl implements Provisioner {
     } else {
       sandboxNetwork = projectNetworkName(project.id);
       await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-        labels: { 'verity.project-id': project.id },
+        labels: { 'verity.project-id': project.id, 'verity.component': 'project-network' },
       });
     }
 
@@ -7744,6 +7797,7 @@ export class DeprovisionerImpl implements Deprovisioner {
     // through `onTeardownFailure`, so the wedged relay is in the log instead of
     // showing up later as an unexplained hang.
     await bestEffort('relay-stop', () => this.projectRelay?.stop(project.id));
+    await bestEffort('network-remove', () => removeLegacyProjectNetwork(this.docker, project.id));
     // The purge seams are synchronous by type (`statSync`/`rmSync` by default),
     // and no timer in the process — including this step's own bound — fires
     // while a synchronous call blocks the event loop. The bound therefore

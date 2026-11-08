@@ -1,5 +1,4 @@
 import { projectEgressFailure, type ProjectEgressHealth } from './project-egress-health.js';
-import { createHash } from 'node:crypto';
 import type { DockerClient } from './docker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import type {
@@ -98,7 +97,8 @@ export class ProjectEgressLifecycle {
     private readonly command: (
       input: ProjectEgressHostRequest,
     ) => Promise<ProjectEgressHostResponse>,
-    private readonly docker: Pick<DockerClient, 'createEgressNetwork'>,
+    // Kept for callers shared with unfenced provisioning; protected creation is host-owned.
+    _docker: Pick<DockerClient, 'createEgressNetwork'>,
     private readonly renewDirect = true,
   ) {}
   async current(projectId: string): Promise<ProjectEgressNetworkBinding | undefined> {
@@ -112,26 +112,23 @@ export class ProjectEgressLifecycle {
     return result.binding ?? undefined;
   }
   async create(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
-    if (this.docker.createEgressNetwork === undefined)
-      throw new Error('Generation network creation is unavailable');
     const prior = await this.current(identity.projectId);
     if (prior !== undefined) throw new Error('Retire the current generation before replacement');
-    const hash = createHash('sha256')
-      .update(`${identity.projectId}\0${identity.containerGeneration}`)
-      .digest('hex');
-    const networkName = `verity-egress-${hash.slice(0, 32)}`;
-    const bridge = `vep${hash.slice(0, 12)}`;
-    const network = await this.docker.createEgressNetwork(networkName, bridge);
-    const binding = {
+    // Creation belongs to the host so its durable intent precedes the Docker mutation.
+    const result = await this.command({
+      operation: 'allocate-network',
       projectId: identity.projectId,
       generation: identity.containerGeneration,
-      networkId: network.id,
-      networkName,
-      bridge,
-    };
-    await this.acknowledge({ operation: 'register', binding }, 'denied', binding.generation);
-    return binding;
+    });
+    if (
+      result.state !== 'network-allocated' ||
+      result.binding.projectId !== identity.projectId ||
+      result.binding.generation !== identity.containerGeneration
+    )
+      throw new Error('Mismatched allocated network');
+    return result.binding;
   }
+
   async binding(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
     const binding = await this.current(identity.projectId);
     if (binding?.generation !== identity.containerGeneration)
