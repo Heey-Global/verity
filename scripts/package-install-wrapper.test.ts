@@ -115,6 +115,24 @@ const answer = (reply: ServerResponse, action: string) => {
 };
 
 describe('package install wrapper', () => {
+  it('sets up native policy before an installation identity is frozen without resolving or installing', async () => {
+    const f = await fixture((body, reply) => {
+      expect(['check', 'configured']).toContain(body.action);
+      answer(reply, body.action === 'check' ? 'configure' : 'continue');
+    });
+    writeFileSync(join(f.root, '.npmrc'), '');
+    const before = readFileSync(join(f.root, 'package-lock.json'), 'utf8');
+    expect((await f.start(['--verity-prepare-only']).exited).code).toBe(0);
+    expect(f.calls.map((call) => call.action)).toEqual(['check', 'configured']);
+    expect(readFileSync(join(f.root, '.npmrc'), 'utf8')).toMatch(/^min-release-age\s*=\s*3$/mu);
+    expect(readFileSync(join(f.root, 'package-lock.json'), 'utf8')).toBe(before);
+    expect(existsSync(f.marker)).toBe(false);
+    expect(existsSync(join(f.root, 'resolved.json'))).toBe(false);
+    expect(
+      spawnSync('flock', ['-n', join(npmStateDirectory(f.root), 'verity-npm.lock'), 'true']).status,
+    ).toBe(0);
+  });
+
   it('holds the project lock through verification and releases it on completion', async () => {
     const f = await fixture(
       (body, reply) => {

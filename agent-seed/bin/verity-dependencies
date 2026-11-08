@@ -309,14 +309,27 @@ function identity(root) {
     if (source !== undefined)
       hash.update(path + '\0' + dependencyInputIdentity(path, source) + '\0');
   }
-  for (const path of [
+  const userConfig =
     process.env.NPM_CONFIG_USERCONFIG ??
-      process.env.npm_config_userconfig ??
-      join(process.env.HOME ?? '', '.npmrc'),
-    process.env.NPM_CONFIG_GLOBALCONFIG ?? process.env.npm_config_globalconfig,
-  ]) {
-    if (path) hash.update(read(path) ?? '');
-  }
+    process.env.npm_config_userconfig ??
+    join(process.env.HOME ?? '', '.npmrc');
+  hash.update('user-config\0' + (read(userConfig) ?? '') + '\0');
+  const globalConfig = spawnSync('npm', ['config', 'get', 'globalconfig'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  const globalPath = globalConfig.stdout?.trim();
+  if (
+    globalConfig.status !== 0 ||
+    !globalPath ||
+    !isAbsolute(globalPath) ||
+    /[\r\n]/.test(globalPath)
+  )
+    throw new Error(
+      'Cannot determine effective npm global configuration for dependency compatibility.',
+    );
+  hash.update('global-config\0' + (read(globalPath) ?? '') + '\0');
   const version = spawnSync('npm', ['--version'], { cwd: root, encoding: 'utf8', timeout: 10_000 });
   if (version.status !== 0)
     throw new Error('Cannot determine npm version for dependency compatibility.');
@@ -521,7 +534,7 @@ async function snapshotSlot(cacheRoot, currentIdentity) {
   }
   return false;
 }
-async function verifyReuse(root, rootLockFd) {
+async function packagePolicy(root, rootLockFd, prepare = false) {
   if (!process.env.VERITY_SESSION_ID) return;
   const directory = '/usr/local/lib/verity';
   if (
@@ -534,7 +547,11 @@ async function verifyReuse(root, rootLockFd) {
   }
   const child = spawn(
     process.execPath,
-    [join(directory, 'verity-package-install.mjs'), 'npm', 'ci', '--verity-verify-only'],
+    [
+      join(directory, 'verity-package-install.mjs'),
+      'npm',
+      ...(prepare ? ['--verity-prepare-only'] : ['ci', '--verity-verify-only']),
+    ],
     {
       cwd: root,
       stdio: rootLockFd === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', rootLockFd],
@@ -553,7 +570,9 @@ async function verifyReuse(root, rootLockFd) {
     });
     if (result.code !== 0 || result.signal)
       throw new Error(
-        'Reused dependency age verification failed or was interrupted; checks remain blocked.',
+        prepare
+          ? 'Package protection preparation failed or was interrupted; installation remains blocked.'
+          : 'Reused dependency age verification failed or was interrupted; checks remain blocked.',
       );
   } finally {
     handlers.forEach(([signal, handler]) => process.removeListener(signal, handler));
@@ -574,12 +593,12 @@ async function main() {
       `Use this project's ${selected} install command, then retry; this helper never replaces its package manager with npm.`,
     );
   }
-  const currentIdentity = identity(root);
+  let currentIdentity = identity(root);
   let rootLockFd;
   let verifiedReuse = false;
   const verify = async () => {
     if (!verifiedReuse) {
-      await verifyReuse(root, rootLockFd);
+      await packagePolicy(root, rootLockFd);
       verifiedReuse = true;
     }
   };
@@ -617,6 +636,10 @@ async function main() {
   rootLockFd = unlockRoot.fd;
   let unlockIdentity;
   try {
+    // Policy setup may deliberately add .npmrc. Freeze the install identity only
+    // after this managed setup, never by accepting arbitrary post-install drift.
+    await packagePolicy(root, rootLockFd, true);
+    currentIdentity = identity(root);
     unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'));
   } catch (error) {
     unlockRoot.release();

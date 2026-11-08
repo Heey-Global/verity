@@ -24,7 +24,12 @@ import {
 
 const [manager, ...originalArgs] = process.argv.slice(2);
 const verifyOnly = originalArgs.includes('--verity-verify-only');
-const args = originalArgs.filter((arg) => arg !== '--verity-verify-only');
+const prepareOnly = originalArgs.includes('--verity-prepare-only');
+const filteredArgs = originalArgs.filter(
+  (arg) => !['--verity-verify-only', '--verity-prepare-only'].includes(arg),
+);
+// An older wrapper receiving only this unknown flag cannot accidentally install.
+const args = prepareOnly && filteredArgs.length === 0 ? ['ci'] : filteredArgs;
 
 function run(executable, childArgs, environment, lockFd) {
   return new Promise((done, reject) => {
@@ -139,6 +144,11 @@ function displayCommand(manager, args) {
 }
 
 async function main() {
+  if (
+    prepareOnly &&
+    (manager !== 'npm' || !process.env.VERITY_SESSION_ID || filteredArgs.length > 0 || verifyOnly)
+  )
+    throw new Error('Protection setup requires a managed npm preparation invocation.');
   if (verifyOnly && (manager !== 'npm' || !process.env.VERITY_SESSION_ID || args[0] !== 'ci'))
     throw new Error('Read-only verification requires a managed npm ci invocation.');
   const executable = realBinary();
@@ -149,6 +159,7 @@ async function main() {
   let installInput;
   let npmPlan;
   let npmDirectory;
+  let installationLock;
   let minimumAgeDays = 3;
   // Image builds and interactive shells have no session to raise a card on.
   if (process.env.VERITY_SESSION_ID && classifyInstall(manager, args)) {
@@ -169,6 +180,8 @@ async function main() {
       npmPlan = npmInstallPlan(args, directory, environment);
       npmDirectory = directory;
       npmPlan.root = npmProjectRoot(executable, directory, environment, args);
+      installationLock = await lockNpmProject(npmPlan.root, environment);
+      delete environment.VERITY_NPM_LOCK_FD;
     }
     if (manager === 'bun') {
       delete environment.VERITY_BUN_CONFIG_FILE;
@@ -278,7 +291,10 @@ async function main() {
     }
   }
   let installToken;
-  const installationLock = npmPlan ? await lockNpmProject(npmPlan.root, environment) : undefined;
+  if (prepareOnly) {
+    installationLock?.release();
+    return;
+  }
   delete environment.VERITY_NPM_LOCK_FD;
   try {
     if (npmPlan) {

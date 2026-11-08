@@ -58,6 +58,8 @@ function fixture() {
 const fs = require('node:fs');
 const path = require('node:path');
 if (process.argv[2] === '--version') { console.log('12.2.2'); process.exit(0); }
+if (process.argv[2] === 'config' && process.argv[3] === 'get' && ['globalconfig','userconfig'].includes(process.argv[4])) { const key=process.argv[4]; console.log(process.env['NPM_CONFIG_'+key.toUpperCase()] ?? process.env['npm_config_'+key] ?? path.join(${JSON.stringify(bin)},key+'.npmrc')); process.exit(0); }
+
 fs.appendFileSync(${JSON.stringify(called)}, process.cwd() + '\\n' + process.argv.slice(2).join('\\n') + '\\n');
 const complete = () => {
   const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
@@ -82,6 +84,7 @@ const complete = () => {
     }
   }
   fs.writeFileSync('node_modules/.package-lock.json', JSON.stringify({lockfileVersion:3,packages}));
+  if (fs.existsSync('.npm-change-config')) fs.appendFileSync('.npmrc','engine-strict=false\\n');
 };
 setTimeout(complete, fs.existsSync('.npm-delay') ? Number(fs.readFileSync('.npm-delay', 'utf8')) : 0);
 `,
@@ -645,6 +648,81 @@ describe('shared dependency reuse', () => {
     expect(f.run('status').status).toBe(1);
     expect(f.run('install').status).toBe(0);
     expect(f.run('status').status).toBe(0);
+  });
+  it('invalidates managed receipts when the effective default global npm configuration changes', () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    expect(f.run('install').status).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    writeFileSync(join(f.root, 'bin', 'globalconfig.npmrc'), 'install-links=true\n');
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(2);
+  });
+  it('freezes identity after managed policy setup and reuses the completed installation', () => {
+    const f = fixture();
+    const trusted = join(f.root, 'bin', 'trusted-policy');
+    mkdirSync(trusted);
+    writeFileSync(join(trusted, 'verity-npm-preflight.mjs'), '// fixture companion');
+    writeFileSync(
+      join(trusted, 'verity-package-install.mjs'),
+      `import fs from 'node:fs';
+if (process.argv.slice(2).join(' ') === 'npm --verity-prepare-only') { fs.appendFileSync('policy-prepared','prepare\\n'); fs.writeFileSync('.npmrc','min-release-age=3\\n'); }
+else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') process.exit(2);
+`,
+    );
+    const instrumented = join(f.root, 'bin', 'helper.mjs');
+    writeFileSync(
+      instrumented,
+      readFileSync(helper, 'utf8').replace(
+        "const directory = '/usr/local/lib/verity';",
+        `const directory = ${JSON.stringify(trusted)};`,
+      ),
+    );
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    const run = (action: string) =>
+      spawnSync(process.execPath, [instrumented, action], {
+        cwd: f.worktree,
+        env: {
+          ...env,
+          PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+          VERITY_SESSION_ID: 'fixture-session',
+        },
+        encoding: 'utf8',
+      });
+    const installed = run('install');
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(run('status').status).toBe(0);
+    expect(run('install').status).toBe(0);
+    expect(readFileSync(join(f.worktree, 'policy-prepared'), 'utf8')).toBe('prepare\n');
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('still rejects an unexpected npm configuration change during native installation', () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    writeFileSync(join(f.worktree, '.npm-change-config'), 'change');
+    const result = f.run('install');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Dependency inputs changed during installation');
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
   });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(

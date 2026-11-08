@@ -74,8 +74,11 @@ evicted. If every slot is busy, the successful local installation remains usable
 and snapshot publication is deferred. Snapshot files are disposable generated
 state; make package changes in the session workspace instead.
 
-Preparation is coordinated per checkout and installation identity. A successful
-native exit alone does not mark an installation complete: required package
+Preparation is coordinated per checkout and installation identity. Native
+protection setup completes under the checkout lock before the preparation
+identity is frozen, so an approved `.npmrc` change does not force another install.
+The effective default global npm configuration participates in identity too.
+A successful native exit alone does not mark an installation complete: required package
 receipts and workspace links must validate first. Only completed installations
 are published for reuse. Existing partial or incompatible files are preserved
 outside the active dependency path so they cannot shadow shared dependencies;
