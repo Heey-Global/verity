@@ -4,6 +4,7 @@
 // as the agent's chat message (MockupPager), a slim bar above the composer keeps
 // the review reachable while the chat goes on (MockupReviewBar), and the
 // full-screen review marks one screen at a time (MockupReviewSheet).
+import type { ImageSource } from 'expo-image';
 import type { MockupBarView, MockupReviewScreen, MockupScreenView } from '@verity/mobile';
 import { useEffect, useState } from 'react';
 import {
@@ -20,6 +21,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useAttachmentImageSource } from '../../hooks/useAttachmentImageSource';
 import { Icon, type IconName } from '../Icon';
+import { ImageLightbox } from '../ImageLightbox';
 import { Button, IconButton, StatusTag, Text } from '../ui';
 import { Image } from '../ui/Image';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../ui/SessionBar';
@@ -65,6 +67,42 @@ function MockupPicture({
       contentFit="contain"
       accessibilityLabel={`${screen.name} mockup`}
     />
+  );
+}
+
+/** A screen to look at full size, with the source it was showing when tapped. */
+interface Enlarged {
+  name: string;
+  source: ImageSource;
+}
+
+/** One screen on the review stage; a tap shows it full size in the app's image
+ *  viewer, which on a phone has room the header and the mark bar take here. Not
+ *  tappable until its image has a source, so a tap never opens a viewer later. */
+function MockupStage({
+  screen,
+  onEnlarge,
+}: {
+  screen: MockupReviewScreen;
+  onEnlarge: (enlarged: Enlarged) => void;
+}) {
+  const source = useAttachmentImageSource({ id: screen.attachment, mediaType: screen.mediaType });
+  return (
+    <Pressable
+      accessibilityRole="imagebutton"
+      accessibilityLabel={`Enlarge ${screen.name}`}
+      accessibilityHint="Shows the screen full size"
+      disabled={source === undefined}
+      onPress={() => source !== undefined && onEnlarge({ name: screen.name, source })}
+      style={[styles.flex, screen.verdict === 'discarded' ? styles.dimmed : null]}
+    >
+      <Image
+        source={source}
+        style={styles.image}
+        contentFit="contain"
+        accessibilityLabel={`${screen.name} mockup`}
+      />
+    </Pressable>
   );
 }
 
@@ -257,9 +295,14 @@ export function MockupReviewSheet({
   const [index, setIndex] = useState(0);
   const [width, setWidth] = useState(0);
   const [scroller, setScroller] = useState<ScrollView | null>(null);
+  const [enlarged, setEnlarged] = useState<Enlarged | undefined>(undefined);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      // A viewer left open must not reappear over the next review.
+      setEnlarged(undefined);
+      return;
+    }
     const at =
       initialScreen === undefined ? -1 : screens.findIndex((s) => s.name === initialScreen);
     setIndex(Math.max(0, at));
@@ -311,9 +354,7 @@ export function MockupReviewSheet({
           >
             {screens.map((screen) => (
               <View key={screen.name} style={[styles.stage, { width }]}>
-                <View style={[styles.flex, screen.verdict === 'discarded' ? styles.dimmed : null]}>
-                  <MockupPicture screen={screen} style={styles.image} />
-                </View>
+                <MockupStage screen={screen} onEnlarge={setEnlarged} />
               </View>
             ))}
           </ScrollView>
@@ -371,6 +412,13 @@ export function MockupReviewSheet({
           />
         </View>
       </View>
+      {enlarged !== undefined ? (
+        <ImageLightbox
+          source={enlarged.source}
+          label={enlarged.name}
+          onClose={() => setEnlarged(undefined)}
+        />
+      ) : null}
     </Modal>
   );
 }

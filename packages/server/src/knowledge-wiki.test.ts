@@ -118,6 +118,7 @@ describe('projectWikiCatalog', () => {
   it('lists pages with titles, links both ways, decisions with status and what needs a look', async () => {
     write('insights/index.md', '# Wiki\n\nOverview.\n\n## Concepts\nThe ideas.\n- [Nav](nav.md)\n');
     write('insights/log.md', '# Log\n');
+    write('insights/wiki-conventions.md', '# Wiki conventions\n\nSee [nav](nav.md).\n');
     write(
       'insights/nav.md',
       `# Navigation\n\nSee [the meeting](../sources/meetings/m.md), [the decision](decisions/${'b'.repeat(32)}.md) and [gone](gone.md).\n`,
@@ -133,7 +134,7 @@ describe('projectWikiCatalog', () => {
 
     const catalog = await projectWikiCatalog(root);
 
-    // The start page and the log are the Wiki's own, not pages among the rest.
+    // The start page, the log and the rules are the Wiki's own, not pages among the rest.
     expect(catalog.pages.map((page) => page.path).sort()).toEqual([
       'insights/nav.md',
       'insights/topic/deep.md',
@@ -162,6 +163,7 @@ describe('projectWikiCatalog', () => {
       { kind: 'broken_links', path: 'insights/nav.md', targets: ['insights/gone.md'] },
       { kind: 'broken_links', path: 'insights/topic/deep.md', targets: ['sources/x.md'] },
     ]);
+    expect(catalog.conventions).toMatchObject({ path: 'insights/wiki-conventions.md' });
     expect(catalog.truncated).toBe(false);
   });
 
@@ -193,9 +195,62 @@ describe('projectWikiCatalog', () => {
       pages: [],
       index: null,
       decisions: [],
+      log: null,
+      conventions: null,
       review: [],
       truncated: false,
     });
+  });
+
+  // "Recently updated" says where a change came from; a log entry that names a
+  // page must reach that page, and a later entry must replace an earlier one.
+  it('gives each page the latest log entry that names it', async () => {
+    write('insights/nav.md', '# Navigation\n\nText.\n');
+    write('insights/meetings.md', '# Meetings\n\nText.\n');
+    write('insights/quiet.md', '# Quiet\n\nText.\n');
+    write(
+      'insights/log.md',
+      [
+        '# Change log',
+        '',
+        '## [2026-11-06] setup | Wiki set up',
+        '- [Navigation](nav.md), [Meetings](meetings.md)',
+        '',
+        '## Notes without a date are no entry',
+        '- [Quiet](quiet.md)',
+        '',
+        '## [2026-11-07] ingest | Live meeting 7 Nov',
+        '- Updated [Navigation](/knowledge/insights/nav.md) from [the meeting](../sources/meetings/m.md)',
+        '',
+      ].join('\n'),
+    );
+    const catalog = await projectWikiCatalog(root);
+    const change = (path: string) => catalog.pages.find((page) => page.path === path)?.lastChange;
+    expect(change('insights/nav.md')).toEqual({
+      at: '2026-11-07',
+      kind: 'ingest',
+      title: 'Live meeting 7 Nov',
+    });
+    expect(change('insights/meetings.md')).toEqual({
+      at: '2026-11-06',
+      kind: 'setup',
+      title: 'Wiki set up',
+    });
+    expect(change('insights/quiet.md')).toBeUndefined();
+    expect(catalog.log).toMatchObject({ path: 'insights/log.md' });
+    // The log links a meeting this Wiki does not have; history is no broken link.
+    expect(catalog.review).toEqual([]);
+  });
+
+  // log.md only grows. Past a page's read cap it must still be read, or every
+  // page loses its origin and the catalog reads as partial for good.
+  it('reads the newest part of a log larger than any limit', async () => {
+    write('insights/nav.md', '# Navigation\n\nText.\n');
+    const old = '## [2026-01-01] ingest | Filler\n- nothing here\n'.repeat(110_000);
+    write('insights/log.md', `${old}## [2026-11-07] ingest | Late entry\n- [Navigation](nav.md)\n`);
+    const catalog = await projectWikiCatalog(root);
+    expect(catalog.truncated).toBe(false);
+    expect(catalog.pages[0]?.lastChange?.title).toBe('Late entry');
   });
 
   // The app opens any knowledge file a link names; only a link to nothing is broken.

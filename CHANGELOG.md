@@ -6,6 +6,26 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.86.0](https://github.com/Heey-Global/verity/compare/v4.85.0...v4.86.0) (2026-11-08)
+
+
+### Features
+
+* **files:** unify swipe actions and simplify knowledge navigation ([#2393](https://github.com/Heey-Global/verity/issues/2393)) ([7dd390d](https://github.com/Heey-Global/verity/commit/7dd390d537a9fa404e15d68b2d70d8065e888a14))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @fastify/websocket to v11.3.7 ([#2397](https://github.com/Heey-Global/verity/issues/2397)) ([d8c8b56](https://github.com/Heey-Global/verity/commit/d8c8b56c856c5272e8c233244307ba47db602794))
+* **deps:** update dependency graphql to v17.1.0 ([#2399](https://github.com/Heey-Global/verity/issues/2399)) ([c78e43b](https://github.com/Heey-Global/verity/commit/c78e43b1b51a9281e2d408dff5a7e191109cc08e))
+* **deps:** update dependency sigstore to v5.0.1 ([#2398](https://github.com/Heey-Global/verity/issues/2398)) ([23c34c9](https://github.com/Heey-Global/verity/commit/23c34c917bb8652762cb40e7d7d34fd42a88112f))
+* **meetings:** allow early calendar joins and keep link entry above keyboard ([#2389](https://github.com/Heey-Global/verity/issues/2389)) ([1b031f2](https://github.com/Heey-Global/verity/commit/1b031f27a908680fdb351a67c4a6bd0124df0e7f))
+* **meetings:** retain connector and calendar startup diagnostics ([#2390](https://github.com/Heey-Global/verity/issues/2390)) ([ce57d23](https://github.com/Heey-Global/verity/commit/ce57d236e466904b9fd25ccd619eda32db50223b))
+* **mobile:** unify Home replies and recover stale mockup reviews ([#2386](https://github.com/Heey-Global/verity/issues/2386)) ([7f5e330](https://github.com/Heey-Global/verity/commit/7f5e3309ccddcb15ba128ca8a6e273492118e7e1))
+* **repositories:** hide archived repositories from pickers ([#2391](https://github.com/Heey-Global/verity/issues/2391)) ([b965bbf](https://github.com/Heey-Global/verity/commit/b965bbfb4986d6e57735ef0c3b5a158220d31d06))
+* **sessions:** hide completed pull requests when work resumes ([#2401](https://github.com/Heey-Global/verity/issues/2401)) ([ddc774a](https://github.com/Heey-Global/verity/commit/ddc774adb780dd360d1b5fbd7ed9d4dfe9bdfea7))
+* **storage:** prepare missing maintenance images on demand ([#2392](https://github.com/Heey-Global/verity/issues/2392)) ([2b5a012](https://github.com/Heey-Global/verity/commit/2b5a012da2ec17025a302a5946bf67a1171b85f2))
+
 ## [4.85.0](https://github.com/Heey-Global/verity/compare/v4.84.3...v4.85.0) (2026-11-07)
 
 

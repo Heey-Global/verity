@@ -567,10 +567,20 @@ const styles = StyleSheet.create((theme) => ({
   body: { flex: 1, minWidth: 0, gap: theme.spacing.xxs },
   title: { ...theme.typography.row, color: theme.colors.text },
   subtitle: { ...theme.typography.subtitle, color: theme.colors.textMuted },
-  // The tag keeps its width and leads the subtitle, which wraps beside it.
-  tagLine: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
-  tagSlot: { flexShrink: 0, maxWidth: '50%' },
-  tagSubtitle: { flex: 1, minWidth: 0 },
+  // The tag keeps its width and leads the subtitle. A subtitle that does not fit
+  // beside the tag moves under it at the full width; growing beside a wide tag
+  // ("MERGE READY") it would wrap into a narrow column of fragments.
+  tagLine: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    columnGap: theme.spacing.sm,
+    rowGap: theme.spacing.xxs,
+  },
+  tagSlot: { flexShrink: 0, maxWidth: '100%' },
+  // No flex basis of 0: the subtitle's own width decides whether it stays on
+  // the tag's line, so a long one starts the next line instead.
+  tagSubtitle: { flexShrink: 1, minWidth: 0 },
   // The trailing side takes at most 45 % of the row; a long value or status
   // truncates there, so the title is never squeezed into a column of fragments.
   trailing: {

@@ -59,7 +59,7 @@ export interface InboxItem {
   kind: InboxItemKind;
   /** Short uppercase tag text for the kind. */
   tag: string;
-  tone: 'attention' | 'success' | 'neutral';
+  tone: 'attention' | 'action' | 'success' | 'neutral';
   title: string;
   /** Where it comes from: project, session, time. */
   context: string;
@@ -359,7 +359,7 @@ function sessionItems(
       key: `mockups:${session.sessionId}:${String(review.revision)}`,
       kind: 'mockup_review',
       tag: 'Mockups',
-      tone: 'attention',
+      tone: 'action',
       title: undecided ? 'Review mockups' : 'Mockups reviewed',
       context: `${where} · ${String(review.screens.length)} ${
         review.screens.length === 1 ? 'screen' : 'screens'
@@ -414,7 +414,7 @@ function sessionItems(
           ? [
               {
                 kind: 'merge',
-                label: 'Squash & merge',
+                label: 'Merge',
                 sessionId: session.sessionId,
                 number: pr.number,
               },

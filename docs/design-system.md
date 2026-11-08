@@ -143,6 +143,7 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 | ----------- | ------------------------------------------------------------- | -------------------------------------------------- |
 | Primary     | Tonal: `action` at 14 % fill, 35 % border, `actionLabel` text | The single main action of a screen                 |
 | Secondary   | `surfaceAlt` fill, `border` outline, `text` label             | Further actions, Cancel                            |
+| Answer      | `surfaceAlt` fill, `action` outline (35 %), `action` label    | A list row's in-place answers (§ 5.2 Row)          |
 | Text        | No container, `action` label                                  | Quiet actions inside cards ("Replace")             |
 | Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
@@ -188,10 +189,12 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     status longer than that truncates, so the title is never squeezed. The chevron `›`
     appears only when the row navigates. An inbox row ("Needs you") puts its status tag
     at the start of the subtitle line instead (`tag`), so the title keeps the full width
-    beside the chevron.
+    beside the chevron. A subtitle that does not fit beside the tag continues on the next
+    line at the full width rather than wrapping into a narrow column next to it.
   - **Answers (optional):** a row that waits on a decision the operator can make in place
-    (a question's options, a repair) shows those answers as small secondary buttons in a
-    strip under it, aligned with the title. None is primary: a list holds many such rows,
+    (a question's options, a repair) shows those answers as small answer buttons (an
+    `action` outline and label without the primary's tonal fill, so they read as
+    tappable) in a strip under it, aligned with the title. None is primary: a list holds many such rows,
     and a primary in each would leave the screen without a single main action. Sending one
     answer locks only that row's answers; the other rows stay answerable. Up to three answers
     of at most 24 characters show as buttons; otherwise the strip holds one "N answers"
@@ -249,7 +252,7 @@ title; a log list keeps them dense and scannable.
 ### 5.4 Status
 
 - **Tag** — the state of a single element: uppercase `Label` text on a 14 % tint of its
-  tone, radius 6. Tones: success (`success`), attention (`attention`) and neutral
+  tone, radius 6. Tones: action (`action`) for normal review requests, success (`success`), attention (`attention`) and neutral
   (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
@@ -259,6 +262,7 @@ title; a log list keeps them dense and scannable.
 
   | Intent       | Tag                                                      | Dot and word         |
   | ------------ | -------------------------------------------------------- | -------------------- |
+  | `action`     | action tone                                              | static action dot    |
   | `ready`      | success tone                                             | success dot          |
   | `needsSetup` | attention tone                                           | attention dot        |
   | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot            |
@@ -423,14 +427,15 @@ For diagnostics and overviews:
 
 ## 8. Status intents
 
-Every status shown anywhere in the app is one of **five intents**. The intent decides the
+Every status shown anywhere in the app is one of **six intents**. The intent decides the
 meaning and the words; [§ 5.4 Status](#54-status) decides how each intent is drawn (tag or
 dot and word) and in which color.
 
-### The five intents
+### The status intents
 
 | Intent       | Meaning                                 | Example labels                                                                      |
 | ------------ | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| `action`     | Waiting for a normal user action         | Review mockups |
 | `ready`      | Works, nothing to do                    | Connected, Configured, Active, Running, Minted, Signing ready, Unlocked, Up to date |
 | `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error                                      |
 | `optional`   | Optional and empty — not a to-do        | Optional, Not configured, Off                                                       |

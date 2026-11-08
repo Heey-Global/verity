@@ -76,6 +76,8 @@ const wikiPageSchema = z.object({
   links: z.array(pathSchema),
   /** Wiki pages that link to this one. */
   linkedFrom: z.array(pathSchema),
+  /** The latest log.md entry that names this page: when, what kind, from what. */
+  lastChange: z.object({ at: z.string(), kind: z.string(), title: z.string() }).optional(),
 });
 
 const wikiTopicSchema = z.object({
@@ -116,6 +118,10 @@ export const wikiCatalogSchema = z.object({
     })
     .nullable(),
   decisions: z.array(wikiDecisionSchema),
+  /** The change log Verity appends to, when the Wiki has one. Older servers omit it. */
+  log: z.object({ path: pathSchema, modifiedAt: z.string() }).nullable().optional(),
+  /** The project's own Wiki rules, when written; like the log, not a page among the rest. */
+  conventions: z.object({ path: pathSchema, modifiedAt: z.string() }).nullable().optional(),
   // Kinds of review items added later are left out rather than failing the whole
   // catalog, which would cost an older app its Wiki.
   review: z.array(z.unknown()).transform((items) =>
@@ -137,3 +143,55 @@ export type WikiCatalog = z.infer<typeof wikiCatalogSchema>;
 /** The start page and the change log are the Wiki's own pages, not topics' pages. */
 export const WIKI_INDEX = 'insights/index.md';
 export const WIKI_LOG = 'insights/log.md';
+/** The project's own Wiki rules (the "schema"), written at setup and changed with Verity. */
+export const WIKI_CONVENTIONS = 'insights/wiki-conventions.md';
+
+export interface WikiLogEntry {
+  /** The entry's day, `YYYY-MM-DD`. */
+  at: string;
+  kind: string;
+  title: string;
+  /** The knowledge files the entry links to: the pages it changed and its sources. */
+  links: KnowledgePath[];
+}
+
+/**
+ * The entries of log.md in file order. An entry is a `## [YYYY-MM-DD] kind |
+ * Title` heading and the lines up to the next heading; other headings and text
+ * are kept by the file but are no entries. Links resolve from log.md itself.
+ */
+/** A log title is copied to every page its entry names; links per entry are bounded too. */
+const MAX_LOG_TITLE = 160;
+const MAX_LOG_LINKS = 200;
+
+export function parseWikiLog(markdown: string): WikiLogEntry[] {
+  const entries: WikiLogEntry[] = [];
+  let current: WikiLogEntry | null = null;
+  for (const line of markdown.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(line)) {
+      // Every repetition is followed by a character it cannot match, and the title
+      // is trimmed in code, so a heading of many spaces cannot make this backtrack.
+      const match = /^##[ \t]+\[(\d{4}-\d{2}-\d{2})\][ \t]+([a-z][a-z-]*)[ \t]*\|(.*)$/.exec(line);
+      const full = match?.[3]!.trim();
+      const title =
+        full && full.length > MAX_LOG_TITLE
+          ? `${full.slice(0, MAX_LOG_TITLE - 1).trimEnd()}…`
+          : full;
+      // A day that does not exist (2026-13-45) is no entry.
+      const day = match ? new Date(`${match[1]!}T00:00:00Z`) : null;
+      const real =
+        day !== null && !Number.isNaN(day.getTime()) && day.toISOString().startsWith(match![1]!);
+      current =
+        match && title && real ? { at: match[1]!, kind: match[2]!, title, links: [] } : null;
+      if (current) entries.push(current);
+      continue;
+    }
+    if (!current) continue;
+    for (const link of markdownLinks(line)) {
+      if (current.links.length >= MAX_LOG_LINKS) break;
+      const target = resolveKnowledgeLink(WIKI_LOG, link.href);
+      if (target && !current.links.includes(target)) current.links.push(target);
+    }
+  }
+  return entries;
+}

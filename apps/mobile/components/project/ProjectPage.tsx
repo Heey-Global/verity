@@ -116,6 +116,7 @@ export function ProjectPage({
     () => ({ kind: 'project', projectId }),
     [projectId],
   );
+  const [layoutRevision, setLayoutRevision] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const reloadPullRequests = pullRequests.reload;
   const reload = useCallback(() => {
@@ -124,7 +125,10 @@ export function ProjectPage({
   }, [load, reloadPullRequests]);
   const refresh = useCallback(() => {
     setRefreshing(true);
-    void Promise.all([load(true), reloadPullRequests(true)]).finally(() => setRefreshing(false));
+    void Promise.all([load(true), reloadPullRequests(true)]).finally(() => {
+      setLayoutRevision((value) => value + 1);
+      setRefreshing(false);
+    });
   }, [load, reloadPullRequests]);
   // Compared with the last value rather than skipping a first run: the mount
   // already loads, and a re-run with the same token (a re-mounted effect, a new
@@ -221,6 +225,7 @@ export function ProjectPage({
           client={client}
           projectId={projectId}
           sessions={detail.sessions}
+          layoutRevision={layoutRevision}
           selectedSessionId={selectedSessionId}
           feed={feed}
           leadingRows={securityRows(security)}

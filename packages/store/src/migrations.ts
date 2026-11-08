@@ -5485,7 +5485,23 @@ migrations['0198_project_repository_instances'] = {
   },
 };
 
-migrations['0199_project_description'] = {
+migrations['0199_session_pr_visibility'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_pr_visibility (
+      session_id text not null references sessions(session_id) on delete cascade,
+      worktree text not null,
+      pr_url text not null,
+      fingerprint text not null,
+      hidden boolean not null default false,
+      primary key (session_id, worktree, pr_url)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_pr_visibility`.execute(db);
+  },
+};
+
+migrations['0200_project_description'] = {
   // One line under the project's name on its page, written by its managers.
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table project_settings add column description text

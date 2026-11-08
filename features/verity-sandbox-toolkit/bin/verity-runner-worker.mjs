@@ -25672,7 +25672,9 @@ var wikiPageSchema = import_zod17.z.object({
   /** Knowledge files this page links to, resolved. */
   links: import_zod17.z.array(pathSchema),
   /** Wiki pages that link to this one. */
-  linkedFrom: import_zod17.z.array(pathSchema)
+  linkedFrom: import_zod17.z.array(pathSchema),
+  /** The latest log.md entry that names this page: when, what kind, from what. */
+  lastChange: import_zod17.z.object({ at: import_zod17.z.string(), kind: import_zod17.z.string(), title: import_zod17.z.string() }).optional()
 });
 var wikiTopicSchema = import_zod17.z.object({
   title: import_zod17.z.string(),
@@ -25703,6 +25705,10 @@ var wikiCatalogSchema = import_zod17.z.object({
     topics: import_zod17.z.array(wikiTopicSchema)
   }).nullable(),
   decisions: import_zod17.z.array(wikiDecisionSchema),
+  /** The change log Verity appends to, when the Wiki has one. Older servers omit it. */
+  log: import_zod17.z.object({ path: pathSchema, modifiedAt: import_zod17.z.string() }).nullable().optional(),
+  /** The project's own Wiki rules, when written; like the log, not a page among the rest. */
+  conventions: import_zod17.z.object({ path: pathSchema, modifiedAt: import_zod17.z.string() }).nullable().optional(),
   // Kinds of review items added later are left out rather than failing the whole
   // catalog, which would cost an older app its Wiki.
   review: import_zod17.z.array(import_zod17.z.unknown()).transform((items) => items.flatMap((item) => {
