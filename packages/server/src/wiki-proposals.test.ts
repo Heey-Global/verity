@@ -183,3 +183,17 @@ it('reports a page that could not be written and decides the others', async () =
     stale: false,
   });
 });
+
+// A label ending in `\]` would otherwise close the link early and turn the rest
+// of the source into the link target in log.md.
+it('escapes backslashes and brackets in log.md link labels', async () => {
+  const source = 'https://example.test/a\\]b';
+  const { proposal } = await proposals.propose({
+    ...input([change('a.md', 'A')]),
+    sources: [source],
+  });
+  await proposals.apply('p', proposal!.id);
+  expect(pages.get('log.md')).toContain(
+    '- [https://example.test/a\\\\\\]b](https://example.test/a\\]b)',
+  );
+});

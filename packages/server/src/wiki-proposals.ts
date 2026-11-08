@@ -122,7 +122,8 @@ const logTitle = (title: string) => title.replace(/\s+/g, ' ').trim();
 
 /** A log link from `insights/log.md` to a knowledge path or a web source. */
 function logLink(target: string, text: string): string {
-  const label = logTitle(text).replace(/[[\]]/g, '\\$&');
+  // A backslash is escaped too, or `\]` in a source would close the label early.
+  const label = logTitle(text).replace(/[\\[\]]/g, '\\$&');
   if (/^https?:\/\/[^\s()<>]+$/i.test(target)) return `- [${label}](${target})`;
   const knowledge = target.replace(/^\/knowledge\//, '');
   const href = knowledge.startsWith('insights/')
