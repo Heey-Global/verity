@@ -10,10 +10,14 @@ import type { ConfirmRequest } from '../components/ui';
 export function deleteSessionRequest(
   session: { label: string; projectId: string | null; automation?: boolean },
   onDelete: (options: { wiki: boolean }) => void | Promise<void>,
+  /** Asked right after closing another sheet (settings, rename). */
+  afterSheet = false,
 ): ConfirmRequest {
   return {
     title: 'Delete session?',
-    message: `This removes "${session.label}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
+    // The switch below says what stays for the Wiki; the session itself is gone.
+    message: `This removes "${session.label}" from your sessions with its${session.automation ? ' automation and' : ''} worktree. This can't be undone.`,
+    ...(afterSheet ? { afterSheet } : {}),
     confirmLabel: 'Delete',
     destructive: true,
     ...(session.projectId

@@ -466,7 +466,7 @@ export function ProjectWork({
         },
       );
   };
-  const confirmRemove = (session: SessionSummary) =>
+  const confirmRemove = (session: SessionSummary, afterSheet = false) =>
     confirm(
       deleteSessionRequest(
         {
@@ -475,6 +475,7 @@ export function ProjectWork({
           automation: Boolean(session.automation),
         },
         ({ wiki }) => remove(session, false, wiki),
+        afterSheet,
       ),
     );
 
@@ -818,7 +819,7 @@ export function ProjectWork({
             // One sheet at a time: the confirmation replaces the settings.
             const { session } = settings;
             setSettings(undefined);
-            confirmRemove(session);
+            confirmRemove(session, true);
           }}
           onChanged={() => onChanged(settings.session.sessionId, false)}
         />

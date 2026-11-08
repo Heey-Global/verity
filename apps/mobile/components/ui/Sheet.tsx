@@ -11,6 +11,7 @@ import {
   ScrollView,
   Text,
   View,
+  InteractionManager,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -319,6 +320,11 @@ export type ConfirmRequest = {
   confirmLabel: string;
   destructive?: boolean;
   option?: ConfirmOption;
+  /**
+   * Asked right after another sheet was closed: it appears once that sheet has
+   * faded out, since iOS does not present a modal while another is dismissed.
+   */
+  afterSheet?: boolean;
   onConfirm: (option: boolean) => void | Promise<void>;
 };
 
@@ -332,10 +338,31 @@ export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   const [visible, setVisible] = useState(false);
   const [chosen, setChosen] = useState(false);
+  const pending = useRef<() => void>(undefined);
+  useEffect(() => () => pending.current?.(), []);
   const confirm = useCallback((next: ConfirmRequest) => {
+    pending.current?.();
     setRequest(next);
     setChosen(next.option?.initial ?? false);
-    setVisible(true);
+    if (!next.afterSheet) {
+      setVisible(true);
+      return;
+    }
+    // Whichever comes first: the fade-out settled, or a fallback a little longer
+    // than the fade, so a lingering interaction cannot keep it from appearing.
+    let shown = false;
+    const show = () => {
+      if (shown) return;
+      shown = true;
+      setVisible(true);
+    };
+    const task = InteractionManager.runAfterInteractions(show);
+    const fallback = setTimeout(show, 350);
+    pending.current = () => {
+      shown = true;
+      task.cancel();
+      clearTimeout(fallback);
+    };
   }, []);
   const sheet =
     request === null ? null : (

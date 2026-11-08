@@ -4420,16 +4420,14 @@ export const SessionChat = memo(function SessionChat({
                 ({ wiki }) =>
                   client
                     .deleteSession(sessionId, wiki ? { wiki } : {})
-                    .then(() => {
-                      setSessionSettingsOpen(false);
-                      router.replace('/');
-                    })
+                    .then(() => router.replace('/'))
                     .catch((error: unknown) =>
                       Alert.alert(
                         'Could not delete session',
                         error instanceof Error ? error.message : 'Please try again.',
                       ),
                     ),
+                true,
               ),
             );
           }}

@@ -967,7 +967,7 @@ function SessionList({ client }: { client: VerityClient }) {
     if (!renaming) return;
     // One sheet at a time: the confirmation replaces the rename sheet.
     setRenaming(null);
-    confirm(deleteRequest(renaming, remove));
+    confirm(deleteRequest(renaming, remove, true));
   }, [confirm, renaming, remove]);
 
   // What the open page shows, as text: polls hand back fresh arrays even when
@@ -1903,12 +1903,12 @@ const ProjectGroup = memo(function ProjectGroup({
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
 // it is confirmed first, with the offer to keep a project session for its Wiki.
-// Used from the rename modal (opened by a row long-press) and from the row's
-// swipe/context-menu action; `onConfirmed` lets the modal close itself.
+// Used from the rename modal (opened by a row long-press, closed before asking)
+// and from the row's swipe/context-menu action.
 function deleteRequest(
   session: SessionSummary,
   remove: (sessionId: string, opts?: { force?: boolean; wiki?: boolean }) => Promise<void>,
-  onConfirmed?: () => void,
+  afterSheet = false,
 ) {
   const deleteSession = (wiki: boolean, force = false) => {
     void remove(session.sessionId, { force, wiki }).catch((error: unknown) => {
@@ -1932,7 +1932,6 @@ function deleteRequest(
         error instanceof Error ? error.message : 'Please try again.',
       );
     });
-    onConfirmed?.();
   };
   return deleteSessionRequest(
     {
@@ -1941,6 +1940,7 @@ function deleteRequest(
       automation: Boolean(session.automation),
     },
     ({ wiki }) => deleteSession(wiki),
+    afterSheet,
   );
 }
 
