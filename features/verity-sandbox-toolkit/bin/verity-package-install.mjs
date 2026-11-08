@@ -351,7 +351,30 @@ async function main() {
         );
       if (verifyOnly || !npmPlan.installArgs) return;
       invocation = npmPlan.installArgs;
-      if (!args.some((arg) => arg === '--dry-run' || arg === '--dry-run=true')) {
+      const dryRunFlags = [];
+      for (let i = 1; i < invocation.length; i++) {
+        const [key, inline] = invocation[i].split('=', 2);
+        if (['--userconfig', '--globalconfig', '--prefix', '--location'].includes(key)) {
+          dryRunFlags.push(invocation[i]);
+          if (inline === undefined) dryRunFlags.push(invocation[++i]);
+        } else if (['--dry-run', '--no-dry-run'].includes(key)) {
+          dryRunFlags.push(invocation[i]);
+          if (inline === undefined && ['true', 'false'].includes(invocation[i + 1]))
+            dryRunFlags.push(invocation[++i]);
+        }
+      }
+      const dryRunEnvironment = { ...environment, npm_config_workspaces: 'false' };
+      delete dryRunEnvironment.npm_config_workspace;
+      delete dryRunEnvironment.NPM_CONFIG_WORKSPACE;
+      const dryRun = spawnSync(executable, ['config', 'get', 'dry-run', ...dryRunFlags], {
+        cwd: npmPlan.root,
+        env: dryRunEnvironment,
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      if (dryRun.status !== 0 || !['true', 'false'].includes(dryRun.stdout.trim()))
+        throw new Error('Could not read effective npm dry-run configuration.');
+      if (dryRun.stdout.trim() !== 'true') {
         const recovery = preserveNpmDependencies(npmPlan.root);
         if (recovery)
           reportError(

@@ -114,7 +114,12 @@ export function registerPackageArtifactRoutes(
       poll.unref();
       try {
         const path = (request.params as { '*': string })['*'];
-        if (installGrant && !path.startsWith('npm/') && !path.startsWith('file/npm/'))
+        if (
+          installGrant &&
+          request.method !== 'POST' &&
+          !path.startsWith('npm/') &&
+          !path.startsWith('file/npm/')
+        )
           return reply.code(403).send({ error: 'installation grant is restricted to npm' });
         const base = options.artifactBaseUrl?.(identity) ?? PACKAGE_ARTIFACT_BASE_URL;
         const response =

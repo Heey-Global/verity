@@ -82,6 +82,33 @@ it('binds installation tokens to current capability authority and revokes comple
   revokeNpmInstallGrant(token);
   expect((await f.get(`Bearer ${token}`)).statusCode).toBe(401);
 });
+it('forwards audit requests authorized by an installation grant', async () => {
+  const f = fixture();
+  const token = createNpmInstallGrant({
+    sourceToken: 'good',
+    ...binding,
+    sessionId: 's1',
+    policy: { minimumAgeDays: 3, packages: new Set(), exceptions: new Set() },
+  });
+  f.transport.mockImplementation(
+    async () =>
+      Object.assign(Readable.from(['{}']), { statusCode: 200, headers: {} }) as IncomingMessage,
+  );
+  try {
+    const response = await f.app.inject({
+      method: 'POST',
+      url: '/internal/package-artifacts/npm/-/npm/v1/security/advisories/bulk',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { example: ['1.0.0'] },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(f.resolve).toHaveBeenCalledWith('good');
+  } finally {
+    revokeNpmInstallGrant(token);
+  }
+});
+
 it('does not accept an installation token issued for a different generation', async () => {
   const f = fixture();
   const token = createNpmInstallGrant({

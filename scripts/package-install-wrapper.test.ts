@@ -39,7 +39,7 @@ async function fixture(
   );
   writeFileSync(
     join(bin, manager),
-    `#!${process.execPath}\nconst fs = require('node:fs');\nif(process.argv[2] === '--version') console.log(${JSON.stringify(version)});\nelse if(process.argv[2] === 'prefix') console.log(${JSON.stringify(root)});\nelse if(process.argv[2] === 'config') console.log(${JSON.stringify(nativeConfig)});\nelse if(process.argv.includes('--package-lock-only=true')) fs.writeFileSync(${JSON.stringify(join(root, 'resolved.json'))}, JSON.stringify(process.argv.slice(2)));\nelse fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({args:process.argv.slice(2),pipConfig:process.env.PIP_CONFIG_FILE,pipAge:process.env.PIP_UPLOADED_PRIOR_TO,npmAge:process.env.npm_config_min_release_age,installToken:process.env.VERITY_PACKAGE_INSTALL_TOKEN}));\n`,
+    `#!${process.execPath}\nconst fs = require('node:fs');\nif(process.argv[2] === '--version') console.log(${JSON.stringify(version)});\nelse if(process.argv[2] === 'prefix') console.log(${JSON.stringify(root)});\nelse if(process.argv[2] === 'config') console.log(process.argv[4] === 'dry-run' ? (process.env.npm_config_dry_run || (fs.existsSync('.npmrc') && /^dry-run\\s*=\\s*true$/m.test(fs.readFileSync('.npmrc','utf8')) ? 'true' : 'false')) : ${JSON.stringify(nativeConfig)});\nelse if(process.argv.includes('--package-lock-only=true')) fs.writeFileSync(${JSON.stringify(join(root, 'resolved.json'))}, JSON.stringify(process.argv.slice(2)));\nelse fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({args:process.argv.slice(2),pipConfig:process.env.PIP_CONFIG_FILE,pipAge:process.env.PIP_UPLOADED_PRIOR_TO,npmAge:process.env.npm_config_min_release_age,installToken:process.env.VERITY_PACKAGE_INSTALL_TOKEN}));\n`,
     { mode: 0o755 },
   );
   const capability = join(root, 'capability');
@@ -115,6 +115,26 @@ const answer = (reply: ServerResponse, action: string) => {
 };
 
 describe('package install wrapper', () => {
+  it.each(['environment', 'npmrc'])(
+    'preserves dependencies for effective dry-run from %s',
+    async (source) => {
+      const f = await fixture((_body, reply) => answer(reply, 'continue'));
+      mkdirSync(join(f.root, 'node_modules'));
+      const existing = join(f.root, 'node_modules', 'existing');
+      writeFileSync(existing, 'preserve me');
+      writeFileSync(join(f.root, '.npmrc'), source === 'npmrc' ? 'dry-run=true\n' : '');
+      const previous = process.env.npm_config_dry_run;
+      if (source === 'environment') process.env.npm_config_dry_run = 'true';
+      try {
+        expect((await f.start(['ci']).exited).code).toBe(0);
+        expect(readFileSync(existing, 'utf8')).toBe('preserve me');
+      } finally {
+        if (previous === undefined) delete process.env.npm_config_dry_run;
+        else process.env.npm_config_dry_run = previous;
+      }
+    },
+  );
+
   it('sets up native policy before an installation identity is frozen without resolving or installing', async () => {
     const f = await fixture((body, reply) => {
       expect(['check', 'configured']).toContain(body.action);
@@ -470,6 +490,6 @@ describe('package install wrapper', () => {
       '10.0.0',
     );
     writeFileSync(join(f.root, '.npmrc'), 'min-release-age=3\n');
-    expect((await f.start(['install']).exited).code).toBe(0);
+    expect(await f.start(['install']).exited).toMatchObject({ code: 0 });
   });
 });
