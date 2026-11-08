@@ -288,6 +288,9 @@ export interface PullRequestFixInput {
   userId: string | null;
 }
 
+/** How recent a list a refresh request still shares instead of reading again. */
+const MIN_REFRESH_MS = 3_000;
+
 export interface ProjectPullRequestRouteDeps {
   store: EventStore;
   backend?: ProjectPullRequestBackend | undefined;
@@ -338,7 +341,10 @@ export function registerProjectPullRequestRoutes(
     const backend = deps.backend;
     if (!backend) return { repositories: [] };
     const cached = cache.get(id);
-    if (!refresh && cached && now() - cached.at < cacheMs)
+    // A pull-to-refresh still joins a list started moments ago (or still being
+    // read): repeated refreshes must not multiply requests against the code
+    // host's rate limit, which CI repair shares. Merge and fix clear the cache.
+    if (cached && now() - cached.at < (refresh ? MIN_REFRESH_MS : cacheMs))
       return { repositories: await cached.value };
     const value = deps
       .sessionLinks(id)
@@ -401,16 +407,26 @@ export function registerProjectPullRequestRoutes(
       return reply
         .code(409)
         .send({ error: `pull request #${String(number)} has no failure or conflict to fix` });
-    const result = await deps.startFix({
-      project: target.project,
-      repository: target.repository,
-      resource: pullRequestResource(target.repository, number),
-      status,
-      branch: parsed.data.branch,
-      prompt: buildPullRequestFixPrompt(target.repository, status, parsed.data.branch),
-      userId: request.localUserId ?? null,
-    });
-    invalidate(id);
+    let result: { sessionId: string; created: boolean };
+    try {
+      result = await deps.startFix({
+        project: target.project,
+        repository: target.repository,
+        resource: pullRequestResource(target.repository, number),
+        status,
+        branch: parsed.data.branch,
+        prompt: buildPullRequestFixPrompt(target.repository, status, parsed.data.branch),
+        userId: request.localUserId ?? null,
+      });
+    } catch (error) {
+      // The global handler would answer an anonymous 500; the app shows this text.
+      const statusCode = (error as { statusCode?: unknown }).statusCode;
+      if (typeof statusCode !== 'number') throw error;
+      request.log.warn({ err: error, projectId: id, number }, 'pull request fix not started');
+      return reply.code(statusCode).send({ error: (error as Error).message });
+    } finally {
+      invalidate(id);
+    }
     return result;
   });
 }

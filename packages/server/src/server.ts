@@ -5790,32 +5790,39 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: deps.eventStore,
     backend: deps.projectPullRequests,
     sessionLinks: async (projectId) => {
-      const links: SessionPullRequestLink[] = [];
-      for (const session of await deps.eventStore.listSessions()) {
-        if (session.projectId !== projectId) continue;
+      const sessions = (await deps.eventStore.listSessions()).filter(
+        (session) => session.projectId === projectId,
+      );
+      // One lookup per session, read together rather than one after another.
+      const workspaces = await Promise.all(
+        sessions.map((session) =>
+          deps.eventStore.listSessionRepositoryWorkspaces(session.sessionId),
+        ),
+      );
+      return sessions.flatMap((session, index): SessionPullRequestLink[] => {
         // Only what is already known: the project page reads every session's PR
         // status, so asking the code host again here would double that traffic.
         const pr = sessionPrCache.peek(session.worktree);
-        links.push({
-          sessionId: session.sessionId,
-          repositoryId: `default:${projectId}`,
-          ...(pr ? { number: pr.number } : {}),
-          name: session.name,
-        });
-        for (const workspace of await deps.eventStore.listSessionRepositoryWorkspaces(
-          session.sessionId,
-        )) {
-          const number = (workspace.pullRequest as { number?: unknown } | null | undefined)?.number;
-          links.push({
+        return [
+          {
             sessionId: session.sessionId,
-            repositoryId: workspace.repositoryId,
-            branch: workspace.branch,
-            ...(typeof number === 'number' ? { number } : {}),
+            repositoryId: `default:${projectId}`,
+            ...(pr ? { number: pr.number } : {}),
             name: session.name,
-          });
-        }
-      }
-      return links;
+          },
+          ...workspaces[index]!.map((workspace): SessionPullRequestLink => {
+            const number = (workspace.pullRequest as { number?: unknown } | null | undefined)
+              ?.number;
+            return {
+              sessionId: session.sessionId,
+              repositoryId: workspace.repositoryId,
+              branch: workspace.branch,
+              ...(typeof number === 'number' ? { number } : {}),
+              name: session.name,
+            };
+          }),
+        ];
+      });
     },
     startFix: (input) => {
       const key = `${input.project.id}\u0000${input.resource}`;
@@ -5839,19 +5846,45 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           throw Object.assign(new Error('The fix session could not be created'), {
             statusCode: spawned.statusCode >= 500 ? 503 : spawned.statusCode,
           });
-        const owner = existing
-          ? await repairs.replaceSessionOrigin(
-              input.project.id,
-              input.resource,
-              existing,
-              sessionId,
-            )
-          : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
-        if (owner !== undefined && owner !== sessionId) return { sessionId: owner, created: false };
-        await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
-          displayPrompt: `Fix pull request #${String(input.status.number)}`,
-          ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
-        });
+        // A session that never got its prompt, or lost the claim to another
+        // process, is removed again: a durable origin pointing at it would turn
+        // every later tap into "already fixing", and a duplicate helps no one.
+        const discard = () =>
+          deleteSessionEverywhere(sessionId).catch((error: unknown) => {
+            app.log.warn({ err: error, sessionId }, 'could not remove an unused fix session');
+            return false;
+          });
+        try {
+          const owner = existing
+            ? await repairs.replaceSessionOrigin(
+                input.project.id,
+                input.resource,
+                existing,
+                sessionId,
+              )
+            : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
+          if (owner === undefined)
+            throw Object.assign(new Error('The fix session could not be recorded'), {
+              statusCode: 503,
+            });
+          if (owner !== sessionId) {
+            await discard();
+            return { sessionId: owner, created: false };
+          }
+          await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
+            displayPrompt: `Fix pull request #${String(input.status.number)}`,
+            ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
+          });
+        } catch (error) {
+          // The origin, if recorded, now names a missing session; the next tap
+          // replaces it.
+          await discard();
+          if (typeof (error as { statusCode?: unknown }).statusCode === 'number') throw error;
+          app.log.error({ err: error, sessionId }, 'fix session could not be started');
+          throw Object.assign(new Error('The fix session could not be started. Try again.'), {
+            statusCode: 503,
+          });
+        }
         return { sessionId, created: true };
       };
       const promise = start().finally(() => pullRequestFixes.delete(key));

@@ -219,6 +219,10 @@ describe('GET /projects/:id/pull-requests', () => {
     expect(backend.list).toHaveBeenCalledTimes(1);
     await app.inject({ method: 'GET', url: '/projects/p/pull-requests?refresh=1' });
     expect(backend.list).toHaveBeenCalledTimes(2);
+    // Refreshing again at once shares that read: the host's rate limit is shared.
+    clock = 6_000;
+    await app.inject({ method: 'GET', url: '/projects/p/pull-requests?refresh=1' });
+    expect(backend.list).toHaveBeenCalledTimes(2);
     clock = 60_000;
     await app.inject({ method: 'GET', url: '/projects/p/pull-requests' });
     expect(backend.list).toHaveBeenCalledTimes(3);

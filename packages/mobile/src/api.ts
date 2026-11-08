@@ -6614,11 +6614,18 @@ export class VerityClient {
     return branchSwitchedSchema.parse(await res.json());
   }
 
-  async mergePullRequest(id: string, number: number): Promise<PullRequestMerged> {
+  /** `expectedHeadSha` merges only that commit; the server refuses a branch that moved. */
+  async mergePullRequest(
+    id: string,
+    number: number,
+    expectedHeadSha?: string,
+  ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ number }),
+      body: JSON.stringify(
+        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
+      ),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }

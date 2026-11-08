@@ -1221,7 +1221,10 @@ export async function buildEmbeddedServer(
       try {
         return await provider.repositoryPrService(project).mergePr(number, expectedHeadSha);
       } finally {
-        sharedForgeStatus.invalidate(await statusIdentity(project, provider));
+        // A failed cache invalidation must not turn a completed merge into an error.
+        await statusIdentity(project, provider)
+          .then((identity) => sharedForgeStatus.invalidate(identity))
+          .catch(() => undefined);
       }
     },
   };

@@ -75,8 +75,9 @@ export function RepositoriesPage({
         try {
           // A session's own pull request merges through the session, which also
           // settles its worktree afterwards.
+          // Either way only the confirmed commit merges.
           if (pull.origin.kind === 'session')
-            await client.mergePullRequest(pull.origin.sessionId, pull.number);
+            await client.mergePullRequest(pull.origin.sessionId, pull.number, pull.headSha);
           else
             await client.mergeProjectPullRequest(projectId, repository.id, pull.number, {
               branch: pull.branch,

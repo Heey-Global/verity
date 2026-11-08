@@ -98,12 +98,13 @@ it('merges a Renovate PR at the commit the list showed, after confirming', async
   expect(client.mergePullRequest).not.toHaveBeenCalled();
 });
 
-it('merges a session PR through its session, which settles the worktree after', async () => {
+it('merges a session PR through its session, at the commit the list showed', async () => {
   const client = renderPage([SITE]);
   const site = await screen.findByTestId('repository-default:p');
   fireEvent.press(within(site).getAllByRole('button', { name: 'Merge' })[1]!);
   await confirmMerge();
-  expect(client.mergePullRequest).toHaveBeenCalledWith('s4', 4);
+  // A fix session may be pushing to this branch: only the commit shown merges.
+  expect(client.mergePullRequest).toHaveBeenCalledWith('s4', 4, 'abc4def0');
   expect(client.mergeProjectPullRequest).not.toHaveBeenCalled();
 });
 
