@@ -368,7 +368,7 @@ describe('inboxItems', () => {
     expect(ready[0]).toMatchObject({ kind: 'merge_ready', context: 'acme/website · PR #2031' });
     expect(ready[0]?.actions[0]).toEqual({
       kind: 'merge',
-      label: 'Squash & merge',
+      label: 'Merge',
       sessionId: 'pr',
       number: 2031,
     });

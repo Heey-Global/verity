@@ -11,7 +11,7 @@ const answer = (label: string): InboxAction => ({
   sessionId: 's1',
 });
 
-it('shows the maximum short answers as small neutral buttons', () => {
+it('shows the maximum short answers as small answer buttons', () => {
   const onAnswer = jest.fn();
   const answers = Array.from({ length: INLINE_ANSWERS }, (_, i) =>
     answer(`${String(i)}${'x'.repeat(SHORT_ANSWER - 1)}`),
@@ -27,13 +27,13 @@ it('shows the maximum short answers as small neutral buttons', () => {
   );
   expect(view.UNSAFE_getAllByType(Button)).toHaveLength(INLINE_ANSWERS);
   for (const button of view.UNSAFE_getAllByType(Button)) {
-    expect(button.props).toMatchObject({ size: 'small', variant: 'secondary' });
+    expect(button.props).toMatchObject({ size: 'small', variant: 'answer' });
   }
   fireEvent.press(screen.getByRole('button', { name: answers[0]!.label }));
   expect(onAnswer).toHaveBeenCalledWith(answers[0]);
 });
 
-it.each(['long', 'many'])('groups all %s answers into one neutral sheet entry', (kind) => {
+it.each(['long', 'many'])('groups all %s answers into one sheet entry', (kind) => {
   const onAnswer = jest.fn();
   const onMore = jest.fn();
   const answers =

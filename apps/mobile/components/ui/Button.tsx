@@ -4,13 +4,15 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon, type IconName } from '../Icon';
 import { tint } from './tint';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'text' | 'destructive';
+export type ButtonVariant = 'primary' | 'secondary' | 'answer' | 'text' | 'destructive';
 export type ButtonSize = 'large' | 'compact' | 'small';
 
 /**
  * The one button (docs/design-system.md § 5.1). Primary is tonal — a quiet cyan
  * fill, never a glow — and a screen has at most one. Destructive is outlined in
- * `attention` and is only ever the confirming action of a confirmation.
+ * `attention` and is only ever the confirming action of a confirmation. Answer
+ * is outlined in `action` without a fill: a list row's in-place answer, which
+ * has to read as tappable without competing with the screen's one primary.
  *
  * Loading keeps the label, puts a spinner in front of it and locks the button,
  * so a second tap cannot run the action twice and the button does not jump.
@@ -50,7 +52,7 @@ export function Button({
       ? theme.colors.actionLabel
       : variant === 'secondary'
         ? theme.colors.text
-        : variant === 'text'
+        : variant === 'text' || variant === 'answer'
           ? theme.colors.action
           : theme.colors.attention;
   return (
@@ -150,6 +152,10 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: tint(theme.colors.action, 'border'),
   },
   secondary: { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border },
+  answer: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderColor: tint(theme.colors.action, 'border'),
+  },
   text: { paddingHorizontal: theme.spacing.xs, minHeight: 44 },
   destructive: { borderColor: tint(theme.colors.attention, 'border') },
   disabled: { opacity: 0.4 },

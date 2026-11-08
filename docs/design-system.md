@@ -143,6 +143,7 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 | ----------- | ------------------------------------------------------------- | -------------------------------------------------- |
 | Primary     | Tonal: `action` at 14 % fill, 35 % border, `actionLabel` text | The single main action of a screen                 |
 | Secondary   | `surfaceAlt` fill, `border` outline, `text` label             | Further actions, Cancel                            |
+| Answer      | `surfaceAlt` fill, `action` outline (35 %), `action` label    | A list row's in-place answers (§ Row)           |
 | Text        | No container, `action` label                                  | Quiet actions inside cards ("Replace")             |
 | Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
@@ -188,10 +189,12 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     status longer than that truncates, so the title is never squeezed. The chevron `›`
     appears only when the row navigates. An inbox row ("Needs you") puts its status tag
     at the start of the subtitle line instead (`tag`), so the title keeps the full width
-    beside the chevron.
+    beside the chevron. A subtitle that does not fit beside the tag continues on the next
+    line at the full width rather than wrapping into a narrow column next to it.
   - **Answers (optional):** a row that waits on a decision the operator can make in place
-    (a question's options, a repair) shows those answers as small secondary buttons in a
-    strip under it, aligned with the title. None is primary: a list holds many such rows,
+    (a question's options, a repair) shows those answers as small answer buttons (an
+    `action` outline and label without a fill, so they read as tappable) in a strip under
+    it, aligned with the title. None is primary: a list holds many such rows,
     and a primary in each would leave the screen without a single main action. Sending one
     answer locks only that row's answers; the other rows stay answerable. Up to three answers
     of at most 24 characters show as buttons; otherwise the strip holds one "N answers"

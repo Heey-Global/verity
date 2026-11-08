@@ -414,7 +414,7 @@ function sessionItems(
           ? [
               {
                 kind: 'merge',
-                label: 'Squash & merge',
+                label: 'Merge',
                 sessionId: session.sessionId,
                 number: pr.number,
               },
