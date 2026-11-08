@@ -11,8 +11,9 @@ export type ButtonSize = 'large' | 'compact' | 'small';
  * The one button (docs/design-system.md § 5.1). Primary is tonal — a quiet cyan
  * fill, never a glow — and a screen has at most one. Destructive is outlined in
  * `attention` and is only ever the confirming action of a confirmation. Answer
- * is outlined in `action` without a fill: a list row's in-place answer, which
- * has to read as tappable without competing with the screen's one primary.
+ * is outlined in `action` without the primary's tonal fill: a list row's
+ * in-place answer, which has to read as tappable without competing with the
+ * screen's one primary.
  *
  * Loading keeps the label, puts a spinner in front of it and locks the button,
  * so a second tap cannot run the action twice and the button does not jump.
