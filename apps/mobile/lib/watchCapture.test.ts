@@ -1,10 +1,11 @@
-import type { AssistantConversation, InboxItem } from '@verity/mobile';
+import type { AssistantConversation, InboxItem, VerityClient } from '@verity/mobile';
 
 import { getAuthToken, isBiometricUnlockEnabled } from './authToken';
 import { getVerityBaseUrl } from './client';
 import { getServerProfile } from './serverProfile';
 
 import {
+  performWatchInboxAction,
   createWatchInboxDrainer,
   createWatchInboxSync,
   showWatchSettings,
@@ -262,6 +263,27 @@ describe('watch "Needs you" list', () => {
     expect(payload?.items[1]).not.toHaveProperty('message');
   });
 
+  it('only sends supported current Home action routes to the Watch', () => {
+    const payload = watchInbox(
+      [
+        item(0, {
+          actions: [
+            { kind: 'resume', label: 'Resume', sessionId: 'session-1' },
+            { kind: 'merge', label: 'Merge', sessionId: 'session-2', number: 42 },
+            { kind: 'open_session', label: 'Open', sessionId: 'session-3' },
+          ],
+        }),
+      ],
+      'account-1',
+      1234,
+    );
+    expect(payload?.items[0]?.actions).toEqual([
+      { kind: 'resume', label: 'Resume', sessionId: 'session-1' },
+      { kind: 'merge', label: 'Merge', sessionId: 'session-2', number: 42 },
+    ]);
+    expect(watchInbox([item(0)], 'account-1', 1234)?.items[0]?.actions).toEqual([]);
+  });
+
   it('sends nothing for a signed-out iPhone, so the watch clears its list', () => {
     expect(watchInbox([item(0)], null, 1)).toBeNull();
   });
@@ -303,5 +325,151 @@ describe('watch "Needs you" list', () => {
     // Signing back in shows the same items; skipping them left the watch empty.
     sync([item(0)], 'account-1', 2_000);
     expect(send).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('immediate Watch Home actions', () => {
+  const request = {
+    id: 'reply-1',
+    scope: 'account-1',
+    key: 'crashed:s:4',
+    expiresAt: 100,
+    action: { kind: 'resume' as const, sessionId: 's' },
+  };
+  const client = (session: Record<string, unknown> = { status: 'crashed' }) => ({
+    getSession: jest.fn(async () => session),
+    sendTurn: jest.fn(async () => ({})),
+    mergePullRequest: jest.fn(async () => ({})),
+  });
+  it('resumes through the existing performer with the stable reply id', async () => {
+    const api = client();
+    expect(
+      await performWatchInboxAction(
+        request,
+        api as unknown as VerityClient,
+        () => 'account-1',
+        () => 1,
+      ),
+    ).toEqual({ status: 'done' });
+    expect(api.sendTurn).toHaveBeenCalledWith('s', {
+      prompt: 'Continue where you stopped.',
+      clientReplyId: 'reply-1',
+    });
+  });
+  it('rejects another account or an expired request before any API call', async () => {
+    const api = client();
+    expect(
+      (
+        await performWatchInboxAction(
+          request,
+          api as unknown as VerityClient,
+          () => 'account-2',
+          () => 1,
+        )
+      ).status,
+    ).toBe('error');
+    expect(
+      (
+        await performWatchInboxAction(
+          request,
+          api as unknown as VerityClient,
+          () => 'account-1',
+          () => 101,
+        )
+      ).status,
+    ).toBe('error');
+    expect(api.getSession).not.toHaveBeenCalled();
+  });
+  it('rejects an account switch while checking session state', async () => {
+    const api = client();
+    const scope = jest.fn().mockReturnValueOnce('account-1').mockReturnValue('account-2');
+    expect(
+      (await performWatchInboxAction(request, api as unknown as VerityClient, scope, () => 1))
+        .status,
+    ).toBe('error');
+    expect(api.sendTurn).not.toHaveBeenCalled();
+  });
+  it('rejects a resumed session that crashed again after the item was shown', async () => {
+    const api = client({ status: 'crashed', eventCount: 5 });
+    const result = await performWatchInboxAction(
+      request,
+      api as unknown as VerityClient,
+      () => 'account-1',
+      () => 1,
+    );
+    expect(result.status).toBe('error');
+    expect(api.sendTurn).not.toHaveBeenCalled();
+  });
+  it('does not resume an already running session', async () => {
+    const api = client({ status: 'running' });
+    expect(
+      (
+        await performWatchInboxAction(
+          request,
+          api as unknown as VerityClient,
+          () => 'account-1',
+          () => 1,
+        )
+      ).status,
+    ).toBe('error');
+    expect(api.sendTurn).not.toHaveBeenCalled();
+  });
+  it('merges only a freshly eligible matching PR', async () => {
+    const api = client({ pullRequest: { number: 42, phase: 'open', mergeable: true } });
+    const merge = {
+      ...request,
+      key: 'merge:s:42:',
+      action: { kind: 'merge' as const, sessionId: 's', number: 42 },
+    };
+    expect(
+      await performWatchInboxAction(
+        merge,
+        api as unknown as VerityClient,
+        () => 'account-1',
+        () => 1,
+      ),
+    ).toEqual({ status: 'done' });
+    expect(api.mergePullRequest).toHaveBeenCalledWith('s', 42);
+    api.getSession.mockResolvedValue({
+      pullRequest: { number: 43, phase: 'open', mergeable: true },
+    });
+    expect(
+      (
+        await performWatchInboxAction(
+          merge,
+          api as unknown as VerityClient,
+          () => 'account-1',
+          () => 1,
+        )
+      ).status,
+    ).toBe('error');
+    api.getSession.mockResolvedValue({
+      pullRequest: { number: 42, phase: 'open', mergeable: true, headSha: 'new-head' },
+    });
+    expect(
+      (
+        await performWatchInboxAction(
+          merge,
+          api as unknown as VerityClient,
+          () => 'account-1',
+          () => 1,
+        )
+      ).status,
+    ).toBe('error');
+    expect(api.mergePullRequest).toHaveBeenCalledTimes(1);
+  });
+  it('reports errors rather than claiming success after a network failure', async () => {
+    const api = client();
+    api.sendTurn.mockRejectedValue(new Error('offline'));
+    expect(
+      (
+        await performWatchInboxAction(
+          request,
+          api as unknown as VerityClient,
+          () => 'account-1',
+          () => 1,
+        )
+      ).status,
+    ).toBe('error');
   });
 });

@@ -25,6 +25,12 @@ class VerityWatchBridge: Module {
       VerityWatchInbox.shared.setProjects(
         scope: scope, projects: projects, lastProjectId: lastProjectId)
     }
+    AsyncFunction("pendingInboxActions") { () -> [[String: Any]] in
+      VerityWatchInbox.shared.pendingInboxActions()
+    }
+    AsyncFunction("completeInboxAction") { (id: String, result: [String: Any]) in
+      VerityWatchInbox.shared.completeInboxAction(id, result: result)
+    }
     AsyncFunction("pendingAnswers") { () -> [[String: Any]] in
       VerityWatchInbox.shared.pendingAnswers()
     }

@@ -7,6 +7,9 @@ module.exports = {
   bundleIdentifier: '.watchkitapp.quickcapture',
   deploymentTarget: '11.0',
   frameworks: ['SwiftUI', 'WidgetKit'],
-  images: { VerityMarkOriginal: '../../assets/brand/verity-v-mark.png' },
+  images: {
+    VerityMarkOriginal: '../../assets/brand/verity-v-mark.png',
+    VerityLauncherArtwork: '../../assets/brand/verity-v-app-icon-source.png',
+  },
   colors: { $accent: '#ff35da' },
 };

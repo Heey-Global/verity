@@ -24,6 +24,7 @@ private struct WatchInboxEntry: Codable {
   /// Transcription attempts so far; optional so entries from older builds decode.
   var attempts: Int?
   var lastAttemptAt: Date?
+  var retryId: String?
   /// The project picked on the watch and the account its project list came
   /// from; JavaScript only saves the task when both still match.
   var projectId: String?
@@ -62,6 +63,10 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// Home's open items as JavaScript last listed them (`syncWatchInbox`), sent
   /// with the project list. Only touched on `queue`.
   private var inbox: [String: Any]?
+  private var jsInboxActions: [String: [String: Any]] = [:]
+  private var jsInboxCallbacks: [String: ([String: Any]) -> Void] = [:]
+  private var inboxActions = Set<String>()
+  private var completedInboxActions = Set<String>()
   /// While set, a read is held open on the server and every change goes to the
   /// watch. Only touched on `queue`.
   private var following = false
@@ -293,6 +298,10 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     replyHandler: @escaping ([String: Any]) -> Void
   ) {
     guard message["v"] as? Int == Self.protocolVersion else { return replyHandler([:]) }
+    if message["kind"] as? String == "inboxAction" {
+      queue.async { self.receiveInboxAction(message, replyHandler: replyHandler) }
+      return
+    }
     if message["kind"] as? String == "capture" {
       let background = applicationIsBackground()
       queue.async {
@@ -318,6 +327,74 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       if let inbox = self.inbox { reply["inbox"] = inbox }
       replyHandler(reply)
       self.follow(for: 30)
+    }
+  }
+
+  func pendingInboxActions() -> [[String: Any]] {
+    queue.sync {
+      let values = Array(jsInboxActions.values)
+      jsInboxActions.removeAll()
+      return values
+    }
+  }
+
+  func completeInboxAction(_ id: String, result: [String: Any]) {
+    queue.async { self.jsInboxCallbacks.removeValue(forKey: id)?(result) }
+  }
+
+  /// Match against the phone's current allowed actions, never execute watch-supplied
+  /// session routing. A stale list or another account must fail closed.
+  private func receiveInboxAction(_ message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
+    let fail: (String) -> Void = { replyHandler(["status": "error", "message": $0]) }
+    guard let key = message["key"] as? String, let kind = message["action"] as? String,
+      let id = message["id"] as? String, UUID(uuidString: id) != nil,
+      let scope = message["scope"] as? String, scope == inbox?["scope"] as? String,
+      let at = inbox?["at"] as? Double, Date().timeIntervalSince1970 * 1000 - at >= 0,
+      Date().timeIntervalSince1970 * 1000 - at < 10 * 60_000,
+      let items = inbox?["items"] as? [[String: Any]],
+      let item = items.first(where: { $0["key"] as? String == key }),
+      let actions = item["actions"] as? [[String: Any]],
+      let action = actions.first(where: { $0["kind"] as? String == kind }),
+      ["resume", "merge"].contains(kind), let sessionId = action["sessionId"] as? String
+    else { return fail("Refresh Home on iPhone before trying this action.") }
+    let actionKey = "\(scope):\(key):\(kind)"
+    if completedInboxActions.contains(actionKey) { return replyHandler(["status": "done"]) }
+    guard !inboxActions.contains(actionKey) else { return fail("This action is already running.") }
+    inboxActions.insert(actionKey)
+    if link.config?.scope != scope {
+      jsInboxActions[id] = ["id": id, "scope": scope, "key": key, "action": action,
+        "expiresAt": Date().timeIntervalSince1970 * 1000 + 8_000]
+      jsInboxCallbacks[id] = { result in
+        self.inboxActions.remove(actionKey)
+        self.jsInboxActions.removeValue(forKey: id)
+        if result["status"] as? String == "done" {
+          if self.completedInboxActions.count >= 128 { self.completedInboxActions.removeAll() }
+          self.completedInboxActions.insert(actionKey)
+        }
+        replyHandler(result)
+      }
+      let notify = onChange
+      DispatchQueue.main.async { notify?() }
+      queue.asyncAfter(deadline: .now() + 10) {
+        self.jsInboxCallbacks.removeValue(forKey: id)?(["status": "error",
+          "message": "Could not confirm the outcome. Refresh Home on iPhone before retrying."])
+      }
+      return
+    }
+    let backgroundTime = BackgroundTime("watch-inbox-action") {}
+    Task {
+      let result = await self.link.sendInboxAction(kind: kind, sessionId: sessionId,
+        number: action["number"] as? Int, requestId: id, scope: scope, itemKey: key)
+      self.queue.async {
+        defer { self.inboxActions.remove(actionKey); backgroundTime.end() }
+        switch result {
+        case .sent:
+          if self.completedInboxActions.count >= 128 { self.completedInboxActions.removeAll() }
+          self.completedInboxActions.insert(actionKey)
+          replyHandler(["status": "done"])
+        case .later(let message), .refused(let message): fail(message)
+        }
+      }
     }
   }
 
@@ -370,6 +447,26 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
       return false
     }
     if let existing = load(id) {
+      // Explicit retries keep the capture ID (server deduplication), but get a
+      // fresh bounded attempt budget once. Duplicate deliveries cannot reset it.
+      if existing.state == .failed, existing.scope == metadata["scope"] as? String,
+        let retryId = metadata["retryId"] as? String, UUID(uuidString: retryId) != nil,
+        retryId != existing.retryId {
+        var retry = existing
+        do {
+          if !FileManager.default.fileExists(atPath: audioURL(id).path) {
+            try storeAudio(audioURL(id))
+          }
+          retry.retryId = retryId
+          retry.attempts = 0
+          retry.lastAttemptAt = nil
+          retry.error = nil
+          retry.state = .received
+          try save(retry)
+          transcribe(id)
+        } catch { reply(["kind": "failed", "id": id, "text": "Could not retry recording"] ) }
+        return true
+      }
       if existing.state == .transcribed || existing.state == .stored, let text = existing.text {
         reply(["kind": "transcript", "id": id, "text": text])
       } else if existing.state == .failed, (existing.attempts ?? 0) >= Self.maxAttempts {
@@ -384,6 +481,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
         id: id, createdAt: metadata["createdAt"] as? String ?? "",
         durationMs: metadata["durationMs"] as? Int ?? 0, receivedAt: Date(),
         receivedInBackground: background, state: .received,
+        retryId: metadata["retryId"] as? String,
         projectId: metadata["projectId"] as? String, scope: metadata["scope"] as? String)
       try save(entry)
       log("request=\(id) stage=iphone_received transport=\(transport) background=\(background)")

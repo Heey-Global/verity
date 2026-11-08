@@ -131,6 +131,44 @@ final class VerityAssistantLink: @unchecked Sendable {
       ["requestId": requestId, "questionId": questionId, "labels": labels, "device": "watch"])
   }
 
+  /// Uses the same session routes as Home's quick actions; server authorization
+  /// and current pull-request validation remain authoritative.
+  func sendInboxAction(kind: String, sessionId: String, number: Int?, requestId: String, scope: String, itemKey: String) async -> Delivery {
+    guard !sessionId.isEmpty,
+      let encoded = sessionId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+    else { return .refused("Invalid session") }
+    guard config?.scope == scope else { return .refused("Account changed") }
+    if kind == "resume" {
+      do {
+        let (status, body) = try await request("/sessions/\(encoded)", method: "GET", body: nil)
+        guard status == 200, let session = body as? [String: Any],
+          session["status"] as? String == "crashed", session["resumable"] as? Bool != false
+        else { return .refused("This session can no longer be resumed. Refresh Home on iPhone.") }
+        if let count = session["eventCount"] as? Int,
+          itemKey != "crashed:\(sessionId):\(count)" {
+          return .refused("This session changed. Refresh Home on iPhone.")
+        }
+      } catch { return .later("Could not refresh session. Try again.") }
+      guard config?.scope == scope else { return .refused("Account changed") }
+      return await deliver("/sessions/\(encoded)/turns",
+        ["prompt": "Continue where you stopped.", "clientReplyId": requestId])
+    }
+    if kind == "merge", let number, number > 0 {
+      do {
+        let (status, body) = try await request("/sessions/\(encoded)", method: "GET", body: nil)
+        guard status == 200, let session = body as? [String: Any],
+          let pr = session["pullRequest"] as? [String: Any],
+          pr["number"] as? Int == number, pr["phase"] as? String == "open",
+          pr["mergeable"] as? Bool == true,
+          itemKey == "merge:\(sessionId):\(number):\(pr["headSha"] as? String ?? "")"
+        else { return .refused("This pull request changed. Refresh Home on iPhone.") }
+      } catch { return .later("Could not refresh pull request. Try again.") }
+      guard config?.scope == scope else { return .refused("Account changed") }
+      return await deliver("/sessions/\(encoded)/pull-request/merge", ["number": number])
+    }
+    return .refused("Unsupported action")
+  }
+
   /// The conversation; with `after`, held by the server until it moves past that revision.
   func conversation(after: Int?, waitMs: Int) async throws -> [String: Any] {
     let query = after.map { "?after=\($0)&waitMs=\(waitMs)" } ?? ""

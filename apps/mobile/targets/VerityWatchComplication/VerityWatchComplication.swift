@@ -34,16 +34,13 @@ private struct CaptureComplicationView: View {
     Group {
       if renderingMode == .fullColor {
         // Preserve the original artwork's shading instead of recreating a gradient.
-        Image("VerityMarkOriginal")
-          .renderingMode(.original)
-          .resizable()
-          .scaledToFit()
+        VerityOriginalMark()
       } else {
         VerityMarkShape().fill(Color.white)
       }
     }
     .aspectRatio(VerityMarkShape.aspectRatio, contentMode: .fit)
-    .widgetAccentable()
+
     .accessibilityHidden(true)
   }
 
@@ -69,15 +66,15 @@ private struct CaptureComplicationView: View {
             mark.frame(width: 24, height: 17)
             Text("Verity").font(.headline)
           }
-          Text("Talk to Verity").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
+          Text("Open Verity").font(.caption).lineLimit(1).minimumScaleFactor(0.7)
         }
       default:
         mark.padding(10)
       }
     }
     .containerBackground(for: .widget) { Color.clear }
-    .widgetURL(WatchCaptureComplication.recordingURL)
-    .accessibilityLabel("Verity. Start recording.")
+    .widgetURL(WatchCaptureComplication.homeURL)
+    .accessibilityLabel("Open Verity.")
   }
 }
 
@@ -87,8 +84,9 @@ struct VerityWatchComplication: Widget {
     StaticConfiguration(kind: WatchCaptureComplication.kind, provider: CaptureProvider()) { entry in
       CaptureComplicationView(entry: entry)
     }
+    .containerBackgroundRemovable(true)
     .configurationDisplayName("Verity")
-    .description("Tap to talk to Verity.")
+    .description("Open Verity on your Watch.")
     .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryRectangular, .accessoryInline])
   }
 }

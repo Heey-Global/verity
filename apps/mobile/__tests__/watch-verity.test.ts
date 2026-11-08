@@ -61,7 +61,8 @@ describe('Watch conversation with Verity', () => {
     const home = section(app, 'private struct HomeView', 'private struct StatusRow');
     expect(home).toContain('ToolbarItem(placement: .topBarTrailing)');
     expect(home).toContain('Button(action: store.start)');
-    expect(home).toContain('NavigationLink { CaptureDetail(id: capture.id) }');
+    expect(home).toContain('NavigationLink { PendingRecordingsView() }');
+    expect(home).not.toContain('ForEach(store.captures)');
     expect(home).not.toContain('Label("Record", systemImage: "mic.fill")');
   });
 });
@@ -109,7 +110,7 @@ describe('Watch immediate capture delivery', () => {
     expect(ingest.indexOf('if let existing = load(id)')).toBeLessThan(
       ingest.indexOf('try storeAudio('),
     );
-    expect(ingest.indexOf('try save(entry)')).toBeLessThan(ingest.indexOf('transcribe(id)'));
+    expect(ingest.indexOf('try save(entry)')).toBeLessThan(ingest.lastIndexOf('transcribe(id)'));
     expect(ingest).toContain('scope: metadata["scope"] as? String');
   });
 
@@ -121,4 +122,55 @@ describe('Watch immediate capture delivery', () => {
     expect(store).toContain('receiveCaptureFeedback(userInfo)');
     expect(store).toContain('if capture.state == .transcribed { return }');
   });
+});
+
+describe('Watch pending recording deletion', () => {
+  it('requires a deliberate trailing swipe and confirmation before discarding audio', () => {
+    const pending = section(
+      app,
+      'private struct PendingRecordingsView',
+      'private struct CaptureRow',
+    );
+    expect(pending).toContain('ForEach(store.pendingCaptures)');
+    expect(pending).toContain('.swipeActions(edge: .trailing, allowsFullSwipe: false)');
+    expect(pending).toContain('systemImage: "xmark"');
+    expect(pending).toContain('.confirmationDialog(');
+    expect(pending).toContain('store.discardCapture(capture.id)');
+    expect(app).toContain('Button("Try again") { store.retryCapture(capture.id) }');
+    expect(store).toContain(
+      'captures.filter { $0.state != .transcribed && ($0.scope == nil || $0.scope == projectList.scope) }',
+    );
+  });
+
+  it('persists deletion before removing audio and cancels delayed retransmission', () => {
+    const deletion = section(store, '  func discardCapture(', '  func toggle()');
+    expect(deletion.indexOf('UserDefaults.standard.set')).toBeLessThan(
+      deletion.indexOf('removeItem'),
+    );
+    expect(deletion).toContain('immediateFallbacks.removeValue(forKey: id)?.cancel()');
+    expect(deletion).toContain('transfer.cancel()');
+    expect(deletion).toContain('captures.removeAll');
+    const recovery = section(
+      store,
+      '  private func recoverInterruptedRecordings()',
+      '  private func resendWhenActive()',
+    );
+    expect(recovery).toContain('!discarded.contains(id)');
+    const persist = section(store, '  private func persist()', '  private func recordTiming(');
+    expect(persist).toContain('guard capture.state == .transcribed else { return true }');
+  });
+});
+
+it('retries failed audio once per explicit token while retaining server deduplication identity', () => {
+  const retry = section(store, '  func retryCapture(', '  func discardCapture(');
+  expect(retry).toContain('capture.state == .failed');
+  expect(retry).toContain('$0.retryId = UUID().uuidString');
+  expect(retry).not.toContain('Capture(id:');
+  expect(inbox).toContain('retryId != existing.retryId');
+  expect(inbox).toContain(
+    'existing.state == .failed, existing.scope == metadata["scope"] as? String',
+  );
+  expect(inbox.indexOf('try save(retry)')).toBeLessThan(
+    inbox.indexOf('transcribe(id)', inbox.indexOf('try save(retry)')),
+  );
 });
