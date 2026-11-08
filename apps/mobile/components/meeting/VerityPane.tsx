@@ -36,30 +36,32 @@ export function VerityPane({ children, footer }: { children: ReactNode; footer: 
   // measured, so the edge cannot drift from the content when layout settles late (web).
   return (
     <View testID="verity-pane" style={[styles.pane, { borderRadius: radius }]}>
-      <Svg
+      {/* The View carries the absolute fill: on web a Unistyles style on the Svg itself
+          is dropped, and the edge would take layout space above the content. */}
+      <View
         pointerEvents="none"
-        width="100%"
-        height="100%"
         style={styles.edge}
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
       >
-        <Defs>
-          <LinearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
-            <Stop offset="0" stopColor={colors.signature} />
-            <Stop offset="1" stopColor={colors.action} />
-          </LinearGradient>
-        </Defs>
-        <Rect
-          x={0}
-          y={0}
-          width="100%"
-          height="100%"
-          rx={radius}
-          ry={radius}
-          fill={`url(#${gradient})`}
-        />
-      </Svg>
+        <Svg width="100%" height="100%">
+          <Defs>
+            <LinearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
+              <Stop offset="0" stopColor={colors.signature} />
+              <Stop offset="1" stopColor={colors.action} />
+            </LinearGradient>
+          </Defs>
+          <Rect
+            x={0}
+            y={0}
+            width="100%"
+            height="100%"
+            rx={radius}
+            ry={radius}
+            fill={`url(#${gradient})`}
+          />
+        </Svg>
+      </View>
       <View style={[styles.inner, { borderRadius: radius - EDGE }]}>
         <View style={styles.header}>
           <Image

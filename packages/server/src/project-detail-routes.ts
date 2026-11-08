@@ -22,6 +22,7 @@ const settingsBody = z
     devcontainerEnabled: z.boolean().optional(),
     googleDriveAccessMode: z.enum(['read-only', 'read-write']).optional(),
     designLevel: z.enum(['off', 'on_request', 'required']).optional(),
+    description: z.string().trim().max(200).nullable().optional(),
     dopplerProject: z.string().nullable().optional(),
     dopplerConfig: z.string().nullable().optional(),
     defaultBranch: z

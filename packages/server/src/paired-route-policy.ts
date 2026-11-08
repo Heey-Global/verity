@@ -46,6 +46,18 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/pull-requests'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/merge'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/fix'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/projects/:id/repositories'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
@@ -241,6 +253,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
   [
     routeScopeKey('GET', '/projects/:id/github/issues'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/issues'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [

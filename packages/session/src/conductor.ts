@@ -20,6 +20,25 @@ import {
 } from '@verity/events';
 import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
+
+/** Built-in tools a Wiki maintenance run never gets: it reads files with Read, Grep and
+ *  Glob, and neither runs commands, fetches, starts subagents nor edits. */
+const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'Agent',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  // Nobody would see a plan approval it raised.
+  'ExitPlanMode',
+  'EnterPlanMode',
+] as const;
 import type {
   EventStore,
   PlanningConsent,
@@ -1586,6 +1605,17 @@ export class Conductor {
         ? 'You are Verity, acting in the QA function. You have no execution tools. Explain supplied evidence, distinguish unknown from verified results, and never claim that chat changes a mandate. Only server-validated structured decisions can delegate work.'
         : QA_ANALYSIS_SYSTEM_PROMPT;
       resumeSessionId = undefined;
+    }
+    // A Wiki maintenance run reads untrusted transcripts with nobody watching. Its
+    // posture is the session's, never the request's: read-only like planning (the
+    // gateway then admits only its Wiki operations) and without web access.
+    if (await this.deps.store.wikiMaintenance.isSession(sessionId)) {
+      builtRunOpts.planning = true;
+      builtRunOpts.permissionMode = PLANNING_PERMISSION_MODE;
+      builtRunOpts.disallowedTools = [
+        ...new Set([...(builtRunOpts.disallowedTools ?? []), ...WIKI_MAINTENANCE_DISALLOWED_TOOLS]),
+      ];
+      this.runningPlanning.set(sessionId, true);
     }
     // Every assistant turn, fresh or resumed: it reads untrusted mail and notes, so it
     // acts only through Verity's server-checked tools (docs/assistant.md).

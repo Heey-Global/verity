@@ -40,7 +40,8 @@ import { Alert, ScrollView } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
-import { ProjectPage, projectInboxItems, projectLine } from '../components/project/ProjectPage';
+import { ProjectPage, projectInboxItems } from '../components/project/ProjectPage';
+import { projectLine } from '../lib/projectRepositories';
 import { INLINE_ANSWERS, SHORT_ANSWER } from '../components/project/AnswerSheet';
 import { ProjectWork, isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
@@ -385,11 +386,81 @@ describe('project page', () => {
     expect(screen.queryByText('blog')).toBeNull();
   });
 
-  it('names where the code lives and how many pull requests are open', async () => {
+  it('names where the code lives without counting pull requests from sessions', async () => {
+    // A session's open PR is one of many; the header never counts them, since
+    // Renovate's and external pull requests would be missing from that number.
     await renderPage([merged, running]);
-    expect(screen.getByTestId('project-line')).toHaveTextContent(
-      'GitHub · heey-global/verity · 1 open PR',
+    expect(screen.getByTestId('project-line')).toHaveTextContent('GitHub · heey-global/verity');
+    expect(screen.getByTestId('project-line')).not.toHaveTextContent(/PR/);
+  });
+
+  it('shows the written description under the name', async () => {
+    const client = clientWith([], {
+      getProject: jest
+        .fn()
+        .mockResolvedValue(makeDetail({ description: 'Self-hosted agent workspace' })),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+    expect(await screen.findByTestId('project-line')).toHaveTextContent(
+      'Self-hosted agent workspace',
     );
+  });
+
+  it('counts open pull requests from the code host on the Repositories row', async () => {
+    const pull = (number: number, state: string, origin: Record<string, unknown>) => ({
+      number,
+      title: `PR ${String(number)}`,
+      url: null,
+      author: 'renovate[bot]',
+      branch: `b${String(number)}`,
+      headSha: 'abcdef0',
+      baseRef: 'main',
+      fork: false,
+      state,
+      checks: null,
+      viewerCanMerge: true,
+      origin,
+    });
+    const client = clientWith([merged], {
+      getProjectPullRequests: jest.fn().mockResolvedValue([
+        {
+          id: 'default:p/1',
+          name: 'heey-global/verity',
+          kind: 'github',
+          owner: 'heey-global',
+          repo: 'verity',
+          isDefault: true,
+          status: 'ok',
+          webUrl: 'https://github.com/heey-global/verity',
+          pullRequests: [
+            pull(2040, 'failing', { kind: 'session', sessionId: 'landing', name: 'landing' }),
+            pull(7, 'conflict', { kind: 'renovate' }),
+            pull(8, 'ready', { kind: 'renovate' }),
+          ],
+        },
+        {
+          id: 'docs',
+          name: 'heey-global/docs',
+          kind: 'forgejo',
+          owner: 'heey-global',
+          repo: 'docs',
+          isDefault: false,
+          status: 'unavailable',
+          webUrl: null,
+          pullRequests: [],
+        },
+      ]),
+    });
+    mockCreateVerityClient.mockReturnValue(client);
+    render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+    const row = await screen.findByLabelText(/^Repositories/);
+    expect(row.props.accessibilityLabel).toContain(
+      '2 repositories · 3 open PRs · 1 failing · 1 conflict · 1 unavailable',
+    );
+    expect(row.props.accessibilityLabel).toContain('2 need you');
+    // Two repositories: the header names how many instead of the default one.
+    expect(screen.getByTestId('project-line')).toHaveTextContent('2 repositories');
   });
 
   it('opens on Now and leaves out a section with nothing in it', async () => {
@@ -842,11 +913,21 @@ describe('project page', () => {
     const onSessionChanged = jest.fn();
     const { client } = await renderPage([running], { onSessionChanged });
     fireEvent.press(screen.getByLabelText('Delete'));
-    const confirm = alert.mock.calls.at(-1)![2]!;
-    await act(async () => confirm.find((button) => button.text === 'Delete')!.onPress!());
-    expect(client.deleteSession).toHaveBeenCalledWith('login', {});
+    expect(alert).not.toHaveBeenCalled();
+    // A project session is kept for its Wiki unless the switch is turned off.
+    expect(screen.getByText('Use for the Wiki')).toBeTruthy();
+    await act(async () => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
+    expect(client.deleteSession).toHaveBeenCalledWith('login', { wiki: true });
     // The wide layout clears its session pane and refreshes its list from this.
     expect(onSessionChanged).toHaveBeenCalledWith('login', true);
+  });
+
+  it('deletes without keeping anything for the Wiki when the switch is off', async () => {
+    const { client } = await renderPage([running]);
+    fireEvent.press(screen.getByLabelText('Delete'));
+    fireEvent.press(screen.getByText('Use for the Wiki'));
+    await act(async () => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
+    expect(client.deleteSession).toHaveBeenCalledWith('login', {});
   });
 
   it.each(['success', 'failure', 'busy'] as const)(
@@ -868,8 +949,7 @@ describe('project page', () => {
       fireEvent.press(screen.getByLabelText('Delete'));
       expect(screen.getByLabelText('login, working')).toBeTruthy();
       expect(client.deleteSession).not.toHaveBeenCalled();
-      const confirm = alert.mock.calls.at(-1)![2]!;
-      act(() => confirm.find((button) => button.text === 'Delete')!.onPress!());
+      act(() => fireEvent.press(screen.getAllByText('Delete').at(-1)!));
       expect(screen.queryByLabelText('login, working')).toBeNull();
       expect(onSessionChanged).not.toHaveBeenCalled();
       // Switching filters must not revive a row from the parent's stale snapshot.
@@ -901,7 +981,11 @@ describe('project page', () => {
           );
           act(() => retry.find((button) => button.text === 'Delete anyway')!.onPress!());
           expect(screen.queryByLabelText('login, working')).toBeNull();
-          expect(client.deleteSession).toHaveBeenLastCalledWith('login', { force: true });
+          // Forcing a busy session keeps the choice to use it for the Wiki.
+          expect(client.deleteSession).toHaveBeenLastCalledWith('login', {
+            force: true,
+            wiki: true,
+          });
           await act(async () => finish({ sessionId: 'login' }));
           expect(onSessionChanged).toHaveBeenCalledWith('login', true);
         }
@@ -1032,7 +1116,7 @@ describe('project helpers', () => {
 
   it('describes a local project without a code host', () => {
     const detail = makeDetail({ kind: 'local' });
-    expect(projectLine(detail.project, [])).toBe('Local project');
+    expect(projectLine(detail.project, null)).toBe('Local project');
   });
 
   it('sorts Now into what waits and what moves, each session once', () => {

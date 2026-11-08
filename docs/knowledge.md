@@ -233,6 +233,42 @@ run works stays open with its new text. Until a maintenance run reads them, open
 occasions and their kept text remain stored, also while a deleted project is
 hidden; they are removed only with the project's database row.
 
+## Wiki maintenance runs
+
+A run starts only when something new happened, never on a fixed schedule. Every
+15 minutes the server looks at projects with open occasions and starts a run when
+all of these hold:
+
+- The project's Wiki is set up (`insights/index.md` exists while the knowledge volume is present). Without it no run
+  starts, and open occasions older than 30 days are discarded.
+- The project is active or sleeping, and not deleted. A paused, failed or still
+  provisioning project is never started for its Wiki; Verity Control has none.
+- The newest occasion is at least 2 hours old, so a burst settles into one run.
+- The last run started at least 20 hours ago.
+- A sleeping project is woken only when its oldest occasion is 3 days old or 20
+  are open; otherwise its occasions wait.
+- No session of the project is working.
+
+The run is a turn in the project's quiet maintenance session, created on first
+use with the project's default model and recorded in `wiki_maintenance` together
+with the time the last run started. The slot is claimed before the run starts, so
+two server generations never both start one; a run that could not start gives the
+slot back. The session appears in no session list and sends no push
+notification; when it is gone, the next run creates a new
+one. Its fixed assignment points the agent to the `wiki-maintain` Skill, which
+reads the occasions with `verity_wiki_read_occasions` (a list, then each kept text
+in pages of 40,000 characters), proposes changes with `verity_wiki_propose` in
+mode `maintenance` and closes what it read with `verity_wiki_close_occasions`.
+Only the maintenance session may read or close occasions.
+
+Because the run reads untrusted text with nobody watching, its posture belongs to
+the session, not to the request: every turn of the maintenance session runs with
+the same read-only isolation as planning (read-only file system, no Docker) and
+without shell, web, subagent or editing tools, also when it is recovered or queued.
+The gateway then refuses every external tool except the occasion operations and
+`propose_wiki`, and the project's connected MCP servers refuse the session. The results appear as
+proposals to review on the Wiki; the run itself changes no page.
+
 ## Wiki proposals
 
 Agents that have no confirmation for a concrete Wiki change propose it with

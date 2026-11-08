@@ -313,7 +313,9 @@ export {
 
 export {
   WIKI_OCCASION_BODY_LIMIT,
+  WikiMaintenanceStore,
   WikiOccasionStore,
+  type WikiMaintenanceRecord,
   type RecordWikiOccasion,
   type WikiOccasion,
   type WikiOccasionKind,

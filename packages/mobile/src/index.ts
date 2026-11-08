@@ -694,7 +694,7 @@ export {
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
 
-export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {
   cancelSessionSwitch,
   exportSessionSwitchTimings,
@@ -774,6 +774,16 @@ export {
   type ProjectInquiry,
   type RepositoryInstructions,
 } from './projectCollaboration.js';
+export {
+  PULL_REQUEST_STATES,
+  pullRequestAction,
+  pullRequestCounts,
+  pullRequestSummary,
+  type ProjectPullRequest,
+  type PullRequestCounts,
+  type PullRequestState,
+  type RepositoryPullRequests,
+} from './projectPullRequests.js';
 export {
   resolveKnowledgeLink,
   WIKI_INDEX,

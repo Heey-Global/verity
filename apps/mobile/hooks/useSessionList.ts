@@ -30,7 +30,7 @@ export interface UseSessionList extends SessionListState {
   /** Permanently delete a session (removes its history + worktree). Optimistic.
    * Named `remove` rather than `delete` so consumers can destructure it (`delete`
    * is a reserved word and would be a syntax error in a destructuring binding). */
-  remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>;
+  remove: (sessionId: string, opts?: { force?: boolean; wiki?: boolean }) => Promise<void>;
 }
 
 /**
@@ -166,7 +166,7 @@ export function useSessionList(client: VerityClient): UseSessionList {
   );
 
   const remove = useCallback(
-    (sessionId: string, opts: { force?: boolean } = {}) => {
+    (sessionId: string, opts: { force?: boolean; wiki?: boolean } = {}) => {
       return model.delete(sessionId, opts);
     },
     [model],

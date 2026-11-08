@@ -241,6 +241,7 @@ import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet'
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
 import { useConfirm } from '../../components/ui';
+import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
@@ -1141,6 +1142,7 @@ export const SessionChat = memo(function SessionChat({
   // The chip names the CURRENT BRANCH; fall back to the session label while the
   // branch list is still loading (or if branch switching is unconfigured → 503).
   const sessionFallback = name?.trim() ? name.trim() : shortLabel(session.model, sessionId);
+  const [confirmDelete, deleteSheet] = useConfirm();
   // The header tracks the LIVE branch from the ~1.5s activity poll (#110) so the label
   // updates on an external/agent `git checkout` without a remount; fall back to the
   // load-once `useBranches` value until the first poll resolves (or when the server
@@ -4409,35 +4411,30 @@ export const SessionChat = memo(function SessionChat({
             refreshMetadata();
             branchesRefresh();
           }}
-          onDelete={() =>
-            Alert.alert(
-              'Delete session?',
-              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => {
-                    void client
-                      .deleteSession(sessionId)
-                      .then(() => {
-                        setSessionSettingsOpen(false);
-                        router.replace('/');
-                      })
-                      .catch((error: unknown) =>
-                        Alert.alert(
-                          'Could not delete session',
-                          error instanceof Error ? error.message : 'Please try again.',
-                        ),
-                      );
-                  },
-                },
-              ],
-            )
-          }
+          onDelete={() => {
+            // One sheet at a time: the confirmation replaces the settings.
+            setSessionSettingsOpen(false);
+            confirmDelete(
+              deleteSessionRequest(
+                { label: sessionFallback, projectId: projectId ?? null },
+                // Not awaited: a failure is reported after the sheet has closed.
+                ({ wiki }) =>
+                  void client
+                    .deleteSession(sessionId, wiki ? { wiki } : {})
+                    .then(() => router.replace('/'))
+                    .catch((error: unknown) =>
+                      Alert.alert(
+                        'Could not delete session',
+                        error instanceof Error ? error.message : 'Please try again.',
+                      ),
+                    ),
+                true,
+              ),
+            );
+          }}
         />
       ) : null}
+      {deleteSheet}
       {filesOpen ? (
         <SessionFilesSheet
           client={client}

@@ -1362,6 +1362,94 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.url).toBe('http://host/projects/p%2F1/github/issues');
   });
 
+  it('lists the issues of every project repository', async () => {
+    const repositories = [
+      {
+        id: 'default:p',
+        name: 'acme/app',
+        kind: 'github',
+        owner: 'acme',
+        repo: 'app',
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: null,
+        issues: [],
+      },
+      {
+        id: 'site',
+        name: 'Website',
+        kind: 'forgejo',
+        owner: 'acme',
+        repo: 'site',
+        isDefault: false,
+        status: 'unavailable',
+      },
+    ];
+    const { fetch, calls } = fakeFetch(json({ repositories }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.listProjectIssues({ id: 'p/1', kind: 'github', owner: 'acme', repo: 'app' }),
+    ).toEqual(repositories);
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/issues');
+  });
+
+  // An older server has no per-repository route; without the fallback the
+  // Issues tab of every project would vanish until the server is updated.
+  it('falls back to the default repository on a server without per-repository issues', async () => {
+    const issue = {
+      number: 7,
+      title: 'Crash',
+      url: 'https://forgejo.example/acme/app/issues/7',
+      labels: [],
+      assignees: [],
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ message: 'Route GET:/projects/p/issues not found' }, 404),
+      json({ connected: true, viewerLogin: 'me', issues: [issue] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.listProjectIssues({ id: 'p', kind: 'forgejo', owner: 'acme', repo: 'app' }),
+    ).toEqual([
+      {
+        id: 'default:p',
+        name: 'acme/app',
+        kind: 'forgejo',
+        owner: 'acme',
+        repo: 'app',
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: 'me',
+        issues: [issue],
+      },
+    ]);
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/projects/p/issues',
+      'http://host/projects/p/github/issues',
+    ]);
+  });
+
+  it('falls back when an older server’s paired gate refuses the unknown route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ error: 'forbidden' }, 403),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toHaveLength(1);
+    expect(calls[1]?.url).toBe('http://host/projects/p/github/issues');
+  });
+
+  it('names the fallback repository neutrally without the project record', async () => {
+    const { fetch } = fakeFetchSequence(
+      json({ message: 'Route GET:/projects/p/issues not found' }, 404),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toMatchObject([
+      { id: 'default:p', name: 'Issues', kind: 'github', status: 'ok' },
+    ]);
+  });
+
   it('fetches available GitHub repositories separately from created projects', async () => {
     const { fetch, calls } = fakeFetch(json([project]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -2648,6 +2736,63 @@ describe('VerityClient.mergePullRequest', () => {
     expect(calls[0]?.url).toBe('http://host/sessions/s1/pull-request/merge');
     expect(calls[0]?.init?.method).toBe('POST');
     expect(calls[0]?.init?.body).toBe(JSON.stringify({ number: 119 }));
+  });
+});
+
+describe('VerityClient project pull requests', () => {
+  const repository = {
+    id: 'default:p',
+    name: 'team/site',
+    kind: 'github',
+    owner: 'team',
+    repo: 'site',
+    isDefault: true,
+    status: 'ok',
+    webUrl: 'https://github.com/team/site',
+    pullRequests: [
+      {
+        number: 5,
+        title: 'Update graphql',
+        url: null,
+        author: 'renovate[bot]',
+        branch: 'renovate/graphql',
+        headSha: 'abc1234',
+        baseRef: 'main',
+        fork: false,
+        // A state a newer server adds must not drop the whole list.
+        state: 'queued-for-merge',
+        checks: null,
+        viewerCanMerge: true,
+        origin: { kind: 'bot', name: 'dependabot' },
+      },
+    ],
+  };
+
+  it('reads every repository and keeps a list with states this app does not know', async () => {
+    const { fetch, calls } = fakeFetch(json({ repositories: [repository] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const [read] = await client.getProjectPullRequests('p', { refresh: true });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests?refresh=1');
+    expect(read?.pullRequests[0]).toMatchObject({ state: 'unknown', origin: { kind: 'external' } });
+  });
+
+  it('addresses the repository by its encoded id and sends the shown head', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ merged: true }),
+      json({ sessionId: 's9', created: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.mergeProjectPullRequest('p', 'default:p', 5, {
+      branch: 'renovate/graphql',
+      expectedHeadSha: 'abc1234',
+    });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/merge');
+    expect(jsonBody(calls[0])).toEqual({ branch: 'renovate/graphql', expectedHeadSha: 'abc1234' });
+    expect(await client.fixProjectPullRequest('p', 'default:p', 5, 'renovate/graphql')).toEqual({
+      sessionId: 's9',
+      created: true,
+    });
+    expect(calls[1]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/fix');
   });
 });
 

@@ -44,7 +44,10 @@ const exec = promisify(execFile);
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const attemptKey = (request: ProtectedBuildRequest) =>
   hash(`${request.projectId}\0${request.attemptId}`);
-const folder = (request: ProtectedBuildRequest) => join(ROOT, 'attempts', attemptKey(request));
+export const protectedBuildAttemptDirectory = (
+  request: Pick<ProtectedBuildRequest, 'projectId' | 'attemptId'>,
+) => join(ROOT, 'attempts', attemptKey(request as ProtectedBuildRequest));
+const folder = protectedBuildAttemptDirectory;
 const unit = (request: ProtectedBuildRequest) =>
   `verity-protected-build-${attemptKey(request).slice(0, 32)}.service`;
 const oid = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -546,7 +549,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
   const startDNS = async (request: ProtectedBuildRequest, anchor: ProtectedBuildAnchor) => {
     const key = attemptKey(request);
     if (dns.has(key)) return;
-    const path = join(folder(request), 'dns.sock');
+    const path = join(folder(request), 'n');
     await rm(path, { force: true });
     let pending = 0;
     const server = createServer((connection) => {

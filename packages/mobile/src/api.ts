@@ -3,6 +3,7 @@ import {
   projectInquirySchema,
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
+import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -121,6 +122,26 @@ const projectGitHubIssuesSchema = z.object({
 });
 export type ProjectGitHubIssues = z.infer<typeof projectGitHubIssuesSchema>;
 export type ProjectGitHubIssue = ProjectGitHubIssues['issues'][number];
+
+const repositoryIdentity = {
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['github', 'forgejo']),
+  owner: z.string(),
+  repo: z.string(),
+  isDefault: z.boolean(),
+};
+const repositoryIssuesSchema = z.discriminatedUnion('status', [
+  z.object({
+    ...repositoryIdentity,
+    status: z.literal('ok'),
+    viewerLogin: z.string().nullable(),
+    issues: projectGitHubIssuesSchema.shape.issues,
+  }),
+  z.object({ ...repositoryIdentity, status: z.literal('unavailable') }),
+]);
+/** Open issues of one repository connected to a project; `unavailable` is never "none". */
+export type RepositoryIssues = z.infer<typeof repositoryIssuesSchema>;
 
 export type { Attachment, AttachmentUpload } from '@verity/events';
 
@@ -726,6 +747,8 @@ export const projectSettingsSchema = z.object({
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
   // When accepted plans stop for mockups; absent on an older server.
   designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
+  // One line under the project's name; absent on an older server, null when unset.
+  description: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -737,7 +760,8 @@ type ProjectSettingsKey =
   | 'memory'
   | 'googleDriveAccessMode'
   | 'allowedAgents'
-  | 'designLevel';
+  | 'designLevel'
+  | 'description';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -3733,6 +3757,46 @@ export class VerityClient {
     return projectGitHubIssuesSchema.parse(await res.json());
   }
 
+  /**
+   * Open issues of every repository connected to the project, the default one
+   * first. A server that predates the per-repository route answers for the
+   * default repository only.
+   */
+  async listProjectIssues(
+    project: Pick<ProjectRecord, 'id'> & Partial<Pick<ProjectRecord, 'kind' | 'owner' | 'repo'>>,
+  ): Promise<RepositoryIssues[]> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(project.id)}/issues`, {
+        method: 'GET',
+      });
+      return z.object({ repositories: z.array(repositoryIssuesSchema) }).parse(await res.json())
+        .repositories;
+    } catch (err) {
+      // An older server does not know the route: 404, or 403 where its paired
+      // gate refuses an unlisted route. A real refusal fails the old route too.
+      if (!(err instanceof VerityApiError) || (err.status !== 404 && err.status !== 403)) throw err;
+    }
+    const legacy = await this.listProjectGitHubIssues(project.id);
+    // The old route answers for GitHub projects; without the record, assume one.
+    const kind = project.kind ?? 'github';
+    if (!legacy.connected || (kind !== 'github' && kind !== 'forgejo')) return [];
+    const owner = project.owner ?? '';
+    const repo = project.repo ?? '';
+    return [
+      {
+        id: `default:${project.id}`,
+        name: owner && repo ? `${owner}/${repo}` : 'Issues',
+        kind,
+        owner,
+        repo,
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: legacy.viewerLogin,
+        issues: legacy.issues,
+      },
+    ];
+  }
+
   async listAvailableRepositories(): Promise<ProjectRecord[]> {
     try {
       const res = await this.request('/github/repositories', { method: 'GET' });
@@ -5021,6 +5085,54 @@ export class VerityClient {
     });
     return z.object({ repositories: z.array(repositoryInstructionsSchema) }).parse(await res.json())
       .repositories;
+  }
+
+  /** Every connected repository with its open pull requests, as the code host reports
+   *  them; `refresh` asks the host again instead of the server's recent answer. */
+  async getProjectPullRequests(id: string, options: { refresh?: boolean } = {}) {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests${options.refresh ? '?refresh=1' : ''}`,
+      { method: 'GET' },
+    );
+    return z.object({ repositories: z.array(repositoryPullRequestsSchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  /** Merges a pull request that no session owns, at the commit the list showed. */
+  async mergeProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    head: { branch: string; expectedHeadSha: string },
+  ): Promise<{ merged: true }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/merge`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(head),
+      },
+    );
+    return z.object({ merged: z.literal(true) }).parse(await res.json());
+  }
+
+  /** Starts the session that fixes a failing or conflicting pull request, or returns
+   *  the one already working on it. */
+  async fixProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    branch: string,
+  ): Promise<{ sessionId: string; created: boolean }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/fix`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch }),
+      },
+    );
+    return z.object({ sessionId: z.string(), created: z.boolean() }).parse(await res.json());
   }
 
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
@@ -6620,11 +6732,18 @@ export class VerityClient {
     return branchSwitchedSchema.parse(await res.json());
   }
 
-  async mergePullRequest(id: string, number: number): Promise<PullRequestMerged> {
+  /** `expectedHeadSha` merges only that commit; the server refuses a branch that moved. */
+  async mergePullRequest(
+    id: string,
+    number: number,
+    expectedHeadSha?: string,
+  ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ number }),
+      body: JSON.stringify(
+        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
+      ),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }

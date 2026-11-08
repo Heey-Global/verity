@@ -5,8 +5,10 @@ import { buildServer } from './server.js';
 import { describe, expect, it, vi } from 'vitest';
 import Fastify from 'fastify';
 import type { ProjectRecord } from '@verity/store';
+import type { ProjectRepositoryRecord } from '@verity/store';
 import {
   listProjectGitHubIssues,
+  listProjectIssues,
   registerProjectGitHubIssueRoutes,
 } from './project-github-issues.js';
 
@@ -17,6 +19,104 @@ const raw = (number: number) => ({
   html_url: `https://github.com/acme/app/issues/${String(number)}`,
   labels: [{ name: 'bug' }],
   assignees: [{ login: 'alice' }],
+});
+
+const repository = (overrides: Partial<ProjectRepositoryRecord>): ProjectRepositoryRecord => ({
+  id: 'default:p',
+  projectId: 'p',
+  name: 'app',
+  kind: 'github',
+  owner: 'acme',
+  repo: 'app',
+  forgeConnectionId: null,
+  defaultBranch: null,
+  isDefault: false,
+  removedAt: null,
+  ...overrides,
+});
+const issue = (number: number) => ({
+  number,
+  title: `Issue ${String(number)}`,
+  url: `https://example.test/${String(number)}`,
+  labels: [],
+  assignees: [],
+});
+
+describe('issues of every project repository', () => {
+  const repositories = [
+    repository({ id: 'default:p', isDefault: true }),
+    repository({
+      id: 'site',
+      name: 'Website',
+      kind: 'forgejo',
+      owner: 'acme',
+      repo: 'site',
+      forgeConnectionId: 'forgejo-1',
+    }),
+    repository({ id: 'docs', name: 'Docs', owner: 'acme', repo: 'docs' }),
+    repository({ id: 'local', name: 'Scratch', kind: 'local', owner: '', repo: '' }),
+    repository({ id: 'gone', name: 'Old', owner: 'acme', repo: 'old', removedAt: new Date() }),
+  ];
+  const store = { listProjectRepositories: async () => repositories };
+
+  it('asks each code host with the project bound to that repository', async () => {
+    const list = vi.fn(async (bound: ProjectRecord) => ({
+      connected: true,
+      viewerLogin: bound.kind === 'forgejo' ? 'me' : null,
+      issues: [issue(bound.repo.length)],
+    }));
+    const result = await listProjectIssues(store, project, list);
+    expect(result.map((entry) => [entry.id, entry.kind, entry.status])).toEqual([
+      ['default:p', 'github', 'ok'],
+      ['site', 'forgejo', 'ok'],
+      ['docs', 'github', 'ok'],
+    ]);
+    // A repository listed with the default repository's binding would show the
+    // default's issues under another heading.
+    // The connection decides whose credentials are sent; the default
+    // repository's would reach the wrong host.
+    expect(
+      list.mock.calls.map(([bound]) => [
+        bound.kind,
+        bound.owner,
+        bound.repo,
+        bound.forgeConnectionId,
+      ]),
+    ).toEqual([
+      ['github', 'acme', 'app', null],
+      ['forgejo', 'acme', 'site', 'forgejo-1'],
+      ['github', 'acme', 'docs', null],
+    ]);
+    expect(result[0]).toMatchObject({ name: 'acme/app', isDefault: true });
+    expect(result[1]).toMatchObject({ name: 'Website', viewerLogin: 'me', issues: [issue(4)] });
+  });
+
+  it('marks only the failing or silent host unavailable', async () => {
+    const list = vi.fn(async (bound: ProjectRecord) => {
+      if (bound.repo === 'site') throw new Error('down');
+      if (bound.repo === 'docs') return new Promise<never>(() => undefined);
+      return { connected: true, viewerLogin: null, issues: [issue(1)] };
+    });
+    const onError = vi.fn<(repositoryId: string, error: unknown) => void>();
+    const result = await listProjectIssues(store, project, list, 20, onError);
+    expect(result.map((entry) => entry.status)).toEqual(['ok', 'unavailable', 'unavailable']);
+    // The entry only says unavailable; the reason goes to the server's log.
+    expect(onError.mock.calls.map(([id]) => id).sort()).toEqual(['docs', 'site']);
+    expect(result[0]).toMatchObject({ issues: [issue(1)] });
+  });
+
+  // Reported as unavailable, a repository without credentials would offer a
+  // retry that can never succeed; the old route hid it as disconnected.
+  it('leaves out repositories the server has no credentials for', async () => {
+    const list = vi.fn(async (bound: ProjectRecord) => ({
+      connected: bound.repo !== 'site',
+      viewerLogin: null,
+      issues: [],
+    }));
+    const result = await listProjectIssues(store, project, list);
+    expect(result.map((entry) => entry.id)).toEqual(['default:p', 'docs']);
+    expect(await listProjectIssues(store, project, undefined)).toEqual([]);
+  });
 });
 
 describe('project GitHub issues', () => {
@@ -81,12 +181,36 @@ describe('project GitHub issues', () => {
     });
     const list = vi.fn().mockResolvedValue({ connected: true, viewerLogin: null, issues: [] });
     registerProjectGitHubIssueRoutes(app, {
-      store: { getProject: async () => project, listReadableProjectIds: async () => [] },
+      store: {
+        getProject: async () => project,
+        listReadableProjectIds: async () => [],
+        listProjectRepositories: async () => [repository({ isDefault: true })],
+      },
       list,
     });
     expect((await app.inject({ method: 'GET', url: '/projects/p/github/issues' })).statusCode).toBe(
       404,
     );
+    expect((await app.inject({ method: 'GET', url: '/projects/p/issues' })).statusCode).toBe(404);
+    expect(list).not.toHaveBeenCalled();
+    await app.close();
+  });
+  // A local project has no code host; stray repository rows must not send its
+  // request to one, as the default-repository route never did.
+  it('lists no repositories for a local project', async () => {
+    const app = Fastify();
+    const list = vi.fn();
+    registerProjectGitHubIssueRoutes(app, {
+      store: {
+        getProject: async () => ({ ...project, kind: 'local' }),
+        listReadableProjectIds: async () => ['p'],
+        listProjectRepositories: async () => [repository({ id: 'site', name: 'Website' })],
+      },
+      list,
+    });
+    expect((await app.inject({ method: 'GET', url: '/projects/p/issues' })).json()).toEqual({
+      repositories: [],
+    });
     expect(list).not.toHaveBeenCalled();
     await app.close();
   });
@@ -129,6 +253,12 @@ it('allows project readers through the paired auth gate and denies unrelated pro
       (await app.inject({ url: '/projects/unrelated/github/issues', headers })).statusCode,
     ).toBe(403);
     expect(list).not.toHaveBeenCalled();
+    const grouped = await app.inject({ url: `/projects/${actual.id}/issues`, headers });
+    expect(grouped.statusCode).toBe(200);
+    expect(grouped.json()).toMatchObject({
+      repositories: [{ id: `default:${actual.id}`, status: 'ok', issues: [] }],
+    });
+    expect((await app.inject({ url: '/projects/unrelated/issues', headers })).statusCode).toBe(403);
   } finally {
     vi.restoreAllMocks();
     await app.close();

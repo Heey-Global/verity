@@ -1,11 +1,12 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, StyleSheet, Text, View } from 'react-native';
 
 import {
   Button,
   CardHead,
+  IconButton,
   ConfirmSheet,
   Row,
   useConfirm,
@@ -40,13 +41,73 @@ describe('Button', () => {
 });
 
 describe('Row', () => {
+  // The action sits beside the pressable area so VoiceOver reaches both; drawn
+  // inside as well, the row would show it twice or bury it in the row's label.
+  it('draws its action once, outside the pressable area, in place of trailing', () => {
+    const onPress = jest.fn();
+    const onAct = jest.fn();
+    render(
+      <Row
+        title="Ship it"
+        onPress={onPress}
+        trailing={<Text>Trailing value</Text>}
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+    expect(screen.queryByText('Trailing value')).toBeNull();
+    fireEvent.press(screen.getByText('Act'));
+    expect(onAct).toHaveBeenCalled();
+    expect(onPress).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Ship it'));
+    expect(onPress).toHaveBeenCalled();
+    screen.unmount();
+    render(
+      <Row
+        title="Ship it"
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+  });
+
+  // Dimmed on the wrapper and again on the pressable, a busy row fell to about
+  // 16 % instead of the one disabled opacity.
+  it('dims a disabled row with an action once, the action included', () => {
+    render(
+      <Row
+        title="Ship it"
+        onPress={jest.fn()}
+        disabled
+        action={<IconButton icon="play" accessibilityLabel="Act" disabled onPress={jest.fn()} />}
+      />,
+    );
+    const opacities = (start: { parent: unknown } | null) => {
+      const found: number[] = [];
+      // Host views only: a wrapper component repeats the style it passes down.
+      for (
+        let node = start as (typeof start & { type: unknown; props: { style?: unknown } }) | null;
+        node;
+        node = node.parent as typeof node
+      ) {
+        if (typeof node.type !== 'string') continue;
+        const style = StyleSheet.flatten(node.props.style as never) as
+          { opacity?: number } | undefined;
+        if (style?.opacity !== undefined && style.opacity < 1) found.push(style.opacity);
+      }
+      return found;
+    };
+    expect(opacities(screen.getByText('Ship it'))).toHaveLength(1);
+    expect(opacities(screen.getByLabelText('Act'))).toHaveLength(1);
+  });
+
   it('highlights the active destination and keeps its trailing content', () => {
     const { rerender } = render(
       <Row title="Session" active onPress={jest.fn()} trailing="Running" />,
     );
     const row = screen.getByRole('button', { name: 'Session, Running' });
     expect(row.props.accessibilityState).toMatchObject({ selected: true });
-    expect(row).toHaveStyle({ backgroundColor: tint(lightTheme.colors.action, 'fill') });
+    expect(row).toHaveStyle({ backgroundColor: lightTheme.colors.surfaceAlt });
     expect(screen.getByText('Running')).toBeOnTheScreen();
     rerender(<Row title="Session" onPress={jest.fn()} trailing="Running" />);
     expect(
@@ -55,8 +116,41 @@ describe('Row', () => {
       selected: false,
     });
     expect(screen.getByRole('button', { name: 'Session, Running' })).not.toHaveStyle({
-      backgroundColor: tint(lightTheme.colors.action, 'fill'),
+      backgroundColor: lightTheme.colors.surfaceAlt,
     });
+  });
+
+  it('highlights the whole active row while keeping answers independently pressable', () => {
+    const onOpen = jest.fn();
+    const onAnswer = jest.fn();
+    const { rerender } = render(
+      <Row
+        title="Question"
+        active
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    expect(StyleSheet.flatten(container.props.style)).toMatchObject({
+      backgroundColor: lightTheme.colors.surfaceAlt,
+    });
+    expect(container.findAllByProps({ accessibilityLabel: 'Answer' })).not.toHaveLength(0);
+    fireEvent.press(screen.getByRole('button', { name: 'Answer' }));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    rerender(
+      <Row
+        title="Question"
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    expect(StyleSheet.flatten(container.props.style)).toBeUndefined();
   });
 
   // The chevron promises navigation; a row that only acts in place must not show it.
@@ -465,6 +559,62 @@ describe('useConfirm', () => {
       fireEvent.press(screen.getByRole('button', { name: 'Remove' }));
     });
     expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
+  });
+
+  function Asking({
+    onConfirm,
+    afterSheet = false,
+  }: {
+    onConfirm: (option: boolean) => void;
+    afterSheet?: boolean;
+  }) {
+    const [confirm, sheet] = useConfirm();
+    return (
+      <>
+        <Button
+          label="Delete session"
+          onPress={() =>
+            confirm({
+              title: 'Delete session?',
+              message: 'It is removed.',
+              confirmLabel: 'Delete',
+              option: { title: 'Use for the Wiki', initial: true },
+              afterSheet,
+              onConfirm,
+            })
+          }
+        />
+        {sheet}
+      </>
+    );
+  }
+
+  // The switch is part of the answer: its final value, not its initial one,
+  // reaches the action.
+  it('hands the switch’s final value to the action', async () => {
+    const onConfirm = jest.fn();
+    render(<Asking onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+    fireEvent.press(screen.getByText('Use for the Wiki'));
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+    });
+    expect(onConfirm).toHaveBeenCalledWith(false);
+  });
+
+  // Asked right after another sheet closed, it waits for that sheet's fade-out,
+  // but it does appear even when the interaction never settles.
+  it('appears after a closing sheet has faded out', () => {
+    jest.useFakeTimers();
+    try {
+      render(<Asking onConfirm={jest.fn()} afterSheet />);
+      fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+      expect(screen.queryByText('Delete session?')).toBeNull();
+      act(() => jest.advanceTimersByTime(400));
+      expect(screen.getByText('Delete session?')).toBeOnTheScreen();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

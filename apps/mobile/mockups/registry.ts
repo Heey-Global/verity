@@ -3,6 +3,7 @@ import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
 import { planCardSpec } from './plan-card';
+import { repositoriesSpec } from './repositories';
 import type { MockupScreen, MockupSpec } from './types';
 import { wikiSpec } from './wiki';
 import { wikiMaintenanceSpec } from './wiki-maintenance';
@@ -14,6 +15,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   mockupReviewSpec,
   instructionSourcesSpec,
   planCardSpec,
+  repositoriesSpec,
   wikiSpec,
   wikiMaintenanceSpec,
 ];

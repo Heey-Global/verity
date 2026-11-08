@@ -5524,3 +5524,30 @@ migrations['0200_wiki_occasions'] = {
     await sql`drop table wiki_occasions`.execute(db);
   },
 };
+
+migrations['0201_project_description'] = {
+  // One line under the project's name on its page, written by its managers.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings add column description text
+      check (char_length(description) <= 200)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings drop column description`.execute(db);
+  },
+};
+
+migrations['0202_wiki_maintenance'] = {
+  // One row per project whose Wiki was maintained: the quiet session the runs
+  // happen in and when the last run started. The session is hidden from every
+  // list; deleting it only means the next run creates a new one.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_maintenance (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text unique references sessions(session_id) on delete set null,
+      last_run_at timestamptz
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_maintenance`.execute(db);
+  },
+};

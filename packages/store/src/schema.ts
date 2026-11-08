@@ -26,6 +26,13 @@ export interface WikiOccasionsTable {
   closed_at: Date | null;
 }
 
+/** The quiet session a project's Wiki is maintained in, and its last run. */
+export interface WikiMaintenanceTable {
+  project_id: string;
+  session_id: string | null;
+  last_run_at: Date | null;
+}
+
 export interface ProjectInquiriesTable {
   id: string;
   source_session_id: string;
@@ -580,6 +587,8 @@ export interface ProjectSettingsTable {
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
   /** Design module: whether plans include mockups to approve before implementation. */
   design_level: Generated<'off' | 'on_request' | 'required'>;
+  /** One line shown under the project's name; null when none was written. */
+  description: ColumnType<string | null, string | null | undefined, string | null>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,
@@ -1769,6 +1778,7 @@ export interface Database {
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
   wiki_occasions: WikiOccasionsTable;
+  wiki_maintenance: WikiMaintenanceTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;

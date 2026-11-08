@@ -458,7 +458,7 @@ export class SessionListModel {
    * preserve-concurrent-poll-updates revert. The visible order is reapplied by
    * {@link attentionQueue}, so the re-insert position doesn't matter.
    */
-  async delete(sessionId: string, opts: { force?: boolean } = {}): Promise<void> {
+  async delete(sessionId: string, opts: { force?: boolean; wiki?: boolean } = {}): Promise<void> {
     const removed = this._sessions.find((s) => s.sessionId === sessionId);
     const deletion = this.pendingDeletes.get(sessionId) ?? {
       active: 0,
@@ -470,7 +470,12 @@ export class SessionListModel {
     this._sessions = this._sessions.filter((s) => s.sessionId !== sessionId);
     this.emit();
     try {
-      if (opts.force) await this.opts.client.deleteSession(sessionId, opts);
+      // Only the options asked for are sent, so a plain delete stays a plain call.
+      if (opts.force || opts.wiki)
+        await this.opts.client.deleteSession(sessionId, {
+          ...(opts.force ? { force: true } : {}),
+          ...(opts.wiki ? { wiki: true } : {}),
+        });
       else await this.opts.client.deleteSession(sessionId);
       deletion.active -= 1;
       deletion.succeeded = true;
