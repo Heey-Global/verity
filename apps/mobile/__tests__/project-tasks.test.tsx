@@ -40,6 +40,7 @@ jest.mock('../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }))
 
 import type { RepositoryIssues, Task, VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 import { router } from 'expo-router';
 
 import ProjectTasksScreen from '../app/project/[id]/tasks';
@@ -342,4 +343,26 @@ it('loads the issues before the project list arrived', async () => {
   expect(listProjectIssues).toHaveBeenCalledWith({ id: 'p1' });
   expect(screen.getByText('site issue 1')).toBeTruthy();
   jest.mocked(createVerityClient).mockReturnValue(null);
+});
+
+it('reopens a done task from its row', async () => {
+  mockTab.value = 'mine';
+  const finished = task('Already done', { status: 'done' });
+  jest.mocked(useTasks).mockReturnValue({ tasks: [finished], pending: [], conflicts: [] } as never);
+  jest.mocked(patchTask).mockResolvedValue(undefined as never);
+  // With a screen reader the row's actions are buttons; a swipe is out of reach here.
+  jest.spyOn(AccessibilityInfo, 'isScreenReaderEnabled').mockResolvedValue(true);
+  render(
+    <TaskListBody
+      context={{ projectId: 'p1', sessionId: null }}
+      projects={projects}
+      scope="project"
+      onLeave={jest.fn()}
+    />,
+  );
+  await act(async () => undefined);
+  fireEvent.press(screen.getByText('Show done (1)'));
+  // The swipe lane and the screen reader's button both offer it, as one action.
+  await act(async () => fireEvent.press(screen.getAllByText('Reopen')[0]!));
+  expect(patchTask).toHaveBeenCalledWith(finished, { status: 'open' });
 });

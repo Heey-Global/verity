@@ -98,7 +98,11 @@ export async function listProjectIssues(
 ): Promise<RepositoryIssues[]> {
   if (!list) return [];
   const repositories = (await store.listProjectRepositories(project.id))
-    .filter((repository) => repository.kind === 'github' || repository.kind === 'forgejo')
+    .filter(
+      (repository) =>
+        repository.removedAt === null &&
+        (repository.kind === 'github' || repository.kind === 'forgejo'),
+    )
     .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
   const listed = await Promise.all(
     repositories.map(async (repository): Promise<RepositoryIssues | undefined> => {

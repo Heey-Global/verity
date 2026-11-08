@@ -45,9 +45,17 @@ const issue = (number: number) => ({
 describe('issues of every project repository', () => {
   const repositories = [
     repository({ id: 'default:p', isDefault: true }),
-    repository({ id: 'site', name: 'Website', kind: 'forgejo', owner: 'acme', repo: 'site' }),
+    repository({
+      id: 'site',
+      name: 'Website',
+      kind: 'forgejo',
+      owner: 'acme',
+      repo: 'site',
+      forgeConnectionId: 'forgejo-1',
+    }),
     repository({ id: 'docs', name: 'Docs', owner: 'acme', repo: 'docs' }),
     repository({ id: 'local', name: 'Scratch', kind: 'local', owner: '', repo: '' }),
+    repository({ id: 'gone', name: 'Old', owner: 'acme', repo: 'old', removedAt: new Date() }),
   ];
   const store = { listProjectRepositories: async () => repositories };
 
@@ -65,10 +73,19 @@ describe('issues of every project repository', () => {
     ]);
     // A repository listed with the default repository's binding would show the
     // default's issues under another heading.
-    expect(list.mock.calls.map(([bound]) => [bound.kind, bound.owner, bound.repo])).toEqual([
-      ['github', 'acme', 'app'],
-      ['forgejo', 'acme', 'site'],
-      ['github', 'acme', 'docs'],
+    // The connection decides whose credentials are sent; the default
+    // repository's would reach the wrong host.
+    expect(
+      list.mock.calls.map(([bound]) => [
+        bound.kind,
+        bound.owner,
+        bound.repo,
+        bound.forgeConnectionId,
+      ]),
+    ).toEqual([
+      ['github', 'acme', 'app', null],
+      ['forgejo', 'acme', 'site', 'forgejo-1'],
+      ['github', 'acme', 'docs', null],
     ]);
     expect(result[0]).toMatchObject({ name: 'acme/app', isDefault: true });
     expect(result[1]).toMatchObject({ name: 'Website', viewerLogin: 'me', issues: [issue(4)] });

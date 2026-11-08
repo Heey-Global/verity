@@ -149,9 +149,9 @@ export function TaskIssuesList({
       (item) =>
         item.projectId === projectId &&
         item.resumable !== false &&
-        (repository.isDefault
-          ? item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number)
-          : (started[retryKey(repository, issue.number)] ?? []).includes(item.sessionId)),
+        ((repository.isDefault &&
+          item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number)) ||
+          (started[retryKey(repository, issue.number)] ?? []).includes(item.sessionId)),
     );
   // "Assigned to me" goes when no host names the viewer any more (after a
   // retry); a filter left on it would empty every section with no chip selected.

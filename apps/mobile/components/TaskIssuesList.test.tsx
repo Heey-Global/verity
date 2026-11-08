@@ -187,3 +187,18 @@ it('finds the session started for another repository’s issue', async () => {
   fireEvent.press(ui.getByText('Issue 1'));
   expect(onOpen).toHaveBeenCalledWith('started');
 });
+
+// A default-repository issue handed to an existing session keeps that
+// session's branch, which names another issue or none.
+it('finds a default-repository issue handed to an existing session', async () => {
+  jest.mocked(createVerityClient).mockReturnValue({
+    listSessions: jest.fn(async () => [
+      { sessionId: 'other', projectId: 'p', branch: 'feat/77-else', resumable: true },
+    ]),
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  records({ retry: null, sessions: ['other'] });
+  const ui = render(list([repository({ issues: [issues[0]!] })]));
+  await act(async () => {});
+  expect(ui.queryByLabelText('Let Verity fix: Issue 1')).toBeNull();
+  expect(ui.getByText('In a session')).toBeTruthy();
+});
