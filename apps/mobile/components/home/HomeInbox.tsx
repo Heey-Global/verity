@@ -37,7 +37,12 @@ const CLOCK_TICK_MS = 30_000;
 /** What Resume sends: a crashed session continues by taking a new turn. */
 export const RESUME_PROMPT = 'Continue where you stopped.';
 
-const TAG_INTENT = { attention: 'needsSetup', success: 'ready', neutral: 'optional' } as const;
+const TAG_INTENT = {
+  attention: 'needsSetup',
+  action: 'action',
+  success: 'ready',
+  neutral: 'optional',
+} as const;
 
 /**
  * Home: Verity's line and capture on top, then every item across all projects
