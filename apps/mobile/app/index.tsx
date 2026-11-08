@@ -137,7 +137,9 @@ import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
+import { useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
+import { deleteSessionRequest } from '../lib/deleteSessionRequest';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -278,6 +280,7 @@ function SessionList({ client }: { client: VerityClient }) {
     providerLimitRows,
     serverAttention,
   } = useSessionList(client);
+  const [confirm, confirmSheet] = useConfirm();
   // On a wide screen the usage sits in the header beside the wordmark, so it
   // stays in view whatever the left column shows. The header lays out whatever
   // the overview hands it as `headerRight`, centred between title and search.
@@ -304,8 +307,8 @@ function SessionList({ client }: { client: VerityClient }) {
     [setFavorite],
   );
   const onDeleteSession = useCallback(
-    (session: SessionSummary) => confirmDeleteSession(session, remove),
-    [remove],
+    (session: SessionSummary) => confirm(deleteRequest(session, remove)),
+    [confirm, remove],
   );
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
@@ -962,8 +965,10 @@ function SessionList({ client }: { client: VerityClient }) {
   // stale banner.
   const onDeleteRenaming = useCallback(() => {
     if (!renaming) return;
-    confirmDeleteSession(renaming, remove, () => setRenaming(null));
-  }, [renaming, remove]);
+    // One sheet at a time: the confirmation replaces the rename sheet.
+    setRenaming(null);
+    confirm(deleteRequest(renaming, remove));
+  }, [confirm, renaming, remove]);
 
   // What the open page shows, as text: polls hand back fresh arrays even when
   // nothing changed, and its detail route is not cheap, so it reloads only when
@@ -1255,6 +1260,7 @@ function SessionList({ client }: { client: VerityClient }) {
         <View style={styles.flex}>
           <ProviderUsageStrip rows={providerLimitRows} />
           {sidebar}
+          {confirmSheet}
         </View>
       </SchedulingDiagnostics>
     );
@@ -1264,6 +1270,7 @@ function SessionList({ client }: { client: VerityClient }) {
       <View style={styles.splitRow}>
         <View style={[styles.leftPane, { width: sidebarWidth }]}>
           <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
+          {confirmSheet}
         </View>
         <View style={styles.rightPane}>
           {knowledgeFile ? (
@@ -1895,16 +1902,16 @@ const ProjectGroup = memo(function ProjectGroup({
 });
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
-// confirm with a native alert before firing. Called from the rename modal (opened
-// by a row long-press) and from the row's swipe/context-menu action; `onConfirmed`
-// lets the modal close itself after the delete.
-function confirmDeleteSession(
+// it is confirmed first, with the offer to keep a project session for its Wiki.
+// Used from the rename modal (opened by a row long-press) and from the row's
+// swipe/context-menu action; `onConfirmed` lets the modal close itself.
+function deleteRequest(
   session: SessionSummary,
-  remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
+  remove: (sessionId: string, opts?: { force?: boolean; wiki?: boolean }) => Promise<void>,
   onConfirmed?: () => void,
-): void {
-  const deleteSession = (force = false) => {
-    void remove(session.sessionId, { force }).catch((error: unknown) => {
+) {
+  const deleteSession = (wiki: boolean, force = false) => {
+    void remove(session.sessionId, { force, wiki }).catch((error: unknown) => {
       if (error instanceof VerityApiError && error.status === 409 && !force) {
         Alert.alert(
           'Session is still running',
@@ -1914,7 +1921,7 @@ function confirmDeleteSession(
             {
               text: 'Delete anyway',
               style: 'destructive',
-              onPress: () => deleteSession(true),
+              onPress: () => deleteSession(wiki, true),
             },
           ],
         );
@@ -1927,20 +1934,13 @@ function confirmDeleteSession(
     });
     onConfirmed?.();
   };
-
-  Alert.alert(
-    'Delete session?',
-    `This permanently removes "${sessionLabel(session)}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
-    [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          deleteSession();
-        },
-      },
-    ],
+  return deleteSessionRequest(
+    {
+      label: sessionLabel(session),
+      projectId: session.projectId ?? null,
+      automation: Boolean(session.automation),
+    },
+    ({ wiki }) => deleteSession(wiki),
   );
 }
 
