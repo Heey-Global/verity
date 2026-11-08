@@ -1807,12 +1807,17 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
-  it.each([false, true])(
-    'seeds PR visibility after managed cleanup before admitting later work (deferred: %s)',
-    async (deferred) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+  ])(
+    'seeds PR visibility after managed cleanup before admitting later work (deferred: %s, forge unavailable after merge: %s)',
+    async (deferred, failRead) => {
       const worktree = await createExistingSession('s1');
       isBusy.mockReturnValue(deferred);
-      let status = prStatus();
+      let status: PullRequestStatus = prStatus();
+      let forgeUnavailable = false;
       let fingerprint = 'before-cleanup';
       await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
       const server = buildServer({
@@ -1827,9 +1832,13 @@ describe('POST /sessions/:id/pull-request/merge', () => {
             return { base: 'main' };
           },
         } as unknown as NonNullable<ServerDeps['branches']>,
-        branchPrStatus: async () => status,
+        branchPrStatus: async () => {
+          if (forgeUnavailable) throw new Error('forge temporarily unavailable');
+          return status;
+        },
         mergePr: async () => {
           status = { ...status, phase: 'merged' };
+          forgeUnavailable = failRead;
           return true;
         },
       });
@@ -1858,6 +1867,7 @@ describe('POST /sessions/:id/pull-request/merge', () => {
           fingerprint: 'settled-cleanup',
           hidden: false,
         });
+        forgeUnavailable = false;
         expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
           'merged',
         );

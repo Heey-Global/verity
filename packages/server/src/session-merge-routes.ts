@@ -126,6 +126,7 @@ export function registerSessionMergeRoutes(
       // Undefined when no resolver is injected — the reset then falls back to the
       // project's base branch, as it always did.
       let mergedBaseRef: string | undefined;
+      let mergedPrStatus: PullRequestStatus | null = null;
       // The push payload is a routing hint, never authorization. Re-resolve the
       // session's PR at action time so a forged/stale notification cannot merge an
       // arbitrary PR from the repository. Older injected deployments without a PR
@@ -140,6 +141,7 @@ export function registerSessionMergeRoutes(
             code: 'merge_status_unavailable',
           };
         }
+        mergedPrStatus = { ...current, phase: 'merged' };
         if (current?.number === number && current.phase === 'merged') {
           applyPrSummaryAction(session, compactPr(current));
           // Preserve idempotency while still repairing a checkout left stale by
@@ -241,9 +243,9 @@ export function registerSessionMergeRoutes(
       // transcript marker and pending agent note are written only after the cleanup
       // attempt, so the next real turn sees the final post-merge state.
       let cleanupObserved = false;
-      const finishCleanup = async (status: PullRequestStatus | null): Promise<void> => {
+      const finishCleanup = async (): Promise<void> => {
         cleanupObserved = true;
-        await deps.afterPrCleanup?.(session, status).catch((err: unknown) => {
+        await deps.afterPrCleanup?.(session, mergedPrStatus).catch((err: unknown) => {
           request.log.warn({ err, sessionId: id }, 'Post-merge PR visibility update failed');
         });
       };
@@ -292,7 +294,7 @@ export function registerSessionMergeRoutes(
             note +=
               " The project's managed default-branch checkout could not be refreshed automatically.";
           }
-          await finishCleanup(await sessionPrStatus(session).catch(() => null));
+          await finishCleanup();
           // The merge and cleanup need no model reasoning. Keep the detail available
           // to the agent on its next genuine turn, while showing the user one concise
           // transcript marker now. Both are best-effort because the PR already landed.
@@ -300,7 +302,7 @@ export function registerSessionMergeRoutes(
           await conductor.emitMerged(id, number).catch(() => undefined);
         })
         .catch(async () => {
-          if (!cleanupObserved) await finishCleanup(null);
+          if (!cleanupObserved) await finishCleanup();
         });
       return { merged: true };
     },
