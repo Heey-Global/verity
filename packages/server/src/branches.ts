@@ -215,8 +215,9 @@ interface SwitchOptions {
 }
 
 export interface GitBranchService {
-  /** Bounded content identity for continuing an assignment-owned dirty worktree. */
-  worktreeFingerprint?(worktreePath: string): Promise<string | undefined>;
+  /** Bounded content identity for continuing an assignment-owned dirty worktree.
+   * Excluding the branch also supports detached post-merge workspaces. */
+  worktreeFingerprint?(worktreePath: string, includeBranch?: boolean): Promise<string | undefined>;
   /** Exact attached HEAD for revision-bound repair admission; detached or unreadable is unavailable. */
   headRevision?(worktreePath: string): Promise<string | undefined>;
   metadata?(worktreePath: string): Promise<{
@@ -1211,12 +1212,13 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
   }
 
   return {
-    async worktreeFingerprint(worktreePath) {
+    async worktreeFingerprint(worktreePath, includeBranch = true) {
       if (opts.withGit) {
         const { withGit, ...scopedOptions } = opts;
         return withGit(worktreePath, (scopedGit) =>
           createGitBranchService({ ...scopedOptions, git: scopedGit }).worktreeFingerprint!(
             worktreePath,
+            includeBranch,
           ),
         );
       }
@@ -1228,7 +1230,7 @@ export function createGitBranchService(opts: GitBranchServiceOptions): GitBranch
         if (files.length > 1000) return undefined;
         // Submodule dirtiness does not identify its nested file contents.
         if (/(?:^|\0)160000 /.test(await run(['ls-files', '--stage', '-z']))) return undefined;
-        const branch = await run(['symbolic-ref', '--quiet', 'HEAD']);
+        const branch = includeBranch ? await run(['symbolic-ref', '--quiet', 'HEAD']) : '';
         const head = await run(['rev-parse', '--verify', 'HEAD^{commit}']);
         const status = await run(['status', '--porcelain=v1', '-z']);
         const staged = await run([
