@@ -29,6 +29,9 @@ export function occasionTitle(path: string): string {
   return path.split('/').at(-1)?.replace(/\.md$/i, '') ?? path;
 }
 
+/** How long a deletion waits for its occasion before it goes ahead without it. */
+const DELETED_SESSION_NOTE_TIMEOUT_MS = 5_000;
+
 /**
  * Keeps a session that is deleted as done for the Wiki: its conversation stays
  * with the occasion until a maintenance run read it. Nothing is copied into
@@ -40,26 +43,50 @@ export async function noteDeletedSession(
   session: { sessionId: string; projectId: string | null; name?: string | null },
   keepForWiki: boolean,
   log?: Log,
+  timeoutMs = DELETED_SESSION_NOTE_TIMEOUT_MS,
 ): Promise<void> {
   const projectId = session.projectId;
   if (!projectId) return;
+  // The deletion holds the session's exclusive slot while it waits; a slow
+  // store must not turn noting into a stalled delete.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
   try {
-    if (!keepForWiki) {
-      await store.wikiOccasions.forgetSession(projectId, session.sessionId);
-      return;
-    }
-    const body = await store.wikiOccasions.sessionTranscript(session.sessionId);
-    if (!body) return;
-    await store.wikiOccasions.record({
-      projectId,
-      kind: 'session',
-      ref: session.sessionId,
-      title: session.name?.trim() || 'Session',
-      body,
-      // A session that went quiet earlier has newer messages now.
-      reopen: true,
-    });
+    const outcome = await Promise.race([
+      noteSession(store, projectId, session, keepForWiki),
+      timeout,
+    ]);
+    if (outcome === 'timeout')
+      log?.warn({ sessionId: session.sessionId }, 'wiki occasion lost: deletion did not wait');
   } catch (error) {
     log?.warn({ err: error, sessionId: session.sessionId }, 'wiki occasion lost');
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function noteSession(
+  store: OccasionStore,
+  projectId: string,
+  session: { sessionId: string; name?: string | null },
+  keepForWiki: boolean,
+): Promise<'done'> {
+  if (!keepForWiki) {
+    await store.wikiOccasions.forgetSession(projectId, session.sessionId);
+    return 'done';
+  }
+  const body = await store.wikiOccasions.sessionTranscript(session.sessionId);
+  if (!body) return 'done';
+  await store.wikiOccasions.record({
+    projectId,
+    kind: 'session',
+    ref: session.sessionId,
+    title: session.name?.trim() || 'Session',
+    body,
+    // A session that went quiet earlier has newer messages now.
+    reopen: true,
+  });
+  return 'done';
 }

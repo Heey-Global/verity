@@ -222,8 +222,12 @@ that caused it.
 Deleting a session can keep its conversation for the Wiki (`DELETE
 /sessions/:id?wiki=true`). The server then stores the plain messages of the user and
 Verity, without tool output, with the occasion and deletes the session as usual.
-Nothing is copied into the project's knowledge; reading the occasion in a
+Only the most recent 256 KiB of the conversation is read and kept, and a deletion
+waits at most five seconds for it. Nothing is copied into the project's knowledge; reading the occasion in a
 maintenance run drops the stored text. Without `wiki=true`, which older clients
 never send, nothing is kept and an earlier occasion of that session is forgotten.
 A merged pull request is recorded once even when the status cache reports it again
-after a restart; a chat day or re-filed meeting opens its occasion again.
+after a restart; a chat day or re-filed meeting opens its occasion again. A
+maintenance run closes only the version it read, so an occasion reopened while the
+run works stays open with its new text. Until a maintenance run reads them, open
+occasions and their kept text remain stored; deleting the project removes them.

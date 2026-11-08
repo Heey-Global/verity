@@ -217,18 +217,23 @@ export async function emitMeetingTranscriptSaved(input: {
   path: string;
   title: string;
   segments: number;
+  log?: { warn: (details: object, message: string) => void };
 }): Promise<void> {
   // A transcript filed into the project's Sources is new material for its Wiki.
   if (input.path.startsWith(`${KNOWLEDGE_MEETINGS_DIR}/`)) {
     // Noting must never cost the saved notice; a failed lookup only skips it.
     const session = await input.eventStore.getSession(input.sessionId).catch(() => undefined);
     if (session?.projectId)
-      await noteWikiOccasion(input.eventStore, {
-        projectId: session.projectId,
-        kind: 'meeting',
-        ref: input.path,
-        title: input.title,
-      });
+      await noteWikiOccasion(
+        input.eventStore,
+        {
+          projectId: session.projectId,
+          kind: 'meeting',
+          ref: input.path,
+          title: input.title,
+        },
+        input.log,
+      );
   }
   await emitNotice({
     ...input,
@@ -389,6 +394,7 @@ export async function fileLiveMeeting(input: {
   dataRoot: string | undefined;
   sessionId: string;
   meetingId: string;
+  log?: { warn: (details: object, message: string) => void };
 }): Promise<void> {
   const session = await input.eventStore.getSession(input.sessionId);
   if (!session) return;
@@ -433,14 +439,18 @@ export async function fileLiveMeeting(input: {
     {
       await appendMeetingIndex(meetingDir, relPath, title);
       if (knowledge && session.projectId)
-        await noteWikiOccasion(input.eventStore, {
-          projectId: session.projectId,
-          kind: 'meeting',
-          ref: relPath,
-          title,
-          // A meeting filed again (an edit, a later summary) is new material.
-          reopen: true,
-        });
+        await noteWikiOccasion(
+          input.eventStore,
+          {
+            projectId: session.projectId,
+            kind: 'meeting',
+            ref: relPath,
+            title,
+            // A meeting filed again (an edit, a later summary) is new material.
+            reopen: true,
+          },
+          input.log,
+        );
       const events = await input.eventStore.getEvents(input.sessionId);
       const savedLink = knowledge ? `${KNOWLEDGE_MOUNT_TARGET}/${relPath}` : relPath;
       const details = {

@@ -56,6 +56,14 @@ describe('noteDeletedSession', () => {
     await expect(noteDeletedSession(value, session, true, { warn })).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalled();
   });
+
+  it('lets a deletion go ahead when the store stalls', async () => {
+    const { value, sessionTranscript } = store();
+    sessionTranscript.mockReturnValue(new Promise(() => undefined));
+    const warn = vi.fn();
+    await expect(noteDeletedSession(value, session, true, { warn }, 10)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith({ sessionId: 's1' }, expect.stringContaining('did not wait'));
+  });
 });
 
 it('never fails the event that caused an occasion', async () => {

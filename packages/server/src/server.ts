@@ -5161,6 +5161,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         dataRoot: deps.dataRoot,
         sessionId,
         meetingId,
+        log: app.log,
       }),
     onDiscarded: async (sessionId, meeting) => {
       // Independent steps, all attempted: a provider failure must not skip removing the

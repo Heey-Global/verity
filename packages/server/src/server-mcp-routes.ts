@@ -1829,12 +1829,16 @@ export function registerServerMcpRoutes({
                 session.worktree,
                 request,
               );
-              await noteWikiOccasion(deps.eventStore, {
-                projectId: input.projectId,
-                kind: 'source',
-                ref: imported.path,
-                title: occasionTitle(imported.path),
-              });
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'source',
+                  ref: knowledgeRef(imported.path),
+                  title: occasionTitle(imported.path),
+                },
+                app.log,
+              );
               return imported;
             }
             if (request.operation === 'create_source_folder')
@@ -1896,12 +1900,16 @@ export function registerServerMcpRoutes({
                 },
                 request,
               );
-              await noteWikiOccasion(deps.eventStore, {
-                projectId: input.projectId,
-                kind: 'decision',
-                ref: knowledgeRef(recorded.path),
-                title: request.title,
-              });
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'decision',
+                  ref: knowledgeRef(recorded.path),
+                  title: request.title,
+                },
+                app.log,
+              );
               return recorded;
             }
             return moveProjectSource(deps.dataRoot, input.projectId, request);

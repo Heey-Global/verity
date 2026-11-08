@@ -101,12 +101,22 @@ export class WikiOccasionStore {
     return result.rows.map((row) => row.project_id);
   }
 
-  /** Marks occasions read and drops the text kept for the run. */
-  async close(projectId: string, ids: readonly string[]): Promise<number> {
-    if (!ids.length) return 0;
+  /**
+   * Marks occasions read and drops the text kept for the run. Only the version a
+   * run read is closed: an occasion reopened meanwhile has a later `createdAt`
+   * and stays open with its new text.
+   */
+  async close(
+    projectId: string,
+    read: readonly Pick<WikiOccasion, 'id' | 'createdAt'>[],
+  ): Promise<number> {
+    if (!read.length) return 0;
+    const pairs = read.map(
+      (occasion) => sql`(${occasion.id}, ${new Date(occasion.createdAt)}::timestamptz)`,
+    );
     const result = await sql`update wiki_occasions set closed_at=now(), body=null
       where project_id=${projectId} and closed_at is null
-        and id in (${sql.join(ids.map((id) => sql`${id}`))})`.execute(this.db);
+        and (id, date_trunc('milliseconds', created_at)) in (${sql.join(pairs)})`.execute(this.db);
     return Number(result.numAffectedRows ?? 0);
   }
 
@@ -116,8 +126,13 @@ export class WikiOccasionStore {
    * session is deleted as done.
    */
   async sessionTranscript(sessionId: string): Promise<string> {
-    const result = await sql<{ role: 'user' | 'agent'; text: string }>`select role,text
-      from messages where session_id=${sessionId} and kind in ('prompt','text')
+    // Only the end is kept, so only the end is read: a long session must not
+    // load its whole history into memory on the deletion path.
+    const result = await sql<{ role: 'user' | 'agent'; text: string }>`select role,text from (
+        select role,text,first_event_seq,id,
+          sum(octet_length(text)) over (order by first_event_seq desc, id desc) as total
+        from messages where session_id=${sessionId} and kind in ('prompt','text')
+      ) tail where total - octet_length(text) < ${WIKI_OCCASION_BODY_LIMIT}
       order by first_event_seq, id`.execute(this.db);
     return result.rows
       .map((row) => `${row.role === 'user' ? 'User' : 'Verity'}: ${row.text.trim()}`)
