@@ -59,6 +59,9 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   /// Verity's conversation as the watch shows it (`VerityAssistantLink.snapshot`),
   /// sent with the project list. Only touched on `queue`.
   private var verity: [String: Any]?
+  /// Home's open items as JavaScript last listed them (`syncWatchInbox`), sent
+  /// with the project list. Only touched on `queue`.
+  private var inbox: [String: Any]?
   /// While set, a read is held open on the server and every change goes to the
   /// watch. Only touched on `queue`.
   private var following = false
@@ -115,6 +118,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
   private func pushProjects() {
     guard var context = projectContext, WCSession.isSupported() else { return }
     if let verity { context["verity"] = verity }
+    if let inbox { context["inbox"] = inbox }
     let session = WCSession.default
     guard session.activationState == .activated, session.isPaired, session.isWatchAppInstalled
     else { return }
@@ -214,6 +218,21 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     queue.async { self.publish(snapshot, force: false) }
   }
 
+  /// Home's open items for the watch's "Needs you" list; nil after sign-out.
+  /// Sent the fast way too while the watch app is open.
+  func setInbox(_ inbox: [String: Any]?) {
+    queue.async {
+      self.inbox = inbox
+      self.pushProjects()
+      guard WCSession.isSupported() else { return }
+      let session = WCSession.default
+      guard session.activationState == .activated, session.isReachable else { return }
+      var message: [String: Any] = ["v": Self.protocolVersion, "kind": "inbox"]
+      if let inbox { message["inbox"] = inbox }
+      session.sendMessage(message, replyHandler: nil, errorHandler: nil)
+    }
+  }
+
   /// Drops transcribed captures JavaScript cannot save (another account, a
   /// project that is gone). Only on the operator's request: the watch already
   /// discarded its audio, so this text is the last copy.
@@ -296,6 +315,7 @@ final class VerityWatchInbox: NSObject, WCSessionDelegate {
     queue.async {
       var reply: [String: Any] = ["v": Self.protocolVersion, "kind": "verity"]
       if let verity = self.verity { reply["verity"] = verity }
+      if let inbox = self.inbox { reply["inbox"] = inbox }
       replyHandler(reply)
       self.follow(for: 30)
     }

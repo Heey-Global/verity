@@ -164,7 +164,7 @@ export function downloadKnowledge(
  *  header's back arrow and the swipe go up exactly one level. */
 export function pushKnowledge(
   scope: KnowledgeScope,
-  target: { folder: string } | { file: string },
+  target: { folder: string } | { file: string } | { proposal: string },
 ) {
   if (scope.kind === 'shared') {
     router.push({ pathname: '/settings/shared-knowledge', params: target });

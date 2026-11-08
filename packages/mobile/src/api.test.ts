@@ -2408,6 +2408,22 @@ describe('VerityClient.setSessionModel (switch engine)', () => {
 });
 
 describe('VerityClient.deleteSession', () => {
+  // The server keeps a deleted session's conversation for the Wiki only when
+  // asked; the flag must reach it, and must not be sent when not chosen.
+  it('asks the server to keep the conversation for the Wiki only when chosen', async () => {
+    const kept = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: kept.fetch }).deleteSession('s1', {
+      wiki: true,
+      force: true,
+    });
+    expect(kept.calls[0]?.url).toBe('http://host/sessions/s1?force=true&wiki=true');
+    const plain = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: plain.fetch }).deleteSession('s1', {
+      wiki: false,
+    });
+    expect(plain.calls[0]?.url).toBe('http://host/sessions/s1');
+  });
+
   it('DELETEs the session and returns the echoed id', async () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -4801,6 +4817,42 @@ it('reads the project Wiki catalog and treats a server without it as none', asyn
   expect(await client.getProjectWiki('p/1')).toBeNull();
   // A project that is gone is not an old server: the app says so.
   await expect(client.getProjectWiki('p/1')).rejects.toThrow('Project knowledge not found');
+});
+
+// Proposals reach the review screen only through these calls; a server that
+// predates them must leave the Wiki working, and a partial decision must name
+// exactly the pages the user kept.
+it('lists, reads and decides proposed Wiki changes', async () => {
+  const head = {
+    id: 'a1',
+    mode: 'inline',
+    logKind: 'chat',
+    title: 'Billing',
+    sources: ['sources/a.md'],
+    createdAt: '2026-11-08T10:00:00.000Z',
+    decidedAt: null,
+  };
+  const change = { path: 'billing.md', summary: 'Explain', status: 'pending', stale: false };
+  const { fetch, calls } = fakeFetchSequence(
+    json({ proposals: [{ ...head, changes: [change] }] }),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p/knowledge/proposals not found' },
+      404,
+    ),
+    json({ ...head, changes: [{ ...change, content: '# Billing', current: null }] }),
+    json({ applied: ['billing.md'], stale: [] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listWikiProposals('p')).toEqual([{ ...head, changes: [change] }]);
+  expect(await client.listWikiProposals('p')).toBeNull();
+  expect((await client.getWikiProposal('p', 'a1')).changes[0]?.content).toBe('# Billing');
+  expect(await client.decideWikiProposal('p', 'a1', 'apply', ['billing.md'])).toEqual({
+    applied: ['billing.md'],
+    stale: [],
+    failed: [],
+  });
+  expect(calls[3]?.url).toBe('http://host/projects/p/knowledge/proposals/a1/apply');
+  expect(JSON.parse(calls[3]?.init?.body as string)).toEqual({ paths: ['billing.md'] });
 });
 
 it('browses Shared without a session and sends the revision for edits', async () => {

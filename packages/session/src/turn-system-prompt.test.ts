@@ -6,7 +6,24 @@ import {
   DOCUMENT_PROJECT_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
 } from '@verity/events';
-import { RESUME_SYSTEM_PROMPT, turnSystemPrompt } from './turn-system-prompt.js';
+import {
+  COMPACT_RESUME_SYSTEM_PROMPT,
+  RESUME_SYSTEM_PROMPT,
+  turnSystemPrompt,
+} from './turn-system-prompt.js';
+
+describe('required work completion instructions', () => {
+  it.each(
+    (['github', 'forgejo', 'local', 'documents'] as const)
+      .flatMap((host) => [turnSystemPrompt(host), turnSystemPrompt(host, true)])
+      .concat(RESUME_SYSTEM_PROMPT, COMPACT_RESUME_SYSTEM_PROMPT),
+  )('does not lose the wait contract on a host switch or resume', (prompt) => {
+    expect(prompt).toContain('Wait for required reviews and tests to finish');
+    expect(prompt).toContain('wait or poll');
+    expect(prompt).toContain('exit status');
+    expect(prompt).toContain('managed continuation');
+  });
+});
 
 describe('communication instructions', () => {
   it.each([

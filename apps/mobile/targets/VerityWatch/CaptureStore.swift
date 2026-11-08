@@ -123,6 +123,48 @@ struct VeritySnapshot: Equatable, Sendable {
   }
 }
 
+/// Home's open items as the iPhone last listed them (`syncWatchInbox` in
+/// `lib/watchCapture.ts`): the same "Needs you" list, decided on the iPhone.
+struct WatchInbox: Equatable, Sendable {
+  struct Item: Equatable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let context: String
+    let tag: String
+    /// `action`, `attention`, `success` or `neutral`, as on Home.
+    let tone: String
+    let message: String?
+  }
+
+  let scope: String?
+  /// When the iPhone read the list.
+  let at: Date
+  let items: [Item]
+  /// All of Home's items; `items` holds the first of them.
+  let total: Int
+
+  /// Reads the `inbox` part of an application context or message; nil without one.
+  init?(context: [String: Any]) {
+    guard context["v"] as? Int == WatchProtocol.version,
+      let inbox = context["inbox"] as? [String: Any],
+      let items = inbox["items"] as? [[String: Any]]
+    else { return nil }
+    scope = inbox["scope"] as? String
+    at = Date(timeIntervalSince1970: (inbox["at"] as? Double ?? 0) / 1000)
+    let parsed: [Item] = items.compactMap { item in
+      guard let id = item["key"] as? String, let title = item["title"] as? String else {
+        return nil
+      }
+      return Item(
+        id: id, title: title, context: item["context"] as? String ?? "",
+        tag: item["tag"] as? String ?? "", tone: item["tone"] as? String ?? "neutral",
+        message: item["message"] as? String)
+    }
+    self.items = parsed
+    total = max(inbox["total"] as? Int ?? parsed.count, parsed.count)
+  }
+}
+
 @MainActor
 final class CaptureStore: NSObject, ObservableObject {
   static let shared = CaptureStore()
@@ -136,6 +178,8 @@ final class CaptureStore: NSObject, ObservableObject {
   @Published private(set) var projectList = ProjectList()
   /// Verity's conversation as the iPhone last reported it.
   @Published private(set) var verity: VeritySnapshot?
+  /// Home's open items as the iPhone last listed them.
+  @Published private(set) var inbox: WatchInbox?
   /// Questions answered here whose answer may still be on its way.
   @Published private(set) var answered: Set<String> = []
   /// Brief feedback after a recording was handed over.
@@ -271,7 +315,13 @@ final class CaptureStore: NSObject, ObservableObject {
       // Runs on a WatchConnectivity queue, not the main actor.
       replyHandler: { @Sendable reply in
         let snapshot = VeritySnapshot(context: reply)
-        Task { @MainActor in if let snapshot { self.receive(snapshot) } }
+        let inbox = WatchInbox(context: reply)
+        Task { @MainActor in
+          if let snapshot { self.receive(snapshot) }
+          // No `inbox` part only means the iPhone has none yet (a background
+          // launch); a sign-out is hidden by the account check in the view.
+          if let inbox { self.inbox = inbox }
+        }
       }, errorHandler: nil)
   }
 
@@ -573,10 +623,12 @@ extension CaptureStore: WCSessionDelegate {
     let reachable = session.isReachable
     let list = ProjectList(context: session.receivedApplicationContext)
     let snapshot = VeritySnapshot(context: session.receivedApplicationContext)
+    let inbox = WatchInbox(context: session.receivedApplicationContext)
     Task { @MainActor in
       self.phoneReachable = reachable
       if let list { self.receive(list) }
       self.receive(snapshot)
+      if let inbox { self.inbox = inbox }
       if activationState == .activated {
         self.resend()
         self.refreshVerity()
@@ -589,9 +641,13 @@ extension CaptureStore: WCSessionDelegate {
   ) {
     let list = ProjectList(context: applicationContext)
     let snapshot = VeritySnapshot(context: applicationContext)
+    // Without an `inbox` part the iPhone has not listed Home yet; keep the last
+    // list. After a sign-out the account check in the view hides it.
+    let inbox = WatchInbox(context: applicationContext)
     Task { @MainActor in
       if let list { self.receive(list) }
       self.receive(snapshot)
+      if let inbox { self.inbox = inbox }
     }
   }
 
@@ -605,6 +661,11 @@ extension CaptureStore: WCSessionDelegate {
 
   /// Conversation state and capture feedback use live messaging when reachable.
   nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+    if message["kind"] as? String == "inbox" {
+      let inbox = WatchInbox(context: message)
+      Task { @MainActor in self.inbox = inbox }
+      return
+    }
     if message["kind"] as? String == "verity", let snapshot = VeritySnapshot(context: message) {
       Task { @MainActor in self.receive(snapshot) }
     } else {

@@ -90,6 +90,7 @@ export function expoRouterMock(): Record<string, unknown> {
       push: (href: string) => mockPush(href),
       replace: (href: string) => mockReplace(href),
       back: () => mockBack(),
+      canGoBack: () => true,
       dismissTo: (href: string) => mockDismissTo(href),
     },
     useFocusEffect: (cb: () => void | (() => void)) =>

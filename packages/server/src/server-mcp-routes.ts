@@ -77,6 +77,7 @@ import {
   importProjectSource,
   moveProjectSource,
 } from './knowledge-import.js';
+import { knowledgeRef, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
@@ -123,8 +124,11 @@ import { executeTasksTool } from './tasks-routes.js';
 import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
+import type { WikiProposals } from './wiki-proposals.js';
 interface ServerMcpRouteDeps {
   deps: ServerDeps;
+  /** Absent without a knowledge folder; proposing then fails like other knowledge writes. */
+  wikiProposals: WikiProposals | undefined;
   inquiryTool: (sessionId: string, userId: string | null, request: unknown) => Promise<unknown>;
   app: FastifyInstance;
   conductor: Conductor;
@@ -157,6 +161,7 @@ interface ServerMcpRouteDeps {
 }
 export function registerServerMcpRoutes({
   deps,
+  wikiProposals,
   inquiryTool,
   app,
   conductor,
@@ -1821,8 +1826,47 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Knowledge access requires an active session in the calling project',
               );
-            if (request.operation === 'import_source')
-              return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
+            if (request.operation === 'import_source') {
+              const imported = await importProjectSource(
+                deps.dataRoot,
+                input.projectId,
+                session.worktree,
+                request,
+              );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'source',
+                  ref: knowledgeRef(imported.path),
+                  title: occasionTitle(imported.path),
+                },
+                app.log,
+              );
+              return imported;
+            }
+            if (request.operation === 'propose_wiki') {
+              if (!wikiProposals) throw new Error('Knowledge storage is unavailable');
+              // A deleted project is only hidden; its Wiki takes no new proposals.
+              if ((await deps.eventStore.getProject(input.projectId))?.hiddenAt)
+                throw new ControlPlaneSessionAuthorityError('The project was deleted');
+              const result = await wikiProposals.propose({
+                mode: request.mode,
+                logKind: request.logKind,
+                title: request.title,
+                sources: request.sources,
+                changes: request.changes,
+                projectId: input.projectId,
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+              });
+              return {
+                proposalId: result.proposal?.id ?? null,
+                proposed: result.proposal?.changes.map((change) => change.path) ?? [],
+                skipped: result.skipped,
+                status: result.proposal ? 'awaiting_review' : 'nothing_new',
+              };
+            }
             if (request.operation === 'create_source_folder')
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
             if (request.operation === 'lookup_decisions')
@@ -1873,7 +1917,7 @@ export function registerServerMcpRoutes({
                 throw new Error(
                   'Decision confirmation must reference a user prompt in the calling session',
                 );
-              return recordProjectDecision(
+              const recorded = await recordProjectDecision(
                 deps.dataRoot,
                 input.projectId,
                 {
@@ -1882,6 +1926,17 @@ export function registerServerMcpRoutes({
                 },
                 request,
               );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'decision',
+                  ref: knowledgeRef(recorded.path),
+                  title: request.title,
+                },
+                app.log,
+              );
+              return recorded;
             }
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
