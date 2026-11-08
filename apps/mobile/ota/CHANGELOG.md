@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.88.1](https://github.com/Heey-Global/verity/compare/mobile-v1.88.0...mobile-v1.88.1) (2026-11-08)
+
+
+### Features
+
+* **knowledge:** rename Sources entries and share swipe actions across lists ([#2434](https://github.com/Heey-Global/verity/issues/2434)) ([9ae4c6b](https://github.com/Heey-Global/verity/commit/9ae4c6b21f0e382a06a142485134532c0420dc88))
+* **mobile:** show working, new and waiting signals on project cards ([#2435](https://github.com/Heey-Global/verity/issues/2435)) ([e61ac5e](https://github.com/Heey-Global/verity/commit/e61ac5ec9b98d47793be22718cc7ea1c85942243))
+
+
+### Bug Fixes
+
+* **mobile:** match project cards to session list width ([#2438](https://github.com/Heey-Global/verity/issues/2438)) ([cb7103f](https://github.com/Heey-Global/verity/commit/cb7103fdb1c074dd8e2b7a8411c8400c1e7b78ff))
+* **mobile:** unify live session groups across Home and projects ([#2439](https://github.com/Heey-Global/verity/issues/2439)) ([cd9747b](https://github.com/Heey-Global/verity/commit/cd9747bb1c821b7b7e5d04984bbd24acf8357dfb))
+* **server:** wait for sandbox agent connections before starting a turn ([#2432](https://github.com/Heey-Global/verity/issues/2432)) ([e4f2cfe](https://github.com/Heey-Global/verity/commit/e4f2cfeeb7c5b8715b084605128d0231aeaa280d))
+
 ## [1.87.1](https://github.com/Heey-Global/verity/compare/mobile-v1.87.0...mobile-v1.87.1) (2026-11-08)
 
 
