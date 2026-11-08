@@ -569,6 +569,8 @@ export interface ProjectSettingsTable {
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
   /** Design module: whether plans include mockups to approve before implementation. */
   design_level: Generated<'off' | 'on_request' | 'required'>;
+  /** One line shown under the project's name; null when none was written. */
+  description: ColumnType<string | null, string | null | undefined, string | null>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,

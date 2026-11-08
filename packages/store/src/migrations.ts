@@ -5484,3 +5484,14 @@ migrations['0198_project_repository_instances'] = {
     await sql`alter table projects drop column repository_instance`.execute(db);
   },
 };
+
+migrations['0199_project_description'] = {
+  // One line under the project's name on its page, written by its managers.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings add column description text
+      check (char_length(description) <= 200)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings drop column description`.execute(db);
+  },
+};

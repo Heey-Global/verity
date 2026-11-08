@@ -184,6 +184,10 @@ import {
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
+import {
+  registerProjectPullRequestRoutes,
+  type SessionPullRequestLink,
+} from './project-pull-requests.js';
 import { registerProjectCollectionRoutes, repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -5779,6 +5783,82 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       log: app.log,
     }),
   );
+  // One fix session per pull request: concurrent taps of "Fix" in this process
+  // wait for the first, and the durable origin record covers everything else.
+  const pullRequestFixes = new Map<string, Promise<{ sessionId: string; created: boolean }>>();
+  registerProjectPullRequestRoutes(app, {
+    store: deps.eventStore,
+    backend: deps.projectPullRequests,
+    sessionLinks: async (projectId) => {
+      const links: SessionPullRequestLink[] = [];
+      for (const session of await deps.eventStore.listSessions()) {
+        if (session.projectId !== projectId) continue;
+        // Only what is already known: the project page reads every session's PR
+        // status, so asking the code host again here would double that traffic.
+        const pr = sessionPrCache.peek(session.worktree);
+        links.push({
+          sessionId: session.sessionId,
+          repositoryId: `default:${projectId}`,
+          ...(pr ? { number: pr.number } : {}),
+          name: session.name,
+        });
+        for (const workspace of await deps.eventStore.listSessionRepositoryWorkspaces(
+          session.sessionId,
+        )) {
+          const number = (workspace.pullRequest as { number?: unknown } | null | undefined)?.number;
+          links.push({
+            sessionId: session.sessionId,
+            repositoryId: workspace.repositoryId,
+            branch: workspace.branch,
+            ...(typeof number === 'number' ? { number } : {}),
+            name: session.name,
+          });
+        }
+      }
+      return links;
+    },
+    startFix: (input) => {
+      const key = `${input.project.id}\u0000${input.resource}`;
+      const running = pullRequestFixes.get(key);
+      if (running) return running;
+      const start = async () => {
+        const repairs = deps.eventStore.repairs;
+        const existing = await repairs.sessionOrigin(input.project.id, input.resource);
+        if (existing && (await deps.eventStore.getSession(existing)))
+          return { sessionId: existing, created: false };
+        const sessionId = randomUUID();
+        const spawned = await sessionCreate.spawn(
+          {
+            projectId: input.project.id,
+            sessionId,
+            name: `Fix PR #${String(input.status.number)}`,
+          },
+          app.log,
+        );
+        if (spawned.statusCode >= 300)
+          throw Object.assign(new Error('The fix session could not be created'), {
+            statusCode: spawned.statusCode >= 500 ? 503 : spawned.statusCode,
+          });
+        const owner = existing
+          ? await repairs.replaceSessionOrigin(
+              input.project.id,
+              input.resource,
+              existing,
+              sessionId,
+            )
+          : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
+        if (owner !== undefined && owner !== sessionId) return { sessionId: owner, created: false };
+        await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
+          displayPrompt: `Fix pull request #${String(input.status.number)}`,
+          ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
+        });
+        return { sessionId, created: true };
+      };
+      const promise = start().finally(() => pullRequestFixes.delete(key));
+      pullRequestFixes.set(key, promise);
+      return promise;
+    },
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();

@@ -558,6 +558,8 @@ export interface ProjectSettingsRecord {
   googleDriveAccessMode: 'read-only' | 'read-write';
   /** Design module: whether plans include mockups the user approves before the build. */
   designLevel: ProjectDesignLevel;
+  /** One line shown under the project's name; null when none was written. */
+  description: string | null;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -616,6 +618,7 @@ type ProjectSettingsKey =
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
   | 'designLevel'
+  | 'description'
   | 'allowedAgents';
 
 /** `off`: no mockups. `on_request`: mockups when the user asks for them.
@@ -8052,6 +8055,7 @@ export class EventStore implements EventSink {
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
       design_level: ProjectDesignLevel;
+      description: string | null;
       allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
@@ -8077,6 +8081,7 @@ export class EventStore implements EventSink {
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
       designLevel: row.design_level,
+      description: row.description,
       allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -8099,6 +8104,7 @@ export class EventStore implements EventSink {
     'google_drive_folder_name',
     'google_drive_access_mode',
     'design_level',
+    'description',
     'allowed_agents',
     'created_at',
     'updated_at',
@@ -9264,6 +9270,7 @@ export class EventStore implements EventSink {
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
       design_level: patch.designLevel ?? 'on_request',
+      description: normalizeSetting(patch.description),
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
@@ -9346,6 +9353,9 @@ export class EventStore implements EventSink {
               ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
             ...(patch.designLevel !== undefined ? { design_level: patch.designLevel } : {}),
+            ...(patch.description !== undefined
+              ? { description: normalizeSetting(patch.description) }
+              : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
               : {}),

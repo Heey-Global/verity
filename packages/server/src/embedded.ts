@@ -99,6 +99,8 @@ import {
   createForgeStatusCache,
   type ForgeStatusIdentity,
 } from './forge-status-cache.js';
+import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
@@ -1137,18 +1139,91 @@ export async function buildEmbeddedServer(
   };
   const sharedForgeStatus = createForgeStatusCache();
   const statusScopes = new Map<string, ForgeStatusIdentity>();
-  const readProjectStatus = async (project: ProjectRecord, branch: string) => {
-    if (project.kind === 'local' || project.kind === 'control_plane') return null;
-    const provider = await projectForgeProvider(eventStore, githubForge, project);
-    if (!provider?.repositoryPrService) return null;
+  const statusIdentity = async (
+    project: ProjectRecord,
+    provider: NonNullable<Awaited<ReturnType<typeof projectForgeProvider>>>,
+  ): Promise<ForgeStatusIdentity> => {
     const token = await provider.mintProjectToken(project);
     if (!token) throw new Error('Forge credentials unavailable');
     const authority = `${project.forgeConnectionId ?? 'github'}:${createHash('sha256').update(token).digest('hex')}`;
-    const identity = { authority, owner: project.owner, repo: project.repo };
-    statusScopes.set(project.id, identity);
+    return { authority, owner: project.owner, repo: project.repo };
+  };
+  /** `remember` records the identity as the project's status scope; a project's
+   *  additional repositories share its id, so only its default repository does. */
+  const readProjectStatus = async (project: ProjectRecord, branch: string, remember = true) => {
+    if (project.kind === 'local' || project.kind === 'control_plane') return null;
+    const provider = await projectForgeProvider(eventStore, githubForge, project);
+    if (!provider?.repositoryPrService) return null;
+    const identity = await statusIdentity(project, provider);
+    if (remember) statusScopes.set(project.id, identity);
     return sharedForgeStatus.read(identity, branch, () =>
       provider.repositoryPrService!(project).prStatusForBranch(branch),
     );
+  };
+  const isDefaultRepository = async (project: ProjectRecord) => {
+    const stored = await eventStore.getProject(project.id);
+    return (
+      stored !== undefined &&
+      stored.kind === project.kind &&
+      stored.owner === project.owner &&
+      stored.repo === project.repo
+    );
+  };
+  const projectPullRequests: ProjectPullRequestBackend = {
+    list: async (project) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.discover) throw new Error('Pull request listing unsupported');
+      const pulls = new Map<number, ForgeDiscoveryPage['pulls'][number]>();
+      // Three pages cover any open list a person scans on a phone; the host's
+      // pages are newest first, so a cut drops the oldest pull requests.
+      for (let page = 1; page <= 3; page += 1) {
+        const result = await provider.discover(project, page);
+        if (result.errors?.some((error) => error.step === 'pulls'))
+          throw new Error('Pull requests unavailable');
+        for (const pull of result.pulls) pulls.set(pull.number, pull);
+        if (result.pulls.length < 30) break;
+      }
+      const remember = await isDefaultRepository(project);
+      const deadline = Date.now() + 12_000;
+      const rows = [...pulls.values()];
+      const statuses = new Array<PullRequestStatus | null>(rows.length).fill(null);
+      let next = 0;
+      // Statuses are read a few at a time against one budget: a cold cache over
+      // many pull requests leaves the slow ones without status instead of
+      // turning the whole repository unavailable.
+      const worker = async () => {
+        while (next < rows.length && Date.now() < deadline) {
+          const index = next++;
+          const pull = rows[index]!;
+          if (pull.fork) continue;
+          let timer: NodeJS.Timeout | undefined;
+          const status = await Promise.race([
+            readProjectStatus(project, pull.branch, remember).catch(() => null),
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+            }),
+          ]).finally(() => clearTimeout(timer));
+          statuses[index] =
+            status && status.number === pull.number && status.phase === 'open' ? status : null;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, rows.length) }, worker));
+      return {
+        webUrl: provider.cloneUrl(project).replace(/\.git$/u, ''),
+        pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
+      };
+    },
+    status: async (project, branch) =>
+      readProjectStatus(project, branch, await isDefaultRepository(project)),
+    merge: async (project, number, expectedHeadSha) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.repositoryPrService) return false;
+      try {
+        return await provider.repositoryPrService(project).mergePr(number, expectedHeadSha);
+      } finally {
+        sharedForgeStatus.invalidate(await statusIdentity(project, provider));
+      }
+    },
   };
   const readWorktreeStatus = async (branch: string, worktree: string) => {
     const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
@@ -4022,6 +4097,7 @@ export async function buildEmbeddedServer(
         return { available: false, reason: 'This project has no supported repository provider' };
       return githubQAAnalysis(project, request, authorize);
     },
+    projectPullRequests,
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider?.discover) throw new Error('Repository monitoring unsupported');
