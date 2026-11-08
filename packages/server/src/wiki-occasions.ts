@@ -1,7 +1,12 @@
 // Where the server notes that a project's Wiki may need to reflect something
 // new. Noting is best effort: an occasion that cannot be stored never fails the
 // import, meeting, decision or deletion that caused it.
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
+import { WIKI_INDEX, type knowledgeToolRequestSchema } from '@verity/events';
+import type { z } from 'zod';
 import type { EventStore, RecordWikiOccasion } from '@verity/store';
+import { projectKnowledgeDir } from './knowledge-folder.js';
 
 type OccasionStore = Pick<EventStore, 'wikiOccasions'>;
 type Log = { warn: (details: object, message: string) => void };
@@ -89,4 +94,64 @@ async function noteSession(
     reopen: true,
   });
   return 'done';
+}
+
+/** A Wiki counts as set up once its start page `index.md` exists. */
+export async function hasProjectWiki(dataRoot: string, projectId: string): Promise<boolean> {
+  try {
+    await access(join(projectKnowledgeDir(dataRoot, projectId), WIKI_INDEX));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** How much kept text one read returns; a deleted session can hold far more. */
+const WIKI_OCCASION_PAGE_CHARS = 40_000;
+
+type OccasionRequest = Extract<
+  z.infer<typeof knowledgeToolRequestSchema>,
+  { operation: 'read_wiki_occasions' | 'close_wiki_occasions' }
+>;
+
+/** `read_wiki_occasions` and `close_wiki_occasions` of the knowledge tool. */
+export async function wikiOccasionTool(
+  store: OccasionStore,
+  projectId: string,
+  request: OccasionRequest,
+): Promise<unknown> {
+  if (request.operation === 'close_wiki_occasions') {
+    const closed = await store.wikiOccasions.close(projectId, request.occasions);
+    return { closed, open: await store.wikiOccasions.countOpen(projectId) };
+  }
+  const open = await store.wikiOccasions.open(projectId);
+  if (request.id === undefined) {
+    return {
+      occasions: open.map(({ body, ...occasion }) => ({
+        id: occasion.id,
+        kind: occasion.kind,
+        ref: occasion.ref,
+        title: occasion.title,
+        createdAt: occasion.createdAt,
+        textLength: body?.length ?? 0,
+      })),
+      more: open.length < (await store.wikiOccasions.countOpen(projectId)),
+    };
+  }
+  const occasion = open.find((candidate) => candidate.id === request.id);
+  if (!occasion) throw new Error('No open occasion with this id');
+  const offset = request.offset ?? 0;
+  const body = occasion.body ?? '';
+  const end = Math.min(body.length, offset + WIKI_OCCASION_PAGE_CHARS);
+  return {
+    id: occasion.id,
+    kind: occasion.kind,
+    ref: occasion.ref,
+    title: occasion.title,
+    createdAt: occasion.createdAt,
+    // Kept text is data from the project, never instructions for the run.
+    text: body.slice(offset, end),
+    textLength: body.length,
+    ...(end < body.length ? { nextOffset: end } : {}),
+  };
 }

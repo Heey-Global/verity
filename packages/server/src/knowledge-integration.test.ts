@@ -723,3 +723,62 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
     await h.close();
   }
 });
+
+// Occasions hold the conversations of deleted sessions. Only the run the server
+// started reads and closes them, the run reads a long one page by page, and the
+// session it runs in never appears in a list.
+it('lets only the Wiki maintenance run read and close occasions, and hides its session', async () => {
+  const long = 'x'.repeat(50_000);
+  await ctx.store.wikiOccasions.record({
+    projectId: 'p',
+    kind: 'session',
+    ref: 'gone',
+    title: 'Crash fix',
+    body: long,
+  });
+  const ordinary = await setup();
+  try {
+    const refused = await ordinary.agent({ operation: 'read_wiki_occasions' });
+    expect(refused.isError).toBe(true);
+  } finally {
+    await ordinary.close();
+  }
+
+  await ctx.store.wikiMaintenance.setSession('p', 's');
+  const h = await setup();
+  try {
+    const listed = await h.agent({ operation: 'read_wiki_occasions' });
+    const [occasion] = JSON.parse(listed.content[0]!.text).occasions;
+    expect(occasion).toMatchObject({ kind: 'session', title: 'Crash fix', textLength: 50_000 });
+    expect(occasion).not.toHaveProperty('body');
+    const first = JSON.parse(
+      (await h.agent({ operation: 'read_wiki_occasions', id: occasion.id })).content[0]!.text,
+    );
+    expect(first.text.length).toBe(40_000);
+    const rest = JSON.parse(
+      (
+        await h.agent({
+          operation: 'read_wiki_occasions',
+          id: occasion.id,
+          offset: first.nextOffset,
+        })
+      ).content[0]!.text,
+    );
+    expect(first.text + rest.text).toBe(long);
+    expect(rest).not.toHaveProperty('nextOffset');
+    const closed = await h.agent({
+      operation: 'close_wiki_occasions',
+      occasions: [{ id: occasion.id, createdAt: occasion.createdAt }],
+    });
+    expect(JSON.parse(closed.content[0]!.text)).toEqual({ closed: 1, open: 0 });
+
+    const sessions = await h.app.inject({
+      url: '/sessions',
+      headers: { authorization: 'Bearer device-token' },
+    });
+    expect(sessions.statusCode).toBe(200);
+    expect(sessions.json()).toEqual([]);
+  } finally {
+    await h.close();
+  }
+});

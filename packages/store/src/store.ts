@@ -1,5 +1,5 @@
 import { ProjectInquiryStore } from './project-inquiries.js';
-import { WikiOccasionStore } from './wiki-occasions.js';
+import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
   egressDestinationDb,
   withEgressDestinationTransaction,
@@ -1740,6 +1740,7 @@ export class EventStore implements EventSink {
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
+    this.wikiMaintenance = new WikiMaintenanceStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
@@ -1757,6 +1758,7 @@ export class EventStore implements EventSink {
   readonly projectInquiries: ProjectInquiryStore;
   /** What a project's Wiki may need to reflect, until a maintenance run read it. */
   readonly wikiOccasions: WikiOccasionStore;
+  readonly wikiMaintenance: WikiMaintenanceStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;

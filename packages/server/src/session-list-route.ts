@@ -10,6 +10,8 @@ export interface SessionListRouteDeps {
   pruneBranchCache: (liveWorktrees: ReadonlySet<string>) => void;
   summarizeSessions: (sessions: SessionRecord[]) => Promise<SessionSummary[]>;
   collectAttention: () => Promise<AttentionSignal[]>;
+  /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
+  hiddenSessionIds?: () => ReadonlySet<string>;
 }
 
 export function registerSessionListRoute(app: FastifyInstance, deps: SessionListRouteDeps): void {
@@ -29,7 +31,10 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
   // Authentication hooks still run independently before every handler invocation.
   let inFlight: Promise<SessionSummary[]> | undefined;
   const load = async (): Promise<SessionSummary[]> => {
-    const sessions = await measureLatencyPhase('session_list', () => deps.store.listSessions());
+    const hidden = deps.hiddenSessionIds?.();
+    const sessions = (
+      await measureLatencyPhase('session_list', () => deps.store.listSessions())
+    ).filter((session) => !hidden?.has(session.sessionId));
     const liveWorktrees = new Set(sessions.map((s) => s.worktree));
     deps.prunePrSummaryCache(liveWorktrees);
     deps.pruneBranchCache(liveWorktrees);

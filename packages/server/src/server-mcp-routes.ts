@@ -77,7 +77,12 @@ import {
   importProjectSource,
   moveProjectSource,
 } from './knowledge-import.js';
-import { knowledgeRef, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
+import {
+  knowledgeRef,
+  noteWikiOccasion,
+  occasionTitle,
+  wikiOccasionTool,
+} from './wiki-occasions.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
@@ -1844,6 +1849,18 @@ export function registerServerMcpRoutes({
                 app.log,
               );
               return imported;
+            }
+            if (
+              request.operation === 'read_wiki_occasions' ||
+              request.operation === 'close_wiki_occasions'
+            ) {
+              // What happened in a project includes the conversations of deleted
+              // sessions; only the run the server started for it reads and closes them.
+              if (!(await deps.eventStore.wikiMaintenance.isSession(input.sessionId)))
+                throw new ControlPlaneSessionAuthorityError(
+                  'Wiki occasions are read only in the Wiki maintenance run',
+                );
+              return wikiOccasionTool(deps.eventStore, input.projectId, request);
             }
             if (request.operation === 'propose_wiki') {
               if (!wikiProposals) throw new Error('Knowledge storage is unavailable');
