@@ -9,6 +9,7 @@ import { isUtf8 } from 'node:buffer';
 import { join } from 'node:path';
 import {
   markdownLinks,
+  parseWikiLog,
   resolveKnowledgeLink,
   WIKI_INDEX,
   WIKI_LOG,
@@ -16,6 +17,7 @@ import {
   type WikiCatalog,
   type WikiPage,
   type WikiReviewItem,
+  type WikiLogEntry,
   type WikiTopic,
 } from '@verity/events';
 import { openDocumentDirectory, readDocument } from './document-workspace.js';
@@ -42,6 +44,7 @@ interface ReadPage {
   summary: string;
   links: KnowledgePath[];
   index?: { overview: string; topics: WikiTopic[] };
+  log?: WikiLogEntry[];
 }
 
 /** Inline Markdown as plain text: link texts, no emphasis or code marks. */
@@ -242,6 +245,7 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
               return links.slice(0, MAX_LINKS_PER_PAGE);
             })(),
             ...(page === WIKI_INDEX ? { index: parseWikiIndex(markdown) } : {}),
+            ...(page === WIKI_LOG ? { log: parseWikiLog(markdown) } : {}),
           });
         } catch {
           // Oversized, replaced while read, or not a plain file: left out, and said so.
@@ -337,6 +341,16 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
   const diskChecks = new Map<string, Promise<boolean>>();
   const pages: WikiPage[] = [];
   let index: WikiCatalog['index'] = null;
+  let log: WikiCatalog['log'] = null;
+  // The latest log entry per page. Entries are appended in order, so a later one
+  // of the same day wins; a page the log never names keeps its file age alone.
+  const lastChange = new Map<string, NonNullable<WikiPage['lastChange']>>();
+  for (const entry of read.find((page) => page.path === WIKI_LOG)?.log ?? [])
+    for (const target of entry.links) {
+      const previous = lastChange.get(target);
+      if (!previous || previous.at <= entry.at)
+        lastChange.set(target, { at: entry.at, kind: entry.kind, title: entry.title });
+    }
   for (const page of read) {
     const links = page.links;
     const broken: string[] = [];
@@ -364,7 +378,11 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
       index = { path: page.path, modifiedAt: page.modifiedAt, ...page.index };
       continue;
     }
-    if (page.path === WIKI_LOG) continue;
+    if (page.path === WIKI_LOG) {
+      log = { path: page.path, modifiedAt: page.modifiedAt };
+      continue;
+    }
+    const change = lastChange.get(page.path);
     pages.push({
       path: page.path,
       title: page.title,
@@ -372,6 +390,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
       modifiedAt: page.modifiedAt,
       links,
       linkedFrom: [],
+      ...(change ? { lastChange: change } : {}),
     });
   }
   for (const page of pages) page.linkedFrom = [...(linkedFrom.get(page.path) ?? [])].sort();
@@ -379,6 +398,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     pages,
     index,
     decisions: decisionState.decisions,
+    log,
     review: [...conflicts.items, ...review],
     truncated,
   };

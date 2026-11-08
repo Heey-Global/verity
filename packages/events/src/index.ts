@@ -279,11 +279,15 @@ export {
 } from './agent-assets.generated.js';
 export {
   markdownLinks,
+  parseWikiLog,
   resolveKnowledgeLink,
+  WIKI_CONVENTIONS,
   WIKI_INDEX,
   WIKI_LOG,
+  WIKI_LOG_KINDS,
   wikiCatalogSchema,
   type KnowledgePath,
+  type WikiLogEntry,
   type WikiCatalog,
   type WikiDecision,
   type WikiPage,

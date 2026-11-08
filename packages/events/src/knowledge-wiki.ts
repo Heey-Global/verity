@@ -76,6 +76,8 @@ const wikiPageSchema = z.object({
   links: z.array(pathSchema),
   /** Wiki pages that link to this one. */
   linkedFrom: z.array(pathSchema),
+  /** The latest log.md entry that names this page: when, what kind, from what. */
+  lastChange: z.object({ at: z.string(), kind: z.string(), title: z.string() }).optional(),
 });
 
 const wikiTopicSchema = z.object({
@@ -116,6 +118,8 @@ export const wikiCatalogSchema = z.object({
     })
     .nullable(),
   decisions: z.array(wikiDecisionSchema),
+  /** The change log Verity appends to, when the Wiki has one. Older servers omit it. */
+  log: z.object({ path: pathSchema, modifiedAt: z.string() }).nullable().optional(),
   // Kinds of review items added later are left out rather than failing the whole
   // catalog, which would cost an older app its Wiki.
   review: z.array(z.unknown()).transform((items) =>
@@ -137,3 +141,41 @@ export type WikiCatalog = z.infer<typeof wikiCatalogSchema>;
 /** The start page and the change log are the Wiki's own pages, not topics' pages. */
 export const WIKI_INDEX = 'insights/index.md';
 export const WIKI_LOG = 'insights/log.md';
+/** The project's own Wiki rules (the "schema"), written at setup and changed with Verity. */
+export const WIKI_CONVENTIONS = 'insights/wiki-conventions.md';
+
+/** The kinds of change log.md records, in its `## [YYYY-MM-DD] kind | Title` headings. */
+export const WIKI_LOG_KINDS = ['setup', 'ingest', 'chat', 'merge', 'lint'] as const;
+
+export interface WikiLogEntry {
+  /** The entry's day, `YYYY-MM-DD`. */
+  at: string;
+  kind: string;
+  title: string;
+  /** The knowledge files the entry links to: the pages it changed and its sources. */
+  links: KnowledgePath[];
+}
+
+/**
+ * The entries of log.md in file order. An entry is a `## [YYYY-MM-DD] kind |
+ * Title` heading and the lines up to the next heading; other headings and text
+ * are kept by the file but are no entries. Links resolve from log.md itself.
+ */
+export function parseWikiLog(markdown: string): WikiLogEntry[] {
+  const entries: WikiLogEntry[] = [];
+  let current: WikiLogEntry | null = null;
+  for (const line of markdown.split('\n')) {
+    if (/^#{1,6}\s/.test(line)) {
+      const match = /^##\s+\[(\d{4}-\d{2}-\d{2})\]\s+([a-z][a-z-]*)\s*\|\s*(.+?)\s*$/.exec(line);
+      current = match ? { at: match[1]!, kind: match[2]!, title: match[3]!, links: [] } : null;
+      if (current) entries.push(current);
+      continue;
+    }
+    if (!current) continue;
+    for (const link of markdownLinks(line)) {
+      const target = resolveKnowledgeLink(WIKI_LOG, link.href);
+      if (target && !current.links.includes(target)) current.links.push(target);
+    }
+  }
+  return entries;
+}

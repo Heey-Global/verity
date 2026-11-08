@@ -180,6 +180,102 @@ it('lists every page by title where the Wiki has no start page yet', async () =>
   expect(screen.queryByText('Topics')).toBeNull();
 });
 
+// A Wiki is set up in a session with the user, never written on opening: the
+// buttons must start that session with the setup request, not write anything.
+it('explains an empty Wiki and sets it up in a session', async () => {
+  const api = client({ ...catalog, pages: [], index: null, decisions: [], review: [] });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  expect(await screen.findByTestId('wiki-empty')).toBeTruthy();
+  expect(screen.getByText('You confirm every change')).toBeTruthy();
+  fireEvent.press(screen.getByText('Set up Wiki'));
+  const call = mockPush.mock.calls.at(-1)?.[0] as unknown as {
+    pathname: string;
+    params: { projectId: string; prompt: string };
+  };
+  expect(call.pathname).toBe('/new');
+  expect(call.params.projectId).toBe('p');
+  expect(call.params.prompt).toContain('wiki-maintain');
+  expect(call.params.prompt).toContain('write nothing until I confirm');
+  expect(api.getProjectKnowledgeFile).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Add a source first'));
+  expect(mockPush).toHaveBeenLastCalledWith({
+    pathname: '/project/[id]/knowledge',
+    params: { id: 'p', folder: 'sources' },
+  });
+});
+
+it('offers an overview above the pages of a Wiki without a start page', async () => {
+  client({ ...catalog, index: null });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  expect(await screen.findByText('2 pages, no overview yet')).toBeTruthy();
+  fireEvent.press(screen.getByText('Create overview'));
+  const call = mockPush.mock.calls.at(-1)?.[0] as unknown as { params: { prompt: string } };
+  expect(call.params.prompt).toMatch(/^Create a start page/);
+  // The pages stay listed under the offer.
+  expect(screen.getByText('Pages · 2')).toBeTruthy();
+});
+
+// The badge leads to To review; buried under the decisions it would be missed.
+it('shows what needs a look right under the overview', async () => {
+  client();
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  await screen.findByTestId('wiki-home');
+  const text = JSON.stringify(screen.toJSON());
+  expect(text.indexOf('To review · 2')).toBeLessThan(text.indexOf('Topics'));
+  expect(text.indexOf('To review · 2')).toBeGreaterThan(text.indexOf('navigation concept'));
+});
+
+it('names where a page’s latest change came from, newest log entry first', async () => {
+  client({
+    ...catalog,
+    pages: [
+      catalog.pages[0]!,
+      {
+        ...catalog.pages[1]!,
+        // Older on disk, but the log names it later: it is the latest change.
+        lastChange: { at: '2099-01-02', kind: 'ingest', title: 'Live meeting 2 Jan' },
+      },
+    ],
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  const from = await screen.findByText(/from Live meeting 2 Jan/);
+  expect(from).toBeTruthy();
+  const text = JSON.stringify(screen.toJSON());
+  const recent = text.slice(text.indexOf('Recently updated'));
+  expect(recent.indexOf('Assistant and roles')).toBeLessThan(recent.indexOf('Navigation concept'));
+});
+
+it('explains how the Wiki works and links its rules and change log', async () => {
+  client({
+    ...catalog,
+    pages: [
+      ...catalog.pages,
+      {
+        path: 'insights/wiki-conventions.md',
+        title: 'Wiki conventions',
+        summary: 'Rules.',
+        modifiedAt: today,
+        links: [],
+        linkedFrom: [],
+      },
+    ],
+    log: { path: 'insights/log.md', modifiedAt: today },
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  await screen.findByTestId('wiki-home');
+  fireEvent.press(screen.getByLabelText('How the Wiki works'));
+  expect(await screen.findByText('Verity writes and maintains')).toBeTruthy();
+  fireEvent.press(screen.getByText('Change log'));
+  expect(mockPush).toHaveBeenLastCalledWith({
+    pathname: '/project/[id]/knowledge',
+    params: { id: 'p', file: 'insights/log.md' },
+  });
+  fireEvent.press(screen.getByLabelText('How the Wiki works'));
+  fireEvent.press(await screen.findByText('Rebuild overview…'));
+  const call = mockPush.mock.calls.at(-1)?.[0] as unknown as { params: { prompt: string } };
+  expect(call.params.prompt).toMatch(/^Rebuild the start page/);
+});
+
 it('lists decisions by status, superseded ones on request', async () => {
   client();
   render(<KnowledgeScreen scope={PROJECT} folder={DECISIONS} />);

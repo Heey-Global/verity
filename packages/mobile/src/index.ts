@@ -776,6 +776,7 @@ export {
 } from './projectCollaboration.js';
 export {
   resolveKnowledgeLink,
+  WIKI_CONVENTIONS,
   WIKI_INDEX,
   WIKI_LOG,
   type KnowledgePath,

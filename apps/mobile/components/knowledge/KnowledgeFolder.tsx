@@ -16,6 +16,7 @@ import {
 } from './knowledgeScope';
 import { KnowledgeDeleteContext, KnowledgeEntryActions } from './KnowledgeEntryActions';
 import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
+import { startWikiSetup, type WikiSetupMode } from './WikiGuide';
 import { WikiDecisions, WikiHome, WikiTopicPages } from './WikiViews';
 
 const PROJECT_AREAS = ['insights', 'sources'] as const;
@@ -156,7 +157,13 @@ export function KnowledgeFolder({
           </Group>
         ) : fromCatalog && wiki.catalog ? (
           view.kind === 'home' ? (
-            <WikiHome catalog={wiki.catalog} open={open} />
+            <WikiHome
+              catalog={wiki.catalog}
+              open={open}
+              {...(scope.kind === 'project'
+                ? { setup: (mode: WikiSetupMode) => startWikiSetup(scope.projectId, mode) }
+                : {})}
+            />
           ) : view.kind === 'decisions' ? (
             <WikiDecisions catalog={wiki.catalog} open={open} />
           ) : view.kind === 'topic' ? (

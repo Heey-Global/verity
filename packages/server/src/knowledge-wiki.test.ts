@@ -193,9 +193,48 @@ describe('projectWikiCatalog', () => {
       pages: [],
       index: null,
       decisions: [],
+      log: null,
       review: [],
       truncated: false,
     });
+  });
+
+  // "Recently updated" says where a change came from; a log entry that names a
+  // page must reach that page, and a later entry must replace an earlier one.
+  it('gives each page the latest log entry that names it', async () => {
+    write('insights/nav.md', '# Navigation\n\nText.\n');
+    write('insights/meetings.md', '# Meetings\n\nText.\n');
+    write('insights/quiet.md', '# Quiet\n\nText.\n');
+    write(
+      'insights/log.md',
+      [
+        '# Change log',
+        '',
+        '## [2026-11-06] setup | Wiki set up',
+        '- [Navigation](nav.md), [Meetings](meetings.md)',
+        '',
+        '## Notes without a date are no entry',
+        '- [Quiet](quiet.md)',
+        '',
+        '## [2026-11-07] ingest | Live meeting 7 Nov',
+        '- Updated [Navigation](/knowledge/insights/nav.md) from [the meeting](../sources/meetings/m.md)',
+        '',
+      ].join('\n'),
+    );
+    const catalog = await projectWikiCatalog(root);
+    const change = (path: string) => catalog.pages.find((page) => page.path === path)?.lastChange;
+    expect(change('insights/nav.md')).toEqual({
+      at: '2026-11-07',
+      kind: 'ingest',
+      title: 'Live meeting 7 Nov',
+    });
+    expect(change('insights/meetings.md')).toEqual({
+      at: '2026-11-06',
+      kind: 'setup',
+      title: 'Wiki set up',
+    });
+    expect(change('insights/quiet.md')).toBeUndefined();
+    expect(catalog.log).toMatchObject({ path: 'insights/log.md' });
   });
 
   // The app opens any knowledge file a link names; only a link to nothing is broken.
