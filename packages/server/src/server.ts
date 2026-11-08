@@ -2670,29 +2670,50 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return null;
   };
   const prCleanupPending = new Set<string>();
+  const prVisibilityWrites = new Map<string, Promise<void>>();
+  const withPrVisibility = async <T>(
+    session: SessionRecord,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    const key = session.worktree;
+    const previous = prVisibilityWrites.get(key);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    prVisibilityWrites.set(key, pending);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (prVisibilityWrites.get(key) === pending) prVisibilityWrites.delete(key);
+    }
+  };
   const sessionPrCache = createSessionPrCache({
     load: sessionPrStatus,
-    present: async (session, status) => {
-      if (!status || status.phase === 'open' || prCleanupPending.has(session.sessionId))
-        return status;
-      const saved = await deps.eventStore.getSessionPrVisibility(
-        session.sessionId,
-        session.worktree,
-        status.url,
-      );
-      if (saved?.hidden) return null;
-      const branches = await branchesForSession(session);
-      const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
-      // An unavailable workspace is not evidence that work resumed.
-      if (fingerprint === undefined) return status;
-      const hidden = await deps.eventStore.observeSessionPrVisibility(
-        session.sessionId,
-        session.worktree,
-        status.url,
-        fingerprint,
-      );
-      return hidden ? null : status;
-    },
+    present: (session, status) =>
+      withPrVisibility(session, async () => {
+        if (!status || status.phase === 'open' || prCleanupPending.has(session.sessionId))
+          return status;
+        const saved = await deps.eventStore.getSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+        );
+        if (saved?.hidden) return null;
+        const branches = await branchesForSession(session);
+        const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+        // An unavailable workspace is not evidence that work resumed.
+        if (fingerprint === undefined) return status;
+        const hidden = await deps.eventStore.observeSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+          fingerprint,
+        );
+        return hidden ? null : status;
+      }),
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
@@ -6353,24 +6374,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     beforePrCleanup: (session) => {
       prCleanupPending.add(session.sessionId);
     },
-    afterPrCleanup: async (session, status) => {
-      try {
-        if (status?.phase === 'merged') {
-          const branches = await branchesForSession(session);
-          const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
-          if (fingerprint !== undefined)
-            await deps.eventStore.resetSessionPrVisibility(
-              session.sessionId,
-              session.worktree,
-              status.url,
-              fingerprint,
-            );
+    afterPrCleanup: (session, status) =>
+      withPrVisibility(session, async () => {
+        try {
+          if (status?.phase === 'merged') {
+            const branches = await branchesForSession(session);
+            const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+            if (fingerprint !== undefined)
+              await deps.eventStore.resetSessionPrVisibility(
+                session.sessionId,
+                session.worktree,
+                status.url,
+                fingerprint,
+              );
+          }
+        } finally {
+          prCleanupPending.delete(session.sessionId);
+          invalidatePrSummaryAction(session, true);
         }
-      } finally {
-        prCleanupPending.delete(session.sessionId);
-        invalidatePrSummaryAction(session, true);
-      }
-    },
+      }),
     invalidatePrSummaryAction,
   });
 
