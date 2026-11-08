@@ -226,14 +226,19 @@ it('shows what needs a look right under the overview', async () => {
 });
 
 it('names where a page’s latest change came from, newest log entry first', async () => {
+  const daysAgo = (days: number) => {
+    const date = new Date();
+    date.setUTCDate(date.getUTCDate() - days);
+    return date.toISOString();
+  };
   client({
     ...catalog,
     pages: [
-      catalog.pages[0]!,
+      { ...catalog.pages[0]!, modifiedAt: daysAgo(3) },
       {
         ...catalog.pages[1]!,
         // Older on disk, but the log names it later: it is the latest change.
-        lastChange: { at: '2099-01-02', kind: 'ingest', title: 'Live meeting 2 Jan' },
+        lastChange: { at: daysAgo(1).slice(0, 10), kind: 'ingest', title: 'Live meeting 2 Jan' },
       },
     ],
   });
@@ -285,6 +290,19 @@ it('keeps a log entry one day older than the file, not two', async () => {
   render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
   expect(await screen.findByText(/from Yesterday/)).toBeTruthy();
   expect(screen.queryByText(/from Earlier/)).toBeNull();
+});
+
+it('ignores a log entry dated in the future', async () => {
+  client({
+    ...catalog,
+    pages: [
+      { ...catalog.pages[0]!, lastChange: { at: '2999-01-01', kind: 'ingest', title: 'Future' } },
+      catalog.pages[1]!,
+    ],
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+  await screen.findByTestId('wiki-home');
+  expect(screen.queryByText(/from Future/)).toBeNull();
 });
 
 it('explains how the Wiki works and links its rules and change log', async () => {

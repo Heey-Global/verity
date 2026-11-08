@@ -177,7 +177,12 @@ export function parseWikiLog(markdown: string): WikiLogEntry[] {
         full && full.length > MAX_LOG_TITLE
           ? `${full.slice(0, MAX_LOG_TITLE - 1).trimEnd()}…`
           : full;
-      current = match && title ? { at: match[1]!, kind: match[2]!, title, links: [] } : null;
+      // A day that does not exist (2026-13-45) is no entry.
+      const day = match ? new Date(`${match[1]!}T00:00:00Z`) : null;
+      const real =
+        day !== null && !Number.isNaN(day.getTime()) && day.toISOString().startsWith(match![1]!);
+      current =
+        match && title && real ? { at: match[1]!, kind: match[2]!, title, links: [] } : null;
       if (current) entries.push(current);
       continue;
     }

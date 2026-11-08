@@ -190,11 +190,18 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
  * log is append-only, so its newest entries are the ones a page's origin needs;
  * a log that outgrew any limit must not take every origin with it.
  */
-async function readTail(path: string, maxBytes: number): Promise<Buffer> {
+async function readTail(
+  path: string,
+  maxBytes: number,
+  expected: { dev: number; ino: number },
+): Promise<Buffer> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
     if (!stat.isFile()) throw Object.assign(new Error('not a file'), { code: 'EISDIR' });
+    // The same checks readDocument makes: still the file the scan listed.
+    if (stat.dev !== expected.dev || stat.ino !== expected.ino)
+      throw Object.assign(new Error('document file changed'), { code: 'DOCUMENT_ENTRY_CHANGED' });
     const start = Math.max(0, stat.size - maxBytes);
     const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
     let length = 0;
@@ -255,7 +262,7 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
           const stat = await lstat(`/proc/self/fd/${handle.fd}/${entry.name}`);
           const content =
             `insights/${rel}` === WIKI_LOG
-              ? await readTail(`/proc/self/fd/${handle.fd}/${entry.name}`, MAX_LOG_BYTES)
+              ? await readTail(`/proc/self/fd/${handle.fd}/${entry.name}`, MAX_LOG_BYTES, stat)
               : await readDocument(insights, rel, false, MAX_PAGE_BYTES);
           if (!content || !isUtf8(content) || content.includes(0)) continue;
           bytes += content.length;

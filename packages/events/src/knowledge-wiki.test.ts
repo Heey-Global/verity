@@ -137,6 +137,12 @@ describe('parseWikiLog', () => {
 
   // The title is copied to every page the entry names; unbounded, one line
   // could blow the catalog up for every page it links.
+  it('skips entries dated on a day that does not exist', () => {
+    expect(
+      parseWikiLog('## [2026-13-45] ingest | Nonsense\n## [2026-02-30] chat | Nor this'),
+    ).toEqual([]);
+  });
+
   it('bounds an entry’s title and links', () => {
     const links = Array.from(
       { length: 500 },

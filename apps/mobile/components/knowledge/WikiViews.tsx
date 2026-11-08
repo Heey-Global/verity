@@ -39,6 +39,10 @@ type Open = { folder: (folder: string) => void; file: (file: string) => void };
  */
 function currentChange(page: WikiPage): WikiPage['lastChange'] {
   const change = page.lastChange;
+  // An entry dated past tomorrow (UTC) was written wrong; it must not pin the page on top.
+  const tomorrow = new Date();
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  if (change && change.at > tomorrow.toISOString().slice(0, 10)) return undefined;
   const edited = new Date(page.modifiedAt);
   if (!change || Number.isNaN(edited.getTime())) return change;
   // The entry's day is the writer's; a publish past midnight may land a day later.
