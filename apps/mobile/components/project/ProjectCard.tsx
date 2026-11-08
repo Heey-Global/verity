@@ -195,7 +195,6 @@ const CARD_BORDER = 1;
 
 const styles = StyleSheet.create((theme) => ({
   card: {
-    marginHorizontal: theme.spacing.md,
     borderRadius: theme.radius.card,
     borderWidth: CARD_BORDER,
     borderColor: theme.colors.border,
