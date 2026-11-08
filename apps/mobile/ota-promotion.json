@@ -1,23 +1,18 @@
 {
   "schema": 1,
-  "version": "1.83.3",
-  "runtime": "1.83.0",
+  "version": "1.88.1",
+  "runtime": "1.88.0",
   "channel": "production",
-  "commit": "12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "tag": "mobile-v1.83.3",
-  "branch": "staging-mobile-v1.83.3-12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "baseline": "mobile-v1.83.0",
-  "group": "f9496f48-e225-438d-a665-5f967ffd45ee",
+  "commit": "89b410a4d60c70acd03425beaa9f2b72a7b05246",
+  "tag": "mobile-v1.88.1",
+  "branch": "staging-mobile-v1.88.1-89b410a4d60c70acd03425beaa9f2b72a7b05246",
+  "baseline": "mobile-v1.88.0",
+  "group": "38456710-3bab-4c9c-ab83-a60b2f2523fd",
   "notes": [
-    "show ongoing recordings on other devices (#2185)",
-    "join online meetings from watched Google calendars (#2167)",
-    "remember confirmed project decisions across chats (#2165)",
-    "restore session repairs and analyze recurring failures (#2168)",
-    "delegate and supervise project assignments (#2171)",
-    "isolate project group selection updates (#2169)",
-    "discover OAuth and complete native/web sign-ins (#2160)",
-    "renew host runtime services independently of builder admission (#2159)",
-    "preserve safe stop and export failure reasons (#2147)",
-    "add elastic memory limits and resilient OOM handling (#2142)"
+    "unify live session groups across Home and projects (#2439)",
+    "match project cards to session list width (#2438)",
+    "show working, new and waiting signals on project cards (#2435)",
+    "rename Sources entries and share swipe actions across lists (#2434)",
+    "wait for sandbox agent connections before starting a turn (#2432)"
   ]
 }
