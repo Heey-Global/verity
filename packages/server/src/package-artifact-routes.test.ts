@@ -13,6 +13,7 @@ import { markInternalConnections } from './internal-listener.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { createNpmInstallGrant, revokeNpmInstallGrant } from './package-install-grants.js';
 const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
@@ -65,6 +66,51 @@ it('requires socket identity, live generation and matching project capability', 
   f.resolve.mockResolvedValueOnce({ ...binding, containerGeneration: 'old' });
   expect((await f.get()).statusCode).toBe(401);
   expect(f.transport).not.toHaveBeenCalled();
+});
+it('binds installation tokens to current capability authority and revokes completed receipts', async () => {
+  const f = fixture();
+  const token = createNpmInstallGrant({
+    sourceToken: 'good',
+    ...binding,
+    sessionId: 's1',
+    policy: { minimumAgeDays: 3, packages: new Set(), exceptions: new Set() },
+  });
+  expect((await f.get(`Bearer ${token}`)).statusCode).toBe(200);
+  expect(f.resolve).toHaveBeenCalledWith('good');
+  f.resolve.mockResolvedValueOnce(undefined);
+  expect((await f.get(`Bearer ${token}`)).statusCode).toBe(401);
+  revokeNpmInstallGrant(token);
+  expect((await f.get(`Bearer ${token}`)).statusCode).toBe(401);
+});
+it('does not accept an installation token issued for a different generation', async () => {
+  const f = fixture();
+  const token = createNpmInstallGrant({
+    sourceToken: 'good',
+    ...binding,
+    containerGeneration: 'old',
+    sessionId: 's1',
+    policy: { minimumAgeDays: 3, packages: new Set(), exceptions: new Set() },
+  });
+  expect((await f.get(`Bearer ${token}`)).statusCode).toBe(401);
+  expect(f.transport).not.toHaveBeenCalled();
+  revokeNpmInstallGrant(token);
+});
+it('expires installation tokens without creating durable project authority', async () => {
+  const f = fixture();
+  const token = createNpmInstallGrant({
+    sourceToken: 'good',
+    ...binding,
+    sessionId: 's1',
+    policy: { minimumAgeDays: 3, packages: new Set(), exceptions: new Set() },
+  });
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30 * 60_000 + 1);
+  try {
+    expect((await f.get(`Bearer ${token}`)).statusCode).toBe(401);
+    expect(f.transport).not.toHaveBeenCalled();
+  } finally {
+    clock.mockRestore();
+    revokeNpmInstallGrant(token);
+  }
 });
 it('accepts native npm bearer and pip Basic auth without forwarding either upstream', async () => {
   const f = fixture();
@@ -185,7 +231,8 @@ it.each([
   'revokes a buffered artifact with a slow client ($throughRelay, $cancellation)',
   async ({ throughRelay, cancellation }) => {
     const f = fixture();
-    const archive = Buffer.alloc(8 * 1024 * 1024, 97);
+    // Exceed the combined UNIX/TCP buffers too, so a relay cannot absorb the whole response.
+    const archive = Buffer.alloc(12 * 1024 * 1024, 97);
     const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`;
     f.transport.mockImplementation(
       async ({ path }) =>
@@ -207,6 +254,7 @@ it.each([
                       },
                     },
                     'dist-tags': { latest: '1.0.0' },
+                    time: { '1.0.0': '2020-01-01T00:00:00Z' },
                   }),
                 ),
           ]),
@@ -258,7 +306,10 @@ it.each([
       }
       expect(clients.map((client) => client.statusCode)).toEqual([200, 200]);
       // Real backpressure keeps the valid response pending beyond broker buffering.
-      expect(sockets.every((socket) => socket.writableLength > 0)).toBe(true);
+      await vi.waitFor(
+        () => expect(sockets.every((socket) => socket.writableLength > 0)).toBe(true),
+        { timeout: 1000, interval: 10 },
+      );
       const activeSockets = [...sockets, ...relaySockets];
       const capacity = await new Promise<number | undefined>((resolve, reject) => {
         const outgoing = request(

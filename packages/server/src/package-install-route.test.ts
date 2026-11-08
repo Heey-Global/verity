@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import { request as httpRequest, type Server } from 'node:http';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Conductor, ExternalPermissionAnswer } from '@verity/session';
@@ -7,6 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { markInternalConnections } from './internal-listener.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
+import { npmInstallGrant } from './package-install-grants.js';
+import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
@@ -26,8 +30,41 @@ const allow = (action: string): ExternalPermissionAnswer => ({
   decision: { behavior: 'allow', updatedInput: { action } },
   decidedBy: 'card',
 });
+const verifyInput = {
+  ...input,
+  action: 'verify',
+  packages: [{ name: 'example', version: '1.0.0' }],
+  minimumAgeDays: 3,
+};
+function packageMetadata(published: unknown): BrokeredHttpStreamTransport {
+  return async () =>
+    Object.assign(
+      Readable.from([
+        JSON.stringify({
+          name: 'example',
+          versions: {
+            '1.0.0': {
+              name: 'example',
+              version: '1.0.0',
+              dist: {
+                tarball: 'https://registry.npmjs.org/example/-/example-1.0.0.tgz',
+                integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+              },
+            },
+          },
+          'dist-tags': { latest: '1.0.0' },
+          time: { '1.0.0': published },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+}
 
-function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', internal = true) {
+function fixture(
+  initial: 'undecided' | 'protected' | 'skipped' = 'undecided',
+  internal = true,
+  packageTransport?: BrokeredHttpStreamTransport,
+) {
   const app = Fastify();
   apps.push(app);
   const generation = new AbortController();
@@ -58,6 +95,7 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
     } as unknown as EventStore,
     conductor: { requestExternalPermission: prompt },
     appendNotice: notice,
+    ...(packageTransport ? { packageTransport } : {}),
   });
   const post = (body: Record<string, unknown> = input, token = 'good') =>
     app.inject({
@@ -70,6 +108,175 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
 }
 
 describe('package install broker', () => {
+  it('verifies locked releases even after a saved Skip and does not persist an exception', async () => {
+    const f = fixture('skipped', true, packageMetadata('2030-01-01T00:00:00Z'));
+    f.prompt.mockResolvedValue(allow('install'));
+    const result = (await f.post(verifyInput)).json<{ action: string; installToken: string }>();
+    expect(result.action).toBe('continue');
+    expect(f.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowStandingGrant: false,
+        input: expect.objectContaining({
+          supported: false,
+          command: expect.stringContaining('example@1.0.0: available 2030-01-04T00:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(npmInstallGrant(result.installToken)?.policy.exceptions.has('example@1.0.0')).toBe(true);
+    expect(f.saved()).toBe('skipped');
+    expect(f.save).not.toHaveBeenCalled();
+    await f.post(verifyInput);
+    expect(f.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires the specific install exception action and cancels denial', async () => {
+    const f = fixture('protected', true, packageMetadata('2030-01-01T00:00:00Z'));
+    f.prompt.mockResolvedValueOnce(allow('configure'));
+    expect((await f.post(verifyInput)).json()).toEqual({ action: 'cancel' });
+    f.prompt.mockResolvedValueOnce({
+      decision: { behavior: 'deny', message: 'Declined.' },
+      decidedBy: 'card',
+    });
+    expect((await f.post(verifyInput)).json()).toEqual({ action: 'cancel' });
+    expect(f.save).not.toHaveBeenCalled();
+  });
+
+  it('grants eligible packages without prompting and revokes a completed install', async () => {
+    const f = fixture('protected', true, packageMetadata('2020-01-01T00:00:00Z'));
+    const result = (await f.post(verifyInput)).json<{ action: string; installToken: string }>();
+    expect(result.action).toBe('continue');
+    expect(f.prompt).not.toHaveBeenCalled();
+    expect(npmInstallGrant(result.installToken)?.policy.packages).toEqual(
+      new Set(['example@1.0.0']),
+    );
+    expect(
+      (await f.post({ ...input, action: 'complete', installToken: result.installToken })).json(),
+    ).toEqual({ action: 'complete' });
+    expect(npmInstallGrant(result.installToken)).toBeUndefined();
+    expect(
+      (await f.post({ ...input, action: 'complete', installToken: result.installToken }))
+        .statusCode,
+    ).toBe(409);
+  });
+
+  it.each([undefined, null, 'not-a-date', '2026-02-30T00:00:00Z'])(
+    'blocks unverifiable publication time %j without offering an exception',
+    async (published) => {
+      const f = fixture('skipped', true, packageMetadata(published));
+      const result = await f.post(verifyInput);
+      expect(result.statusCode).toBe(409);
+      expect(result.json().error).toContain('example@1.0.0');
+      expect(f.prompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a stronger release age and validates verify inputs', async () => {
+    const f = fixture(
+      'protected',
+      true,
+      packageMetadata(new Date(Date.now() - 4 * 86400_000).toISOString()),
+    );
+    f.prompt.mockResolvedValue(allow('install'));
+    const response = (await f.post({ ...verifyInput, minimumAgeDays: 7 })).json<{
+      installToken: string;
+    }>();
+    expect(f.prompt).toHaveBeenCalledOnce();
+    expect(npmInstallGrant(response.installToken)?.policy.minimumAgeDays).toBe(7);
+    expect((await f.post({ ...verifyInput, minimumAgeDays: 0 })).statusCode).toBe(400);
+    expect((await f.post({ ...verifyInput, manager: 'pip' })).statusCode).toBe(400);
+    expect(
+      (await f.post({ ...verifyInput, packages: [{ name: '../escape', version: '1.0.0' }] }))
+        .statusCode,
+    ).toBe(400);
+  });
+
+  it('fails closed when provider metadata cannot be retrieved', async () => {
+    const f = fixture('protected', true, async () => {
+      throw new Error('offline');
+    });
+    expect((await f.post(verifyInput)).statusCode).toBe(502);
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
+  it('reuses publication facts briefly while rechecking floors and never caching exceptions', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockImplementation(packageMetadata(new Date(Date.now() - 4 * 86400_000).toISOString()));
+    const f = fixture('protected', true, transport);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    f.prompt.mockResolvedValue(allow('install'));
+    await f.post({ ...verifyInput, minimumAgeDays: 7 });
+    await f.post({ ...verifyInput, minimumAgeDays: 7 });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(f.prompt).toHaveBeenCalledTimes(2);
+    f.resolve.mockResolvedValueOnce(undefined);
+    expect((await f.post(verifyInput)).statusCode).toBe(401);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5 * 60_000 + 1);
+    try {
+      expect((await f.post(verifyInput)).statusCode).toBe(200);
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it('does not cache missing publication times or failed provider responses', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(packageMetadata(undefined))
+      .mockImplementation(packageMetadata('2020-01-01T00:00:00Z'));
+    const f = fixture('protected', true, transport);
+    expect((await f.post(verifyInput)).statusCode).toBe(502);
+    expect((await f.post(verifyInput)).statusCode).toBe(409);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(3);
+  });
+  it('bounds publication facts instead of retaining every encountered release', async () => {
+    let currentVersions: string[] = [];
+    const transport = vi.fn<BrokeredHttpStreamTransport>().mockImplementation(
+      async () =>
+        Object.assign(
+          Readable.from([
+            JSON.stringify({
+              name: 'example',
+              versions: Object.fromEntries(
+                currentVersions.map((version) => [
+                  version,
+                  {
+                    version,
+                    dist: {
+                      tarball: 'https://registry.npmjs.org/example/-/example.tgz',
+                      integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+                    },
+                  },
+                ]),
+              ),
+              'dist-tags': {},
+              time: Object.fromEntries(
+                currentVersions.map((version) => [version, '2020-01-01T00:00:00Z']),
+              ),
+            }),
+          ]),
+          { statusCode: 200, headers: {} },
+        ) as IncomingMessage,
+    );
+    const f = fixture('protected', true, transport);
+    for (const [start, count] of [
+      [0, 5000],
+      [5000, 5000],
+      [10000, 1],
+      [0, 1],
+    ]) {
+      currentVersions = Array.from({ length: count! }, (_, index) => `1.0.${start! + index}`);
+      const response = await f.post({
+        ...verifyInput,
+        packages: currentVersions.map((version) => ({ name: 'example', version })),
+      });
+      expect(response.statusCode).toBe(200);
+    }
+    expect(transport).toHaveBeenCalledTimes(4);
+  });
+
   it('keeps a saved Skip authoritative when another manager already has protection', async () => {
     const f = fixture('skipped');
     expect((await f.post({ ...input, manager: 'pip', protected: true })).json()).toEqual({

@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { npmStateDirectory } from '../features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs';
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -15,15 +16,30 @@ async function fixture(
   manager = 'npm',
   version = '11.19.0',
   nativeConfig = '',
+  inspectVerification = false,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'verity-package-install-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, 'bin');
   mkdirSync(bin);
   const marker = join(root, 'executed.json');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }));
+  writeFileSync(
+    join(root, 'package-lock.json'),
+    JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'fixture', version: '1.0.0' },
+        'node_modules/example': {
+          version: '1.0.0',
+          resolved: 'https://registry.npmjs.org/example/-/example-1.0.0.tgz',
+        },
+      },
+    }),
+  );
   writeFileSync(
     join(bin, manager),
-    `#!${process.execPath}\nconst fs = require('node:fs');\nif(process.argv[2] === '--version') console.log(${JSON.stringify(version)});\nelse if(process.argv[2] === 'config') console.log(${JSON.stringify(nativeConfig)});\nelse fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({args:process.argv.slice(2),pipConfig:process.env.PIP_CONFIG_FILE,pipAge:process.env.PIP_UPLOADED_PRIOR_TO,npmAge:process.env.npm_config_min_release_age}));\n`,
+    `#!${process.execPath}\nconst fs = require('node:fs');\nif(process.argv[2] === '--version') console.log(${JSON.stringify(version)});\nelse if(process.argv[2] === 'prefix') console.log(${JSON.stringify(root)});\nelse if(process.argv[2] === 'config') console.log(${JSON.stringify(nativeConfig)});\nelse if(process.argv.includes('--package-lock-only=true')) fs.writeFileSync(${JSON.stringify(join(root, 'resolved.json'))}, JSON.stringify(process.argv.slice(2)));\nelse fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({args:process.argv.slice(2),pipConfig:process.env.PIP_CONFIG_FILE,pipAge:process.env.PIP_UPLOADED_PRIOR_TO,npmAge:process.env.npm_config_min_release_age,installToken:process.env.VERITY_PACKAGE_INSTALL_TOKEN}));\n`,
     { mode: 0o755 },
   );
   const capability = join(root, 'capability');
@@ -40,6 +56,15 @@ async function fixture(
       expect(request.headers.authorization).toBe('Bearer test-capability');
       const parsed = JSON.parse(body) as Record<string, unknown>;
       calls.push(parsed);
+      if (!inspectVerification && parsed.action === 'verify') {
+        reply.setHeader('content-type', 'application/json');
+        reply.end(JSON.stringify({ action: 'continue', installToken: 'fixture-install-token' }));
+        return;
+      }
+      if (!inspectVerification && parsed.action === 'complete') {
+        answer(reply, 'complete');
+        return;
+      }
       handler(parsed, reply);
     });
   });
@@ -90,6 +115,101 @@ const answer = (reply: ServerResponse, action: string) => {
 };
 
 describe('package install wrapper', () => {
+  it('holds the project lock through verification and releases it on completion', async () => {
+    const f = await fixture(
+      (body, reply) => {
+        if (body.action === 'verify') {
+          const probe = spawnSync('flock', [
+            '-n',
+            join(npmStateDirectory(f.root), 'verity-npm.lock'),
+            'true',
+          ]);
+          expect(probe.status).toBe(1);
+          reply.setHeader('content-type', 'application/json');
+          reply.end(JSON.stringify({ action: 'continue', installToken: 'one-command' }));
+        } else answer(reply, body.action === 'complete' ? 'complete' : 'continue');
+      },
+      'npm',
+      '11.19.0',
+      '3',
+      true,
+    );
+    expect((await f.start(['ci']).exited).code).toBe(0);
+    expect(
+      spawnSync('flock', ['-n', join(npmStateDirectory(f.root), 'verity-npm.lock'), 'true']).status,
+    ).toBe(0);
+  });
+
+  it('verifies reuse without configuration writes, lockfile resolution or installation', async () => {
+    const f = await fixture((_body, reply) => answer(reply, 'configure'));
+    const before = readFileSync(join(f.root, 'package-lock.json'), 'utf8');
+    expect((await f.start(['ci', '--verity-verify-only']).exited).code).toBe(0);
+    expect(f.calls.map((call) => call.action)).toEqual(['verify', 'complete']);
+    expect(existsSync(f.marker)).toBe(false);
+    expect(existsSync(join(f.root, 'resolved.json'))).toBe(false);
+    expect(existsSync(join(f.root, '.npmrc'))).toBe(false);
+    expect(readFileSync(join(f.root, 'package-lock.json'), 'utf8')).toBe(before);
+  });
+
+  it('checks cached lockfile versions before npm ci and blocks a rejected verification', async () => {
+    const f = await fixture(
+      (body, reply) => {
+        if (body.action === 'verify') {
+          expect(body.packages).toEqual([{ name: 'example', version: '1.0.0' }]);
+          expect(body.minimumAgeDays).toBe(7);
+          expect(existsSync(f.marker)).toBe(false);
+          answer(reply, 'cancel');
+        } else answer(reply, 'continue');
+      },
+      'npm',
+      '11.19.0',
+      '7',
+      true,
+    );
+    mkdirSync(join(f.root, 'node_modules', 'example'), { recursive: true });
+    writeFileSync(join(f.root, 'node_modules', 'example', 'package.json'), '{"version":"1.0.0"}');
+    const result = await f.start(['ci', '--min-release-age=0']).exited;
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('installation remains blocked');
+    expect(existsSync(f.marker)).toBe(false);
+    expect(existsSync(join(f.root, 'resolved.json'))).toBe(false);
+  });
+
+  it('revokes the one-command token and refuses a changed lockfile after verification', async () => {
+    const f = await fixture(
+      (body, reply) => {
+        if (body.action === 'verify') {
+          writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}');
+          reply.setHeader('content-type', 'application/json');
+          reply.end(JSON.stringify({ action: 'continue', installToken: 'one-install' }));
+        } else answer(reply, body.action === 'complete' ? 'complete' : 'continue');
+      },
+      'npm',
+      '11.19.0',
+      '3',
+      true,
+    );
+    const result = await f.start(['ci']).exited;
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('lockfile changed');
+    expect(existsSync(f.marker)).toBe(false);
+    expect(f.calls.map((call) => call.action)).toEqual(['check', 'verify', 'complete']);
+    expect(f.calls.at(-1)?.installToken).toBe('one-install');
+  });
+
+  it('resolves with scripts disabled, verifies, then installs the frozen tree', async () => {
+    const f = await fixture((_body, reply) => answer(reply, 'continue'), 'npm', '11.19.0', '3');
+    expect((await f.start(['install', 'example@1.0.0']).exited).code).toBe(0);
+    const resolution = JSON.parse(readFileSync(join(f.root, 'resolved.json'), 'utf8')) as string[];
+    expect(resolution).toContain('--package-lock-only=true');
+    expect(resolution.at(-2)).toBe('--ignore-scripts=true');
+    expect(JSON.parse(readFileSync(f.marker, 'utf8'))).toMatchObject({
+      args: ['ci'],
+      installToken: 'fixture-install-token',
+    });
+    expect(f.calls.map((call) => call.action)).toEqual(['check', 'verify', 'complete']);
+  });
+
   it('preserves a native user npm floor without creating a weaker project setting', async () => {
     const f = await fixture(
       (body, reply) => {
@@ -280,12 +400,17 @@ describe('package install wrapper', () => {
     answer(waiting, 'configure');
     expect(await run.exited).toMatchObject({ code: 0 });
     expect(JSON.parse(readFileSync(f.marker, 'utf8'))).toMatchObject({
-      args: ['install', 'express'],
+      args: ['ci'],
     });
     expect(readFileSync(join(f.root, '.npmrc'), 'utf8')).toContain(
       'registry=https://registry.npmjs.org/',
     );
-    expect(f.calls.map((call) => call.action)).toEqual(['check', 'configured']);
+    expect(f.calls.map((call) => call.action)).toEqual([
+      'check',
+      'configured',
+      'verify',
+      'complete',
+    ]);
   });
 
   it.each(['cancel', 'unknown'])('keeps the real install blocked after %s', async (action) => {

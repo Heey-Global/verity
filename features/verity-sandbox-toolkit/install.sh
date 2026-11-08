@@ -533,6 +533,7 @@ install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-
 install -d /opt/verity/package-managers /usr/local/lib/verity
 install -m 0644 "$FEATURE_DIR/bin/verity-package-artifacts.mjs" /usr/local/lib/verity/verity-package-artifacts.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
+install -m 0644 "$FEATURE_DIR/bin/verity-npm-preflight.mjs" /usr/local/lib/verity/verity-npm-preflight.mjs
 install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
 for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
   printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"

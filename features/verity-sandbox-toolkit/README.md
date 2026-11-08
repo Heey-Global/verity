@@ -101,6 +101,12 @@ failed confinement operation.
 - **npm supply-chain hardening** — global `ignore-scripts=true`, `allow-git=none`,
   `save-exact=true`, `fund=false`, written to the resolved
   `npm config get globalconfig` path (not hard-coded) and re-asserted.
+- **Session dependency verification and reuse** — npm lockfile inventories are
+  checked before installation or reuse, including cache hits; young versions
+  require a fresh scoped exception. Compatible successful installations can be
+  copied across sessions without sharing writable packages. See
+  [session dependency preparation](../../docs/session-dependencies.md) for
+  supported operations, preserved files and rollout requirements.
 - **git config** into the target user's `~/.gitconfig`: `safe.directory` for
   `/work` (+ worktrees), SSH commit/tag signing (`gpg.format=ssh`,
   `user.signingkey`), the two `insteadOf` HTTPS rewrites, and

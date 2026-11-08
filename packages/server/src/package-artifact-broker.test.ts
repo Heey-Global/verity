@@ -64,6 +64,120 @@ it('rewrites npm metadata to stable content selectors while retaining native age
   ).toBe(true);
 });
 
+it.each([undefined, 'not-a-date', '2030-01-01T00:00:00Z'])(
+  'blocks locked artifact bytes with ineligible publication time %j',
+  async (published) => {
+    const f = fixture();
+    f.transport.mockImplementation(async ({ path }) =>
+      response(metadataPath(path) ? { ...manifest(), time: { '1.0.0': published } } : bytes),
+    );
+    const path = await selector(f);
+    await expect(f.serve(path)).rejects.toMatchObject({ status: 409 });
+    await expect(f.serve('npm/example/-/example-1.0.0.tgz')).rejects.toMatchObject({ status: 409 });
+    expect(f.transport.mock.calls.every(([input]) => metadataPath(input.path))).toBe(true);
+  },
+);
+
+it('enforces stronger install floors and package-scoped exceptions on download', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async ({ path }) =>
+    response(
+      metadataPath(path)
+        ? { ...manifest(), time: { '1.0.0': new Date(Date.now() - 4 * 86400_000).toISOString() } }
+        : bytes,
+    ),
+  );
+  const path = await selector(f);
+  const policy = {
+    minimumAgeDays: 7,
+    packages: new Set(['example@1.0.0']),
+    exceptions: new Set<string>(),
+  };
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 409 });
+  policy.exceptions.add('example@1.0.0');
+  expect(
+    (await f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy)).body,
+  ).toEqual(bytes);
+  policy.packages.clear();
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 403 });
+});
+
+it('never treats missing publication metadata as an approved young release', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async ({ path }) =>
+    response(metadataPath(path) ? { ...manifest(), time: {} } : bytes),
+  );
+  const path = await selector(f);
+  const policy = {
+    minimumAgeDays: 3,
+    packages: new Set(['example@1.0.0']),
+    exceptions: new Set(['example@1.0.0']),
+  };
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(f.transport.mock.calls.every(([input]) => metadataPath(input.path))).toBe(true);
+});
+
+it('verifies publication facts from large packuments without raising the ordinary metadata cap', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async () =>
+    response({ ...manifest(), description: 'x'.repeat(3 * 1024 ** 2) }),
+  );
+  const result = await f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  expect(result.versions).toEqual(new Set(['1.0.0']));
+  expect(result.times.get('1.0.0')).toBe('2020-01-01T00:00:00Z');
+  await expect(f.serve('npm/example')).rejects.toMatchObject({ status: 413 });
+});
+
+it('keeps publication metadata redirects on the provider and rechecks authority', async () => {
+  const f = fixture();
+  f.transport.mockResolvedValueOnce(
+    response('', 302, { location: 'https://foreign.example/example' }),
+  );
+  await expect(
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  ).rejects.toThrow();
+  expect(f.transport).toHaveBeenCalledOnce();
+  f.transport.mockImplementationOnce(async () => {
+    f.authorized.mockResolvedValue(false);
+    return response(manifest());
+  });
+  await expect(
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  ).rejects.toMatchObject({ status: 401 });
+});
+
+it.each([false, true])(
+  'downloads a selected artifact from large packuments (time first: %s)',
+  async (timeFirst) => {
+    const f = fixture();
+    const path = await selector(f);
+    const { time, ...data } = manifest();
+    const metadata = timeFirst
+      ? { time, ...data, description: 'x'.repeat(3 * 1024 ** 2) }
+      : { ...data, time, description: 'x'.repeat(3 * 1024 ** 2) };
+    f.transport.mockImplementation(async ({ path }) =>
+      response(metadataPath(path) ? metadata : bytes),
+    );
+    expect((await f.serve(path)).body).toEqual(bytes);
+    expect((await f.serve('npm/example/-/example-1.0.0.tgz')).body).toEqual(bytes);
+  },
+);
+
+it('does not retain an earlier selected artifact overwritten by a duplicate version', async () => {
+  const f = fixture();
+  const path = await selector(f);
+  const metadata = manifest();
+  const raw = `{"name":"example","versions":{"1.0.0":${JSON.stringify(metadata.versions['1.0.0'])},"1.0.0":null},"time":${JSON.stringify(metadata.time)}}`;
+  f.transport.mockImplementation(async () => response(Buffer.from(raw)));
+  await expect(f.serve(path)).rejects.toMatchObject({ status: 404 });
+});
+
 it('reauthorizes a frozen lockfile selector after broker restart and generation replacement', async () => {
   const f = fixture();
   const path = await selector(f);
