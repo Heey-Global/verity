@@ -168,6 +168,9 @@ export function TaskIssuesList({
           ? item.branch?.match(/^[^/]+\/(\d+)(?:-|$)/)?.[1] === String(issue.number)
           : item.sessionId === started[retryKey(repository, issue.number)]),
     );
+  // "Assigned to me" goes when no host names the viewer any more (after a
+  // retry); a filter left on it would empty every section with no chip selected.
+  const shown = filter === 'mine' && viewers.length === 0 ? 'all' : filter;
   const several = repositories.length > 1;
   return (
     <View style={styles.list}>
@@ -175,7 +178,7 @@ export function TaskIssuesList({
         accessibilityLabel="Filter issues"
         compact
         wrap
-        value={filter}
+        value={shown}
         onChange={(value) => {
           setFilter(value);
           setExpanded([]);
@@ -202,8 +205,8 @@ export function TaskIssuesList({
           );
         const filtered = repository.issues.filter(
           (issue) =>
-            filter === 'all' ||
-            (filter === 'mine'
+            shown === 'all' ||
+            (shown === 'mine'
               ? issue.assignees.some(
                   (login) => login.toLowerCase() === repository.viewerLogin?.toLowerCase(),
                 )

@@ -291,7 +291,8 @@ export function Row({
       style={({ pressed }) => [
         styles.row,
         action !== undefined ? styles.rowBesideAction : null,
-        disabled ? styles.muted : settled ? styles.settled : null,
+        // Beside an action the wrapper dims the whole row once.
+        disabled && action === undefined ? styles.muted : settled ? styles.settled : null,
         pressed && !disabled ? styles.pressed : null,
         active ? styles.rowActive : null,
       ]}

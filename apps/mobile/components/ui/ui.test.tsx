@@ -70,6 +70,27 @@ describe('Row', () => {
     expect(screen.getAllByText('Act')).toHaveLength(1);
   });
 
+  // Dimmed on the wrapper and again on the pressable, a busy row fell to about
+  // 16 % instead of the one disabled opacity.
+  it('dims a disabled row with an action once', () => {
+    render(
+      <Row
+        title="Ship it"
+        onPress={jest.fn()}
+        disabled
+        action={<Button label="Act" variant="secondary" size="compact" onPress={jest.fn()} />}
+      />,
+    );
+    const opacities: number[] = [];
+    for (let node = screen.getByText('Ship it').parent; node; node = node.parent) {
+      // Host views only: a wrapper component repeats the style it passes down.
+      if (typeof node.type !== 'string') continue;
+      const style = StyleSheet.flatten(node.props.style) as { opacity?: number } | undefined;
+      if (style?.opacity !== undefined && style.opacity < 1) opacities.push(style.opacity);
+    }
+    expect(opacities).toHaveLength(1);
+  });
+
   it('highlights the active destination and keeps its trailing content', () => {
     const { rerender } = render(
       <Row title="Session" active onPress={jest.fn()} trailing="Running" />,

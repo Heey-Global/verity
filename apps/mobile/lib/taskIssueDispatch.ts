@@ -152,8 +152,10 @@ export function dispatchTaskIssue(
     }
     await client.sendTurn(dispatch.sessionId, {
       prompt:
-        repository === undefined
-          ? `Work on GitHub issue #${issue.number}: ${issue.title}\n${issue.url}`
+        // Without owner and repository (an older server's answer read before the
+        // project record arrived) the issue's URL alone names where it lives.
+        repository === undefined || !repository.owner || !repository.repo
+          ? `Work on ${HOST_NAME[repository?.kind ?? 'github']} issue #${issue.number}: ${issue.title}\n${issue.url}`
           : `Work on ${HOST_NAME[repository.kind]} issue ${repository.owner}/${repository.repo}#${issue.number}: ${issue.title}\n${issue.url}`,
       clientReplyId: dispatch.replyId,
     });
