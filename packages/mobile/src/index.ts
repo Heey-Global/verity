@@ -782,6 +782,9 @@ export {
   type WikiCatalog,
   type WikiDecision,
   type WikiPage,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
   type WikiReviewItem,
   type WikiTopic,
 } from '@verity/events';

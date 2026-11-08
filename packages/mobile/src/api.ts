@@ -49,7 +49,16 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
-import { wikiCatalogSchema, type WikiCatalog } from '@verity/events';
+import {
+  wikiCatalogSchema,
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiCatalog,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -6279,6 +6288,48 @@ export class VerityClient {
         return null;
       throw err;
     }
+  }
+
+  /** Proposed Wiki changes waiting for review, or null from a server without proposals. */
+  async listWikiProposals(projectId: string): Promise<WikiProposalSummary[] | null> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/proposals`,
+        { method: 'GET' },
+      );
+      return wikiProposalListSchema.parse(await res.json()).proposals;
+    } catch (err) {
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
+  /** One proposal with each page's proposed and current text. */
+  async getWikiProposal(projectId: string, proposalId: string): Promise<WikiProposal> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}`,
+      { method: 'GET' },
+    );
+    return wikiProposalSchema.parse(await res.json());
+  }
+
+  /** Applies or rejects a proposal's pending pages, or only the `paths` named. */
+  async decideWikiProposal(
+    projectId: string,
+    proposalId: string,
+    decision: 'apply' | 'reject',
+    paths?: readonly string[],
+  ): Promise<WikiProposalDecision> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}/${decision}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(paths ? { paths } : {}),
+      },
+    );
+    return wikiProposalDecisionSchema.parse(await res.json());
   }
 
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {

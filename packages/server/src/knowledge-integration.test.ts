@@ -18,6 +18,12 @@ import { join } from 'node:path';
 import { InMemoryEventBus, type Conductor } from '@verity/session';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import {
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+} from '@verity/events';
+
 import { buildServer } from './server.js';
 import {
   markInternalConnections,
@@ -643,9 +649,18 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
 
     const list = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
     expect(list.statusCode).toBe(200);
-    const [open] = list.json<{ proposals: { id: string; changes: unknown[] }[] }>().proposals;
+    // The app reads these replies with the shared schemas; a field renamed here breaks it.
+    const [open] = wikiProposalListSchema.parse(list.json()).proposals;
     expect(open).not.toHaveProperty('sessionId');
     expect(open!.changes).toMatchObject([{ path: 'topics/billing.md', stale: false }]);
+    const detail = await h.app.inject({
+      url: `/projects/p/knowledge/proposals/${open!.id}`,
+      headers: auth,
+    });
+    expect(wikiProposalSchema.parse(detail.json()).changes[0]).toMatchObject({
+      content: change.content,
+      current: null,
+    });
     const applied = await h.app.inject({
       method: 'POST',
       url: `/projects/p/knowledge/proposals/${open!.id}/apply`,
@@ -653,7 +668,10 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
       payload: {},
     });
     expect(applied.statusCode).toBe(200);
-    expect(applied.json()).toMatchObject({ applied: ['topics/billing.md'], stale: [] });
+    expect(wikiProposalDecisionSchema.parse(applied.json())).toMatchObject({
+      applied: ['topics/billing.md'],
+      stale: [],
+    });
     expect(readFileSync(page, 'utf8')).toBe(change.content);
     // Agents write the Wiki as another user; a page created by applying stays writable.
     expect(statSync(page).mode & 0o777).toBe(0o666);

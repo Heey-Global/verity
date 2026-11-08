@@ -509,3 +509,72 @@ it('says a date inside a sentence without lowering the month', () => {
   expect(wikiDayInline('2020-11-07T12:00:00.000Z')).toBe('7 Nov 2020');
   expect(wikiDayInline('not a date')).toBe('at an unknown time');
 });
+
+describe('proposed Wiki changes', () => {
+  const head = {
+    id: 'a1',
+    mode: 'inline' as const,
+    logKind: 'chat',
+    title: 'Billing cycle',
+    sources: ['sources/meetings/2026-11-07-live-meeting.md'],
+    createdAt: today,
+    decidedAt: null,
+  };
+  const pending = { status: 'pending' as const, stale: false };
+
+  it('lists proposals first under To review and opens one for review', async () => {
+    client(catalog, {
+      listWikiProposals: jest
+        .fn()
+        .mockResolvedValue([
+          { ...head, changes: [{ ...pending, path: 'nav.md', summary: 'Explain billing' }] },
+        ]),
+    });
+    render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
+    fireEvent.press(await screen.findByText('Billing cycle'));
+    expect(screen.getByText('To review · 3')).toBeTruthy();
+    expect(screen.getByText('1 change · prepared today')).toBeTruthy();
+    expect(mockPush).toHaveBeenCalledWith(
+      expect.objectContaining({ params: expect.objectContaining({ proposal: 'a1' }) }),
+    );
+  });
+
+  // Leaving a page out must not apply it, and a page edited since the proposal
+  // must not be offered for applying at all.
+  it('applies the chosen pages and rejects the ones left out', async () => {
+    const decideWikiProposal = jest.fn().mockResolvedValue({ applied: [], stale: [], failed: [] });
+    client(catalog, {
+      getWikiProposal: jest.fn().mockResolvedValue({
+        ...head,
+        changes: [
+          {
+            ...pending,
+            path: 'nav.md',
+            summary: 'Explain billing',
+            current: 'Intro.\n\nOld step.',
+            content: 'Intro.\n\nNew step.',
+          },
+          { ...pending, path: 'faq.md', summary: 'Add FAQ', current: null, content: '# FAQ' },
+          {
+            ...pending,
+            stale: true,
+            path: 'roles.md',
+            summary: 'Rename roles',
+            current: 'x',
+            content: 'y',
+          },
+        ],
+      }),
+      decideWikiProposal,
+    });
+    render(<KnowledgeScreen scope={PROJECT} proposal="a1" />);
+    expect(await screen.findByText('Old step.')).toBeTruthy();
+    expect(screen.getByText('New step.')).toBeTruthy();
+    expect(screen.getByText('Changes · 2 of 3 selected')).toBeTruthy();
+    fireEvent.press(screen.getByText('faq · Add FAQ'));
+    fireEvent.press(screen.getByText('Apply 1 change'));
+    await act(async () => {});
+    expect(decideWikiProposal).toHaveBeenCalledWith('p', 'a1', 'apply', ['nav.md']);
+    expect(decideWikiProposal).toHaveBeenCalledWith('p', 'a1', 'reject', ['faq.md', 'roles.md']);
+  });
+});

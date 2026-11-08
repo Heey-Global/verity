@@ -10,12 +10,14 @@ import {
   folderSubtitle,
   folderTitle,
   listKnowledge,
+  pushKnowledge,
   WIKI,
   wikiView,
   type KnowledgeScope,
 } from './knowledgeScope';
 import { KnowledgeDeleteContext, KnowledgeEntryActions } from './KnowledgeEntryActions';
 import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
+import { useWikiProposals } from './useWikiProposals';
 import { startWikiSetup, type WikiSetupMode } from './WikiGuide';
 import { WikiDecisions, WikiHome, WikiTopicPages } from './WikiViews';
 
@@ -69,7 +71,17 @@ export function KnowledgeFolder({
   const catalogFailed = fromCatalog && wiki.error !== undefined;
   const listing = !areas && (!fromCatalog || wiki.catalog === null || catalogFailed);
   const titles = new Map((wiki.catalog?.pages ?? []).map((page) => [page.path, page]));
-  const open = { folder: onOpenFolder, file: onOpenFile };
+  const proposals = useWikiProposals(
+    client,
+    scope.kind === 'project' && folder === WIKI ? scope.projectId : null,
+  );
+  const open = {
+    folder: onOpenFolder,
+    file: onOpenFile,
+    ...(scope.kind === 'project'
+      ? { proposal: (id: string) => pushKnowledge(scope, { proposal: id }) }
+      : {}),
+  };
   const [directory, setDirectory] = useState<SessionDirectory>();
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
@@ -160,6 +172,7 @@ export function KnowledgeFolder({
             <WikiHome
               catalog={wiki.catalog}
               open={open}
+              proposals={proposals ?? []}
               {...(scope.kind === 'project'
                 ? { setup: (mode: WikiSetupMode) => startWikiSetup(scope.projectId, mode) }
                 : {})}
