@@ -161,10 +161,13 @@ export interface WikiLogEntry {
 export function parseWikiLog(markdown: string): WikiLogEntry[] {
   const entries: WikiLogEntry[] = [];
   let current: WikiLogEntry | null = null;
-  for (const line of markdown.split('\n')) {
+  for (const line of markdown.split(/\r?\n/)) {
     if (/^#{1,6}\s/.test(line)) {
-      const match = /^##\s+\[(\d{4}-\d{2}-\d{2})\]\s+([a-z][a-z-]*)\s*\|\s*(.+?)\s*$/.exec(line);
-      current = match ? { at: match[1]!, kind: match[2]!, title: match[3]!, links: [] } : null;
+      // Every repetition is followed by a character it cannot match, and the title
+      // is trimmed in code, so a heading of many spaces cannot make this backtrack.
+      const match = /^##[ \t]+\[(\d{4}-\d{2}-\d{2})\][ \t]+([a-z][a-z-]*)[ \t]*\|(.*)$/.exec(line);
+      const title = match?.[3]!.trim();
+      current = match && title ? { at: match[1]!, kind: match[2]!, title, links: [] } : null;
       if (current) entries.push(current);
       continue;
     }

@@ -21,7 +21,7 @@ const SETUP_REQUEST: Record<WikiSetupMode, string> = {
  * built-in wiki-maintain Skill; the message names it and the one promise the
  * user relies on: nothing is written before they confirm.
  */
-export function wikiSetupPrompt(mode: WikiSetupMode): string {
+function wikiSetupPrompt(mode: WikiSetupMode): string {
   return `${SETUP_REQUEST[mode]} Load the wiki-maintain skill and follow its setup steps: ask me your two questions first, then propose the topics, and write nothing until I confirm.`;
 }
 

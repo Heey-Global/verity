@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { markdownLinks, resolveKnowledgeLink, wikiCatalogSchema } from './knowledge-wiki.js';
+import {
+  markdownLinks,
+  parseWikiLog,
+  resolveKnowledgeLink,
+  wikiCatalogSchema,
+} from './knowledge-wiki.js';
 
 describe('resolveKnowledgeLink', () => {
   it('opens Wiki pages, decisions and sources relative to the page', () => {
@@ -102,5 +107,31 @@ describe('wikiCatalogSchema', () => {
     expect(catalog.review).toEqual([
       { kind: 'edit_conflict', path: 'insights/a.md', conflict: 'insights/Conflicts/c' },
     ]);
+  });
+});
+
+describe('parseWikiLog', () => {
+  it('reads dated entries with trimmed titles and their links, also with CRLF', () => {
+    expect(
+      parseWikiLog(
+        '# Log\r\n\r\n## [2026-11-07]  ingest |  Live meeting  \r\n- [Nav](nav.md)\r\n## [2026-11-08] chat |   \r\n',
+      ),
+    ).toEqual([
+      { at: '2026-11-07', kind: 'ingest', title: 'Live meeting', links: ['insights/nav.md'] },
+    ]);
+  });
+
+  // log.md is written by agents from untrusted sources; a heading crafted to
+  // make the parser backtrack must not stall the catalog the app waits for.
+  it('stays linear on headings made of long runs of spaces', () => {
+    const hostile = [
+      `## [2026-11-07] ingest |${' '.repeat(50_000)}x${' '.repeat(50_000)}!`,
+      `## [2026-11-07]${' '.repeat(100_000)}`,
+      `##${' '.repeat(100_000)}[`,
+    ].join('\n');
+    const started = Date.now();
+    const entries = parseWikiLog(hostile);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(entries.map((entry) => entry.title)).toEqual([`x${' '.repeat(50_000)}!`]);
   });
 });
