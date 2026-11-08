@@ -85,3 +85,11 @@ it('bounds a hop that never answers', async () => {
   });
   expect(result.codex).toBe('timeout');
 });
+
+it('reports a leg configured with an unusable port as invalid without failing the others', async () => {
+  const result = await runnerEgressReadiness({
+    env: { VERITY_CODEX_EGRESS_URL: 'https://relay.invalid:0' },
+    fetch: readyConnector,
+  });
+  expect(result).toMatchObject({ codex: 'invalid', claude: 'not_configured' });
+});

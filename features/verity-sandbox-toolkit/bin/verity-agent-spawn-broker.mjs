@@ -126,6 +126,7 @@ export async function runnerEgressReadiness(options = {}) {
       return 'invalid';
     }
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return 'invalid';
     // A URL keeps an IPv6 literal bracketed; a socket connect wants it bare.
     return await connect(url.hostname.replace(/^\[(.*)\]$/u, '$1'), port, timeoutMs);
   };
