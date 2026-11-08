@@ -68,7 +68,7 @@ export interface WatchSnapshot {
 }
 
 /** One open item from Home as the watch lists it (`WatchInbox` on the watch). */
-export interface WatchInboxItem {
+interface WatchInboxItem {
   key: string;
   title: string;
   context: string;

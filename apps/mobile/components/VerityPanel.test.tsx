@@ -16,7 +16,7 @@ const mockVoice = {
 };
 jest.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => mockVoice }));
 
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, within } from '@testing-library/react-native';
 import type { AssistantConversationItem } from '@verity/mobile';
 import { router } from 'expo-router';
 
@@ -330,8 +330,8 @@ it('renders her replies as the session chat does, not as raw Markdown', () => {
   const reply = screen.getByTestId('verity-reply');
   // A plain Text showed the markers; the reply must read as a list with bold dates.
   expect(reply).not.toHaveTextContent(/\*\*/);
-  expect(reply).not.toHaveTextContent(/^- /m, { normalizeWhitespace: false });
-  expect(reply).not.toHaveTextContent(/\n- /, { normalizeWhitespace: false });
+  // Each line is its own text: none may still start with the list marker.
+  expect(within(reply).queryAllByText(/^\s*- /)).toHaveLength(0);
   expect(screen.getAllByText('•')).toHaveLength(2);
   expect(screen.getByText('Wed, 11.11.:')).toBeTruthy();
 });
