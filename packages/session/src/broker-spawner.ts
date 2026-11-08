@@ -94,7 +94,11 @@ function send(socket: Socket, frame: object): boolean {
   return true;
 }
 
-async function requireBrokerIsolation(socketPath: string, planning: boolean): Promise<void> {
+async function requireBrokerIsolation(
+  socketPath: string,
+  planning: boolean,
+  gatewayToolsOnly: boolean,
+): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const peer = createConnection(socketPath);
     let buffered = '';
@@ -120,7 +124,8 @@ async function requireBrokerIsolation(socketPath: string, planning: boolean): Pr
         if (
           status['ok'] !== true ||
           status['managedAgentConfig'] !== true ||
-          (planning && status['planningIsolation'] !== true)
+          (planning && status['planningIsolation'] !== true) ||
+          (gatewayToolsOnly && status['gatewayToolsOnlyVersion'] !== 1)
         ) {
           return finish(
             new Error(
@@ -187,9 +192,17 @@ export function createBrokerSpawner(
 
     socket.once('connect', () => {
       void (async () => {
-        if (requireManagedConfiguration || options.planning === true) {
+        if (
+          requireManagedConfiguration ||
+          options.planning === true ||
+          options.gatewayToolsOnly === true
+        ) {
           try {
-            await requireBrokerIsolation(socketPath, options.planning === true);
+            await requireBrokerIsolation(
+              socketPath,
+              options.planning === true,
+              options.gatewayToolsOnly === true,
+            );
           } catch (error) {
             stderrTail.push(String(error));
             settle(1);
@@ -205,6 +218,14 @@ export function createBrokerSpawner(
           args,
           cwd: options.cwd,
           ...(options.planning === true ? { planning: true } : {}),
+          ...(options.gatewayToolsOnly === true
+            ? {
+                gatewayToolsOnly: true,
+                ...(options.gatewayToolsModel !== undefined
+                  ? { gatewayToolsModel: options.gatewayToolsModel }
+                  : {}),
+              }
+            : {}),
           ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
         });
       })();

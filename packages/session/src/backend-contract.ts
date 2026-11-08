@@ -35,6 +35,10 @@ export interface SpawnOptions {
   keepStdinOpen?: boolean;
   /** Require the broker's filesystem boundary before starting a planning agent. */
   planning?: boolean;
+  /** Require broker-owned configuration that disables native agent tools. */
+  gatewayToolsOnly?: boolean;
+  /** Concrete model for the broker-owned restricted Codex catalog. */
+  gatewayToolsModel?: string;
 }
 
 export interface SpawnedProcess {

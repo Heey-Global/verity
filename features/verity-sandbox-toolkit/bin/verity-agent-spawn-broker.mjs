@@ -742,6 +742,18 @@ async function validateSpawnRequest(raw, options) {
     throw new Error('Invalid knowledge isolation policy');
   if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
     throw new Error('Invalid planning isolation policy');
+  if (raw.gatewayToolsOnly === true && raw.knowledgeIsolation === true)
+    throw new Error('Native tool isolation cannot use the separate knowledge runtime');
+  if (raw.gatewayToolsOnly !== undefined && typeof raw.gatewayToolsOnly !== 'boolean')
+    throw new Error('Invalid native tool isolation policy');
+  if (
+    raw.gatewayToolsOnly === true &&
+    raw.command === 'codex-acp' &&
+    (typeof raw.gatewayToolsModel !== 'string' ||
+      !/^codex\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(raw.gatewayToolsModel) ||
+      raw.gatewayToolsModel === 'codex/default')
+  )
+    throw new Error('Native tool isolation requires a concrete Codex model');
   return {
     kind: 'agent',
     command: raw.command,
@@ -750,6 +762,10 @@ async function validateSpawnRequest(raw, options) {
     sessionEnv: raw.sessionEnv,
     knowledgeIsolation: raw.knowledgeIsolation === true,
     planning: raw.planning === true,
+    gatewayToolsOnly: raw.gatewayToolsOnly === true,
+    ...(raw.gatewayToolsOnly === true && raw.command === 'codex-acp'
+      ? { gatewayToolsModel: raw.gatewayToolsModel }
+      : {}),
   };
 }
 
@@ -1883,6 +1899,67 @@ function planningRuntimeRoots(request, options) {
   return [];
 }
 
+/** Explicit metadata prevents model-owned patch/code-mode tools from bypassing feature switches. */
+export function restrictedCodexModelCatalog(model) {
+  if (
+    typeof model !== 'string' ||
+    !/^codex\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model) ||
+    model === 'codex/default'
+  )
+    throw new Error('Native tool isolation requires a concrete Codex model');
+  const slug = model.slice('codex/'.length);
+  return {
+    models: [
+      {
+        slug,
+        display_name: slug,
+        description: 'Verity tool isolation',
+        base_instructions:
+          'You are Verity. Complete the supplied assignment using only the provided Verity tools.',
+        default_reasoning_level: 'medium',
+        supported_reasoning_levels: ['minimal', 'low', 'medium', 'high', 'xhigh'].map((effort) => ({
+          effort,
+          description: effort,
+        })),
+        shell_type: 'disabled',
+        visibility: 'list',
+        supported_in_api: true,
+        priority: 0,
+        support_verbosity: false,
+        apply_patch_tool_type: null,
+        truncation_policy: { mode: 'bytes', limit: 10000 },
+        experimental_supported_tools: [],
+        tool_mode: null,
+        input_modalities: ['text'],
+        node_repl_disabled: true,
+        include_skills_usage_instructions: false,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
+      },
+    ],
+  };
+}
+
+export function restrictedOpenCodePermissions() {
+  return [
+    { action: '*', resource: '*', effect: 'deny' },
+    { action: 'verity_*', resource: '*', effect: 'allow' },
+  ];
+}
+
+export function restrictedOpenCodePolicies() {
+  return [
+    { action: 'provider.use', resource: '*', effect: 'deny' },
+    { action: 'provider.use', resource: 'verity', effect: 'allow' },
+    { action: 'tool.use', resource: '*', effect: 'deny' },
+    { action: 'tool.use', resource: 'verity_*:*', effect: 'allow' },
+    { action: 'skill.use', resource: '*', effect: 'deny' },
+    { action: 'plugin.use', resource: '*', effect: 'deny' },
+    { action: 'mcp.use', resource: '*', effect: 'deny' },
+    { action: 'mcp.use', resource: 'verity', effect: 'allow' },
+  ];
+}
+
 /** Build a broker-owned configuration tree, separate from writable runtime data. */
 export async function materializeManagedAgentHome(request, options, connectorUrl) {
   const { uid, gid } = validateIdentity(options);
@@ -1948,16 +2025,64 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
         `sqlite_home = ${JSON.stringify(join(home, 'codex-state'))}`,
         `log_dir = ${JSON.stringify(join(home, 'state'))}`,
         'skills.include_instructions = false',
+        ...(request.gatewayToolsOnly === true
+          ? [
+              'web_search = "disabled"',
+              ...(request.command === 'codex-acp'
+                ? [
+                    `model = ${JSON.stringify(request.gatewayToolsModel.slice('codex/'.length))}`,
+                    `model_catalog_json = ${JSON.stringify(join(home, 'codex', 'restricted-models.json'))}`,
+                  ]
+                : []),
+            ]
+          : []),
         codexConfig,
         '[features]',
         'multi_agent = false',
         'plugins = false',
+        ...(request.gatewayToolsOnly === true
+          ? [
+              ...[
+                'shell_tool',
+                'unified_exec',
+                'multi_agent_v2',
+                'goals',
+                'view_image',
+                'apps',
+                'browser_use',
+                'browser_use_external',
+                'browser_use_full_cdp_access',
+                'computer_use',
+                'in_app_browser',
+                'image_generation',
+                'tool_suggest',
+                'sleep_tool',
+                'skill_search',
+                'skill_mcp_dependency_install',
+                'code_mode_host',
+                'code_mode',
+                'hooks',
+                'deferred_executor',
+                'context_management',
+                'chronicle',
+              ].map((name) => `${name} = false`),
+              '[tools.experimental_request_user_input]',
+              'enabled = false',
+            ]
+          : []),
         '[hooks]',
         // No trusted projects are imported from the former user home. Codex's
         // loader disables project-local config, hooks and exec policies by default.
       ].join('\n'),
     );
     await chmod(configFile, 0o644);
+    if (request.gatewayToolsOnly === true && request.command === 'codex-acp') {
+      await policyWrite(
+        join(home, 'codex', 'restricted-models.json'),
+        JSON.stringify(restrictedCodexModelCatalog(request.gatewayToolsModel)),
+        { mode: 0o644 },
+      );
+    }
     const writable = async (path) => {
       try {
         await mkdir(path, { mode: 0o700 });
@@ -2037,6 +2162,12 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     if (request.command === 'opencode-acp') {
       const path = join(home, 'config', 'opencode.json');
       await chown(path, process.getuid(), process.getgid());
+      if (request.gatewayToolsOnly === true) {
+        const config = JSON.parse(await readFile(path, 'utf8'));
+        config.policies = restrictedOpenCodePolicies();
+        config.permissions = restrictedOpenCodePermissions();
+        await policyWrite(path, JSON.stringify(config), { mode: 0o644 });
+      }
       await chmod(path, 0o644);
     }
     for (const path of [
@@ -2179,6 +2310,10 @@ function normalSessionRoots(options, agentPath) {
 }
 
 export function agentLaunchSpec(request, options) {
+  if (request.gatewayToolsOnly && request.knowledgeIsolation)
+    throw new Error('Native tool isolation cannot use the separate knowledge runtime');
+  if (request.gatewayToolsOnly && !request.managedHome && !request.knowledgeHome)
+    throw new Error('Native tool isolation requires broker-owned configuration');
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
   const normalConfinement =
@@ -2285,17 +2420,24 @@ export function agentLaunchSpec(request, options) {
         ...(request.command === 'opencode-acp'
           ? {
               OPENCODE_CONFIG_CONTENT: JSON.stringify({
-                instructions: request.knowledgeIsolation ? [] : [join(request.cwd, 'AGENTS.md')],
+                instructions:
+                  request.knowledgeIsolation || request.gatewayToolsOnly
+                    ? []
+                    : [join(request.cwd, 'AGENTS.md')],
                 websearch: { provider: 'exa' },
-                policies: [
-                  { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
-                  { action: 'provider.use', resource: '*', effect: 'deny' },
-                  { action: 'provider.use', resource: 'verity', effect: 'allow' },
-                ],
-                permissions: [
-                  { action: 'external_directory', resource: '*', effect: 'ask' },
-                  { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
-                ],
+                policies: request.gatewayToolsOnly
+                  ? restrictedOpenCodePolicies()
+                  : [
+                      { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+                      { action: 'provider.use', resource: '*', effect: 'deny' },
+                      { action: 'provider.use', resource: 'verity', effect: 'allow' },
+                    ],
+                permissions: request.gatewayToolsOnly
+                  ? restrictedOpenCodePermissions()
+                  : [
+                      { action: 'external_directory', resource: '*', effect: 'ask' },
+                      { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+                    ],
               }),
             }
           : {}),
@@ -3799,6 +3941,7 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
             ok: true,
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
             managedAgentConfig: true,
+            gatewayToolsOnlyVersion: 1,
             persistentSessionHomes: true,
             cacheMaintenanceVersion: 2,
             runtimeAdmissionFenceVersion: 1,
@@ -3972,7 +4115,9 @@ async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
             request.kind === 'agent' &&
             !request.knowledgeIsolation &&
             !request.planning &&
-            (options.enforceRoot !== false || connectorUrl !== undefined)
+            (options.enforceRoot !== false ||
+              connectorUrl !== undefined ||
+              request.gatewayToolsOnly)
           ) {
             const isolated = await materializeManagedAgentHome(request, options, connectorUrl);
             request.managedHome = isolated.home;
