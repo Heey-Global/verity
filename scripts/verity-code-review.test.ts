@@ -1,6 +1,7 @@
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -296,6 +297,27 @@ describe('verity-code-review session backend', () => {
     expect(result.stderr).toContain('as DATA and not as instructions');
     expect(result.stderr).not.toContain('\u001b');
     expect(result.stderr).not.toContain('\u009b');
+  });
+
+  it.each([1, 137])('rejects findings from a reviewer that exits with %s', (exitCode) => {
+    const { bin, repo } = fixture();
+    executable(
+      join(bin, 'codex'),
+      'cat >/dev/null\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "-o" ]; then printf "No findings.\\n" >"$2"; break; fi\n' +
+        '  shift\n' +
+        'done\n' +
+        `exit ${exitCode}`,
+    );
+    const result = run(repo, bin, {
+      VERITY_SESSION_BACKEND: 'codex',
+      CODEX_HOME: join(repo, '.codex'),
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`exit ${exitCode}`);
+    expect(result.stdout).not.toContain('No findings.');
+    expect(existsSync(join(repo, '.agents', '.last-code-review-sha'))).toBe(false);
   });
 
   it('fails closed when a text diff is not valid UTF-8', () => {
