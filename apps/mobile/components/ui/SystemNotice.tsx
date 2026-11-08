@@ -109,7 +109,11 @@ export function SystemNotice({
 export function SystemNoticeIndicator({ intent }: { intent: SystemNoticeIntent }) {
   const { theme } = useUnistyles();
   return (
-    <View style={styles.indicator} importantForAccessibility="no" accessibilityElementsHidden>
+    <View
+      style={styles.indicator}
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+    >
       {intent === 'transient' ? (
         <ActivityIndicator size="small" color={theme.colors.textMuted} />
       ) : (

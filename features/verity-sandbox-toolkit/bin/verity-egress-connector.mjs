@@ -363,9 +363,9 @@ function hasErrorCode(error, code, depth = 0) {
  *  A refused connection says only that nothing listened at the next hop. In a
  *  relay deployment that hop is the project relay, which refuses while it is
  *  still starting after a wake or recreate; elsewhere it may be the gateway. The
- *  connector cannot tell which, nor why, so it states the refusal and the one
- *  remedy that is right for the common, transient case. It never names missing
- *  credentials: that guess sent operators to the credential settings while the
+ *  connector cannot tell which, nor why, so it states the refusal and that the
+ *  request was not sent, without a remedy it cannot vouch for. It never names
+ *  missing credentials: that guess sent operators to the credential settings while the
  *  gateway was healthy and the relay had simply not finished starting. A
  *  rejected credential is visible on its own, as the gateway's 401/403 that this
  *  connector forwards unchanged. A timeout, a DNS or a TLS fault gets the bare
@@ -376,7 +376,7 @@ function hasErrorCode(error, code, depth = 0) {
 function unavailableBody(leg, error) {
   if (leg === 'codex') {
     return hasErrorCode(error, 'ECONNREFUSED')
-      ? 'Codex egress unavailable: nothing accepted the connection at the Codex egress. The project environment may still be starting; try again in a moment.'
+      ? 'Codex egress unavailable: nothing accepted the connection at the Codex egress, so the request was not sent.'
       : 'Codex egress unavailable: the Verity agent gateway did not serve the Codex request.';
   }
   if (leg === 'codex-unconfigured') {
