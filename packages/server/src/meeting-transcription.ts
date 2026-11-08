@@ -220,7 +220,8 @@ export async function emitMeetingTranscriptSaved(input: {
 }): Promise<void> {
   // A transcript filed into the project's Sources is new material for its Wiki.
   if (input.path.startsWith(`${KNOWLEDGE_MEETINGS_DIR}/`)) {
-    const session = await input.eventStore.getSession(input.sessionId);
+    // Noting must never cost the saved notice; a failed lookup only skips it.
+    const session = await input.eventStore.getSession(input.sessionId).catch(() => undefined);
     if (session?.projectId)
       await noteWikiOccasion(input.eventStore, {
         projectId: session.projectId,

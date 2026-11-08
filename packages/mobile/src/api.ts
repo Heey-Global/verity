@@ -6234,10 +6234,9 @@ export class VerityClient {
     id: string,
     opts: { force?: boolean; wiki?: boolean } = {},
   ): Promise<SessionDeleted> {
-    const params = new URLSearchParams();
-    if (opts.force) params.set('force', 'true');
-    if (opts.wiki) params.set('wiki', 'true');
-    const query = params.size ? `?${params.toString()}` : '';
+    // Built by hand: URLSearchParams is incomplete in some React Native runtimes.
+    const params = [opts.force ? 'force=true' : '', opts.wiki ? 'wiki=true' : ''].filter(Boolean);
+    const query = params.length ? `?${params.join('&')}` : '';
     const res = await this.request(`/sessions/${encodeURIComponent(id)}${query}`, {
       method: 'DELETE',
     });

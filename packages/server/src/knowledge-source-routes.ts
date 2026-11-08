@@ -15,7 +15,7 @@ import {
   KNOWLEDGE_INSIGHTS_DIR,
 } from './knowledge-folder.js';
 import { ingestKnowledgeBytes } from './knowledge-file-ingest.js';
-import { noteWikiOccasion } from './wiki-occasions.js';
+import { knowledgeRef, noteWikiOccasion } from './wiki-occasions.js';
 
 const id = z.string().min(1).max(128);
 const file = { filename: z.string().min(1).max(150), base64: z.string().min(4).max(13_981_016) };
@@ -142,7 +142,12 @@ export function registerKnowledgeSourceRoutes(
         paths.push(path);
         await noteWikiOccasion(
           deps.store,
-          { projectId: session.projectId, kind: 'source', ref: path, title: attachment.filename },
+          {
+            projectId: session.projectId,
+            kind: 'source',
+            ref: knowledgeRef(path),
+            title: attachment.filename,
+          },
           request.log,
         );
       }
