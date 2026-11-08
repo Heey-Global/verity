@@ -10,7 +10,14 @@ import { Icon } from '../Icon';
 import { KnowledgeFileView } from './KnowledgeFileView';
 import { KnowledgeFolder } from './KnowledgeFolder';
 import { useKnowledgePane } from './KnowledgePane';
-import { folderTitle, pushKnowledge, scopeTitle, type KnowledgeScope } from './knowledgeScope';
+import {
+  folderTitle,
+  pushKnowledge,
+  scopeTitle,
+  WIKI,
+  type KnowledgeScope,
+} from './knowledgeScope';
+import { WikiInfoButton } from './WikiGuide';
 
 /**
  * A knowledge route: one folder or one file per screen, so the header's back
@@ -38,7 +45,20 @@ export function KnowledgeScreen({
   if (file !== undefined && file !== '')
     return <KnowledgeFileView client={client} scope={scope} file={file} chrome="stack" />;
   return (
-    <SettingsScaffold title={folderTitle(scope, folder)} detail state={NO_STATE}>
+    <SettingsScaffold
+      title={folderTitle(scope, folder)}
+      detail
+      state={NO_STATE}
+      headerAction={
+        scope.kind === 'project' && folder === WIKI ? (
+          <WikiInfoButton
+            client={client}
+            projectId={scope.projectId}
+            onOpenFile={(next) => pushKnowledge(scope, { file: next })}
+          />
+        ) : undefined
+      }
+    >
       <KnowledgeFolder
         client={client}
         scope={scope}
@@ -95,44 +115,49 @@ export function EmbeddedKnowledge({
   }
   return (
     <View style={styles.root} testID="embedded-knowledge">
-      <ScrollView
-        horizontal
-        style={styles.pathScroll}
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.breadcrumb}
-      >
-        {exit ? (
-          <>
-            <Button
-              label={exit.label}
-              icon="chevron-left"
-              variant="text"
-              size="compact"
-              onPress={exit.onPress}
-            />
-            <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
-          </>
-        ) : null}
-        {levels.map((level, index) => (
-          <View key={level.path} style={styles.breadcrumb}>
-            {index > 0 ? (
-              <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
-            ) : null}
-            {index === levels.length - 1 ? (
-              <Text variant="subtitle" numberOfLines={1}>
-                {level.label}
-              </Text>
-            ) : (
+      <View style={styles.pathRow}>
+        <ScrollView
+          horizontal
+          style={styles.pathScroll}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.breadcrumb}
+        >
+          {exit ? (
+            <>
               <Button
-                label={level.label}
+                label={exit.label}
+                icon="chevron-left"
                 variant="text"
                 size="compact"
-                onPress={() => setFolder(level.path)}
+                onPress={exit.onPress}
               />
-            )}
-          </View>
-        ))}
-      </ScrollView>
+              <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+            </>
+          ) : null}
+          {levels.map((level, index) => (
+            <View key={level.path} style={styles.breadcrumb}>
+              {index > 0 ? (
+                <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+              ) : null}
+              {index === levels.length - 1 ? (
+                <Text variant="subtitle" numberOfLines={1}>
+                  {level.label}
+                </Text>
+              ) : (
+                <Button
+                  label={level.label}
+                  variant="text"
+                  size="compact"
+                  onPress={() => setFolder(level.path)}
+                />
+              )}
+            </View>
+          ))}
+        </ScrollView>
+        {scope.kind === 'project' && folder === WIKI ? (
+          <WikiInfoButton client={client} projectId={scope.projectId} onOpenFile={open.file} />
+        ) : null}
+      </View>
       <KnowledgeFolder
         key={folder}
         client={client}
@@ -156,7 +181,8 @@ export function KnowledgeColumn(props: Parameters<typeof EmbeddedKnowledge>[0]) 
 
 const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.sm },
-  pathScroll: { flexGrow: 0 },
+  pathRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  pathScroll: { flexGrow: 1, flexShrink: 1 },
   breadcrumb: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   column: { padding: theme.spacing.lg },
 }));

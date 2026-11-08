@@ -9,13 +9,16 @@ import { isUtf8 } from 'node:buffer';
 import { join } from 'node:path';
 import {
   markdownLinks,
+  parseWikiLog,
   resolveKnowledgeLink,
+  WIKI_CONVENTIONS,
   WIKI_INDEX,
   WIKI_LOG,
   type KnowledgePath,
   type WikiCatalog,
   type WikiPage,
   type WikiReviewItem,
+  type WikiLogEntry,
   type WikiTopic,
 } from '@verity/events';
 import { openDocumentDirectory, readDocument } from './document-workspace.js';
@@ -24,6 +27,8 @@ import { projectDecisionSummaries } from './knowledge-decisions.js';
 const MAX_PAGES = 1000;
 const MAX_DEPTH = 6;
 const MAX_PAGE_BYTES = 512 * 1024;
+/** log.md only grows; past this its newest part is read, from the first whole line on. */
+const MAX_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_CONFLICTS = 50;
 /** Linked files the scan did not read, looked up on disk per request. */
@@ -42,6 +47,7 @@ interface ReadPage {
   summary: string;
   links: KnowledgePath[];
   index?: { overview: string; topics: WikiTopic[] };
+  log?: WikiLogEntry[];
 }
 
 /** Inline Markdown as plain text: link texts, no emphasis or code marks. */
@@ -179,6 +185,40 @@ export function parseWikiIndex(markdown: string): { overview: string; topics: Wi
   return { overview: overview.join('\n').trim(), topics };
 }
 
+/**
+ * The last `maxBytes` of a file, starting at its first whole line. The change
+ * log is append-only, so its newest entries are the ones a page's origin needs;
+ * a log that outgrew any limit must not take every origin with it.
+ */
+async function readTail(
+  path: string,
+  maxBytes: number,
+  expected: { dev: number; ino: number },
+): Promise<Buffer> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile()) throw Object.assign(new Error('not a file'), { code: 'EISDIR' });
+    // The same checks readDocument makes: still the file the scan listed.
+    if (stat.dev !== expected.dev || stat.ino !== expected.ino)
+      throw Object.assign(new Error('document file changed'), { code: 'DOCUMENT_ENTRY_CHANGED' });
+    const start = Math.max(0, stat.size - maxBytes);
+    const buffer = Buffer.alloc(Math.min(stat.size, maxBytes));
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(buffer, length, buffer.length - length, start + length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    const data = buffer.subarray(0, length);
+    if (start === 0) return data;
+    const newline = data.indexOf(10);
+    return newline < 0 ? Buffer.alloc(0) : data.subarray(newline + 1);
+  } finally {
+    await file.close();
+  }
+}
+
 /** Markdown pages under `insights`, depth-first, refusing links and bounded. */
 async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncated: boolean }> {
   const pages: ReadPage[] = [];
@@ -220,7 +260,10 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
         if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue;
         try {
           const stat = await lstat(`/proc/self/fd/${handle.fd}/${entry.name}`);
-          const content = await readDocument(insights, rel, false, MAX_PAGE_BYTES);
+          const content =
+            `insights/${rel}` === WIKI_LOG
+              ? await readTail(`/proc/self/fd/${handle.fd}/${entry.name}`, MAX_LOG_BYTES, stat)
+              : await readDocument(insights, rel, false, MAX_PAGE_BYTES);
           if (!content || !isUtf8(content) || content.includes(0)) continue;
           bytes += content.length;
           const markdown = content.toString('utf8');
@@ -242,6 +285,7 @@ async function readPages(insights: string): Promise<{ pages: ReadPage[]; truncat
               return links.slice(0, MAX_LINKS_PER_PAGE);
             })(),
             ...(page === WIKI_INDEX ? { index: parseWikiIndex(markdown) } : {}),
+            ...(page === WIKI_LOG ? { log: parseWikiLog(markdown) } : {}),
           });
         } catch {
           // Oversized, replaced while read, or not a plain file: left out, and said so.
@@ -337,10 +381,23 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
   const diskChecks = new Map<string, Promise<boolean>>();
   const pages: WikiPage[] = [];
   let index: WikiCatalog['index'] = null;
+  let log: WikiCatalog['log'] = null;
+  let conventions: WikiCatalog['conventions'] = null;
+  // The latest log entry per page. Entries are appended in order, so a later one
+  // of the same day wins; a page the log never names keeps its file age alone.
+  const lastChange = new Map<string, NonNullable<WikiPage['lastChange']>>();
+  for (const entry of read.find((page) => page.path === WIKI_LOG)?.log ?? [])
+    for (const target of entry.links) {
+      const previous = lastChange.get(target);
+      if (!previous || previous.at <= entry.at)
+        lastChange.set(target, { at: entry.at, kind: entry.kind, title: entry.title });
+    }
   for (const page of read) {
     const links = page.links;
     const broken: string[] = [];
-    for (const target of links) {
+    // The log records history and is append-only: a page renamed since must not
+    // turn its old entry into a review item nobody may fix.
+    for (const target of page.path === WIKI_LOG ? [] : links) {
       // A page the scan read or a decision is known; anything else the app could
       // open (a source, an image, a page past the limits) is looked up on disk,
       // so a link counts as broken only when there is nothing to open.
@@ -352,8 +409,13 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
           if (!(await diskChecks.get(target))) broken.push(target);
         }
       }
-      // The start page and the log link everything; as backlinks they say nothing.
-      if (target !== page.path && page.path !== WIKI_INDEX && page.path !== WIKI_LOG) {
+      // The start page, the log and the rules link everything; as backlinks they say nothing.
+      if (
+        target !== page.path &&
+        page.path !== WIKI_INDEX &&
+        page.path !== WIKI_LOG &&
+        page.path !== WIKI_CONVENTIONS
+      ) {
         const from = linkedFrom.get(target) ?? new Set<string>();
         from.add(page.path);
         linkedFrom.set(target, from);
@@ -364,7 +426,15 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
       index = { path: page.path, modifiedAt: page.modifiedAt, ...page.index };
       continue;
     }
-    if (page.path === WIKI_LOG) continue;
+    if (page.path === WIKI_LOG) {
+      log = { path: page.path, modifiedAt: page.modifiedAt };
+      continue;
+    }
+    if (page.path === WIKI_CONVENTIONS) {
+      conventions = { path: page.path, modifiedAt: page.modifiedAt };
+      continue;
+    }
+    const change = lastChange.get(page.path);
     pages.push({
       path: page.path,
       title: page.title,
@@ -372,6 +442,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
       modifiedAt: page.modifiedAt,
       links,
       linkedFrom: [],
+      ...(change ? { lastChange: change } : {}),
     });
   }
   for (const page of pages) page.linkedFrom = [...(linkedFrom.get(page.path) ?? [])].sort();
@@ -379,6 +450,8 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     pages,
     index,
     decisions: decisionState.decisions,
+    log,
+    conventions,
     review: [...conflicts.items, ...review],
     truncated,
   };

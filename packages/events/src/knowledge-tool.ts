@@ -107,9 +107,10 @@ export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
   'When asked to move an existing worktree file into Sources, use `verity_knowledge` with `import_source`, verify the result, then remove the original and update references. Use nested destination paths to organize imports; use `create_source_folder` for empty folders and `move_source` to reorganize existing project Sources files. ' +
   'Create and revise project documents in the session Documents working copy when a path is supplied. Verity publishes those changes automatically; `/knowledge/insights` is then read-only. Without a Documents working copy, use the writable `/knowledge/insights` folder. ' +
-  'When work produces a durable, reusable conclusion grounded in project sources, create or update ' +
-  'a concise Markdown insight without asking first. Prefer improving an existing insight over creating ' +
-  'a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +
+  'Change Wiki content only when the user explicitly asks or confirms the concrete change; when work ' +
+  'produces a durable, reusable conclusion grounded in project sources, offer it as a Wiki change and ' +
+  'ask. Load the wiki-maintain skill before setting up or changing the Wiki. Prefer improving an existing ' +
+  'insight over creating a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +
   'progress, transient state, unsupported speculation, or secrets. Ask before saving sensitive personal ' +
   'information or a disputed interpretation as durable knowledge. ' +
   'Files shared with every project are available read-only at `/knowledge/shared`, organized into ' +

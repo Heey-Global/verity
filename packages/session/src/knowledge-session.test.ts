@@ -88,7 +88,10 @@ describe('knowledge discovery context', () => {
       await conductor.sendTurn('s', 'Hello');
       expect(seen[0]).toContain('## Project knowledge');
       expect(seen[0]).toContain('writable `/knowledge/insights`');
-      expect(seen[0]).toContain('without asking first');
+      // Wiki content changes only with the user's confirmation; the old
+      // "without asking first" rule must not come back.
+      expect(seen[0]).toContain('only when the user explicitly asks or confirms');
+      expect(seen[0]).not.toContain('without asking first');
       expect(seen[0]).toContain('Prefer improving an existing insight');
       expect(seen[0]).toContain('cite the relevant source paths');
       expect(seen[0]).toContain('Ask before saving sensitive personal information');
