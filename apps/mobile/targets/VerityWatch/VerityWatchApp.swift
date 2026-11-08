@@ -191,7 +191,7 @@ private struct NeedsYouSection: View {
         NavigationLink { InboxItemDetail(item: item) } label: { InboxItemRow(item: item) }
       }
     } header: {
-      Text("Needs you · \(inbox.items.count)").textCase(nil)
+      Text("Needs you · \(inbox.total)").textCase(nil)
     } footer: {
       // An old list may already be done on the iPhone; say how old it is. The
       // timeline re-checks while the screen stays open.

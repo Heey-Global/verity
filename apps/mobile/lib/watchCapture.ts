@@ -83,6 +83,8 @@ export interface WatchInboxPayload {
   /** Milliseconds since the epoch; the watch says "as of" when this is old. */
   at: number;
   items: WatchInboxItem[];
+  /** All of Home's items; the wrist lists at most {@link WATCH_INBOX_LIMIT}. */
+  total: number;
 }
 
 /** How many open items the wrist lists; the rest wait on the iPhone. */
@@ -234,6 +236,7 @@ export function watchInbox(
   return {
     scope,
     at,
+    total: items.length,
     items: items.slice(0, WATCH_INBOX_LIMIT).map((item) => ({
       key: item.key,
       title: item.title.slice(0, 160),
@@ -254,12 +257,13 @@ const INBOX_REFRESH_MS = 5 * 60_000;
  */
 export function createWatchInboxSync(
   send: (payload: WatchInboxPayload | null) => Promise<void>,
-  scope: () => string | null,
-): (items: readonly InboxItem[], now?: number) => void {
+): (items: readonly InboxItem[], scope: string | null, now?: number) => void {
   let last: { key: string; at: number } | null = null;
-  return (items, now = Date.now()) => {
-    const payload = watchInbox(items, scope(), now);
-    const key = JSON.stringify(payload === null ? null : [payload.scope, payload.items]);
+  return (items, scope, now = Date.now()) => {
+    const payload = watchInbox(items, scope, now);
+    const key = JSON.stringify(
+      payload === null ? null : [payload.scope, payload.total, payload.items],
+    );
     if (last?.key === key && now - last.at < INBOX_REFRESH_MS) return;
     const sent = { key, at: now };
     last = sent;
@@ -272,11 +276,16 @@ export function createWatchInboxSync(
 }
 
 /**
- * Hands the watch the items Home shows under "For you". Home calls it whenever
- * its list changes; the watch keeps the latest list with its time.
+ * Hands the watch the items Home shows under "For you", under the account they
+ * were read for (not whichever is signed in when the call runs, which may
+ * already be the next one). The watch keeps the latest list with its time.
  */
-export const syncWatchInbox: (items: readonly InboxItem[], now?: number) => void = native?.setInbox
-  ? createWatchInboxSync((payload) => native.setInbox!(payload), taskAccountScope)
+export const syncWatchInbox: (
+  items: readonly InboxItem[],
+  scope: string | null,
+  now?: number,
+) => void = native?.setInbox
+  ? createWatchInboxSync((payload) => native.setInbox!(payload))
   : () => undefined;
 
 /**
@@ -329,7 +338,7 @@ export function startWatchInbox(): () => void {
     void native.setProjects(next, [], null).catch(() => undefined);
     // Home may be gone before it could send an empty list: never leave another
     // account's items on the iPhone's side of the link.
-    if (next === null) syncWatchInbox([]);
+    if (next === null) syncWatchInbox([], null);
     syncLink();
     run();
   };

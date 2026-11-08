@@ -227,6 +227,8 @@ describe('watch "Needs you" list', () => {
     const payload = watchInbox(items, 'account-1', 1234);
     expect(payload?.scope).toBe('account-1');
     expect(payload?.at).toBe(1234);
+    // The wrist lists twelve but counts them all, as Home does.
+    expect(payload?.total).toBe(WATCH_INBOX_LIMIT + 3);
     expect(payload?.items.map((entry) => entry.key)).toEqual(
       items.slice(0, WATCH_INBOX_LIMIT).map((entry) => entry.key),
     );
@@ -246,14 +248,14 @@ describe('watch "Needs you" list', () => {
 
   it('sends a changed list at once and an unchanged one only to refresh its time', () => {
     const send = jest.fn(async () => undefined);
-    const sync = createWatchInboxSync(send, () => 'account-1');
-    sync([item(0)], 0);
-    sync([item(0)], 60_000);
+    const sync = createWatchInboxSync(send);
+    sync([item(0)], 'account-1', 0);
+    sync([item(0)], 'account-1', 60_000);
     expect(send).toHaveBeenCalledTimes(1);
-    sync([item(0), item(1)], 61_000);
+    sync([item(0), item(1)], 'account-1', 61_000);
     expect(send).toHaveBeenCalledTimes(2);
     // Without a resend the watch would call a correct list outdated.
-    sync([item(0), item(1)], 61_000 + 5 * 60_000);
+    sync([item(0), item(1)], 'account-1', 61_000 + 5 * 60_000);
     expect(send).toHaveBeenCalledTimes(3);
     expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ at: 61_000 + 5 * 60_000 }));
   });
@@ -263,26 +265,23 @@ describe('watch "Needs you" list', () => {
       .fn<Promise<void>, [unknown]>()
       .mockRejectedValueOnce(new Error('not activated'))
       .mockResolvedValue(undefined);
-    const sync = createWatchInboxSync(send, () => 'account-1');
-    sync([item(0)], 0);
+    const sync = createWatchInboxSync(send);
+    sync([item(0)], 'account-1', 0);
     await Promise.resolve();
     await Promise.resolve();
     // Kept as sent, the list would wait out the refresh interval on the iPhone.
-    sync([item(0)], 1_000);
+    sync([item(0)], 'account-1', 1_000);
     expect(send).toHaveBeenCalledTimes(2);
   });
 
   it('sends the same list again after a sign-out cleared it', () => {
-    let scope: string | null = 'account-1';
     const send = jest.fn(async () => undefined);
-    const sync = createWatchInboxSync(send, () => scope);
-    sync([item(0)], 0);
-    scope = null;
-    sync([], 1_000);
+    const sync = createWatchInboxSync(send);
+    sync([item(0)], 'account-1', 0);
+    sync([], null, 1_000);
     expect(send).toHaveBeenLastCalledWith(null);
     // Signing back in shows the same items; skipping them left the watch empty.
-    scope = 'account-1';
-    sync([item(0)], 2_000);
+    sync([item(0)], 'account-1', 2_000);
     expect(send).toHaveBeenCalledTimes(3);
   });
 });

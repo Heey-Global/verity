@@ -368,7 +368,7 @@ function ItemView({
         <View style={styles.reply} testID="verity-reply">
           <VerityMark size={22} glow={false} />
           {/* Rendered like an agent's reply in a session: lists, bold, links. */}
-          <View style={styles.flex}>
+          <View style={styles.replyText}>
             <MarkdownText
               content={item.text}
               onOpenLocalFile={null}
@@ -558,6 +558,9 @@ const styles = StyleSheet.create((theme) => ({
   row: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   reply: { flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing.sm },
   flex: { flex: 1 },
+  // As the transcript's list slot: without minWidth, selectable Text in a row
+  // measures as one wide line on iOS and clips at the right edge.
+  replyText: { flex: 1, minWidth: 0 },
   options: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   mine: {
     alignSelf: 'flex-end',

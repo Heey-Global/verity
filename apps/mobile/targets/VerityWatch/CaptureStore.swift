@@ -135,6 +135,8 @@ struct WatchInbox: Equatable, Sendable {
   /// When the iPhone read the list.
   let at: Date
   let items: [Item]
+  /// All of Home's items; `items` holds the first of them.
+  let total: Int
 
   /// Reads the `inbox` part of an application context or message; nil without one.
   init?(context: [String: Any]) {
@@ -144,7 +146,7 @@ struct WatchInbox: Equatable, Sendable {
     else { return nil }
     scope = inbox["scope"] as? String
     at = Date(timeIntervalSince1970: (inbox["at"] as? Double ?? 0) / 1000)
-    self.items = items.compactMap { item in
+    let parsed: [Item] = items.compactMap { item in
       guard let id = item["key"] as? String, let title = item["title"] as? String else {
         return nil
       }
@@ -153,6 +155,8 @@ struct WatchInbox: Equatable, Sendable {
         tag: item["tag"] as? String ?? "", tone: item["tone"] as? String ?? "neutral",
         message: item["message"] as? String)
     }
+    self.items = parsed
+    total = max(inbox["total"] as? Int ?? parsed.count, parsed.count)
   }
 }
 
