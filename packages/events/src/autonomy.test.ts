@@ -32,7 +32,7 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('diagnosis is not completion');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('Verity Quick Actions');
     expect(AUTONOMY_RESUME_SYSTEM_PROMPT).toContain('without asking again');
-    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(650);
+    expect(AUTONOMY_RESUME_SYSTEM_PROMPT.length).toBeLessThan(1300);
   });
 
   it.each([AUTONOMY_SYSTEM_PROMPT, AUTONOMY_RESUME_SYSTEM_PROMPT])(
@@ -42,6 +42,19 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
       expect(prompt).toContain('same reply');
       expect(prompt).toMatch(/what (it would authorize|each action authorizes)/);
       expect(prompt).toContain('Do not wait for the user to ask how to proceed');
+    },
+  );
+
+  it.each([AUTONOMY_SYSTEM_PROMPT, AUTONOMY_RESUME_SYSTEM_PROMPT])(
+    'keeps required background work inside the active turn',
+    (prompt) => {
+      // A final promise cannot wake the agent after teardown killed its review.
+      expect(prompt).toContain('Wait for required reviews and tests to finish');
+      expect(prompt).toContain('wait or poll');
+      expect(prompt).toContain('exit status');
+      expect(prompt).toContain('turn completion can terminate its processes');
+      expect(prompt).toContain('managed continuation');
+      expect(prompt).toContain('report the concrete failure');
     },
   );
 });
