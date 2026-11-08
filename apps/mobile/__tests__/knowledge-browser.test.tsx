@@ -8,8 +8,33 @@
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
+jest.mock('../components/files/FileRowActions', () => ({
+  FileRowActions: ({
+    children,
+    label,
+    onDelete,
+  }: {
+    children: React.ReactNode;
+    label: string;
+    onDelete?: () => void;
+  }) => {
+    const { View, Pressable, Text } = require('react-native');
+    return (
+      <View>
+        {children}
+        {onDelete ? (
+          <Pressable accessibilityLabel={`Delete ${label}`} onPress={onDelete}>
+            <Text>Delete entry</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  },
+}));
+
 import type { VerityClient } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -287,14 +312,119 @@ it('lists Decisions first inside a project Wiki and goes back up to the Wiki', a
   );
 });
 
-it('keeps Shared out of the session root tabs and links Settings to the central screen', () => {
+it('keeps only Code and Drive in session root tabs and Shared in Settings', () => {
   const session = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
   const roots = session.slice(
     session.indexOf('<View style={styles.filesRootBar}>'),
     session.indexOf('<FileBreadcrumb'),
   );
-  expect(roots).toContain("['documents', 'Wiki']");
-  expect(roots).not.toContain("['shared'");
+  expect([...roots.matchAll(/accessibilityLabel="([^"]+)"/g)].map((match) => match[1])).toEqual([
+    'Code',
+    'Google Drive',
+  ]);
   const settings = readFileSync(join(__dirname, '../app/settings/index.tsx'), 'utf8');
   expect(settings).toContain("router.push('/settings/shared-knowledge')");
+});
+
+it('confirms Wiki folder deletion including its contents and reloads the list', async () => {
+  const remove = jest.fn().mockResolvedValue(undefined);
+  const api = client({ deleteProjectKnowledgeFile: remove });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
+  fireEvent.press(await screen.findByLabelText('Delete uplink'));
+  expect(screen.getByText(/and everything inside it from the project Wiki/)).toBeTruthy();
+  expect(remove).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('p', 'insights/uplink'));
+  await waitFor(() => expect(api.listProjectKnowledgeFiles).toHaveBeenCalledTimes(2));
+});
+
+it('keeps structured decisions outside ordinary file deletion', async () => {
+  client({
+    listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
+      path: 'insights',
+      entries: [
+        { path: 'insights/decisions', name: 'decisions', kind: 'directory' },
+        { path: 'sources/original.txt', name: 'original.txt', kind: 'file' },
+      ],
+      truncated: false,
+    }),
+  });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
+  await screen.findByText('Decisions');
+  expect(screen.queryByLabelText('Delete decisions')).toBeNull();
+  expect(screen.getByLabelText('Delete original.txt')).toBeTruthy();
+});
+
+it('keeps the Wiki entry visible and shows deletion errors for retry', async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const remove = jest.fn().mockRejectedValue(new Error('Project management access required'));
+  client({ deleteProjectKnowledgeFile: remove });
+  render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
+  fireEvent.press(await screen.findByLabelText('Delete reference.md'));
+  fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+  await waitFor(() =>
+    expect(alert).toHaveBeenCalledWith('Could not delete', 'Project management access required'),
+  );
+  alert.mockRestore();
+  expect(screen.getByText('reference.md')).toBeTruthy();
+});
+
+it('confirms Sources folder deletion and refreshes its files', async () => {
+  const remove = jest.fn().mockResolvedValue(undefined);
+  const list = jest.fn().mockResolvedValue({
+    path: 'sources/documents',
+    entries: [
+      { path: 'sources/documents/import', name: 'import', kind: 'directory' },
+      { path: 'sources/documents/original.pdf', name: 'original.pdf', kind: 'file' },
+    ],
+    truncated: false,
+  });
+  client({ deleteProjectKnowledgeFile: remove, listProjectKnowledgeFiles: list });
+  render(<KnowledgeScreen scope={PROJECT} folder="sources/documents" />);
+  fireEvent.press(await screen.findByLabelText('Delete import'));
+  expect(screen.getByText(/and everything inside it from the project Sources/)).toBeTruthy();
+  expect(remove).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('p', 'sources/documents/import'));
+  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+});
+
+it('uses one breadcrumb for nested Sources and can return to Sources or the project', async () => {
+  const listing: Record<string, { path: string; name: string; kind: string }[]> = {
+    sources: [{ path: 'sources/matrix', name: 'matrix', kind: 'directory' }],
+    'sources/matrix': [{ path: 'sources/matrix/room', name: 'room', kind: 'directory' }],
+    'sources/matrix/room': [
+      { path: 'sources/matrix/room/message.md', name: 'message.md', kind: 'file' },
+    ],
+  };
+  const list = jest.fn(async (_project: string, path: string) => ({
+    path,
+    entries: listing[path] ?? [],
+    truncated: false,
+  }));
+  const api = client({ listProjectKnowledgeFiles: list });
+  const exit = jest.fn();
+  render(
+    <KnowledgePaneContext.Provider value={{ openFile: jest.fn() }}>
+      <EmbeddedKnowledge
+        client={api as unknown as VerityClient}
+        scope={PROJECT}
+        start="sources"
+        exit={{ label: 'Verity', onPress: exit }}
+      />
+    </KnowledgePaneContext.Provider>,
+  );
+  fireEvent.press(await screen.findByText('matrix'));
+  fireEvent.press(await screen.findByText('room'));
+  await screen.findByText('message.md');
+  for (const label of ['Verity', 'Sources', 'matrix', 'room']) {
+    expect(screen.getAllByText(label)).toHaveLength(1);
+  }
+  expect(screen.queryByRole('button', { name: 'room' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Sources' }));
+  await waitFor(() => expect(list).toHaveBeenLastCalledWith('p', 'sources'));
+  expect(await screen.findByText('matrix')).toBeTruthy();
+  expect(screen.queryByText('room')).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Verity' }));
+  expect(exit).toHaveBeenCalledTimes(1);
 });

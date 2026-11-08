@@ -4296,6 +4296,30 @@ export class VerityClient {
     return driveFileListSchema.parse(await res.json());
   }
 
+  async getProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+  ): Promise<DriveFile> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'GET' },
+    );
+    return z.object({ file: driveFileSchema }).parse(await res.json()).file;
+  }
+
+  async trashProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+    expectedVersion: string,
+  ): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'DELETE', body: JSON.stringify({ expectedVersion, confirmed: true }) },
+    );
+  }
+
   async uploadProjectGoogleDriveFile(
     projectId: string,
     folderId: string,
@@ -6283,6 +6307,13 @@ export class VerityClient {
       { method: 'GET' },
     );
     return res.blob();
+  }
+
+  async deleteProjectKnowledgeFile(projectId: string, path: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
   }
 
   async writeProjectKnowledgeFile(

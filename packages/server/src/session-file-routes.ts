@@ -72,6 +72,7 @@ type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 interface SessionFileTarget {
   root: SessionFileRootName;
   dir: string;
+  protectedPaths?: readonly string[];
 }
 
 export class SessionFileRootUnavailableError extends Error {
@@ -194,6 +195,33 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
       const { path } = sessionFileQuery.parse(request.query);
       const target = await projectTarget(request, reply);
       return target ? deps.download(reply, target, path) : reply;
+    });
+    app.delete('/projects/:id/knowledge/files', async (request, reply) => {
+      const { path } = sessionFileDeleteQuery.parse(request.query);
+      const parts = path.replaceAll('\\', '/').split('/');
+      const area = parts[0];
+      // Keep library roots and provenance-bearing decisions outside ordinary deletion.
+      if (
+        (area !== 'insights' && area !== 'sources') ||
+        parts.length < 2 ||
+        parts.some((part) => part === '.' || part === '..' || part === '') ||
+        (area === 'insights' && parts[1] === 'decisions')
+      )
+        return reply
+          .code(403)
+          .send({ error: 'Only ordinary Wiki and Sources entries can be deleted here.' });
+      const target = await projectTarget(request, reply);
+      return target
+        ? deps.remove(
+            reply,
+            {
+              root: area === 'insights' ? 'documents' : 'sources',
+              dir: join(target.dir, area),
+              protectedPaths: area === 'insights' ? ['decisions'] : [],
+            },
+            parts.slice(1).join('/'),
+          )
+        : reply;
     });
     app.put(
       '/projects/:id/knowledge/files/content',

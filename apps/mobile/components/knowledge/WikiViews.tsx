@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { KnowledgeEntryActions } from './KnowledgeEntryActions';
 import { MarkdownItem } from '../files/MarkdownItem';
 import { Card, FilterChips, Group, Row, SectionHeader, StatusTag, Text } from '../ui';
 import { fileMarkdownItems } from '../../lib/fileMarkdownPreview';
@@ -85,13 +86,15 @@ export function PageRow({
   onOpen: (file: string) => void;
 }) {
   return (
-    <Row
-      leading={{ icon: 'file-text' }}
-      title={page.title}
-      subtitle={subtitle ?? (page.summary || undefined)}
-      navigates
-      onPress={() => onOpen(page.path)}
-    />
+    <KnowledgeEntryActions path={page.path} label={page.title}>
+      <Row
+        leading={{ icon: 'file-text' }}
+        title={page.title}
+        subtitle={subtitle ?? (page.summary || undefined)}
+        navigates
+        onPress={() => onOpen(page.path)}
+      />
+    </KnowledgeEntryActions>
   );
 }
 

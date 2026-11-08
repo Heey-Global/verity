@@ -103,3 +103,22 @@ export function renameProblem(
   if (name !== currentName && siblings.includes(name)) return `"${name}" already exists here.`;
   return null;
 }
+
+/** Keeps completed removals across retries so one missing file cannot block the rest. */
+export function fileDeletionBatch(
+  paths: readonly string[],
+  remove: (path: string) => Promise<unknown>,
+) {
+  const deleted: string[] = [];
+  const remaining = new Set(paths);
+  return {
+    deleted,
+    run: async () => {
+      for (const path of remaining) {
+        await remove(path);
+        remaining.delete(path);
+        deleted.push(path);
+      }
+    },
+  };
+}

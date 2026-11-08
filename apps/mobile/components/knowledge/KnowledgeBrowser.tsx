@@ -1,21 +1,16 @@
 import type { VerityClient } from '@verity/mobile';
 import { useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
 import { SettingsMessage, SettingsScaffold } from '../settings/SettingsChrome';
-import { Button } from '../ui';
+import { Button, Text } from '../ui';
+import { Icon } from '../Icon';
 import { KnowledgeFileView } from './KnowledgeFileView';
 import { KnowledgeFolder } from './KnowledgeFolder';
 import { useKnowledgePane } from './KnowledgePane';
-import {
-  folderTitle,
-  parentFolder,
-  pushKnowledge,
-  scopeTitle,
-  type KnowledgeScope,
-} from './knowledgeScope';
+import { folderTitle, pushKnowledge, scopeTitle, type KnowledgeScope } from './knowledgeScope';
 
 /**
  * A knowledge route: one folder or one file per screen, so the header's back
@@ -79,6 +74,7 @@ export function EmbeddedKnowledge({
   /** Where "‹" at the top level leads, when the library is not the page's root. */
   exit?: { label: string; onPress: () => void };
 }) {
+  const { theme } = useUnistyles();
   const pane = useKnowledgePane();
   const [folder, setFolder] = useState(start);
   const open = {
@@ -86,22 +82,57 @@ export function EmbeddedKnowledge({
     file: (next: string) =>
       pane ? pane.openFile(scope, next) : pushKnowledge(scope, { file: next }),
   };
-  const up = parentFolder(folder);
-  const back =
-    folder !== start ? { label: folderTitle(scope, up), onPress: () => setFolder(up) } : exit;
+  const levels = [{ path: start, label: folderTitle(scope, start) }];
+  if (folder !== start) {
+    const parts = folder
+      .slice(start ? start.length + 1 : 0)
+      .split('/')
+      .filter(Boolean);
+    parts.forEach((_part, index) => {
+      const path = [start, ...parts.slice(0, index + 1)].filter(Boolean).join('/');
+      levels.push({ path, label: folderTitle(scope, path) });
+    });
+  }
   return (
     <View style={styles.root} testID="embedded-knowledge">
-      {back ? (
-        <View style={styles.back}>
-          <Button
-            label={back.label}
-            icon="chevron-left"
-            variant="text"
-            size="compact"
-            onPress={back.onPress}
-          />
-        </View>
-      ) : null}
+      <ScrollView
+        horizontal
+        style={styles.pathScroll}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.breadcrumb}
+      >
+        {exit ? (
+          <>
+            <Button
+              label={exit.label}
+              icon="chevron-left"
+              variant="text"
+              size="compact"
+              onPress={exit.onPress}
+            />
+            <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+          </>
+        ) : null}
+        {levels.map((level, index) => (
+          <View key={level.path} style={styles.breadcrumb}>
+            {index > 0 ? (
+              <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+            ) : null}
+            {index === levels.length - 1 ? (
+              <Text variant="subtitle" numberOfLines={1}>
+                {level.label}
+              </Text>
+            ) : (
+              <Button
+                label={level.label}
+                variant="text"
+                size="compact"
+                onPress={() => setFolder(level.path)}
+              />
+            )}
+          </View>
+        ))}
+      </ScrollView>
       <KnowledgeFolder
         key={folder}
         client={client}
@@ -125,6 +156,7 @@ export function KnowledgeColumn(props: Parameters<typeof EmbeddedKnowledge>[0]) 
 
 const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.sm },
-  back: { alignItems: 'flex-start', marginLeft: -theme.spacing.sm },
+  pathScroll: { flexGrow: 0 },
+  breadcrumb: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   column: { padding: theme.spacing.lg },
 }));

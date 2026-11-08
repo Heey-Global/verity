@@ -241,6 +241,26 @@ it('scopes direct project knowledge reads and edits to project permissions', asy
   ).toBe('allow');
 });
 
+it('requires project management permission to delete Wiki entries', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      project === 'p' && user === 'manager' && permission === 'manage',
+    getSession: async () => undefined,
+  };
+  expect(
+    await authorizePairedRoute(store, 'reader', 'DELETE', '/projects/:id/knowledge/files', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'DELETE', '/projects/:id/knowledge/files', {
+      id: 'p',
+    }),
+  ).toBe('allow');
+});
+
 it('lets a reader keep their own view state but hides resources they cannot read', async () => {
   const store: PairedRoutePolicyStore = {
     isActiveLocalUser: async () => true,

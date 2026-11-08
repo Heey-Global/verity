@@ -1,9 +1,9 @@
 import type { SessionDirectory, VerityClient } from '@verity/mobile';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Alert, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { Button, Group, Row, Text } from '../ui';
+import { Button, Group, Row, Text, useConfirm } from '../ui';
 import {
   DECISIONS,
   folderIcon,
@@ -14,7 +14,8 @@ import {
   wikiView,
   type KnowledgeScope,
 } from './knowledgeScope';
-import { useWikiCatalog } from './useWikiCatalog';
+import { KnowledgeDeleteContext, KnowledgeEntryActions } from './KnowledgeEntryActions';
+import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
 import { WikiDecisions, WikiHome, WikiTopicPages } from './WikiViews';
 
 const PROJECT_AREAS = ['insights', 'sources'] as const;
@@ -23,7 +24,7 @@ const DESCRIPTION: Record<KnowledgeScope['kind'], string> = {
   shared:
     'Reference material shared across projects. Agents can read it from every project. Administrators can edit supported text files; original sources remain protected.',
   project:
-    'The Wiki with its decisions, and the original sources of this project. Wiki edits require project management access.',
+    'The Wiki with its decisions, and the original sources of this project. Wiki edits and file deletion require project management access.',
 };
 
 /**
@@ -51,6 +52,8 @@ export function KnowledgeFolder({
   onOpenFolder: (folder: string) => void;
   onOpenFile: (file: string) => void;
 }) {
+  const [confirm, confirmSheet] = useConfirm();
+  const [deleting, setDeleting] = useState(false);
   const areas = scope.kind === 'project' && folder === '';
   // Folders take their area names only where the areas are: a project's tree,
   // or the top of a library. Below that, a Shared folder named `sources` is just that.
@@ -98,88 +101,130 @@ export function KnowledgeFolder({
   ]);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
+  const remove =
+    scope.kind === 'project'
+      ? (path: string, directory: boolean) => {
+          if (deleting) return;
+          const area = path.startsWith('sources/') ? 'the project Sources' : 'the project Wiki';
+          confirm({
+            title: directory ? 'Delete folder?' : 'Delete file?',
+            message: directory
+              ? `Permanently delete “${path.split('/').at(-1) ?? path}” and everything inside it from ${area}?`
+              : `Permanently delete “${path.split('/').at(-1) ?? path}” from ${area}?`,
+            confirmLabel: 'Delete',
+            destructive: true,
+            onConfirm: async () => {
+              setDeleting(true);
+              try {
+                await client.deleteProjectKnowledgeFile(scope.projectId, path);
+                invalidateWikiCatalog(scope.projectId);
+                retry();
+              } catch (failure) {
+                Alert.alert(
+                  'Could not delete',
+                  failure instanceof Error ? failure.message : 'Could not delete this entry.',
+                );
+                throw failure;
+              } finally {
+                setDeleting(false);
+              }
+            },
+          });
+        }
+      : undefined;
+
   return (
-    <View style={styles.root} testID="knowledge-folder">
-      {folder === '' ? (
-        <Text variant="subtitle" tone="muted">
-          {DESCRIPTION[scope.kind]}
-        </Text>
-      ) : null}
-      {areas ? (
-        <Group>
-          {PROJECT_AREAS.map((area) => (
-            <Row
-              key={area}
-              leading={{ icon: folderIcon(area) }}
-              title={folderTitle(scope, area)}
-              subtitle={folderSubtitle(scope, area)}
-              navigates
-              onPress={() => onOpenFolder(area)}
-            />
-          ))}
-        </Group>
-      ) : fromCatalog && wiki.catalog ? (
-        view.kind === 'home' ? (
-          <WikiHome catalog={wiki.catalog} open={open} />
-        ) : view.kind === 'decisions' ? (
-          <WikiDecisions catalog={wiki.catalog} open={open} />
-        ) : view.kind === 'topic' ? (
-          <WikiTopicPages catalog={wiki.catalog} title={view.title} open={open} />
-        ) : null
-      ) : fromCatalog && wiki.catalog === undefined && !catalogFailed ? (
-        <ActivityIndicator style={styles.loading} />
-      ) : error !== undefined ? (
-        <View style={styles.message}>
-          <Text variant="body" tone="muted">
-            {error}
-          </Text>
-          <Button label="Retry" variant="secondary" size="compact" onPress={retry} />
-        </View>
-      ) : directory === undefined ? (
-        <ActivityIndicator style={styles.loading} />
-      ) : directory.entries.length === 0 ? (
-        <Text variant="body" tone="muted" style={styles.message}>
-          No documents in this folder.
-        </Text>
-      ) : (
-        <Group>
-          {sectionsFirst(scope, directory.entries).map((entry) =>
-            entry.kind === 'directory' ? (
-              <Row
-                key={entry.path}
-                leading={{ icon: known ? folderIcon(entry.path) : 'folder' }}
-                title={known ? folderTitle(scope, entry.path) : entry.name}
-                subtitle={known ? folderSubtitle(scope, entry.path) : undefined}
-                navigates
-                onPress={() => onOpenFolder(entry.path)}
-              />
-            ) : (
-              <Row
-                key={entry.path}
-                leading={{ icon: 'file-text' }}
-                title={titles.get(entry.path)?.title ?? entry.name}
-                subtitle={titles.get(entry.path)?.summary || undefined}
-                navigates
-                onPress={() => onOpenFile(entry.path)}
-              />
-            ),
-          )}
-        </Group>
-      )}
-      {catalogFailed ? (
-        <View style={styles.message}>
+    <KnowledgeDeleteContext.Provider value={deleting ? undefined : remove}>
+      <View style={styles.root} testID="knowledge-folder">
+        {folder === '' ? (
           <Text variant="subtitle" tone="muted">
-            {`This Wiki view could not be loaded (${wiki.error ?? ''}), so its files are listed instead.`}
+            {DESCRIPTION[scope.kind]}
           </Text>
-          <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
-        </View>
-      ) : null}
-      {listing && directory?.truncated ? (
-        <Text variant="subtitle" tone="muted">
-          This folder has more files than can be shown. Organize it into smaller folders.
-        </Text>
-      ) : null}
-    </View>
+        ) : null}
+        {areas ? (
+          <Group>
+            {PROJECT_AREAS.map((area) => (
+              <Row
+                key={area}
+                leading={{ icon: folderIcon(area) }}
+                title={folderTitle(scope, area)}
+                subtitle={folderSubtitle(scope, area)}
+                navigates
+                onPress={() => onOpenFolder(area)}
+              />
+            ))}
+          </Group>
+        ) : fromCatalog && wiki.catalog ? (
+          view.kind === 'home' ? (
+            <WikiHome catalog={wiki.catalog} open={open} />
+          ) : view.kind === 'decisions' ? (
+            <WikiDecisions catalog={wiki.catalog} open={open} />
+          ) : view.kind === 'topic' ? (
+            <WikiTopicPages catalog={wiki.catalog} title={view.title} open={open} />
+          ) : null
+        ) : fromCatalog && wiki.catalog === undefined && !catalogFailed ? (
+          <ActivityIndicator style={styles.loading} />
+        ) : error !== undefined ? (
+          <View style={styles.message}>
+            <Text variant="body" tone="muted">
+              {error}
+            </Text>
+            <Button label="Retry" variant="secondary" size="compact" onPress={retry} />
+          </View>
+        ) : directory === undefined ? (
+          <ActivityIndicator style={styles.loading} />
+        ) : directory.entries.length === 0 ? (
+          <Text variant="body" tone="muted" style={styles.message}>
+            No documents in this folder.
+          </Text>
+        ) : (
+          <Group>
+            {sectionsFirst(scope, directory.entries).map((entry) =>
+              entry.kind === 'directory' ? (
+                <KnowledgeEntryActions
+                  key={entry.path}
+                  path={entry.path}
+                  label={entry.name}
+                  directory
+                >
+                  <Row
+                    leading={{ icon: known ? folderIcon(entry.path) : 'folder' }}
+                    title={known ? folderTitle(scope, entry.path) : entry.name}
+                    subtitle={known ? folderSubtitle(scope, entry.path) : undefined}
+                    navigates
+                    onPress={() => onOpenFolder(entry.path)}
+                  />
+                </KnowledgeEntryActions>
+              ) : (
+                <KnowledgeEntryActions key={entry.path} path={entry.path} label={entry.name}>
+                  <Row
+                    leading={{ icon: 'file-text' }}
+                    title={titles.get(entry.path)?.title ?? entry.name}
+                    subtitle={titles.get(entry.path)?.summary || undefined}
+                    navigates
+                    onPress={() => onOpenFile(entry.path)}
+                  />
+                </KnowledgeEntryActions>
+              ),
+            )}
+          </Group>
+        )}
+        {catalogFailed ? (
+          <View style={styles.message}>
+            <Text variant="subtitle" tone="muted">
+              {`This Wiki view could not be loaded (${wiki.error ?? ''}), so its files are listed instead.`}
+            </Text>
+            <Button label="Retry" variant="secondary" size="compact" onPress={wiki.retry} />
+          </View>
+        ) : null}
+        {listing && directory?.truncated ? (
+          <Text variant="subtitle" tone="muted">
+            This folder has more files than can be shown. Organize it into smaller folders.
+          </Text>
+        ) : null}
+        {confirmSheet}
+      </View>
+    </KnowledgeDeleteContext.Provider>
   );
 }
 
