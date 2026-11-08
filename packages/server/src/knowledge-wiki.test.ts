@@ -118,6 +118,7 @@ describe('projectWikiCatalog', () => {
   it('lists pages with titles, links both ways, decisions with status and what needs a look', async () => {
     write('insights/index.md', '# Wiki\n\nOverview.\n\n## Concepts\nThe ideas.\n- [Nav](nav.md)\n');
     write('insights/log.md', '# Log\n');
+    write('insights/wiki-conventions.md', '# Wiki conventions\n\nSee [nav](nav.md).\n');
     write(
       'insights/nav.md',
       `# Navigation\n\nSee [the meeting](../sources/meetings/m.md), [the decision](decisions/${'b'.repeat(32)}.md) and [gone](gone.md).\n`,
@@ -133,7 +134,7 @@ describe('projectWikiCatalog', () => {
 
     const catalog = await projectWikiCatalog(root);
 
-    // The start page and the log are the Wiki's own, not pages among the rest.
+    // The start page, the log and the rules are the Wiki's own, not pages among the rest.
     expect(catalog.pages.map((page) => page.path).sort()).toEqual([
       'insights/nav.md',
       'insights/topic/deep.md',
@@ -162,6 +163,7 @@ describe('projectWikiCatalog', () => {
       { kind: 'broken_links', path: 'insights/nav.md', targets: ['insights/gone.md'] },
       { kind: 'broken_links', path: 'insights/topic/deep.md', targets: ['sources/x.md'] },
     ]);
+    expect(catalog.conventions).toMatchObject({ path: 'insights/wiki-conventions.md' });
     expect(catalog.truncated).toBe(false);
   });
 
@@ -194,6 +196,7 @@ describe('projectWikiCatalog', () => {
       index: null,
       decisions: [],
       log: null,
+      conventions: null,
       review: [],
       truncated: false,
     });

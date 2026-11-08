@@ -290,23 +290,14 @@ it('keeps a log entry one day older than the file, not two', async () => {
 it('explains how the Wiki works and links its rules and change log', async () => {
   client({
     ...catalog,
-    pages: [
-      ...catalog.pages,
-      {
-        path: 'insights/wiki-conventions.md',
-        title: 'Wiki conventions',
-        summary: 'Rules.',
-        modifiedAt: today,
-        links: [],
-        linkedFrom: [],
-      },
-    ],
+    conventions: { path: 'insights/wiki-conventions.md', modifiedAt: today },
     log: { path: 'insights/log.md', modifiedAt: today },
   });
   render(<KnowledgeScreen scope={PROJECT} folder="insights" />);
   await screen.findByTestId('wiki-home');
   fireEvent.press(screen.getByLabelText('How the Wiki works'));
   expect(await screen.findByText('Verity writes and maintains')).toBeTruthy();
+  expect(screen.getByText('How this Wiki is organized')).toBeTruthy();
   fireEvent.press(screen.getByText('Change log'));
   expect(mockPush).toHaveBeenLastCalledWith({
     pathname: '/project/[id]/knowledge',

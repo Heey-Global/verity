@@ -11,6 +11,7 @@ import {
   markdownLinks,
   parseWikiLog,
   resolveKnowledgeLink,
+  WIKI_CONVENTIONS,
   WIKI_INDEX,
   WIKI_LOG,
   type KnowledgePath,
@@ -374,6 +375,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
   const pages: WikiPage[] = [];
   let index: WikiCatalog['index'] = null;
   let log: WikiCatalog['log'] = null;
+  let conventions: WikiCatalog['conventions'] = null;
   // The latest log entry per page. Entries are appended in order, so a later one
   // of the same day wins; a page the log never names keeps its file age alone.
   const lastChange = new Map<string, NonNullable<WikiPage['lastChange']>>();
@@ -398,8 +400,13 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
           if (!(await diskChecks.get(target))) broken.push(target);
         }
       }
-      // The start page and the log link everything; as backlinks they say nothing.
-      if (target !== page.path && page.path !== WIKI_INDEX && page.path !== WIKI_LOG) {
+      // The start page, the log and the rules link everything; as backlinks they say nothing.
+      if (
+        target !== page.path &&
+        page.path !== WIKI_INDEX &&
+        page.path !== WIKI_LOG &&
+        page.path !== WIKI_CONVENTIONS
+      ) {
         const from = linkedFrom.get(target) ?? new Set<string>();
         from.add(page.path);
         linkedFrom.set(target, from);
@@ -412,6 +419,10 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     }
     if (page.path === WIKI_LOG) {
       log = { path: page.path, modifiedAt: page.modifiedAt };
+      continue;
+    }
+    if (page.path === WIKI_CONVENTIONS) {
+      conventions = { path: page.path, modifiedAt: page.modifiedAt };
       continue;
     }
     const change = lastChange.get(page.path);
@@ -431,6 +442,7 @@ export async function projectWikiCatalog(knowledgeRoot: string): Promise<WikiCat
     index,
     decisions: decisionState.decisions,
     log,
+    conventions,
     review: [...conflicts.items, ...review],
     truncated,
   };

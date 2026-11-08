@@ -120,6 +120,8 @@ export const wikiCatalogSchema = z.object({
   decisions: z.array(wikiDecisionSchema),
   /** The change log Verity appends to, when the Wiki has one. Older servers omit it. */
   log: z.object({ path: pathSchema, modifiedAt: z.string() }).nullable().optional(),
+  /** The project's own Wiki rules, when written; like the log, not a page among the rest. */
+  conventions: z.object({ path: pathSchema, modifiedAt: z.string() }).nullable().optional(),
   // Kinds of review items added later are left out rather than failing the whole
   // catalog, which would cost an older app its Wiki.
   review: z.array(z.unknown()).transform((items) =>

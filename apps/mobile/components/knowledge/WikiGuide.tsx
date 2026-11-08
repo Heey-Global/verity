@@ -1,4 +1,4 @@
-import { WIKI_CONVENTIONS, WIKI_LOG, type VerityClient } from '@verity/mobile';
+import { WIKI_LOG, type VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet } from 'react-native-unistyles';
@@ -71,7 +71,7 @@ export function WikiInfoButton({
 }) {
   const [visible, setVisible] = useState(false);
   const { catalog } = useWikiCatalog(client, projectId);
-  const conventions = catalog?.pages.some((page) => page.path === WIKI_CONVENTIONS) ?? false;
+  const conventions = catalog?.conventions ?? null;
   const log = catalog?.log ?? null;
   const go = (action: () => void) => {
     setVisible(false);
@@ -110,7 +110,7 @@ export function WikiInfoButton({
                   title="How this Wiki is organized"
                   subtitle="Topics and page rules, changed with Verity"
                   navigates
-                  onPress={() => go(() => onOpenFile(WIKI_CONVENTIONS))}
+                  onPress={() => go(() => onOpenFile(conventions.path))}
                 />
               ) : null}
               {log ? (

@@ -25707,6 +25707,8 @@ var wikiCatalogSchema = import_zod17.z.object({
   decisions: import_zod17.z.array(wikiDecisionSchema),
   /** The change log Verity appends to, when the Wiki has one. Older servers omit it. */
   log: import_zod17.z.object({ path: pathSchema, modifiedAt: import_zod17.z.string() }).nullable().optional(),
+  /** The project's own Wiki rules, when written; like the log, not a page among the rest. */
+  conventions: import_zod17.z.object({ path: pathSchema, modifiedAt: import_zod17.z.string() }).nullable().optional(),
   // Kinds of review items added later are left out rather than failing the whole
   // catalog, which would cost an older app its Wiki.
   review: import_zod17.z.array(import_zod17.z.unknown()).transform((items) => items.flatMap((item) => {
