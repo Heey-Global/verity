@@ -1,10 +1,11 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { createServer, type Server } from 'node:http';
 import { lstat, chmod } from 'node:fs/promises';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { ProjectEgressHealthError } from './project-egress-health.js';
 import type { ProtectedBuildHost } from './project-egress-build.js';
-import type { ProjectEgressHost } from './project-egress-host.js';
+import { projectEgressHostRequest, type ProjectEgressHost } from './project-egress-host.js';
 
 /** Bind only below a pre-created, root-owned runtime directory. There is no TCP
  * listener and no endpoint accepting raw commands. The bearer key is projected
@@ -52,6 +53,8 @@ export async function listenProjectEgressHost(options: {
         return;
       }
       pending++;
+      const correlationId = randomUUID();
+      let operation = 'invalid';
       void (async () => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -66,16 +69,32 @@ export async function listenProjectEgressHost(options: {
           chunks.push(buffer);
         }
         const controller = request.url === '/v1/build' ? options.builds! : options.controller;
-        const result = await controller.execute(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        const input: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (request.url === '/v1/command') {
+          const parsed = projectEgressHostRequest.safeParse(input);
+          if (parsed.success) operation = parsed.data.operation;
+        }
+        const result = await controller.execute(input);
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
         .catch((error: unknown) => {
+          if (error instanceof ProjectEgressInventoryError) {
+            console.warn('verity: inventory command refused', {
+              operation,
+              reason: error.reason,
+              correlationId,
+            });
+          }
           // Do not disclose commands, paths or daemon inspection data to the client.
           if (!response.headersSent) response.writeHead(409);
           response.end(
             JSON.stringify({
               error: 'host operation refused',
-              ...(error instanceof ProjectEgressHealthError ? { reason: error.reason } : {}),
+              ...(error instanceof ProjectEgressInventoryError ? { correlationId } : {}),
+              ...(error instanceof ProjectEgressHealthError ||
+              error instanceof ProjectEgressInventoryError
+                ? { reason: error.reason }
+                : {}),
             }),
           );
         })

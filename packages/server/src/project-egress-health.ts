@@ -41,7 +41,10 @@ export function projectEgressFailure(error: unknown): ProjectEgressHealth {
   };
 }
 
-/** Root-owned provisioning diagnostics can explain an outage, never establish readiness. */
+/** Root-owned provisioning diagnostics can explain an outage, never establish readiness.
+ * /etc/verity-egress-server/status.json deliberately records an unavailable reboot
+ * fallback. /run is ephemeral; neither file overrides authenticated live health.
+ */
 export function projectEgressInstallationFailure(input: unknown): ProjectEgressHealth | undefined {
   if (typeof input !== 'object' || input === null) return undefined;
   const status = input as Record<string, unknown>;

@@ -1,3 +1,4 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   transportRules,
   directCorridorRules,
@@ -25,6 +26,7 @@ const hostname = z
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('health') }),
   z.strictObject({ operation: z.literal('inventory-begin'), token: z.uuid() }),
+  z.strictObject({ operation: z.literal('inventory-abort'), token: z.uuid() }),
   z.strictObject({ operation: z.literal('inventory-renew'), token: z.uuid(), hash: objectId }),
   z.strictObject({
     operation: z.literal('inventory-commit'),
@@ -48,7 +50,10 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
-  z.strictObject({ state: z.enum(['inventory-denied', 'inventory-ready']), token: z.uuid() }),
+  z.strictObject({
+    state: z.enum(['inventory-denied', 'inventory-ready', 'inventory-aborted']),
+    token: z.uuid(),
+  }),
   z.strictObject({
     state: z.literal('health'),
     protocolVersion: z.literal(1),
@@ -122,6 +127,7 @@ interface Dependencies {
   systemInventory?: {
     invalidate(): void;
     begin(token: string): void;
+    abort(token: string): void;
     commit(token: string, hosts: readonly string[], addresses: readonly string[]): Promise<void>;
     ready(): boolean;
     renew(hash: string): void;
@@ -380,12 +386,17 @@ export class ProjectEgressHost {
     }
     if (
       request.operation === 'inventory-begin' ||
+      request.operation === 'inventory-abort' ||
       request.operation === 'inventory-commit' ||
       request.operation === 'inventory-renew'
     ) {
       return this.serialize(async () => {
         if (!this.deps.systemInventory || !this.deps.enforcement)
-          throw new Error('Managed system inventory is not configured');
+          throw new ProjectEgressInventoryError('inventory_not_configured');
+        if (request.operation === 'inventory-abort') {
+          this.deps.systemInventory.abort(request.token);
+          return { state: 'inventory-aborted', token: request.token };
+        }
         if (request.operation === 'inventory-renew') {
           this.deps.systemInventory.renew(request.hash);
           return { state: 'inventory-ready', token: request.token };
@@ -409,7 +420,10 @@ export class ProjectEgressHost {
           }),
         );
         const failures = outcomes.filter((outcome) => outcome.status === 'rejected');
-        if (failures.length) throw new Error('System inventory fencing failed');
+        if (failures.length) {
+          this.deps.systemInventory.abort(request.token);
+          throw new ProjectEgressInventoryError('inventory_fencing_failed');
+        }
         return { state: 'inventory-denied', token: request.token };
       });
     }
