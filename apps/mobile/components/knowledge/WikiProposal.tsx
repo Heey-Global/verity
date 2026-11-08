@@ -1,6 +1,6 @@
 import type { VerityClient, WikiProposal, WikiProposalDecision } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -105,6 +105,14 @@ export function WikiProposalScreen({
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [attempt, setAttempt] = useState(0);
+  // A decision may finish after the user left; it must not move another screen.
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
   useEffect(() => {
     let active = true;
     setError(undefined);
@@ -160,15 +168,17 @@ export function WikiProposalScreen({
         if (reject.length) await client.decideWikiProposal(projectId, proposalId, 'reject', reject);
       } catch (failure) {
         failed = true;
-        setDecisionError(
-          failure instanceof Error ? failure.message : 'Could not save the decision',
-        );
+        if (mounted.current)
+          setDecisionError(
+            failure instanceof Error ? failure.message : 'Could not save the decision',
+          );
       } finally {
         // Pages may have been written even when a later step failed.
         invalidateWikiCatalog(projectId);
         invalidateWikiProposals(projectId);
-        setSaving(false);
+        if (mounted.current) setSaving(false);
       }
+      if (!mounted.current) return;
       if (notes) setNotice(notes);
       if (failed || notes || !router.canGoBack()) setAttempt((value) => value + 1);
       else router.back();
@@ -178,35 +188,42 @@ export function WikiProposalScreen({
 
   const footer =
     proposal && pending.length ? (
-      <View style={styles.footer}>
-        <View style={styles.flex}>
-          <Button
-            label="Reject"
-            variant="secondary"
-            disabled={saving}
-            onPress={() =>
-              confirm({
-                title: 'Reject this proposal?',
-                message: 'Its changes are not applied and Verity will not propose them again.',
-                confirmLabel: 'Reject',
-                destructive: true,
-                onConfirm: () =>
-                  decide(
-                    [],
-                    pending.map((change) => change.path),
-                  ),
-              })
-            }
-            fullWidth
-          />
-        </View>
-        <View style={styles.flex}>
-          <Button
-            label={`Apply ${String(chosen.length)} ${chosen.length === 1 ? 'change' : 'changes'}`}
-            disabled={saving || !chosen.length}
-            onPress={() => void decide(chosen, omitted)}
-            fullWidth
-          />
+      <View style={styles.footerStack}>
+        {omitted.length && chosen.length ? (
+          <Text variant="footnote" tone="muted" style={styles.center}>
+            {`Applying rejects the ${String(omitted.length)} ${omitted.length === 1 ? 'page' : 'pages'} left out.`}
+          </Text>
+        ) : null}
+        <View style={styles.footer}>
+          <View style={styles.flex}>
+            <Button
+              label="Reject"
+              variant="secondary"
+              disabled={saving}
+              onPress={() =>
+                confirm({
+                  title: 'Reject this proposal?',
+                  message: 'Its changes are not applied and Verity will not propose them again.',
+                  confirmLabel: 'Reject',
+                  destructive: true,
+                  onConfirm: () =>
+                    decide(
+                      [],
+                      pending.map((change) => change.path),
+                    ),
+                })
+              }
+              fullWidth
+            />
+          </View>
+          <View style={styles.flex}>
+            <Button
+              label={`Apply ${String(chosen.length)} ${chosen.length === 1 ? 'change' : 'changes'}`}
+              disabled={saving || !chosen.length}
+              onPress={() => void decide(chosen, omitted)}
+              fullWidth
+            />
+          </View>
         </View>
       </View>
     ) : undefined;
@@ -216,7 +233,10 @@ export function WikiProposalScreen({
       title="Proposed change"
       detail
       state={{ error: decisionError ?? error, saving }}
-      onRetry={() => setAttempt((value) => value + 1)}
+      onRetry={() => {
+        setDecisionError(undefined);
+        setAttempt((value) => value + 1);
+      }}
       {...(footer ? { footer } : {})}
     >
       {proposal === undefined ? (
@@ -309,6 +329,8 @@ const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.md },
   head: { gap: theme.spacing.xs },
   passage: { padding: theme.spacing.md, gap: theme.spacing.xs },
+  footerStack: { gap: theme.spacing.xs },
   footer: { flexDirection: 'row', gap: theme.spacing.sm },
+  center: { textAlign: 'center' },
   flex: { flex: 1 },
 }));
