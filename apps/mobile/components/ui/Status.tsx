@@ -95,6 +95,34 @@ export function Dot({ intent }: { intent: StatusIntent }) {
   );
 }
 
+/**
+ * How many items wait for the person: a number on the attention tint, the same
+ * drawing as the Home tab's count. The label names what is counted, so the
+ * number is never read out bare.
+ */
+export function CountBadge({
+  count,
+  label,
+  testID,
+}: {
+  count: number;
+  label: string;
+  testID?: string;
+}) {
+  return (
+    <View
+      style={styles.count}
+      accessible
+      accessibilityLabel={`${String(count)} ${label}`}
+      testID={testID}
+    >
+      <Text numberOfLines={1} style={[styles.tagLabel, styles.countLabel]}>
+        {String(count)}
+      </Text>
+    </View>
+  );
+}
+
 /** Plain muted word, with a spinner for `transient`. */
 function StatusText({ intent, label }: { intent: StatusIntent; label: string }) {
   const { theme } = useUnistyles();
@@ -140,6 +168,16 @@ const styles = StyleSheet.create((theme) => ({
   tagReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tagAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tagLabel: { ...theme.typography.label },
+  count: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tint(theme.colors.attention, 'fill'),
+  },
+  countLabel: { color: theme.colors.attention },
   dotRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   // A status word truncates instead of pushing the row's title aside.
   shrink: { flexShrink: 1, minWidth: 0 },

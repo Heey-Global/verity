@@ -863,6 +863,7 @@ function SessionList({ client }: { client: VerityClient }) {
             group={item}
             client={client}
             now={Date.now()}
+            unread={unread}
             layoutRevision={overviewLayoutRevision}
             reorder={reorder}
             renderedOrder={activeGroupIds}
