@@ -55,7 +55,7 @@ import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
 import { useFonts } from '@expo-google-fonts/inter/useFonts';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
-import { showsMessageSearch } from '../lib/headerRoutes';
+import { showsMessageSearch, usesExpandedHeaderTitle } from '../lib/headerRoutes';
 import { dispatchVerityShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
@@ -398,7 +398,7 @@ function AppHeader({
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const isHome = route.name === 'index';
-  const isSettingsRoute = route.name.includes('settings');
+  const expandedTitle = usesExpandedHeaderTitle(route.name);
   // iPadOS 26 draws the window controls over the header's top-left corner without
   // reserving any safe area for them, so the row is pushed clear of whatever the
   // window's corners claim (zero everywhere else — see components/WindowControls).
@@ -484,7 +484,7 @@ function AppHeader({
               hitSlop={8}
             >
               <Icon name="chevron-left" size={28} color={theme.colors.text} />
-              {back.title && !isSettingsRoute ? (
+              {back.title && !expandedTitle ? (
                 <Text style={styles.headerBackTitle} numberOfLines={1}>
                   {back.title}
                 </Text>
@@ -496,7 +496,7 @@ function AppHeader({
           style={[
             styles.headerTitle,
             isHome ? styles.headerTitleHome : null,
-            isSettingsRoute ? styles.headerTitleSettings : null,
+            expandedTitle ? styles.headerTitleExpanded : null,
           ]}
           numberOfLines={1}
           accessibilityRole="header"
@@ -592,7 +592,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     ...theme.typography.title,
   },
-  headerTitleSettings: {
+  headerTitleExpanded: {
     flex: 3,
   },
   // The wordmark takes only its own width, so the two sides split the rest
