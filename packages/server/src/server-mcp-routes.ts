@@ -1847,9 +1847,15 @@ export function registerServerMcpRoutes({
             }
             if (request.operation === 'propose_wiki') {
               if (!wikiProposals) throw new Error('Knowledge storage is unavailable');
-              const { operation: _operation, ...proposal } = request;
+              // A deleted project is only hidden; its Wiki takes no new proposals.
+              if ((await deps.eventStore.getProject(input.projectId))?.hiddenAt)
+                throw new ControlPlaneSessionAuthorityError('The project was deleted');
               const result = await wikiProposals.propose({
-                ...proposal,
+                mode: request.mode,
+                logKind: request.logKind,
+                title: request.title,
+                sources: request.sources,
+                changes: request.changes,
                 projectId: input.projectId,
                 sessionId: input.sessionId,
                 turnId: input.turnId,

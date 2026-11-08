@@ -84,7 +84,7 @@ it('applies only the chosen pages and keeps the rest open', async () => {
     ['topics/b.md', 'applied'],
   ]);
   // A decided change keeps no copy of its text.
-  expect(open!.changes[1]!.content).toBeNull();
+  expect((await proposals.get('p', proposal!.id)).changes[1]!.content).toBeNull();
   await proposals.reject('p', proposal!.id);
   expect(await proposals.listOpen('p')).toEqual([]);
   expect(pages.has('a.md')).toBe(false);
@@ -92,7 +92,15 @@ it('applies only the chosen pages and keeps the rest open', async () => {
 
 it('accepts only ordinary Wiki pages', () => {
   expect(proposalPagePath('/knowledge/insights/topics/x.md')).toBe('topics/x.md');
-  for (const path of ['log.md', 'decisions/x.md', '../sources/x.md', 'a/.hidden.md', 'x.txt'])
+  for (const path of [
+    'log.md',
+    'decisions/x.md',
+    '../sources/x.md',
+    'a/.hidden.md',
+    'x.txt',
+    '/knowledge/sources/x.md',
+    'knowledge/shared/insights/x.md',
+  ])
     expect(() => proposalPagePath(path)).toThrow(/not a Wiki page/);
 });
 
@@ -108,4 +116,70 @@ it('refuses a source that would write its own log.md heading', () => {
   expect(
     knowledgeToolRequestSchema.safeParse({ ...request, sources: ['sources/a.md'] }).success,
   ).toBe(true);
+});
+
+it('reports an applied change whose log entry failed as applied, with a warning', async () => {
+  const { proposal } = await proposals.propose(input([change('a.md', 'A')]));
+  pages.set('log.md', 'x');
+  const failing = new WikiProposals(dataRoot, {
+    readProjectWiki: async (_project, path) =>
+      path === 'log.md' ? { content: 'x', version: 'not-the-version' } : null,
+    writeProjectWiki: async (_project, path, content) => {
+      if (path === 'log.md') throw new FileWriteError(409, 'file changed');
+      pages.set(path, content);
+    },
+  });
+  const result = await failing.apply('p', proposal!.id);
+  expect(result).toMatchObject({ applied: ['a.md'], warning: expect.any(String) });
+  expect(pages.get('a.md')).toBe('A');
+});
+
+it('lets a change that went stale be offered again against the current page', async () => {
+  pages.set('a.md', 'old');
+  const { proposal } = await proposals.propose(input([change('a.md', 'new')]));
+  // While its page is unchanged, the same text is not offered twice.
+  expect((await proposals.propose(input([change('a.md', 'new')], 't2'))).proposal).toBeNull();
+  pages.set('a.md', 'edited by hand');
+  const again = await proposals.propose(input([change('a.md', 'new')], 't3'));
+  expect(again.proposal?.changes[0]?.baseVersion).toBe(version('edited by hand'));
+  // Rejecting the stale one does not block the text either.
+  await proposals.reject('p', proposal!.id);
+  await proposals.reject('p', again.proposal!.id);
+  pages.set('a.md', 'edited twice');
+  expect((await proposals.propose(input([change('a.md', 'new')], 't4'))).proposal).toBeNull();
+});
+
+it('keeps the review usable when a proposed page can no longer be read', async () => {
+  const { proposal } = await proposals.propose(input([change('a.md', 'A')]));
+  const broken = new WikiProposals(dataRoot, {
+    readProjectWiki: () => Promise.reject(new Error('ELOOP')),
+    writeProjectWiki: () => Promise.resolve(),
+  });
+  expect(await broken.listOpen('p')).toMatchObject([
+    { id: proposal!.id, changes: [{ path: 'a.md', stale: true }] },
+  ]);
+});
+
+it('reports a page that could not be written and decides the others', async () => {
+  const { proposal } = await proposals.propose(input([change('a.md', 'A'), change('b.md', 'B')]));
+  const flaky = new WikiProposals(dataRoot, {
+    readProjectWiki: async (_project, path) => {
+      const content = pages.get(path);
+      return content === undefined ? null : { content, version: version(content) };
+    },
+    writeProjectWiki: async (_project, path, content) => {
+      if (path === 'a.md') throw new FileWriteError(400, 'invalid Wiki path');
+      pages.set(path, content);
+    },
+  });
+  expect(await flaky.apply('p', proposal!.id)).toMatchObject({
+    applied: ['b.md'],
+    failed: ['a.md'],
+  });
+  expect((await proposals.listOpen('p'))[0]!.changes[0]).toEqual({
+    path: 'a.md',
+    summary: 'Write a.md',
+    status: 'pending',
+    stale: false,
+  });
 });

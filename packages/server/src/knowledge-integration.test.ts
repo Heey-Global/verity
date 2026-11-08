@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { request, type Server } from 'node:http';
@@ -643,9 +644,8 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
     const list = await h.app.inject({ url: '/projects/p/knowledge/proposals', headers: auth });
     expect(list.statusCode).toBe(200);
     const [open] = list.json<{ proposals: { id: string; changes: unknown[] }[] }>().proposals;
-    expect(open!.changes).toMatchObject([
-      { path: 'topics/billing.md', stale: false, current: null },
-    ]);
+    expect(open).not.toHaveProperty('sessionId');
+    expect(open!.changes).toMatchObject([{ path: 'topics/billing.md', stale: false }]);
     const applied = await h.app.inject({
       method: 'POST',
       url: `/projects/p/knowledge/proposals/${open!.id}/apply`,
@@ -655,6 +655,9 @@ it('proposes a Wiki change for review and applies it with a log entry', async ()
     expect(applied.statusCode).toBe(200);
     expect(applied.json()).toMatchObject({ applied: ['topics/billing.md'], stale: [] });
     expect(readFileSync(page, 'utf8')).toBe(change.content);
+    // Agents write the Wiki as another user; a page created by applying stays writable.
+    expect(statSync(page).mode & 0o777).toBe(0o666);
+    expect(statSync(join(page, '..')).mode & 0o777).toBe(0o777);
     const log = readFileSync(join(h.dataRoot, 'knowledge/p/insights/log.md'), 'utf8');
     expect(log).toMatch(/^## \[\d{4}-\d{2}-\d{2}\] chat \| Billing cycle$/m);
     expect(log).toContain('(topics/billing.md)');

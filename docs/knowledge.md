@@ -248,13 +248,16 @@ as knowledge. The server records each page's version when the proposal is made. 
 change identical to one already proposed, applied or rejected, or to the page as
 it is, is skipped; at most 50 proposals per project can wait for review.
 
-`GET /projects/:id/knowledge/proposals` lists open proposals with each page's
-current text and whether it changed since the proposal (`stale`); reading requires
-read access to the project. `POST …/proposals/:proposalId/apply` and `…/reject`
+`GET /projects/:id/knowledge/proposals` lists open proposals with each page's path,
+summary and whether it changed since the proposal (`stale`);
+`GET …/proposals/:proposalId` adds the proposed and the current text. Reading
+requires read access to the project. `POST …/proposals/:proposalId/apply` and `…/reject`
 decide all pending pages or those named in `paths` and require the Wiki's edit
 access (project `manage`). Applying writes through the Wiki's versioned editor
-path, so a page edited meanwhile is reported as stale and left unchanged, and adds
-one `log.md` entry with the applied pages and the sources. A decided change keeps
+path, so a page edited meanwhile is reported as stale and left unchanged, a page
+that cannot be written is reported as failed and stays pending, and applying adds
+one `log.md` entry with the applied pages and the sources; when that entry cannot
+be written, the apply still succeeds and returns a warning. A decided change keeps
 only a fingerprint of its text; the Wiki's own version history holds what was
 applied. Like the project's knowledge folder, proposals stay on disk when a project is
 deleted, which only hides it; while it is hidden they can be neither listed nor

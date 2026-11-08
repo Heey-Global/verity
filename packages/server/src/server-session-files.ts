@@ -124,6 +124,8 @@ export function registerServerSessionFiles(
     path: string,
     content: string,
     expectedVersion: string | null,
+    /** Overrides the mode a new file gets; the Wiki's pages stay writable for agents. */
+    newFileMode?: number,
   ) => {
     let slot;
     try {
@@ -142,9 +144,10 @@ export function registerServerSessionFiles(
       if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
         await excludeFileHistoryFromGit(root.dir);
       const creationMode =
-        root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+        newFileMode ??
+        (root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
           ? 0o666
-          : 0o644;
+          : 0o644);
       const saved = await writeSessionText(slot, content, expectedVersion, creationMode);
       let warning: string | undefined;
       const updates: Array<() => Promise<unknown>> = [];
@@ -885,7 +888,7 @@ export function registerServerSessionFiles(
         throw new FileWriteError(400, 'invalid Wiki path');
       const wiki = await projectWiki(projectId);
       await ensureWikiFolders(wiki.dir, path);
-      const saved = await saveText(wiki, path, content, expectedVersion);
+      const saved = await saveText(wiki, path, content, expectedVersion, 0o666);
       if ('slotError' in saved) throw new FileWriteError(400, 'invalid Wiki path');
       return saved;
     },
@@ -893,19 +896,31 @@ export function registerServerSessionFiles(
 }
 
 /**
- * Creates the folders a new Wiki page needs. A folder that is not a real
- * directory (a symlink) stops it; the write then refuses the path.
+ * Creates the folders a new Wiki page needs, each relative to its opened parent
+ * so a folder swapped for a symlink meanwhile cannot redirect it. A component
+ * that is not a real directory stops it; the write then refuses the path.
  */
 async function ensureWikiFolders(dir: string, path: string): Promise<void> {
-  const parts = path.split('/').slice(0, -1);
-  let current = dir;
-  for (const part of parts) {
-    current = join(current, part);
-    const stats = await lstat(current).catch(() => null);
-    if (stats?.isDirectory()) continue;
-    if (stats) return;
-    await mkdir(current, { mode: 0o777 }).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    });
+  const flags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  let parent = await open(dir, flags);
+  try {
+    for (const part of path.split('/').slice(0, -1)) {
+      const child = `/proc/self/fd/${String(parent.fd)}/${part}`;
+      const created = await mkdir(child).then(
+        () => true,
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          return false;
+        },
+      );
+      const next = await open(child, flags).catch(() => undefined);
+      if (!next) return;
+      await parent.close();
+      parent = next;
+      // The umask would narrow a mode passed to mkdir; agents write here as another user.
+      if (created) await parent.chmod(0o777);
+    }
+  } finally {
+    await parent.close();
   }
 }

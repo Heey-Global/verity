@@ -27,7 +27,7 @@ const singleLine = z
 
 /**
  * Agents read and write project knowledge as files under `/knowledge`; this tool
- * brokers the two writes that cross read-only knowledge mount boundaries.
+ * brokers the writes that cross read-only knowledge mount boundaries.
  */
 export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
   z

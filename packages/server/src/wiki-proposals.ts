@@ -91,8 +91,13 @@ const RESERVED = new Set([posix.basename(WIKI_LOG)]);
  * `insights/x.md` and `x.md`.
  */
 export function proposalPagePath(path: string): string {
-  const trimmed = path.trim().replace(/^\/?knowledge\//, '');
-  const relative = trimmed.startsWith('insights/') ? trimmed.slice('insights/'.length) : trimmed;
+  const trimmed = path.trim();
+  const knowledge = /^\/?knowledge\//.exec(trimmed);
+  // A knowledge path outside the Wiki (Sources, Shared) is no page to propose.
+  if (knowledge && !trimmed.slice(knowledge[0].length).startsWith('insights/'))
+    throw new WikiProposalError(400, `not a Wiki page that can be proposed: ${path}`);
+  const local = knowledge ? trimmed.slice(knowledge[0].length) : trimmed;
+  const relative = local.startsWith('insights/') ? local.slice('insights/'.length) : local;
   const parts = relative.split('/');
   if (
     !relative.toLowerCase().endsWith('.md') ||
@@ -104,6 +109,8 @@ export function proposalPagePath(path: string): string {
     throw new WikiProposalError(400, `not a Wiki page that can be proposed: ${path}`);
   return relative;
 }
+
+const UNREADABLE: unique symbol = Symbol('unreadable');
 
 const fingerprint = (path: string, content: string) =>
   createHash('sha256').update(`${path}\0${content}`).digest('hex');
@@ -122,7 +129,9 @@ function logLink(target: string, text: string): string {
     ? knowledge.slice('insights/'.length)
     : `../${knowledge}`;
   // Only a link the Wiki itself resolves is written as one.
-  return resolveKnowledgeLink(WIKI_LOG, href) ? `- [${label}](${encodeURI(href)})` : `- ${label}`;
+  return resolveKnowledgeLink(WIKI_LOG, href)
+    ? `- [${label}](${encodeURI(href).replace(/[()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)})`
+    : `- ${label}`;
 }
 
 function wikiLogEntry(proposal: WikiProposal, applied: readonly string[]): string {
@@ -192,18 +201,30 @@ export class WikiProposals {
       if (
         input.mode === 'inline' &&
         input.turnId !== null &&
-        open.some((proposal) => proposal.mode === 'inline' && proposal.turnId === input.turnId)
+        existing.some((proposal) => proposal.mode === 'inline' && proposal.turnId === input.turnId)
       )
         throw new WikiProposalError(409, 'one Wiki proposal per answer');
-      const known = new Set(
-        existing.flatMap((proposal) => proposal.changes.map((c) => c.fingerprint)),
-      );
+      // A pending change whose page moved on can no longer be applied; offering
+      // the same text against the page as it is now must stay possible.
+      const offered = new Set(changes.map((change) => fingerprint(change.path, change.content)));
+      const known = new Set<string>();
+      for (const proposal of existing)
+        for (const decided of proposal.changes) {
+          if (!offered.has(decided.fingerprint)) continue;
+          if (decided.status !== 'pending') known.add(decided.fingerprint);
+          else {
+            const page = await this.page(input.projectId, decided.path);
+            if (page !== UNREADABLE && (page?.version ?? null) === decided.baseVersion)
+              known.add(decided.fingerprint);
+          }
+        }
       const skipped: string[] = [];
       const kept: WikiProposalChange[] = [];
       for (const change of changes) {
-        const current = await this.wiki.readProjectWiki(input.projectId, change.path);
+        const current = await this.page(input.projectId, change.path);
         const print = fingerprint(change.path, change.content);
-        if (known.has(print) || current?.content === change.content) {
+        // A page that cannot be read has no version to propose against.
+        if (current === UNREADABLE || known.has(print) || current?.content === change.content) {
           skipped.push(change.path);
           continue;
         }
@@ -238,10 +259,35 @@ export class WikiProposals {
     }
   }
 
+  /**
+   * A page as it is now. A path that became unreadable (a file where a folder
+   * was, a symlink) affects only the changes on it, never the whole review.
+   */
+  private async page(
+    projectId: string,
+    path: string,
+  ): Promise<{ content: string; version: string } | null | typeof UNREADABLE> {
+    return this.wiki.readProjectWiki(projectId, path).catch(() => UNREADABLE);
+  }
+
   /** Open proposals, oldest first, each change marked stale when its page moved on. */
   async listOpen(projectId: string) {
     const open = (await this.all(projectId)).filter((proposal) => proposal.decidedAt === null);
-    return Promise.all(open.map((proposal) => this.view(proposal)));
+    // The list stays small: page texts are read with the single proposal.
+    return Promise.all(
+      open.map(async (proposal) => {
+        const view = await this.view(proposal);
+        return {
+          ...view,
+          changes: view.changes.map(({ path, summary, status, stale }) => ({
+            path,
+            summary,
+            status,
+            stale,
+          })),
+        };
+      }),
+    );
   }
 
   async get(projectId: string, id: string) {
@@ -265,7 +311,8 @@ export class WikiProposals {
     const changes = await Promise.all(
       proposal.changes.map(async (change) => {
         if (change.status !== 'pending') return { ...change, stale: false, current: null };
-        const current = await this.wiki.readProjectWiki(proposal.projectId, change.path);
+        const current = await this.page(proposal.projectId, change.path);
+        if (current === UNREADABLE) return { ...change, stale: true, current: null };
         return {
           ...change,
           stale: (current?.version ?? null) !== change.baseVersion,
@@ -273,7 +320,18 @@ export class WikiProposals {
         };
       }),
     );
-    return { ...proposal, changes };
+    // Which session proposed it is not shown: project readers need not see its ids.
+    return {
+      id: proposal.id,
+      projectId: proposal.projectId,
+      mode: proposal.mode,
+      logKind: proposal.logKind,
+      title: proposal.title,
+      sources: proposal.sources,
+      createdAt: proposal.createdAt,
+      decidedAt: proposal.decidedAt,
+      changes,
+    };
   }
 
   /**
@@ -298,7 +356,14 @@ export class WikiProposals {
   }
 
   async reject(projectId: string, id: string, paths?: readonly string[]) {
-    return this.decide(projectId, id, paths, () => Promise.resolve('rejected' as const));
+    return this.decide(projectId, id, paths, async (proposal, change) => {
+      // Rejecting a change only because its page moved on says nothing about its
+      // text; it must not keep the same text from being proposed again.
+      const page = await this.page(proposal.projectId, change.path);
+      if (page === UNREADABLE || (page?.version ?? null) !== change.baseVersion)
+        change.fingerprint = '';
+      return 'rejected';
+    });
   }
 
   private async decide(
@@ -320,15 +385,15 @@ export class WikiProposals {
       if (!targets.length) throw new WikiProposalError(409, 'nothing left to decide');
       const applied: string[] = [];
       const stale: string[] = [];
-      let failure: Error | undefined;
+      const failed: string[] = [];
       for (const change of targets) {
         let outcome: WikiChangeStatus | 'stale';
         try {
           outcome = await act(proposal, change);
-        } catch (error) {
-          // Keep what was decided before the failure; the rest stays pending.
-          failure = error instanceof Error ? error : new Error(String(error));
-          break;
+        } catch {
+          // The page stays pending; the others are still decided.
+          failed.push(change.path);
+          continue;
         }
         if (outcome === 'stale') {
           stale.push(change.path);
@@ -342,16 +407,23 @@ export class WikiProposals {
         proposal.decidedAt = new Date().toISOString();
         for (const change of proposal.changes) change.baseVersion = null;
       }
-      // Pages written are decided even when their log entry cannot be added.
       await this.save(proposal);
-      if (applied.length)
-        await this.appendLog(proposal, applied).catch((error: unknown) => {
-          failure ??= error instanceof Error ? error : new Error(String(error));
-        });
+      // The pages are applied either way; a missing log entry must not read as a failed apply.
+      const logged = applied.length
+        ? await this.appendLog(proposal, applied).then(
+            () => true,
+            () => false,
+          )
+        : true;
       if (proposal.decidedAt) await this.prune(projectId);
       this.wiki.onChange?.(projectId);
-      if (failure) throw failure;
-      return { applied, stale, proposal: await this.view(proposal) };
+      return {
+        applied,
+        stale,
+        failed,
+        ...(logged ? {} : { warning: 'The pages were applied, but log.md could not be updated.' }),
+        proposal: await this.view(proposal),
+      };
     } finally {
       release();
     }
