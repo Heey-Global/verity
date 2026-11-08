@@ -12,6 +12,7 @@ import {
   useConfirm,
   StatusDot,
   StatusTag,
+  SystemNotice,
   TextField,
   ToggleRow,
 } from './index';
@@ -683,5 +684,43 @@ describe('CardHead', () => {
     const style = StyleSheet.flatten(screen.getByTestId('card-head-trailing').props.style);
     expect(style.flexShrink).toBe(0);
     expect(style.maxWidth).toBeUndefined();
+  });
+});
+
+describe('SystemNotice', () => {
+  // Raw diagnostics are never the explanation: they stay folded until asked for.
+  it('keeps technical output behind Details and names the state in words', () => {
+    render(
+      <SystemNotice
+        intent="needsSetup"
+        title="Agent couldn’t start"
+        detail="Your message wasn’t sent to the agent."
+        technical="codex: refused"
+      />,
+    );
+    expect(screen.getByText('Agent couldn’t start')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Agent couldn’t start, needs attention')).toBeOnTheScreen();
+    expect(screen.queryByText('codex: refused')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText('codex: refused')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Hide details' }));
+    expect(screen.queryByText('codex: refused')).toBeNull();
+  });
+
+  it('shows progress with a spinner and opens its target when it links somewhere', () => {
+    const onPress = jest.fn();
+    const { rerender } = render(<SystemNotice intent="transient" title="Preparing" />);
+    expect(screen.getByLabelText('Preparing, in progress')).toBeOnTheScreen();
+    rerender(
+      <SystemNotice
+        intent="unknown"
+        title="Agent planned 3 steps"
+        link="Tasks"
+        onPress={onPress}
+        accessibilityLabel="Agent planned 3 steps. Open Tasks"
+      />,
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Agent planned 3 steps. Open Tasks' }));
+    expect(onPress).toHaveBeenCalledTimes(1);
   });
 });

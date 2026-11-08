@@ -78,6 +78,7 @@ export {
   type AgentEventDescriptor,
   type AgentEventTone,
 } from './ui/agentEvent.js';
+export { splitNoticeText } from './ui/systemNotice.js';
 export {
   APP_LINK_PROJECT_SETTINGS_PAGES,
   APP_LINK_SCHEME,

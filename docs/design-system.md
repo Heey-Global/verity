@@ -400,6 +400,32 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   Premium branding does not imply that the Home assistant is a paid feature.
   Buttons never glow; existing typography, motion and accessibility rules still apply.
 
+### 5.9 System notice
+
+A line Verity writes into a session chat itself, rather than the agent or the
+operator: preparation, interruptions, failures and bookkeeping. Every such line
+uses one component, `SystemNotice` (`components/ui/SystemNotice.tsx`); a chat
+row never styles its own.
+
+- **Indicator:** the § 5.4 mark for its intent in a 20 px leading slot —
+  `transient` a spinner (in progress), `needsSetup` the attention dot (failed or
+  needs the operator), `unknown` the faint dot (neutral bookkeeping).
+- **Headline:** what happened, in `Subtitle` size and `text` color; semibold when
+  an explanation or actions follow, regular for a one-line note. It is always
+  present, so the state never depends on color.
+- **Explanation:** optional `Subtitle` in `textMuted`, indented under the
+  headline. It says what it means for the operator — for example that a message
+  was not sent — never a raw error.
+- **Actions:** compact buttons under the explanation. A failure the operator can
+  recover from offers `Try again` (secondary, `rotate-cw`); sign-in uses the
+  primary button. Technical output stays behind a `Details` text button, shown in
+  a `CodeBlock` on `surface`.
+- **Link:** a notice that opens something (`Agent planned 3 steps · Tasks ›`) is
+  pressable as a whole and ends with its target word.
+- **Message status:** a message's own `Sending…` or `Not sent` uses the same
+  indicator and `Subtitle` word under the bubble.
+- No bubble, card or `signature`: a system notice is not Verity speaking.
+
 ## 6. Patterns
 
 ### 6.1 Settings screen
