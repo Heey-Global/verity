@@ -487,7 +487,7 @@ describe('Conductor.sendTurn', () => {
     // Kept once although the request named one of them too.
     const disallowed = fake.last().disallowedTools ?? [];
     expect(disallowed.filter((tool) => tool === 'Task')).toHaveLength(1);
-    for (const tool of ['Bash', 'WebFetch', 'WebSearch', 'Task', 'Write', 'Edit'])
+    for (const tool of ['Bash', 'WebFetch', 'WebSearch', 'Task', 'Write', 'Edit', 'ExitPlanMode'])
       expect(disallowed).toContain(tool);
     await conductor.sendTurn('plain', 'Continue', { permissionMode: 'bypassPermissions' });
     expect(fake.last().planning).not.toBe(true);

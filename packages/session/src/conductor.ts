@@ -35,6 +35,9 @@ const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
   'Edit',
   'MultiEdit',
   'NotebookEdit',
+  // Nobody would see a plan approval it raised.
+  'ExitPlanMode',
+  'EnterPlanMode',
 ] as const;
 import type {
   EventStore,
