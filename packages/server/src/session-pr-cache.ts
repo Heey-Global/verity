@@ -159,7 +159,13 @@ export function createSessionPrCache(options: {
         const visibleStatus = options.present
           ? await options
               .present(session, status)
-              .catch(() => (previous ? previous.visibleStatus : status))
+              .catch(() =>
+                previous?.visibleStatus === null &&
+                previous.status?.url === status?.url &&
+                status?.phase !== 'open'
+                  ? null
+                  : status,
+              )
           : status;
         if (token.disowned) {
           resolve(null);

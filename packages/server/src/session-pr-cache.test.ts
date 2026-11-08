@@ -49,6 +49,28 @@ describe('shared session PR cache', () => {
     expect(await cache.get(session)).toMatchObject({ number: 2, phase: 'open' });
   });
 
+  it('uses fresh forge identity and phase when presentation fails', async () => {
+    let status = pr;
+    let fail = false;
+    const cache = createSessionPrCache({
+      load: async () => status,
+      present: async (_session, current) => {
+        if (fail) throw new Error('workspace unavailable');
+        return current;
+      },
+    });
+    await cache.get(session);
+    status = { ...pr, phase: 'merged' };
+    fail = true;
+    cache.invalidate(session.worktree, true);
+    await cache.get(session);
+    expect(cache.peek(session.worktree)?.phase).toBe('merged');
+    status = { ...pr, number: 2, url: 'https://example.test/pr/2' };
+    cache.invalidate(session.worktree, true);
+    await cache.get(session);
+    expect(cache.peek(session.worktree)).toEqual(status);
+  });
+
   it('keeps hidden terminal PR status available to automation', async () => {
     const terminal = { ...pr, phase: 'merged' as const };
     const onChange = vi.fn();
