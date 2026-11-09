@@ -1,9 +1,14 @@
+import { isCacheHelper, retainLatestCacheHelper } from './cache-helper-retention.js';
 import { randomUUID } from 'node:crypto';
 import { posix, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { RunnerTurnOwnershipRequest } from '@verity/store';
 import type { DockerClient } from './docker.js';
-import { cacheHelperCommand, cacheHelperFailureReason } from './runner-cache-helper.js';
+import {
+  cacheHelperCommand,
+  cacheHelperFailureReason,
+  cacheMaintenanceResponse,
+} from './runner-cache-helper.js';
 import type { cacheHelperDiagnostic } from './runner-cache-helper.js';
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u);
@@ -23,7 +28,10 @@ export type CacheTurnOwner = { turnId: string; sessionId?: string; conflict: boo
 export function cacheMaintenanceFailure(
   code: string,
   diagnostics?: {
-    exitCode: number;
+    exitCode?: number;
+    phase?: 'create' | 'start' | 'wait' | 'inspect' | 'logs' | 'response';
+    memoryBytes?: number;
+    pidsLimit?: number;
     /** Absent only when the helper's logs could not be read. */
     outputBytes?: number;
     reason?: z.infer<typeof cacheHelperDiagnostic>;
@@ -213,6 +221,12 @@ export async function reclaimSleepingRunnerCaches(input: {
     if (runtimeRoot === destination || runtimeRoot.startsWith(`${destination}/`))
       runtimeAliases.push(resolve(mount.source, relative(destination, runtimeRoot)));
   }
+  const retention = await retainLatestCacheHelper({ docker, projectId: input.projectId }).catch(
+    () => {
+      throw cacheMaintenanceFailure('maintenance-helper-retention-blocked');
+    },
+  );
+  if (retention.blocked) throw cacheMaintenanceFailure('maintenance-helper-retention-blocked');
   const consumers = await docker.listContainers();
   if (consumers.length > 1000) throw cacheMaintenanceFailure('runtime-not-idle');
   const inventoryDeadline = Date.now() + 5000;
@@ -242,13 +256,11 @@ export async function reclaimSleepingRunnerCaches(input: {
       hasRuntime &&
       !inspect.running &&
       ['created', 'exited', 'dead'].includes(inspect.status ?? '') &&
+      isCacheHelper(candidate, input.projectId) &&
       inspect.labels?.['verity.project-id'] === input.projectId &&
-      inspect.labels?.['verity.component'] === 'runner-cache-maintenance' &&
-      candidate.names?.some((name) => /^verity-cache-maintenance-[a-f0-9-]{36}$/u.test(name))
+      inspect.labels?.['verity.component'] === 'runner-cache-maintenance'
     ) {
-      // Exact ownership and stopped state permit recovery of disconnected helpers.
-      // A concurrent start makes non-forcing removal fail.
-      await removeStoppedContainer(candidate.id);
+      // The retention pass already reconciled these under the same barriers.
       continue;
     }
     if (inspect.running || !['exited', 'dead'].includes(inspect.status ?? ''))
@@ -258,63 +270,68 @@ export async function reclaimSleepingRunnerCaches(input: {
   const name = `verity-cache-maintenance-${randomUUID()}`;
   const request = JSON.stringify({ sessionIds: input.sessionIds, maxBytes: input.maxBytes });
   if (Buffer.byteLength(request) > 96 * 1024) throw cacheMaintenanceFailure('invalid-response');
-  const created = await docker.createContainer({
-    name,
-    image: input.image,
-    entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
-    command: ['-e', cacheHelperCommand],
-    env: [
-      'VERITY_RUNNER_RUNTIME=/run/verity-runner',
-      'VERITY_RUNNER_RUNTIME_UID=1101',
-      `VERITY_RUNNER_RUNTIME_GID=${input.runtimeGid ?? 1101}`,
-      'VERITY_AGENT_UID=1000',
-      'VERITY_AGENT_GID=1000',
-      `VERITY_CACHE_MAINTENANCE_REQUEST=${request}`,
-    ],
-    ...(input.dataVolume
-      ? {
-          volumeMounts: [
-            {
-              volume: input.dataVolume.name,
-              subpath: `runners/${input.projectId}`,
-              target: '/run/verity-runner',
-            },
-          ],
-        }
-      : { binds: [`${hostRuntimeRoot!}:/run/verity-runner`] }),
-    labels: {
-      'verity.project-id': input.projectId,
-      'verity.component': 'runner-cache-maintenance',
-    },
-    user: `0:${input.runtimeGid ?? 1101}`,
-    runtime: input.runtime,
-    network: 'none',
-    restartPolicy: 'no',
-    readOnlyRootfs: true,
-    capDrop: ['ALL'],
-    capAdd: ['CHOWN', 'SETUID', 'SETGID'],
-    securityOpt: ['no-new-privileges=true'],
-    pidsLimit: 32,
-    memoryBytes: 256 * 1024 ** 2,
-    memorySwapBytes: 256 * 1024 ** 2,
-    nanoCpus: 1_000_000_000,
-    tmpfs: { '/tmp': 'rw,nosuid,nodev,size=16m' },
-  });
+  const resources = { memoryBytes: 256 * 1024 ** 2, pidsLimit: 32 };
+  let phase: 'create' | 'start' | 'wait' | 'inspect' | 'logs' | 'response' = 'create';
+  const created = await docker
+    .createContainer({
+      name,
+      image: input.image,
+      entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
+      command: ['-e', cacheHelperCommand],
+      env: [
+        'VERITY_RUNNER_RUNTIME=/run/verity-runner',
+        'VERITY_RUNNER_RUNTIME_UID=1101',
+        `VERITY_RUNNER_RUNTIME_GID=${input.runtimeGid ?? 1101}`,
+        'VERITY_AGENT_UID=1000',
+        'VERITY_AGENT_GID=1000',
+        `VERITY_CACHE_MAINTENANCE_REQUEST=${request}`,
+      ],
+      ...(input.dataVolume
+        ? {
+            volumeMounts: [
+              {
+                volume: input.dataVolume.name,
+                subpath: `runners/${input.projectId}`,
+                target: '/run/verity-runner',
+              },
+            ],
+          }
+        : { binds: [`${hostRuntimeRoot!}:/run/verity-runner`] }),
+      labels: {
+        'verity.project-id': input.projectId,
+        'verity.component': 'runner-cache-maintenance',
+      },
+      user: `0:${input.runtimeGid ?? 1101}`,
+      runtime: input.runtime,
+      network: 'none',
+      restartPolicy: 'no',
+      readOnlyRootfs: true,
+      capDrop: ['ALL'],
+      capAdd: ['CHOWN', 'SETUID', 'SETGID'],
+      securityOpt: ['no-new-privileges=true'],
+      ...resources,
+      memorySwapBytes: 256 * 1024 ** 2,
+      nanoCpus: 1_000_000_000,
+      tmpfs: { '/tmp': 'rw,nosuid,nodev,size=16m' },
+    })
+    .catch(() => {
+      throw cacheMaintenanceFailure('maintenance-helper-failed', { phase, ...resources });
+    });
   let stopped = false;
+  let exitCode: number | undefined;
   let failed = false;
   let primaryError: unknown;
   const cleanup = async () => {
-    // A failed start/wait may have lost its reply after the helper stopped.
-    // Unknown or running helpers must retain their admission fence.
     try {
-      if (!stopped) {
-        const inspect = await docker.inspectContainer(created.id);
-        stopped = !inspect.running && ['created', 'exited', 'dead'].includes(inspect.status ?? '');
+      if (failed) {
+        const retention = await retainLatestCacheHelper({ docker, projectId: input.projectId });
+        if (retention.blocked)
+          throw cacheMaintenanceFailure('maintenance-helper-retention-blocked');
+      } else if (stopped) {
+        await removeStoppedContainer(created.id);
       }
-      if (stopped) await removeStoppedContainer(created.id);
     } catch (cleanupError) {
       if (!failed) throw cleanupError;
-      // Preserve the primary failure and its structured diagnostics for backoff.
       throw Object.assign(
         new AggregateError(
           [primaryError, cleanupError],
@@ -328,11 +345,22 @@ export async function reclaimSleepingRunnerCaches(input: {
     }
   };
   try {
+    phase = 'start';
     await docker.startContainer(created.id);
+    phase = 'wait';
     const exit = await docker.waitContainer(created.id, { timeoutMs: 30_000 });
+    exitCode = exit;
+    phase = 'inspect';
     const inspect = await docker.inspectContainer(created.id);
-    stopped = !inspect.running && ['exited', 'dead'].includes(inspect.status ?? '');
+    stopped =
+      inspect.id === created.id &&
+      !inspect.running &&
+      ['exited', 'dead'].includes(inspect.status ?? '') &&
+      inspect.imageId === input.image &&
+      inspect.labels?.['verity.project-id'] === input.projectId &&
+      inspect.labels?.['verity.component'] === 'runner-cache-maintenance';
     if (!stopped) throw cacheMaintenanceFailure('maintenance-helper-failed');
+    phase = 'logs';
     const logs = await docker.containerLogs(created.id, 1).then(
       (output) => ({ output }),
       (error: unknown) => ({ error }),
@@ -356,19 +384,28 @@ export async function reclaimSleepingRunnerCaches(input: {
       outputBytes: Buffer.byteLength(output),
       reason: cacheHelperFailureReason(output, exit),
     };
+    phase = 'response';
     if (inspect.exitCode !== 0 || exit !== 0)
       throw cacheMaintenanceFailure('maintenance-helper-failed', diagnostics);
     if (diagnostics.outputBytes > 64 * 1024)
       throw cacheMaintenanceFailure('invalid-response', diagnostics);
     try {
-      return JSON.parse(output) as unknown;
+      return cacheMaintenanceResponse.parse(JSON.parse(output));
     } catch {
       throw cacheMaintenanceFailure('invalid-response', diagnostics);
     }
   } catch (error) {
     failed = true;
-    primaryError = error;
-    throw error;
+    const classified = typeof error === 'object' && error !== null && 'runnerCacheFailure' in error;
+    primaryError = classified ? error : cacheMaintenanceFailure('maintenance-helper-failed');
+    const failure = primaryError as Error & { runnerCacheFailure: object };
+    failure.runnerCacheFailure = {
+      ...failure.runnerCacheFailure,
+      ...(exitCode === undefined ? {} : { exitCode }),
+      phase,
+      ...resources,
+    };
+    throw primaryError;
   } finally {
     await cleanup();
   }
