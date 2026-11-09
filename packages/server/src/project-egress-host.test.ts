@@ -1020,3 +1020,135 @@ it('clears allocation expiry after verified transport and preserves the connecte
     vi.useRealTimers();
   }
 });
+
+it('logs correlated protected-build refusals without exposing raw exception data', async () => {
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => {
+          throw new Error('SECRET /private/daemon/path');
+        },
+        prepare: async () => {},
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'running',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove: async () => {},
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const call = request(
+        {
+          socketPath: join(root, 'control.sock'),
+          path: '/v1/build',
+          method: 'POST',
+          headers: { authorization: `Bearer ${'a'.repeat(64)}` },
+        },
+        (reply) => {
+          let body = '';
+          reply.on('data', (chunk: Buffer) => {
+            body += chunk.toString();
+          });
+          reply.on('end', () => resolve({ status: reply.statusCode!, body }));
+        },
+      );
+      call.on('error', reject);
+      call.end(JSON.stringify({ operation: 'health' }));
+    });
+    expect(response.status).toBe(409);
+    const diagnostic = JSON.parse(response.body) as { reason: string; correlationId: string };
+    expect(diagnostic).toMatchObject({
+      reason: 'operation_refused',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'health',
+      reason: diagnostic.reason,
+      correlationId: diagnostic.correlationId,
+    });
+    expect(response.body + JSON.stringify(warn.mock.calls)).not.toMatch(/SECRET|\/private/u);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('carries a correlated startup refusal through host control and confirms release after containment', async () => {
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { superviseProtectedBuild } = await import('./project-egress-build-worker.js');
+  const { ProtectedBuildFailure } = await import('./project-egress-build-error.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const remove = vi.fn(async () => {});
+  const buildRequest = {
+    projectId: 'project-a',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    snapshot: 'attempt-a/verity-build-a',
+    image: `verity-devc-repo:${'a'.repeat(12)}`,
+    noCache: false,
+  };
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => true,
+        prepare: async () => {
+          throw new ProtectedBuildFailure('files_prepare_failed', {
+            cause: new Error('SECRET /private/path'),
+          });
+        },
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'failed',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove,
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const result = await superviseProtectedBuild(buildRequest, client);
+    expect(result).toMatchObject({
+      success: false,
+      failure: {
+        reason: 'files_prepare_failed',
+        correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+      },
+    });
+    expect(remove).toHaveBeenCalledExactlyOnceWith(buildRequest);
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'begin',
+      ...result.failure,
+    });
+    expect(JSON.stringify(result) + JSON.stringify(warn.mock.calls)).not.toMatch(
+      /SECRET|\/private/u,
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});

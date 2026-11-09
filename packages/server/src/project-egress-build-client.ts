@@ -1,3 +1,4 @@
+import { ProtectedBuildFailure, protectedBuildDiagnostic } from './project-egress-build-error.js';
 import { request } from 'node:http';
 import { isAbsolute } from 'node:path';
 import {
@@ -79,8 +80,22 @@ export function createProtectedBuildClient(options: {
           response.on('aborted', () => finish(new ProtectedBuildTransportError()));
           response.on('end', () => {
             try {
-              if (response.statusCode !== 200)
-                throw new Error('Protected builder refused the operation');
+              if (response.statusCode !== 200) {
+                let diagnostic;
+                try {
+                  diagnostic = protectedBuildDiagnostic.safeParse(
+                    JSON.parse(Buffer.concat(chunks).toString('utf8')),
+                  );
+                } catch {
+                  /* A malformed refusal never discloses its body. */
+                }
+                throw new ProtectedBuildFailure(
+                  diagnostic?.success ? diagnostic.data.reason : 'operation_refused',
+                  diagnostic?.success
+                    ? { correlationId: diagnostic.data.correlationId }
+                    : undefined,
+                );
+              }
               const reply = protectedBuildReply.parse(
                 JSON.parse(Buffer.concat(chunks).toString('utf8')),
               );

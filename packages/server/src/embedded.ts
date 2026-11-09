@@ -343,6 +343,7 @@ import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
+import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
 import { readCodexAccessToken, type AgentGatewayConfiguration } from './agent-gateway-control.js';
 import {
@@ -5104,11 +5105,20 @@ export async function buildEmbeddedServer(
       if (reconciling) return;
       reconciling = true;
       try {
-        const unresolved = await storage.reconcile(
-          buildDockerHost === undefined
+        const unresolved = await storage.reconcile({
+          ...(buildDockerHost === undefined
             ? {}
-            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
-        );
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) }),
+          ...(config.projectEgressSocketPath && config.projectEgressKeyPath
+            ? {
+                protectedBuildStatus: (reference: { projectId: string; attemptId: string }) =>
+                  createProtectedBuildClient({
+                    socketPath: config.projectEgressSocketPath!,
+                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+                  })({ operation: 'status', ...reference }),
+              }
+            : {}),
+        });
         if (unresolved.length > 0)
           app.log.warn(
             { attempts: unresolved },

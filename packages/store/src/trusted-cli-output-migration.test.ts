@@ -33,3 +33,30 @@ it('upgrades an existing schema and removes retained frames on rollback', async 
     await ctx.close();
   }
 });
+
+it('gives records retained across the listing upgrade a start time and rolls back', async () => {
+  const ctx = createRawDb();
+  try {
+    const entries = Object.entries(await migrationProvider.getMigrations());
+    const index = entries.findIndex(([key]) => key.endsWith('_trusted_cli_output_listing'));
+    expect(index).toBeGreaterThan(0);
+    const [key, migration] = entries[index]!;
+    // A NOT NULL column without a default would fail on an installation holding records.
+    const prior = Object.fromEntries(entries.slice(0, index));
+    const previous = new Migrator({ db: ctx.db, provider: { getMigrations: async () => prior } });
+    expect((await previous.migrateToLatest()).error).toBeUndefined();
+    await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence) values ('retained', 'project', 'session', now(), 0)`.execute(
+      ctx.db,
+    );
+    const current = new Migrator({ db: ctx.db, provider: migrationProvider });
+    expect((await current.migrateTo(key)).error).toBeUndefined();
+    const { rows } = await sql<{
+      started_at: Date | null;
+    }>`select started_at from trusted_cli_outputs where id = 'retained'`.execute(ctx.db);
+    expect(rows[0]?.started_at).toBeInstanceOf(Date);
+    await migration.down!(ctx.db);
+    await expect(sql`select started_at from trusted_cli_outputs`.execute(ctx.db)).rejects.toThrow();
+  } finally {
+    await ctx.close();
+  }
+});

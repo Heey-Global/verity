@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { superviseProtectedBuild } from './project-egress-build-worker.js';
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import { ProtectedBuildTransportError } from './project-egress-build-client.js';
 import type { ProtectedBuildCommand, ProtectedBuildReply } from './project-egress-build.js';
 
@@ -70,6 +71,7 @@ describe('protected build worker supervision', () => {
       'health',
       'begin',
       'cancel',
+      'status',
     ]);
   });
   it('does not return a releasable outcome when timed-out cancellation is uncertain', async () => {
@@ -110,3 +112,50 @@ it('recovers completion between a running status and heartbeat refusal', async (
   );
   expect(command.mock.calls.some(([input]) => input.operation === 'cancel')).toBe(false);
 });
+
+it('releases a failed begin only after matching terminal cancellation confirmation', async () => {
+  const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+    if (input.operation === 'health') return { version: 1, available: true };
+    if (input.operation === 'begin')
+      throw new ProtectedBuildFailure('files_prepare_failed', {
+        correlationId: '22222222-2222-4222-8222-222222222222',
+      });
+    return { version: 1, record: { request, ended: true, phase: 'failed' } };
+  });
+  await expect(superviseProtectedBuild(request, command)).resolves.toEqual({
+    success: false,
+    failure: {
+      reason: 'files_prepare_failed',
+      correlationId: '22222222-2222-4222-8222-222222222222',
+    },
+  });
+});
+
+it('recovers terminal status after cancellation transport failure', async () => {
+  const command = async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+    if (input.operation === 'health') return { version: 1, available: true };
+    if (input.operation === 'status')
+      return { version: 1, record: { request, ended: true, phase: 'failed' } };
+    throw new Error('lost');
+  };
+  await expect(superviseProtectedBuild(request, command)).resolves.toEqual({ success: false });
+});
+
+it.each(['identity', 'phase'] as const)(
+  'retains storage for invalid ended evidence: %s',
+  async (invalid) => {
+    const command = async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+      if (input.operation === 'health') return { version: 1, available: true };
+      if (input.operation === 'begin') throw new Error('refused');
+      return {
+        version: 1,
+        record: {
+          request: invalid === 'identity' ? { ...request, projectId: 'other' } : request,
+          ended: true,
+          phase: invalid === 'phase' ? 'running' : 'failed',
+        },
+      };
+    };
+    await expect(superviseProtectedBuild(request, command)).rejects.toThrow('refused');
+  },
+);

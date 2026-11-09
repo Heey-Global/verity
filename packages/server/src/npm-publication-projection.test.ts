@@ -32,6 +32,23 @@ it('projects facts across arbitrary UTF-8 and escaped string boundaries', async 
   expect(input.destroyed).toBe(true);
 });
 
+it('verifies requested releases in large streamed registry documents without retaining manifests', async () => {
+  const chunk = 'x'.repeat(64 * 1024);
+  function* chunks() {
+    yield '{"name":"example","versions":{"1.0.0":{"description":"';
+    for (let i = 0; i < 640; i++) yield chunk;
+    yield '"}},"time":{"1.0.0":"2020-01-01T00:00:00Z"}}';
+  }
+  const result = await projectNpmPublications(
+    response(chunks()),
+    'example',
+    new Set(['1.0.0']),
+    signal,
+  );
+  expect(result.versions).toEqual(new Set(['1.0.0']));
+  expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
+}, 30_000);
+
 it('discards a multi-MiB unrelated manifest string while retaining only requested facts', async () => {
   const input = response([
     '{"description":"',

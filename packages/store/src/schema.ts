@@ -1232,6 +1232,7 @@ interface TrustedCliOutputsTable {
   session_id: string;
   expires_at: ColumnType<Date, string, string>;
   next_sequence: number;
+  started_at: ColumnType<Date, string | undefined, never>;
   /** Encrypted completion metadata; null while the invocation is running. */
   result: string | null;
 }

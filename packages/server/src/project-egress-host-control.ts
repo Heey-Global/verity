@@ -1,3 +1,5 @@
+import { protectedBuildCommand } from './project-egress-build.js';
+import { protectedBuildFailure } from './project-egress-build-error.js';
 import { DockerError } from './docker.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { createServer, type Server } from 'node:http';
@@ -75,10 +77,23 @@ export async function listenProjectEgressHost(options: {
           const parsed = projectEgressHostRequest.safeParse(input);
           if (parsed.success) operation = parsed.data.operation;
         }
+        if (request.url === '/v1/build') {
+          const parsed = protectedBuildCommand.safeParse(input);
+          if (parsed.success) operation = parsed.data.operation;
+        }
         const result = await controller.execute(input);
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
         .catch((error: unknown) => {
+          const buildFailure =
+            request.url === '/v1/build'
+              ? { ...protectedBuildFailure(error), correlationId }
+              : undefined;
+          if (buildFailure)
+            console.warn('verity: protected build operation refused', {
+              operation,
+              ...buildFailure,
+            });
           if (error instanceof ProjectEgressInventoryError) {
             console.warn('verity: inventory command refused', {
               operation,
@@ -91,6 +106,7 @@ export async function listenProjectEgressHost(options: {
           response.end(
             JSON.stringify({
               error: 'host operation refused',
+              ...buildFailure,
               ...(error instanceof DockerError && error.kind === 'address_pool_exhausted'
                 ? { reason: 'address_pool_exhausted' }
                 : {}),

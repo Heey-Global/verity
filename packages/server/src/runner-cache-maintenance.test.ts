@@ -331,12 +331,78 @@ describe('sleeping runner cache helpers', () => {
     await expect(h.run()).rejects.toThrow('connection lost');
     expect(h.docker.removeStoppedContainer).not.toHaveBeenCalled();
   });
-  it('retains failed helpers and bounded invalid output', async () => {
+  it('removes stopped helpers after invalid output', async () => {
     const h = fixture();
     h.docker.containerLogs.mockResolvedValueOnce('x'.repeat(65537));
     await expect(h.run()).rejects.toMatchObject({
       runnerCacheFailure: { code: 'invalid-response' },
     });
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it.each([2, 78])(
+    'reads diagnostics and removes a stopped helper after exit %s',
+    async (exitCode) => {
+      const h = fixture();
+      h.docker.waitContainer.mockResolvedValueOnce(exitCode);
+      h.docker.containerLogs.mockResolvedValueOnce('private failure detail');
+      await expect(h.run()).rejects.toMatchObject({
+        runnerCacheFailure: {
+          code: exitCode === 78 ? 'unsupported' : 'maintenance-helper-failed',
+          exitCode,
+          outputBytes: 22,
+        },
+      });
+      expect(h.docker.containerLogs).toHaveBeenCalledExactlyOnceWith('helper', 1);
+      expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+      expect(h.docker.containerLogs.mock.invocationCallOrder[0]).toBeLessThan(
+        h.docker.removeStoppedContainer.mock.invocationCallOrder[0]!,
+      );
+    },
+  );
+  it('removes a stopped helper when reading logs fails', async () => {
+    const h = fixture();
+    h.docker.containerLogs.mockRejectedValueOnce(new Error('logs unavailable'));
+    await expect(h.run()).rejects.toThrow('logs unavailable');
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it('propagates nonforcing cleanup failures for later recovery', async () => {
+    const h = fixture();
+    h.docker.removeStoppedContainer.mockRejectedValueOnce(new Error('removal unavailable'));
+    await expect(h.run()).rejects.toThrow('removal unavailable');
+  });
+  it('removes a stopped helper after malformed JSON', async () => {
+    const h = fixture();
+    h.docker.containerLogs.mockResolvedValueOnce('malformed');
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'invalid-response' },
+    });
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it('retains a helper if the post-wait inspection cannot prove termination', async () => {
+    const h = fixture();
+    const inspect = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) =>
+      id === 'helper' ? { id, running: true, status: 'running' } : inspect(id),
+    );
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'maintenance-helper-failed' },
+    });
     expect(h.docker.removeStoppedContainer).not.toHaveBeenCalled();
+  });
+  it('recovers exactly owned exited maintenance helpers from previous failures', async () => {
+    const h = fixture();
+    h.existing.labels = {
+      'verity.project-id': 'p',
+      'verity.component': 'runner-cache-maintenance',
+    };
+    h.docker.listContainers.mockResolvedValueOnce([
+      {
+        id: 'project',
+        imageId: 'old',
+        names: ['verity-cache-maintenance-12345678-1234-1234-1234-123456789abc'],
+      },
+    ]);
+    await h.run();
+    expect(h.docker.removeStoppedContainer).toHaveBeenNthCalledWith(1, 'project');
   });
 });

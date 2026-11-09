@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { DevcontainerBuildSpawner } from './provisioner.js';
 import { protectedBuildRequest } from './project-egress-build.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
+import { protectedBuildDiagnostic } from './project-egress-build-error.js';
 
 /** Reuses normal audit, snapshot and storage admission; only the build executor changes.
  * Importing a completed archive is local Engine work and cannot fetch dependencies.
@@ -88,15 +89,21 @@ export function createProtectedDevcontainerBuilder(options: {
         {
           env,
           remoteOperation: 'protected-build',
+          protectedBuild: { projectId: request.projectId, attemptId: request.attemptId },
           timeout: 32 * 60_000,
           maxBuffer: 64 * 1024,
           ...(args.signal ? { signal: args.signal } : {}),
         },
       );
-      const outcome = z.strictObject({ success: z.boolean() }).parse(JSON.parse(result.stdout));
+      const outcome = z
+        .strictObject({ success: z.boolean(), failure: protectedBuildDiagnostic.optional() })
+        .parse(JSON.parse(result.stdout));
       if (!outcome.success) {
         const failure = new Error(
-          'Protected devcontainer build failed; retry after checking its build diagnostics',
+          'Protected devcontainer build failed; retry after checking its build diagnostics' +
+            (outcome.failure
+              ? ` (${outcome.failure.reason}; reference ${outcome.failure.correlationId ?? 'unavailable'})`
+              : ''),
         );
         let fd: number | undefined;
         try {
