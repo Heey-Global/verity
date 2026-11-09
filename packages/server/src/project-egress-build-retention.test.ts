@@ -11,31 +11,45 @@ it('retains an owned build image without any project relay registry entries', as
   const id = 'a'.repeat(64);
   const image = `ghcr.io/example/relay@sha256:${'b'.repeat(64)}`;
   try {
-    await writeFile(join(directory, 'c'.repeat(64) + '.json'), JSON.stringify({
-      version: 1, binding: { containerId: id },
-    }), { mode: 0o600 });
+    await writeFile(
+      join(directory, 'c'.repeat(64) + '.json'),
+      JSON.stringify({
+        version: 1,
+        binding: { containerId: id },
+      }),
+      { mode: 0o600 },
+    );
     // The same atomic-write entry can be in flight or left behind after a crash.
     const temporary = join(directory, 'e'.repeat(64) + '.json.12345678-1234-4234-8234-123456789abc');
     await writeFile(temporary, '{incomplete', { mode: 0o600 });
     vi.mocked(readEgressHostConfiguration).mockResolvedValue({
-      version: 1, binding: { containerId: id },
+      version: 1,
+      binding: { containerId: id },
     });
-    expect(await protectedBuildRetainedImages(async (expected) => {
-      expect(expected).toBe(id);
-      return JSON.stringify([{ Id: id, Config: { Image: image } }]);
-    }, directory)).toEqual([image]);
-    expect(vi.mocked(readEgressHostConfiguration).mock.calls.map(([path]) => path))
-      .not.toContain(temporary);
+    expect(
+      await protectedBuildRetainedImages(async (expected) => {
+        expect(expected).toBe(id);
+        return JSON.stringify([{ Id: id, Config: { Image: image } }]);
+      }, directory),
+    ).toEqual([image]);
+    expect(vi.mocked(readEgressHostConfiguration).mock.calls.map(([path]) => path)).not.toContain(
+      temporary,
+    );
     expect(await protectedBuildRetainedImages(async () => undefined, directory)).toEqual([]);
     // With no published record, a crash leftover must not invent image authority.
     await rm(join(directory, 'c'.repeat(64) + '.json'));
-    expect(await protectedBuildRetainedImages(async () => {
-      throw new Error('Temporary files must never trigger inspection');
-    }, directory)).toEqual([]);
+    expect(
+      await protectedBuildRetainedImages(async () => {
+        throw new Error('Temporary files must never trigger inspection');
+      }, directory),
+    ).toEqual([]);
     await writeFile(join(directory, 'c'.repeat(64) + '.json'), '{}', { mode: 0o600 });
-    await expect(protectedBuildRetainedImages(async () => JSON.stringify([
-      { Id: 'd'.repeat(64), Config: { Image: image } },
-    ]), directory)).rejects.toThrow('identity mismatch');
+    await expect(
+      protectedBuildRetainedImages(
+        async () => JSON.stringify([{ Id: 'd'.repeat(64), Config: { Image: image } }]),
+        directory,
+      ),
+    ).rejects.toThrow('identity mismatch');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

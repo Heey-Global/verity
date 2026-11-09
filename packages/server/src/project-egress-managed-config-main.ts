@@ -83,17 +83,35 @@ try {
       throw new Error('Protected relay inspection is incomplete');
     activeRelayImages.push((inspected[0] as { Config: { Image: string } }).Config.Image);
   }
-  activeRelayImages.push(...await protectedBuildRetainedImages(async (id) => {
-    const listed = (await run('/usr/local/bin/docker',
-      ['--host=unix:///var/run/docker.sock', 'container', 'ls', '--all', '--quiet',
-        '--no-trunc', '--filter', `id=${id}`],
-      { timeout: 10000, maxBuffer: 65536 })).stdout.trim();
-    if (!listed) return undefined;
-    if (listed !== id) throw new Error('Protected build retention identity mismatch');
-    return (await run('/usr/local/bin/docker',
-      ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
-      { timeout: 10000, maxBuffer: 1024 * 1024 })).stdout;
-  }));
+  activeRelayImages.push(
+    ...(await protectedBuildRetainedImages(async (id) => {
+      const listed = (
+        await run(
+          '/usr/local/bin/docker',
+          [
+            '--host=unix:///var/run/docker.sock',
+            'container',
+            'ls',
+            '--all',
+            '--quiet',
+            '--no-trunc',
+            '--filter',
+            `id=${id}`,
+          ],
+          { timeout: 10000, maxBuffer: 65536 },
+        )
+      ).stdout.trim();
+      if (!listed) return undefined;
+      if (listed !== id) throw new Error('Protected build retention identity mismatch');
+      return (
+        await run(
+          '/usr/local/bin/docker',
+          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
+          { timeout: 10000, maxBuffer: 1024 * 1024 },
+        )
+      ).stdout;
+    })),
+  );
   const configuration = managedEgressConfiguration({
     env: process.env,
     databaseInspection: inspection,

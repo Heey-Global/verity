@@ -309,7 +309,9 @@ for (const stopped of [false, true]) {
     const anchor = await old.create('project-a', 'attempt-a');
     if (stopped) f.stop();
     const next = new ProtectedBuildNetworks({
-      ...f.io, imageRef: targetImage, cleanupImageRef: image,
+      ...f.io,
+      imageRef: targetImage,
+      cleanupImageRef: image,
     });
     await expect(next.inspect(anchor)).rejects.toThrow();
     await expect(next.remove(anchor, async () => false)).rejects.toThrow('termination');
@@ -330,7 +332,9 @@ for (const stopped of [false, true]) {
 it('retained cleanup authority does not admit new anchors from the old image', async () => {
   const f = fixture();
   const next = new ProtectedBuildNetworks({
-    ...f.io, imageRef: targetImage, cleanupImageRef: image,
+    ...f.io,
+    imageRef: targetImage,
+    cleanupImageRef: image,
   });
   await expect(next.create('project-a', 'attempt-a')).rejects.toThrow();
   const create = f.calls.find((call) => call[0] === 'container' && call[1] === 'create')!;
@@ -343,7 +347,9 @@ it('retained image cleanup still rejects replaced namespaces and foreign attachm
     const anchor = await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
     f[change]();
     const next = new ProtectedBuildNetworks({
-      ...f.io, imageRef: targetImage, cleanupImageRef: image,
+      ...f.io,
+      imageRef: targetImage,
+      cleanupImageRef: image,
     });
     await expect(next.remove(anchor, async () => true)).rejects.toThrow();
     expect(f.calls.some((call) => call[1] === 'rm')).toBe(false);

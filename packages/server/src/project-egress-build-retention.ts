@@ -21,22 +21,28 @@ export async function protectedBuildRetainedImages(
   for (const file of files) {
     // privateWrite publishes by rename. Temporary entries are neither complete
     // authority nor an error, including leftovers from an interrupted write.
-    if (/^[a-f0-9]{64}\.json\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(file))
-      continue;
+    if (/^[a-f0-9]{64}\.json\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(file)) continue;
     if (!/^[a-f0-9]{64}\.json$/u.test(file))
       throw new Error('Invalid protected build inventory entry');
     const raw = await readEgressHostConfiguration(join(directory, file));
     if (raw === undefined) continue; // The live controller may have retired it.
-    const record = z.object({
-      version: z.literal(1),
-      binding: z.object({ containerId: objectId }),
-    }).parse(raw);
+    const record = z
+      .object({
+        version: z.literal(1),
+        binding: z.object({ containerId: objectId }),
+      })
+      .parse(raw);
     const inspection = await inspect(record.binding.containerId);
     if (inspection === undefined) continue;
-    const value = z.array(z.object({
-      Id: objectId,
-      Config: z.object({ Image: z.string() }),
-    })).length(1).parse(JSON.parse(inspection))[0]!;
+    const value = z
+      .array(
+        z.object({
+          Id: objectId,
+          Config: z.object({ Image: z.string() }),
+        }),
+      )
+      .length(1)
+      .parse(JSON.parse(inspection))[0]!;
     if (value.Id !== record.binding.containerId)
       throw new Error('Protected build retention identity mismatch');
     images.push(value.Config.Image);
