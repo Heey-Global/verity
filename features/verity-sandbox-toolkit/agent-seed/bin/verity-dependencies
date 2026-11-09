@@ -976,6 +976,24 @@ async function main() {
             'Central dependency preparation requires updated sandbox package tooling; refresh the sandbox before retrying.',
           );
       }
+      // npm resolves path settings against cwd. Preserve the checkout's effective
+      // trust file when ci changes cwd, without copying private certificate data.
+      const stageEnvironment = npmEnvironment();
+      const cafile = spawnSync('npm', ['config', 'get', 'cafile'], {
+        cwd: root,
+        env: stageEnvironment,
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      if (cafile.status !== 0)
+        throw new Error(
+          'Cannot resolve npm certificate configuration; preparation remains blocked.',
+        );
+      const certificate = cafile.stdout.trim();
+      if (certificate && certificate !== 'null' && certificate !== 'undefined') {
+        delete stageEnvironment.NPM_CONFIG_CAFILE;
+        stageEnvironment.npm_config_cafile = resolve(root, certificate);
+      }
       const prefix = spawnSync('npm', ['prefix', '--global=false'], {
         cwd: stage,
         env: npmEnvironment(),
@@ -996,7 +1014,7 @@ async function main() {
         child = spawn('npm', ['ci', '--ignore-scripts'], {
           cwd: stage,
           stdio: ['inherit', 'inherit', 'inherit', preparation.fd],
-          env: { ...npmEnvironment(), VERITY_NPM_LOCK_FD: '3' },
+          env: { ...stageEnvironment, VERITY_NPM_LOCK_FD: '3' },
         });
         child.on('error', reject);
         child.on('close', (code, signal) => done({ code, signal }));

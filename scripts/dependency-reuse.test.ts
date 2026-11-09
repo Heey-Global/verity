@@ -64,11 +64,13 @@ function fixture() {
 const fs = require('node:fs');
 const path = require('node:path');
 if (process.argv[2] === 'prefix') { console.log(fs.existsSync(${JSON.stringify(join(bin, '.npm-prefix-redirect'))}) ? ${JSON.stringify(root)} : process.cwd()); process.exit(0); }
+if (process.argv[2] === 'config' && process.argv[4] === 'cafile') { const config = fs.existsSync('.npmrc') ? fs.readFileSync('.npmrc','utf8') : ''; const value = /^cafile=(.+)$/m.exec(config)?.[1]; console.log(value ? path.resolve(value) : 'null'); process.exit(0); }
 if (process.argv[2] === '--version') { console.log('12.2.2'); process.exit(0); }
 if (process.argv[2] === 'config' && process.argv[3] === 'get' && ['globalconfig','userconfig'].includes(process.argv[4])) { const key=process.argv[4]; console.log(process.env['NPM_CONFIG_'+key.toUpperCase()] ?? process.env['npm_config_'+key] ?? path.join(${JSON.stringify(bin)},key+'.npmrc')); process.exit(0); }
 
 fs.appendFileSync(${JSON.stringify(called)}, process.cwd() + '\\n' + process.argv.slice(2).join('\\n') + '\\n');
 const complete = () => {
+  if (process.env.TEST_EXPECTED_CAFILE && (process.env.npm_config_cafile !== process.env.TEST_EXPECTED_CAFILE || fs.readFileSync(process.env.npm_config_cafile, 'utf8') !== 'certificate')) process.exit(50);
   const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
   fs.mkdirSync('node_modules', {recursive:true});
   if (process.env.NPM_CONFIG_USERCONFIG && !path.isAbsolute(process.env.NPM_CONFIG_USERCONFIG)) process.exit(48);
@@ -229,6 +231,16 @@ describe('shared dependency reuse', () => {
     });
     expect(result.status, result.stderr).toBe(0);
     expect(f.run('status', { NPM_CONFIG_USERCONFIG: 'user.npmrc' }).status).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('preserves a relative certificate path during central preparation', () => {
+    const f = fixture();
+    mkdirSync(join(f.worktree, 'certs'));
+    const certificate = join(f.worktree, 'certs', 'registry.pem');
+    writeFileSync(certificate, 'certificate');
+    writeFileSync(join(f.worktree, '.npmrc'), 'cafile=certs/registry.pem\n');
+    const result = f.run('install', { TEST_EXPECTED_CAFILE: certificate });
+    expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
   it('does not mistake an empty workspace skeleton for installed dependencies', () => {
