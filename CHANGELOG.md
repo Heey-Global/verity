@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.90.0](https://github.com/Heey-Global/verity/compare/v4.89.1...v4.90.0) (2026-11-09)
+
+
+### Features
+
+* **projects:** add independent names and inline profile editing ([#2462](https://github.com/Heey-Global/verity/issues/2462)) ([7b495e9](https://github.com/Heey-Global/verity/commit/7b495e944a8dbaf6c46b6db89a3623debc7e7b73))
+
+
+### Bug Fixes
+
+* **release:** retain original identity after empty duplicate merges ([#2467](https://github.com/Heey-Global/verity/issues/2467)) ([4a9e658](https://github.com/Heey-Global/verity/commit/4a9e658293efb77c72f2d6325f94b35d8e588023))
+* **release:** retain registered identities after empty duplicate merges ([#2466](https://github.com/Heey-Global/verity/issues/2466)) ([668fbcf](https://github.com/Heey-Global/verity/commit/668fbcf1bd3481a3077fd66dc441544bf9e3b7bb))
+* **server:** recover interrupted protected build records on startup ([#2464](https://github.com/Heey-Global/verity/issues/2464)) ([965fc21](https://github.com/Heey-Global/verity/commit/965fc21bf74186fd09edaaffa9eb5ee4f321488d))
+* **server:** require persisted startup state before releasing legacy build storage ([#2460](https://github.com/Heey-Global/verity/issues/2460)) ([01ed359](https://github.com/Heey-Global/verity/commit/01ed3594a8bc98824e3961583538d20072fb4b10))
+* **storage:** bound failed cache helper retention ([#2468](https://github.com/Heey-Global/verity/issues/2468)) ([5988228](https://github.com/Heey-Global/verity/commit/5988228da966414a4a59c267dad674e0ca01ef78))
+
 ## [4.89.1](https://github.com/Heey-Global/verity/compare/v4.89.0...v4.89.1) (2026-11-09)
 
 
