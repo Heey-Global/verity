@@ -505,9 +505,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
   };
   const networks = new ProtectedBuildNetworks({
     imageRef: options.imageRef,
-    ...(options.cleanupImageRef === undefined
-      ? {}
-      : { cleanupImageRef: options.cleanupImageRef }),
+    ...(options.cleanupImageRef === undefined ? {} : { cleanupImageRef: options.cleanupImageRef }),
     docker,
     readNamespace: async (path) =>
       (
