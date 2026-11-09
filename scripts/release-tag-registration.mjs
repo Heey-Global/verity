@@ -91,7 +91,7 @@ export function registerReleaseTags(mode, head, options = {}) {
   for (const spec of trains.filter((spec) => !options.train || spec.train === options.train)) {
     const version = versionAt(head, spec);
     const tag = `${spec.prefix}${version}`;
-    const matches = [];
+    let matches = [];
     const later = [];
     for (const pr of records) {
       if (
@@ -113,9 +113,6 @@ export function registerReleaseTags(mode, head, options = {}) {
       if (contained) matches.push(sha);
       else later.push(sha);
     }
-    if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
-    if (mode === 'register' && options.train && matches.length + later.length > 1)
-      throw new Error(`Ambiguous merged release identity for ${tag}`);
     /** Read remote refs so retries cannot trust stale checkout tags. */
     const remoteTarget = () => {
       const refs = run('git', [
@@ -135,6 +132,31 @@ export function registerReleaseTags(mode, head, options = {}) {
       );
     };
     let target = remoteTarget();
+    if (
+      matches.length > 1 &&
+      !later.length &&
+      target &&
+      shaPattern.test(target) &&
+      matches.includes(target) &&
+      new Set(matches).size === matches.length
+    ) {
+      // An already registered identity remains authoritative when a release bot
+      // later merges an empty duplicate PR. Never infer equivalence from equal
+      // version strings or move the tag to the newer merge.
+      const registered = target;
+      const emptyDuplicates = matches.every((sha) => {
+        if (sha === registered) return true;
+        if (!ancestor(registered, sha)) return false;
+        const parents = git(['rev-list', '--parents', '-n', '1', sha]).split(/\s+/);
+        if (parents.length !== 2 || parents[0] !== sha || !shaPattern.test(parents[1]))
+          return false;
+        return !git(['diff-tree', '--no-commit-id', '--name-only', '-r', parents[1], sha]);
+      });
+      if (emptyDuplicates) matches = [registered];
+    }
+    if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
+    if (mode === 'register' && options.train && matches.length + later.length > 1)
+      throw new Error(`Ambiguous merged release identity for ${tag}`);
     if (mode === 'register' && options.train && !matches.length && later.length) {
       if (later.length !== 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
       if (
