@@ -1,3 +1,4 @@
+import { hasCacheHelperIdentity, retainLatestCacheHelper } from './cache-helper-retention.js';
 import type { ProjectRecord } from '@verity/store';
 import type { DockerClient, DockerContainerSummary, DockerImageSummary } from './docker.js';
 
@@ -60,6 +61,44 @@ export async function retireStoppedContainers(input: {
   await docker.listImages(); // Inventory errors must fail closed.
   const containers = await docker.listContainers();
   const heldProjects = new Set(projects.map((p) => p.id));
+  const cacheProjects = new Set(
+    containers
+      .filter(hasCacheHelperIdentity)
+      .map((c) => c.labels?.[projectLabel])
+      .filter((id): id is string => !!id),
+  );
+  for (const projectId of cacheProjects) {
+    try {
+      await input.withProjectMutation(projectId, async () => {
+        const freshProjects = await input.listProjects();
+        if (heldProjects.has(projectId) && !freshProjects.some((p) => p.id === projectId)) return;
+        const retention = await retainLatestCacheHelper({
+          docker,
+          projectId,
+          now,
+          expireAfterMs: 7 * DAY,
+          ...(input.dryRun === undefined ? {} : { dryRun: input.dryRun }),
+        });
+        if (retention.blocked && retention.retained.length === 0)
+          result.errors.push(
+            `${projectId}: Cache helper retention inventory unavailable or too large; containers retained`,
+          );
+        for (const id of retention.removed)
+          result.removed.push(containers.find((c) => c.id === id)?.names?.[0] ?? id);
+        for (const id of retention.retained)
+          result.retained.push({
+            name: containers.find((c) => c.id === id)?.names?.[0] ?? id,
+            reason: retention.blocked
+              ? 'Cache helper retention blocked by unverified state or identity'
+              : 'Latest cache helper evidence retained (7 days)',
+          });
+      });
+    } catch {
+      result.errors.push(
+        `${projectId}: Cache helper retention failed; unverified containers retained`,
+      );
+    }
+  }
   for (const candidate of containers) {
     if (!stopped(candidate)) continue;
     const projectId = candidate.labels?.[projectLabel];
@@ -67,11 +106,12 @@ export async function retireStoppedContainers(input: {
       keep(candidate, 'No project identity; outside managed ownership');
       continue;
     }
+    // Cache helpers were reconciled under their project barrier above. Generic GC
+    // must not delete result evidence or bypass a blocked retention pass.
+    if (hasCacheHelperIdentity(candidate)) continue;
     const maintenance =
-      (candidate.labels?.[componentLabel] === 'storage-maintenance' &&
-        candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name))) ||
-      (candidate.labels?.[componentLabel] === 'runner-cache-maintenance' &&
-        candidate.names?.some((name) => /^verity-cache-maintenance-[a-f0-9-]{36}$/.test(name)));
+      candidate.labels?.[componentLabel] === 'storage-maintenance' &&
+      candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
     const project = projects.find((p) => p.id === projectId);
     const ownedSandbox =
       !relay(candidate) &&

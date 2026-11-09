@@ -1,3 +1,4 @@
+import { retainLatestCacheHelper } from './cache-helper-retention.js';
 import { generationNetworkIdentity } from './project-network-cleanup.js';
 import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
@@ -87,6 +88,7 @@ import {
   type DockerClient,
   type ContainerSpec,
   type ContainerInspect,
+  type DockerContainerSummary,
 } from './docker.js';
 import {
   CONTAINER_GENERATION_LABEL,
@@ -710,6 +712,128 @@ describe('ProvisionerImpl (#174)', () => {
         calls.some((call) => ['createContainer', 'startContainer'].includes(call.method)),
       ).toBe(false);
       expect((await ctx.store.getProject(id))?.state).toBe('sleeping');
+    },
+  );
+
+  it.each(['created', 'running', 'ambiguous-created'] as const)(
+    'cache helper retention recovery preserves wake admission safety for %s',
+    async (kind) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const now = Date.now();
+      const labels = { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' };
+      const state = kind === 'running' ? 'running' : 'created';
+      const summaries = new Map<string, DockerContainerSummary>([
+        [
+          'unfinished',
+          {
+            id: 'unfinished',
+            imageId: 'helper-image',
+            state,
+            labels: { ...labels },
+            created: (now - 1000) / 1000,
+            names: [
+              kind === 'ambiguous-created'
+                ? 'unverified-name'
+                : 'verity-cache-maintenance-11111111-1234-1234-1234-123456789abc',
+            ],
+          },
+        ],
+        [
+          'previous-failure',
+          {
+            id: 'previous-failure',
+            imageId: 'helper-image',
+            state: 'exited',
+            labels: { ...labels },
+            created: (now - 3000) / 1000,
+            names: ['verity-cache-maintenance-22222222-1234-1234-1234-123456789abc'],
+          },
+        ],
+      ]);
+      const inspections = new Map<string, ContainerInspect>([
+        [
+          'unfinished',
+          {
+            id: 'unfinished',
+            running: kind === 'running',
+            status: state,
+            imageId: 'helper-image',
+            labels: { ...labels },
+          },
+        ],
+        [
+          'previous-failure',
+          {
+            id: 'previous-failure',
+            running: false,
+            status: 'exited',
+            exitCode: 1,
+            finishedAt: new Date(now - 2000).toISOString(),
+            imageId: 'helper-image',
+            labels: { ...labels },
+          },
+        ],
+      ]);
+      let collecting = false;
+      const removeStoppedContainer = vi.fn(async (containerId: string) => {
+        expect(collecting).toBe(true);
+        const inspected = inspections.get(containerId);
+        if (inspected?.running) throw new Error('container is running');
+        summaries.delete(containerId);
+        inspections.delete(containerId);
+      });
+      const { client: docker, calls } = fakeDocker({
+        listContainers: async () => structuredClone([...summaries.values()]),
+        inspectContainer: async (containerId) =>
+          structuredClone(inspections.get(containerId) ?? { id: containerId, running: true }),
+        removeStoppedContainer,
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      const result = await provisioner.withProjectExclusiveMutation(id, async () => {
+        collecting = true;
+        try {
+          return await retainLatestCacheHelper({ docker, projectId: id, now });
+        } finally {
+          collecting = false;
+        }
+      });
+      if (kind === 'created') {
+        expect(result).toEqual({
+          blocked: false,
+          removed: ['unfinished'],
+          retained: ['previous-failure'],
+        });
+        expect(removeStoppedContainer.mock.calls).toEqual([['unfinished']]);
+        expect([...summaries.keys()]).toEqual(['previous-failure']);
+        // Keeping the never-started container would wedge this independent admission guard forever.
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'project relay does not support wake',
+        );
+      } else {
+        expect(result).toMatchObject({ blocked: true, removed: [] });
+        expect(removeStoppedContainer).not.toHaveBeenCalled();
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'Runner cache maintenance is still in progress',
+        );
+        expect(
+          calls.some((call) => ['createContainer', 'startContainer'].includes(call.method)),
+        ).toBe(false);
+      }
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
     },
   );
 
