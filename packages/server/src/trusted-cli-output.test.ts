@@ -133,9 +133,115 @@ describe('trusted CLI retained output', () => {
     expect(result.outputAvailable).toBeUndefined();
     expect(result.stdout).toHaveLength(9000);
     expect(result.previewTruncated).toBeUndefined();
+    // The inline response is unchanged, yet a caller that never saw it can still find it.
+    const { invocations } = await store.list(owner);
+    expect(invocations).toEqual([
+      {
+        invocationId: expect.any(String),
+        startedAt: expect.any(String),
+        complete: true,
+        terminationReason: 'process_exit',
+        exitCode: 0,
+      },
+    ]);
+    let text = '';
+    let cursor = 0;
+    for (;;) {
+      const page = (await store.read(owner, invocations[0]!.invocationId, cursor)) as {
+        frames: { payload: string }[];
+        nextCursor: number;
+        hasMore: boolean;
+        complete: boolean;
+      };
+      expect(page.complete).toBe(true);
+      text += page.frames.map((frame) => frame.payload).join('');
+      cursor = page.nextCursor;
+      if (!page.hasMore) break;
+    }
+    expect(text).toBe('x'.repeat(9000));
   });
 
-  it('releases reservations after small inline commands', async () => {
+  it('still returns a complete inline result when it cannot be retained', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    const result = await collectTrustedCliOutput(
+      {
+        ...store,
+        finish: async () => {
+          throw new Error('private database detail');
+        },
+      },
+      owner,
+      redactors(),
+      async ({ onOutput }) => {
+        await onOutput('stdout', Buffer.from('small response'));
+        return {
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          outputMode: 'stream-v1',
+          terminationReason: 'process_exit',
+        };
+      },
+    );
+    expect(result).toMatchObject({ exitCode: 0, stdout: 'small response' });
+    expect(result.terminationReason).toBe('process_exit');
+    // A record left running would hold a full reservation until its lease expired.
+    expect((await sql`select * from trusted_cli_outputs`.execute(ctx.db)).rows).toHaveLength(0);
+  });
+
+  it("lists only the owner's runs, newest first, with status but no output", async () => {
+    let time = new Date('2026-10-13T12:00:00Z');
+    const store = createTrustedCliOutputStore(ctx.db, cipher, () => time);
+    const finished = await store.begin(owner);
+    await store.append(finished, 'stdout', 'private output text');
+    await store.finish(finished, {
+      exitCode: 1,
+      exitCodeKnown: false,
+      terminationReason: 'timeout',
+      stdout: 'private output text',
+    });
+    time = new Date('2026-10-13T12:01:00Z');
+    const running = await store.begin(owner);
+    await store.begin({ ...owner, sessionId: 'other' });
+    await store.begin({ ...owner, projectId: 'other' });
+    const listing = await store.list(owner);
+    expect(listing).toEqual({
+      invocations: [
+        { invocationId: running, startedAt: '2026-10-13T12:01:00.000Z', complete: false },
+        {
+          invocationId: finished,
+          startedAt: '2026-10-13T12:00:00.000Z',
+          complete: true,
+          terminationReason: 'timeout',
+          exitCode: 1,
+          exitCodeKnown: false,
+        },
+      ],
+    });
+    expect(JSON.stringify(listing)).not.toContain('private output');
+    await expect(store.list({ ...owner, sessionId: 'nobody' })).resolves.toEqual({
+      invocations: [],
+    });
+    // Both leases (one hour after completion, two hours for the abandoned run) have expired.
+    time = new Date('2026-10-13T14:01:00Z');
+    await expect(store.list(owner)).resolves.toEqual({ invocations: [] });
+  });
+
+  it('bounds the listing to the twenty newest runs', async () => {
+    let time = new Date('2026-10-13T12:00:00Z');
+    const store = createTrustedCliOutputStore(ctx.db, cipher, () => time);
+    const ids: string[] = [];
+    for (let i = 0; i < 22; i++) {
+      time = new Date(Date.parse('2026-10-13T12:00:00Z') + i * 1000);
+      const id = await store.begin(owner);
+      await store.finish(id, { exitCode: 0, terminationReason: 'process_exit' });
+      ids.push(id);
+    }
+    const { invocations } = await store.list(owner);
+    expect(invocations.map((entry) => entry.invocationId)).toEqual(ids.slice(2).reverse());
+  });
+
+  it('does not let retained small results reduce concurrency', async () => {
     const store = createTrustedCliOutputStore(ctx.db, cipher);
     for (let i = 0; i < 6; i++) {
       const result = await collectTrustedCliOutput(
@@ -156,7 +262,35 @@ describe('trusted CLI retained output', () => {
       expect(result.stdout).toBe('small response');
       expect(result.invocationId).toBeUndefined();
     }
-    expect((await sql`select * from trusted_cli_outputs`.execute(ctx.db)).rows).toHaveLength(0);
+    expect((await sql`select * from trusted_cli_outputs`.execute(ctx.db)).rows).toHaveLength(6);
+    // Finished records reserve only their stored bytes, so all five running slots remain.
+    for (let i = 0; i < 5; i++) await store.begin(owner);
+    await expect(store.begin(owner)).rejects.toThrow('quota');
+  });
+
+  it('counts retained output by its actual stored bytes per project and in total', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    // byte_length is what the quota reads; a synthetic frame avoids writing 40 MiB.
+    const retain = async (projectId: string, id: string, bytes: number) => {
+      await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result) values (${id}, ${projectId}, 'session', now() + interval '1 hour', 1, 'done')`.execute(
+        ctx.db,
+      );
+      await sql`insert into secret_job_frames (job_id, sequence, protocol_version, stream, encoding, payload, byte_length, emitted_at, created_at) values (${id}, 0, 1, 'stdout', 'utf8', 'synthetic', ${bytes}, now(), now())`.execute(
+        ctx.db,
+      );
+    };
+    const mib = 1024 * 1024;
+    await retain('project', 'below', 50 * mib - 1);
+    await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
+    await retain('project', 'at-limit', 1);
+    // 50 MiB retained in this project; a running record elsewhere is still admitted.
+    await expect(store.begin(owner)).rejects.toThrow('quota');
+    await expect(store.begin({ ...owner, projectId: 'fresh' })).resolves.toEqual(
+      expect.any(String),
+    );
+    for (let i = 0; i < 3; i++) await retain(`full-${i}`, `full-${i}`, 50 * mib);
+    // 200 MiB retained across projects closes admission everywhere.
+    await expect(store.begin({ ...owner, projectId: 'another' })).rejects.toThrow('quota');
   });
 
   it('honors one-hour completion expiry across storage reconstruction', async () => {

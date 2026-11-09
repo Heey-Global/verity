@@ -108,7 +108,9 @@ export function createMcpGatewayToolExecutor(options: {
   }) => {
     if (toolName === 'verity_secret_output') {
       if (options.trustedCliOutput === undefined) throw new Error('trusted CLI output unavailable');
-      const input = request as { invocationId: string; cursor?: number };
+      const input = request as { invocationId?: string; cursor?: number };
+      if (input.invocationId === undefined)
+        return options.trustedCliOutput.list({ projectId, sessionId });
       return options.trustedCliOutput.read(
         { projectId, sessionId },
         input.invocationId,

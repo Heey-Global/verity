@@ -165,7 +165,7 @@ const MAX_PROMPT_SECRET_ALIAS_BYTES = 8 * 1024;
 /** Denial handed to an out-of-band caller that gave up waiting (deadline, disconnect).
  *  It reaches the agent as the tool's rejection reason, so it says what to do next. */
 export const EXTERNAL_PERMISSION_ABORT_MESSAGE =
-  'The approval request expired before it was answered. Ask again if you still need this.';
+  'The approval request expired before it was answered, so nothing ran. Ask the user to answer the approval card, then ask again if you still need this.';
 
 /** Whether a permission was answered on a card the operator saw, or by a standing grant
  *  redeemed without one. */

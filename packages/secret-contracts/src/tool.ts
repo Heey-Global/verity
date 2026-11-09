@@ -515,7 +515,8 @@ export const TRUSTED_CLI_TOOL_DESCRIPTION =
   'List every secret the command needs in `secrets`; a CLI that wants a key id, an issuer id and a private key gets all three from one call. Do not ask for a combined JSON alias and do not try to split one. ' +
   'There is no implicit shell. The executable and each argument are separate tokens, and the executable must be an installed root-owned program. A worktree entry script is allowed only when `entryScript` names its absolute path, SHA-256, and loading mode; Verity shows and verifies them. Use `loading: "isolated"` only when the script needs no mutable worktree files; Verity denies those reads and may reuse approval. Use `loading: "dynamic"` for imports, sourced files, and other worktree reads; scoped approval accepts that those files may change. Ordinary CLIs, inline eval, stdin, and modules also support once, session, and 30-day project approval bound to the exact invocation and execution directory. ' +
   'With `injection: "file"` Verity writes the secret to /run/verity-runner/secrets/<env>; because nothing expands `$VAR`, the argument has to spell that path out in full, in whichever form the tool takes. ' +
-  'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only.';
+  'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only. ' +
+  'If this call is cut off before it returns, do not run the command again: call verity_secret_read_output without invocationId to find the run and read its status and output.';
 
 export const secretCatalogToolRequestSchema = z
   .object({

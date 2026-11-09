@@ -122,6 +122,7 @@ describe('MCP trusted output retrieval', () => {
         remove: vi.fn(),
         cleanup: vi.fn(),
         read,
+        list: vi.fn(),
       },
     });
     await invoke({
@@ -138,6 +139,42 @@ describe('MCP trusted output retrieval', () => {
       'stored-output',
       4,
     );
+    expect(trustedCliTool).not.toHaveBeenCalled();
+  });
+
+  // A caller whose verity_secret_run wait was cut off never received an invocationId; without
+  // an owner-scoped listing the only way back to the run's output would be running it again.
+  it("lists the calling session's runs when no invocationId is given", async () => {
+    const trustedCliTool = vi.fn();
+    const read = vi.fn();
+    const listing = { invocations: [{ invocationId: 'run', startedAt: 'now', complete: false }] };
+    const list = vi.fn(async () => listing);
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool: vi.fn(),
+      trustedCliTool,
+      trustedCliOutput: {
+        begin: vi.fn(),
+        append: vi.fn(),
+        finish: vi.fn(),
+        remove: vi.fn(),
+        cleanup: vi.fn(),
+        read,
+        list,
+      },
+    });
+    await expect(
+      invoke({
+        projectId: 'project',
+        sessionId: 'session',
+        turnId: 'later-turn',
+        callId: 'list',
+        invocationId: 'list-invocation',
+        toolName: 'verity_secret_output',
+        request: {},
+      }),
+    ).resolves.toBe(listing);
+    expect(list).toHaveBeenCalledWith({ projectId: 'project', sessionId: 'session' });
+    expect(read).not.toHaveBeenCalled();
     expect(trustedCliTool).not.toHaveBeenCalled();
   });
 });

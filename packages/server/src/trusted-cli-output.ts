@@ -6,12 +6,31 @@ import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
 export const TRUSTED_OUTPUT_BYTES = 10 * 1024 * 1024;
 const RETENTION_MS = 60 * 60 * 1000;
 const PAGE_BYTES = 12 * 1024;
+// Running records each reserve the full ceiling, so their count bounds in-flight payload.
+// Finished records are retained (so a caller whose wait was cut off can find the run) and
+// count only the bytes they actually stored, under a separate budget: retaining many small
+// results must not take away running slots.
+const PROJECT_RUNNING = 5;
+const TOTAL_RUNNING = 20;
+const PROJECT_RETAINED_BYTES = 5 * TRUSTED_OUTPUT_BYTES;
+const TOTAL_RETAINED_BYTES = 20 * TRUSTED_OUTPUT_BYTES;
+const LIST_LIMIT = 20;
 export type OutputOwner = { projectId: string; sessionId: string };
+export type TrustedCliInvocationSummary = {
+  invocationId: string;
+  startedAt: string;
+  complete: boolean;
+  terminationReason?: string;
+  exitCode?: number;
+  exitCodeKnown?: false;
+};
 export interface TrustedCliOutputStore {
   begin(owner: OutputOwner): Promise<string>;
   append(id: string, stream: 'stdout' | 'stderr', text: string): Promise<void>;
   finish(id: string, result: Record<string, unknown>): Promise<void>;
   read(owner: OutputOwner, id: string, cursor?: number): Promise<unknown>;
+  /** The owner's retained records, newest first; metadata only, never output. */
+  list(owner: OutputOwner): Promise<{ invocations: TrustedCliInvocationSummary[] }>;
   remove(id: string): Promise<void>;
   cleanup(): Promise<void>;
 }
@@ -26,7 +45,6 @@ export function createTrustedCliOutputStore(
     maxJobBytes: TRUSTED_OUTPUT_BYTES,
     now,
   });
-  // Each retained invocation reserves its full ceiling, bounding aggregate payload to 200 MiB.
   const cleanup = async () => {
     await db.transaction().execute(async (tx) => {
       const expired = await sql<{
@@ -48,15 +66,28 @@ export function createTrustedCliOutputStore(
           tx,
         );
         const { rows } = await sql<{
-          total: number;
-          project: number;
-        }>`select count(*)::integer as total, count(*) filter (where project_id = ${owner.projectId})::integer as project from trusted_cli_outputs`.execute(
+          running: number;
+          project_running: number;
+          retained: number;
+          project_retained: number;
+        }>`select count(*) filter (where o.result is null)::integer as running,
+          count(*) filter (where o.result is null and o.project_id = ${owner.projectId})::integer as project_running,
+          coalesce(sum(f.bytes) filter (where o.result is not null), 0)::float8 as retained,
+          coalesce(sum(f.bytes) filter (where o.result is not null and o.project_id = ${owner.projectId}), 0)::float8 as project_retained
+          from trusted_cli_outputs o
+          left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames group by job_id) f on f.job_id = o.id`.execute(
           tx,
         );
-        if ((rows[0]?.total ?? 0) >= 20 || (rows[0]?.project ?? 0) >= 5)
+        const usage = rows[0];
+        if (
+          (usage?.running ?? 0) >= TOTAL_RUNNING ||
+          (usage?.project_running ?? 0) >= PROJECT_RUNNING ||
+          Number(usage?.retained ?? 0) >= TOTAL_RETAINED_BYTES ||
+          Number(usage?.project_retained ?? 0) >= PROJECT_RETAINED_BYTES
+        )
           throw new Error('trusted CLI output quota exceeded');
         // Abandoned executions have a bounded lease even when the server never returns to finish.
-        await sql`insert into trusted_cli_outputs(id, project_id, session_id, expires_at, next_sequence) values (${id}, ${owner.projectId}, ${owner.sessionId}, ${new Date(now().getTime() + 2 * RETENTION_MS).toISOString()}, 0)`.execute(
+        await sql`insert into trusted_cli_outputs(id, project_id, session_id, expires_at, next_sequence, started_at) values (${id}, ${owner.projectId}, ${owner.sessionId}, ${new Date(now().getTime() + 2 * RETENTION_MS).toISOString()}, 0, ${now().toISOString()})`.execute(
           tx,
         );
       });
@@ -126,6 +157,33 @@ export function createTrustedCliOutputStore(
         ...(row.result === null
           ? {}
           : { result: JSON.parse(cipher.decrypt(row.result)) as unknown }),
+      };
+    },
+    async list(owner) {
+      await cleanup();
+      const { rows } = await sql<{
+        id: string;
+        started_at: Date;
+        result: string | null;
+      }>`select id, started_at, result from trusted_cli_outputs where project_id = ${owner.projectId} and session_id = ${owner.sessionId} order by started_at desc, id limit ${LIST_LIMIT}`.execute(
+        db,
+      );
+      return {
+        invocations: rows.map((row) => {
+          const summary: TrustedCliInvocationSummary = {
+            invocationId: row.id,
+            startedAt: new Date(row.started_at).toISOString(),
+            complete: row.result !== null,
+          };
+          if (row.result === null) return summary;
+          const result = JSON.parse(cipher.decrypt(row.result)) as Record<string, unknown>;
+          // Only fixed status fields; output stays behind read() and its pagination.
+          if (typeof result.terminationReason === 'string')
+            summary.terminationReason = result.terminationReason;
+          if (typeof result.exitCode === 'number') summary.exitCode = result.exitCode;
+          if (result.exitCodeKnown === false) summary.exitCodeKnown = false;
+          return summary;
+        }),
       };
     },
     async remove(id) {
