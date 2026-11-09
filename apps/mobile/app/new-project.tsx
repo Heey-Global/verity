@@ -1,8 +1,8 @@
 // Create a project, then manage runtime and integrations on its project page.
 //
-// "Start from" offers every connected code host — GitHub, Forgejo, both or
-// neither — with equal weight, plus a local project that lives only on this
-// Verity server.
+// A project always starts with a name. Repositories from any connected code
+// host — GitHub, Forgejo, both or neither — are optional; without one, Verity
+// keeps the project's code on this server.
 import {
   VerityApiError,
   preferredCodeHost,
@@ -16,18 +16,18 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
-import { CodeHostOption, RepositoryPicker } from '../components/RepositoryPicker';
+import { CodeHostIcon } from '../components/CodeHostIcon';
+import { AddRepositorySheet } from '../components/RepositoryPicker';
 import {
   SettingsGroup,
   SettingsMessage,
   SettingsScaffold,
 } from '../components/settings/SettingsChrome';
 import { settingsStyles as styles } from '../components/settings/settingsStyles';
-import { Button, Group, Row, Text, TextField } from '../components/ui';
+import { Button, Group, IconButton, Row, Text, TextField } from '../components/ui';
 import { createVerityClient, getVerityBaseUrl } from '../lib/client';
 import { loadCodeHosts, readLastCodeHost, rememberCodeHost } from '../lib/codeHosts';
-
-const LOCAL = 'local';
+import { repositoryModuleName } from '../lib/projectRepositories';
 
 export default function NewProjectScreen() {
   const params = useLocalSearchParams<{ projectId?: string | string[] }>();
@@ -55,14 +55,18 @@ export default function NewProjectScreen() {
   return <NewProject client={client} />;
 }
 
+/** A repository chosen for the new project, with the code host it comes from. */
+type ChosenRepository = { host: CodeHost; repository: string };
+
 function NewProject({ client }: { client: VerityClient }) {
   const { theme } = useUnistyles();
   const [hosts, setHosts] = useState<CodeHost[] | null>(null);
   const [githubRepositories, setGithubRepositories] = useState<ProjectRecord[]>([]);
-  const [choice, setChoice] = useState<string | null>(null);
-  const choiceMade = useRef(false);
-  const [selectedRepository, setSelectedRepository] = useState<string | null>(null);
-  const [localName, setLocalName] = useState('');
+  const [name, setName] = useState('');
+  // Until the person types a name, the first repository chosen suggests one.
+  const nameTyped = useRef(false);
+  const [repositories, setRepositories] = useState<ChosenRepository[]>([]);
+  const [adding, setAdding] = useState(false);
   const [createdProject, setCreatedProject] = useState<ProjectRecord | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -78,10 +82,14 @@ function NewProject({ client }: { client: VerityClient }) {
         readLastCodeHost(),
       ]).then(([loaded, remembered]) => {
         if (!active) return;
-        setHosts(loaded.hosts);
+        // The host used last time is offered first.
+        const preferred = preferredCodeHost(loaded.hosts, remembered);
+        setHosts(
+          preferred
+            ? [preferred, ...loaded.hosts.filter((host) => host.id !== preferred.id)]
+            : loaded.hosts,
+        );
         setGithubRepositories(loaded.githubRepositories);
-        if (!choiceMade.current)
-          setChoice(preferredCodeHost(loaded.hosts, remembered)?.id ?? LOCAL);
       });
       return () => {
         active = false;
@@ -89,29 +97,66 @@ function NewProject({ client }: { client: VerityClient }) {
     }, [client]),
   );
 
-  const host = hosts?.find((candidate) => candidate.id === choice);
+  const canCreate = !creating && name.trim().length > 0;
 
-  const canCreate =
-    !creating &&
-    choice !== null &&
-    (choice === LOCAL
-      ? localName.trim().length > 0
-      : host !== undefined && selectedRepository !== null);
+  const addRepository = (host: CodeHost, repository: string) => {
+    setAdding(false);
+    setError(undefined);
+    setRepositories((current) =>
+      current.some((item) => item.host.id === host.id && item.repository === repository)
+        ? current
+        : [...current, { host, repository }],
+    );
+    if (!nameTyped.current && name.trim() === '') setName(repository.split('/')[1] ?? repository);
+  };
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
+    const projectName = name.trim();
+    const [first, ...more] = repositories;
     const body: CreateProjectRequest =
-      choice === LOCAL || host === undefined
-        ? { kind: 'local', name: localName.trim() }
-        : host.provider === 'forgejo'
-          ? { repo: selectedRepository!, kind: 'forgejo', connectionId: host.id }
-          : { repo: selectedRepository! };
+      first === undefined
+        ? { kind: 'local', name: projectName }
+        : first.host.provider === 'forgejo'
+          ? {
+              repo: first.repository,
+              kind: 'forgejo',
+              connectionId: first.host.id,
+              name: projectName,
+            }
+          : { repo: first.repository, name: projectName };
     setCreating(true);
     setError(undefined);
     void client
       .createProject(body)
-      .then((project) => {
-        if (host !== undefined && choice !== LOCAL) rememberCodeHost(host.id);
+      .then(async (project) => {
+        if (first !== undefined) rememberCodeHost(first.host.id);
+        // The first repository is the project's own; the others join it as
+        // they would on its page. One that fails does not undo the project.
+        const taken = [project.repo];
+        const failed: string[] = [];
+        for (const { host, repository } of more) {
+          const [owner, repo] = repository.split('/');
+          if (!owner || !repo) continue;
+          const moduleName = repositoryModuleName(taken, owner, repo);
+          try {
+            await client.addProjectRepository(project.id, {
+              name: moduleName,
+              kind: host.provider,
+              owner,
+              repo,
+              ...(host.provider === 'forgejo' ? { forgeConnectionId: host.id } : {}),
+            });
+            taken.push(moduleName);
+          } catch {
+            failed.push(repository);
+          }
+        }
+        if (failed.length > 0)
+          Alert.alert(
+            'Some repositories were not connected',
+            `${failed.join(', ')} could not be connected. Add them again on the project page.`,
+          );
         // Setup progress is lifecycle state; optional integrations do not gate access.
         setCreatedProject(project);
         void client.setProjectSetupStatus(project.id, 'complete').catch(() => {
@@ -123,10 +168,10 @@ function NewProject({ client }: { client: VerityClient }) {
         setError(caught instanceof VerityApiError ? caught.message : 'Could not add project');
         setCreating(false);
       });
-  }, [canCreate, choice, client, host, localName, selectedRepository]);
+  }, [canCreate, client, name, repositories]);
 
   if (createdProject) return <ProjectConnections client={client} project={createdProject} />;
-  if (hosts === null || choice === null) {
+  if (hosts === null) {
     return (
       <View style={styles.centered}>
         <ActivityIndicator color={theme.colors.text} />
@@ -134,12 +179,6 @@ function NewProject({ client }: { client: VerityClient }) {
     );
   }
 
-  const choose = (next: string) => {
-    choiceMade.current = true;
-    if (next !== choice) setSelectedRepository(null);
-    setChoice(next);
-    setError(undefined);
-  };
   return (
     <SettingsScaffold
       title="New project"
@@ -154,70 +193,91 @@ function NewProject({ client }: { client: VerityClient }) {
         />
       }
     >
-      <SettingsGroup title="Start from">
+      <SettingsGroup title="Project">
+        <TextField
+          label="Project name"
+          value={name}
+          onChangeText={(next) => {
+            nameTyped.current = true;
+            setName(next);
+          }}
+          placeholder="My project"
+          maxLength={100}
+          disabled={creating}
+        />
+      </SettingsGroup>
+      <SettingsGroup
+        title="Repositories"
+        description="Optional. You can connect more later on the project page."
+      >
         <Group>
-          {hosts.map((candidate) => (
-            <CodeHostOption
-              key={candidate.id}
-              host={candidate}
-              selected={choice === candidate.id}
-              disabled={creating}
-              onPress={() => choose(candidate.id)}
+          {repositories.map(({ host, repository }) => (
+            <Row
+              key={`${host.id}:${repository}`}
+              leading={{
+                element: <CodeHostIcon provider={host.provider} color={theme.colors.action} />,
+              }}
+              title={repository}
+              subtitle={host.title}
+              trailing={
+                <IconButton
+                  icon="x"
+                  accessibilityLabel={`Remove ${repository}`}
+                  disabled={creating}
+                  onPress={() =>
+                    setRepositories((current) =>
+                      current.filter(
+                        (item) => !(item.host.id === host.id && item.repository === repository),
+                      ),
+                    )
+                  }
+                />
+              }
             />
           ))}
-          <Row
-            leading={{ icon: 'hard-drive' }}
-            title="Local project"
-            subtitle="Only on this Verity server"
-            selected={choice === LOCAL}
-            disabled={creating}
-            onPress={() => choose(LOCAL)}
-          />
+          {hosts.length > 0 ? (
+            <Row
+              leading={{ icon: 'plus' }}
+              title="Add repository"
+              subtitle={hosts.map((host) => host.title).join(' or ')}
+              navigates
+              disabled={creating}
+              onPress={() => setAdding(true)}
+            />
+          ) : (
+            <Row
+              leading={{ icon: 'link' }}
+              title="Connect a code host"
+              subtitle="To work with GitHub or Forgejo repositories"
+              navigates
+              onPress={() => router.push('/settings/services')}
+            />
+          )}
         </Group>
       </SettingsGroup>
-      {choice === LOCAL || host === undefined ? (
-        <SettingsGroup title="Project name">
-          <TextField
-            label="Project name"
-            value={localName}
-            onChangeText={setLocalName}
-            placeholder="my-project"
-            literal
-            maxLength={100}
-            disabled={creating}
-          />
-          <Text variant="footnote" tone="faint">
-            Verity creates a Git repository on this server.
-          </Text>
-          {hosts.length === 0 ? (
-            <View style={styles.selfStart}>
-              <Button
-                label="Connect a code host"
-                variant="text"
-                size="compact"
-                icon="link"
-                onPress={() => router.push('/settings/services')}
-              />
-            </View>
-          ) : null}
-        </SettingsGroup>
-      ) : (
-        <SettingsGroup title="Repository">
-          <RepositoryPicker
-            client={client}
-            host={host}
-            initialGithubRepositories={githubRepositories}
-            selected={selectedRepository}
-            onSelect={setSelectedRepository}
-            disabled={creating}
-          />
-        </SettingsGroup>
-      )}
+      {repositories.length === 0 ? (
+        <Text variant="footnote" tone="faint">
+          Without a repository, Verity keeps the project&apos;s code in a Git repository on this
+          server.
+        </Text>
+      ) : null}
       {error ? (
         <Text variant="bodySmall" tone="attention">
           {error}
         </Text>
       ) : null}
+      <AddRepositorySheet
+        client={client}
+        visible={adding}
+        hosts={hosts}
+        githubRepositories={githubRepositories}
+        exclude={(host) =>
+          repositories.filter((item) => item.host.id === host.id).map((item) => item.repository)
+        }
+        disabled={creating}
+        onAdd={addRepository}
+        onClose={() => setAdding(false)}
+      />
     </SettingsScaffold>
   );
 }

@@ -307,3 +307,27 @@ it('lets a reader keep their own view state but hides resources they cannot read
     );
   }
 });
+
+it('lets a manager rename a project without opening the rest of its settings', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (userId, projectId, permission) =>
+      projectId === 'shared' && (permission === 'read' || userId === 'manager'),
+    getSession: async () => undefined,
+  };
+  const profile = '/projects/:id/profile';
+  expect(await authorizePairedRoute(store, 'manager', 'PATCH', profile, { id: 'shared' })).toBe(
+    'allow',
+  );
+  // Reading a project is not enough to rename it.
+  expect(await authorizePairedRoute(store, 'reader', 'PATCH', profile, { id: 'shared' })).toBe(
+    'forbidden',
+  );
+  // The settings route keeps every other project setting with administrators.
+  expect(
+    await authorizePairedRoute(store, 'manager', 'PATCH', '/projects/:id/settings', {
+      id: 'shared',
+    }),
+  ).toBe('forbidden');
+});

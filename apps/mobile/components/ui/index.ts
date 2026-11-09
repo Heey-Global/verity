@@ -13,6 +13,7 @@ export { TileMark, type TileMarkGlyph, type TileMarkTone } from './TileMark';
 export { StepIntro, SuccessHero } from './StepHero';
 export { Text } from './Text';
 export { LogList, LogRow } from './LogList';
+export { InlineEdit } from './InlineEdit';
 export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
 export { UsageRing, type UsageRingLevel } from './UsageRing';

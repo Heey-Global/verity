@@ -29,6 +29,26 @@ export function projectLine(
   return 'Local project';
 }
 
+/**
+ * The name a repository takes inside its project: its repository name, with
+ * the owner joining it only when another repository of the project already
+ * uses that name, and a number after that. At most 100 characters.
+ */
+export function repositoryModuleName(
+  taken: readonly string[],
+  owner: string,
+  repo: string,
+): string {
+  const names = new Set(taken.map((name) => name.toLowerCase()));
+  const base = names.has(repo.toLowerCase()) ? `${owner}-${repo}` : repo;
+  let name = base.slice(0, 100);
+  for (let suffix = 2; names.has(name.toLowerCase()); suffix++) {
+    const tail = `-${suffix}`;
+    name = `${base.slice(0, 100 - tail.length)}${tail}`;
+  }
+  return name;
+}
+
 /** Pull requests that wait for someone: a failure or a conflict. */
 function needsAttention(pulls: readonly ProjectPullRequest[]): number {
   return pulls.filter((pull) => pull.state === 'failing' || pull.state === 'conflict').length;

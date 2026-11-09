@@ -4206,9 +4206,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         project: seen ?? presented,
         settings: publicProjectSettings(settings),
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
+        // What this person may change here, so the app offers only that. The
+        // routes check again; this only spares an edit the server would refuse.
+        viewer: {
+          canManage:
+            deps.authRegistry?.isEnabled() !== true ||
+            (await deps.eventStore.hasProjectPermission(viewer, id, 'manage')),
+        },
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
+    renameProject: async (id, name) => {
+      const renamed = await deps.eventStore.renameProject(id, name);
+      // The overview list is memoised; it must show the new name at once.
+      if (renamed !== undefined) deps.invalidateProjectList?.();
+      return renamed;
+    },
     ...(deps.listBrokeredGrants !== undefined ? { listGrants: deps.listBrokeredGrants } : {}),
     ...(deps.revokeBrokeredGrant !== undefined ? { revokeGrant: deps.revokeBrokeredGrant } : {}),
     setSetupStatus: async (id, status) => {

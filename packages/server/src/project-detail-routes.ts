@@ -2,9 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { viewerId } from './view-state-routes.js';
 import {
+  InvalidProjectNameError,
   PROJECT_AGENTS,
   PROJECT_MEMORY_MAX_CHARS,
+  PROJECT_NAME_MAX_CHARS,
   SealedError,
+  type ProjectRecord,
   type ProjectSettingsPatch,
 } from '@verity/store';
 import { isValidBranchName } from './branches.js';
@@ -17,6 +20,25 @@ const collapsedBody = z.object({ collapsed: z.boolean() });
 const setupStatusBody = z.object({
   status: z.enum(['pending', 'secrets_skipped', 'complete']),
 });
+// Name and description, edited in place on the project page. A route of its
+// own so that a member with manage rights can change them without being able
+// to reach the rest of the settings, which stay with administrators.
+const PROJECT_DESCRIPTION_MAX_CHARS = 200;
+const profileBody = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, 'project name is required')
+      .refine(
+        (name) => name.length <= PROJECT_NAME_MAX_CHARS,
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      )
+      .optional(),
+    description: z.string().trim().max(PROJECT_DESCRIPTION_MAX_CHARS).nullable().optional(),
+  })
+  .strict()
+  .refine((body) => body.name !== undefined || body.description !== undefined, 'nothing to change');
 const settingsBody = z
   .object({
     devcontainerEnabled: z.boolean().optional(),
@@ -64,6 +86,7 @@ export interface ProjectDetailRouteDeps {
   setCollapsed: (projectId: string, collapsed: boolean, viewer: string) => Promise<unknown>;
   isSealed: () => boolean;
   updateSettings: (projectId: string, patch: ProjectSettingsPatch) => Promise<unknown>;
+  renameProject: (projectId: string, name: string) => Promise<ProjectRecord | undefined>;
 }
 
 /** Registers project detail, presentation state, settings, and secret-grant routes. */
@@ -128,6 +151,47 @@ export function registerProjectDetailRoutes(
       return { error: 'project not found' };
     }
     return project;
+  });
+
+  app.patch('/projects/:id/profile', async (request, reply): Promise<unknown> => {
+    if (deps.isSealed()) throw new SealedError();
+    const { id } = projectParams.parse(request.params);
+    const parsed = profileBody.safeParse(request.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: parsed.error.issues[0]?.message ?? 'invalid request' };
+    }
+    const { name, description } = parsed.data;
+    if (!(await deps.projectExists(id))) {
+      reply.code(404);
+      return { error: `project ${id} not found` };
+    }
+    const answer: { name?: string; description?: string | null } = {};
+    if (name !== undefined) {
+      let renamed: ProjectRecord | undefined;
+      try {
+        renamed = await deps.renameProject(id, name);
+      } catch (error) {
+        if (!(error instanceof InvalidProjectNameError)) throw error;
+        reply.code(400);
+        return { error: error.message };
+      }
+      if (renamed === undefined) {
+        reply.code(404);
+        return { error: `project ${id} not found` };
+      }
+      answer.name = renamed.name;
+    }
+    if (description !== undefined) {
+      const settings = (await deps.updateSettings(id, { description })) as
+        { description?: string | null } | undefined;
+      if (settings === undefined) {
+        reply.code(404);
+        return { error: `project ${id} not found` };
+      }
+      answer.description = settings.description ?? null;
+    }
+    return answer;
   });
 
   app.patch('/projects/:id/settings', async (request, reply): Promise<unknown> => {

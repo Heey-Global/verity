@@ -5566,3 +5566,18 @@ migrations['0203_trusted_cli_output_listing'] = {
     await sql`alter table trusted_cli_outputs drop column started_at`.execute(db);
   },
 };
+
+migrations['0204_project_name'] = {
+  // A project's own name, independent of the repositories it connects. Every
+  // existing project keeps the name the app showed it under: its repository
+  // (or, for a local project, directory) name. Connecting, disconnecting or
+  // syncing repositories never writes it; only a rename does.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column name text
+      check (char_length(btrim(name)) between 1 and 200)`.execute(db);
+    await sql`update projects set name = repo`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects drop column name`.execute(db);
+  },
+};
