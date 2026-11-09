@@ -64,7 +64,7 @@ export {
   type ProjectBadge,
   type ProjectTone,
 } from './ui/projectBadge.js';
-export { projectDisplayName, projectRepoRef } from './ui/projectName.js';
+export { projectDisplayName, projectRepoRef, projectTitle } from './ui/projectName.js';
 export {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
@@ -426,6 +426,8 @@ export {
   type ProjectRuntimeLogs,
   type ProjectRuntimeStarted,
   type ProjectSettings,
+  type ProjectProfile,
+  type ProjectProfilePatch,
   type ProjectSettingsPatch,
   type ProjectAgent,
   type ProjectDesignLevel,

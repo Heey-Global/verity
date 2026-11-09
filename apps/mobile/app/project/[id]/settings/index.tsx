@@ -161,16 +161,20 @@ function ProjectSettingsIndexView({
           </SettingsListPanel>
         </SettingsGroup>
       )}
-      <SettingsGroup title="General">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="align-left"
-            title="Description"
-            subtitle={description ?? 'Shown under the project name'}
-            onPress={editDescription}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {/* Keep the legacy editor when the project page or profile API is unavailable. */}
+      {(newDesign === false || detail.viewer === undefined) &&
+      detail.viewer?.canManage !== false ? (
+        <SettingsGroup title="General">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="align-left"
+              title="Description"
+              subtitle={description ?? 'Shown under the project name'}
+              onPress={editDescription}
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow

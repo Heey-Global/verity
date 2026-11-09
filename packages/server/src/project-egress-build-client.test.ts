@@ -122,3 +122,25 @@ it('never echoes unrecognized refusal reasons or correlation values', async () =
   await expect(client({ operation: 'health' })).rejects.toThrow('operation_refused');
   await expect(client({ operation: 'health' })).rejects.not.toThrow('SECRET');
 });
+
+it('never confuses slot and health replies, which share the same boolean shape', async () => {
+  // A health reply read as a slot answer would release legacy storage reservations.
+  const replies = [
+    { version: 1, available: true },
+    { version: 1, record: { request, phase: 'succeeded', ended: true } },
+  ];
+  for (const reply of replies) {
+    const client = await fixture((response) => response.end(JSON.stringify(reply)));
+    await expect(client({ operation: 'slot' })).rejects.toThrow('Mismatched protected build slot');
+  }
+  const health = await fixture((response) =>
+    response.end(JSON.stringify({ version: 1, idle: true })),
+  );
+  await expect(health({ operation: 'health' })).rejects.toThrow(
+    'Mismatched protected builder health',
+  );
+  const slot = await fixture((response) =>
+    response.end(JSON.stringify({ version: 1, idle: true })),
+  );
+  expect(await slot({ operation: 'slot' })).toEqual({ version: 1, idle: true });
+});

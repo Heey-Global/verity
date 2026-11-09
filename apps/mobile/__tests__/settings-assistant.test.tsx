@@ -14,7 +14,7 @@ import {
 afterEach(() => resetSettingsHarness());
 
 const projects = [
-  { id: 'p', owner: 'team', repo: 'app', kind: 'github' },
+  { id: 'p', name: 'Team App', owner: 'team', repo: 'app', kind: 'github' },
   { id: 'verity-control', owner: 'verity', repo: 'control', kind: 'control_plane' },
 ];
 
@@ -28,7 +28,7 @@ it('opens the assistant session and lists only granted projects', async () => {
     }),
   } as unknown as VerityClient);
   render(<AssistantScreen />);
-  await screen.findByText('team/app');
+  await screen.findByText('Team App');
   expect(screen.getByText('Tasks and sessions')).toBeTruthy();
   fireEvent.press(screen.getByRole('button', { name: /Open assistant/ }));
   expect(mockPush).toHaveBeenCalledWith('/session/s-assistant');

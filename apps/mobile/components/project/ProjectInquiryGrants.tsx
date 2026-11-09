@@ -1,4 +1,4 @@
-import { type VerityClient } from '@verity/mobile';
+import { projectTitle, type VerityClient } from '@verity/mobile';
 import { useCallback, useState } from 'react';
 import { useScanResource } from '../../lib/useScanResource';
 import { Card, Text, ToggleRow } from '../ui';
@@ -45,7 +45,7 @@ export function ProjectInquiryGrants({
         .map((project) => (
           <Card flush key={project.id}>
             <ToggleRow
-              title={project.repo}
+              title={projectTitle(project)}
               value={
                 resource.data?.grants.some((g) => g.targetProjectId === project.id && g.enabled) ??
                 false

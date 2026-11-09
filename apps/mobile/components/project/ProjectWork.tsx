@@ -22,6 +22,7 @@ import {
   type SessionSummary,
   type SessionTile,
   type VerityClient,
+  projectTitle,
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
@@ -834,8 +835,9 @@ export function ProjectWork({
           displayName={sessionLabel(settings.session)}
           projectId={settings.session.projectId ?? null}
           projectName={
-            settings.projects.find((project) => project.id === settings.session.projectId)?.repo ??
-            'No project'
+            projectTitle(
+              settings.projects.find((project) => project.id === settings.session.projectId),
+            ) ?? 'No project'
           }
           canMove={
             settings.session.status !== 'running' &&
@@ -851,7 +853,7 @@ export function ProjectWork({
           client={client}
           projects={settings.projects
             .filter((project) => project.kind === 'local')
-            .map((project) => ({ id: project.id, name: project.repo }))}
+            .map((project) => ({ id: project.id, name: projectTitle(project) }))}
           // The same rule as the session list's dialog, so both offer the same partners.
           linkableSessions={settings.everySession
             .filter((candidate) =>
@@ -862,8 +864,9 @@ export function ProjectWork({
               name: sessionLabel(candidate),
               projectId: candidate.projectId!,
               projectName:
-                settings.projects.find((project) => project.id === candidate.projectId)?.repo ??
-                candidate.projectId!,
+                projectTitle(
+                  settings.projects.find((project) => project.id === candidate.projectId),
+                ) ?? candidate.projectId!,
               detail: modelDisplayName(candidate.model),
             }))}
           onClose={() => setSettings(undefined)}

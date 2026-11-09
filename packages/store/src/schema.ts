@@ -449,6 +449,9 @@ export interface ProjectsTable {
   owner: string;
   /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** The project's own name, shown wherever the project is named. NULL only
+   *  for rows written before migration 0204 by an older writer. */
+  name: ColumnType<string | null, string | null | undefined, string | null>;
   /** 1 for the first project of a repository; each further project of the same
    *  repository takes the next number. Part of the unique repository identity. */
   repository_instance: ColumnType<number, number | undefined, number>;

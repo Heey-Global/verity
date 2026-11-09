@@ -135,6 +135,11 @@ export function slugifyProjectName(input: string): string | undefined {
   const slug = input
     .trim()
     .toLowerCase()
+    // A name is free text now; keep its letters readable in the directory
+    // instead of dropping them (`Übersetzungen` → `ubersetzungen`).
+    .replace(/ß/g, 'ss')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9._-]+/g, '-')
     // Collapse the runs the substitution above can create, then trim the
     // leading/trailing punctuation `validRepo` forbids.

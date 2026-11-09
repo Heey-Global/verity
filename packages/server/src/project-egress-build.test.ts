@@ -384,7 +384,7 @@ describe('protected build terminal cleanup and receipts', () => {
     const slot = async () => host.execute({ operation: 'slot' });
     // Before persisted state is loaded, an empty slot proves nothing about earlier builds.
     expect(await slot()).toEqual({ version: 1, idle: false });
-    await host.restore(undefined);
+    await host.restore({ request: next, phase: 'failed', ended: true, cleaned: true });
     expect(await slot()).toEqual({ version: 1, idle: true });
     await host.begin(request);
     expect(await slot()).toEqual({ version: 1, idle: false });
@@ -393,6 +393,17 @@ describe('protected build terminal cleanup and receipts', () => {
     expect(await slot()).toEqual({ version: 1, idle: false });
     await host.revalidate();
     expect(await slot()).toEqual({ version: 1, idle: true });
+  });
+  it('never reports idle when no persisted state existed at startup', async () => {
+    // Missing state (fresh or wiped directory) cannot prove that builds from before
+    // it ended, even after a new build on this host has ended.
+    const { runtime, persist } = fixture();
+    const host = new ProtectedBuildHost(runtime, persist);
+    await host.restore(undefined);
+    expect(await host.execute({ operation: 'slot' })).toEqual({ version: 1, idle: false });
+    await host.begin(request);
+    await host.cancel(request.projectId, request.attemptId);
+    expect(await host.execute({ operation: 'slot' })).toEqual({ version: 1, idle: false });
   });
   it('refuses mismatched or nonterminal durable receipts', async () => {
     const { runtime, persist } = fixture();

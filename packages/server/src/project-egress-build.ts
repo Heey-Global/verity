@@ -77,8 +77,10 @@ export class ProtectedBuildHost {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private lastHeartbeat = 0;
-  /** Persisted state has been loaded; before that, an empty slot proves nothing. */
-  private restored = false;
+  /** A persisted record was loaded at startup. The host keeps its last record once
+   * it has run any build, so missing state (fresh or wiped directory) cannot prove
+   * that builds from before it ended; such a host never reports its slot idle. */
+  private restoredFromState = false;
   constructor(
     private readonly runtime: ProtectedBuildRuntime,
     private readonly persist: (record: ProtectedBuildRecord | undefined) => Promise<void>,
@@ -101,7 +103,7 @@ export class ProtectedBuildHost {
       return {
         version: 1,
         idle: await this.serialize(() =>
-          Promise.resolve(this.restored && (this.record?.ended ?? true)),
+          Promise.resolve(this.restoredFromState && (this.record?.ended ?? true)),
         ),
       };
     if (command.operation === 'begin')
@@ -173,10 +175,7 @@ export class ProtectedBuildHost {
   restore(value: unknown): Promise<void> {
     return this.serialize(async () => {
       if (this.record) throw new Error('Protected build state is already loaded');
-      if (value === undefined) {
-        this.restored = true;
-        return;
-      }
+      if (value === undefined) return;
       const parsed = protectedBuildRecord.parse(value);
       // Interrupted records can claim termination without a terminal outcome.
       // Recontain them before issuing a receipt; neither flag proves cleanup.
@@ -185,7 +184,7 @@ export class ProtectedBuildHost {
         parsed.cleaned = false;
       }
       this.record = parsed;
-      this.restored = true;
+      this.restoredFromState = true;
       if (parsed.ended) await this.cleanup(parsed);
       else await this.contain(parsed);
     });

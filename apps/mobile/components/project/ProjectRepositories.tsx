@@ -2,11 +2,12 @@ import { type CodeHost, type ProjectRecord, type VerityClient } from '@verity/mo
 import { useCallback, useEffect, useState } from 'react';
 import { useUnistyles } from 'react-native-unistyles';
 import { loadCodeHosts } from '../../lib/codeHosts';
+import { repositoryModuleName } from '../../lib/projectRepositories';
 import { useScanResource } from '../../lib/useScanResource';
 import { CodeHostIcon } from '../CodeHostIcon';
-import { CodeHostOption, RepositoryPicker } from '../RepositoryPicker';
+import { AddRepositorySheet } from '../RepositoryPicker';
 import { SettingsGroup } from '../settings/SettingsChrome';
-import { Group, IconButton, Row, Sheet, StatusTag, Text, useConfirm } from '../ui';
+import { Group, IconButton, Row, StatusTag, Text, useConfirm } from '../ui';
 
 export function ProjectRepositories({
   client,
@@ -21,7 +22,6 @@ export function ProjectRepositories({
   const setResourceError = resource.setError;
   const [hosts, setHosts] = useState<CodeHost[]>([]);
   const [githubRepositories, setGithubRepositories] = useState<ProjectRecord[]>([]);
-  const [hostId, setHostId] = useState<string>();
   const { theme } = useUnistyles();
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -33,7 +33,6 @@ export function ProjectRepositories({
         if (!active) return;
         setHosts(result.hosts);
         setGithubRepositories(result.githubRepositories);
-        setHostId(result.hosts[0]?.id);
       })
       .catch((error: unknown) => {
         if (active)
@@ -43,32 +42,25 @@ export function ProjectRepositories({
       active = false;
     };
   }, [client, setResourceError]);
-  const host = hosts.find((item) => item.id === hostId);
   const connected = (resource.data ?? []).filter((item) => item.removedAt === null);
   // Repositories already in this project are not offered again; repositories
   // that other projects use stay available.
-  const exclude = host
-    ? connected
-        .filter(
-          (item) =>
-            item.kind === host.provider &&
-            (host.provider !== 'forgejo' || item.forgeConnectionId === host.id),
-        )
-        .map((item) => `${item.owner}/${item.repo}`)
-    : [];
-  const add = async (repository: string) => {
-    if (!host) return;
+  const exclude = (host: CodeHost) =>
+    connected
+      .filter(
+        (item) =>
+          item.kind === host.provider &&
+          (host.provider !== 'forgejo' || item.forgeConnectionId === host.id),
+      )
+      .map((item) => `${item.owner}/${item.repo}`);
+  const add = async (host: CodeHost, repository: string) => {
     const [owner, repo] = repository.split('/');
     if (!owner || !repo) return;
-    // The module is named after its repository; the owner only joins the name
-    // when another module already uses the repository name.
-    const names = new Set((resource.data ?? []).map((item) => item.name.toLowerCase()));
-    const base = names.has(repo.toLowerCase()) ? `${owner}-${repo}` : repo;
-    let name = base.slice(0, 100);
-    for (let suffix = 2; names.has(name.toLowerCase()); suffix++) {
-      const tail = `-${suffix}`;
-      name = `${base.slice(0, 100 - tail.length)}${tail}`;
-    }
+    const name = repositoryModuleName(
+      (resource.data ?? []).map((item) => item.name),
+      owner,
+      repo,
+    );
     setBusy(true);
     try {
       await client.addProjectRepository(projectId, {
@@ -155,37 +147,17 @@ export function ProjectRepositories({
           Connect a code host in Connectors first.
         </Text>
       ) : null}
-      <Sheet visible={adding} title="Add repository" onClose={() => setAdding(false)}>
-        {hosts.length > 1 ? (
-          <Group>
-            {hosts.map((candidate) => (
-              <CodeHostOption
-                key={candidate.id}
-                host={candidate}
-                selected={candidate.id === hostId}
-                disabled={busy}
-                onPress={() => setHostId(candidate.id)}
-              />
-            ))}
-          </Group>
-        ) : null}
-        {host ? (
-          <RepositoryPicker
-            client={client}
-            host={host}
-            initialGithubRepositories={githubRepositories}
-            selected={null}
-            onSelect={ignoreSelection}
-            disabled={busy}
-            autoSelect={false}
-            exclude={exclude}
-            onAdd={(repository) => void add(repository)}
-          />
-        ) : null}
-      </Sheet>
+      <AddRepositorySheet
+        client={client}
+        visible={adding}
+        hosts={hosts}
+        githubRepositories={githubRepositories}
+        exclude={exclude}
+        disabled={busy}
+        onAdd={(host, repository) => void add(host, repository)}
+        onClose={() => setAdding(false)}
+      />
       {sheet}
     </SettingsGroup>
   );
 }
-
-const ignoreSelection = () => undefined;

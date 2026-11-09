@@ -11,6 +11,7 @@ import {
   rowPressIn,
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
+import { projectTitle } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { SessionDragSlot } from '../components/SessionDragSlot';
@@ -1169,7 +1170,8 @@ function SessionList({ client }: { client: VerityClient }) {
           displayName={sessionLabel(renaming)}
           projectId={renaming.projectId ?? null}
           projectName={
-            projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
+            projectTitle(projects.find((project) => project.id === renaming.projectId)) ??
+            'No project'
           }
           canMove={
             renaming.status !== 'running' &&
@@ -1185,7 +1187,7 @@ function SessionList({ client }: { client: VerityClient }) {
           client={client}
           projects={projects
             .filter((project) => project.kind === 'local')
-            .map((project) => ({ id: project.id, name: project.repo }))}
+            .map((project) => ({ id: project.id, name: projectTitle(project) }))}
           linkableSessions={sessions
             .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
             .map((candidate) => ({
@@ -1193,7 +1195,7 @@ function SessionList({ client }: { client: VerityClient }) {
               name: sessionLabel(candidate),
               projectId: candidate.projectId!,
               projectName:
-                projects.find((project) => project.id === candidate.projectId)?.repo ??
+                projectTitle(projects.find((project) => project.id === candidate.projectId)) ??
                 candidate.projectId!,
               detail: modelDisplayName(candidate.model),
             }))}
@@ -1222,6 +1224,8 @@ function SessionList({ client }: { client: VerityClient }) {
         // Home beside the page shows the same items; it must not offer an answered one again.
         reloadOn={reloadToken}
         onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
+        // The project list beside the page names the project too.
+        onProjectChanged={() => void refreshProjects()}
         onSessionChanged={(sessionId, deleted) => {
           // The list and the session pane beside the page show the same sessions.
           if (deleted && selectedId === sessionId) setSelectedId(null);
@@ -1895,7 +1899,7 @@ const ProjectGroup = memo(function ProjectGroup({
                 <Pressable
                   style={styles.projectIconButton}
                   accessibilityRole="button"
-                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
+                  accessibilityLabel={`Start new session in ${projectTitle(defaultNewSessionProject)}`}
                   onPress={() => onNewSession(defaultNewSessionProject)}
                 >
                   <Icon name="plus" size={20} color={theme.colors.action} />
@@ -1908,7 +1912,7 @@ const ProjectGroup = memo(function ProjectGroup({
                       projectId: defaultNewSessionProject.id,
                     },
                   }}
-                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
+                  accessibilityLabel={`Start new session in ${projectTitle(defaultNewSessionProject)}`}
                   asChild
                 >
                   <Pressable style={styles.projectIconButton} accessibilityRole="button">

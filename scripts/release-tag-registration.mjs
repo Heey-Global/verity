@@ -92,7 +92,7 @@ export function registerReleaseTags(mode, head, options = {}) {
     const version = versionAt(head, spec);
     const tag = `${spec.prefix}${version}`;
     let matches = [];
-    let later = [];
+    const later = [];
     for (const pr of records) {
       if (
         !pr.merged_at ||
@@ -113,21 +113,6 @@ export function registerReleaseTags(mode, head, options = {}) {
       if (contained) matches.push(sha);
       else later.push(sha);
     }
-    // A no-op follow-up PR is not a second release identity when a trusted
-    // same-version merge already precedes it. A sole empty merge stays valid.
-    const candidates = [...matches, ...later];
-    const redundant = new Set(
-      candidates.filter(
-        (sha) =>
-          candidates.some((previous) => previous !== sha && ancestor(previous, sha)) &&
-          !git(['diff-tree', '--no-commit-id', '--name-only', '-r', `${sha}^1`, sha]),
-      ),
-    );
-    matches = matches.filter((sha) => !redundant.has(sha));
-    later = later.filter((sha) => !redundant.has(sha));
-    if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
-    if (mode === 'register' && options.train && matches.length + later.length > 1)
-      throw new Error(`Ambiguous merged release identity for ${tag}`);
     /** Read remote refs so retries cannot trust stale checkout tags. */
     const remoteTarget = () => {
       const refs = run('git', [
@@ -147,6 +132,31 @@ export function registerReleaseTags(mode, head, options = {}) {
       );
     };
     let target = remoteTarget();
+    if (
+      matches.length > 1 &&
+      !later.length &&
+      target &&
+      shaPattern.test(target) &&
+      matches.includes(target) &&
+      new Set(matches).size === matches.length
+    ) {
+      // An already registered identity remains authoritative when a release bot
+      // later merges an empty duplicate PR. Never infer equivalence from equal
+      // version strings or move the tag to the newer merge.
+      const registered = target;
+      const emptyDuplicates = matches.every((sha) => {
+        if (sha === registered) return true;
+        if (!ancestor(registered, sha)) return false;
+        const parents = git(['rev-list', '--parents', '-n', '1', sha]).split(/\s+/);
+        if (parents.length !== 2 || parents[0] !== sha || !shaPattern.test(parents[1]))
+          return false;
+        return !git(['diff-tree', '--no-commit-id', '--name-only', '-r', parents[1], sha]);
+      });
+      if (emptyDuplicates) matches = [registered];
+    }
+    if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
+    if (mode === 'register' && options.train && matches.length + later.length > 1)
+      throw new Error(`Ambiguous merged release identity for ${tag}`);
     if (mode === 'register' && options.train && !matches.length && later.length) {
       if (later.length !== 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
       if (
