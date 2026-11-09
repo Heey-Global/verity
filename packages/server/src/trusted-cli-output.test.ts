@@ -268,50 +268,52 @@ describe('trusted CLI retained output', () => {
     await expect(store.begin(owner)).rejects.toThrow('quota');
   });
 
-  it('counts retained output by its actual stored bytes per project and in total', async () => {
-    const store = createTrustedCliOutputStore(ctx.db, cipher);
-    // byte_length is what the quota reads; a synthetic frame avoids writing 40 MiB.
-    const retain = async (projectId: string, id: string, bytes: number) => {
-      await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result) values (${id}, ${projectId}, 'session', now() + interval '1 hour', 1, 'done')`.execute(
-        ctx.db,
-      );
+  // Inserted directly with an explicit start time: byte_length is what the budget reads,
+  // so a synthetic frame stands in for megabytes of output.
+  const retain = async (projectId: string, id: string, startedAt: string, bytes = 0) => {
+    await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result, started_at) values (${id}, ${projectId}, 'session', now() + interval '1 hour', 1, 'done', ${startedAt})`.execute(
+      ctx.db,
+    );
+    if (bytes > 0)
       await sql`insert into secret_job_frames (job_id, sequence, protocol_version, stream, encoding, payload, byte_length, emitted_at, created_at) values (${id}, 0, 1, 'stdout', 'utf8', 'synthetic', ${bytes}, now(), now())`.execute(
         ctx.db,
       );
-    };
-    const mib = 1024 * 1024;
-    await retain('project', 'below', 50 * mib - 1);
+  };
+  const retainedIds = async () =>
+    (
+      await sql<{
+        id: string;
+      }>`select id from trusted_cli_outputs where result is not null order by id`.execute(ctx.db)
+    ).rows.map((row) => row.id);
+  const at = (second: number) => new Date(Date.UTC(2026, 9, 13, 12, 0, second)).toISOString();
+  const mib = 1024 * 1024;
+
+  // Retention only serves a caller whose wait was cut off; a full retention budget must
+  // never refuse the next run, it gives up the oldest retained output instead.
+  it('evicts the oldest retained output beyond the byte budgets instead of refusing runs', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    await retain('project', 'old', at(1), 30 * mib);
+    await retain('project', 'new', at(2), 30 * mib);
     await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
-    await retain('project', 'at-limit', 1);
-    // 50 MiB retained in this project; a running record elsewhere is still admitted.
-    await expect(store.begin(owner)).rejects.toThrow('quota');
-    await expect(store.begin({ ...owner, projectId: 'fresh' })).resolves.toEqual(
+    expect(await retainedIds()).toEqual(['new']);
+    expect(
+      (await sql`select * from secret_job_frames where job_id = 'old'`.execute(ctx.db)).rows,
+    ).toHaveLength(0);
+    for (let i = 0; i < 6; i++) await retain(`p${i}`, `p${i}`, at(10 + i), 40 * mib);
+    // 30 + 6 * 40 = 270 MiB; keeping the newest within 200 MiB drops the two oldest.
+    await expect(store.begin({ ...owner, projectId: 'other' })).resolves.toEqual(
       expect.any(String),
     );
-    for (let i = 0; i < 3; i++) await retain(`full-${i}`, `full-${i}`, 50 * mib);
-    // 200 MiB retained across projects closes admission everywhere.
-    await expect(store.begin({ ...owner, projectId: 'another' })).rejects.toThrow('quota');
+    expect(await retainedIds()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5']);
   });
 
-  it('bounds the number of retained records that stored almost nothing', async () => {
+  it('evicts the oldest retained records beyond the record budgets', async () => {
     const store = createTrustedCliOutputStore(ctx.db, cipher);
-    const retain = (projectId: string, count: number) =>
-      sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result)
-        select ${projectId} || '-' || n, ${projectId}, 'session', now() + interval '1 hour', 0, 'done'
-        from generate_series(1, ${count}) n`.execute(ctx.db);
-    await retain('project', 199);
+    for (let i = 0; i < 201; i++) await retain('project', `r${String(i).padStart(3, '0')}`, at(i));
     await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
-    await retain('extra', 1);
-    await sql`update trusted_cli_outputs set project_id = 'project' where project_id = 'extra'`.execute(
-      ctx.db,
-    );
-    await expect(store.begin(owner)).rejects.toThrow('quota');
-    await retain('a', 200);
-    await retain('b', 200);
-    await retain('c', 200);
-    await expect(store.begin({ ...owner, projectId: 'd' })).resolves.toEqual(expect.any(String));
-    await retain('e', 200);
-    await expect(store.begin({ ...owner, projectId: 'f' })).rejects.toThrow('quota');
+    const kept = await retainedIds();
+    expect(kept).toHaveLength(200);
+    expect(kept).not.toContain('r000');
   });
 
   it('honors one-hour completion expiry across storage reconstruction', async () => {

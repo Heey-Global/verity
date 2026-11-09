@@ -7,15 +7,15 @@ export const TRUSTED_OUTPUT_BYTES = 10 * 1024 * 1024;
 const RETENTION_MS = 60 * 60 * 1000;
 const PAGE_BYTES = 12 * 1024;
 // Running records each reserve the full ceiling, so their count bounds in-flight payload.
-// Finished records are retained (so a caller whose wait was cut off can find the run) and
-// count only the bytes they actually stored, under a separate budget: retaining many small
-// results must not take away running slots. Running output becomes retained output when it
-// finishes, so stored payload stays below the two budgets combined: 400 MiB in total.
+// Finished records are retained (so a caller whose wait was cut off can find the run) under
+// a separate budget of actually stored bytes and record count, enforced by evicting the
+// oldest finished records whenever a run is admitted. Running output becomes retained output
+// when it finishes, so stored payload stays below the two byte budgets combined (400 MiB).
 const PROJECT_RUNNING = 5;
 const TOTAL_RUNNING = 20;
 const PROJECT_RETAINED_BYTES = 5 * TRUSTED_OUTPUT_BYTES;
 const TOTAL_RETAINED_BYTES = 20 * TRUSTED_OUTPUT_BYTES;
-// Runs with little or no output cost almost no bytes; the record count bounds them instead.
+// Runs with little or no output cost almost no bytes; the record count bounds them too.
 const PROJECT_RETAINED_RECORDS = 200;
 const TOTAL_RETAINED_RECORDS = 1000;
 const LIST_LIMIT = 20;
@@ -69,31 +69,35 @@ export function createTrustedCliOutputStore(
         await sql`select pg_advisory_xact_lock(hashtext('verity.trusted-cli-output-quota'))`.execute(
           tx,
         );
+        // Retention is a convenience for callers whose wait was cut off; it never blocks a
+        // new run. Over budget, the oldest finished records go first, newest ones are kept.
+        const evicted = await sql<{ id: string }>`delete from trusted_cli_outputs where id in (
+          select id from (
+            select o.id,
+              row_number() over (partition by o.project_id order by o.started_at desc, o.id desc) as project_rank,
+              sum(coalesce(f.bytes, 0)) over (partition by o.project_id order by o.started_at desc, o.id desc) as project_bytes,
+              row_number() over (order by o.started_at desc, o.id desc) as total_rank,
+              sum(coalesce(f.bytes, 0)) over (order by o.started_at desc, o.id desc) as total_bytes
+            from trusted_cli_outputs o
+            left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames
+              where job_id in (select id from trusted_cli_outputs where result is not null)
+              group by job_id) f on f.job_id = o.id
+            where o.result is not null
+          ) ranked
+          where project_rank > ${PROJECT_RETAINED_RECORDS} or total_rank > ${TOTAL_RETAINED_RECORDS}
+            or project_bytes > ${PROJECT_RETAINED_BYTES} or total_bytes > ${TOTAL_RETAINED_BYTES}
+        ) returning id`.execute(tx);
+        for (const { id: gone } of evicted.rows)
+          await sql`delete from secret_job_frames where job_id = ${gone}`.execute(tx);
         const { rows } = await sql<{
           running: number;
           project_running: number;
-          retained: number;
-          project_retained: number;
-          retained_records: number;
-          project_retained_records: number;
-        }>`select count(*) filter (where o.result is null)::integer as running,
-          count(*) filter (where o.result is not null)::integer as retained_records,
-          count(*) filter (where o.result is not null and o.project_id = ${owner.projectId})::integer as project_retained_records,
-          count(*) filter (where o.result is null and o.project_id = ${owner.projectId})::integer as project_running,
-          coalesce(sum(f.bytes) filter (where o.result is not null), 0)::float8 as retained,
-          coalesce(sum(f.bytes) filter (where o.result is not null and o.project_id = ${owner.projectId}), 0)::float8 as project_retained
-          from trusted_cli_outputs o
-          left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames
-            where job_id in (select id from trusted_cli_outputs where result is not null)
-            group by job_id) f on f.job_id = o.id`.execute(tx);
-        const usage = rows[0];
+        }>`select count(*)::integer as running,
+          count(*) filter (where project_id = ${owner.projectId})::integer as project_running
+          from trusted_cli_outputs where result is null`.execute(tx);
         if (
-          (usage?.running ?? 0) >= TOTAL_RUNNING ||
-          (usage?.project_running ?? 0) >= PROJECT_RUNNING ||
-          Number(usage?.retained ?? 0) >= TOTAL_RETAINED_BYTES ||
-          Number(usage?.project_retained ?? 0) >= PROJECT_RETAINED_BYTES ||
-          (usage?.retained_records ?? 0) >= TOTAL_RETAINED_RECORDS ||
-          (usage?.project_retained_records ?? 0) >= PROJECT_RETAINED_RECORDS
+          (rows[0]?.running ?? 0) >= TOTAL_RUNNING ||
+          (rows[0]?.project_running ?? 0) >= PROJECT_RUNNING
         )
           throw new Error('trusted CLI output quota exceeded');
         // Abandoned executions have a bounded lease even when the server never returns to finish.
