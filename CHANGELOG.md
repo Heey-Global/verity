@@ -6,6 +6,19 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.89.1](https://github.com/Heey-Global/verity/compare/v4.89.0...v4.89.1) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** prepare verified npm inventories centrally ([#2457](https://github.com/Heey-Global/verity/issues/2457)) ([3f947f0](https://github.com/Heey-Global/verity/commit/3f947f054918b1b9d541c693d21bf99aec8777ed))
+* **deps:** update agent clis ([#2448](https://github.com/Heey-Global/verity/issues/2448)) ([931eba4](https://github.com/Heey-Global/verity/commit/931eba4d760ef031a9a199758d5f1809e66632c1))
+* **deps:** update dependency minimatch to v11.0.5 ([#2445](https://github.com/Heey-Global/verity/issues/2445)) ([b6bb6ad](https://github.com/Heey-Global/verity/commit/b6bb6ad5e1bbe4ff5669f2880b342e0f3d44e8da))
+* **server:** harden protected build recovery after review ([#2458](https://github.com/Heey-Global/verity/issues/2458)) ([8446808](https://github.com/Heey-Global/verity/commit/8446808291b484b335413279bd5b0c3492d1bb02))
+* **server:** make cut-off secret runs discoverable ([#2453](https://github.com/Heey-Global/verity/issues/2453)) ([31b93ae](https://github.com/Heey-Global/verity/commit/31b93aebb2404a6e41f38021546eeffe0a08092c))
+* **server:** recover protected builds, build reservations and maintenance helpers ([#2454](https://github.com/Heey-Global/verity/issues/2454)) ([fdfcf06](https://github.com/Heey-Global/verity/commit/fdfcf067d2d006f44b3bcbf0512246468390a78e))
+* **server:** simplify cache helpers and recover failed launches ([#2456](https://github.com/Heey-Global/verity/issues/2456)) ([a472bf3](https://github.com/Heey-Global/verity/commit/a472bf3cc0674b69e29dc1924316b8281390c7bd))
+
 ## [4.89.0](https://github.com/Heey-Global/verity/compare/v4.88.0...v4.89.0) (2026-11-08)
 
 
