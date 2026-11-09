@@ -293,6 +293,27 @@ describe('trusted CLI retained output', () => {
     await expect(store.begin({ ...owner, projectId: 'another' })).rejects.toThrow('quota');
   });
 
+  it('bounds the number of retained records that stored almost nothing', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    const retain = (projectId: string, count: number) =>
+      sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result)
+        select ${projectId} || '-' || n, ${projectId}, 'session', now() + interval '1 hour', 0, 'done'
+        from generate_series(1, ${count}) n`.execute(ctx.db);
+    await retain('project', 199);
+    await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
+    await retain('extra', 1);
+    await sql`update trusted_cli_outputs set project_id = 'project' where project_id = 'extra'`.execute(
+      ctx.db,
+    );
+    await expect(store.begin(owner)).rejects.toThrow('quota');
+    await retain('a', 200);
+    await retain('b', 200);
+    await retain('c', 200);
+    await expect(store.begin({ ...owner, projectId: 'd' })).resolves.toEqual(expect.any(String));
+    await retain('e', 200);
+    await expect(store.begin({ ...owner, projectId: 'f' })).rejects.toThrow('quota');
+  });
+
   it('honors one-hour completion expiry across storage reconstruction', async () => {
     let time = new Date('2026-10-13T12:00:00Z');
     const store = createTrustedCliOutputStore(ctx.db, cipher, () => time);

@@ -335,11 +335,7 @@ const TOOL_SCHEMAS = {
       invocationId: z.string().uuid().optional(),
       cursor: z.number().int().nonnegative().optional(),
     })
-    .strict()
-    .refine((input) => input.cursor === undefined || input.invocationId !== undefined, {
-      message: 'cursor requires invocationId',
-      path: ['cursor'],
-    }),
+    .strict(),
   verity_diagnostics: diagnosticsRequestSchema,
   verity_list_sessions: listSessionsRequestSchema,
   verity_session_handoff: sessionHandoffRequestSchema,

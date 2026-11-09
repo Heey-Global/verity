@@ -15,6 +15,9 @@ const PROJECT_RUNNING = 5;
 const TOTAL_RUNNING = 20;
 const PROJECT_RETAINED_BYTES = 5 * TRUSTED_OUTPUT_BYTES;
 const TOTAL_RETAINED_BYTES = 20 * TRUSTED_OUTPUT_BYTES;
+// Runs with little or no output cost almost no bytes; the record count bounds them instead.
+const PROJECT_RETAINED_RECORDS = 200;
+const TOTAL_RETAINED_RECORDS = 1000;
 const LIST_LIMIT = 20;
 export type OutputOwner = { projectId: string; sessionId: string };
 export type TrustedCliInvocationSummary = {
@@ -71,7 +74,11 @@ export function createTrustedCliOutputStore(
           project_running: number;
           retained: number;
           project_retained: number;
+          retained_records: number;
+          project_retained_records: number;
         }>`select count(*) filter (where o.result is null)::integer as running,
+          count(*) filter (where o.result is not null)::integer as retained_records,
+          count(*) filter (where o.result is not null and o.project_id = ${owner.projectId})::integer as project_retained_records,
           count(*) filter (where o.result is null and o.project_id = ${owner.projectId})::integer as project_running,
           coalesce(sum(f.bytes) filter (where o.result is not null), 0)::float8 as retained,
           coalesce(sum(f.bytes) filter (where o.result is not null and o.project_id = ${owner.projectId}), 0)::float8 as project_retained
@@ -84,7 +91,9 @@ export function createTrustedCliOutputStore(
           (usage?.running ?? 0) >= TOTAL_RUNNING ||
           (usage?.project_running ?? 0) >= PROJECT_RUNNING ||
           Number(usage?.retained ?? 0) >= TOTAL_RETAINED_BYTES ||
-          Number(usage?.project_retained ?? 0) >= PROJECT_RETAINED_BYTES
+          Number(usage?.project_retained ?? 0) >= PROJECT_RETAINED_BYTES ||
+          (usage?.retained_records ?? 0) >= TOTAL_RETAINED_RECORDS ||
+          (usage?.project_retained_records ?? 0) >= PROJECT_RETAINED_RECORDS
         )
           throw new Error('trusted CLI output quota exceeded');
         // Abandoned executions have a bounded lease even when the server never returns to finish.
