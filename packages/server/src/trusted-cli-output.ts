@@ -9,7 +9,8 @@ const PAGE_BYTES = 12 * 1024;
 // Running records each reserve the full ceiling, so their count bounds in-flight payload.
 // Finished records are retained (so a caller whose wait was cut off can find the run) and
 // count only the bytes they actually stored, under a separate budget: retaining many small
-// results must not take away running slots.
+// results must not take away running slots. Running output becomes retained output when it
+// finishes, so stored payload stays below the two budgets combined: 400 MiB in total.
 const PROJECT_RUNNING = 5;
 const TOTAL_RUNNING = 20;
 const PROJECT_RETAINED_BYTES = 5 * TRUSTED_OUTPUT_BYTES;
@@ -75,9 +76,9 @@ export function createTrustedCliOutputStore(
           coalesce(sum(f.bytes) filter (where o.result is not null), 0)::float8 as retained,
           coalesce(sum(f.bytes) filter (where o.result is not null and o.project_id = ${owner.projectId}), 0)::float8 as project_retained
           from trusted_cli_outputs o
-          left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames group by job_id) f on f.job_id = o.id`.execute(
-          tx,
-        );
+          left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames
+            where job_id in (select id from trusted_cli_outputs where result is not null)
+            group by job_id) f on f.job_id = o.id`.execute(tx);
         const usage = rows[0];
         if (
           (usage?.running ?? 0) >= TOTAL_RUNNING ||
@@ -176,7 +177,13 @@ export function createTrustedCliOutputStore(
             complete: row.result !== null,
           };
           if (row.result === null) return summary;
-          const result = JSON.parse(cipher.decrypt(row.result)) as Record<string, unknown>;
+          let result: Record<string, unknown>;
+          try {
+            result = JSON.parse(cipher.decrypt(row.result)) as Record<string, unknown>;
+          } catch {
+            // One unreadable record (for example after a key change) must not hide the rest.
+            return summary;
+          }
           // Only fixed status fields; output stays behind read() and its pagination.
           if (typeof result.terminationReason === 'string')
             summary.terminationReason = result.terminationReason;

@@ -10908,9 +10908,9 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     const denied = (await answered) as { decision: { behavior: string; message?: string } };
     expect(denied.decision.behavior).toBe('deny');
     // An agent told only that "the request expired" read it as a broker failure and kept
-    // retrying; it must learn that nothing ran and that a card is waiting on the user.
+    // retrying; it must learn that nothing ran and that the next card needs the user.
     expect(denied.decision.message).toMatch(/nothing ran/u);
-    expect(denied.decision.message).toMatch(/answer the approval card/u);
+    expect(denied.decision.message).toMatch(/approval card needs an answer/u);
     expect(conductor.pendingPermissions('x2')).toEqual([]);
     await expect(
       conductor.decidePermission('x2', 'toolu_gone', { behavior: 'allow' }),
