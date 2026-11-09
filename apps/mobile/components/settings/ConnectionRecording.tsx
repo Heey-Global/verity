@@ -558,11 +558,11 @@ export function ConnectionRecording({ client }: { client: VerityClient | null })
           ? selectRemoteRecording(local.recording, saved.startedAt, saved.expiresAt)
           : null;
       if (selectedLocal && saved.targetSession) {
-        const snapshots = JSON.parse(selectedLocal) as Array<{ sessionHash?: string }>;
-        selectedLocal =
-          snapshots.length === 1 && snapshots[0]?.sessionHash === saved.targetSession
-            ? selectedLocal
-            : null;
+        const snapshots = (JSON.parse(selectedLocal) as Array<{ sessionHash?: string }>).filter(
+          (snapshot) => snapshot.sessionHash === saved.targetSession,
+        );
+        // A reconnect from another session must not hide the selected capture.
+        selectedLocal = snapshots.length === 1 ? JSON.stringify(snapshots) : null;
       }
       const updated = {
         ...saved,
