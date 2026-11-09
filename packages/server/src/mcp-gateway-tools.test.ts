@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { TRUSTED_CLI_TOOL_DESCRIPTION } from '@verity/secret-contracts';
+import { AGENT_CAPABILITIES } from './mcp-gateway.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
@@ -189,6 +191,16 @@ describe('MCP trusted output retrieval', () => {
     expect(read).not.toHaveBeenCalled();
     expect(trustedCliTool).not.toHaveBeenCalled();
   });
+});
+
+// The recovery hint is the only way a cut-off caller learns about the listing. Agents see
+// capability names (verity_secret_read_output), not the gateway's internal tool names, so
+// the hint must name an advertised capability or the caller re-runs the command instead.
+it('names an advertised capability in the secret-run recovery hint', () => {
+  const named = TRUSTED_CLI_TOOL_DESCRIPTION.match(/verity_[a-z_]+/gu) ?? [];
+  const advertised = new Set(AGENT_CAPABILITIES.map((capability) => capability.name));
+  expect(named).toContain('verity_secret_read_output');
+  for (const name of named) expect(advertised).toContain(name);
 });
 
 describe('MCP gateway Google Slides integration', () => {

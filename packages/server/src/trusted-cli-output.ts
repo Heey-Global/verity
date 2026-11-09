@@ -70,14 +70,16 @@ export function createTrustedCliOutputStore(
           tx,
         );
         // Retention is a convenience for callers whose wait was cut off; it never blocks a
-        // new run. Over budget, the oldest finished records go first, newest ones are kept.
+        // new run. Over budget, the earliest finished records go first. finish() sets
+        // expires_at to completion plus the retention window, so it orders by completion:
+        // a long run, the kind whose wait gets cut off, is not evicted for its early start.
         const evicted = await sql<{ id: string }>`delete from trusted_cli_outputs where id in (
           select id from (
             select o.id,
-              row_number() over (partition by o.project_id order by o.started_at desc, o.id desc) as project_rank,
-              sum(coalesce(f.bytes, 0)) over (partition by o.project_id order by o.started_at desc, o.id desc) as project_bytes,
-              row_number() over (order by o.started_at desc, o.id desc) as total_rank,
-              sum(coalesce(f.bytes, 0)) over (order by o.started_at desc, o.id desc) as total_bytes
+              row_number() over (partition by o.project_id order by o.expires_at desc, o.id desc) as project_rank,
+              sum(coalesce(f.bytes, 0)) over (partition by o.project_id order by o.expires_at desc, o.id desc) as project_bytes,
+              row_number() over (order by o.expires_at desc, o.id desc) as total_rank,
+              sum(coalesce(f.bytes, 0)) over (order by o.expires_at desc, o.id desc) as total_bytes
             from trusted_cli_outputs o
             left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames
               where job_id in (select id from trusted_cli_outputs where result is not null)

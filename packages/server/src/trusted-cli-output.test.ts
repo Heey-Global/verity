@@ -270,8 +270,8 @@ describe('trusted CLI retained output', () => {
 
   // Inserted directly with an explicit start time: byte_length is what the budget reads,
   // so a synthetic frame stands in for megabytes of output.
-  const retain = async (projectId: string, id: string, startedAt: string, bytes = 0) => {
-    await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result, started_at) values (${id}, ${projectId}, 'session', now() + interval '1 hour', 1, 'done', ${startedAt})`.execute(
+  const retain = async (projectId: string, id: string, finishedAt: string, bytes = 0) => {
+    await sql`insert into trusted_cli_outputs (id, project_id, session_id, expires_at, next_sequence, result, started_at) values (${id}, ${projectId}, 'session', ${finishedAt}::timestamptz + interval '1 hour', 1, 'done', ${finishedAt})`.execute(
       ctx.db,
     );
     if (bytes > 0)
@@ -291,7 +291,7 @@ describe('trusted CLI retained output', () => {
   // Retention only serves a caller whose wait was cut off; a full retention budget must
   // never refuse the next run, it gives up the oldest retained output instead.
   it('evicts the oldest retained output beyond the byte budgets instead of refusing runs', async () => {
-    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    const store = createTrustedCliOutputStore(ctx.db, cipher, () => new Date(at(30)));
     await retain('project', 'old', at(1), 30 * mib);
     await retain('project', 'new', at(2), 30 * mib);
     await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
@@ -307,8 +307,20 @@ describe('trusted CLI retained output', () => {
     expect(await retainedIds()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5']);
   });
 
+  it('ranks eviction by completion, not by start', async () => {
+    const store = createTrustedCliOutputStore(ctx.db, cipher, () => new Date(at(30)));
+    await retain('project', 'short', at(5), 30 * mib);
+    await retain('project', 'long', at(9), 30 * mib);
+    // The long run started first but finished last; the short one goes.
+    await sql`update trusted_cli_outputs set started_at = ${at(0)} where id = 'long'`.execute(
+      ctx.db,
+    );
+    await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
+    expect(await retainedIds()).toEqual(['long']);
+  });
+
   it('evicts the oldest retained records beyond the record budgets', async () => {
-    const store = createTrustedCliOutputStore(ctx.db, cipher);
+    const store = createTrustedCliOutputStore(ctx.db, cipher, () => new Date(at(30)));
     for (let i = 0; i < 201; i++) await retain('project', `r${String(i).padStart(3, '0')}`, at(i));
     await expect(store.begin(owner)).resolves.toEqual(expect.any(String));
     const kept = await retainedIds();
