@@ -312,12 +312,13 @@ describe('sleeping runner cache helpers', () => {
       expect(h.docker.createContainer).not.toHaveBeenCalled();
     },
   );
-  it('retries an owned helper whose creator disconnected before start and retains its evidence', async () => {
+  it('removes an owned never-started helper before retrying without leaving an admission fence', async () => {
     const h = fixture();
     h.addHelper('abandoned', 'created');
     expect(await h.run()).toEqual(report);
-    expect(h.helpers.has('abandoned')).toBe(true);
-    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+    expect(h.helpers.has('abandoned')).toBe(false);
+    expect(h.docker.removeStoppedContainer).toHaveBeenNthCalledWith(1, 'abandoned');
+    expect(h.docker.removeStoppedContainer).toHaveBeenNthCalledWith(2, 'helper');
     expect(h.docker.createContainer).toHaveBeenCalledOnce();
   });
 
@@ -528,7 +529,7 @@ describe('sleeping runner cache helpers', () => {
 });
 
 describe('helper recovery after uncertain Docker outcomes', () => {
-  it('retains a created helper when start fails and sanitizes the error', async () => {
+  it('removes a never-started helper when start fails and preserves sanitized diagnostics', async () => {
     const h = fixture();
     h.docker.startContainer.mockRejectedValueOnce(new Error('private launch detail'));
     const error = await h.run().catch((error: unknown) => error);
@@ -536,8 +537,22 @@ describe('helper recovery after uncertain Docker outcomes', () => {
       runnerCacheFailure: { code: 'maintenance-helper-failed', phase: 'start' },
     });
     expect(JSON.stringify(error)).not.toContain('private launch detail');
-    expect(h.helpers.get('helper')?.summary.state).toBe('created');
-    expect(h.docker.removeStoppedContainer).not.toHaveBeenCalled();
+    expect(h.helpers.has('helper')).toBe(false);
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it('preserves previous completed failure evidence after failed start and admits a successful retry', async () => {
+    const h = fixture();
+    h.addHelper('previous-failure');
+    h.docker.startContainer.mockRejectedValueOnce(new Error('private launch detail'));
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'maintenance-helper-failed', phase: 'start' },
+    });
+    expect([...h.helpers.keys()]).toEqual(['previous-failure']);
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+    await expect(h.run()).resolves.toEqual(report);
+    expect([...h.helpers.keys()]).toEqual(['previous-failure']);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
+    expect(h.docker.removeStoppedContainer).toHaveBeenNthCalledWith(2, 'helper-2');
   });
   it('retains a confirmed stopped helper after wait loses its reply', async () => {
     const h = fixture();

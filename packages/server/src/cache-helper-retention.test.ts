@@ -94,12 +94,19 @@ describe('cache helper retention', () => {
     expect(f.inspectContainer.mock.calls).toEqual([['a']]);
     expect([...f.summaries.keys()]).toEqual(['a', 'b', 'foreign']);
   });
-  it('bounds created failed-start evidence using the creation timestamp', async () => {
+  it('removes verified never-started containers so project admission cannot stay fenced', async () => {
     const f = fixture();
     f.add('a', 2000, 'project', 'created');
     const last = f.add('b', 1000, 'project', 'created');
     delete last.inspect.finishedAt;
-    expect(await f.run()).toEqual({ blocked: false, removed: ['a'], retained: ['b'] });
+    expect(await f.run()).toEqual({ blocked: false, removed: ['b', 'a'], retained: [] });
+  });
+  it('keeps the last completed failure when a newer launch never started', async () => {
+    const f = fixture();
+    f.add('a', 2000);
+    f.add('b', 1000, 'project', 'created');
+    expect(await f.run()).toEqual({ blocked: false, removed: ['b'], retained: ['a'] });
+    expect([...f.summaries.keys()]).toEqual(['a']);
   });
   it('retains zero-exit evidence because invalid results cannot be inferred from exit status', async () => {
     const f = fixture();

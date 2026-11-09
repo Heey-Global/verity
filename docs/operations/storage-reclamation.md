@@ -111,9 +111,11 @@ marks a secondary cleanup failure while preserving the primary diagnostics.
 
 Cache-helper retention requires the exact project/component labels, managed name,
 matching list/inspect image identity and a known terminal state and timestamp.
-Created failed-start containers use creation time; exited/dead containers use
-finish time. The newest verified evidence is retained, with a deterministic ID
-tie-break. Older verified helpers are removed non-forcibly without volumes,
+Created failed-start containers require verified creation time and are removed
+without retaining them: they have never run and would otherwise keep project
+admission fenced. Their failure phase remains in bounded reports. Exited/dead
+containers use finish time. The newest verified completed-run evidence is retained,
+with a deterministic ID tie-break. Older verified helpers are removed non-forcibly without volumes,
 including helpers left by older releases. A zero exit code alone is insufficient
 to establish a valid result; leftover zero-exit helpers remain diagnostic evidence.
 The last retained helper may expire under the existing seven-day GC policy;

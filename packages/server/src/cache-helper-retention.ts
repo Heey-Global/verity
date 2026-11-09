@@ -80,9 +80,12 @@ export async function retainLatestCacheHelper(input: {
   // Unknown runs may still own a fence or be the newest evidence. Don't guess or multiply them.
   if (result.blocked) return result;
   verified.sort((a, b) => b.since - a.since || a.candidate.id.localeCompare(b.candidate.id));
-  for (const [index, saved] of verified.entries()) {
+  // A created container has never run. Keeping it would fence project admission
+  // indefinitely; remove it under these barriers instead of retaining empty evidence.
+  const latestRun = verified.find((entry) => entry.inspect.status !== 'created');
+  for (const saved of verified) {
     if (
-      index === 0 &&
+      saved === latestRun &&
       (input.expireAfterMs === undefined || now - saved.since < input.expireAfterMs)
     )
       continue;
