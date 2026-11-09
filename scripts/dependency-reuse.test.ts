@@ -10,9 +10,11 @@ import {
   utimesSync,
   openSync,
   closeSync,
+  chmodSync,
   cpSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,14 +63,25 @@ function fixture() {
     `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
+if (process.argv[2] === 'prefix') { console.log(fs.existsSync(${JSON.stringify(join(bin, '.npm-prefix-redirect'))}) ? ${JSON.stringify(root)} : process.cwd()); process.exit(0); }
+if (process.argv[2] === 'config' && process.argv[4] === 'cafile') { const config = fs.existsSync('.npmrc') ? fs.readFileSync('.npmrc','utf8') : ''; const value = /^cafile=(.+)$/m.exec(config)?.[1]; console.log(value ? path.resolve(value) : 'null'); process.exit(0); }
 if (process.argv[2] === '--version') { console.log('12.2.2'); process.exit(0); }
 if (process.argv[2] === 'config' && process.argv[3] === 'get' && ['globalconfig','userconfig'].includes(process.argv[4])) { const key=process.argv[4]; console.log(process.env['NPM_CONFIG_'+key.toUpperCase()] ?? process.env['npm_config_'+key] ?? path.join(${JSON.stringify(bin)},key+'.npmrc')); process.exit(0); }
 
 fs.appendFileSync(${JSON.stringify(called)}, process.cwd() + '\\n' + process.argv.slice(2).join('\\n') + '\\n');
 const complete = () => {
+  if (process.env.TEST_EXPECTED_CAFILE && (process.env.npm_config_cafile !== process.env.TEST_EXPECTED_CAFILE || fs.readFileSync(process.env.npm_config_cafile, 'utf8') !== 'certificate')) process.exit(50);
   const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
   fs.mkdirSync('node_modules', {recursive:true});
-  if (fs.existsSync('.npm-fail')) process.exit(42);
+  if (process.env.NPM_CONFIG_USERCONFIG && !path.isAbsolute(process.env.NPM_CONFIG_USERCONFIG)) process.exit(48);
+  if (process.env.TEST_EXPECTED_USERCONFIG_CONTENT && fs.readFileSync(process.env.NPM_CONFIG_USERCONFIG, 'utf8') !== process.env.TEST_EXPECTED_USERCONFIG_CONTENT) process.exit(49);
+  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-fail'))})) process.exit(42);
+  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-required-source'))})) {
+    const expected = JSON.parse(fs.readFileSync(${JSON.stringify(join(bin, '.npm-required-source'))}, 'utf8'));
+    for (const [file, contents] of Object.entries(expected)) {
+      if (fs.readFileSync(file, 'utf8') !== contents) process.exit(43);
+    }
+  }
   const packages = {...(lock.packages ?? {})};
   const collect = (dependencies,prefix='') => { for (const [name,value] of Object.entries(dependencies ?? {})) { const entry=prefix+'node_modules/'+name; packages[entry]=value; collect(value.dependencies,entry+'/'); } };
   if (!lock.packages) collect(lock.dependencies);
@@ -88,9 +101,9 @@ const complete = () => {
     }
   }
   fs.writeFileSync('node_modules/.package-lock.json', JSON.stringify({lockfileVersion:3,packages}));
-  if (fs.existsSync('.npm-change-config')) fs.appendFileSync('.npmrc','engine-strict=false\\n');
+  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-change-config'))})) fs.appendFileSync('.npmrc','engine-strict=false\\n');
 };
-setTimeout(complete, fs.existsSync('.npm-delay') ? Number(fs.readFileSync('.npm-delay', 'utf8')) : 0);
+setTimeout(complete, fs.existsSync(${JSON.stringify(join(bin, '.npm-delay'))}) ? Number(fs.readFileSync(${JSON.stringify(join(bin, '.npm-delay'))}, 'utf8')) : 0);
 `,
     { mode: 0o755 },
   );
@@ -149,7 +162,7 @@ describe('shared dependency reuse', () => {
     expect(f.run('install').status).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
-  it('keeps divergent lockfiles isolated and never installs in the shared root', () => {
+  it('prepares divergent lockfiles centrally without installing in either checkout', () => {
     const f = fixture();
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
@@ -157,7 +170,78 @@ describe('shared dependency reuse', () => {
     );
     expect(f.run('status').status).toBe(1);
     expect(f.run('install').status).toBe(0);
-    expect(readFileSync(f.called, 'utf8')).toContain(`${f.worktree}\nci\n--ignore-scripts`);
+    const invocation = readFileSync(f.called, 'utf8');
+    expect(invocation.split('\n')[0]).toMatch(/\/verity-dependencies\/[a-f0-9]{64}\.prepare$/u);
+    expect(invocation).toContain('\nci\n--ignore-scripts');
+    expect(invocation).not.toContain(`${f.worktree}\n`);
+    expect(invocation).not.toContain(`${f.root}\n`);
+  });
+  it('rejects unlocked preparation without falling back to npm install in the session', () => {
+    const f = fixture();
+    rmSync(join(f.worktree, 'package-lock.json'));
+    const result = f.run('install');
+    expect(result.status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+    expect(existsSync(join(f.worktree, 'node_modules'))).toBe(false);
+  });
+  it('does not activate dependencies when central publication cannot acquire its lock', () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '2.0.0' } },
+      }),
+    );
+    const cache = join(f.root, '.git', 'verity-dependencies');
+    mkdirSync(join(cache, 'publication.lock'), { recursive: true });
+    const result = f.run('install');
+    expect(result.status).toBe(1);
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+    expect(readdirSync(cache).filter((name) => /^[a-f0-9]{64}$/.test(name))).toEqual([]);
+  });
+  it('blocks npm prefix redirection before central installation', () => {
+    const f = fixture();
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '2.0.0' } },
+      }),
+    );
+    writeFileSync(join(f.root, 'bin', '.npm-prefix-redirect'), 'redirect');
+    const result = f.run('install');
+    expect(result.status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+  });
+  it('resolves a relative user configuration before central preparation', () => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'user.npmrc'), 'engine-strict=true\n');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '2.0.0' } },
+      }),
+    );
+    const result = f.run('install', {
+      NPM_CONFIG_USERCONFIG: 'user.npmrc',
+      TEST_EXPECTED_USERCONFIG_CONTENT: 'engine-strict=true\n',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(f.run('status', { NPM_CONFIG_USERCONFIG: 'user.npmrc' }).status).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('preserves a relative certificate path during central preparation', () => {
+    const f = fixture();
+    mkdirSync(join(f.worktree, 'certs'));
+    const certificate = join(f.worktree, 'certs', 'registry.pem');
+    writeFileSync(certificate, 'certificate');
+    writeFileSync(join(f.worktree, '.npmrc'), 'cafile=certs/registry.pem\n');
+    const result = f.run('install', { TEST_EXPECTED_CAFILE: certificate });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
   it('does not mistake an empty workspace skeleton for installed dependencies', () => {
     const f = fixture();
@@ -203,7 +287,7 @@ describe('shared dependency reuse', () => {
       readFileSync(join(preserved, readdirSync(preserved)[0]!, 'stale', 'package.json'), 'utf8'),
     ).toContain('old');
   });
-  it('recognizes npm v1 source locks against modern installation receipts', () => {
+  it('rejects unprepared npm v1 locks without a private installation fallback', () => {
     const f = fixture();
     for (const root of [f.root, f.worktree])
       writeFileSync(
@@ -223,8 +307,9 @@ describe('shared dependency reuse', () => {
       }),
     );
     expect(f.run('status').status).toBe(1);
-    expect(f.run('install').status).toBe(0);
-    expect(f.run('status').status).toBe(0);
+    expect(f.run('install').status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+    expect(f.run('status').status).toBe(1);
   });
   it.each(['yarn', 'pnpm'])(
     'recognizes an existing %s install without switching package managers',
@@ -289,7 +374,7 @@ describe('shared dependency reuse', () => {
     expect(f.run('install').status).toBe(0);
     expect(f.run('status').status).toBe(0);
   });
-  it('accepts declared local npm links outside the checkout', () => {
+  it('rejects preparation of local npm links outside the checkout', () => {
     const f = fixture();
     const target = resolve(f.worktree, '../shared');
     mkdirSync(target);
@@ -305,8 +390,9 @@ describe('shared dependency reuse', () => {
     writeFileSync(join(f.worktree, 'node_modules', '.package-lock.json'), '{"packages":{}}');
     symlinkSync(target, join(f.worktree, 'node_modules', 'shared'));
     expect(f.run('status').status).toBe(1);
-    expect(f.run('install').status).toBe(0);
-    expect(f.run('status').status).toBe(0);
+    expect(f.run('install').status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+    expect(realpathSync(join(f.worktree, 'node_modules', 'shared'))).toBe(target);
   });
   it('reuses a prepared divergent installation across sessions with independent files', () => {
     const f = fixture();
@@ -363,7 +449,124 @@ describe('shared dependency reuse', () => {
     );
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
-  it('preserves failed installation files and verifies a successful retry', () => {
+  it('preserves stale workspace dependency trees before activating hoisted packages', () => {
+    const f = fixture();
+    const workspace = join(f.worktree, 'packages', 'source');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, 'package.json'), '{"name":"source"}');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          'packages/source': { name: 'source' },
+          'node_modules/source': { link: true, resolved: 'packages/source' },
+          'node_modules/private': { version: '2.0.0' },
+        },
+      }),
+    );
+    expect(f.run('install').status).toBe(0);
+    // A valid root receipt must not conceal a stale workspace resolution path.
+    mkdirSync(join(workspace, 'node_modules', 'private'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'node_modules', 'private', 'package.json'),
+      '{"version":"1.0.0"}',
+    );
+    writeFileSync(join(workspace, 'node_modules', 'patch.txt'), 'keep workspace patch');
+    expect(f.run('status').status).toBe(1);
+    const activated = f.run('install');
+    expect(activated.status, activated.stderr).toBe(0);
+    expect(existsSync(join(workspace, 'node_modules'))).toBe(false);
+    const loaded = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        "import { createRequire } from 'node:module'; console.log(createRequire(process.cwd() + '/probe.js')('private/package.json').version);",
+      ],
+      { cwd: workspace, encoding: 'utf8' },
+    );
+    expect(loaded.trim()).toBe('2.0.0');
+    const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'patch.txt')) &&
+          readFileSync(join(preserved, entry, 'patch.txt'), 'utf8') === 'keep workspace patch',
+      ),
+    ).toBe(true);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(f.run('status').status).toBe(0);
+  });
+  it('restores workspace command links to each receiving session', () => {
+    const f = fixture();
+    const sibling = f.sibling();
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/source': { link: true, resolved: 'packages/source' } },
+    });
+    for (const [directory, output] of [
+      [f.worktree, 'first'],
+      [sibling, 'second'],
+    ] as const) {
+      mkdirSync(join(directory, 'packages', 'source'), { recursive: true });
+      writeFileSync(
+        join(directory, 'packages', 'source', 'package.json'),
+        JSON.stringify({ name: 'source', bin: { 'workspace-cli': 'cli.js' } }),
+      );
+      writeFileSync(
+        join(directory, 'packages', 'source', 'cli.js'),
+        `#!${process.execPath}${output === 'second' ? '\r\n' : '\n'}console.log(${JSON.stringify(output)});\n`,
+        { mode: 0o644 },
+      );
+      chmodSync(join(directory, 'packages', 'source', 'cli.js'), 0o644);
+      writeFileSync(join(directory, 'package-lock.json'), lock);
+    }
+    expect(f.run('install').status).toBe(0);
+    const second = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    expect(second.status, second.stderr).toBe(0);
+    for (const [directory, output] of [
+      [f.worktree, 'first'],
+      [sibling, 'second'],
+    ] as const) {
+      const command = join(directory, 'node_modules', '.bin', 'workspace-cli');
+      expect(realpathSync(command)).toBe(join(directory, 'packages', 'source', 'cli.js'));
+      const result = spawnSync(command, [], { cwd: directory, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(output);
+    }
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('rejects workspace commands that link to executable sources outside the session', () => {
+    const f = fixture();
+    const external = join(f.root, 'bin', 'external-cli.js');
+    const source = `#!${process.execPath}\r\nconsole.log('external');\n`;
+    writeFileSync(external, source, { mode: 0o644 });
+    chmodSync(external, 0o644);
+    mkdirSync(join(f.worktree, 'packages', 'source'), { recursive: true });
+    writeFileSync(
+      join(f.worktree, 'packages', 'source', 'package.json'),
+      JSON.stringify({ name: 'source', bin: { 'external-cli': 'cli.js' } }),
+    );
+    symlinkSync(external, join(f.worktree, 'packages', 'source', 'cli.js'));
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/source': { link: true, resolved: 'packages/source' } },
+      }),
+    );
+    const result = f.run('install');
+    expect(result.status).toBe(1);
+    expect(readFileSync(external, 'utf8')).toBe(source);
+    expect(statSync(external).mode & 0o777).toBe(0o644);
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+  });
+  it('keeps failed central preparations inactive and preserves session patches on retry', () => {
     const f = fixture();
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
@@ -372,13 +575,16 @@ describe('shared dependency reuse', () => {
         packages: { 'node_modules/private': { version: '2.0.0' } },
       }),
     );
-    writeFileSync(join(f.worktree, '.npm-fail'), 'fail');
+    mkdirSync(join(f.worktree, 'node_modules'));
+    writeFileSync(join(f.worktree, 'node_modules', 'patch.txt'), 'keep');
+    writeFileSync(join(f.root, 'bin', '.npm-fail'), 'fail');
     const failed = f.run('install');
     expect(failed.status).toBe(1);
     expect(failed.stderr).toContain('failed (42)');
     expect(f.run('status').status).toBe(1);
-    writeFileSync(join(f.worktree, 'node_modules', 'patch.txt'), 'keep');
-    rmSync(join(f.worktree, '.npm-fail'));
+    expect(readFileSync(join(f.worktree, 'node_modules', 'patch.txt'), 'utf8')).toBe('keep');
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+    rmSync(join(f.root, 'bin', '.npm-fail'));
     expect(f.run('install').status).toBe(0);
     expect(f.run('status').status).toBe(0);
     const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
@@ -410,7 +616,7 @@ describe('shared dependency reuse', () => {
           packages: { 'node_modules/private': { version: '2.0.0' } },
         }),
       );
-      writeFileSync(join(directory, '.npm-delay'), '500');
+      writeFileSync(join(f.root, 'bin', '.npm-delay'), '500');
     }
     const first = f.start();
     const second = f.start(sibling);
@@ -426,6 +632,37 @@ describe('shared dependency reuse', () => {
     expect(statuses).toEqual([0, 0]);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('reports a shared preparation failure to waiting sessions without repeated installation', async () => {
+    const f = fixture();
+    const sibling = f.sibling();
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/private': { version: '2.0.0' } },
+    });
+    for (const directory of [f.worktree, sibling])
+      writeFileSync(join(directory, 'package-lock.json'), lock);
+    writeFileSync(join(f.root, 'bin', '.npm-delay'), '1000');
+    writeFileSync(join(f.root, 'bin', '.npm-fail'), 'fail');
+    const first = f.start();
+    const second = f.start(sibling);
+    const results = await Promise.all(
+      [first, second].map(
+        (child) =>
+          new Promise<number | null>((done, reject) => {
+            child.on('error', reject);
+            child.on('close', done);
+          }),
+      ),
+    );
+    expect(results).toEqual([1, 1]);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    for (const directory of [f.worktree, sibling])
+      expect(existsSync(join(directory, 'node_modules', '.verity-install.json'))).toBe(false);
+    rmSync(join(f.root, 'bin', '.npm-delay'));
+    rmSync(join(f.root, 'bin', '.npm-fail'));
+    expect(f.run('install').status).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(2);
+  });
   it('releases preparation locks after interruption and does not mark the install ready', async () => {
     const f = fixture();
     writeFileSync(
@@ -435,23 +672,23 @@ describe('shared dependency reuse', () => {
         packages: { 'node_modules/private': { version: '2.0.0' } },
       }),
     );
-    writeFileSync(join(f.worktree, '.npm-delay'), '10000');
+    writeFileSync(join(f.root, 'bin', '.npm-delay'), '10000');
     const child = f.start();
     const exited = new Promise((done, reject) => {
       child.on('error', reject);
       child.on('close', done);
     });
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 60000;
     while (!existsSync(f.called) && Date.now() < deadline)
       await new Promise((done) => setTimeout(done, 25));
     expect(existsSync(f.called)).toBe(true);
     child.kill('SIGTERM');
     expect(await exited).toBe(143);
     expect(f.run('status').status).toBe(1);
-    rmSync(join(f.worktree, '.npm-delay'));
+    rmSync(join(f.root, 'bin', '.npm-delay'));
     expect(f.run('install').status).toBe(0);
   });
-  it('keeps the checkout locked when the helper is killed before native npm exits', async () => {
+  it('keeps central preparation locked when the helper is killed before native npm exits', async () => {
     const f = fixture();
     writeFileSync(
       join(f.worktree, 'package-lock.json'),
@@ -460,26 +697,33 @@ describe('shared dependency reuse', () => {
         packages: { 'node_modules/private': { version: '2.0.0' } },
       }),
     );
-    writeFileSync(join(f.worktree, '.npm-delay'), '2000');
+    writeFileSync(join(f.root, 'bin', '.npm-delay'), '2000');
     const child = f.start();
     const exited = new Promise((done) => child.on('exit', done));
     const drained = new Promise((done) => child.on('close', done));
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 60000;
     while (!existsSync(f.called) && Date.now() < deadline)
       await new Promise((done) => setTimeout(done, 25));
     expect(existsSync(f.called)).toBe(true);
     child.kill('SIGKILL');
     await exited;
     try {
-      const lock = join(f.root, '.git', 'worktrees', 'test', 'verity-npm.lock');
+      const lock = join(f.root, '.git', 'verity-dependencies', 'preparation.lock');
       expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(1);
     } finally {
       await drained;
     }
     expect(f.run('status').status).toBe(1);
-    rmSync(join(f.worktree, '.npm-delay'));
+    const cache = join(f.root, '.git', 'verity-dependencies');
+    const staging = readdirSync(cache).find((name) => /^[a-f0-9]{64}\.prepare$/u.test(name));
+    expect(staging).toBeDefined();
+    writeFileSync(join(cache, staging!, 'stale.txt'), 'interrupted preparation');
+    rmSync(join(f.root, 'bin', '.npm-delay'));
     expect(f.run('install').status).toBe(0);
     expect(f.run('status').status).toBe(0);
+    expect(existsSync(join(cache, staging!))).toBe(false);
+    const completed = join(cache, staging!.replace(/\.prepare$/u, ''));
+    expect(existsSync(join(completed, 'stale.txt'))).toBe(false);
   });
   it.skipIf(existsSync('/usr/local/lib/verity/verity-npm-preflight.mjs'))(
     'blocks session reuse when the trusted age verifier is missing',
@@ -528,9 +772,17 @@ describe('shared dependency reuse', () => {
         packages: { 'node_modules/local': { version: '1.0.0', resolved: 'file:vendor/local' } },
       }),
     );
+    writeFileSync(
+      join(f.root, 'bin', '.npm-required-source'),
+      JSON.stringify({ 'vendor/local/index.js': 'export default 1;' }),
+    );
     expect(f.run('install').status).toBe(0);
     expect(f.run('status').status).toBe(0);
     writeFileSync(join(f.worktree, 'vendor', 'local', 'index.js'), 'export default 2;');
+    writeFileSync(
+      join(f.root, 'bin', '.npm-required-source'),
+      JSON.stringify({ 'vendor/local/index.js': 'export default 2;' }),
+    );
     expect(f.run('status').status).toBe(1);
     expect(f.run('install').status).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(2);
@@ -631,6 +883,54 @@ describe('shared dependency reuse', () => {
     }
     expect(readdirSync(cache).filter((name) => /^[a-f0-9]{64}$/.test(name))).toHaveLength(2);
   });
+  it('repairs its corrupt packed-source snapshot while another identity is active', () => {
+    const f = fixture();
+    const cache = join(f.root, '.git', 'verity-dependencies');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    expect(f.run('install').status).toBe(0);
+    const first = readdirSync(cache).find((name) => /^[a-f0-9]{64}$/u.test(name))!;
+    mkdirSync(join(f.worktree, 'vendor', 'local'), { recursive: true });
+    writeFileSync(
+      join(f.worktree, 'vendor', 'local', 'package.json'),
+      '{"name":"local","version":"1.0.0"}',
+    );
+    writeFileSync(join(f.worktree, 'vendor', 'local', 'index.js'), 'export default 1;');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/local': { version: '1.0.0', resolved: 'file:vendor/local' } },
+      }),
+    );
+    expect(f.run('install').status).toBe(0);
+    const current = readdirSync(cache).find(
+      (name) => /^[a-f0-9]{64}$/u.test(name) && name !== first,
+    )!;
+    writeFileSync(join(cache, current, 'vendor', 'local', 'index.js'), 'corrupt cached source');
+    rmSync(join(f.worktree, 'node_modules'), { recursive: true });
+    const fd = openSync(join(cache, first + '.lock'), 'a');
+    try {
+      expect(
+        spawnSync('flock', ['-n', '3'], { stdio: ['ignore', 'ignore', 'ignore', fd] }).status,
+      ).toBe(0);
+      const result = f.run('install');
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(join(cache, first))).toBe(true);
+      expect(readFileSync(join(cache, current, 'vendor', 'local', 'index.js'), 'utf8')).toBe(
+        'export default 1;',
+      );
+      expect(f.run('status').status).toBe(0);
+      expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(3);
+    } finally {
+      closeSync(fd);
+    }
+  });
   it('requires managed proof for complete legacy inventories after configuration or runtime changes', () => {
     const f = fixture();
     const receipt = readFileSync(join(f.root, 'node_modules', '.verity-install.json'), 'utf8');
@@ -673,7 +973,10 @@ describe('shared dependency reuse', () => {
     const f = fixture();
     const trusted = join(f.root, 'bin', 'trusted-policy');
     mkdirSync(trusted);
-    writeFileSync(join(trusted, 'verity-npm-preflight.mjs'), '// fixture companion');
+    writeFileSync(
+      join(trusted, 'verity-npm-preflight.mjs'),
+      "export const npmStateDirectory = (root) => root + '/.cache';\n",
+    );
     writeFileSync(
       join(trusted, 'verity-package-install.mjs'),
       `import fs from 'node:fs';
@@ -713,6 +1016,82 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(readFileSync(join(f.worktree, 'policy-prepared'), 'utf8')).toBe('prepare\n');
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it.each(['missing', 'legacy'])(
+    'blocks central preparation with a %s staging-aware runtime verifier',
+    (variant) => {
+      const f = fixture();
+      const trusted = join(f.root, 'bin', 'legacy-policy');
+      mkdirSync(trusted);
+      writeFileSync(
+        join(trusted, 'verity-npm-preflight.mjs'),
+        variant === 'missing'
+          ? '// no staging support'
+          : "export const npmStateDirectory = () => '/legacy/git/state';\n",
+      );
+      writeFileSync(join(trusted, 'verity-package-install.mjs'), '// permits preparation');
+      const instrumented = join(f.root, 'bin', 'legacy-helper.mjs');
+      writeFileSync(
+        instrumented,
+        readFileSync(helper, 'utf8').replace(
+          "const directory = '/usr/local/lib/verity';",
+          `const directory = ${JSON.stringify(trusted)};`,
+        ),
+      );
+      writeFileSync(
+        join(f.worktree, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: { 'node_modules/private': { version: '2.0.0' } },
+        }),
+      );
+      const result = spawnSync(process.execPath, [instrumented, 'install'], {
+        cwd: f.worktree,
+        env: {
+          ...env,
+          PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+          VERITY_SESSION_ID: 'fixture-session',
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(1);
+      expect(existsSync(f.called)).toBe(false);
+      expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+    },
+  );
+  it('keeps policy verification mandatory when reusing a prepared installation', () => {
+    const f = fixture();
+    const trusted = join(f.root, 'bin', 'rejecting-policy');
+    mkdirSync(trusted);
+    writeFileSync(
+      join(trusted, 'verity-npm-preflight.mjs'),
+      "export const npmStateDirectory = (root) => root + '/.cache';\n",
+    );
+    writeFileSync(
+      join(trusted, 'verity-package-install.mjs'),
+      "if (process.env.TEST_POLICY_REJECT === '1') process.exit(47);\n",
+    );
+    const instrumented = join(f.root, 'bin', 'policy-helper.mjs');
+    writeFileSync(
+      instrumented,
+      readFileSync(helper, 'utf8').replace(
+        "const directory = '/usr/local/lib/verity';",
+        `const directory = ${JSON.stringify(trusted)};`,
+      ),
+    );
+    const result = spawnSync(process.execPath, [instrumented, 'install'], {
+      cwd: f.worktree,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        VERITY_SESSION_ID: 'fixture-session',
+        TEST_POLICY_REJECT: '1',
+      },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Reused dependency age verification failed');
+    expect(existsSync(f.called)).toBe(false);
+  });
   it('still rejects an unexpected npm configuration change during native installation', () => {
     const f = fixture();
     writeFileSync(
@@ -722,7 +1101,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
         packages: { 'node_modules/private': { version: '1.0.0' } },
       }),
     );
-    writeFileSync(join(f.worktree, '.npm-change-config'), 'change');
+    writeFileSync(join(f.root, 'bin', '.npm-change-config'), 'change');
     const result = f.run('install');
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Dependency inputs changed during installation');

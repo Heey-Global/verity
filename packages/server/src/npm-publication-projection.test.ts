@@ -62,6 +62,28 @@ it('discards a multi-MiB unrelated manifest string while retaining only requeste
   expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
 });
 
+it.each([true, false])(
+  'projects a large packument with Content-Length present: %s',
+  async (withLength) => {
+    const prefix = '{"description":"';
+    const suffix = '",' + JSON.stringify(facts).slice(1);
+    const chunk = Buffer.alloc(1024 ** 2, 97);
+    const count = 80;
+    function* chunks() {
+      yield prefix;
+      for (let i = 0; i < count; i++) yield chunk;
+      yield suffix;
+    }
+    const length = Buffer.byteLength(prefix + suffix) + count * chunk.length;
+    const input = response(chunks(), withLength ? { 'content-length': String(length) } : {});
+    const result = await projectNpmPublications(input, 'example', new Set(['1.0.0']), signal);
+    expect(result.versions).toEqual(new Set(['1.0.0']));
+    expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
+    expect(input.destroyed).toBe(true);
+  },
+  30_000,
+);
+
 it.each([
   '{"name":"example","versions":{"1.0.0":{}},"time":{"1.0.0":"a","1.0.0":"b"}}',
   '{"name":"example","versions":{"1.0.0":{},"1.0.0":{}}}',

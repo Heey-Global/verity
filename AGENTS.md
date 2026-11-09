@@ -102,8 +102,11 @@ whose receipt is `.agents/.last-code-review-sha` — a per-checkout marker, neve
 committed. Run `verity-code-review run` and `verity-code-review mark`; the
 sandbox git wrapper refuses `git push --no-verify`. When the dependencies are
 not installed, the hook automatically prepares compatible dependencies with
-`verity-dependencies install` (falling back to npm with lifecycle scripts disabled)
-and runs the checks. A requested push authorizes this preparation without another
+`verity-dependencies install` and runs the checks. The helper prepares a verified
+central inventory and activates independent files with worktree-local workspace
+links; it does not install packages in the session worktree. A missing helper or
+unsupported central preparation layout blocks the push instead of falling back
+to a private npm installation. A requested push authorizes this preparation without another
 confirmation. Installation failures stop the push. An explicit
 `verity-local-checks skip` remains valid until dependency inputs change. The scan is the last point at which a leaked credential
 is still local; once pushed it is burned and has to be rotated, whoever

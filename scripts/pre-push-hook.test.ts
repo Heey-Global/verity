@@ -94,7 +94,12 @@ function passingSecretScan(): string {
 
 function runHook(
   cwd: string,
-  opts: { path?: string; env?: Record<string, string>; input?: string } = {},
+  opts: {
+    path?: string;
+    env?: Record<string, string>;
+    input?: string;
+    dependencyHelper?: boolean;
+  } = {},
 ): ReturnType<typeof spawnSync> {
   // Isolate dependency preparation from the registry while exercising the real hook.
   const fixtureSeed = mkdtempSync(join(tmpdir(), 'verity-hook-seed-'));
@@ -102,16 +107,21 @@ function runHook(
   mkdirSync(join(fixtureSeed, 'hooks'));
   mkdirSync(join(fixtureSeed, 'bin'));
   const fixtureHook = join(fixtureSeed, 'hooks/pre-push');
-  writeFileSync(fixtureHook, readFileSync(hook), { mode: 0o755 });
+  writeFileSync(
+    fixtureHook,
+    readFileSync(hook, 'utf8').replace('/opt/agent-seed/bin/$name', `${fixtureSeed}/missing/$name`),
+    { mode: 0o755 },
+  );
   for (const name of ['verity-review-base.sh', 'verity-local-checks']) {
     symlinkSync(
       fileURLToPath(new URL(`../agent-seed/bin/${name}`, import.meta.url)),
       join(fixtureSeed, 'bin', name),
     );
   }
-  writeFileSync(
-    join(fixtureSeed, 'bin/verity-dependencies'),
-    `#!/bin/sh
+  if (opts.dependencyHelper !== false)
+    writeFileSync(
+      join(fixtureSeed, 'bin/verity-dependencies'),
+      `#!/bin/sh
 if [ "$1" = install ]; then
   echo install >> .install-log
   [ "$VERITY_TEST_INSTALL_FAIL" != 1 ] || exit 1
@@ -120,8 +130,8 @@ if [ "$1" = install ]; then
 fi
 [ -f node_modules/.fixture-ready ] || [ -f node_modules/.package-lock.json ]
 `,
-    { mode: 0o755 },
-  );
+      { mode: 0o755 },
+    );
   return spawnSync(fixtureHook, [], {
     cwd,
     encoding: 'utf8',
@@ -228,6 +238,45 @@ describe('pre-push lint gate', () => {
     runHook(repo, { env: reviewEnv() });
     expect(readFileSync(join(repo, '.install-log'), 'utf8')).toBe('install\n');
   });
+
+  it.each([false, true])(
+    'blocks when the managed helper is missing, with existing modules: %s',
+    (withModules) => {
+      const repo = repoWithPendingReview('{"scripts":{"lint":"echo SHOULD_NOT_RUN >&2"}}');
+      if (withModules) {
+        mkdirSync(join(repo, 'node_modules'));
+        writeFileSync(join(repo, 'node_modules/.package-lock.json'), '{"packages":{}}');
+      }
+      const bin = restrictedPath(repo, [
+        'env',
+        'bash',
+        'git',
+        'node',
+        'npm',
+        'cat',
+        'head',
+        'tr',
+        'grep',
+      ]);
+      rmSync(join(bin, 'npm'));
+      writeFileSync(
+        join(bin, 'npm'),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> "$VERITY_TEST_NPM_LOG"\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      const result = runHook(repo, {
+        path: bin,
+        env: { ...reviewEnv(), VERITY_TEST_NPM_LOG: join(repo, '.npm-log') },
+        dependencyHelper: false,
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('dependency helper missing');
+      expect(result.stderr).not.toContain('SHOULD_NOT_RUN');
+      expect(result.stderr).not.toContain('pre-push code review required');
+      expect(() => readFileSync(join(repo, '.install-log'))).toThrow();
+      expect(() => readFileSync(join(repo, '.npm-log'))).toThrow();
+    },
+  );
 
   it('blocks on installation failure before running checks', () => {
     const repo = repoWithPendingReview('{"scripts":{"lint":"echo SHOULD_NOT_RUN >&2"}}');

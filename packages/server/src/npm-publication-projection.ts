@@ -1,8 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 
-// Registry packuments can exceed 32 MiB; scanning stays bounded while ignored
-// manifest strings are discarded rather than retained in memory.
-export const MAX_NPM_PUBLICATION_BYTES = 64 * 1024 ** 2;
+// Full packuments of long-lived packages can exceed 32 MiB. Keep a finite transfer
+// budget while the streaming parser bounds retained strings and nesting separately.
+export const MAX_NPM_PUBLICATION_BYTES = 128 * 1024 ** 2;
 
 interface Frame {
   kind: 'object' | 'array';

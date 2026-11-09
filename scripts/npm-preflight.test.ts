@@ -1,11 +1,13 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { afterEach, expect, it } from 'vitest';
 import {
   npmInstallPlan,
   npmLockedPackages,
   npmProjectRoot,
+  npmStateDirectory,
   preserveNpmDependencies,
 } from '../features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs';
 
@@ -176,3 +178,14 @@ it.each(['git+https://example.test/a.git', 'https://example.test/a.tgz'])(
     expect(() => npmLockedPackages(root)).toThrow('unsupported source');
   },
 );
+
+it('keeps central staging locks separate from the enclosing Git administration directory', () => {
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  execFileSync('git', ['-c', 'init.templateDir=', 'init', '-q', root], {
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' },
+  });
+  const stage = join(root, '.git', 'verity-dependencies', 'identity.prepare');
+  mkdirSync(stage, { recursive: true });
+  expect(npmStateDirectory(stage)).toBe(join(stage, '.cache'));
+  expect(npmStateDirectory(root)).toBe(join(root, '.git'));
+});

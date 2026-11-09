@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reuse an existing compatible project installation without mutating it.
+// Prepare dependencies centrally; activate independent files in each worktree.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -19,8 +19,10 @@ import {
   closeSync,
   readSync,
   statSync,
+  chmodSync,
 } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 function git(...args) {
   return execFileSync('git', args, {
@@ -34,6 +36,18 @@ function read(path) {
   } catch {
     return undefined;
   }
+}
+function npmEnvironment() {
+  const environment = { ...process.env };
+  for (const key of [
+    'NPM_CONFIG_USERCONFIG',
+    'npm_config_userconfig',
+    'NPM_CONFIG_GLOBALCONFIG',
+    'npm_config_globalconfig',
+  ]) {
+    if (environment[key]) environment[key] = resolve(environment[key]);
+  }
+  return environment;
 }
 function manager(root) {
   const declared = JSON.parse(read(join(root, 'package.json')) ?? '{}').packageManager;
@@ -295,17 +309,30 @@ function packedSourceIdentity(root, sources) {
   }
   return hash.digest('hex');
 }
-function identity(root) {
-  const hash = createHash('sha256');
-  hash.update(packedSourceIdentity(root, packedSources(root)));
+function inputFiles(root) {
   const files = git('-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z')
     .split('\0')
     .filter((path) =>
       /(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json|.npmrc)$/.test(path),
     )
     .sort();
-  for (const path of files) {
-    const source = read(join(root, path));
+  // Effective project configuration matters even when .npmrc is gitignored.
+  return [
+    ...new Set([
+      ...files,
+      '.npmrc',
+      ...files
+        .filter((path) => /(^|\/)package.json$/u.test(path))
+        .map((path) => join(dirname(path), '.npmrc')),
+    ]),
+  ].sort();
+}
+function identity(root, inputs = root) {
+  const hash = createHash('sha256');
+  hash.update('central-preparation-v1\0');
+  hash.update(packedSourceIdentity(inputs, packedSources(inputs)));
+  for (const path of inputFiles(root)) {
+    const source = read(join(inputs, path));
     if (source !== undefined)
       hash.update(path + '\0' + dependencyInputIdentity(path, source) + '\0');
   }
@@ -315,7 +342,8 @@ function identity(root) {
     join(process.env.HOME ?? '', '.npmrc');
   hash.update('user-config\0' + (read(userConfig) ?? '') + '\0');
   const globalConfig = spawnSync('npm', ['config', 'get', 'globalconfig'], {
-    cwd: root,
+    cwd: inputs,
+    env: npmEnvironment(),
     encoding: 'utf8',
     timeout: 10_000,
   });
@@ -330,7 +358,12 @@ function identity(root) {
       'Cannot determine effective npm global configuration for dependency compatibility.',
     );
   hash.update('global-config\0' + (read(globalPath) ?? '') + '\0');
-  const version = spawnSync('npm', ['--version'], { cwd: root, encoding: 'utf8', timeout: 10_000 });
+  const version = spawnSync('npm', ['--version'], {
+    cwd: inputs,
+    env: npmEnvironment(),
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
   if (version.status !== 0)
     throw new Error('Cannot determine npm version for dependency compatibility.');
   const configuration = Object.entries(process.env)
@@ -365,6 +398,7 @@ function cacheable(root) {
   );
   if (!lock?.packages) return false;
   return Object.entries(lock.packages).every(([path, value]) => {
+    if (isAbsolute(path) || path.split('/').includes('..')) return false;
     if (path.includes('/node_modules/') && !path.startsWith('node_modules/')) return false;
     if (!value.link) return true;
     if (typeof value.resolved !== 'string' || isAbsolute(value.resolved)) return false;
@@ -372,28 +406,150 @@ function cacheable(root) {
     return target !== '..' && !target.startsWith('../');
   });
 }
+function workspaceModuleTrees(root) {
+  // Existing non-hoisted installations retain their native completeness rules.
+  if (!cacheable(root)) return [];
+  const lock = JSON.parse(
+    read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')),
+  );
+  const projects = new Set(
+    Object.keys(lock.packages).filter((path) => path && !path.split('/').includes('node_modules')),
+  );
+  for (const entry of Object.values(lock.packages)) {
+    if (entry.link) projects.add(entry.resolved);
+  }
+  const trees = [];
+  for (const project of projects) {
+    const directory = resolve(root, project);
+    if (!contained(root, directory) || directory === root)
+      throw new Error('Workspace dependency directory must stay inside the project.');
+    const modules = join(directory, 'node_modules');
+    if (!readlinkExists(modules)) continue;
+    if (!contained(realpathSync(root), realpathSync(directory)))
+      throw new Error('Workspace dependency parent must stay inside the project.');
+    trees.push(modules);
+  }
+  return trees;
+}
+function stagedInputIdentity(root) {
+  const hash = createHash('sha256');
+  let count = 0;
+  let bytes = 0;
+  const visit = (directory) => {
+    for (const name of readdirSync(directory).sort()) {
+      if (['node_modules', '.git', '.cache'].includes(name)) continue;
+      if (directory === root && ['receipt.json', '.verity-inputs.sha256'].includes(name)) continue;
+      if (++count > 10000)
+        throw new Error('Staged dependency inputs exceed the 10000-entry verification bound.');
+      const path = join(directory, name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) throw new Error('Unexpected symlink in staged dependency inputs.');
+      if (stat.isDirectory()) visit(path);
+      else if (
+        ['package.json', 'package-lock.json', 'npm-shrinkwrap.json', '.npmrc'].includes(name)
+      ) {
+        bytes += stat.size;
+        if (bytes > 64 * 1024 ** 2)
+          throw new Error('Staged dependency inputs exceed the 64 MiB verification bound.');
+        hash.update(relative(root, path) + '\0' + dependencyInputIdentity(path, read(path)) + '\0');
+      }
+    }
+  };
+  visit(root);
+  return hash.digest('hex');
+}
 function cachedReady(root, cache, expected) {
-  if (read(join(cache, 'receipt.json')) !== expected) return false;
   try {
-    const lock = JSON.parse(
-      read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')),
+    return (
+      read(join(cache, 'receipt.json')) === expected &&
+      receiptMatches(cache, expected) &&
+      installed(cache) &&
+      workspaceModuleTrees(cache).length === 0 &&
+      read(join(cache, '.verity-inputs.sha256')) === stagedInputIdentity(cache) &&
+      identity(root, cache) === expected
     );
-    const modules = join(cache, 'node_modules');
-    const receipt = JSON.parse(read(join(modules, '.package-lock.json')));
-    return Object.entries(lock.packages).every(([path, wanted]) => {
-      if (!path.startsWith('node_modules/')) return true;
-      const entry = join(cache, path);
-      if (wanted.link) return lstatSync(entry).isSymbolicLink();
-      const actual = receipt.packages[path];
-      if (!actual) return wanted.optional === true || wanted.devOptional === true;
-      return (
-        actual.version === wanted.version &&
-        actual.integrity === wanted.integrity &&
-        existsSync(join(entry, 'package.json'))
-      );
-    });
   } catch {
     return false;
+  }
+}
+function contained(root, path) {
+  const rel = relative(root, path);
+  return rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+}
+function stageInputs(root, stage) {
+  mkdirSync(stage, { recursive: true, mode: 0o700 });
+  for (const path of inputFiles(root)) {
+    const source = join(root, path);
+    if (!existsSync(source)) continue;
+    if (!contained(root, realpathSync(source)) || !lstatSync(source).isFile())
+      throw new Error('Dependency input must be a regular file inside the project.');
+    mkdirSync(dirname(join(stage, path)), { recursive: true });
+    cpSync(source, join(stage, path));
+  }
+  for (const source of packedSources(root)) {
+    const path = decodeURIComponent(source.slice('file:'.length));
+    const directory = resolve(root, path);
+    if (isAbsolute(path) || !contained(root, directory) || directory === root)
+      throw new Error('Central preparation requires local package sources inside the project.');
+    const manifest = JSON.parse(read(join(directory, 'package.json')) ?? '{}');
+    const bundles = manifest.bundledDependencies ?? manifest.bundleDependencies;
+    const bundled = bundles === true || (Array.isArray(bundles) && bundles.length > 0);
+    cpSync(directory, resolve(stage, path), {
+      recursive: true,
+      filter: (entry) => {
+        const name = relative(directory, entry).split('/');
+        return !name.includes('.git') && (bundled || !name.includes('node_modules'));
+      },
+    });
+  }
+}
+function readinessReason(root, expected) {
+  if (!existsSync(join(root, 'node_modules'))) return 'missing installation';
+  if (!read(join(root, 'node_modules', '.verity-install.json')))
+    return 'missing managed installation receipt';
+  if (!receiptMatches(root, expected))
+    return 'dependency inputs, configuration or runtime differ from the installation receipt';
+  if (!workspaceLinksReady(root)) return 'workspace links do not target this worktree';
+  if (workspaceModuleTrees(root).length)
+    return 'stale workspace dependency directories shadow hoisted packages';
+  return 'missing packages or package versions/integrities differ from the lockfile';
+}
+function fixWorkspaceBin(root, source) {
+  if (!readlinkExists(source)) return; // Build outputs may not exist yet.
+  if (!lstatSync(source).isFile() || !contained(realpathSync(root), realpathSync(source)))
+    throw new Error('Workspace executable must be a regular file inside the project.');
+  const stat = statSync(source);
+  const fd = openSync(source, 'r');
+  const header = Buffer.alloc(2048);
+  let length;
+  try {
+    length = readSync(fd, header);
+  } finally {
+    closeSync(fd);
+  }
+  const newline = header.subarray(0, length).indexOf(10);
+  const mode = (stat.mode & 0o777) | 0o111;
+  if (header[0] === 35 && header[1] === 33 && newline > 1 && header[newline - 1] === 13) {
+    // Match npm's shebang repair without buffering arbitrarily large executables.
+    if (stat.size > 1024 ** 2)
+      throw new Error(
+        'Workspace executable with a CRLF shebang exceeds the 1 MiB normalization bound.',
+      );
+    const content = readFileSync(source);
+    const temporary = source + '.verity-bin-' + randomUUID();
+    try {
+      writeFileSync(
+        temporary,
+        Buffer.concat([content.subarray(0, newline - 1), content.subarray(newline)]),
+        { mode },
+      );
+      chmodSync(temporary, mode);
+      renameSync(temporary, source);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  } else {
+    chmodSync(source, mode);
   }
 }
 function rewire(root, modules) {
@@ -404,10 +560,44 @@ function rewire(root, modules) {
     if (!value.link || !path.startsWith('node_modules/')) continue;
     const target = join(modules, path.slice('node_modules/'.length));
     // Only a declared workspace symlink is replaced, never package contents.
+    if (!contained(modules, realpathSync(dirname(target))))
+      throw new Error('Cached workspace parent escapes the activation directory.');
     if (!lstatSync(target).isSymbolicLink())
       throw new Error('Cached workspace link is not a symlink.');
     rmSync(target);
     symlinkSync(relative(dirname(join(root, path)), resolve(root, value.resolved)), target);
+    const manifest = JSON.parse(read(join(root, value.resolved, 'package.json')) ?? '{}');
+    const bins =
+      typeof manifest.bin === 'string'
+        ? { [manifest.name?.split('/').pop()]: manifest.bin }
+        : (manifest.bin ?? {});
+    for (const [name, entry] of Object.entries(bins)) {
+      if (
+        !name ||
+        name === '.' ||
+        name === '..' ||
+        /[/\\]/u.test(name) ||
+        typeof entry !== 'string' ||
+        isAbsolute(entry)
+      )
+        throw new Error('Unsupported workspace executable path.');
+      const source = resolve(root, value.resolved, entry);
+      if (!contained(root, source))
+        throw new Error('Workspace executable must stay inside the project.');
+      const binDirectory = join(modules, '.bin');
+      if (
+        readlinkExists(binDirectory) &&
+        (!lstatSync(binDirectory).isDirectory() || lstatSync(binDirectory).isSymbolicLink())
+      )
+        throw new Error('Workspace executable directory must not be a symlink.');
+      mkdirSync(binDirectory, { recursive: true });
+      const executable = join(binDirectory, name);
+      fixWorkspaceBin(root, source);
+      // npm skips workspace bins whose sources are absent in central staging.
+      // Keep native collision choices; add only missing links to current sources.
+      if (!readlinkExists(executable))
+        symlinkSync(relative(join(root, 'node_modules', '.bin'), source), executable);
+    }
   }
 }
 function workspaceLinksReady(root) {
@@ -440,10 +630,11 @@ function restoreWorkspaceLinks(root) {
     symlinkSync(relative(dirname(link), target), link);
   }
 }
-function sharedReady(root, base) {
+function sharedReady(root, base, ignorePrivate = false) {
   if (packedSources(root).length > 0) return false;
   if (
-    !privateSkeleton(root) ||
+    (!ignorePrivate && (!privateSkeleton(root) || workspaceModuleTrees(root).length > 0)) ||
+    workspaceModuleTrees(base).length > 0 ||
     root === base ||
     existsSync(join(base, '.pnp.cjs')) ||
     !compatible(root, base)
@@ -491,7 +682,9 @@ async function lock(path, wait = true) {
 }
 
 async function snapshotSlot(cacheRoot, currentIdentity) {
-  const names = readdirSync(cacheRoot).filter((name) => /^[a-f0-9]{64}$/.test(name));
+  const names = readdirSync(cacheRoot).filter(
+    (name) => /^[a-f0-9]{64}$/.test(name) && name !== currentIdentity,
+  );
   if (names.length < 2) return true;
   const generated = names
     .filter((name) => {
@@ -534,9 +727,9 @@ async function snapshotSlot(cacheRoot, currentIdentity) {
   }
   return false;
 }
+const directory = '/usr/local/lib/verity';
 async function packagePolicy(root, rootLockFd, prepare = false) {
   if (!process.env.VERITY_SESSION_ID) return;
-  const directory = '/usr/local/lib/verity';
   if (
     !existsSync(join(directory, 'verity-npm-preflight.mjs')) ||
     !existsSync(join(directory, 'verity-package-install.mjs'))
@@ -555,7 +748,10 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
     {
       cwd: root,
       stdio: rootLockFd === undefined ? 'inherit' : ['inherit', 'inherit', 'inherit', rootLockFd],
-      env: rootLockFd === undefined ? process.env : { ...process.env, VERITY_NPM_LOCK_FD: '3' },
+      env:
+        rootLockFd === undefined
+          ? npmEnvironment()
+          : { ...npmEnvironment(), VERITY_NPM_LOCK_FD: '3' },
     },
   );
   const handlers = ['SIGINT', 'SIGTERM'].map((signal) => {
@@ -586,7 +782,6 @@ async function main() {
   if (!['status', 'install'].includes(action))
     throw new Error('Usage: verity-dependencies status|install');
   const selected = manager(root);
-  // Keep existing non-npm installations on their native, read-only checks.
   if (selected !== 'npm') {
     if (installed(root) || sharedReady(root, base)) return;
     throw new Error(
@@ -595,14 +790,17 @@ async function main() {
   }
   let currentIdentity = identity(root);
   let rootLockFd;
-  let verifiedReuse = false;
+  let verified = false;
   const verify = async () => {
-    if (!verifiedReuse) {
+    if (!verified) {
       await packagePolicy(root, rootLockFd);
-      verifiedReuse = true;
+      verified = true;
     }
   };
-  const ready = () => installed(root) && receiptMatches(root, identity(root));
+  const ready = () =>
+    installed(root) &&
+    receiptMatches(root, identity(root)) &&
+    workspaceModuleTrees(root).length === 0;
   if (ready()) {
     await verify();
     if (action === 'install')
@@ -619,9 +817,14 @@ async function main() {
       console.log('Using compatible shared project dependencies; no private install needed.');
     return;
   }
+  const cacheRoot = join(common, 'verity-dependencies');
   if (action === 'status') {
+    console.error(`Dependencies are not ready: ${readinessReason(root, currentIdentity)}.`);
+    console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
     console.error(
-      'Dependencies are incomplete or incompatible with the current manifests, lockfile, configuration or runtime. Reachable lint tools alone do not prove a complete installation.',
+      cachedReady(root, join(cacheRoot, currentIdentity), currentIdentity)
+        ? 'A complete central inventory is available; run verity dependencies install to activate it.'
+        : 'No complete compatible central inventory is available; run verity dependencies install to prepare it.',
     );
     process.exitCode = 1;
     return;
@@ -630,60 +833,88 @@ async function main() {
     throw new Error(
       'Dependency preparation requires a session worktree; the shared project installation is preserved.',
     );
-  const cacheRoot = join(common, 'verity-dependencies');
-  // The checkout lock prevents different identities from replacing one session's tree.
   const unlockRoot = await lock(join(git('rev-parse', '--absolute-git-dir'), 'verity-npm.lock'));
   rootLockFd = unlockRoot.fd;
   let unlockIdentity;
-  try {
-    // Policy setup may deliberately add .npmrc. Freeze the install identity only
-    // after this managed setup, never by accepting arbitrary post-install drift.
-    await packagePolicy(root, rootLockFd, true);
-    currentIdentity = identity(root);
-    unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'));
-  } catch (error) {
-    unlockRoot.release();
-    rootLockFd = undefined;
-    throw error;
-  }
+  let preparation;
+  let stage;
+  let centralAttempt = false;
   let child;
   let cancelled;
   const handlers = ['SIGINT', 'SIGTERM'].map((signal) => {
     const handler = () => {
       cancelled = signal;
-      if (child) child.kill(signal);
+      child?.kill(signal);
     };
     process.on(signal, handler);
     return [signal, handler];
   });
-  try {
+  const checkInputs = () => {
+    if (cancelled)
+      throw new Error(
+        `Dependency preparation interrupted (${cancelled}); no activation was published.`,
+      );
     if (identity(root) !== currentIdentity)
       throw new Error(
-        'Dependency inputs changed while waiting for preparation; retry with the current inputs.',
+        'Dependency inputs changed during preparation; no ready receipt was published.',
       );
+  };
+  try {
+    await packagePolicy(root, rootLockFd, true);
+    currentIdentity = identity(root);
+    const waitingSince = Date.now();
+    unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'), false);
+    const waited = !unlockIdentity;
+    if (waited) {
+      console.log(
+        'Waiting for central dependency preparation for this identity (up to 90 seconds)…',
+      );
+      unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'));
+    }
+    checkInputs();
     if (ready()) {
       await verify();
       return;
     }
     const modules = join(root, 'node_modules');
     const cache = join(cacheRoot, currentIdentity);
-    const preserve = () => {
-      if (!existsSync(modules) && !readlinkExists(modules)) return;
+    const failure = join(cacheRoot, currentIdentity + '.failed.json');
+    if (waited) {
+      const failed = JSON.parse(read(failure) ?? 'null');
+      if (failed?.at >= waitingSince)
+        throw new Error(
+          'The central dependency preparation this session waited for failed; retry explicitly after correcting the preparation error.',
+        );
+    }
+    const preserve = (directory = modules) => {
+      if (!readlinkExists(directory)) return;
       const recovery = join(
         git('rev-parse', '--absolute-git-dir'),
         'verity-dependencies-preserved',
         randomUUID(),
       );
       mkdirSync(dirname(recovery), { recursive: true });
-      renameSync(modules, recovery);
+      renameSync(directory, recovery);
       console.log(`Preserved previous dependency files at ${recovery}.`);
     };
-    if (cacheable(root) && cachedReady(root, cache, currentIdentity)) {
+    // A skeleton can use an already verified ancestor without mutating packages.
+    // Shadowing private files are preserved only when a replacement is available.
+    if (sharedReady(root, base, true) && receiptMatches(base, currentIdentity)) {
       await verify();
+      checkInputs();
+      for (const tree of workspaceModuleTrees(root)) preserve(tree);
+      preserve();
+      restoreWorkspaceLinks(root);
+      return;
+    }
+    const activate = async () => {
+      await verify();
+      checkInputs();
       const candidate = join(
         git('rev-parse', '--absolute-git-dir'),
         'verity-dependencies-copy-' + randomUUID(),
       );
+      let recovery;
       try {
         cpSync(join(cache, 'node_modules'), candidate, {
           recursive: true,
@@ -691,94 +922,169 @@ async function main() {
           verbatimSymlinks: true,
         });
         rewire(root, candidate);
+        checkInputs();
+        // Workspace-local packages take precedence over hoisted dependencies.
+        // Preserve those trees too, even when the root receipt is already valid.
+        for (const tree of workspaceModuleTrees(root)) preserve(tree);
+        // Validate at the final path; keep recovery files if activation ever fails.
         preserve();
+        recovery = true;
         renameSync(candidate, modules);
-        if (!ready()) throw new Error('Cached dependencies failed completeness validation.');
+        if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
         console.log(
-          'Reused compatible prepared dependencies; copied private files and restored session workspace links.',
+          'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
-        return;
-      } finally {
-        rmSync(candidate, { recursive: true, force: true });
-      }
-    }
-    // A previous incomplete tree can shadow shared packages. Move it aside without
-    // deleting patches, then reconsider the compatible ancestor before downloading.
-    preserve();
-    if (sharedReady(root, base) && receiptMatches(base, currentIdentity)) {
-      await verify();
-      restoreWorkspaceLinks(root);
-      console.log(
-        'Using compatible shared dependencies after preserving the incomplete private tree.',
-      );
-      return;
-    }
-    const action =
-      existsSync(join(root, 'package-lock.json')) || existsSync(join(root, 'npm-shrinkwrap.json'))
-        ? 'ci'
-        : 'install';
-    console.log(
-      `Preparing private dependencies with npm ${action}; no compatible complete installation is available.`,
-    );
-    const result = await new Promise((done, reject) => {
-      child = spawn('npm', [action, '--ignore-scripts'], {
-        cwd: root,
-        stdio: ['inherit', 'inherit', 'inherit', rootLockFd],
-        env: { ...process.env, VERITY_NPM_LOCK_FD: '3' },
-      });
-      child.on('error', reject);
-      child.on('exit', (code, signal) => done({ code, signal }));
-    });
-    if (cancelled || result.signal || result.code !== 0) {
-      throw new Error(
-        `Dependency preparation ${cancelled || result.signal ? 'interrupted' : 'failed'} (${cancelled ?? result.signal ?? result.code}); incomplete files are not reusable. Retry preserves them before preparing again.`,
-      );
-    }
-    if (!installed(root))
-      throw new Error(
-        'npm finished but required dependencies or workspace links are incomplete; installation was not marked ready.',
-      );
-    const completedIdentity = identity(root);
-    if (action === 'ci' && completedIdentity !== currentIdentity)
-      throw new Error(
-        'Dependency inputs changed during installation; no ready receipt was published.',
-      );
-    writeFileSync(
-      join(modules, '.verity-install.json'),
-      JSON.stringify({ identity: completedIdentity }),
-    );
-    if (cacheable(root) && completedIdentity === currentIdentity && !existsSync(cache)) {
-      const candidate = join(cacheRoot, '.prepare-' + randomUUID());
-      let publication;
-      try {
-        publication = await lock(join(cacheRoot, 'publication.lock'));
-        if (await snapshotSlot(cacheRoot, currentIdentity)) {
-          mkdirSync(candidate, { recursive: true });
-          cpSync(modules, join(candidate, 'node_modules'), {
-            recursive: true,
-            dereference: false,
-            verbatimSymlinks: true,
-          });
-          writeFileSync(join(candidate, 'receipt.json'), currentIdentity);
-          renameSync(candidate, cache);
-        } else {
-          console.log(
-            'Prepared dependencies are usable; reuse snapshot publication deferred while existing snapshots are active.',
-          );
-        }
       } catch (error) {
-        console.error(
-          `Prepared dependencies are usable, but the optional reuse snapshot could not be saved: ${error.message}`,
-        );
+        if (recovery && readlinkExists(modules)) preserve();
+        throw error;
       } finally {
         rmSync(candidate, { recursive: true, force: true });
-        publication?.release();
       }
+    };
+    if (!cachedReady(root, cache, currentIdentity)) {
+      if (!cacheable(root))
+        throw new Error(
+          'Central preparation requires a supported npm lockfile with project-local workspace links and no workspace-nested node_modules; no private installation was attempted.',
+        );
+      // Bound expensive preparation to one process per project, even across identities.
+      console.log('Waiting for the central preparation slot (up to 90 seconds)…');
+      preparation = await lock(join(cacheRoot, 'preparation.lock'));
+      checkInputs();
+      for (const entry of readdirSync(cacheRoot)) {
+        if (/^[a-f0-9]{64}\.prepare$/u.test(entry))
+          rmSync(join(cacheRoot, entry), { recursive: true, force: true });
+      }
+      centralAttempt = true;
+      stage = join(cacheRoot, currentIdentity + '.prepare');
+      // Only this identity owns this staging path. A native npm child inherits the
+      // preparation lock, so a killed supervisor cannot race its surviving child.
+      rmSync(stage, { recursive: true, force: true });
+      stageInputs(root, stage);
+      if (identity(root, stage) !== currentIdentity)
+        throw new Error(
+          'Staged dependency inputs differ from the requested identity; installation remains blocked.',
+        );
+      if (process.env.VERITY_SESSION_ID) {
+        const runtime = await import(
+          pathToFileURL(join(directory, 'verity-npm-preflight.mjs')).href
+        );
+        if (
+          typeof runtime.npmStateDirectory !== 'function' ||
+          runtime.npmStateDirectory(stage) !== join(stage, '.cache')
+        )
+          throw new Error(
+            'Central dependency preparation requires updated sandbox package tooling; refresh the sandbox before retrying.',
+          );
+      }
+      // npm resolves path settings against cwd. Preserve the checkout's effective
+      // trust file when ci changes cwd, without copying private certificate data.
+      const stageEnvironment = npmEnvironment();
+      const cafile = spawnSync('npm', ['config', 'get', 'cafile'], {
+        cwd: root,
+        env: stageEnvironment,
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      if (cafile.status !== 0)
+        throw new Error(
+          'Cannot resolve npm certificate configuration; preparation remains blocked.',
+        );
+      const certificate = cafile.stdout.trim();
+      if (certificate && certificate !== 'null' && certificate !== 'undefined') {
+        delete stageEnvironment.NPM_CONFIG_CAFILE;
+        stageEnvironment.npm_config_cafile = resolve(root, certificate);
+      }
+      const prefix = spawnSync('npm', ['prefix', '--global=false'], {
+        cwd: stage,
+        env: npmEnvironment(),
+        encoding: 'utf8',
+        timeout: 15_000,
+      });
+      if (prefix.status !== 0 || prefix.stdout.trim() !== stage)
+        throw new Error(
+          'Effective npm configuration redirects installation outside central staging; no installation was attempted.',
+        );
+      mkdirSync(join(stage, '.cache'), { recursive: true });
+      symlinkSync(join(cacheRoot, 'preparation.lock'), join(stage, '.cache', 'verity-npm.lock'));
+      const stagedIdentity = stagedInputIdentity(stage);
+      console.log(
+        'Preparing central dependencies with npm ci; session worktrees do not download packages.',
+      );
+      const result = await new Promise((done, reject) => {
+        child = spawn('npm', ['ci', '--ignore-scripts'], {
+          cwd: stage,
+          stdio: ['inherit', 'inherit', 'inherit', preparation.fd],
+          env: { ...stageEnvironment, VERITY_NPM_LOCK_FD: '3' },
+        });
+        child.on('error', reject);
+        child.on('close', (code, signal) => done({ code, signal }));
+      });
+      child = undefined;
+      if (cancelled || result.signal || result.code !== 0)
+        throw new Error(
+          `Central dependency preparation ${cancelled || result.signal ? 'interrupted' : 'failed'} (${cancelled ?? result.signal ?? result.code}); incomplete files are not reusable.`,
+        );
+      checkInputs();
+      if (
+        identity(root, stage) !== currentIdentity ||
+        stagedInputIdentity(stage) !== stagedIdentity
+      )
+        throw new Error(
+          'Dependency inputs changed during installation; no ready receipt was published.',
+        );
+      if (!installed(stage))
+        throw new Error(
+          'npm finished but required dependencies or workspace links are incomplete; installation was not marked ready.',
+        );
+      // Verify publication policy against the original session before making the
+      // inventory available. The npm wrapper also verifies before downloading.
+      await verify();
+      checkInputs();
+      writeFileSync(
+        join(stage, 'node_modules', '.verity-install.json'),
+        JSON.stringify({ identity: currentIdentity }),
+      );
+      const publication = await lock(join(cacheRoot, 'publication.lock'));
+      try {
+        if (!(await snapshotSlot(cacheRoot, currentIdentity)))
+          throw new Error(
+            'Central dependency inventory is full while other identities are active; retry after they finish. No private installation was attempted.',
+          );
+        if (readlinkExists(cache)) {
+          if (read(join(cache, 'receipt.json')) !== currentIdentity)
+            throw new Error(
+              'Unrecognized central inventory blocks publication; existing files were preserved.',
+            );
+          rmSync(cache, { recursive: true });
+        }
+        // Temporary policy/lock files never become part of a ready inventory.
+        rmSync(join(stage, '.cache', 'verity-npm.lock'));
+        writeFileSync(join(stage, '.verity-inputs.sha256'), stagedIdentity);
+        writeFileSync(join(stage, 'receipt.json'), currentIdentity);
+        renameSync(stage, cache);
+        stage = undefined;
+        centralAttempt = false;
+        rmSync(failure, { force: true });
+      } finally {
+        publication.release();
+      }
+      preparation.release();
+      preparation = undefined;
     }
-    console.log('Dependency preparation complete and verified.');
+    await activate();
+  } catch (error) {
+    if (unlockIdentity && centralAttempt)
+      writeFileSync(
+        join(cacheRoot, currentIdentity + '.failed.json'),
+        JSON.stringify({ at: Date.now() }),
+      );
+    throw error;
   } finally {
     handlers.forEach(([signal, handler]) => process.removeListener(signal, handler));
-    unlockIdentity.release();
+    // SIGKILL leaves staging for the next owner of the identity/preparation locks.
+    if (stage) rmSync(stage, { recursive: true, force: true });
+    preparation?.release();
+    unlockIdentity?.release();
     unlockRoot.release();
     rootLockFd = undefined;
     if (cancelled) process.exitCode = cancelled === 'SIGINT' ? 130 : 143;
