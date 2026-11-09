@@ -162,11 +162,15 @@ it.each(['identity', 'phase'] as const)(
 
 it('reports success when the error path proves the build itself succeeded', async () => {
   // Status failing after completion (e.g. a cleanup refusal) must not discard a built image.
+  let refusedStatus = false;
   const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
     if (input.operation === 'health') return { version: 1, available: true };
     if (input.operation === 'begin') return record(false);
-    if (input.operation === 'status' && command.mock.calls.length < 4)
+    // Refuse only the first status read; the error path's cancel then proves success.
+    if (input.operation === 'status' && !refusedStatus) {
+      refusedStatus = true;
       throw new ProtectedBuildFailure('cleanup_failed');
+    }
     return record(true, 'succeeded');
   });
   // A bounded clock makes an unconfirmed outcome fail fast instead of polling forever.
@@ -191,7 +195,13 @@ it('confirms termination by request fields, independent of serialized key order'
   const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
     if (input.operation === 'health') return { version: 1, available: true };
     if (input.operation === 'begin') return record(false);
-    return { version: 1, record: { request: reordered, phase: 'succeeded', ended: true } };
+    // Decode as the client does, so object identity can never stand in for equality.
+    return JSON.parse(
+      JSON.stringify({
+        version: 1,
+        record: { request: reordered, phase: 'succeeded', ended: true },
+      }),
+    ) as ProtectedBuildReply;
   });
   // A bounded clock makes an unconfirmed outcome fail fast instead of polling forever.
   let tick = 0;
