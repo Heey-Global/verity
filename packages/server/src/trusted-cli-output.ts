@@ -87,8 +87,10 @@ export function createTrustedCliOutputStore(
           where project_rank > ${PROJECT_RETAINED_RECORDS} or total_rank > ${TOTAL_RETAINED_RECORDS}
             or project_bytes > ${PROJECT_RETAINED_BYTES} or total_bytes > ${TOTAL_RETAINED_BYTES}
         ) returning id`.execute(tx);
-        for (const { id: gone } of evicted.rows)
-          await sql`delete from secret_job_frames where job_id = ${gone}`.execute(tx);
+        if (evicted.rows.length > 0)
+          await sql`delete from secret_job_frames where job_id = any(${evicted.rows.map((row) => row.id)})`.execute(
+            tx,
+          );
         const { rows } = await sql<{
           running: number;
           project_running: number;
@@ -179,7 +181,7 @@ export function createTrustedCliOutputStore(
         id: string;
         started_at: Date;
         result: string | null;
-      }>`select id, started_at, result from trusted_cli_outputs where project_id = ${owner.projectId} and session_id = ${owner.sessionId} order by started_at desc, id limit ${LIST_LIMIT}`.execute(
+      }>`select id, started_at, result from trusted_cli_outputs where project_id = ${owner.projectId} and session_id = ${owner.sessionId} order by started_at desc, id desc limit ${LIST_LIMIT}`.execute(
         db,
       );
       return {

@@ -174,6 +174,18 @@ describe('MCP trusted output retrieval', () => {
       }),
     ).resolves.toBe(listing);
     expect(list).toHaveBeenCalledWith({ projectId: 'project', sessionId: 'session' });
+    await expect(
+      invoke({
+        projectId: 'project',
+        sessionId: 'session',
+        turnId: 'later-turn',
+        callId: 'page',
+        invocationId: 'page-invocation',
+        toolName: 'verity_secret_output',
+        request: { cursor: 3 },
+      }),
+    ).rejects.toThrow('cursor requires invocationId');
+    expect(list).toHaveBeenCalledTimes(1);
     expect(read).not.toHaveBeenCalled();
     expect(trustedCliTool).not.toHaveBeenCalled();
   });
