@@ -5551,3 +5551,18 @@ migrations['0202_wiki_maintenance'] = {
     await sql`drop table wiki_maintenance`.execute(db);
   },
 };
+
+migrations['0203_trusted_cli_output_listing'] = {
+  // Lets an agent whose wait for a secret command was cut off find the run
+  // again: list its own session's retained records, newest first.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table trusted_cli_outputs
+      add column started_at timestamptz not null default now()`.execute(db);
+    await sql`create index trusted_cli_outputs_owner
+      on trusted_cli_outputs(project_id, session_id, started_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index trusted_cli_outputs_owner`.execute(db);
+    await sql`alter table trusted_cli_outputs drop column started_at`.execute(db);
+  },
+};

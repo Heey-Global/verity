@@ -214,7 +214,16 @@ export async function collectTrustedCliOutput(
       result.terminationReason === 'process_exit' &&
       totalBytes === Buffer.byteLength(preview.stdout + preview.stderr)
     ) {
-      await store.remove(id);
+      // The whole output fits inline, but the record is still kept: a caller whose wait was
+      // cut off (client timeout, disconnect) never sees this response and must be able to
+      // find the run through the session listing instead of re-running it.
+      try {
+        await store.finish(id, metadata);
+      } catch {
+        // Retention is best-effort here; the response itself is complete. A record left
+        // running would hold a full reservation until its lease expires.
+        await store.remove(id).catch(() => undefined);
+      }
       return { ...metadata, stdout: preview.stdout, stderr: preview.stderr };
     }
     try {
