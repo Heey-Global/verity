@@ -81,8 +81,63 @@ flock plus home/cache leases. Brokers and their surviving children inherit the
 shared admission fence; normal starts wait while offline maintenance owns it.
 Project lifecycle admission also checks for unfinished helper containers after a
 Server restart, protecting older toolkits that lack the fence. Transport failure
-leaves the helper and fence intact. Successful helpers are removed without
-volumes; stopped leftovers become eligible for maintenance GC after seven days.
+leaves a running or unverified helper and its fence intact. Helpers confirmed
+stopped are removed without volumes, including after failed work and lost
+start/wait replies. A later maintenance attempt also recovers exactly owned
+stopped leftovers. Removal never forces a running container to stop.
+
+The helper imports and calls the broker's offline operation in one Node process;
+it does not keep a second Node runtime alive just to launch maintenance. Its
+256 MiB memory/swap ceiling and external 25-second timeout remain unchanged.
+Failures back off independently per project, from five minutes up to one hour;
+success resets that delay. Pre-helper runtime-state refusals remain immediately
+retryable. Retry state is in memory and resets when the Server restarts.
+
+Helper failures include an exit code, output byte count and an allowlisted
+`reason` in reports and Server warnings. Reasons distinguish broker import or
+capability failures, invalid requests/responses, a busy runtime, maintenance
+failure, timeout and resource unavailability. The exact tini `exec timeout failed:
+Cannot allocate memory` diagnostic is classified as `resource-unavailable`;
+it does not establish that the container memory ceiling caused the failure.
+Exit 137 alone is not proof of OOM. Unknown output remains `unknown`; raw output,
+exception messages and private paths are never forwarded. `cleanupFailed=true`
+marks a secondary cleanup failure while preserving the primary diagnostics.
+
+### Recovering stopped maintenance helpers
+
+After upgrading the Server, inspect leftover helpers on the Docker host. The
+following Bash function selects only exited/dead containers with both ownership
+labels and the exact maintenance name shape. Preview the IDs first:
+
+```bash
+stopped_cache_helpers() {
+  docker container ls --all \
+    --filter label=verity.component=runner-cache-maintenance \
+    --filter label=verity.project-id \
+    --filter status=exited --filter status=dead \
+    --format '{{.ID}} {{.Names}}' |
+    while read -r id name; do
+      if [[ "$name" =~ ^verity-cache-maintenance-[a-f0-9-]{36}$ ]]; then
+        printf '%s\n' "$id"
+      fi
+    done
+}
+stopped_cache_helpers
+```
+
+After reviewing that list, remove those stopped containers with:
+
+```bash
+stopped_cache_helpers | xargs --no-run-if-empty docker container rm
+```
+
+This command uses neither force removal nor volume deletion. A container that
+has started again must cause removal to fail rather than be interrupted. Do not
+substitute a general container or volume prune. After the normal release process,
+verify fresh maintenance reports, decreasing helper/image pins, and a successful
+sandbox repair; merged code alone does not verify deployment recovery.
+
+### Offline cache policy and reporting
 
 Offline reclamation can clear a known home's regenerable cache despite ambiguous
 historical turn state only after proving no consumer can write and acquiring the

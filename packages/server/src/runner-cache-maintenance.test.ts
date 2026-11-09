@@ -6,6 +6,7 @@ import type {
   DockerContainerSummary,
 } from './docker.js';
 import { RunnerCacheMaintenance, reclaimSleepingRunnerCaches } from './runner-cache-maintenance.js';
+import { cacheHelperCommand } from './runner-cache-helper.js';
 
 const report = { ok: true, report: { removedBytes: 12 } };
 describe('runner maintenance negotiation and ownership', () => {
@@ -180,8 +181,12 @@ describe('sleeping runner cache helpers', () => {
     expect(await h.run()).toEqual(report);
     expect(h.assertIdle).toHaveBeenCalledTimes(2);
     expect(h.docker.startContainer).toHaveBeenCalledExactlyOnceWith('helper');
+    expect(h.spec?.command).toEqual(['-e', cacheHelperCommand]);
     expect(h.spec).toMatchObject({
       network: 'none',
+      entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
+      memoryBytes: 256 * 1024 ** 2,
+      memorySwapBytes: 256 * 1024 ** 2,
       readOnlyRootfs: true,
       capDrop: ['ALL'],
       runtime: 'runsc',
@@ -327,6 +332,10 @@ describe('sleeping runner cache helpers', () => {
   });
   it('leaves a disconnected helper and its fence for admission guards to observe', async () => {
     const h = fixture();
+    const inspect = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) =>
+      id === 'helper' ? { id, running: true, status: 'running' } : inspect(id),
+    );
     h.docker.waitContainer.mockRejectedValueOnce(new Error('connection lost'));
     await expect(h.run()).rejects.toThrow('connection lost');
     expect(h.docker.removeStoppedContainer).not.toHaveBeenCalled();
@@ -422,5 +431,53 @@ describe('sleeping runner cache helpers', () => {
     ]);
     await h.run();
     expect(h.docker.removeStoppedContainer).toHaveBeenNthCalledWith(1, 'project');
+  });
+});
+
+describe('helper cleanup after uncertain Docker outcomes', () => {
+  it.each(['startContainer', 'waitContainer'] as const)(
+    'removes a confirmed stopped helper after %s loses its reply',
+    async (method) => {
+      const h = fixture();
+      const failure = new Error('reply lost');
+      h.docker[method].mockRejectedValueOnce(failure);
+      await expect(h.run()).rejects.toBe(failure);
+      expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+    },
+  );
+  it('retains a helper when inspection is unavailable after timeout', async () => {
+    const h = fixture();
+    const inspect = h.docker.inspectContainer.getMockImplementation()!;
+    h.docker.inspectContainer.mockImplementation(async (id) => {
+      if (id === 'helper') throw new Error('inspection unavailable');
+      return inspect(id);
+    });
+    const timeout = new Error('wait timed out');
+    h.docker.waitContainer.mockRejectedValueOnce(timeout);
+    await expect(h.run()).rejects.toMatchObject({
+      errors: [timeout, expect.objectContaining({ message: 'inspection unavailable' })],
+      runnerCacheCleanupFailed: true,
+    });
+    expect(h.docker.removeStoppedContainer).not.toHaveBeenCalled();
+  });
+  it('preserves the primary diagnostics when cleanup also fails', async () => {
+    const h = fixture();
+    h.docker.waitContainer.mockResolvedValueOnce(2);
+    h.docker.containerLogs.mockResolvedValueOnce(
+      '[FATAL tini (2)] exec timeout failed: Cannot allocate memory',
+    );
+    h.docker.removeStoppedContainer.mockRejectedValueOnce(new Error('removal unavailable'));
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: {
+        code: 'maintenance-helper-failed',
+        exitCode: 2,
+        reason: 'resource-unavailable',
+      },
+      runnerCacheCleanupFailed: true,
+      errors: [
+        expect.objectContaining({ runnerCacheFailure: expect.any(Object) }),
+        expect.objectContaining({ message: 'removal unavailable' }),
+      ],
+    });
   });
 });

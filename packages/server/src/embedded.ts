@@ -3645,6 +3645,8 @@ export async function buildEmbeddedServer(
     dataVolumeRoot === undefined
       ? undefined
       : new RunnerCacheStorage({
+          onFailure: (failure) =>
+            app.log.warn(failure, 'Runner cache maintenance failed; unverified caches retained'),
           ...(config.runnerCacheMaxBytes !== undefined
             ? { maxBytes: config.runnerCacheMaxBytes }
             : {}),
