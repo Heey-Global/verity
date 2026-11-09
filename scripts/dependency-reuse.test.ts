@@ -437,6 +437,55 @@ describe('shared dependency reuse', () => {
     );
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('preserves stale workspace dependency trees before activating hoisted packages', () => {
+    const f = fixture();
+    const workspace = join(f.worktree, 'packages', 'source');
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, 'package.json'), '{"name":"source"}');
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          'packages/source': { name: 'source' },
+          'node_modules/source': { link: true, resolved: 'packages/source' },
+          'node_modules/private': { version: '2.0.0' },
+        },
+      }),
+    );
+    expect(f.run('install').status).toBe(0);
+    // A valid root receipt must not conceal a stale workspace resolution path.
+    mkdirSync(join(workspace, 'node_modules', 'private'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'node_modules', 'private', 'package.json'),
+      '{"version":"1.0.0"}',
+    );
+    writeFileSync(join(workspace, 'node_modules', 'patch.txt'), 'keep workspace patch');
+    expect(f.run('status').status).toBe(1);
+    const activated = f.run('install');
+    expect(activated.status, activated.stderr).toBe(0);
+    expect(existsSync(join(workspace, 'node_modules'))).toBe(false);
+    const loaded = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        "import { createRequire } from 'node:module'; console.log(createRequire(process.cwd() + '/probe.js')('private/package.json').version);",
+      ],
+      { cwd: workspace, encoding: 'utf8' },
+    );
+    expect(loaded.trim()).toBe('2.0.0');
+    const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'patch.txt')) &&
+          readFileSync(join(preserved, entry, 'patch.txt'), 'utf8') === 'keep workspace patch',
+      ),
+    ).toBe(true);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(f.run('status').status).toBe(0);
+  });
   it('restores workspace command links to each receiving session', () => {
     const f = fixture();
     const sibling = f.sibling();
