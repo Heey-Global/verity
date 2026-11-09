@@ -85,9 +85,13 @@ it('allows the same name twice and refuses an empty or overlong one', async () =
   await expect(
     ctx.store.renameProject('a', 'x'.repeat(PROJECT_NAME_MAX_CHARS + 1)),
   ).rejects.toBeInstanceOf(InvalidProjectNameError);
-  // Counted in characters, not UTF-16 units: a full-length name of umlauts fits.
+  // Limits match native inputs and HTTP validation, including supplementary Unicode.
   expect((await ctx.store.renameProject('a', 'ü'.repeat(PROJECT_NAME_MAX_CHARS)))?.name).toBe(
     'ü'.repeat(PROJECT_NAME_MAX_CHARS),
+  );
+  expect((await ctx.store.renameProject('a', '😀'.repeat(50)))?.name).toBe('😀'.repeat(50));
+  await expect(ctx.store.renameProject('a', '😀'.repeat(51))).rejects.toBeInstanceOf(
+    InvalidProjectNameError,
   );
   expect(await ctx.store.renameProject('missing', 'Name')).toBeUndefined();
 });

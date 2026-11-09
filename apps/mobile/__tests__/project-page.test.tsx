@@ -451,6 +451,49 @@ describe('project page', () => {
       expect(client.getProject).toHaveBeenCalledTimes(loadsBefore + 1);
     });
 
+    it.each(['name', 'description'] as const)(
+      'keeps the saved %s when the detail refresh fails',
+      async (field) => {
+        const { client, updateProjectProfile } = managed('Old description');
+        render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+        fireEvent.press(
+          await screen.findByLabelText(
+            field === 'name' ? 'Project name: Verity Plattform' : 'Description: Old description',
+          ),
+        );
+        await act(async () => undefined);
+        (client.getProject as jest.Mock).mockRejectedValue(new Error('offline'));
+        updateProjectProfile.mockResolvedValue({ [field]: 'Saved value' });
+        const input = screen.getByLabelText(field === 'name' ? 'Project name' : 'Description');
+        fireEvent.changeText(input, 'Saved value');
+        fireEvent(input, 'submitEditing');
+        expect(
+          await screen.findByLabelText(
+            `${field === 'name' ? 'Project name' : 'Description'}: Saved value`,
+          ),
+        ).toBeOnTheScreen();
+      },
+    );
+
+    it('keeps a newly added description when settings were absent and refresh fails', async () => {
+      const { client, updateProjectProfile } = managed();
+      const detail = makeDetail();
+      (client.getProject as jest.Mock).mockResolvedValue({
+        ...detail,
+        settings: null,
+        viewer: { canManage: true },
+      });
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      fireEvent.press(await screen.findByLabelText('Add description'));
+      await act(async () => undefined);
+      (client.getProject as jest.Mock).mockRejectedValue(new Error('offline'));
+      updateProjectProfile.mockResolvedValue({ description: 'Saved description' });
+      const input = screen.getByLabelText('Description');
+      fireEvent.changeText(input, 'Saved description');
+      fireEvent(input, 'submitEditing');
+      expect(await screen.findByLabelText('Description: Saved description')).toBeOnTheScreen();
+    });
+
     it('puts the old name back on Escape and saves nothing', async () => {
       const { client, updateProjectProfile } = managed();
       render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);

@@ -475,7 +475,7 @@ export interface ProjectUpsertInput {
   name?: string;
 }
 
-/** Longest name {@link EventStore.renameProject} accepts. */
+/** Maximum UTF-16 length, matching API validation and native text input limits. */
 export const PROJECT_NAME_MAX_CHARS = 100;
 
 /** The name a project carries when none was given: its repository name, or a
@@ -7014,7 +7014,7 @@ export class EventStore implements EventSink {
   async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
     const trimmed = name.trim();
     if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
-    if ([...trimmed].length > PROJECT_NAME_MAX_CHARS)
+    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
       throw new InvalidProjectNameError(
         `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
       );

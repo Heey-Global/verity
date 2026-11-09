@@ -1595,6 +1595,27 @@ describe('PATCH /projects/:id/profile', () => {
     expect((await ctx.store.getProject('p-profile'))?.name).toBe('verity');
   });
 
+  it('uses the same supplementary Unicode length limit for creation and rename', async () => {
+    for (const [units, status] of [
+      [50, 201],
+      [51, 400],
+    ] as const) {
+      const name = '😀'.repeat(units);
+      const created = await app.inject({
+        method: 'POST',
+        url: '/projects',
+        payload: { kind: 'local', name },
+      });
+      expect(created.statusCode).toBe(status);
+      const renamed = await app.inject({
+        method: 'PATCH',
+        url: '/projects/p-profile/profile',
+        payload: { name },
+      });
+      expect(renamed.statusCode).toBe(status === 201 ? 200 : 400);
+    }
+  });
+
   it('tells the app in the detail whether this person may edit them', async () => {
     const res = await app.inject({ method: 'GET', url: '/projects/p-profile' });
     // Without the auth gate there is one implicit administrator.

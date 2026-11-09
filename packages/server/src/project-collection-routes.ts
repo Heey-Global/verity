@@ -20,7 +20,14 @@ import {
 const orderBody = z.object({ ids: z.array(z.string().min(1)) });
 // The project's own name. Optional for a repository project, which is then
 // named after its repository; a local project is named by it.
-const projectName = z.string().trim().min(1).max(PROJECT_NAME_MAX_CHARS);
+const projectName = z
+  .string()
+  .trim()
+  .min(1)
+  .refine(
+    (name) => name.length <= PROJECT_NAME_MAX_CHARS,
+    `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+  );
 const createBody = z.union([
   z.object({
     repo: z.string().min(1),

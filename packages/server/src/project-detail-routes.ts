@@ -30,7 +30,10 @@ const profileBody = z
       .string()
       .trim()
       .min(1, 'project name is required')
-      .max(PROJECT_NAME_MAX_CHARS)
+      .refine(
+        (name) => name.length <= PROJECT_NAME_MAX_CHARS,
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      )
       .optional(),
     description: z.string().trim().max(PROJECT_DESCRIPTION_MAX_CHARS).nullable().optional(),
   })

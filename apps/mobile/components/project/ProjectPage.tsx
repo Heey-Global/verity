@@ -106,7 +106,10 @@ export function ProjectPage({
   onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
 }) {
   const { theme } = useUnistyles();
-  const { detail, loading, error, load } = useProjectDetail(client, projectId);
+  const { detail, loading, error, load, onProfileSaved, savedProfile } = useProjectDetail(
+    client,
+    projectId,
+  );
   const pullRequests = useProjectPullRequests(client, projectId);
   /** The knowledge area open in the wide layout's column, if any. */
   const [knowledgeArea, setKnowledgeArea] = useState<string>();
@@ -193,11 +196,12 @@ export function ProjectPage({
   const name = detail ? projectTitle(detail.project) : 'Project';
   const saveProfile = useCallback(
     async (patch: { name?: string; description?: string | null }) => {
-      await client.updateProjectProfile(projectId, patch);
+      const saved = await client.updateProjectProfile(projectId, patch);
+      onProfileSaved(saved);
       await load(true);
       onProjectChanged?.();
     },
-    [client, projectId, load, onProjectChanged],
+    [client, projectId, load, onProfileSaved, onProjectChanged],
   );
   const gear = (
     <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
@@ -227,7 +231,11 @@ export function ProjectPage({
       >
         <ProjectHero
           project={detail.project}
-          description={detail.settings?.description ?? ''}
+          description={
+            (savedProfile?.description !== undefined
+              ? savedProfile.description
+              : detail.settings?.description) ?? ''
+          }
           line={projectLine(detail.project, null, pullRequests.repositories?.length)}
           onSave={detail.viewer?.canManage === true ? saveProfile : undefined}
         />
