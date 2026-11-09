@@ -676,11 +676,9 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
         z.object({
           Id: oid,
           Config: z.object({
-            Image: z
-              .string()
-              .refine(
-                (image) => image === options.imageRef || image === options.cleanupImageRef,
-              ),
+            Image: z.string().refine((image) => {
+              return image === options.imageRef || image === options.cleanupImageRef;
+            }),
             Entrypoint: z.array(z.string()),
             Cmd: z.array(z.string()),
             User: z.literal('65534:65534'),

@@ -20,7 +20,10 @@ it('retains an owned build image without any project relay registry entries', as
       { mode: 0o600 },
     );
     // The same atomic-write entry can be in flight or left behind after a crash.
-    const temporary = join(directory, 'e'.repeat(64) + '.json.12345678-1234-4234-8234-123456789abc');
+    const temporary = join(
+      directory,
+      'e'.repeat(64) + '.json.12345678-1234-4234-8234-123456789abc',
+    );
     await writeFile(temporary, '{incomplete', { mode: 0o600 });
     vi.mocked(readEgressHostConfiguration).mockResolvedValue({
       version: 1,
@@ -32,9 +35,8 @@ it('retains an owned build image without any project relay registry entries', as
         return JSON.stringify([{ Id: id, Config: { Image: image } }]);
       }, directory),
     ).toEqual([image]);
-    expect(vi.mocked(readEgressHostConfiguration).mock.calls.map(([path]) => path)).not.toContain(
-      temporary,
-    );
+    const readPaths = vi.mocked(readEgressHostConfiguration).mock.calls.map(([path]) => path);
+    expect(readPaths).not.toContain(temporary);
     expect(await protectedBuildRetainedImages(async () => undefined, directory)).toEqual([]);
     // With no published record, a crash leftover must not invent image authority.
     await rm(join(directory, 'c'.repeat(64) + '.json'));
