@@ -214,27 +214,31 @@ it.each([
 
 it('cleans a partially prepared network only after exact partial termination proof', async () => {
   const { io } = fixture();
-  io.endedPartial = vi.fn(async () => false);
-  io.removePartial = vi.fn(async () => {});
+  const endedPartial = vi.fn(async () => false);
+  const removePartial = vi.fn(async () => {});
+  io.endedPartial = endedPartial;
+  io.removePartial = removePartial;
   const runtime = createProtectedBuildRuntime(io);
   await expect(runtime.remove(request)).rejects.toThrow('partial termination is unconfirmed');
-  expect(io.removePartial).not.toHaveBeenCalled();
-  vi.mocked(io.endedPartial).mockResolvedValue(true);
+  expect(removePartial).not.toHaveBeenCalled();
+  endedPartial.mockResolvedValue(true);
   await runtime.remove(request);
-  expect(io.removePartial).toHaveBeenCalledWith(request);
+  expect(removePartial).toHaveBeenCalledWith(request);
 });
 
 it('retries resource removal when final file cleanup fails after network removal', async () => {
-  const { io, calls, ended } = fixture();
+  const f = fixture();
+  const { io, calls } = f;
   const runtime = createProtectedBuildRuntime(io);
   await runtime.prepare(request);
-  ended();
-  io.cleanup = vi
+  f.ended();
+  const cleanup = vi
     .fn()
     .mockRejectedValueOnce(new Error('cleanup reply lost'))
     .mockResolvedValue(undefined);
+  io.cleanup = cleanup;
   await expect(runtime.remove(request)).rejects.toThrow('cleanup reply lost');
   await runtime.remove(request);
   expect(calls.filter((call) => call === 'remove-network')).toHaveLength(2);
-  expect(io.cleanup).toHaveBeenCalledTimes(2);
+  expect(cleanup).toHaveBeenCalledTimes(2);
 });
