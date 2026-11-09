@@ -3,6 +3,7 @@ import { SessionRepositories } from '../../components/project/SessionRepositorie
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
+import { projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
@@ -4396,7 +4397,8 @@ export const SessionChat = memo(function SessionChat({
           displayName={sessionFallback}
           projectId={projectId ?? null}
           projectName={
-            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+            projectTitle(settingsProjects.find((project) => project.id === projectId)) ??
+            'No project'
           }
           canMove={
             !busy &&
@@ -4409,7 +4411,7 @@ export const SessionChat = memo(function SessionChat({
           }
           projects={settingsProjects
             .filter((project) => project.kind === 'local')
-            .map((project) => ({ id: project.id, name: project.repo }))}
+            .map((project) => ({ id: project.id, name: projectTitle(project) }))}
           linkableSessions={settingsSessions
             .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
             .map((candidate) => ({
@@ -4417,8 +4419,9 @@ export const SessionChat = memo(function SessionChat({
               name: candidate.name ?? candidate.sessionId,
               projectId: candidate.projectId!,
               projectName:
-                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
-                candidate.projectId!,
+                projectTitle(
+                  settingsProjects.find((project) => project.id === candidate.projectId),
+                ) ?? candidate.projectId!,
             }))}
           client={client}
           onClose={() => setSessionSettingsOpen(false)}

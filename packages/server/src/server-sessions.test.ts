@@ -2758,6 +2758,7 @@ describe('POST /sessions (injected worktree provisioner)', () => {
 describe('POST /sessions with project field (#174)', () => {
   const mockProject: ProjectRecord = {
     id: 'p1',
+    name: 'Fixture project',
     owner: 'heey-global',
     repo: 'verity',
     containerName: 'dev-heey-global-verity',
@@ -3095,6 +3096,7 @@ describe('POST /sessions with project field (#174)', () => {
     const p = fakeProvisioner();
     p.provision.mockResolvedValue({
       id: 'p-absent',
+      name: 'Fixture project',
       owner: 'heey-global',
       repo: 'verity',
       containerName: 'dev-heey-global-verity',

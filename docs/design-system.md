@@ -258,6 +258,12 @@ title; a log list keeps them dense and scannable.
   - **Single line**
   - **Secret:** masked, with a reveal control, never offered to the password manager
   - **Multiline:** grows up to six lines
+  - **In place** (`InlineEdit`): text that is edited where it stands, such as the project's
+    name and description. At rest it reads as the surrounding text; a tap turns it into a slim
+    field in the same typography — no box, an `action` underline and a small check beside it.
+    Leaving the field, Return and the check save; Escape restores the old text. A failed save
+    keeps the typed text, turns the underline `attention` and names the reason in one line
+    below. Someone who may not change the text sees it plain.
 
 ### 5.4 Status
 

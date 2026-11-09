@@ -14,6 +14,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+let mockNewDesignChoice = false;
+jest.mock('../lib/homePreferences', () => ({
+  useNewDesignChoice: () => mockNewDesignChoice,
+}));
 
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
@@ -42,6 +46,7 @@ const rowLabel = (title: string) =>
   new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`);
 
 beforeEach(() => {
+  mockNewDesignChoice = false;
   setSearchParams({ id: 'p/1' });
 });
 
@@ -113,23 +118,45 @@ describe('project settings index — destinations', () => {
     expect(screen.queryByLabelText(/^MCP(,|$)/)).toBeNull();
   });
 
-  it('edits the description shown under the project name', async () => {
-    const detail = makeDetail({ description: 'Old line' });
-    const updateProjectSettings = jest
-      .fn()
-      .mockResolvedValue({ ...detail.settings, description: 'Agent workspace' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
-    const prompt = jest.spyOn(Alert, 'prompt').mockImplementation((_title, _message, callback) => {
-      (callback as (value: string) => void)('Agent workspace');
-    });
+  it('leaves description editing on the project page', async () => {
+    mockNewDesignChoice = true;
+    const detail = { ...makeDetail({ description: 'Old line' }), viewer: { canManage: true } };
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSettingsIndexScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Description, Old line/));
-    expect(prompt.mock.calls[0]?.[4]).toBe('Old line');
-    await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { description: 'Agent workspace' }),
-    );
-    expect(await screen.findByText('Agent workspace')).toBeOnTheScreen();
+    await screen.findByLabelText(rowLabel('Sandbox'));
+    expect(screen.queryByLabelText(rowLabel('Description'))).toBeNull();
+    expect(screen.queryByText('Old line')).toBeNull();
   });
+
+  it.each([
+    [false, undefined],
+    [true, undefined],
+    [false, { canManage: true }],
+  ] as const)(
+    'keeps description editing with preview %s and viewer %s',
+    async (preview, viewer) => {
+      mockNewDesignChoice = preview;
+      const detail = { ...makeDetail({ description: 'Old line' }), viewer };
+      const updateProjectSettings = jest
+        .fn()
+        .mockResolvedValue({ ...detail.settings, description: 'Agent workspace' });
+      mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+      const prompt = jest
+        .spyOn(Alert, 'prompt')
+        .mockImplementation((_title, _message, callback) => {
+          (callback as (value: string) => void)('Agent workspace');
+        });
+      render(<ProjectSettingsIndexScreen />);
+      fireEvent.press(await screen.findByLabelText(/^Description, Old line/));
+      expect(prompt.mock.calls[0]?.[4]).toBe('Old line');
+      await waitFor(() =>
+        expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
+          description: 'Agent workspace',
+        }),
+      );
+      expect(await screen.findByText('Agent workspace')).toBeOnTheScreen();
+    },
+  );
 
   it('shows the sandbox state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(

@@ -486,6 +486,7 @@ function fakeGit(canned: Array<{ match: RegExp; stdout?: string; reject?: boolea
 describe('resolveImage (#174)', () => {
   const baseProject = {
     id: randomUUID(),
+    name: 'Fixture project',
     owner: 'example-org',
     repo: 'example-repo',
     containerName: 'dev-example-org-example-repo',
