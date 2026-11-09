@@ -1,3 +1,4 @@
+import { cacheHelperDiagnostic } from './runner-cache-helper.js';
 import { MaintenanceImageError } from './maintenance-image.js';
 import type { RunnerCacheReclamationReport } from '@verity/events';
 import { z } from 'zod';
@@ -47,6 +48,7 @@ const maintenanceFailure = z.object({
   ]),
   exitCode: z.number().safe().int().optional(),
   outputBytes: bytes.optional(),
+  reason: cacheHelperDiagnostic.optional(),
   counts: z
     .object({
       missingState: bytes.max(1_000_000),
@@ -70,15 +72,15 @@ function isStateRefusal(error: unknown): boolean {
   );
   return parsed.success && STATE_REFUSAL_CODES.has(parsed.data.code);
 }
-function failureReason(error: unknown): string {
+function primaryFailureReason(error: unknown): string {
   if (error instanceof MaintenanceImageError) return `[${error.code}]`;
   const record = typeof error === 'object' && error !== null ? error : {};
   const parsed = maintenanceFailure.safeParse(
     'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
   );
   if (parsed.success) {
-    const { code, counts, exitCode, outputBytes } = parsed.data;
-    return `[${code}]${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
+    const { code, counts, exitCode, outputBytes, reason } = parsed.data;
+    return `[${code}]${reason === undefined ? '' : ` reason=${reason}`}${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
   }
   const code = 'code' in record ? record.code : undefined;
   if (code === 'EACCES' || code === 'EPERM') return '[supervisor-access-denied]';
@@ -87,6 +89,15 @@ function failureReason(error: unknown): string {
   if (error instanceof z.ZodError) return '[invalid-response]';
   return '[unclassified-failure]';
 }
+function failureReason(error: unknown): string {
+  const cleanupFailed =
+    typeof error === 'object' &&
+    error !== null &&
+    'runnerCacheCleanupFailed' in error &&
+    error.runnerCacheCleanupFailed === true;
+  return `${primaryFailureReason(error)}${cleanupFailed ? ' cleanupFailed=true' : ''}`;
+}
+
 const safeBlockers = new Set([
   'Runner cache maintenance inventory is incomplete',
   'Runner turn ownership is unknown; legacy package caches were retained',
@@ -144,6 +155,7 @@ export class RunnerCacheStorage {
       request: (projectId: string, sessionIds: string[], maxBytes: number) => Promise<unknown>;
       maxBytes?: number | undefined;
       now?: () => number;
+      onFailure?: (failure: { projectId: string; reason: string; retryAfter?: string }) => void;
     },
   ) {
     this.maxBytes = deps.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -312,6 +324,13 @@ export class RunnerCacheStorage {
               });
             }
             this.pendingProjects.delete(runtime.projectId);
+            this.deps.onFailure?.({
+              projectId: runtime.projectId,
+              reason: failureReason(error),
+              ...(this.retries.has(runtime.projectId)
+                ? { retryAfter: new Date(this.retries.get(runtime.projectId)!.after).toISOString() }
+                : {}),
+            });
             incomplete(
               `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,
             );
