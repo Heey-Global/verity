@@ -322,6 +322,9 @@ const builds =
   relayPolicy?.packetEnforcement === true
     ? await createNativeProtectedBuildHost({
         imageRef: relayPolicy.image,
+        ...(relayPolicy.previousImage === undefined
+          ? {}
+          : { cleanupImageRef: relayPolicy.previousImage }),
         dataVolume: relayPolicy.dataVolume,
         dependencies: { ...fenceDependencies, deadline },
         verifyReady: async () => {

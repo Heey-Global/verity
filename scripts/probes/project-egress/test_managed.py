@@ -376,6 +376,87 @@ class ManagedTests(unittest.TestCase):
         inspect = max(i for i, args in enumerate(self.calls) if 'container' in args and 'inspect' in args)
         self.assertLess(stop, inspect)
 
+    def build_anchor_policy(self):
+        old, target = ['sha256:' + c * 64 for c in 'ab']
+        request = {'projectId': 'project-a', 'attemptId': 'attempt-a'}
+        key = managed.base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+        root = self.root / 'var/lib/verity/protected-build'
+        managed.base.atomic_file(root / 'controller.json', json.dumps({
+            'request': request, 'phase': 'running', 'ended': False}).encode(), 0o600)
+        managed.base.atomic_file(root / 'attempts' / key / 'checkpoint.json', json.dumps({
+            'binding': {'projectId': request['projectId'], 'generation': request['attemptId'],
+                        'networkId': 'c' * 64, 'networkName': 'verity-build-' + key[:32],
+                        'bridge': 'veb' + key[:12]},
+            'attemptId': request['attemptId'], 'containerId': 'd' * 64}).encode(), 0o600)
+        managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json',
+            json.dumps({'image': old, 'packetEnforcement': True}).encode(), 0o600)
+        return old, target, key
+
+    def test_build_only_image_is_retained_across_skipped_release_and_retries(self):
+        old, target, key = self.build_anchor_policy()
+        for running in (True, False):
+            def run(*args):
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old},
+                                   'State': {'Running': running}}])
+            result = managed.reconcile_stopped_relay_policy(self.root, run,
+                json.dumps({'image': target, 'packetEnforcement': True}))
+            self.assertEqual(json.loads(result)['previousImage'], old)
+            managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json', result, 0o600)
+        # Lost removal replies must not keep obsolete image authority forever.
+        result = managed.reconcile_stopped_relay_policy(self.root, lambda *args: '', result)
+        self.assertNotIn('previousImage', json.loads(result))
+
+    def test_build_retention_rejects_foreign_image_and_replaced_identity(self):
+        old, target, key = self.build_anchor_policy()
+        for identity, image in [('e' * 64, old), ('d' * 64, 'sha256:' + 'f' * 64)]:
+            def run(*args):
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': identity, 'Config': {'Image': image}}])
+            with self.assertRaises(ValueError):
+                managed.reconcile_stopped_relay_policy(self.root, run,
+                    json.dumps({'image': target, 'packetEnforcement': True}))
+
+    def test_partial_build_without_container_checkpoint_retains_installed_image(self):
+        old, target, key = self.build_anchor_policy()
+        path = self.root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
+        point = json.loads(path.read_text())
+        point.pop('containerId')
+        managed.base.atomic_file(path, json.dumps(point).encode(), 0o600)
+        selectors = []
+        def run(*args):
+            if 'ls' in args:
+                selectors.append(args[-1])
+                return 'd' * 64
+            return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old}}])
+        result = managed.reconcile_stopped_relay_policy(self.root, run,
+            json.dumps({'image': target, 'packetEnforcement': True}))
+        self.assertEqual(json.loads(result)['previousImage'], old)
+        self.assertEqual(selectors, ['name=^/verity-build-anchor-' + key[:32] + '$'])
+
+    def test_build_retention_rejects_untrusted_checkpoint_and_inspection_failure(self):
+        old, target, key = self.build_anchor_policy()
+        path = self.root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
+        data = path.read_bytes()
+        def run(*args):
+            if 'ls' in args:
+                return 'd' * 64
+            raise RuntimeError('daemon unavailable')
+        with self.assertRaises(RuntimeError):
+            managed.reconcile_stopped_relay_policy(self.root, run,
+                json.dumps({'image': target, 'packetEnforcement': True}))
+        path.chmod(0o644)
+        with self.assertRaises(ValueError):
+            managed.stopped_build_images(self.root, run)
+        path.chmod(0o600)
+        point = json.loads(data)
+        point['binding']['projectId'] = 'another-project'
+        managed.base.atomic_file(path, json.dumps(point).encode(), 0o600)
+        with self.assertRaises(ValueError):
+            managed.stopped_build_images(self.root, run)
+
     def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
         old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
         self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
