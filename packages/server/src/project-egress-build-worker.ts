@@ -1,3 +1,8 @@
+import {
+  ProtectedBuildFailure,
+  protectedBuildFailure,
+  type ProtectedBuildDiagnostic,
+} from './project-egress-build-error.js';
 /** Private Server child. Only a host-confirmed terminal outcome releases storage;
  * a nonzero exit retains reservations because remote work may still be running.
  */
@@ -24,12 +29,17 @@ export async function superviseProtectedBuild(
     pause?: (ms: number) => Promise<unknown>;
     timeoutMs?: number;
   } = {},
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; failure?: ProtectedBuildDiagnostic }> {
   request = protectedBuildRequest.parse(request);
   const now = options.now ?? (() => performance.now());
   const pause = options.pause ?? delay;
   const until = now() + (options.timeoutMs ?? 30 * 60_000);
   const reference = { projectId: request.projectId, attemptId: request.attemptId };
+  const confirmed = (reply: ProtectedBuildReply): boolean =>
+    'record' in reply &&
+    reply.record.ended &&
+    (reply.record.phase === 'failed' || reply.record.phase === 'succeeded') &&
+    JSON.stringify(reply.record.request) === JSON.stringify(request);
   const retry = async (input: ProtectedBuildCommand) => {
     while (true) {
       try {
@@ -51,13 +61,13 @@ export async function superviseProtectedBuild(
     while (now() < until) {
       const reply = await retry({ operation: 'status', ...reference });
       if (!('record' in reply)) throw new Error('Invalid protected build status');
-      if (reply.record.ended) return { success: reply.record.phase === 'succeeded' };
+      if (confirmed(reply)) return { success: reply.record.phase === 'succeeded' };
       if (reply.record.phase === 'running') {
         try {
           await retry({ operation: 'heartbeat', ...reference });
         } catch (error) {
           const current = await retry({ operation: 'status', ...reference });
-          if ('record' in current && current.record.ended)
+          if ('record' in current && confirmed(current))
             return { success: current.record.phase === 'succeeded' };
           throw error;
         }
@@ -65,13 +75,21 @@ export async function superviseProtectedBuild(
       await pause(200);
     }
     const stopped = await command({ operation: 'cancel', ...reference });
-    if (!('record' in stopped) || !stopped.record.ended)
-      throw new Error('Protected build termination is unconfirmed');
+    if (!confirmed(stopped)) throw new Error('Protected build termination is unconfirmed');
     return { success: false };
   } catch (error) {
-    // Cancellation is best effort on a broken transport. Failure remains nonzero
-    // even if cancellation replies, preserving conservative reservation handling.
-    await command({ operation: 'cancel', ...reference }).catch(() => undefined);
+    // A failed build can still have a confirmed end. Only exact host evidence,
+    // never client exit or error text, allows storage to be released.
+    for (const operation of ['cancel', 'status'] as const) {
+      const reply = await command({ operation, ...reference }).catch(() => undefined);
+      if (reply && confirmed(reply))
+        return {
+          success: false,
+          ...(error instanceof ProtectedBuildFailure
+            ? { failure: protectedBuildFailure(error) }
+            : {}),
+        };
+    }
     throw error;
   }
 }
@@ -79,7 +97,7 @@ export async function runProtectedBuildWorker(options: {
   jobFile: string;
   socketPath: string;
   keyPath: string;
-}): Promise<{ success: boolean }> {
+}): Promise<{ success: boolean; failure?: ProtectedBuildDiagnostic }> {
   const job = z
     .strictObject({ request: protectedBuildRequest })
     .parse(JSON.parse(await readFile(options.jobFile, 'utf8')));

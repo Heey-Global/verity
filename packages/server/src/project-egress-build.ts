@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
 
 const identity = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/u);
 export const protectedBuildRequest = z.strictObject({
@@ -15,6 +16,8 @@ export interface ProtectedBuildRecord {
   phase: ProtectedBuildPhase;
   /** A failed operation remains allocated until the host confirms process termination. */
   ended: boolean;
+  /** Resources were removed after termination was proven; safe to retry after a crash. */
+  cleaned?: boolean | undefined;
 }
 export interface ProtectedBuildRuntime {
   ready(this: void): Promise<boolean>;
@@ -31,10 +34,11 @@ export interface ProtectedBuildRuntime {
   ended(this: void, request: ProtectedBuildRequest): Promise<boolean>;
   remove(this: void, request: ProtectedBuildRequest): Promise<void>;
 }
-const protectedBuildRecord = z.strictObject({
+export const protectedBuildRecord = z.strictObject({
   request: protectedBuildRequest,
   phase: z.enum(['preparing', 'running', 'succeeded', 'failed', 'stopping']),
   ended: z.boolean(),
+  cleaned: z.boolean().optional(),
 });
 export const protectedBuildCommand = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('health') }),
@@ -70,6 +74,10 @@ export class ProtectedBuildHost {
     private readonly runtime: ProtectedBuildRuntime,
     private readonly persist: (record: ProtectedBuildRecord | undefined) => Promise<void>,
     private readonly now: () => number = () => performance.now(),
+    private readonly receipts?: {
+      save(record: ProtectedBuildRecord): Promise<void>;
+      load(projectId: string, attemptId: string): Promise<ProtectedBuildRecord | undefined>;
+    },
   ) {}
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);
@@ -94,10 +102,39 @@ export class ProtectedBuildHost {
   private match(projectId: string, attemptId: string): ProtectedBuildRecord {
     const record = this.record;
     if (!record || record.request.projectId !== projectId || record.request.attemptId !== attemptId)
-      throw new Error('Unknown protected build attempt');
+      throw new ProtectedBuildFailure('unknown_attempt');
     return record;
   }
+  private async receipt(projectId: string, attemptId: string): Promise<ProtectedBuildRecord> {
+    const value = await this.receipts?.load(projectId, attemptId);
+    if (value === undefined) throw new ProtectedBuildFailure('unknown_attempt');
+    const record = protectedBuildRecord.parse(value);
+    if (
+      !record.ended ||
+      !terminal(record.phase) ||
+      record.request.projectId !== projectId ||
+      record.request.attemptId !== attemptId
+    )
+      throw new ProtectedBuildFailure('unknown_attempt');
+    return record;
+  }
+  private async cleanup(record: ProtectedBuildRecord): Promise<void> {
+    if (!record.ended || record.cleaned) return;
+    // Keep authenticated termination proof even if removal or a later build fails.
+    await this.receipts?.save(structuredClone(record));
+    try {
+      await this.runtime.remove(record.request);
+    } catch (cause) {
+      throw new ProtectedBuildFailure('cleanup_failed', { cause });
+    }
+    record.cleaned = true;
+    await this.save();
+  }
   private async contain(record: ProtectedBuildRecord): Promise<void> {
+    if (record.ended) {
+      await this.cleanup(record);
+      return;
+    }
     record.phase = 'stopping';
     // Persistence failure does not skip packet revocation or process containment.
     const saved = await Promise.allSettled([this.save(), this.runtime.deny(record.request)]);
@@ -110,9 +147,11 @@ export class ProtectedBuildHost {
     record.ended = await this.runtime.ended(record.request).catch(() => false);
     if (record.ended) record.phase = 'failed';
     await this.save();
+    if (record.ended) await this.cleanup(record);
     const errors = saved.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
     if (stopped !== undefined) errors.push(stopped);
-    if (errors.length) throw new AggregateError(errors, 'Protected build containment failed');
+    if (errors.length)
+      throw new ProtectedBuildFailure('containment_failed', { cause: new AggregateError(errors) });
   }
   /** Restore before accepting requests; never resume old access or unknown processes. */
   restore(value: unknown): Promise<void> {
@@ -121,7 +160,8 @@ export class ProtectedBuildHost {
       if (value === undefined) return;
       const parsed = protectedBuildRecord.parse(value);
       this.record = parsed;
-      await this.contain(parsed);
+      if (parsed.ended) await this.cleanup(parsed);
+      else await this.contain(parsed);
     });
   }
   begin(input: unknown): Promise<ProtectedBuildRecord> {
@@ -131,20 +171,34 @@ export class ProtectedBuildHost {
       if (this.record) {
         if (this.record.request.attemptId === request.attemptId) {
           if (!same(this.record.request, request))
-            throw new Error('Protected build attempt changed');
+            throw new ProtectedBuildFailure('attempt_changed');
           return structuredClone(this.record);
         }
-        if (!this.record.ended) throw new Error('Another protected build still owns the host slot');
-        await this.runtime.remove(this.record.request);
+        if (!this.record.ended) throw new ProtectedBuildFailure('slot_busy');
+        await this.cleanup(this.record);
+      }
+      const previous = await this.receipts?.load(request.projectId, request.attemptId);
+      if (previous) {
+        const recorded = await this.receipt(request.projectId, request.attemptId);
+        if (!same(recorded.request, request)) throw new ProtectedBuildFailure('attempt_changed');
+        return structuredClone(recorded);
       }
       const record: ProtectedBuildRecord = { request, phase: 'preparing', ended: false };
       this.record = record;
       // A crash before preparation still leaves an owned attempt for restoration.
       await this.save();
       try {
-        await this.runtime.prepare(request);
-        await this.runtime.renew(request);
-        await this.runtime.start(request);
+        await this.runtime.prepare(request).catch((cause: unknown) => {
+          throw cause instanceof ProtectedBuildFailure
+            ? cause
+            : new ProtectedBuildFailure('prepare_failed', { cause });
+        });
+        await this.runtime.renew(request).catch((cause: unknown) => {
+          throw new ProtectedBuildFailure('renew_failed', { cause });
+        });
+        await this.runtime.start(request).catch((cause: unknown) => {
+          throw new ProtectedBuildFailure('launch_failed', { cause });
+        });
         record.phase = 'running';
         this.lastHeartbeat = this.now();
         await this.save();
@@ -153,9 +207,10 @@ export class ProtectedBuildHost {
         try {
           await this.contain(record);
         } catch (error) {
-          throw new AggregateError([cause, error], 'Protected build startup failed', {
-            cause: error,
-          });
+          throw new ProtectedBuildFailure(
+            cause instanceof ProtectedBuildFailure ? cause.reason : 'prepare_failed',
+            { cause: new AggregateError([cause, error]) },
+          );
         }
         throw cause;
       }
@@ -173,11 +228,11 @@ export class ProtectedBuildHost {
         try {
           await this.contain(record);
         } catch (error) {
-          throw new AggregateError([cause, error], 'Protected build renewal failed', {
-            cause: error,
+          throw new ProtectedBuildFailure('renew_failed', {
+            cause: new AggregateError([cause, error]),
           });
         }
-        throw cause;
+        throw new ProtectedBuildFailure('renew_failed', { cause });
       }
     });
   }
@@ -187,7 +242,11 @@ export class ProtectedBuildHost {
   revalidate(): Promise<void> {
     return this.serialize(async () => {
       const record = this.record;
-      if (!record || record.ended) return;
+      if (!record) return;
+      if (record.ended) {
+        await this.cleanup(record);
+        return;
+      }
       if (record.phase === 'running' && this.now() - this.lastHeartbeat > 5000) {
         await this.contain(record);
         return;
@@ -201,6 +260,7 @@ export class ProtectedBuildHost {
       if (record.ended) {
         record.phase = 'failed';
         await this.save();
+        await this.cleanup(record);
       }
     }
     if (!terminal(record.phase) && record.phase !== 'stopping') {
@@ -211,11 +271,17 @@ export class ProtectedBuildHost {
         record.ended = await this.runtime.ended(record.request);
         record.phase = record.ended ? phase : 'stopping';
         await this.save();
+        if (record.ended) await this.cleanup(record);
       }
     }
   }
   status(projectId: string, attemptId: string): Promise<ProtectedBuildRecord> {
     return this.serialize(async () => {
+      if (
+        this.record?.request.projectId !== projectId ||
+        this.record.request.attemptId !== attemptId
+      )
+        return structuredClone(await this.receipt(projectId, attemptId));
       const record = this.match(projectId, attemptId);
       await this.poll(record);
       return structuredClone(record);
@@ -223,8 +289,13 @@ export class ProtectedBuildHost {
   }
   cancel(projectId: string, attemptId: string): Promise<ProtectedBuildRecord> {
     return this.serialize(async () => {
+      if (
+        this.record?.request.projectId !== projectId ||
+        this.record.request.attemptId !== attemptId
+      )
+        return structuredClone(await this.receipt(projectId, attemptId));
       const record = this.match(projectId, attemptId);
-      await this.contain(record);
+      if (!record.ended) await this.contain(record);
       return structuredClone(record);
     });
   }

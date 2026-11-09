@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createProtectedBuildRuntime,
   protectedBuildLaunch,
@@ -181,4 +181,60 @@ describe('protected build fixed host runtime', () => {
 
 it('retains successful transient unit completion until explicit cleanup', () => {
   expect(protectedBuildLaunch(request, anchor).args).toContain('--property=RemainAfterExit=yes');
+});
+
+it.each([
+  ['network', 'network_prepare_failed'],
+  ['authority', 'authority_prepare_failed'],
+  ['files', 'files_prepare_failed'],
+] as const)(
+  'identifies a failed %s preparation step without disclosing its cause',
+  async (step, reason) => {
+    const { io } = fixture();
+    const failure = new Error('private daemon details');
+    if (step === 'network')
+      io.networks.create = async () => {
+        throw failure;
+      };
+    if (step === 'authority')
+      io.authority.prepare = async () => {
+        throw failure;
+      };
+    if (step === 'files')
+      io.prepareFiles = async () => {
+        throw failure;
+      };
+    const caught = await createProtectedBuildRuntime(io)
+      .prepare(request)
+      .catch((error: unknown) => error);
+    expect(caught).toMatchObject({ reason, cause: failure });
+    expect((caught as Error).message).not.toContain('private daemon details');
+  },
+);
+
+it('cleans a partially prepared network only after exact partial termination proof', async () => {
+  const { io } = fixture();
+  io.endedPartial = vi.fn(async () => false);
+  io.removePartial = vi.fn(async () => {});
+  const runtime = createProtectedBuildRuntime(io);
+  await expect(runtime.remove(request)).rejects.toThrow('partial termination is unconfirmed');
+  expect(io.removePartial).not.toHaveBeenCalled();
+  vi.mocked(io.endedPartial).mockResolvedValue(true);
+  await runtime.remove(request);
+  expect(io.removePartial).toHaveBeenCalledWith(request);
+});
+
+it('retries resource removal when final file cleanup fails after network removal', async () => {
+  const { io, calls, ended } = fixture();
+  const runtime = createProtectedBuildRuntime(io);
+  await runtime.prepare(request);
+  ended();
+  io.cleanup = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('cleanup reply lost'))
+    .mockResolvedValue(undefined);
+  await expect(runtime.remove(request)).rejects.toThrow('cleanup reply lost');
+  await runtime.remove(request);
+  expect(calls.filter((call) => call === 'remove-network')).toHaveLength(2);
+  expect(io.cleanup).toHaveBeenCalledTimes(2);
 });

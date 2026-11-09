@@ -69,6 +69,10 @@ describe('protected devcontainer Server executor', () => {
       snapshot: 'attempt-a/verity-build-a',
       noCache: false,
     });
+    expect(options.protectedBuild).toEqual({
+      projectId: job.request.projectId,
+      attemptId: job.request.attemptId,
+    });
     expect(existsSync(join(f.directory, 'protected-build/registry.json'))).toBe(false);
   });
   it('does not register remote work while host readiness is missing', async () => {
@@ -82,6 +86,21 @@ describe('protected devcontainer Server executor', () => {
     const f = fixture();
     f.run.mockResolvedValue({ stdout: '{"success":false}', stderr: '' });
     await expect(f.build(f.args)).rejects.toThrow('build failed');
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+  it('preserves safe host refusal diagnostics after confirmed failed termination', async () => {
+    const f = fixture();
+    const correlationId = '22222222-2222-4222-8222-222222222222';
+    f.run.mockResolvedValue({
+      stdout: JSON.stringify({
+        success: false,
+        failure: { reason: 'files_prepare_failed', correlationId },
+      }),
+      stderr: '',
+    });
+    await expect(f.build(f.args)).rejects.toThrow(
+      `files_prepare_failed; reference ${correlationId}`,
+    );
     expect(f.run).toHaveBeenCalledTimes(1);
   });
   it('passes bounded post-termination diagnostics into the existing failure recorder', async () => {

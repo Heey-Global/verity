@@ -45,6 +45,8 @@ const maintenanceFailure = z.object({
     'supervisor-rejected',
     'invalid-response',
   ]),
+  exitCode: z.number().safe().int().optional(),
+  outputBytes: bytes.optional(),
   counts: z
     .object({
       missingState: bytes.max(1_000_000),
@@ -60,8 +62,8 @@ function failureReason(error: unknown): string {
     'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
   );
   if (parsed.success) {
-    const { code, counts } = parsed.data;
-    return `[${code}]${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
+    const { code, counts, exitCode, outputBytes } = parsed.data;
+    return `[${code}]${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
   }
   const code = 'code' in record ? record.code : undefined;
   if (code === 'EACCES' || code === 'EPERM') return '[supervisor-access-denied]';
@@ -119,12 +121,14 @@ export class RunnerCacheStorage {
   private readonly pendingProjects = new Set<string>();
   private continuationTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
+  private readonly retries = new Map<string, { failures: number; after: number }>();
 
   constructor(
     private readonly deps: {
       listRuntimes: () => Promise<RunnerRuntime[]>;
       request: (projectId: string, sessionIds: string[], maxBytes: number) => Promise<unknown>;
       maxBytes?: number | undefined;
+      now?: () => number;
     },
   ) {
     this.maxBytes = deps.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -160,7 +164,8 @@ export class RunnerCacheStorage {
   }
 
   private async collect(): Promise<void> {
-    const deadline = Date.now() + PASS_BUDGET_MS;
+    const now = this.deps.now ?? Date.now;
+    const deadline = now() + PASS_BUDGET_MS;
     const report: RunnerCacheReclamationReport = {
       observedAt: new Date().toISOString(),
       sharedBytes: 0,
@@ -198,6 +203,8 @@ export class RunnerCacheStorage {
         const present = new Set(ordered.map((runtime) => runtime.projectId));
         for (const projectId of this.pendingProjects)
           if (!present.has(projectId)) this.pendingProjects.delete(projectId);
+        for (const projectId of this.retries.keys())
+          if (!present.has(projectId)) this.retries.delete(projectId);
         // Finish inventories before their inactivity TTL; regular projects retain
         // their rotating cursor once each bounded continuation has completed.
         const priority = [
@@ -207,7 +214,7 @@ export class RunnerCacheStorage {
         for (const runtime of priority.slice(0, MAX_RUNTIMES)) {
           if (this.stopped) break;
           // An in-flight broker request has its own bound; do not start another after this budget.
-          if (Date.now() >= deadline) {
+          if (now() >= deadline) {
             this.nextProject = runtime.projectId;
             incomplete('Runner cache collection deadline reached; remaining caches retained.');
             break;
@@ -228,10 +235,18 @@ export class RunnerCacheStorage {
             );
             continue;
           }
+          const retry = this.retries.get(runtime.projectId);
+          if (retry && retry.after > now()) {
+            incomplete(
+              `Project ${runtime.projectId}: runner cache maintenance retry deferred until ${new Date(retry.after).toISOString()}; caches retained where unverified.`,
+            );
+            continue;
+          }
           try {
             const response = responseSchema.parse(
               await this.deps.request(runtime.projectId, sessionIds, this.maxBytes),
             );
+            this.retries.delete(runtime.projectId);
             if (response.maintenancePending) this.pendingProjects.add(runtime.projectId);
             else this.pendingProjects.delete(runtime.projectId);
             const project = response.report;
@@ -273,6 +288,11 @@ export class RunnerCacheStorage {
                 );
             }
           } catch (error) {
+            const failures = Math.min((retry?.failures ?? 0) + 1, 10);
+            this.retries.set(runtime.projectId, {
+              failures,
+              after: now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 60 * 60_000),
+            });
             this.pendingProjects.delete(runtime.projectId);
             incomplete(
               `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,

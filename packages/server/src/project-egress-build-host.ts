@@ -26,6 +26,7 @@ import type { ProjectFenceBinding, ProjectFenceDependencies } from './project-eg
 import {
   ProtectedBuildHost,
   protectedBuildRequest,
+  protectedBuildRecord,
   type ProtectedBuildRequest,
   type ProtectedBuildRecord,
 } from './project-egress-build.js';
@@ -705,25 +706,44 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     if (container) await docker(['container', 'rm', container.point.containerId!]);
     const point = await partial(request);
     if (point) {
-      const value = z
-        .array(
-          z.object({
-            Id: oid,
-            Name: z.string(),
-            Options: z.record(z.string(), z.string()),
-            Containers: z.record(z.string(), z.unknown()).default({}),
-          }),
-        )
-        .length(1)
-        .parse(JSON.parse(await docker(['network', 'inspect', point.binding.networkId])))[0]!;
-      if (
-        value.Id !== point.binding.networkId ||
-        value.Name !== point.binding.networkName ||
-        value.Options['com.docker.network.bridge.name'] !== point.binding.bridge ||
-        Object.keys(value.Containers).length
+      // A lost removal reply may leave only the checkpoint. Inspect failures are
+      // not absence evidence; enumerate the exact immutable network ID first.
+      const ids = (
+        await docker([
+          'network',
+          'ls',
+          '--quiet',
+          '--no-trunc',
+          '--filter',
+          'id=' + point.binding.networkId,
+        ])
       )
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      if (ids.some((id) => id !== point.binding.networkId))
         throw new Error('Changed protected build partial network');
-      await docker(['network', 'rm', point.binding.networkId]);
+      if (ids.length) {
+        const value = z
+          .array(
+            z.object({
+              Id: oid,
+              Name: z.string(),
+              Options: z.record(z.string(), z.string()),
+              Containers: z.record(z.string(), z.unknown()).default({}),
+            }),
+          )
+          .length(1)
+          .parse(JSON.parse(await docker(['network', 'inspect', point.binding.networkId])))[0]!;
+        if (
+          value.Id !== point.binding.networkId ||
+          value.Name !== point.binding.networkName ||
+          value.Options['com.docker.network.bridge.name'] !== point.binding.bridge ||
+          Object.keys(value.Containers).length
+        )
+          throw new Error('Changed protected build partial network');
+        await docker(['network', 'rm', point.binding.networkId]);
+      }
     }
     await rm(folder(request), { recursive: true, force: true });
   };
@@ -954,6 +974,28 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     async (record: ProtectedBuildRecord | undefined) => {
       if (record) await privateWrite(join(ROOT, 'controller.json'), record);
       else await rm(join(ROOT, 'controller.json'), { force: true });
+    },
+    undefined,
+    {
+      async save(record) {
+        const terminal = protectedBuildRecord.parse(record);
+        if (!terminal.ended || !['succeeded', 'failed'].includes(terminal.phase))
+          throw new Error('Protected build receipt is not terminal');
+        const path = join(ROOT, 'receipts', attemptKey(terminal.request) + '.json');
+        const existing = await privateRead(path);
+        if (existing !== undefined) {
+          const previous = protectedBuildRecord.parse(existing);
+          if (JSON.stringify(previous) !== JSON.stringify(terminal))
+            throw new Error('Protected build terminal receipt changed');
+          return;
+        }
+        await privateWrite(path, terminal);
+      },
+      async load(projectId, attemptId) {
+        const request = { projectId, attemptId } as ProtectedBuildRequest;
+        const value = await privateRead(join(ROOT, 'receipts', attemptKey(request) + '.json'));
+        return value === undefined ? undefined : protectedBuildRecord.parse(value);
+      },
     },
   );
   return {

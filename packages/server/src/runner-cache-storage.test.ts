@@ -437,3 +437,64 @@ describe('bounded runner cache failure diagnostics', () => {
     expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
   });
 });
+
+describe('runner cache maintenance retry backoff', () => {
+  it('backs off failures per project, caps the delay, and resets after success', async () => {
+    let now = 0;
+    let fail = true;
+    const request = vi.fn(async (id: string) => {
+      if (id === 'bad' && fail) throw new Error('unavailable');
+      return response();
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => now,
+      listRuntimes: async () => [
+        { projectId: 'bad', sessionIds: [] },
+        { projectId: 'good', sessionIds: [] },
+      ],
+      request,
+    });
+    const badCalls = () => request.mock.calls.filter(([id]) => id === 'bad').length;
+    const goodCalls = () => request.mock.calls.filter(([id]) => id === 'good').length;
+    for (const delay of [5, 10, 20, 40, 60, 60]) {
+      await storage.runOnce();
+      const before = badCalls();
+      now += delay * 60_000 - 1;
+      await storage.runOnce();
+      expect(badCalls()).toBe(before);
+      expect(storage.lastReport).toMatchObject({ usageComplete: false, sharedBytes: null });
+      expect(storage.lastReport?.blockers.join(' ')).toContain('retry deferred');
+      now += 1;
+    }
+    fail = false;
+    await storage.runOnce();
+    const successes = badCalls();
+    await storage.runOnce();
+    expect(badCalls()).toBe(successes + 1);
+    expect(goodCalls()).toBe(14);
+    fail = true;
+    await storage.runOnce();
+    const before = badCalls();
+    now += 5 * 60_000;
+    await storage.runOnce();
+    expect(badCalls()).toBe(before + 1);
+  });
+
+  it('discards retry state for removed projects', async () => {
+    let present = true;
+    const request = vi.fn(async () => {
+      throw new Error('unavailable');
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => 0,
+      listRuntimes: async () => (present ? [{ projectId: 'one', sessionIds: [] }] : []),
+      request,
+    });
+    await storage.runOnce();
+    present = false;
+    await storage.runOnce();
+    present = true;
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
