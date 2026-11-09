@@ -27,7 +27,7 @@ export function StatusTag({
 }) {
   const { theme } = useUnistyles();
   if (intent === 'transient') return <StatusText intent="transient" label={label} />;
-  const tone = muted ? 'unknown' : intent;
+  const tone: StatusIntent | 'neutral' = muted ? 'neutral' : intent;
   return (
     <View
       style={[
