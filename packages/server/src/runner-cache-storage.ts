@@ -55,6 +55,21 @@ const maintenanceFailure = z.object({
     })
     .optional(),
 });
+// The supervisor raises these from its own turn inventory before any broker
+// request or maintenance helper starts. They track runtime state rather than a
+// failing helper, so backing off would only hide a cleared refusal for an hour.
+export const STATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  'runtime-not-idle',
+  'turn-ownership-unknown',
+  'turn-inventory-unavailable',
+]);
+function isStateRefusal(error: unknown): boolean {
+  const record = typeof error === 'object' && error !== null ? error : {};
+  const parsed = maintenanceFailure.safeParse(
+    'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
+  );
+  return parsed.success && STATE_REFUSAL_CODES.has(parsed.data.code);
+}
 function failureReason(error: unknown): string {
   if (error instanceof MaintenanceImageError) return `[${error.code}]`;
   const record = typeof error === 'object' && error !== null ? error : {};
@@ -288,11 +303,14 @@ export class RunnerCacheStorage {
                 );
             }
           } catch (error) {
-            const failures = Math.min((retry?.failures ?? 0) + 1, 10);
-            this.retries.set(runtime.projectId, {
-              failures,
-              after: now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 60 * 60_000),
-            });
+            if (isStateRefusal(error)) this.retries.delete(runtime.projectId);
+            else {
+              const failures = Math.min((retry?.failures ?? 0) + 1, 10);
+              this.retries.set(runtime.projectId, {
+                failures,
+                after: now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 60 * 60_000),
+              });
+            }
             this.pendingProjects.delete(runtime.projectId);
             incomplete(
               `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,

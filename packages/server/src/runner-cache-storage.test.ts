@@ -1,6 +1,11 @@
+import { readFile } from 'node:fs/promises';
 import { MaintenanceImageError } from './maintenance-image.js';
 import { describe, expect, it, vi } from 'vitest';
-import { RunnerCacheStorage, runnerCacheTargetFromEnv } from './runner-cache-storage.js';
+import {
+  RunnerCacheStorage,
+  STATE_REFUSAL_CODES,
+  runnerCacheTargetFromEnv,
+} from './runner-cache-storage.js';
 
 function response(overrides = {}) {
   return {
@@ -478,6 +483,46 @@ describe('runner cache maintenance retry backoff', () => {
     now += 5 * 60_000;
     await storage.runOnce();
     expect(badCalls()).toBe(before + 1);
+  });
+
+  it('does not back off refusals the supervisor raises before starting maintenance', async () => {
+    // Derive the pre-helper codes from the supervisor: a new pre-helper refusal
+    // left out of STATE_REFUSAL_CODES would silently defer recovery for an hour.
+    const supervisor = await readFile(
+      new URL(
+        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const reclaim = supervisor.slice(
+      supervisor.indexOf("case 'reclaim-package-caches':"),
+      supervisor.indexOf(
+        'brokerStorageRequest(',
+        supervisor.indexOf("case 'reclaim-package-caches':"),
+      ),
+    );
+    const codes = [...reclaim.matchAll(/fail\('([a-z-]+)'/gu)].map(([, code]) => code!);
+    expect(codes.length).toBeGreaterThan(0);
+    for (const code of codes) {
+      expect(STATE_REFUSAL_CODES).toContain(code);
+      let refuse = true;
+      const request = vi.fn(async () => {
+        if (refuse) throw Object.assign(new Error('blocked'), { runnerCacheFailure: { code } });
+        return response();
+      });
+      const storage = new RunnerCacheStorage({
+        now: () => 0,
+        listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+        request,
+      });
+      await storage.runOnce();
+      expect(storage.lastReport?.blockers.join(' ')).toContain(`[${code}]`);
+      refuse = false;
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(storage.lastReport?.blockers.join(' ')).not.toContain('retry deferred');
+    }
   });
 
   it('discards retry state for removed projects', async () => {
