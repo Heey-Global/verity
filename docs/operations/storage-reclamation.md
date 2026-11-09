@@ -82,9 +82,11 @@ shared admission fence; normal starts wait while offline maintenance owns it.
 Project lifecycle admission also checks for unfinished helper containers after a
 Server restart, protecting older toolkits that lack the fence. Transport failure
 leaves a running or unverified helper and its fence intact. Helpers confirmed
-stopped are removed without volumes, including after failed work and lost
-start/wait replies. A later maintenance attempt also recovers exactly owned
-stopped leftovers. Removal never forces a running container to stop.
+stopped after successful valid results are removed without volumes. Failed work,
+invalid results and lost start/wait replies retain at most one verified terminal
+helper per project for diagnosis. Scheduled GC and later maintenance attempts use
+the same retention check under lifecycle and storage barriers, including result
+collection. Removal never forces a running container to stop.
 
 The helper imports and calls the broker's offline operation in one Node process;
 it does not keep a second Node runtime alive just to launch maintenance. Its
@@ -93,8 +95,10 @@ Failures back off independently per project, from five minutes up to one hour;
 success resets that delay. Pre-helper runtime-state refusals remain immediately
 retryable. Retry state is in memory and resets when the Server restarts.
 
-Helper failures include an exit code, output byte count and an allowlisted
-`reason` in reports and Server warnings. Reasons distinguish broker import or
+Helper failures include the phase (`create`, `start`, `wait`, `inspect`, `logs`
+or `response`), configured `memoryBytes` and `pidsLimit`, and an exit code when
+known. Output byte count and an allowlisted `reason` are included when logs are
+available, in reports and Server warnings. Reasons distinguish broker import or
 capability failures, invalid requests/responses, a busy runtime, maintenance
 failure, timeout and resource unavailability. The exact tini `exec timeout failed:
 Cannot allocate memory` diagnostic is classified as `resource-unavailable`;
@@ -105,37 +109,34 @@ marks a secondary cleanup failure while preserving the primary diagnostics.
 
 ### Recovering stopped maintenance helpers
 
-After upgrading the Server, inspect leftover helpers on the Docker host. The
-following Bash function selects only exited/dead containers with both ownership
-labels and the exact maintenance name shape. Preview the IDs first:
+Cache-helper retention requires the exact project/component labels, managed name,
+matching list/inspect image identity and a known terminal state and timestamp.
+Created failed-start containers use creation time; exited/dead containers use
+finish time. The newest verified evidence is retained, with a deterministic ID
+tie-break. Older verified helpers are removed non-forcibly without volumes,
+including helpers left by older releases. A zero exit code alone is insufficient
+to establish a valid result; leftover zero-exit helpers remain diagnostic evidence.
+The last retained helper may expire under the existing seven-day GC policy;
+other stopped-container grace periods are unchanged.
 
-```bash
-stopped_cache_helpers() {
-  docker container ls --all \
-    --filter label=verity.component=runner-cache-maintenance \
-    --filter label=verity.project-id \
-    --filter status=exited --filter status=dead \
-    --format '{{.ID}} {{.Names}}' |
-    while read -r id name; do
-      if [[ "$name" =~ ^verity-cache-maintenance-[a-f0-9-]{36}$ ]]; then
-        printf '%s\n' "$id"
-      fi
-    done
-}
-stopped_cache_helpers
-```
+Running helpers, ambiguous identity or timestamps, failed inventory, and removal
+errors prevent further helper creation. These produce
+`maintenance-helper-retention-blocked` or a cleanup failure rather than continued
+accumulation. Protected unknown runs can temporarily prevent the numerical bound.
+A disconnected wait is reconciled only after fresh inspection proves termination.
+The existing per-project retry backoff remains unchanged. No manual deletion is
+required for this scheduled convergence, and general container/volume pruning is
+not a substitute for verified ownership and lifecycle checks.
 
-After reviewing that list, remove those stopped containers with:
-
-```bash
-stopped_cache_helpers | xargs --no-run-if-empty docker container rm
-```
-
-This command uses neither force removal nor volume deletion. A container that
-has started again must cause removal to fail rather than be interrupted. Do not
-substitute a general container or volume prune. After the normal release process,
-verify fresh maintenance reports, decreasing helper/image pins, and a successful
-sandbox repair; merged code alone does not verify deployment recovery.
+After an authorized rollout, compare a read-only baseline with fresh cache and GC
+`observedAt` reports: helper counts and terminal states per project, retained last
+failure, cleanup blockers, selected image/runtime, image pins and filesystem
+used/free bytes. Verify an actual successful helper result separately from fewer
+containers. Pin estimates overlap shared image layers and do not establish
+reclaimable or reclaimed bytes. Startup ENOMEM still requires evidence from the
+same runtime and configured container/host limits; neither that message nor code
+publication establishes a fix or host OOM. Live pulls, restarts, reconciliation
+and cleanup require separate authorization.
 
 ### Offline cache policy and reporting
 

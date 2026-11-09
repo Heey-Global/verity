@@ -5279,9 +5279,11 @@ export async function buildEmbeddedServer(
         const result = await retireStoppedContainers({
           docker: projectDocker,
           listProjects: () => eventStore.listProjects(),
+          // Match helper execution: acquire lifecycle ownership before preview/storage
+          // barriers, and hold both until result collection/retention finishes.
           withProjectMutation: (id, run) =>
-            withStorageProjectMutation(id, () =>
-              provisioner.withProjectExclusiveMutation(id, async () => {
+            provisioner.withProjectExclusiveMutation(id, () =>
+              withStorageProjectMutation(id, async () => {
                 if (managedDevServerManager?.hasRunningServers(id))
                   throw new Error('Managed dev server is active');
                 if (

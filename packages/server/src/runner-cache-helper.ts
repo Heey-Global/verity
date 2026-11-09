@@ -1,5 +1,28 @@
 import { z } from 'zod';
 
+const bytes = z.number().safe().nonnegative();
+export const cacheMaintenanceResponse = z.object({
+  ok: z.literal(true),
+  maintenancePending: z.boolean().optional(),
+  report: z.object({
+    observedAt: z.iso.datetime({ offset: true }),
+    sharedBytes: bytes.nullable(),
+    legacyBytes: bytes.nullable(),
+    removedBytes: bytes,
+    legacyCachesRemoved: bytes,
+    sharedCachePruned: z.boolean(),
+    usageComplete: z.boolean(),
+    blockers: z.array(z.string().max(500)).max(100),
+    turnOwnershipCounts: z
+      .object({
+        missingState: bytes.max(1_000_000),
+        invalidState: bytes.max(1_000_000),
+        unsettledWithoutSession: bytes.max(1_000_000),
+      })
+      .optional(),
+  }),
+});
+
 export const cacheHelperDiagnostic = z.enum([
   'broker-import-failed',
   'broker-unsupported',

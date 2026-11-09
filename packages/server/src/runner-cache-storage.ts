@@ -1,4 +1,4 @@
-import { cacheHelperDiagnostic } from './runner-cache-helper.js';
+import { cacheHelperDiagnostic, cacheMaintenanceResponse } from './runner-cache-helper.js';
 import { MaintenanceImageError } from './maintenance-image.js';
 import type { RunnerCacheReclamationReport } from '@verity/events';
 import { z } from 'zod';
@@ -8,33 +8,13 @@ const MAX_RUNTIMES = 1000;
 const MAX_SESSIONS = 512;
 const PASS_BUDGET_MS = 60_000;
 const bytes = z.number().safe().nonnegative();
-const responseSchema = z.object({
-  ok: z.literal(true),
-  maintenancePending: z.boolean().optional(),
-  report: z.object({
-    observedAt: z.iso.datetime({ offset: true }),
-    sharedBytes: bytes.nullable(),
-    legacyBytes: bytes.nullable(),
-    removedBytes: bytes,
-    legacyCachesRemoved: bytes,
-    sharedCachePruned: z.boolean(),
-    usageComplete: z.boolean(),
-    blockers: z.array(z.string().max(500)).max(100),
-    turnOwnershipCounts: z
-      .object({
-        missingState: bytes.max(1_000_000),
-        invalidState: bytes.max(1_000_000),
-        unsettledWithoutSession: bytes.max(1_000_000),
-      })
-      .optional(),
-  }),
-});
 
 // Never copy exception messages or arbitrary peer strings into host diagnostics.
 const maintenanceFailure = z.object({
   code: z.enum([
     'runtime-not-idle',
     'maintenance-helper-failed',
+    'maintenance-helper-retention-blocked',
     'turn-ownership-unknown',
     'turn-inventory-unavailable',
     'broker-access-denied',
@@ -46,6 +26,9 @@ const maintenanceFailure = z.object({
     'supervisor-rejected',
     'invalid-response',
   ]),
+  phase: z.enum(['create', 'start', 'wait', 'inspect', 'logs', 'response']).optional(),
+  memoryBytes: bytes.optional(),
+  pidsLimit: bytes.optional(),
   exitCode: z.number().safe().int().optional(),
   outputBytes: bytes.optional(),
   reason: cacheHelperDiagnostic.optional(),
@@ -79,8 +62,9 @@ function primaryFailureReason(error: unknown): string {
     'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
   );
   if (parsed.success) {
-    const { code, counts, exitCode, outputBytes, reason } = parsed.data;
-    return `[${code}]${reason === undefined ? '' : ` reason=${reason}`}${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
+    const { code, counts, exitCode, outputBytes, reason, phase, memoryBytes, pidsLimit } =
+      parsed.data;
+    return `[${code}]${phase === undefined ? '' : ` phase=${phase}`}${memoryBytes === undefined ? '' : ` memoryBytes=${memoryBytes}`}${pidsLimit === undefined ? '' : ` pidsLimit=${pidsLimit}`}${reason === undefined ? '' : ` reason=${reason}`}${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
   }
   const code = 'code' in record ? record.code : undefined;
   if (code === 'EACCES' || code === 'EPERM') return '[supervisor-access-denied]';
@@ -271,7 +255,7 @@ export class RunnerCacheStorage {
             continue;
           }
           try {
-            const response = responseSchema.parse(
+            const response = cacheMaintenanceResponse.parse(
               await this.deps.request(runtime.projectId, sessionIds, this.maxBytes),
             );
             this.retries.delete(runtime.projectId);
