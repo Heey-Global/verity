@@ -19,6 +19,10 @@ export async function protectedBuildRetainedImages(
   if (files.length > 10000) throw new Error('Protected build inventory is too large');
   const images: string[] = [];
   for (const file of files) {
+    // privateWrite publishes by rename. Temporary entries are neither complete
+    // authority nor an error, including leftovers from an interrupted write.
+    if (/^[a-f0-9]{64}\.json\.[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(file))
+      continue;
     if (!/^[a-f0-9]{64}\.json$/u.test(file))
       throw new Error('Invalid protected build inventory entry');
     const raw = await readEgressHostConfiguration(join(directory, file));

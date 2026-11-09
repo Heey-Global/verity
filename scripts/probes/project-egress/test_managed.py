@@ -457,6 +457,28 @@ class ManagedTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             managed.stopped_build_images(self.root, run)
 
+    def test_build_created_after_snapshot_is_retained_before_replacement_start(self):
+        old, target = ['sha256:' + c * 64 for c in 'ab']
+        self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
+        self.provision()
+        self.relay.write_text(json.dumps({'image': target, 'packetEnforcement': True}))
+        observed = []
+        def run(*args):
+            if 'stop' in args and args[-1] == managed.SERVICE:
+                self.build_anchor_policy()
+            if 'container' in args:
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old}}])
+            if 'start' in args and args[-1] == managed.SERVICE:
+                policy = json.loads((self.root / 'etc/verity-egress/relay.json').read_text())
+                self.assertEqual(policy['image'], target)
+                self.assertEqual(policy['previousImage'], old)
+                observed.append(True)
+            return self.execute(*args)
+        self.provision(run=run)
+        self.assertEqual(observed, [True])
+
     def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
         old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
         self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
