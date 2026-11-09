@@ -68,7 +68,7 @@ it.each([true, false])(
     const prefix = '{"description":"';
     const suffix = '",' + JSON.stringify(facts).slice(1);
     const chunk = Buffer.alloc(1024 ** 2, 97);
-    const count = 40;
+    const count = 80;
     function* chunks() {
       yield prefix;
       for (let i = 0; i < count; i++) yield chunk;
