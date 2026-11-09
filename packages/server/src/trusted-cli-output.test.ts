@@ -519,6 +519,7 @@ describe('trusted CLI retained output', () => {
       read: vi.fn(async () => ({})),
       remove: vi.fn(async () => {}),
       cleanup: vi.fn(async () => {}),
+      list: vi.fn(async () => ({ invocations: [] })),
     };
     const result = await collectTrustedCliOutput(
       store,

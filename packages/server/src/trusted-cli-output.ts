@@ -20,7 +20,7 @@ const PROJECT_RETAINED_RECORDS = 200;
 const TOTAL_RETAINED_RECORDS = 1000;
 const LIST_LIMIT = 20;
 export type OutputOwner = { projectId: string; sessionId: string };
-export type TrustedCliInvocationSummary = {
+type TrustedCliInvocationSummary = {
   invocationId: string;
   startedAt: string;
   complete: boolean;
