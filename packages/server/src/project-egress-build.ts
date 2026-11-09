@@ -177,6 +177,12 @@ export class ProtectedBuildHost {
       if (this.record) throw new Error('Protected build state is already loaded');
       if (value === undefined) return;
       const parsed = protectedBuildRecord.parse(value);
+      // Interrupted records can claim termination without a terminal outcome.
+      // Recontain them before issuing a receipt; neither flag proves cleanup.
+      if (!terminal(parsed.phase)) {
+        parsed.ended = false;
+        parsed.cleaned = false;
+      }
       this.record = parsed;
       this.restoredFromState = true;
       if (parsed.ended) await this.cleanup(parsed);
