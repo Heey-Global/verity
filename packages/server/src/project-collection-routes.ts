@@ -49,7 +49,7 @@ const LOCAL_SLUG_ATTEMPTS = 20;
 /** The `n`-th candidate directory slug for a local project: the slug itself,
  *  then `<slug>-2`, `<slug>-3`, … — kept within the 100 characters a repo
  *  name allows. Two projects may share a name; their directories must differ. */
-export function numberedLocalSlug(slug: string, n: number): string {
+function numberedLocalSlug(slug: string, n: number): string {
   if (n === 1) return slug;
   const suffix = `-${String(n)}`;
   return `${slug.slice(0, 100 - suffix.length).replace(/[._-]+$/, '')}${suffix}`;

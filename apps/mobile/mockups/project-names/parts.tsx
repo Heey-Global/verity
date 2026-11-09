@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -159,12 +158,7 @@ export function ProjectPageBody() {
   );
 }
 
-export function PageFrame({ children }: { children: ReactNode }) {
-  return <View style={styles.page}>{children}</View>;
-}
-
 const styles = StyleSheet.create((theme) => ({
-  page: { flex: 1, padding: theme.spacing.lg, gap: theme.spacing.sm },
   hero: {
     flexDirection: 'row',
     alignItems: 'flex-start',
