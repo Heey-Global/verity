@@ -61,7 +61,7 @@ separately by `TRADEMARKS.md`.
 | CC0-1.0 | 2 |
 | ISC | 66 |
 | LGPL-3.0-or-later | 10 |
-| MIT | 1052 |
+| MIT | 1053 |
 | MIT AND Apache-2.0 | 1 |
 | MIT AND OFL-1.1 | 1 |
 | MPL-2.0 | 12 |
@@ -1027,6 +1027,7 @@ separately by `TRADEMARKS.md`.
 | natural-compare | MIT | [source](https://www.npmjs.com/package/natural-compare) |
 | negotiator | MIT | [source](https://www.npmjs.com/package/negotiator) |
 | neo-async | MIT | [source](https://www.npmjs.com/package/neo-async) |
+| nitro-core | MIT | [source](https://www.npmjs.com/package/nitro-core) |
 | node-fetch | MIT | [source](https://www.npmjs.com/package/node-fetch) |
 | node-forge | (BSD-3-Clause OR GPL-2.0) | [source](https://www.npmjs.com/package/node-forge) |
 | node-html-parser | MIT | [source](https://www.npmjs.com/package/node-html-parser) |
