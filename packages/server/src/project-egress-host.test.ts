@@ -1152,3 +1152,41 @@ it('carries a correlated startup refusal through host control and confirms relea
     warn.mockRestore();
   }
 });
+
+it('keeps an address-pool refusal on the build route parseable with its correlation id', async () => {
+  // A reason outside the build allowlist made the client drop both the reason and the reference.
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const builds = {
+      execute: async () => {
+        throw new DockerError({ kind: 'address_pool_exhausted', message: 'pool exhausted' });
+      },
+    } as unknown as ProtectedBuildHost;
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const refused: unknown = await client({ operation: 'health' }).catch((error: unknown) => error);
+    expect(refused).toMatchObject({
+      reason: 'address_pool_exhausted',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      'verity: protected build operation refused',
+      expect.objectContaining({ reason: 'address_pool_exhausted' }),
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});

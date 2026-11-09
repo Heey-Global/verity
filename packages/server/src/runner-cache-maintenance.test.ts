@@ -359,6 +359,24 @@ describe('sleeping runner cache helpers', () => {
       );
     },
   );
+  it('classifies exit 78 as unsupported even when its logs cannot be read', async () => {
+    const h = fixture();
+    h.docker.waitContainer.mockResolvedValueOnce(78);
+    h.docker.containerLogs.mockRejectedValueOnce(new Error('logs unavailable'));
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'unsupported', exitCode: 78 },
+    });
+    expect(h.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('helper');
+  });
+  it('keeps the classified helper failure when removal also fails', async () => {
+    const h = fixture();
+    h.docker.waitContainer.mockResolvedValueOnce(2);
+    h.docker.containerLogs.mockResolvedValueOnce('');
+    h.docker.removeStoppedContainer.mockRejectedValueOnce(new Error('removal unavailable'));
+    await expect(h.run()).rejects.toMatchObject({
+      runnerCacheFailure: { code: 'maintenance-helper-failed', exitCode: 2, outputBytes: 0 },
+    });
+  });
   it('removes a stopped helper when reading logs fails', async () => {
     const h = fixture();
     h.docker.containerLogs.mockRejectedValueOnce(new Error('logs unavailable'));

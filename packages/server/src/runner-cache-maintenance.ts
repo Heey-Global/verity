@@ -20,7 +20,7 @@ const pending = z.object({
 export type CacheTurnOwner = { turnId: string; sessionId?: string; conflict: boolean };
 export function cacheMaintenanceFailure(
   code: string,
-  diagnostics?: { exitCode: number; outputBytes: number },
+  diagnostics?: { exitCode: number; outputBytes?: number },
 ): Error {
   return Object.assign(new Error('Runner cache maintenance is unavailable'), {
     runnerCacheFailure: { code, ...diagnostics },
@@ -301,21 +301,45 @@ export async function reclaimSleepingRunnerCaches(input: {
   const inspect = await docker.inspectContainer(created.id);
   if (inspect.running || !['exited', 'dead'].includes(inspect.status ?? ''))
     throw cacheMaintenanceFailure('maintenance-helper-failed');
+  let result: unknown;
+  let failure: Error | undefined;
   try {
-    const output = await docker.containerLogs(created.id, 1);
+    const logs = await docker.containerLogs(created.id, 1).then(
+      (output) => ({ output }),
+      (error: unknown) => ({ error }),
+    );
+    // The exit code alone classifies an unsupported image; a failed log read must not hide it.
+    if (exit === 78)
+      throw cacheMaintenanceFailure('unsupported', {
+        exitCode: exit,
+        ...('output' in logs ? { outputBytes: Buffer.byteLength(logs.output) } : {}),
+      });
+    if ('error' in logs) throw logs.error;
+    const output = logs.output;
     const diagnostics = { exitCode: exit, outputBytes: Buffer.byteLength(output) };
-    if (exit === 78) throw cacheMaintenanceFailure('unsupported', diagnostics);
     if (inspect.exitCode !== 0 || exit !== 0)
       throw cacheMaintenanceFailure('maintenance-helper-failed', diagnostics);
     if (diagnostics.outputBytes > 64 * 1024)
       throw cacheMaintenanceFailure('invalid-response', diagnostics);
     try {
-      return JSON.parse(output) as unknown;
+      result = JSON.parse(output) as unknown;
     } catch {
       throw cacheMaintenanceFailure('invalid-response', diagnostics);
     }
-  } finally {
+  } catch (error) {
+    failure =
+      error instanceof Error
+        ? error
+        : new Error('Runner cache maintenance failed', { cause: error });
+  }
+  try {
     // Failed work no longer owns a fence once termination is proven. Never force removal.
     await docker.removeStoppedContainer(created.id);
+  } catch (removal) {
+    // Keep the classified failure (and its diagnostics) primary; removal is retried
+    // through owned-helper recovery on the next pass.
+    if (failure === undefined) throw removal;
   }
+  if (failure !== undefined) throw failure;
+  return result;
 }

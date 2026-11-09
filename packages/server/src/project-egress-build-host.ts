@@ -11,6 +11,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -214,6 +215,29 @@ async function privateDirectory(path: string): Promise<void> {
     (await realpath(path)) !== path
   )
     throw new Error('Untrusted protected build directory');
+}
+/** Terminal receipts only answer status queries for storage reservations that the
+ * Server reconciles every few minutes. Retain them far longer than that, bounded in
+ * age and count, so host state cannot grow by one file per attempt forever. A
+ * receipt pruned too early only keeps a reservation held; it never releases one. */
+const PROTECTED_BUILD_RECEIPT_RETENTION = { maxAgeMs: 30 * 24 * 3600_000, maxCount: 4096 };
+export async function pruneProtectedBuildReceipts(
+  directory: string,
+  now: number,
+  retention = PROTECTED_BUILD_RECEIPT_RETENTION,
+): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const receipts: { path: string; mtimeMs: number }[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/u.test(entry.name)) continue;
+    const path = join(directory, entry.name);
+    const info = await lstat(path).catch(() => undefined);
+    if (info?.isFile()) receipts.push({ path, mtimeMs: info.mtimeMs });
+  }
+  receipts.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  for (const [index, receipt] of receipts.entries())
+    if (index >= retention.maxCount || now - receipt.mtimeMs > retention.maxAgeMs)
+      await rm(receipt.path, { force: true }).catch(() => undefined);
 }
 async function privateRead(path: string): Promise<unknown> {
   const fd = await open(
@@ -990,6 +1014,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
           return;
         }
         await privateWrite(path, terminal);
+        await pruneProtectedBuildReceipts(dirname(path), Date.now());
       },
       async load(projectId, attemptId) {
         const request = { projectId, attemptId } as ProtectedBuildRequest;

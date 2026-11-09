@@ -13,6 +13,7 @@ const protectedBuildReason = z.enum([
   'slot_busy',
   'attempt_changed',
   'unknown_attempt',
+  'address_pool_exhausted',
 ]);
 export const protectedBuildDiagnostic = z.object({
   reason: protectedBuildReason,

@@ -85,9 +85,15 @@ export async function listenProjectEgressHost(options: {
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
         .catch((error: unknown) => {
+          const poolExhausted =
+            error instanceof DockerError && error.kind === 'address_pool_exhausted';
           const buildFailure =
             request.url === '/v1/build'
-              ? { ...protectedBuildFailure(error), correlationId }
+              ? {
+                  ...protectedBuildFailure(error),
+                  ...(poolExhausted ? { reason: 'address_pool_exhausted' as const } : {}),
+                  correlationId,
+                }
               : undefined;
           if (buildFailure)
             console.warn('verity: protected build operation refused', {
@@ -106,10 +112,7 @@ export async function listenProjectEgressHost(options: {
           response.end(
             JSON.stringify({
               error: 'host operation refused',
-              ...buildFailure,
-              ...(error instanceof DockerError && error.kind === 'address_pool_exhausted'
-                ? { reason: 'address_pool_exhausted' }
-                : {}),
+              ...(buildFailure ?? (poolExhausted ? { reason: 'address_pool_exhausted' } : {})),
               ...(error instanceof ProjectEgressInventoryError ? { correlationId } : {}),
               ...(error instanceof ProjectEgressHealthError ||
               error instanceof ProjectEgressInventoryError
