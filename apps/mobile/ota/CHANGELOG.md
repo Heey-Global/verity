@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.88.2](https://github.com/Heey-Global/verity/compare/mobile-v1.88.1...mobile-v1.88.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2448](https://github.com/Heey-Global/verity/issues/2448)) ([931eba4](https://github.com/Heey-Global/verity/commit/931eba4d760ef031a9a199758d5f1809e66632c1))
+* **deps:** update dependency minimatch to v11.0.5 ([#2445](https://github.com/Heey-Global/verity/issues/2445)) ([b6bb6ad](https://github.com/Heey-Global/verity/commit/b6bb6ad5e1bbe4ff5669f2880b342e0f3d44e8da))
+
 ## [1.88.1](https://github.com/Heey-Global/verity/compare/mobile-v1.88.0...mobile-v1.88.1) (2026-11-08)
 
 
