@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const protectedBuildReason = z.enum([
+const protectedBuildReason = z.enum([
   'operation_refused',
   'prepare_failed',
   'network_prepare_failed',
