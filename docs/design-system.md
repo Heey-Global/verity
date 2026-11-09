@@ -264,6 +264,8 @@ title; a log list keeps them dense and scannable.
 - **Tag** — the state of a single element: uppercase `Label` text on a 14 % tint of its
   tone, radius 6. Tones: action (`action`) for normal review requests, success (`success`), attention (`attention`) and neutral
   (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
+  A tag beside a row whose icon and subtitle already carry the tone (e.g. `2 NEED YOU` on
+  the Repositories row) is drawn neutral; its spoken label keeps the intent.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
 - **Count** (`CountBadge`) — how many items wait for the person: the number in `Label` on

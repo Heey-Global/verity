@@ -6,7 +6,8 @@ import { Row, StatusTag } from '../ui';
 
 /**
  * The project's repositories in its Content: open pull requests across all of them,
- * counted from the code host. Red only while one fails or conflicts.
+ * counted from the code host. The icon turns red while one fails or conflicts; the
+ * count beside it stays neutral so the row does not shout.
  */
 export function ProjectRepositoriesRow({
   projectId,
@@ -26,7 +27,7 @@ export function ProjectRepositoriesRow({
       subtitle={subtitle}
       trailing={
         attention > 0 ? (
-          <StatusTag intent="needsSetup" label={`${String(attention)} need you`} />
+          <StatusTag intent="needsSetup" label={`${String(attention)} need you`} muted />
         ) : undefined
       }
       navigates

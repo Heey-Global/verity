@@ -156,7 +156,7 @@ export function VerityPage({
         </View>
       </View>
 
-      <SectionHeader title="Recently changed" variant="eyebrow" />
+      <SectionHeader title="Recently changed" />
       {recentFailed ? (
         <Text variant="body" tone="muted">
           Shared knowledge could not be read right now.
@@ -190,7 +190,7 @@ export function VerityPage({
         </Text>
       ) : null}
 
-      <SectionHeader title="Across all projects" variant="eyebrow" />
+      <SectionHeader title="Across all projects" />
       <Group>
         <Row
           leading={{ icon: 'file-text' }}

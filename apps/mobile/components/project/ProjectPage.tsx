@@ -233,7 +233,7 @@ export function ProjectPage({
           onChanged={sessionChanged}
         />
         <ProjectInquiryCards client={client} projectId={projectId} />
-        <SectionHeader title="Content" variant="eyebrow" />
+        <SectionHeader title="Content" />
         <ProjectContent
           client={client}
           detail={detail}

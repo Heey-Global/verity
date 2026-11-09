@@ -36,7 +36,7 @@ jest.mock('../lib/homePreferences', () => ({
 import type { SessionSummary, VerityClient } from '@verity/mobile';
 import { inboxItems, VerityApiError } from '@verity/mobile';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
-import { Alert, ScrollView } from 'react-native';
+import { Alert, ScrollView, StyleSheet } from 'react-native';
 
 import ProjectEntry from '../app/project/[id]/index';
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
@@ -46,6 +46,7 @@ import { INLINE_ANSWERS, SHORT_ANSWER } from '../components/project/AnswerSheet'
 import { ProjectWork, isActive, nowSections, workFilter } from '../components/project/ProjectWork';
 import { publishSessionPreviews } from '../lib/sessionPreviews';
 import { makeClient, makeDetail } from './support/projectHarness';
+import { darkTheme, lightTheme } from '../theme/tokens';
 import {
   mockCreateVerityClient,
   mockDismissTo,
@@ -458,6 +459,11 @@ describe('project page', () => {
       '2 repositories · 3 open PRs · 1 failing · 1 conflict · 1 unavailable',
     );
     expect(row.props.accessibilityLabel).toContain('2 need you');
+    // The red icon and the subtitle already say what is wrong; a red tag beside them
+    // made the row shout. The tag stays neutral but still speaks its meaning.
+    const tag = within(row).getByLabelText('2 need you, needs attention');
+    const { color } = StyleSheet.flatten(within(tag).getByText('2 need you').props.style);
+    expect([darkTheme.colors.textMuted, lightTheme.colors.textMuted]).toContain(color);
     // Two repositories: the header names how many instead of the default one.
     expect(screen.getByTestId('project-line')).toHaveTextContent('2 repositories');
   });
