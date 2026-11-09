@@ -91,8 +91,8 @@ export function registerReleaseTags(mode, head, options = {}) {
   for (const spec of trains.filter((spec) => !options.train || spec.train === options.train)) {
     const version = versionAt(head, spec);
     const tag = `${spec.prefix}${version}`;
-    const matches = [];
-    const later = [];
+    let matches = [];
+    let later = [];
     for (const pr of records) {
       if (
         !pr.merged_at ||
@@ -112,6 +112,24 @@ export function registerReleaseTags(mode, head, options = {}) {
       if (!isReleaseBotLogin(pr.user?.login)) throw new Error(`Unexpected author for ${tag}`);
       if (contained) matches.push(sha);
       else later.push(sha);
+    }
+    const candidates = [...matches, ...later];
+    if (candidates.length > 1) {
+      const redundant = new Set();
+      for (const sha of candidates) {
+        if (!candidates.some((earlier) => earlier !== sha && ancestor(earlier, sha))) continue;
+        // A repeated empty release must not replace the original identity.
+        // Compare against its first parent, not the earlier release: unrelated
+        // Main changes between releases are not changes made by this merge.
+        try {
+          git(['diff', '--quiet', `${sha}^1`, sha]);
+          redundant.add(sha);
+        } catch (error) {
+          if (/** @type {{status?: number}} */ (error).status !== 1) throw error;
+        }
+      }
+      matches = matches.filter((sha) => !redundant.has(sha));
+      later = later.filter((sha) => !redundant.has(sha));
     }
     if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
     if (mode === 'register' && options.train && matches.length + later.length > 1)

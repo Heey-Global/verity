@@ -439,3 +439,102 @@ it('reproduces earlier version content and a later empty trusted merge using rea
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+it.each(['check', 'register'] as const)(
+  'preserves the original identity after an empty duplicate release in %s mode',
+  (mode) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'duplicate-release-'));
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      git(['init', '-q']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'user.email', 'test@example.com']);
+      for (const [train, manifest] of [
+        ['mobile', { 'apps/mobile': '1.89.0' }],
+        ['backend', { '.': '3.0.0' }],
+        ['website', { 'docs/website': '2.0.0' }],
+      ] as const)
+        writeFileSync(
+          join(cwd, `.release-please-manifest.${train}.json`),
+          JSON.stringify(manifest),
+        );
+      git(['add', '.']);
+      git(['commit', '-qm', 'original release']);
+      const original = git(['rev-parse', 'HEAD']);
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', original]);
+      git(['update-ref', 'refs/tags/v3.0.0', original]);
+      git(['update-ref', 'refs/tags/website-v2.0.0', original]);
+      // Intervening main changes must not make an empty release look substantive.
+      writeFileSync(join(cwd, 'unrelated.txt'), 'another train changed');
+      git(['add', '.']);
+      git(['commit', '-qm', 'unrelated main change']);
+      git(['commit', '--allow-empty', '-qm', 'duplicate mobile release']);
+      const duplicate = git(['rev-parse', 'HEAD']);
+      git(['remote', 'add', 'origin', cwd]);
+      const records = [duplicate, original]
+        .map((sha) =>
+          JSON.stringify({
+            merged_at: '2026-11-09',
+            merge_commit_sha: sha,
+            user: { login: 'github-actions[bot]' },
+            head: { ref: 'release-please--branches--main--components--mobile' },
+          }),
+        )
+        .join('\n');
+      const writes: string[][] = [];
+      let failDiff = false;
+      const run = (command: string, args: string[]) => {
+        if (command === 'git') {
+          if (failDiff && args[0] === 'diff')
+            throw Object.assign(new Error('Missing parent'), { status: 128 });
+          return git(args);
+        }
+        if (args.includes('POST')) {
+          writes.push(args);
+          throw new Error('Unexpected tag creation');
+        }
+        if (args.includes('.object.sha')) return duplicate;
+        return records;
+      };
+      const invoke = () =>
+        registerReleaseTags(mode, duplicate, {
+          repository: 'example/repo',
+          run,
+          ...(mode === 'register' ? { train: 'mobile' } : {}),
+        });
+      expect(invoke()).toContainEqual({ tag: 'mobile-v1.89.0', sha: original });
+      expect(git(['rev-parse', 'mobile-v1.89.0'])).toBe(original);
+      expect(writes).toHaveLength(0);
+      failDiff = true;
+      expect(invoke).toThrow('Missing parent');
+      failDiff = false;
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', duplicate]);
+      expect(invoke).toThrow('differs from its merged release commit');
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', original]);
+      writeFileSync(join(cwd, 'duplicate.txt'), 'substantive change');
+      git(['add', '.']);
+      git(['commit', '--amend', '-qm', 'nonempty duplicate release']);
+      const substantive = git(['rev-parse', 'HEAD']);
+      expect(() =>
+        registerReleaseTags(mode, substantive, {
+          repository: 'example/repo',
+          run: (command, args) => {
+            if (command === 'gh' && args.includes('.object.sha')) return substantive;
+            if (command === 'gh' && !args.includes('POST'))
+              return records.replace(duplicate, substantive);
+            return run(command, args);
+          },
+          ...(mode === 'register' ? { train: 'mobile' } : {}),
+        }),
+      ).toThrow('Ambiguous');
+      expect(writes).toHaveLength(0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+);
