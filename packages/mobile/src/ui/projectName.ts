@@ -1,14 +1,12 @@
 import type { ProjectRecord } from '../api.js';
 
 /**
- * How a project is named in operator-facing copy.
+ * How a project is named in operator-facing copy: by its own name, which the
+ * person gives it and can change, independent of its repositories.
  *
- * A GitHub-backed project is named by its repository coordinate (`acme/web`) —
- * that string is the identity the operator recognises and can paste into GitHub.
- * A project created WITHOUT a GitHub repository has no such coordinate: its
- * `owner` is a reserved internal placeholder Verity needs to satisfy the
- * `(owner, repo)` uniqueness constraint. So a local project is named by its
- * `repo` slug alone.
+ * A server that predates project names sends none; the project is then named
+ * as it was before — a repository project by its `owner/repo` coordinate, a
+ * local project by its `repo` slug (its `owner` is a reserved placeholder).
  *
  * Pure TS (no React Native / theme) so the rule stays unit-testable and every
  * surface — overview, project detail, dialogs — resolves the name identically.
@@ -16,9 +14,21 @@ import type { ProjectRecord } from '../api.js';
  * coordinate (a URL, a `POST /sessions { project }` body).
  */
 export function projectDisplayName(
-  project: Pick<ProjectRecord, 'owner' | 'repo' | 'kind'>,
+  project: Pick<ProjectRecord, 'owner' | 'repo' | 'kind'> & { name?: string | undefined },
 ): string {
+  if (project.name !== undefined && project.name.trim() !== '') return project.name;
   return project.kind === 'local' ? project.repo : `${project.owner}/${project.repo}`;
+}
+
+/** The short name lists, headers and pickers show: the project's own name,
+ *  or — from a server that predates names — its repository name, as these
+ *  surfaces showed before. */
+type Titled = { repo: string; name?: string | undefined };
+export function projectTitle(project: Titled): string;
+export function projectTitle(project: Titled | undefined): string | undefined;
+export function projectTitle(project: Titled | undefined): string | undefined {
+  if (project === undefined) return undefined;
+  return project.name !== undefined && project.name.trim() !== '' ? project.name : project.repo;
 }
 
 /** The `owner/repo` coordinate, or `undefined` when the project has no GitHub

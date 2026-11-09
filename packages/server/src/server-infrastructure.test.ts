@@ -880,6 +880,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
     });
     const updated = {
       id: 'p-verity',
+      name: 'Fixture project',
       owner: 'heey-global',
       repo: 'verity',
       containerName: 'dev-heey-global-verity',
@@ -933,6 +934,7 @@ describe('POST /verity-control/projects/:id/recreate-container', () => {
     });
     const updated = {
       id: 'p-recreate',
+      name: 'Fixture project',
       owner: 'heey-global',
       repo: 'site',
       containerName: 'dev-heey-global-site',

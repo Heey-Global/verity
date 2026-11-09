@@ -22,6 +22,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('PATCH', '/projects/:id/profile'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('PUT', '/projects/:id/inquiry-grants'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],

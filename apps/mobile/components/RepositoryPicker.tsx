@@ -7,7 +7,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { CodeHostIcon } from './CodeHostIcon';
 import { settingsStyles as styles } from './settings/settingsStyles';
-import { Button, Group, Row, SearchField, StatusTag, Text, TextField } from './ui';
+import { Button, Group, Row, SearchField, Sheet, StatusTag, Text, TextField } from './ui';
 
 export type Repository = { owner: string; repo: string; archived?: boolean | undefined };
 const repositoryName = (repository: Repository) => `${repository.owner}/${repository.repo}`;
@@ -212,3 +212,66 @@ export function CodeHostOption({
     />
   );
 }
+
+/**
+ * The "Add repository" sheet: the code hosts to choose from when there are
+ * several, and one tap on a repository adds it. Shared by the project's
+ * repositories and New project, so both offer repositories the same way.
+ */
+export function AddRepositorySheet({
+  client,
+  visible,
+  hosts,
+  githubRepositories,
+  exclude,
+  disabled = false,
+  onAdd,
+  onClose,
+}: {
+  client: VerityClient;
+  visible: boolean;
+  hosts: readonly CodeHost[];
+  githubRepositories?: readonly Repository[] | undefined;
+  /** `owner/repo` names of the host left out, such as those already chosen. */
+  exclude: (host: CodeHost) => readonly string[];
+  disabled?: boolean;
+  onAdd: (host: CodeHost, repository: string) => void;
+  onClose: () => void;
+}) {
+  const [hostId, setHostId] = useState<string | undefined>(hosts[0]?.id);
+  const host = hosts.find((candidate) => candidate.id === hostId) ?? hosts[0];
+  return (
+    <Sheet visible={visible} title="Add repository" onClose={onClose}>
+      {hosts.length > 1 ? (
+        <Group>
+          {hosts.map((candidate) => (
+            <CodeHostOption
+              key={candidate.id}
+              host={candidate}
+              selected={candidate.id === host?.id}
+              disabled={disabled}
+              onPress={() => setHostId(candidate.id)}
+            />
+          ))}
+        </Group>
+      ) : null}
+      {host ? (
+        <RepositoryPicker
+          // A fresh list per host: its search and selection belong to that host.
+          key={host.id}
+          client={client}
+          host={host}
+          initialGithubRepositories={githubRepositories}
+          selected={null}
+          onSelect={ignoreSelection}
+          disabled={disabled}
+          autoSelect={false}
+          exclude={exclude(host)}
+          onAdd={(repository) => onAdd(host, repository)}
+        />
+      ) : null}
+    </Sheet>
+  );
+}
+
+const ignoreSelection = () => undefined;

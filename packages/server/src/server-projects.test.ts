@@ -1,6 +1,6 @@
 import type { Backend } from '@verity/session';
 import { createSealableSecretCipher, type ProjectRecord } from '@verity/store';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditLog } from './audit-log.js';
 import type { AuditRecorder } from './audit-recorder.js';
 import { createAuthTokenRegistry } from './auth.js';
@@ -675,6 +675,7 @@ describe('GET /projects (#174)', () => {
     const projects: ProjectRecord[] = [
       {
         id: 'p1',
+        name: 'Fixture project',
         owner: 'heey-global',
         repo: 'verity',
         containerName: 'dev-heey-global-verity',
@@ -693,6 +694,7 @@ describe('GET /projects (#174)', () => {
       },
       {
         id: 'p2',
+        name: 'Fixture project',
         owner: 'heey-global',
         repo: 'dev-server',
         containerName: 'dev-heey-global-dev-server',
@@ -768,6 +770,7 @@ describe('GET /projects (#174)', () => {
     const CURRENT = 'sha256:current';
     const projectRow = (overrides: Partial<ProjectRecord> = {}): ProjectRecord => ({
       id: 'p-drift',
+      name: 'Fixture project',
       owner: 'heey-global',
       repo: 'verity',
       containerName: 'dev-heey-global-verity',
@@ -1416,12 +1419,13 @@ describe('POST /projects', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/projects',
-      payload: { kind: 'local', name: 'My New Project' },
+      payload: { kind: 'local', name: '  My New Project  ' },
     });
 
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({
       project: {
+        name: 'My New Project',
         kind: 'local',
         owner: '__local__',
         repo: 'my-new-project',
@@ -1437,21 +1441,60 @@ describe('POST /projects', () => {
     });
   });
 
-  it('400s a local project name that has no legal slug', async () => {
+  it('names a repository project as asked and otherwise after its repository', async () => {
+    const named = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'heey-global/named', name: 'Verity Plattform' },
+    });
+    expect(named.statusCode).toBe(201);
+    expect(named.json()).toMatchObject({
+      project: { name: 'Verity Plattform', owner: 'heey-global', repo: 'named' },
+    });
+    const unnamed = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { repo: 'heey-global/unnamed' },
+    });
+    expect(unnamed.json()).toMatchObject({ project: { name: 'unnamed' } });
+  });
+
+  it('keeps umlauts in the name and spells them out in the directory', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { kind: 'local', name: 'Übersetzungen & Größen' },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({
+      project: { name: 'Übersetzungen & Größen', repo: 'ubersetzungen-grossen' },
+    });
+  });
+
+  it('gives a name without a usable character a directory of its own', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/projects',
       payload: { kind: 'local', name: '!!!' },
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual({ error: 'invalid project name' });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ project: { name: '!!!', repo: 'project' } });
   });
 
-  // Unlike the GitHub path, a local add must not double as a restore: the name is
-  // operator-typed, so adopting a same-named row would hand back someone else's
-  // clone and sessions.
-  it('409s a local project name that is already taken', async () => {
+  it('400s an empty project name', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/projects',
+      payload: { kind: 'local', name: '   ' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  // Names may repeat; a local add must still never double as a restore: adopting
+  // a same-named row would hand back someone else's clone and sessions. So the
+  // second project gets its own, numbered directory.
+  it('creates a second project of the same name in a directory of its own', async () => {
     const first = await app.inject({
       method: 'POST',
       url: '/projects',
@@ -1464,11 +1507,14 @@ describe('POST /projects', () => {
       url: '/projects',
       payload: { kind: 'local', name: 'Twice' },
     });
-    expect(second.statusCode).toBe(409);
-    expect(second.json()).toEqual({ error: 'a project with that name already exists' });
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toMatchObject({
+      project: { name: 'Twice', repo: 'twice-2', cloneDir: '__local__-twice-2' },
+    });
+    expect(second.json().project.id).not.toBe(first.json().project.id);
   });
 
-  it('atomically rejects one of two concurrent local creates for the same slug', async () => {
+  it('gives each of two concurrent local creates of one name its own directory', async () => {
     const [first, second] = await Promise.all([
       app.inject({
         method: 'POST',
@@ -1481,11 +1527,90 @@ describe('POST /projects', () => {
         payload: { kind: 'local', name: 'Concurrent' },
       }),
     ]);
-    expect([first.statusCode, second.statusCode].sort()).toEqual([201, 409]);
+    expect([first.statusCode, second.statusCode]).toEqual([201, 201]);
     const matches = (await ctx.store.listProjects({ includeHidden: true })).filter(
-      (project) => project.owner === '__local__' && project.repo === 'concurrent',
+      (project) => project.owner === '__local__' && project.name === 'Concurrent',
     );
-    expect(matches).toHaveLength(1);
+    expect(matches.map((project) => project.repo).sort()).toEqual(['concurrent', 'concurrent-2']);
+  });
+});
+
+describe('PATCH /projects/:id/profile', () => {
+  beforeEach(async () => {
+    await ctx.store.upsertProject({
+      id: 'p-profile',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+      state: 'active',
+    });
+  });
+
+  it('renames the project and leaves its repository identity alone', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/projects/p-profile/profile',
+      payload: { name: '  Verity Plattform  ' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ name: 'Verity Plattform' });
+    expect(await ctx.store.getProject('p-profile')).toMatchObject({
+      name: 'Verity Plattform',
+      owner: 'heey-global',
+      repo: 'verity',
+      containerName: 'dev-heey-global-verity',
+    });
+    // The list is memoised; the new name must reach it straight away.
+    const list = await app.inject({ method: 'GET', url: '/projects' });
+    expect(
+      list.json<{ id: string; name: string }[]>().find((p) => p.id === 'p-profile')?.name,
+    ).toBe('Verity Plattform');
+  });
+
+  it('sets and clears the description beside the name', async () => {
+    const set = await app.inject({
+      method: 'PATCH',
+      url: '/projects/p-profile/profile',
+      payload: { name: 'Verity', description: ' Agent workspace ' },
+    });
+    expect(set.json()).toEqual({ name: 'Verity', description: 'Agent workspace' });
+    const cleared = await app.inject({
+      method: 'PATCH',
+      url: '/projects/p-profile/profile',
+      payload: { description: '' },
+    });
+    expect(cleared.json()).toEqual({ description: null });
+    expect((await ctx.store.getProject('p-profile'))?.name).toBe('Verity');
+  });
+
+  it('refuses an empty name, an overlong one and an empty request', async () => {
+    for (const payload of [{ name: '   ' }, { name: 'x'.repeat(101) }, {}]) {
+      const res = await app.inject({
+        method: 'PATCH',
+        url: '/projects/p-profile/profile',
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    expect((await ctx.store.getProject('p-profile'))?.name).toBe('verity');
+  });
+
+  it('tells the app in the detail whether this person may edit them', async () => {
+    const res = await app.inject({ method: 'GET', url: '/projects/p-profile' });
+    // Without the auth gate there is one implicit administrator.
+    expect(res.json()).toMatchObject({
+      project: { name: 'verity' },
+      viewer: { canManage: true },
+    });
+  });
+
+  it('404s an unknown project', async () => {
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/projects/missing/profile',
+      payload: { name: 'Anything' },
+    });
+    expect(res.statusCode).toBe(404);
   });
 });
 
@@ -1959,7 +2084,11 @@ describe('POST /projects/:id/link-github', () => {
         url: '/projects',
         payload: { kind: 'local', name: 'My Project' },
       });
-      expect(concurrentCreate.statusCode).toBe(409);
+      // Same name, but the reserved directory stays with the project being linked.
+      expect(concurrentCreate.statusCode).toBe(201);
+      expect(concurrentCreate.json()).toMatchObject({
+        project: { name: 'My Project', repo: 'my-project-2' },
+      });
       release();
       expect((await linking).statusCode).toBe(409);
       expect(await ctx.store.getProject('p-race')).toMatchObject({
@@ -2373,6 +2502,7 @@ describe('POST /projects/:id/deprovision (#174)', () => {
     return {
       deprovision: vi.fn(async (projectId: string): Promise<ProjectRecord> => ({
         id: projectId,
+        name: 'Fixture project',
         owner: 'heey-global',
         repo: 'verity',
         containerName: 'dev-heey-global-verity',
@@ -2675,6 +2805,7 @@ describe('DELETE /projects/:id', () => {
     return {
       deprovision: vi.fn(async (projectId: string): Promise<ProjectRecord> => ({
         id: projectId,
+        name: 'Fixture project',
         owner: 'heey-global',
         repo: 'verity',
         containerName: 'dev-heey-global-verity',
@@ -3675,6 +3806,7 @@ describe('POST /projects/:id/repair', () => {
     return {
       provision: vi.fn(async (projectId: string): Promise<ProjectRecord> => ({
         id: projectId,
+        name: 'Fixture project',
         owner: 'heey-global',
         repo: 'verity',
         containerName: 'dev-heey-global-verity',

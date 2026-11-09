@@ -62,6 +62,9 @@ export {
 // harness reaches it through `@verity/store/testing`.
 export {
   EventStore,
+  defaultProjectName,
+  InvalidProjectNameError,
+  PROJECT_NAME_MAX_CHARS,
   SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
   type PlanningConsent,

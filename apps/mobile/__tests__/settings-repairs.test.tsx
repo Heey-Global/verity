@@ -16,14 +16,16 @@ it('does not enroll projects until explicitly selected', async () => {
   mockCreateVerityClient.mockReturnValue({
     listProjects: jest
       .fn()
-      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+      .mockResolvedValue([
+        { id: 'p', name: 'Team App', owner: 'team', repo: 'app', kind: 'github' },
+      ]),
     projectRepairs,
     qaSettings: jest
       .fn()
       .mockResolvedValue({ enabled: false, health: 'disabled', session_id: null }),
   } as unknown as VerityClient);
   render(<RepairsScreen />);
-  await screen.findByText('team/app');
+  await screen.findByText('Team App');
   expect(projectRepairs).toHaveBeenCalledWith('p');
   expect(projectRepairs).not.toHaveBeenCalledWith('p', 'automatic');
   expect(screen.queryByRole('button', { name: 'Allow automatic repairs' })).toBeNull();
@@ -48,7 +50,9 @@ it('pauses automatic delegation before opening a session for manual takeover', a
   mockCreateVerityClient.mockReturnValue({
     listProjects: jest
       .fn()
-      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+      .mockResolvedValue([
+        { id: 'p', name: 'Team App', owner: 'team', repo: 'app', kind: 'github' },
+      ]),
     projectRepairs,
     qaSettings: jest
       .fn()
@@ -92,12 +96,14 @@ it('shows accessible project incidents when global settings are denied', async (
   mockCreateVerityClient.mockReturnValue({
     listProjects: jest
       .fn()
-      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+      .mockResolvedValue([
+        { id: 'p', name: 'Team App', owner: 'team', repo: 'app', kind: 'github' },
+      ]),
     projectRepairs: jest.fn().mockResolvedValue({ mandate: null, incidents: [] }),
     qaSettings: jest.fn().mockRejectedValue(new Error('403')),
   } as unknown as VerityClient);
   render(<RepairsScreen />);
-  await screen.findByText('team/app');
+  await screen.findByText('Team App');
   expect(screen.getByRole('button', { name: 'Enable QA' })).toBeDisabled();
 });
 
@@ -120,7 +126,9 @@ it('opens the originating session without offering QA takeover or retry', async 
   mockCreateVerityClient.mockReturnValue({
     listProjects: jest
       .fn()
-      .mockResolvedValue([{ id: 'p', owner: 'team', repo: 'app', kind: 'github' }]),
+      .mockResolvedValue([
+        { id: 'p', name: 'Team App', owner: 'team', repo: 'app', kind: 'github' },
+      ]),
     projectRepairs,
     qaSettings: jest.fn().mockResolvedValue({ enabled: true, health: 'healthy', session_id: 'qa' }),
   } as unknown as VerityClient);

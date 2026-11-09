@@ -113,22 +113,13 @@ describe('project settings index — destinations', () => {
     expect(screen.queryByLabelText(/^MCP(,|$)/)).toBeNull();
   });
 
-  it('edits the description shown under the project name', async () => {
+  it('leaves description editing on the project page', async () => {
     const detail = makeDetail({ description: 'Old line' });
-    const updateProjectSettings = jest
-      .fn()
-      .mockResolvedValue({ ...detail.settings, description: 'Agent workspace' });
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
-    const prompt = jest.spyOn(Alert, 'prompt').mockImplementation((_title, _message, callback) => {
-      (callback as (value: string) => void)('Agent workspace');
-    });
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
     render(<ProjectSettingsIndexScreen />);
-    fireEvent.press(await screen.findByLabelText(/^Description, Old line/));
-    expect(prompt.mock.calls[0]?.[4]).toBe('Old line');
-    await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { description: 'Agent workspace' }),
-    );
-    expect(await screen.findByText('Agent workspace')).toBeOnTheScreen();
+    await screen.findByLabelText(rowLabel('Sandbox'));
+    expect(screen.queryByLabelText(rowLabel('Description'))).toBeNull();
+    expect(screen.queryByText('Old line')).toBeNull();
   });
 
   it('shows the sandbox state and default model without GitHub details', async () => {

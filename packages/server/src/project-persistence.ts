@@ -1,9 +1,16 @@
 import { type Kysely, sql } from 'kysely';
 
-import type { Database, ProjectKind, ProjectRecord, ProjectState } from '@verity/store';
+import {
+  defaultProjectName,
+  type Database,
+  type ProjectKind,
+  type ProjectRecord,
+  type ProjectState,
+} from '@verity/store';
 
 const PROJECT_COLUMNS = [
   'id',
+  'name',
   'owner',
   'repo',
   'container_name',
@@ -30,6 +37,7 @@ const PROJECT_COLUMNS = [
 
 interface ProjectRow {
   id: string;
+  name: string | null;
   owner: string;
   repo: string;
   container_name: string;
@@ -57,6 +65,7 @@ interface ProjectRow {
 function projectRowToRecord(row: ProjectRow): ProjectRecord {
   return {
     id: row.id,
+    name: row.name ?? defaultProjectName(row),
     owner: row.owner,
     repo: row.repo,
     containerName: row.container_name,

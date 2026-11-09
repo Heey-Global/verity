@@ -342,6 +342,9 @@ export function isInstallationPlaceholder(
 /** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
 export interface ProjectRecord {
   id: string;
+  /** The project's own name, independent of its repositories. Set when the
+   *  project is created, changed only by {@link EventStore.renameProject}. */
+  name: string;
   owner: string;
   repo: string;
   containerName: string;
@@ -467,7 +470,23 @@ export interface ProjectUpsertInput {
   /** Mark this repo as intentionally added to the project overview. Installation
    *  sync omits it so unadded `absent` repos stay picker-only. */
   overviewVisible?: boolean;
+  /** The project's name. Only written on INSERT; omitted, it is derived with
+   *  {@link defaultProjectName}. An existing project keeps its name. */
+  name?: string;
 }
+
+/** Longest name {@link EventStore.renameProject} accepts. */
+export const PROJECT_NAME_MAX_CHARS = 100;
+
+/** The name a project carries when none was given: its repository name, or a
+ *  local project's directory name — what the app showed before projects had
+ *  names of their own, and what migration 0204 copied into existing rows. */
+export function defaultProjectName(project: { repo: string }): string {
+  return project.repo;
+}
+
+/** A rename the store refuses: empty after trimming, or over the limit. */
+export class InvalidProjectNameError extends Error {}
 
 export interface SessionBackendStateRecord {
   contextFingerprint?: string;
@@ -3861,6 +3880,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName(input),
           owner: input.owner,
           repo: input.repo,
           container_name: input.containerName,
@@ -6475,6 +6495,7 @@ export class EventStore implements EventSink {
 
   private projectRowToRecord(row: {
     id: string;
+    name?: string | null;
     owner: string;
     repo: string;
     container_name: string;
@@ -6507,6 +6528,7 @@ export class EventStore implements EventSink {
   }): ProjectRecord {
     return {
       id: row.id,
+      name: row.name ?? defaultProjectName(row),
       owner: row.owner,
       repo: row.repo,
       containerName: row.container_name,
@@ -6549,6 +6571,7 @@ export class EventStore implements EventSink {
   private readonly projectColumns = [
     'forge_connection_id',
     'id',
+    'name',
     'kind',
     'owner',
     'repo',
@@ -6710,6 +6733,7 @@ export class EventStore implements EventSink {
       .insertInto('projects')
       .values({
         id: input.id,
+        name: input.name ?? defaultProjectName({ repo }),
         owner,
         repo,
         container_name: containerName,
@@ -6868,6 +6892,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
           repository_instance: instance,
@@ -6954,6 +6979,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
           container_name: input.containerName.toLowerCase(),
@@ -6974,6 +7000,31 @@ export class EventStore implements EventSink {
       return project;
     });
     return this.projectRowToRecord(row);
+  }
+
+  /**
+   * Gives a project a new name. Only the name changes: owner, repo, container,
+   * clone directory and every repository link stay as they are. Duplicate names
+   * across projects are allowed — the ID identifies a project, not its name.
+   *
+   * @throws {InvalidProjectNameError} when the trimmed name is empty or longer
+   *         than {@link PROJECT_NAME_MAX_CHARS}.
+   * @returns the renamed project, or `undefined` when it does not exist.
+   */
+  async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
+    if ([...trimmed].length > PROJECT_NAME_MAX_CHARS)
+      throw new InvalidProjectNameError(
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      );
+    const row = await this.db
+      .updateTable('projects')
+      .set({ name: trimmed, updated_at: sql`now()` })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirst();
+    return row ? this.projectRowToRecord(row) : undefined;
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {

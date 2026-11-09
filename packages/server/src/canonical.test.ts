@@ -144,7 +144,9 @@ describe('slugifyProjectName (projects created without GitHub)', () => {
   });
 
   it('normalises rather than rejecting — unlike parseOwnerRepo', () => {
-    expect(slugifyProjectName('Ünsere App!!')).toBe('nsere-app');
+    // Letters with diacritics keep their base letter instead of vanishing.
+    expect(slugifyProjectName('Ünsere App!!')).toBe('unsere-app');
+    expect(slugifyProjectName('Größe')).toBe('grosse');
     expect(parseOwnerRepo('local/Ünsere App!!')).toBeUndefined();
   });
 

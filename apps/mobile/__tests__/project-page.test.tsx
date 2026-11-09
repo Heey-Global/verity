@@ -407,6 +407,125 @@ describe('project page', () => {
     );
   });
 
+  describe('name and description in place', () => {
+    function managed(description: string | null = null) {
+      const base = makeDetail({ description });
+      const detail = {
+        ...base,
+        project: { ...base.project, name: 'Verity Plattform' },
+        viewer: { canManage: true },
+      };
+      const updateProjectProfile = jest.fn().mockResolvedValue({});
+      const client = clientWith([], {
+        getProject: jest.fn().mockResolvedValue(detail),
+        updateProjectProfile,
+      });
+      mockCreateVerityClient.mockReturnValue(client);
+      return { client, updateProjectProfile };
+    }
+
+    it('renames the project from its name and reloads the page', async () => {
+      const { client, updateProjectProfile } = managed();
+      const onProjectChanged = jest.fn();
+      render(
+        <ProjectPage
+          client={client}
+          projectId="p/1"
+          onOpenSession={jest.fn()}
+          onProjectChanged={onProjectChanged}
+        />,
+      );
+      fireEvent.press(await screen.findByLabelText('Project name: Verity Plattform'));
+      await act(async () => undefined);
+      const loadsBefore = (client.getProject as jest.Mock).mock.calls.length;
+      const input = screen.getByTestId('project-name-input');
+      fireEvent.changeText(input, '  Verity Mobile  ');
+      fireEvent(input, 'submitEditing');
+      await waitFor(() =>
+        expect(updateProjectProfile).toHaveBeenCalledWith('p/1', { name: 'Verity Mobile' }),
+      );
+      await waitFor(() => expect(onProjectChanged).toHaveBeenCalled());
+      // Saved once, though Return blurs the field as well.
+      fireEvent(input, 'blur');
+      expect(updateProjectProfile).toHaveBeenCalledTimes(1);
+      expect(client.getProject).toHaveBeenCalledTimes(loadsBefore + 1);
+    });
+
+    it('puts the old name back on Escape and saves nothing', async () => {
+      const { client, updateProjectProfile } = managed();
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      fireEvent.press(await screen.findByLabelText('Project name: Verity Plattform'));
+      const input = screen.getByTestId('project-name-input');
+      fireEvent.changeText(input, 'Something else');
+      // A browser blurs the focused field as Escape removes it, reaching the
+      // handler the field had at that moment — which holds the discarded text.
+      const blurAsRemoved = screen.getByTestId('project-name-input').props.onBlur as () => void;
+      fireEvent(input, 'keyPress', { nativeEvent: { key: 'Escape' } });
+      await act(async () => blurAsRemoved());
+      expect(screen.getByLabelText('Project name: Verity Plattform')).toBeOnTheScreen();
+      expect(updateProjectProfile).not.toHaveBeenCalled();
+    });
+
+    it('refuses an empty name and keeps a failed save open with its reason', async () => {
+      const { client, updateProjectProfile } = managed();
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      fireEvent.press(await screen.findByLabelText('Project name: Verity Plattform'));
+      const input = screen.getByTestId('project-name-input');
+      fireEvent.changeText(input, '   ');
+      fireEvent(input, 'blur');
+      expect(await screen.findByText('Project name cannot be empty.')).toBeOnTheScreen();
+      expect(updateProjectProfile).not.toHaveBeenCalled();
+
+      updateProjectProfile.mockRejectedValueOnce(new Error('The server did not answer.'));
+      fireEvent.changeText(input, 'Verity Mobile');
+      fireEvent.press(screen.getByLabelText('Save project name'));
+      expect(await screen.findByText('The server did not answer.')).toBeOnTheScreen();
+      expect(screen.getByTestId('project-name-input').props.value).toBe('Verity Mobile');
+    });
+
+    it('offers a missing description to add', async () => {
+      const { client, updateProjectProfile } = managed();
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      fireEvent.press(await screen.findByLabelText('Add description'));
+      const input = screen.getByTestId('project-line-input');
+      fireEvent.changeText(input, 'Agent workspace');
+      fireEvent(input, 'blur');
+      await waitFor(() =>
+        expect(updateProjectProfile).toHaveBeenCalledWith('p/1', {
+          description: 'Agent workspace',
+        }),
+      );
+    });
+
+    it('clears the description when its text is removed', async () => {
+      const { client, updateProjectProfile } = managed('Agent workspace');
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      fireEvent.press(await screen.findByLabelText('Description: Agent workspace'));
+      fireEvent.changeText(screen.getByTestId('project-line-input'), '');
+      fireEvent(screen.getByTestId('project-line-input'), 'submitEditing');
+      await waitFor(() =>
+        expect(updateProjectProfile).toHaveBeenCalledWith('p/1', { description: null }),
+      );
+    });
+
+    it('shows name and description as plain text to someone who may not manage', async () => {
+      const base = makeDetail({ description: 'Agent workspace' });
+      const client = clientWith([], {
+        getProject: jest.fn().mockResolvedValue({
+          ...base,
+          project: { ...base.project, name: 'Verity Plattform' },
+          viewer: { canManage: false },
+        }),
+      });
+      mockCreateVerityClient.mockReturnValue(client);
+      render(<ProjectPage client={client} projectId="p/1" onOpenSession={jest.fn()} />);
+      expect(await screen.findByText('Verity Plattform')).toBeOnTheScreen();
+      expect(screen.getByTestId('project-line')).toHaveTextContent('Agent workspace');
+      expect(screen.queryByLabelText(/^Project name:/)).toBeNull();
+      expect(screen.queryByLabelText(/^Description:/)).toBeNull();
+    });
+  });
+
   it('counts open pull requests from the code host on the Repositories row', async () => {
     const pull = (number: number, state: string, origin: Record<string, unknown>) => ({
       number,

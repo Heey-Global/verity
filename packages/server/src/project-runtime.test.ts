@@ -14,6 +14,7 @@ import {
 
 const project: ProjectRecord = {
   id: 'p1',
+  name: 'Fixture project',
   owner: 'heey-global',
   repo: 'verity',
   containerName: 'dev-heey-global-verity',

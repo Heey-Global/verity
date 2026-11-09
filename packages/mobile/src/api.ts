@@ -613,6 +613,9 @@ export type ToolkitDrift = z.infer<typeof toolkitDriftSchema>;
 /** Cached GitHub-installation repo plus Verity-side container lifecycle state (#174). */
 export const projectRecordSchema = z.object({
   id: z.string().min(1),
+  // The project's own name. Optional for servers that predate it; the app then
+  // names the project as before (see `projectDisplayName`).
+  name: z.string().min(1).optional(),
   owner: z.string().min(1),
   repo: z.string().min(1),
   containerName: z.string().min(1),
@@ -1805,10 +1808,25 @@ export const projectDetailSchema = z.object({
   project: projectRecordSchema,
   settings: projectSettingsSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
+  // What the requesting person may change. Absent from older servers, which
+  // left every change to administrators and refused the rest.
+  viewer: z.object({ canManage: z.boolean() }).optional(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
 const projectCreatedSchema = z.object({ project: projectRecordSchema });
+
+/** Body for `PATCH /projects/:id/profile`: the name and description shown on
+ *  the project page. `description: null` (or empty) removes the description. */
+export interface ProjectProfilePatch {
+  name?: string;
+  description?: string | null;
+}
+const projectProfileSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+});
+export type ProjectProfile = z.infer<typeof projectProfileSchema>;
 export type ProjectCreated = z.infer<typeof projectCreatedSchema>;
 
 const projectSettingsResponseSchema = z.object({ settings: projectSettingsSchema });
@@ -2232,13 +2250,20 @@ export interface SpawnRequest {
   issue?: number;
 }
 
-/** Body for `POST /projects`. Two shapes: an existing GitHub repository as
+/** Body for `POST /projects`. `name` is the project's own name; a repository
+ * project without one is named after its repository. Two shapes: an existing GitHub repository as
  * `owner/repo` (plus the GitHub URL forms the server canonicalises through its
  * shared project parser), or a project with NO GitHub repository behind it,
  * which {@link VerityClient.linkProjectToGitHub} can connect to one later. */
 export type CreateProjectRequest =
-  | { repo: string; kind?: 'github'; imageRef?: string | null }
-  | { repo: string; kind: 'forgejo'; connectionId: string; imageRef?: string | null }
+  | { repo: string; kind?: 'github'; name?: string; imageRef?: string | null }
+  | {
+      repo: string;
+      kind: 'forgejo';
+      connectionId: string;
+      name?: string;
+      imageRef?: string | null;
+    }
   | { kind: 'local'; name: string; imageRef?: string | null };
 
 /** Body for `POST /devices/:id/push-token`: registers this device's Expo push
@@ -5187,6 +5212,16 @@ export class VerityClient {
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());
+  }
+
+  /** Renames the project and/or changes its description; only what is given changes. */
+  async updateProjectProfile(id: string, patch: ProjectProfilePatch): Promise<ProjectProfile> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/profile`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return projectProfileSchema.parse(await res.json());
   }
 
   async updateProjectSettings(id: string, patch: ProjectSettingsPatch): Promise<ProjectSettings> {

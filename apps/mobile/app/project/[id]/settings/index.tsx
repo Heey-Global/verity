@@ -33,7 +33,7 @@ import { useDeleteProject } from '../../../../lib/projectDelete';
 import { useNewDesignChoice } from '../../../../lib/homePreferences';
 import { useProjectConnections } from '../../../../lib/useProjectConnections';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { Button, useTextPrompt } from '../../../../components/ui';
+import { Button } from '../../../../components/ui';
 
 export default function ProjectSettingsIndexScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -59,28 +59,7 @@ function ProjectSettingsIndexView({
   projectId: string;
 }) {
   const { theme } = useUnistyles();
-  const { detail, loading, error, setError, load, onSettingsSaved } = useProjectDetail(
-    client,
-    projectId,
-  );
-  const textPrompt = useTextPrompt();
-  const description = detail?.settings?.description ?? null;
-  const editDescription = () =>
-    textPrompt.prompt(
-      'Description',
-      'One line shown under the project name.',
-      (value) => {
-        setError(undefined);
-        client
-          .updateProjectSettings(projectId, { description: value.trim() === '' ? null : value })
-          .then(onSettingsSaved)
-          .catch((caught: unknown) =>
-            setError(caught instanceof Error ? caught.message : 'Could not save the description'),
-          );
-      },
-      'plain-text',
-      description ?? '',
-    );
+  const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
   // The new design shows project knowledge on the project page instead. Until
   // the stored choice is known the row stays away: appearing late is calmer than
   // showing and then vanishing for a device that has the preview on.
@@ -161,16 +140,6 @@ function ProjectSettingsIndexView({
           </SettingsListPanel>
         </SettingsGroup>
       )}
-      <SettingsGroup title="General">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="align-left"
-            title="Description"
-            subtitle={description ?? 'Shown under the project name'}
-            onPress={editDescription}
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow
@@ -371,7 +340,6 @@ function ProjectSettingsIndexView({
           and the project's sessions.
         </Text>
       </View>
-      {textPrompt.dialog}
     </SettingsScaffold>
   );
 }

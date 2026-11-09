@@ -232,6 +232,7 @@ function secretJobsConfig(): NonNullable<EmbeddedServerConfig['secretJobs']> {
 function sampleAppProject(): ProjectRecord {
   return {
     id: 'p-sample-app',
+    name: 'Fixture project',
     owner: 'Heey-Global',
     repo: 'Deep-OCR',
     containerName: 'dev-example-org--sample-app',

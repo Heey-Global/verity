@@ -2,6 +2,7 @@ import { ProjectInquiryCards } from './ProjectInquiryCards';
 import {
   inboxDismissedKeys,
   inboxItems,
+  projectTitle,
   type InboxItem,
   type RepositoryPullRequests,
   type ProjectDetail,
@@ -22,7 +23,7 @@ import {
   folderTitle,
   type KnowledgeScope,
 } from '../knowledge/knowledgeScope';
-import { Button, Group, IconButton, Row, SectionHeader, StatusTag, Text } from '../ui';
+import { Button, Group, IconButton, InlineEdit, Row, SectionHeader, StatusTag, Text } from '../ui';
 import { tint } from '../ui/tint';
 import { useProjectDetail } from '../../lib/useProjectDetail';
 import { ProjectTasksRow } from './ProjectTasksRow';
@@ -80,6 +81,7 @@ export function ProjectPage({
   onRepairProject,
   onSessionChanged,
   onInboxSaved,
+  onProjectChanged,
   reloadOn,
   selectedSessionId,
 }: {
@@ -98,6 +100,8 @@ export function ProjectPage({
   reloadOn?: unknown;
   /** An inbox item on this page was answered, dismissed or restored. */
   onInboxSaved?: (() => void) | undefined;
+  /** The project's name or description was changed on this page. */
+  onProjectChanged?: (() => void) | undefined;
   /** A session was renamed, (un)favorited or deleted on this page. */
   onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
 }) {
@@ -186,7 +190,15 @@ export function ProjectPage({
     },
     [inline, projectId],
   );
-  const name = detail?.project.repo ?? 'Project';
+  const name = detail ? projectTitle(detail.project) : 'Project';
+  const saveProfile = useCallback(
+    async (patch: { name?: string; description?: string | null }) => {
+      await client.updateProjectProfile(projectId, patch);
+      await load(true);
+      onProjectChanged?.();
+    },
+    [client, projectId, load, onProjectChanged],
+  );
   const gear = (
     <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
   );
@@ -215,11 +227,9 @@ export function ProjectPage({
       >
         <ProjectHero
           project={detail.project}
-          line={projectLine(
-            detail.project,
-            detail.settings?.description,
-            pullRequests.repositories?.length,
-          )}
+          description={detail.settings?.description ?? ''}
+          line={projectLine(detail.project, null, pullRequests.repositories?.length)}
+          onSave={detail.viewer?.canManage === true ? saveProfile : undefined}
         />
         <ProjectWork
           client={client}
@@ -281,21 +291,55 @@ export function ProjectPage({
   );
 }
 
-function ProjectHero({ project, line }: { project: ProjectRecord; line: string }) {
+/**
+ * The project's name with its description below. Someone who may manage the
+ * project edits both in place; for everyone else they are plain text, and a
+ * missing description gives way to what the project is connected to.
+ */
+function ProjectHero({
+  project,
+  description,
+  line,
+  onSave,
+}: {
+  project: ProjectRecord;
+  description: string;
+  /** Shown read-only instead of an absent description. */
+  line: string;
+  onSave?: ((patch: { name?: string; description?: string | null }) => Promise<void>) | undefined;
+}) {
+  const name = projectTitle(project);
   return (
     <View style={styles.hero}>
       <View style={styles.initial}>
         <Text variant="title" tone="action">
-          {(project.repo.trim()[0] ?? '?').toUpperCase()}
+          {(Array.from(name.trim())[0] ?? '?').toUpperCase()}
         </Text>
       </View>
-      <View style={styles.flex}>
-        <Text variant="title" accessibilityRole="header" numberOfLines={1}>
-          {project.repo}
-        </Text>
-        <Text variant="subtitle" numberOfLines={2} testID="project-line">
-          {line}
-        </Text>
+      <View style={styles.heroBody}>
+        <InlineEdit
+          value={name}
+          label="Project name"
+          variant="title"
+          header
+          required
+          maxLength={100}
+          numberOfLines={1}
+          onSave={onSave && ((next) => onSave({ name: next }))}
+          testID="project-name"
+        />
+        <InlineEdit
+          value={description}
+          label="Description"
+          variant="subtitle"
+          multiline
+          maxLength={200}
+          numberOfLines={2}
+          placeholder="Add description"
+          emptyText={line}
+          onSave={onSave && ((next) => onSave({ description: next === '' ? null : next }))}
+          testID="project-line"
+        />
       </View>
     </View>
   );
@@ -393,11 +437,12 @@ const styles = StyleSheet.create((theme) => ({
   },
   hero: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: theme.spacing.md,
     paddingTop: theme.spacing.md,
     paddingBottom: theme.spacing.sm,
   },
+  heroBody: { flex: 1, gap: theme.spacing.xxs },
   initial: {
     width: 48,
     height: 48,
