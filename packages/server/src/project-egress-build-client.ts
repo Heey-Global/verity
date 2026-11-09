@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import {
   protectedBuildCommand,
   protectedBuildReply,
+  sameProtectedBuildRequest,
   type ProtectedBuildCommand,
   type ProtectedBuildReply,
 } from './project-egress-build.js';
@@ -101,6 +102,8 @@ export function createProtectedBuildClient(options: {
               );
               if (command.operation === 'health') {
                 if (!('available' in reply)) throw new Error('Mismatched protected builder health');
+              } else if (command.operation === 'slot') {
+                if (!('idle' in reply)) throw new Error('Mismatched protected build slot');
               } else {
                 const expected = command.operation === 'begin' ? command.request : command;
                 if (
@@ -111,7 +114,7 @@ export function createProtectedBuildClient(options: {
                   throw new Error('Mismatched protected build acknowledgement');
                 if (
                   command.operation === 'begin' &&
-                  JSON.stringify(reply.record.request) !== JSON.stringify(command.request)
+                  !sameProtectedBuildRequest(reply.record.request, command.request)
                 )
                   throw new Error('Changed protected build acknowledgement');
               }

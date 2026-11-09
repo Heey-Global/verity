@@ -42,6 +42,7 @@ export const protectedBuildRecord = z.strictObject({
 });
 export const protectedBuildCommand = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('health') }),
+  z.strictObject({ operation: z.literal('slot') }),
   z.strictObject({ operation: z.literal('begin'), request: protectedBuildRequest }),
   ...(['heartbeat', 'status', 'cancel'] as const).map((operation) =>
     z.strictObject({
@@ -53,12 +54,18 @@ export const protectedBuildCommand = z.discriminatedUnion('operation', [
 ]);
 export const protectedBuildReply = z.union([
   z.strictObject({ version: z.literal(1), available: z.boolean() }),
+  /** The single host slot holds no build whose termination is unproven. */
+  z.strictObject({ version: z.literal(1), idle: z.boolean() }),
   z.strictObject({ version: z.literal(1), record: protectedBuildRecord }),
 ]);
 export type ProtectedBuildCommand = z.infer<typeof protectedBuildCommand>;
 export type ProtectedBuildReply = z.infer<typeof protectedBuildReply>;
-const same = (a: ProtectedBuildRequest, b: ProtectedBuildRequest) =>
-  JSON.stringify(a) === JSON.stringify(b);
+// Every field is a primitive; derive the keys from the schema so a new field
+// cannot silently drop out of receipt, acknowledgement or termination matching.
+const requestKeys = Object.keys(protectedBuildRequest.shape) as (keyof ProtectedBuildRequest)[];
+export const sameProtectedBuildRequest = (a: ProtectedBuildRequest, b: ProtectedBuildRequest) =>
+  requestKeys.every((key) => a[key] === b[key]);
+const same = sameProtectedBuildRequest;
 const terminal = (phase: ProtectedBuildPhase) => phase === 'failed' || phase === 'succeeded';
 
 /** Host-owned build lifecycle, separate from the project's live sandbox generation.
@@ -70,6 +77,8 @@ export class ProtectedBuildHost {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private lastHeartbeat = 0;
+  /** Persisted state has been loaded; before that, an empty slot proves nothing. */
+  private restored = false;
   constructor(
     private readonly runtime: ProtectedBuildRuntime,
     private readonly persist: (record: ProtectedBuildRecord | undefined) => Promise<void>,
@@ -88,6 +97,13 @@ export class ProtectedBuildHost {
     const command = protectedBuildCommand.parse(input);
     if (command.operation === 'health')
       return { version: 1, available: !this.closed && (await this.runtime.ready()) };
+    if (command.operation === 'slot')
+      return {
+        version: 1,
+        idle: await this.serialize(() =>
+          Promise.resolve(this.restored && (this.record?.ended ?? true)),
+        ),
+      };
     if (command.operation === 'begin')
       return { version: 1, record: await this.begin(command.request) };
     if (command.operation === 'cancel')
@@ -120,9 +136,9 @@ export class ProtectedBuildHost {
   }
   private async cleanup(record: ProtectedBuildRecord): Promise<void> {
     if (!record.ended || record.cleaned) return;
-    // Keep authenticated termination proof even if removal or a later build fails.
-    await this.receipts?.save(structuredClone(record));
     try {
+      // Keep authenticated termination proof even if removal or a later build fails.
+      await this.receipts?.save(structuredClone(record));
       await this.runtime.remove(record.request);
     } catch (cause) {
       throw new ProtectedBuildFailure('cleanup_failed', { cause });
@@ -157,9 +173,13 @@ export class ProtectedBuildHost {
   restore(value: unknown): Promise<void> {
     return this.serialize(async () => {
       if (this.record) throw new Error('Protected build state is already loaded');
-      if (value === undefined) return;
+      if (value === undefined) {
+        this.restored = true;
+        return;
+      }
       const parsed = protectedBuildRecord.parse(value);
       this.record = parsed;
+      this.restored = true;
       if (parsed.ended) await this.cleanup(parsed);
       else await this.contain(parsed);
     });
@@ -254,13 +274,18 @@ export class ProtectedBuildHost {
       await this.poll(record);
     });
   }
+  /** Termination is already proven here; the host sweep retries removal, so a
+   * cleanup failure must not turn a status read (or a succeeded build) into an error. */
+  private async settle(record: ProtectedBuildRecord): Promise<void> {
+    await this.cleanup(record).catch(() => undefined);
+  }
   private async poll(record: ProtectedBuildRecord): Promise<void> {
     if (record.phase === 'stopping') {
       record.ended = await this.runtime.ended(record.request);
       if (record.ended) {
         record.phase = 'failed';
         await this.save();
-        await this.cleanup(record);
+        await this.settle(record);
       }
     }
     if (!terminal(record.phase) && record.phase !== 'stopping') {
@@ -271,7 +296,7 @@ export class ProtectedBuildHost {
         record.ended = await this.runtime.ended(record.request);
         record.phase = record.ended ? phase : 'stopping';
         await this.save();
-        if (record.ended) await this.cleanup(record);
+        if (record.ended) await this.settle(record);
       }
     }
   }

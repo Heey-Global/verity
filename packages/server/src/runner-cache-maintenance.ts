@@ -24,7 +24,8 @@ export function cacheMaintenanceFailure(
   code: string,
   diagnostics?: {
     exitCode: number;
-    outputBytes: number;
+    /** Absent only when the helper's logs could not be read. */
+    outputBytes?: number;
     reason?: z.infer<typeof cacheHelperDiagnostic>;
   },
 ): Error {
@@ -332,13 +333,29 @@ export async function reclaimSleepingRunnerCaches(input: {
     const inspect = await docker.inspectContainer(created.id);
     stopped = !inspect.running && ['exited', 'dead'].includes(inspect.status ?? '');
     if (!stopped) throw cacheMaintenanceFailure('maintenance-helper-failed');
-    const output = await docker.containerLogs(created.id, 1);
+    const logs = await docker.containerLogs(created.id, 1).then(
+      (output) => ({ output }),
+      (error: unknown) => ({ error }),
+    );
+    // The exit code alone classifies an unsupported image; a failed log read must not hide it.
+    if (exit === 78)
+      throw cacheMaintenanceFailure(
+        'unsupported',
+        'output' in logs
+          ? {
+              exitCode: exit,
+              outputBytes: Buffer.byteLength(logs.output),
+              reason: cacheHelperFailureReason(logs.output, exit),
+            }
+          : { exitCode: exit },
+      );
+    if ('error' in logs) throw logs.error;
+    const output = logs.output;
     const diagnostics = {
       exitCode: exit,
       outputBytes: Buffer.byteLength(output),
       reason: cacheHelperFailureReason(output, exit),
     };
-    if (exit === 78) throw cacheMaintenanceFailure('unsupported', diagnostics);
     if (inspect.exitCode !== 0 || exit !== 0)
       throw cacheMaintenanceFailure('maintenance-helper-failed', diagnostics);
     if (diagnostics.outputBytes > 64 * 1024)

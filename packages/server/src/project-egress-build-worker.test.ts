@@ -159,3 +159,57 @@ it.each(['identity', 'phase'] as const)(
     await expect(superviseProtectedBuild(request, command)).rejects.toThrow('refused');
   },
 );
+
+it('reports success when the error path proves the build itself succeeded', async () => {
+  // Status failing after completion (e.g. a cleanup refusal) must not discard a built image.
+  let refusedStatus = false;
+  const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+    if (input.operation === 'health') return { version: 1, available: true };
+    if (input.operation === 'begin') return record(false);
+    // Refuse only the first status read; the error path's cancel then proves success.
+    if (input.operation === 'status' && !refusedStatus) {
+      refusedStatus = true;
+      throw new ProtectedBuildFailure('cleanup_failed');
+    }
+    return record(true, 'succeeded');
+  });
+  // A bounded clock makes an unconfirmed outcome fail fast instead of polling forever.
+  let tick = 0;
+  expect(
+    await superviseProtectedBuild(request, command, {
+      pause: async () => undefined,
+      now: () => ++tick,
+      timeoutMs: 20,
+    }),
+  ).toEqual({ success: true });
+});
+
+it('confirms termination by request fields, independent of serialized key order', async () => {
+  const reordered = {
+    noCache: request.noCache,
+    image: request.image,
+    snapshot: request.snapshot,
+    attemptId: request.attemptId,
+    projectId: request.projectId,
+  };
+  const command = vi.fn(async (input: ProtectedBuildCommand): Promise<ProtectedBuildReply> => {
+    if (input.operation === 'health') return { version: 1, available: true };
+    if (input.operation === 'begin') return record(false);
+    // Decode as the client does, so object identity can never stand in for equality.
+    return JSON.parse(
+      JSON.stringify({
+        version: 1,
+        record: { request: reordered, phase: 'succeeded', ended: true },
+      }),
+    ) as ProtectedBuildReply;
+  });
+  // A bounded clock makes an unconfirmed outcome fail fast instead of polling forever.
+  let tick = 0;
+  expect(
+    await superviseProtectedBuild(request, command, {
+      pause: async () => undefined,
+      now: () => ++tick,
+      timeoutMs: 20,
+    }),
+  ).toEqual({ success: true });
+});

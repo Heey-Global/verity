@@ -14,6 +14,7 @@ import {
 } from './project-egress-build-client.js';
 import {
   protectedBuildRequest,
+  sameProtectedBuildRequest,
   type ProtectedBuildRequest,
   type ProtectedBuildCommand,
   type ProtectedBuildReply,
@@ -39,7 +40,7 @@ export async function superviseProtectedBuild(
     'record' in reply &&
     reply.record.ended &&
     (reply.record.phase === 'failed' || reply.record.phase === 'succeeded') &&
-    JSON.stringify(reply.record.request) === JSON.stringify(request);
+    sameProtectedBuildRequest(reply.record.request, request);
   const retry = async (input: ProtectedBuildCommand) => {
     while (true) {
       try {
@@ -82,13 +83,16 @@ export async function superviseProtectedBuild(
     // never client exit or error text, allows storage to be released.
     for (const operation of ['cancel', 'status'] as const) {
       const reply = await command({ operation, ...reference }).catch(() => undefined);
-      if (reply && confirmed(reply))
+      if (reply && confirmed(reply)) {
+        // A lost heartbeat or reply after the build itself succeeded is not a failed build.
+        if ('record' in reply && reply.record.phase === 'succeeded') return { success: true };
         return {
           success: false,
           ...(error instanceof ProtectedBuildFailure
             ? { failure: protectedBuildFailure(error) }
             : {}),
         };
+      }
     }
     throw error;
   }

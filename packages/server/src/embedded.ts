@@ -5118,6 +5118,11 @@ export async function buildEmbeddedServer(
                     socketPath: config.projectEgressSocketPath!,
                     token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
                   })({ operation: 'status', ...reference }),
+                protectedBuildSlot: () =>
+                  createProtectedBuildClient({
+                    socketPath: config.projectEgressSocketPath!,
+                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+                  })({ operation: 'slot' }),
               }
             : {}),
         });

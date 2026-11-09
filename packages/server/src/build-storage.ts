@@ -977,6 +977,8 @@ export class BuildStorage {
     probe: {
       buildkitIdle?: BuildkitIdleProbe;
       protectedBuildStatus?: (reference: ProtectedBuildReference) => Promise<unknown>;
+      /** Host reply to the `slot` query; covers records written before it was asked. */
+      protectedBuildSlot?: () => Promise<unknown>;
     } = {},
     now: number = Date.now(),
   ): Promise<UnresolvedBuildAttempt[]> {
@@ -994,9 +996,27 @@ export class BuildStorage {
       }
       return idle;
     };
+    let slotIdle: Promise<boolean> | undefined;
+    let slotAskedAt = 0;
+    const protectedSlotIdle = () =>
+      (slotIdle ??= (async () => {
+        slotAskedAt = Date.now();
+        try {
+          const reply = protectedBuildReply.safeParse(await probe.protectedBuildSlot?.());
+          return reply.success && 'idle' in reply.data && reply.data.idle;
+        } catch {
+          return false;
+        }
+      })());
     const protectedEnded = async (record: z.infer<typeof remoteRecordSchema>): Promise<boolean> => {
-      if (record.operation !== 'protected-build' || record.protectedBuild === undefined)
-        return false;
+      if (record.operation !== 'protected-build') return false;
+      if (record.protectedBuild === undefined) {
+        // Records from before attempt identities were stored cannot be matched to a
+        // receipt. The host has one slot and refuses a new build until the previous
+        // one is proven ended, so an idle slot proves every earlier attempt ended.
+        const idle = await protectedSlotIdle();
+        return idle && Date.parse(record.startedAt) < slotAskedAt;
+      }
       const reference = record.protectedBuild;
       try {
         const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));

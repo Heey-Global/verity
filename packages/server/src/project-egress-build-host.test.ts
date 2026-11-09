@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   protectedBuildBootstrapRules,
   protectedBuildHostConfig,
@@ -143,4 +143,32 @@ it('proves retained successful units empty without needing exported Server artif
   );
   read.mockResolvedValue('populated 1\n');
   expect(await protectedBuildUnitEnded(state, read)).toBe(false);
+});
+
+describe('protected build receipt retention', () => {
+  it('prunes receipts beyond the age and count bounds, newest first, ignoring foreign files', async () => {
+    const { pruneProtectedBuildReceipts } = await import('./project-egress-build-host.js');
+    const { mkdtemp, writeFile, utimes, readdir, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'receipts-'));
+    try {
+      const now = Date.UTC(2030, 0, 31);
+      const day = 24 * 3600_000;
+      const names = ['a', 'b', 'c', 'd'].map((c) => c.repeat(64) + '.json');
+      for (const [index, name] of names.entries()) {
+        await writeFile(join(root, name), '{}');
+        const at = (now - index * day) / 1000;
+        await utimes(join(root, name), at, at);
+      }
+      await writeFile(join(root, 'unrelated.txt'), 'x');
+      await utimes(join(root, 'unrelated.txt'), 0, 0);
+      await pruneProtectedBuildReceipts(root, now, { maxAgeMs: 2.5 * day, maxCount: 2 });
+      expect((await readdir(root)).sort()).toEqual([names[0], names[1], 'unrelated.txt'].sort());
+      await pruneProtectedBuildReceipts(root, now + day, { maxAgeMs: 0.5 * day, maxCount: 10 });
+      expect((await readdir(root)).sort()).toEqual(['unrelated.txt']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

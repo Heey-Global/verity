@@ -1174,6 +1174,48 @@ describe('build storage reconciliation', () => {
   };
   const quiet = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+  it('releases a legacy protected reservation once the host reports its single slot idle', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
+    const status = vi.fn();
+    const slot = vi.fn(async () => ({ version: 1, idle: true }));
+    const warn = quiet();
+    try {
+      expect(
+        await f.manager().reconcile({ protectedBuildStatus: status, protectedBuildSlot: slot }),
+      ).toEqual([]);
+      expect(slot).toHaveBeenCalledTimes(1);
+      expect(status).not.toHaveBeenCalled();
+      expect(existsSync(directory)).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it.each([
+    ['a busy slot', async () => ({ version: 1, idle: false })],
+    ['an unreachable host', async () => Promise.reject(new Error('unreachable'))],
+    ['a host without the slot query', async () => Promise.reject(new Error('refused'))],
+    ['a malformed reply', async () => ({ version: 1, record: { ended: true } })],
+  ])('retains a legacy protected reservation for %s', async (_label, slot) => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
+    expect(await f.manager().reconcile({ protectedBuildSlot: slot })).toHaveLength(1);
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
+  it('does not let an idle slot release a legacy record written after the query', async () => {
+    // The answer only covers attempts that began before the host was asked.
+    const f = fixture();
+    const directory = attempt(
+      f,
+      'attempt-legacy',
+      {},
+      { operation: 'protected-build', startedAt: new Date(Date.now() + 60_000).toISOString() },
+    );
+    expect(
+      await f.manager().reconcile({ protectedBuildSlot: async () => ({ version: 1, idle: true }) }),
+    ).toHaveLength(1);
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
   it('releases a matching failed protected attempt from a durable host receipt', async () => {
     const f = fixture();
     const directory = attempt(

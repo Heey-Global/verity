@@ -259,6 +259,73 @@ describe('protected build terminal cleanup and receipts', () => {
     expect(runtime.stop).not.toHaveBeenCalled();
     expect(runtime.remove).not.toHaveBeenCalled();
   });
+  it('reports a succeeded build as succeeded when host cleanup fails afterwards', async () => {
+    // A cleanup hiccup after proven termination must not turn a built image into a
+    // failed build; the sweep owns the removal retry.
+    const { runtime, persist } = fixture();
+    const host = new ProtectedBuildHost(runtime, persist, undefined, journal());
+    await host.begin(request);
+    vi.mocked(runtime.status).mockResolvedValueOnce('succeeded');
+    vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'succeeded',
+      ended: true,
+    });
+    await host.revalidate();
+    expect(runtime.remove).toHaveBeenCalledTimes(2);
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      cleaned: true,
+    });
+  });
+  it('refuses replacement after a status-path cleanup failure until removal succeeds', async () => {
+    const { runtime, persist } = fixture();
+    const receipts = journal();
+    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    await host.begin(request);
+    vi.mocked(runtime.status).mockResolvedValueOnce('failed');
+    vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({ ended: true });
+    vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
+    await expect(host.begin(next)).rejects.toThrow('cleanup_failed');
+    expect(runtime.start).toHaveBeenCalledTimes(1);
+    await host.begin(next);
+    expect(receipts.save).toHaveBeenCalled();
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'failed',
+      ended: true,
+    });
+  });
+  it('maps receipt persistence failures to a retryable cleanup refusal', async () => {
+    const { runtime, persist } = fixture();
+    const receipts = journal();
+    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    await host.begin(request);
+    receipts.save.mockRejectedValueOnce(new Error('ENOSPC /private/receipts/path'));
+    const refused = await host
+      .cancel(request.projectId, request.attemptId)
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ reason: 'cleanup_failed' });
+    expect(runtime.remove).not.toHaveBeenCalled();
+    await host.revalidate();
+    expect(runtime.remove).toHaveBeenCalledTimes(1);
+    expect(await host.begin(next)).toMatchObject({ phase: 'running' });
+  });
+  it('reports the slot idle only while no build with unproven termination holds it', async () => {
+    const { runtime, persist } = fixture();
+    const host = new ProtectedBuildHost(runtime, persist);
+    const slot = async () => host.execute({ operation: 'slot' });
+    // Before persisted state is loaded, an empty slot proves nothing about earlier builds.
+    expect(await slot()).toEqual({ version: 1, idle: false });
+    await host.restore(undefined);
+    expect(await slot()).toEqual({ version: 1, idle: true });
+    await host.begin(request);
+    expect(await slot()).toEqual({ version: 1, idle: false });
+    vi.mocked(runtime.ended).mockResolvedValueOnce(false);
+    await host.cancel(request.projectId, request.attemptId).catch(() => undefined);
+    expect(await slot()).toEqual({ version: 1, idle: false });
+    await host.revalidate();
+    expect(await slot()).toEqual({ version: 1, idle: true });
+  });
   it('refuses mismatched or nonterminal durable receipts', async () => {
     const { runtime, persist } = fixture();
     const receipts = journal();

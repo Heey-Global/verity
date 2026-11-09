@@ -525,6 +525,16 @@ describe('runner cache maintenance retry backoff', () => {
     }
   });
 
+  it('stamps the report with the injected clock', async () => {
+    const storage = new RunnerCacheStorage({
+      now: () => Date.UTC(2030, 0, 2),
+      listRuntimes: async () => [],
+      request: async () => response(),
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.observedAt).toBe('2030-01-02T00:00:00.000Z');
+  });
+
   it('discards retry state for removed projects', async () => {
     let present = true;
     const request = vi.fn(async () => {

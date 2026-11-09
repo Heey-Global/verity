@@ -192,9 +192,10 @@ export class RunnerCacheStorage {
 
   private async collect(): Promise<void> {
     const now = this.deps.now ?? Date.now;
-    const deadline = now() + PASS_BUDGET_MS;
+    const startedAt = now();
+    const deadline = startedAt + PASS_BUDGET_MS;
     const report: RunnerCacheReclamationReport = {
-      observedAt: new Date().toISOString(),
+      observedAt: new Date(startedAt).toISOString(),
       sharedBytes: 0,
       legacyBytes: 0,
       removedBytes: 0,
