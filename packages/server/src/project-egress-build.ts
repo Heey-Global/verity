@@ -60,12 +60,11 @@ export const protectedBuildReply = z.union([
 ]);
 export type ProtectedBuildCommand = z.infer<typeof protectedBuildCommand>;
 export type ProtectedBuildReply = z.infer<typeof protectedBuildReply>;
+// Every field is a primitive; derive the keys from the schema so a new field
+// cannot silently drop out of receipt, acknowledgement or termination matching.
+const requestKeys = Object.keys(protectedBuildRequest.shape) as (keyof ProtectedBuildRequest)[];
 export const sameProtectedBuildRequest = (a: ProtectedBuildRequest, b: ProtectedBuildRequest) =>
-  a.projectId === b.projectId &&
-  a.attemptId === b.attemptId &&
-  a.snapshot === b.snapshot &&
-  a.image === b.image &&
-  a.noCache === b.noCache;
+  requestKeys.every((key) => a[key] === b[key]);
 const same = sameProtectedBuildRequest;
 const terminal = (phase: ProtectedBuildPhase) => phase === 'failed' || phase === 'succeeded';
 
@@ -78,6 +77,8 @@ export class ProtectedBuildHost {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
   private lastHeartbeat = 0;
+  /** Persisted state has been loaded; before that, an empty slot proves nothing. */
+  private restored = false;
   constructor(
     private readonly runtime: ProtectedBuildRuntime,
     private readonly persist: (record: ProtectedBuildRecord | undefined) => Promise<void>,
@@ -99,7 +100,9 @@ export class ProtectedBuildHost {
     if (command.operation === 'slot')
       return {
         version: 1,
-        idle: await this.serialize(() => Promise.resolve(this.record?.ended ?? true)),
+        idle: await this.serialize(() =>
+          Promise.resolve(this.restored && (this.record?.ended ?? true)),
+        ),
       };
     if (command.operation === 'begin')
       return { version: 1, record: await this.begin(command.request) };
@@ -170,9 +173,13 @@ export class ProtectedBuildHost {
   restore(value: unknown): Promise<void> {
     return this.serialize(async () => {
       if (this.record) throw new Error('Protected build state is already loaded');
-      if (value === undefined) return;
+      if (value === undefined) {
+        this.restored = true;
+        return;
+      }
       const parsed = protectedBuildRecord.parse(value);
       this.record = parsed;
+      this.restored = true;
       if (parsed.ended) await this.cleanup(parsed);
       else await this.contain(parsed);
     });
