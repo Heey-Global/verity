@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream';
 import type { IncomingMessage } from 'node:http';
 import { expect, it } from 'vitest';
-import { projectNpmPublications } from './npm-publication-projection.js';
+import { MAX_NPM_PUBLICATION_BYTES, projectNpmPublications } from './npm-publication-projection.js';
 
 function response(
   chunks: Iterable<Buffer | string>,
@@ -31,6 +31,23 @@ it('projects facts across arbitrary UTF-8 and escaped string boundaries', async 
   expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
   expect(input.destroyed).toBe(true);
 });
+
+it('verifies requested releases in large streamed registry documents without retaining manifests', async () => {
+  const chunk = 'x'.repeat(64 * 1024);
+  function* chunks() {
+    yield '{"name":"example","versions":{"1.0.0":{"description":"';
+    for (let i = 0; i < 640; i++) yield chunk;
+    yield '"}},"time":{"1.0.0":"2020-01-01T00:00:00Z"}}';
+  }
+  const result = await projectNpmPublications(
+    response(chunks()),
+    'example',
+    new Set(['1.0.0']),
+    signal,
+  );
+  expect(result.versions).toEqual(new Set(['1.0.0']));
+  expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
+}, 30_000);
 
 it('discards a multi-MiB unrelated manifest string while retaining only requested facts', async () => {
   const input = response([
@@ -68,7 +85,7 @@ it.each([
 it('bounds nesting, input bytes and content encodings and rejects invalid UTF-8', async () => {
   for (const input of [
     response(['{"name":"example","unused":' + '['.repeat(65) + '0' + ']'.repeat(65) + '}']),
-    response(['{}'], { 'content-length': String(32 * 1024 ** 2 + 1) }),
+    response(['{}'], { 'content-length': String(MAX_NPM_PUBLICATION_BYTES + 1) }),
     response(['{}'], { 'content-encoding': 'gzip' }),
     response([Buffer.from([255])]),
   ])
@@ -79,7 +96,7 @@ it('bounds streamed bytes without buffering or requiring a Content-Length', asyn
   const chunk = Buffer.alloc(1024 ** 2, 97);
   function* chunks() {
     yield '{"name":"example","description":"';
-    for (let i = 0; i < 33; i++) yield chunk;
+    for (let i = 0; i < MAX_NPM_PUBLICATION_BYTES / chunk.length + 1; i++) yield chunk;
     yield '"}';
   }
   await expect(

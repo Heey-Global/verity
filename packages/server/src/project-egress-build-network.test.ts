@@ -289,3 +289,14 @@ it('rechecks foreign network attachments after partial cleanup', async () => {
   await expect(networks.remove(anchor, async () => true)).rejects.toThrow('attachment mismatch');
   expect(f.calls.some((call) => call[0] === 'remove-deny')).toBe(false);
 });
+
+it('repeats completed removal without inspecting already absent objects', async () => {
+  const f = fixture();
+  const networks = new ProtectedBuildNetworks(f.io);
+  const anchor = await networks.create('project-a', 'attempt-a');
+  await networks.remove(anchor, async () => true);
+  f.calls.length = 0;
+  await networks.remove(anchor, async () => true);
+  expect(f.calls.some((call) => call[1] === 'inspect' || call[1] === 'rm')).toBe(false);
+  expect(f.calls.at(-1)).toEqual(['remove-deny']);
+});

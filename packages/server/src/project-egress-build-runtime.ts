@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import {
   protectedBuildRequest,
   type ProtectedBuildRequest,
@@ -128,11 +129,21 @@ export function createProtectedBuildRuntime(io: ProtectedBuildRuntimeIO): Protec
       const request = protectedBuildRequest.parse(input);
       if (!(await io.ready())) throw new Error('Protected build toolchain is not ready');
       if (await io.load(request)) throw new Error('Protected build runtime already exists');
-      const anchor = await io.networks.create(request.projectId, request.attemptId);
+      const anchor = await io.networks
+        .create(request.projectId, request.attemptId)
+        .catch((cause: unknown) => {
+          throw new ProtectedBuildFailure('network_prepare_failed', { cause });
+        });
       const saved: ProtectedBuildRuntimeState = { request, anchor, launched: false };
       await io.save(saved);
-      await io.authority.prepare(anchor);
-      await io.prepareFiles(request, protectedBuildLaunch(request, anchor));
+      await io.authority.prepare(anchor).catch((cause: unknown) => {
+        throw new ProtectedBuildFailure('authority_prepare_failed', { cause });
+      });
+      await io
+        .prepareFiles(request, protectedBuildLaunch(request, anchor))
+        .catch((cause: unknown) => {
+          throw new ProtectedBuildFailure('files_prepare_failed', { cause });
+        });
     },
     async renew(request) {
       const saved = await state(request);

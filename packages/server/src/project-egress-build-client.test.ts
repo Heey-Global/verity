@@ -96,3 +96,29 @@ describe('protected host control transport', () => {
     );
   });
 });
+
+it('preserves only allowlisted refusal details', async () => {
+  const correlationId = '22222222-2222-4222-8222-222222222222';
+  const client = await fixture((response) => {
+    response.statusCode = 409;
+    response.end(
+      JSON.stringify({
+        reason: 'files_prepare_failed',
+        correlationId,
+        error: 'private daemon output SECRET',
+      }),
+    );
+  });
+  await expect(client({ operation: 'health' })).rejects.toThrow(
+    `files_prepare_failed; reference ${correlationId}`,
+  );
+  await expect(client({ operation: 'health' })).rejects.not.toThrow('SECRET');
+});
+it('never echoes unrecognized refusal reasons or correlation values', async () => {
+  const client = await fixture((response) => {
+    response.statusCode = 409;
+    response.end(JSON.stringify({ reason: 'SECRET', correlationId: '/private/path' }));
+  });
+  await expect(client({ operation: 'health' })).rejects.toThrow('operation_refused');
+  await expect(client({ operation: 'health' })).rejects.not.toThrow('SECRET');
+});

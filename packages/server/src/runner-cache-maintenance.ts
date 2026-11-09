@@ -18,9 +18,12 @@ const pending = z.object({
   turnsNeedingOwnership: z.array(turn).max(256),
 });
 export type CacheTurnOwner = { turnId: string; sessionId?: string; conflict: boolean };
-export function cacheMaintenanceFailure(code: string): Error {
+export function cacheMaintenanceFailure(
+  code: string,
+  diagnostics?: { exitCode: number; outputBytes: number },
+): Error {
   return Object.assign(new Error('Runner cache maintenance is unavailable'), {
-    runnerCacheFailure: { code },
+    runnerCacheFailure: { code, ...diagnostics },
   });
 }
 function incompleteReport() {
@@ -232,12 +235,13 @@ export async function reclaimSleepingRunnerCaches(input: {
     if (
       hasRuntime &&
       !inspect.running &&
-      inspect.status === 'created' &&
+      ['created', 'exited', 'dead'].includes(inspect.status ?? '') &&
       inspect.labels?.['verity.project-id'] === input.projectId &&
       inspect.labels?.['verity.component'] === 'runner-cache-maintenance' &&
       candidate.names?.some((name) => /^verity-cache-maintenance-[a-f0-9-]{36}$/u.test(name))
     ) {
-      // No work has started. A concurrent start makes non-forcing removal fail.
+      // Exact ownership and stopped state permit recovery of disconnected helpers.
+      // A concurrent start makes non-forcing removal fail.
       await docker.removeStoppedContainer(candidate.id);
       continue;
     }
@@ -295,17 +299,23 @@ export async function reclaimSleepingRunnerCaches(input: {
   await docker.startContainer(created.id);
   const exit = await docker.waitContainer(created.id, { timeoutMs: 30_000 });
   const inspect = await docker.inspectContainer(created.id);
-  if (exit === 78) throw cacheMaintenanceFailure('unsupported');
-  if (inspect.running || inspect.status !== 'exited' || inspect.exitCode !== 0 || exit !== 0)
+  if (inspect.running || !['exited', 'dead'].includes(inspect.status ?? ''))
     throw cacheMaintenanceFailure('maintenance-helper-failed');
-  const output = await docker.containerLogs(created.id, 1);
-  if (Buffer.byteLength(output) > 64 * 1024) throw cacheMaintenanceFailure('invalid-response');
-  let response: unknown;
   try {
-    response = JSON.parse(output);
-  } catch {
-    throw cacheMaintenanceFailure('invalid-response');
+    const output = await docker.containerLogs(created.id, 1);
+    const diagnostics = { exitCode: exit, outputBytes: Buffer.byteLength(output) };
+    if (exit === 78) throw cacheMaintenanceFailure('unsupported', diagnostics);
+    if (inspect.exitCode !== 0 || exit !== 0)
+      throw cacheMaintenanceFailure('maintenance-helper-failed', diagnostics);
+    if (diagnostics.outputBytes > 64 * 1024)
+      throw cacheMaintenanceFailure('invalid-response', diagnostics);
+    try {
+      return JSON.parse(output) as unknown;
+    } catch {
+      throw cacheMaintenanceFailure('invalid-response', diagnostics);
+    }
+  } finally {
+    // Failed work no longer owns a fence once termination is proven. Never force removal.
+    await docker.removeStoppedContainer(created.id);
   }
-  await docker.removeStoppedContainer(created.id);
-  return response;
 }
