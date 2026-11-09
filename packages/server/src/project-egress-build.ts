@@ -178,6 +178,12 @@ export class ProtectedBuildHost {
         return;
       }
       const parsed = protectedBuildRecord.parse(value);
+      // Interrupted records can claim termination without a terminal outcome.
+      // Recontain them before issuing a receipt; neither flag proves cleanup.
+      if (!terminal(parsed.phase)) {
+        parsed.ended = false;
+        parsed.cleaned = false;
+      }
       this.record = parsed;
       this.restored = true;
       if (parsed.ended) await this.cleanup(parsed);

@@ -164,6 +164,8 @@ describe('protected build terminal cleanup and receipts', () => {
     const values = new Map<string, ProtectedBuildRecord>();
     return {
       save: vi.fn(async (record: ProtectedBuildRecord) => {
+        if (!record.ended || !['succeeded', 'failed'].includes(record.phase))
+          throw new Error('Protected build receipt is not terminal');
         values.set(record.request.projectId + record.request.attemptId, structuredClone(record));
       }),
       load: vi.fn(async (projectId: string, attemptId: string) =>
@@ -171,6 +173,72 @@ describe('protected build terminal cleanup and receipts', () => {
       ),
     };
   }
+  it.each(['preparing', 'running', 'stopping'] as const)(
+    'contains an interrupted %s record before saving its terminal receipt on startup',
+    async (phase) => {
+      const { runtime, persist, calls } = fixture();
+      const receipts = journal();
+      const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+      await host.restore({ request, phase, ended: true });
+      expect(calls).toEqual(['persist', 'deny', 'stop', 'persist', 'remove', 'persist']);
+      expect(receipts.save).toHaveBeenCalledWith({
+        request,
+        phase: 'failed',
+        ended: true,
+        cleaned: false,
+      });
+      const recovered = { request, phase: 'failed', ended: true, cleaned: true };
+      expect(await host.status(request.projectId, request.attemptId)).toEqual(recovered);
+      const restarted = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+      await restarted.restore(recovered);
+      await restarted.revalidate();
+      expect(runtime.remove).toHaveBeenCalledTimes(1);
+      expect(runtime.start).not.toHaveBeenCalled();
+      expect(runtime.renew).not.toHaveBeenCalled();
+      expect(await restarted.begin(next)).toMatchObject({ phase: 'running', ended: false });
+    },
+  );
+  it('retains an interrupted startup allocation until termination and cleanup are proven', async () => {
+    const { runtime, persist } = fixture();
+    const receipts = journal();
+    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    vi.mocked(runtime.ended).mockResolvedValue(false);
+    await host.restore({ request, phase: 'running', ended: true, cleaned: true });
+    expect(await host.execute({ operation: 'slot' })).toMatchObject({ idle: false });
+    await expect(host.begin(next)).rejects.toThrow('slot_busy');
+    expect(receipts.save).not.toHaveBeenCalled();
+    expect(runtime.remove).not.toHaveBeenCalled();
+    vi.mocked(runtime.ended).mockResolvedValue(true);
+    vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('cleanup unavailable'));
+    await host.revalidate();
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'failed',
+      ended: true,
+      cleaned: false,
+    });
+    await host.revalidate();
+    expect(runtime.remove).toHaveBeenCalledTimes(2);
+    expect(await host.begin(next)).toMatchObject({ phase: 'running', ended: false });
+  });
+  it.each(['succeeded', 'failed'] as const)(
+    'preserves a proven %s outcome during startup cleanup',
+    async (phase) => {
+      const { runtime, persist } = fixture();
+      const receipts = journal();
+      const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+      await host.restore({ request, phase, ended: true });
+      expect(receipts.save).toHaveBeenCalledWith({ request, phase, ended: true });
+      expect(await host.status(request.projectId, request.attemptId)).toEqual({
+        request,
+        phase,
+        ended: true,
+        cleaned: true,
+      });
+      expect(runtime.deny).not.toHaveBeenCalled();
+      expect(runtime.stop).not.toHaveBeenCalled();
+      expect(runtime.remove).toHaveBeenCalledExactlyOnceWith(request);
+    },
+  );
   it.each(['prepare', 'renew', 'start'] as const)(
     'removes a failed %s attempt before another begin',
     async (step) => {
