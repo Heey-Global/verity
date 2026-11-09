@@ -91,8 +91,8 @@ export function registerReleaseTags(mode, head, options = {}) {
   for (const spec of trains.filter((spec) => !options.train || spec.train === options.train)) {
     const version = versionAt(head, spec);
     const tag = `${spec.prefix}${version}`;
-    const matches = [];
-    const later = [];
+    let matches = [];
+    let later = [];
     for (const pr of records) {
       if (
         !pr.merged_at ||
@@ -113,6 +113,18 @@ export function registerReleaseTags(mode, head, options = {}) {
       if (contained) matches.push(sha);
       else later.push(sha);
     }
+    // A no-op follow-up PR is not a second release identity when a trusted
+    // same-version merge already precedes it. A sole empty merge stays valid.
+    const candidates = [...matches, ...later];
+    const redundant = new Set(
+      candidates.filter(
+        (sha) =>
+          candidates.some((previous) => previous !== sha && ancestor(previous, sha)) &&
+          !git(['diff-tree', '--no-commit-id', '--name-only', '-r', `${sha}^1`, sha]),
+      ),
+    );
+    matches = matches.filter((sha) => !redundant.has(sha));
+    later = later.filter((sha) => !redundant.has(sha));
     if (matches.length > 1) throw new Error(`Ambiguous merged release identity for ${tag}`);
     if (mode === 'register' && options.train && matches.length + later.length > 1)
       throw new Error(`Ambiguous merged release identity for ${tag}`);
