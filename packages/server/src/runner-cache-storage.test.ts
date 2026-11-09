@@ -543,3 +543,53 @@ describe('runner cache maintenance retry backoff', () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('helper failure reporting and backoff', () => {
+  it('logs only safe diagnostics and defers further helper requests', async () => {
+    const onFailure = vi.fn();
+    const request = vi.fn(async () => {
+      throw Object.assign(new Error('/private/token'), {
+        runnerCacheFailure: {
+          code: 'maintenance-helper-failed',
+          exitCode: 2,
+          outputBytes: 60,
+          reason: 'resource-unavailable',
+          stderr: '/private/token',
+        },
+        runnerCacheCleanupFailed: true,
+      });
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => 0,
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+      onFailure,
+    });
+    await storage.runOnce();
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+      projectId: 'one',
+      reason:
+        '[maintenance-helper-failed] reason=resource-unavailable exitCode=2 outputBytes=60 cleanupFailed=true',
+      retryAfter: '1970-01-01T00:05:00.000Z',
+    });
+    expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
+    expect(storage.lastReport?.blockers.join(' ')).toContain('retry deferred');
+  });
+  it('does not log arbitrary reason strings supplied by peers', async () => {
+    const onFailure = vi.fn();
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      onFailure,
+      request: async () => {
+        throw Object.assign(new Error('unavailable'), {
+          runnerCacheFailure: { code: 'maintenance-helper-failed', reason: '/private/token' },
+        });
+      },
+    });
+    await storage.runOnce();
+    expect(onFailure.mock.calls[0]?.[0].reason).toBe('[unclassified-failure]');
+    expect(JSON.stringify(onFailure.mock.calls)).not.toContain('/private/token');
+  });
+});

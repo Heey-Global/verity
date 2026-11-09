@@ -3,6 +3,8 @@ import { posix, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import type { RunnerTurnOwnershipRequest } from '@verity/store';
 import type { DockerClient } from './docker.js';
+import { cacheHelperCommand, cacheHelperFailureReason } from './runner-cache-helper.js';
+import type { cacheHelperDiagnostic } from './runner-cache-helper.js';
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u);
 const turn = z.object({
@@ -20,7 +22,11 @@ const pending = z.object({
 export type CacheTurnOwner = { turnId: string; sessionId?: string; conflict: boolean };
 export function cacheMaintenanceFailure(
   code: string,
-  diagnostics?: { exitCode: number; outputBytes: number },
+  diagnostics?: {
+    exitCode: number;
+    outputBytes: number;
+    reason?: z.infer<typeof cacheHelperDiagnostic>;
+  },
 ): Error {
   return Object.assign(new Error('Runner cache maintenance is unavailable'), {
     runnerCacheFailure: { code, ...diagnostics },
@@ -135,8 +141,6 @@ export class RunnerCacheMaintenance {
   }
 }
 
-const brokerCommand = `import('/usr/local/bin/verity-agent-spawn-broker').then(m=>{if(typeof m.reclaimPackageCachesOffline!=='function')process.exit(78); const {spawn}=require('node:child_process'); const p=spawn(process.execPath,['/usr/local/bin/verity-agent-spawn-broker','--reclaim-package-caches-maintenance'],{stdio:['pipe','inherit','inherit']}); p.on('error',()=>process.exit(1)); p.on('exit',(code)=>process.exit(code??1)); p.stdin.on('error',()=>{}); p.stdin.end(process.env.VERITY_CACHE_MAINTENANCE_REQUEST);}).catch(()=>process.exit(78));`;
-
 function volumeSubpathsOverlap(subpath: string | undefined, target: string): boolean {
   if (subpath === undefined || subpath === '') return true;
   // Malformed or platform-ambiguous inventory cannot prove independent storage.
@@ -173,6 +177,7 @@ export async function reclaimSleepingRunnerCaches(input: {
     !docker.removeStoppedContainer
   )
     throw cacheMaintenanceFailure('unsupported');
+  const removeStoppedContainer = docker.removeStoppedContainer.bind(docker);
   if (
     !id.safeParse(input.projectId).success ||
     !/^(?:sha256:[a-f0-9]{64}|.+@sha256:[a-f0-9]{64})$/u.test(input.image)
@@ -242,7 +247,7 @@ export async function reclaimSleepingRunnerCaches(input: {
     ) {
       // Exact ownership and stopped state permit recovery of disconnected helpers.
       // A concurrent start makes non-forcing removal fail.
-      await docker.removeStoppedContainer(candidate.id);
+      await removeStoppedContainer(candidate.id);
       continue;
     }
     if (inspect.running || !['exited', 'dead'].includes(inspect.status ?? ''))
@@ -256,7 +261,7 @@ export async function reclaimSleepingRunnerCaches(input: {
     name,
     image: input.image,
     entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
-    command: ['-e', brokerCommand],
+    command: ['-e', cacheHelperCommand],
     env: [
       'VERITY_RUNNER_RUNTIME=/run/verity-runner',
       'VERITY_RUNNER_RUNTIME_UID=1101',
@@ -294,16 +299,45 @@ export async function reclaimSleepingRunnerCaches(input: {
     nanoCpus: 1_000_000_000,
     tmpfs: { '/tmp': 'rw,nosuid,nodev,size=16m' },
   });
-  // A disconnected wait must leave the helper and its inherited fence intact.
-  // Project admission independently inventories these labelled helpers after restart.
-  await docker.startContainer(created.id);
-  const exit = await docker.waitContainer(created.id, { timeoutMs: 30_000 });
-  const inspect = await docker.inspectContainer(created.id);
-  if (inspect.running || !['exited', 'dead'].includes(inspect.status ?? ''))
-    throw cacheMaintenanceFailure('maintenance-helper-failed');
+  let stopped = false;
+  let failed = false;
+  let primaryError: unknown;
+  const cleanup = async () => {
+    // A failed start/wait may have lost its reply after the helper stopped.
+    // Unknown or running helpers must retain their admission fence.
+    try {
+      if (!stopped) {
+        const inspect = await docker.inspectContainer(created.id);
+        stopped = !inspect.running && ['created', 'exited', 'dead'].includes(inspect.status ?? '');
+      }
+      if (stopped) await removeStoppedContainer(created.id);
+    } catch (cleanupError) {
+      if (!failed) throw cleanupError;
+      // Preserve the primary failure and its structured diagnostics for backoff.
+      throw Object.assign(
+        new AggregateError(
+          [primaryError, cleanupError],
+          'Runner cache maintenance and cleanup failed',
+        ),
+        {
+          ...(typeof primaryError === 'object' && primaryError !== null ? primaryError : {}),
+          runnerCacheCleanupFailed: true,
+        },
+      );
+    }
+  };
   try {
+    await docker.startContainer(created.id);
+    const exit = await docker.waitContainer(created.id, { timeoutMs: 30_000 });
+    const inspect = await docker.inspectContainer(created.id);
+    stopped = !inspect.running && ['exited', 'dead'].includes(inspect.status ?? '');
+    if (!stopped) throw cacheMaintenanceFailure('maintenance-helper-failed');
     const output = await docker.containerLogs(created.id, 1);
-    const diagnostics = { exitCode: exit, outputBytes: Buffer.byteLength(output) };
+    const diagnostics = {
+      exitCode: exit,
+      outputBytes: Buffer.byteLength(output),
+      reason: cacheHelperFailureReason(output, exit),
+    };
     if (exit === 78) throw cacheMaintenanceFailure('unsupported', diagnostics);
     if (inspect.exitCode !== 0 || exit !== 0)
       throw cacheMaintenanceFailure('maintenance-helper-failed', diagnostics);
@@ -314,8 +348,11 @@ export async function reclaimSleepingRunnerCaches(input: {
     } catch {
       throw cacheMaintenanceFailure('invalid-response', diagnostics);
     }
+  } catch (error) {
+    failed = true;
+    primaryError = error;
+    throw error;
   } finally {
-    // Failed work no longer owns a fence once termination is proven. Never force removal.
-    await docker.removeStoppedContainer(created.id);
+    await cleanup();
   }
 }
