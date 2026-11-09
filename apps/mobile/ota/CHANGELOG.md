@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.89.1](https://github.com/Heey-Global/verity/compare/mobile-v1.89.0...mobile-v1.89.1) (2026-11-09)
+
+
+### Features
+
+* **projects:** add independent names and inline profile editing ([#2462](https://github.com/Heey-Global/verity/issues/2462)) ([7b495e9](https://github.com/Heey-Global/verity/commit/7b495e944a8dbaf6c46b6db89a3623debc7e7b73))
+
 ## [1.88.1](https://github.com/Heey-Global/verity/compare/mobile-v1.88.0...mobile-v1.88.1) (2026-11-08)
 
 
