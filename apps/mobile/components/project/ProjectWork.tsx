@@ -769,7 +769,7 @@ export function ProjectWork({
         <>
           {needsCount > 0 ? (
             <View style={styles.section} testID="work-needs-you">
-              <SectionHeader title={`Needs you · ${String(needsCount)}`} variant="eyebrow" flush />
+              <SectionHeader title={`Needs you · ${String(needsCount)}`} flush />
               <Group>
                 {leadingRows}
                 {now.needsYou.map(needsYouRow)}
@@ -778,21 +778,13 @@ export function ProjectWork({
           ) : null}
           {now.active.length > 0 ? (
             <View style={styles.section} testID="work-active">
-              <SectionHeader
-                title={`In progress · ${String(now.active.length)}`}
-                variant="eyebrow"
-                flush
-              />
+              <SectionHeader title={`In progress · ${String(now.active.length)}`} flush />
               <Group>{now.active.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}
           {now.results.length > 0 ? (
             <View style={styles.section} testID="work-results">
-              <SectionHeader
-                title={`New results · ${String(now.results.length)}`}
-                variant="eyebrow"
-                flush
-              />
+              <SectionHeader title={`New results · ${String(now.results.length)}`} flush />
               <Group>{now.results.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}

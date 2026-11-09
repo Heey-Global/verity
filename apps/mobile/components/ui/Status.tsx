@@ -12,19 +12,32 @@ export type StatusIntent = 'action' | 'ready' | 'needsSetup' | 'optional' | 'tra
  * it (`Soon` on a feature card); elsewhere `optional` is plain muted text, which
  * `StatusText` renders. `transient` shows a spinner next to its word.
  */
-export function StatusTag({ intent, label }: { intent: StatusIntent; label: string }) {
+export function StatusTag({
+  intent,
+  label,
+  muted = false,
+}: {
+  intent: StatusIntent;
+  label: string;
+  /**
+   * Draws the tag in the neutral tone while keeping the intent's spoken meaning,
+   * for a row whose icon and subtitle already carry the color.
+   */
+  muted?: boolean;
+}) {
   const { theme } = useUnistyles();
   if (intent === 'transient') return <StatusText intent="transient" label={label} />;
+  const tone: StatusIntent | 'neutral' = muted ? 'neutral' : intent;
   return (
     <View
       style={[
         styles.tag,
         styles.shrink,
-        intent === 'action'
+        tone === 'action'
           ? styles.tagAction
-          : intent === 'ready'
+          : tone === 'ready'
             ? styles.tagReady
-            : intent === 'needsSetup'
+            : tone === 'needsSetup'
               ? styles.tagAttention
               : null,
       ]}
@@ -37,11 +50,11 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
           styles.tagLabel,
           {
             color:
-              intent === 'action'
+              tone === 'action'
                 ? theme.colors.action
-                : intent === 'ready'
+                : tone === 'ready'
                   ? theme.colors.success
-                  : intent === 'needsSetup'
+                  : tone === 'needsSetup'
                     ? theme.colors.attention
                     : theme.colors.textMuted,
           },
