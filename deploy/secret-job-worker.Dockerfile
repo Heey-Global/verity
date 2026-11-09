@@ -47,7 +47,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 
 # Shell-less, non-root runtime. No network tools, package manager, writable worktree, or credentials.
 # renovate: datasource=docker depName=gcr.io/distroless/nodejs26-debian13
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:9b945e92c1b5463a4b75f11e8417515e4bea7355f6adfd79ec220fbbe905dda8 AS worker-base
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:33c86a63859efc2ebd88ea0a355863582ec6f1220d048de62baffb2584e709b3 AS worker-base
 # Use the builder's exact Node patch; the distroless base may lag a patch release.
 COPY --from=builder /usr/local/bin/node /nodejs/bin/node
 WORKDIR /app
