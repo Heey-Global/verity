@@ -1,5 +1,9 @@
 import type { IncomingMessage } from 'node:http';
 
+// Full packuments of long-lived packages can exceed 32 MiB. Keep a finite transfer
+// budget while the streaming parser bounds retained strings and nesting separately.
+export const MAX_NPM_PUBLICATION_BYTES = 128 * 1024 ** 2;
+
 interface Frame {
   kind: 'object' | 'array';
   role: 'root' | 'versions' | 'entry' | 'dist' | 'time' | 'other';
@@ -29,7 +33,7 @@ export async function projectNpmPublications(
   times: ReadonlyMap<string, unknown>;
   artifact?: ProjectedNpmArtifact;
 }> {
-  const limit = 32 * 1024 ** 2;
+  const limit = MAX_NPM_PUBLICATION_BYTES;
   const encoding = response.headers['content-encoding'];
   const length = response.headers['content-length'];
   function fail(): never {

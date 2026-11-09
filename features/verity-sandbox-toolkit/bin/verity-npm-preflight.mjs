@@ -123,14 +123,24 @@ export function npmProjectRoot(executable, directory, env, args) {
 
 export function npmStateDirectory(root) {
   try {
-    return execFileSync('git', ['-C', root, 'rev-parse', '--absolute-git-dir'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 10_000,
-    }).trim();
+    const result = execFileSync(
+      'git',
+      ['-C', root, 'rev-parse', '--is-inside-work-tree', '--absolute-git-dir'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 10_000,
+      },
+    )
+      .trim()
+      .split('\n');
+    // Central staging lives inside .git, where rev-parse still returns the
+    // enclosing gitdir. It must inherit its own preparation lock instead.
+    if (result[0] === 'true' && result[1]) return result[1];
   } catch {
-    return join(root, '.cache');
+    // A staged or standalone npm project has no worktree administration.
   }
+  return join(root, '.cache');
 }
 
 /** The open file description survives an interrupted parent in its native child. */
