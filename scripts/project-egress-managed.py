@@ -149,7 +149,7 @@ def reject_bridge_collisions(root, run):
             raise ValueError('Invalid protected build controller registry')
         key = base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
         checkpoint = root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
-        point = json.loads(private_file(checkpoint))
+        point = json.loads(private_build_file(root, checkpoint))
         binding = point.get('binding', {})
         if (binding.get('projectId') != request['projectId'] or point.get('attemptId') != request['attemptId']
                 or not re.fullmatch(r'veb[a-f0-9]{12}', binding.get('bridge', ''))):
@@ -489,6 +489,75 @@ def recover_boot(root=Path('/'), run=base.command):
         return result
 
 
+def private_build_file(root, path):
+    parent = path.parent
+    while parent != root:
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022):
+            raise ValueError('Untrusted protected build directory')
+        parent = parent.parent
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 131072):
+            raise ValueError('Untrusted protected build state')
+        return os.read(fd, 131073)
+    finally:
+        os.close(fd)
+
+
+def stopped_build_images(root, run):
+    """Retention evidence comes only from the private controller checkpoint.
+
+    No build is resumed here. Container shape, namespace and cgroup termination
+    remain mandatory in the controller before cleanup can remove anything.
+    """
+    directory = root / 'var/lib/verity/protected-build'
+    controller = directory / 'controller.json'
+    if not controller.exists() and not controller.is_symlink():
+        return set()
+    record = json.loads(private_build_file(root, controller))
+    request = record.get('request', {})
+    if not all(isinstance(request.get(k), str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', request[k])
+               for k in ('projectId', 'attemptId')):
+        raise ValueError('Invalid protected build retention request')
+    key = base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+    checkpoint = directory / 'attempts' / key / 'checkpoint.json'
+    if not checkpoint.exists() and not checkpoint.is_symlink():
+        return set()  # Controller intent can precede network allocation.
+    point = json.loads(private_build_file(root, checkpoint))
+    binding = point.get('binding', {})
+    if (point.get('attemptId') != request['attemptId']
+            or binding.get('projectId') != request['projectId']
+            or binding.get('generation') != request['attemptId']
+            or binding.get('networkName') != 'verity-build-' + key[:32]
+            or binding.get('bridge') != 'veb' + key[:12]
+            or not re.fullmatch(r'[a-f0-9]{64}', binding.get('networkId', ''))):
+        raise ValueError('Invalid protected build retention checkpoint')
+    container = point.get('containerId')
+    if container is not None and not re.fullmatch(r'[a-f0-9]{64}', container):
+        raise ValueError('Invalid protected build retention identity')
+    # Also cover a crash between container creation and checkpoint persistence.
+    selector = ('id=' + container if container else
+                'name=^/verity-build-anchor-' + key[:32] + '$')
+    found = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock', 'container', 'ls',
+                '--all', '--quiet', '--no-trunc', '--filter', selector).strip().splitlines()
+    if not found:
+        return set()
+    if (len(found) != 1 or not re.fullmatch(r'[a-f0-9]{64}', found[0])
+            or (container and found[0] != container)):
+        raise ValueError('Protected build retention identity mismatch')
+    inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                               'container', 'inspect', found[0]))
+    if (not isinstance(inspected, list) or len(inspected) != 1
+            or inspected[0].get('Id') != found[0]
+            or not isinstance(inspected[0].get('Config', {}).get('Image'), str)):
+        raise ValueError('Protected build retention inspection mismatch')
+    return {inspected[0]['Config']['Image']}
+
+
 def reconcile_stopped_relay_policy(root, run, target):
     """The stopped controller can no longer append an old-image relay after this read."""
     registry = root / 'var/lib/verity-egress/registry.json'
@@ -496,7 +565,7 @@ def reconcile_stopped_relay_policy(root, run, target):
     if (not isinstance(state, dict) or state.get('version') != 1
             or not isinstance(state.get('records'), list) or len(state['records']) > 10000):
         raise ValueError('Invalid stopped relay registry')
-    active = set()
+    active = stopped_build_images(root, run)
     for record in state['records']:
         if not isinstance(record, dict):
             raise ValueError('Invalid stopped relay record')

@@ -300,3 +300,58 @@ it('repeats completed removal without inspecting already absent objects', async 
   expect(f.calls.some((call) => call[1] === 'inspect' || call[1] === 'rm')).toBe(false);
   expect(f.calls.at(-1)).toEqual(['remove-deny']);
 });
+
+const targetImage = `ghcr.io/example/server@sha256:${'b'.repeat(64)}`;
+for (const stopped of [false, true]) {
+  it(`cleans a retained release anchor after cutover (stopped=${stopped})`, async () => {
+    const f = fixture();
+    const old = new ProtectedBuildNetworks(f.io);
+    const anchor = await old.create('project-a', 'attempt-a');
+    if (stopped) f.stop();
+    const next = new ProtectedBuildNetworks({
+      ...f.io,
+      imageRef: targetImage,
+      cleanupImageRef: image,
+    });
+    await expect(next.inspect(anchor)).rejects.toThrow();
+    await expect(next.remove(anchor, async () => false)).rejects.toThrow('termination');
+    expect(f.calls.some((call) => call[1] === 'rm')).toBe(false);
+    await next.remove(anchor, async () => true);
+    await next.remove(anchor, async () => true);
+    expect(f.calls.at(-1)).toEqual(['remove-deny']);
+  });
+  it(`refuses unretained old images during cleanup (stopped=${stopped})`, async () => {
+    const f = fixture();
+    const anchor = await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
+    if (stopped) f.stop();
+    const next = new ProtectedBuildNetworks({ ...f.io, imageRef: targetImage });
+    await expect(next.remove(anchor, async () => true)).rejects.toThrow();
+    expect(f.calls.some((call) => call[1] === 'rm')).toBe(false);
+  });
+}
+it('retained cleanup authority does not admit new anchors from the old image', async () => {
+  const f = fixture();
+  const next = new ProtectedBuildNetworks({
+    ...f.io,
+    imageRef: targetImage,
+    cleanupImageRef: image,
+  });
+  await expect(next.create('project-a', 'attempt-a')).rejects.toThrow();
+  const create = f.calls.find((call) => call[0] === 'container' && call[1] === 'create')!;
+  expect(create).toContain(targetImage);
+  expect(create).not.toContain(image);
+});
+it('retained image cleanup still rejects replaced namespaces and foreign attachments', async () => {
+  for (const change of ['replace', 'foreign', 'mount'] as const) {
+    const f = fixture();
+    const anchor = await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
+    f[change]();
+    const next = new ProtectedBuildNetworks({
+      ...f.io,
+      imageRef: targetImage,
+      cleanupImageRef: image,
+    });
+    await expect(next.remove(anchor, async () => true)).rejects.toThrow();
+    expect(f.calls.some((call) => call[1] === 'rm')).toBe(false);
+  }
+});

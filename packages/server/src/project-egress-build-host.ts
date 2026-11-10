@@ -330,6 +330,7 @@ export function protectedBuildBootstrapRules(active: readonly string[] = []): st
 }
 export interface NativeProtectedBuildOptions {
   imageRef: string;
+  cleanupImageRef?: string;
   dataVolume: string;
   dependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'inspect' | 'relay'>;
   verifyReady(): Promise<void>;
@@ -344,6 +345,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     imageRef: options.imageRef,
     dataVolume: options.dataVolume,
   });
+  if (options.cleanupImageRef !== undefined)
+    protectedBuildHostConfig.shape.imageRef.parse(options.cleanupImageRef);
   for (const path of [ROOT, join(ROOT, 'attempts'), join(ROOT, 'projects'), INSPECTION])
     await privateDirectory(path);
   const run =
@@ -502,6 +505,7 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
   };
   const networks = new ProtectedBuildNetworks({
     imageRef: options.imageRef,
+    ...(options.cleanupImageRef === undefined ? {} : { cleanupImageRef: options.cleanupImageRef }),
     docker,
     readNamespace: async (path) =>
       (
@@ -670,7 +674,9 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
         z.object({
           Id: oid,
           Config: z.object({
-            Image: z.literal(options.imageRef),
+            Image: z.string().refine((image) => {
+              return image === options.imageRef || image === options.cleanupImageRef;
+            }),
             Entrypoint: z.array(z.string()),
             Cmd: z.array(z.string()),
             User: z.literal('65534:65534'),

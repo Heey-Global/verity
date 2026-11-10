@@ -26,6 +26,8 @@ export interface ProtectedBuildAnchor {
 export interface ProtectedBuildNetworkIO {
   /** A release-authorized immutable image, never a project image/reference. */
   imageRef: string;
+  /** Installed immutable image accepted only after workload termination, for cleanup. */
+  cleanupImageRef?: string;
   /** Persist each allocated object before the next host mutation. */
   checkpoint(value: {
     binding: ProjectEgressNetworkBinding;
@@ -115,6 +117,7 @@ function checkImage(ref: string): void {
 export class ProtectedBuildNetworks {
   constructor(private readonly io: ProtectedBuildNetworkIO) {
     checkImage(io.imageRef);
+    if (io.cleanupImageRef !== undefined) checkImage(io.cleanupImageRef);
   }
   private async inspectNetwork(binding: ProjectEgressNetworkBinding, allowed: readonly string[]) {
     const value = networkSchema.parse(
@@ -223,6 +226,7 @@ export class ProtectedBuildNetworks {
     binding: ProjectEgressNetworkBinding,
     attemptId: string,
     containerId: string,
+    cleanup = false,
   ): Promise<ProtectedBuildAnchor> {
     const named = names(binding.projectId, attemptId);
     id.parse(containerId);
@@ -242,7 +246,10 @@ export class ProtectedBuildNetworks {
     const attached = entries[0]?.[1];
     if (
       value.Id !== containerId ||
-      value.Config.Image !== this.io.imageRef ||
+      !(
+        value.Config.Image === this.io.imageRef ||
+        (cleanup && value.Config.Image === this.io.cleanupImageRef)
+      ) ||
       value.Config.Entrypoint.join('\0') !== '/nodejs/bin/node' ||
       value.Config.Cmd.join('\0') !== '-e\0setInterval(() => {}, 2147483647)' ||
       config.NetworkMode !== binding.networkId ||
@@ -337,7 +344,10 @@ export class ProtectedBuildNetworks {
         const config = value.HostConfig;
         if (
           value.Id !== expected.containerId ||
-          value.Config.Image !== this.io.imageRef ||
+          !(
+            value.Config.Image === this.io.imageRef ||
+            value.Config.Image === this.io.cleanupImageRef
+          ) ||
           value.Config.Entrypoint.join('\0') !== '/nodejs/bin/node' ||
           value.Config.Cmd.join('\0') !== '-e\0setInterval(() => {}, 2147483647)' ||
           config.NetworkMode !== expected.binding.networkId ||
@@ -352,7 +362,16 @@ export class ProtectedBuildNetworks {
         )
           throw new Error('Stopped protected build anchor contract mismatch');
         await this.inspectNetwork(expected.binding, [expected.containerId]);
-      } else await this.inspect(expected);
+      } else {
+        const actual = await this.inspectAnchor(
+          expected.binding,
+          expected.attemptId,
+          expected.containerId,
+          true,
+        );
+        if (JSON.stringify(actual) !== JSON.stringify(expected))
+          throw new Error('Protected build anchor was replaced');
+      }
       await this.io.docker(['container', 'stop', expected.containerId]);
       await this.io.docker(['container', 'rm', expected.containerId]);
     }
