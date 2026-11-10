@@ -148,9 +148,7 @@ it('serves title requests through the pinned ACP adapter before and after transc
       cwd: worktree,
       model: 'smoke',
       command: process.execPath,
-      extraArgs: [
-        claudeAgentAcpBin(),
-      ],
+      extraArgs: [claudeAgentAcpBin()],
       spawner: nodeSpawner,
       env,
     };

@@ -94,9 +94,7 @@ describe('installed claude-agent-acp MCP gateway integration', () => {
         cwd: process.cwd(),
         prompt: 'finish after opening the session',
         command: process.execPath,
-        extraArgs: [
-          claudeAgentAcpBin(),
-        ],
+        extraArgs: [claudeAgentAcpBin()],
         spawner: nodeSpawner,
         env: {
           ...process.env,

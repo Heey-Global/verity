@@ -255,7 +255,9 @@ async function probeFailure(layout, stage) {
       fail(`${layout.file} no longer exports AcpToolCallRenderer — re-derive this hardening.`);
     const renderer = new module.AcpToolCallRenderer();
     if (typeof renderer.facts !== 'function')
-      fail(`${layout.file} no longer defines AcpToolCallRenderer#facts — re-derive this hardening.`);
+      fail(
+        `${layout.file} no longer defines AcpToolCallRenderer#facts — re-derive this hardening.`,
+      );
     render = (toolUse) => renderer.facts(toolUse, '/');
   }
   for (const probe of PROBES) {
