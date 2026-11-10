@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.89.4](https://github.com/Heey-Global/verity/compare/mobile-v1.89.3...mobile-v1.89.4) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2490](https://github.com/Heey-Global/verity/issues/2490)) ([ba95874](https://github.com/Heey-Global/verity/commit/ba9587466ea1f2a343ce919da1897e180f553000))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.5.0 ([#2491](https://github.com/Heey-Global/verity/issues/2491)) ([d20ee43](https://github.com/Heey-Global/verity/commit/d20ee43e7da2d346aaa78753d8e44539ac27d92a))
+
 ## [1.89.3](https://github.com/Heey-Global/verity/compare/mobile-v1.89.2...mobile-v1.89.3) (2026-11-10)
 
 
