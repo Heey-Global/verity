@@ -60,7 +60,9 @@ export function HomeInbox({
   projects,
   selectedSessionId,
   refreshing,
+  layoutRevision = 0,
   onRefresh,
+  onSessionChanged,
   onOpenSession,
   onOpenProject,
   onRepairProject,
@@ -75,7 +77,11 @@ export function HomeInbox({
   /** The session shown in the wide layout's right pane, drawn as selected. */
   selectedSessionId?: string | null;
   refreshing: boolean;
+  /** Explicit refresh rebuilds the visit order and clears retained read results. */
+  layoutRevision?: number;
   onRefresh: () => void;
+  /** Reload after edits without resetting the visit order. */
+  onSessionChanged?: (sessionId: string, deleted: boolean) => void;
   /** `mockups` opens the session with its mockup review in front. */
   onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   /** Where "Open" on a project item leads; the project route when omitted. */
@@ -123,7 +129,13 @@ export function HomeInbox({
     );
   }, []);
   useEffect(() => onCountChange?.(counts.needs), [counts.needs, onCountChange]);
-  const changed = useCallback(() => onRefresh(), [onRefresh]);
+  const changed = useCallback(
+    (sessionId: string, deleted: boolean) => {
+      if (onSessionChanged) onSessionChanged(sessionId, deleted);
+      else onRefresh();
+    },
+    [onSessionChanged, onRefresh],
+  );
   const renderItem = (item: InboxItem) => (
     <InboxCard
       key={item.key}
@@ -175,6 +187,7 @@ export function HomeInbox({
         projects={projects}
         feed={feed}
         overview
+        layoutRevision={layoutRevision}
         selectedSessionId={selectedSessionId}
         leadingRows={feed.items.filter((item) => item.kind === 'meeting').map(renderItem)}
         renderProjectItem={renderItem}

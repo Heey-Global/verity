@@ -295,7 +295,7 @@ describe('project page', () => {
     expect(screen.getByRole('tab', { name: 'Now · 1' })).toBeTruthy();
   });
 
-  it('removes a read answer from Now on opening and on live reload', async () => {
+  it('keeps a read answer in Now until explicit refresh', async () => {
     const unread = session('read-me', { eventCount: 5, lastSeenEventCount: 3 });
     const client = clientWith([unread]);
     const onOpenSession = jest.fn();
@@ -311,7 +311,8 @@ describe('project page', () => {
     await screen.findByTestId('project-line');
     await act(async () => undefined);
     fireEvent.press(screen.getByLabelText('read-me, new answer'));
-    expect(screen.queryByText('read-me')).toBeNull();
+    expect(screen.getByText('read-me')).toBeTruthy();
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
     const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
     (client.getProject as jest.Mock).mockResolvedValue({
       ...detail,
@@ -319,7 +320,7 @@ describe('project page', () => {
     });
     view.rerender(page(2));
     await act(async () => undefined);
-    expect(screen.queryByText('read-me')).toBeNull();
+    expect(screen.getByText('read-me')).toBeTruthy();
     const scroll = view
       .UNSAFE_getAllByType(ScrollView)
       .find((node) => node.props.refreshControl !== undefined)!;
@@ -856,8 +857,7 @@ describe('project page', () => {
     expect(onOpenSession).toHaveBeenCalledWith('answered');
     expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
     expect(screen.queryByLabelText('Unread messages')).toBeNull();
-    expect(screen.queryByTestId('work-results')).toBeNull();
-    expect(screen.queryByText('answered')).toBeNull();
+    expect(within(screen.getByTestId('work-results')).getByText('answered')).toBeTruthy();
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     fireEvent.press(screen.getByRole('tab', { name: /^Now/ }));
     expect(screen.queryByText('answered')).toBeNull();

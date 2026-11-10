@@ -619,7 +619,7 @@ it('uses the project work groups across projects without counting progress or un
   expect(results.getByText('new-answer')).toBeTruthy();
   expect(screen.getByText('Needs you · 2')).toBeTruthy();
   expect(screen.getByText('In progress · 2')).toBeTruthy();
-  expect(screen.getByText('New results · 1')).toBeTruthy();
+  expect(screen.getByText('Results · 1')).toBeTruthy();
   expect(onCountChange).toHaveBeenLastCalledWith(2);
   expect(screen.queryByRole('tab', { name: /^Now/ })).toBeNull();
 });
@@ -680,4 +680,108 @@ it('keeps archived project problems, running work and unread results out of Home
   expect(screen.queryByTestId('work-active')).toBeNull();
   expect(screen.queryByTestId('work-results')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
+});
+
+it('keeps read results in place, appends new results and clears them only on explicit refresh', async () => {
+  const client = Object.assign(fakeClient(), { setSessionSeen: jest.fn(async () => undefined) });
+  const first = session('first-result', { eventCount: 5, lastSeenEventCount: 2 });
+  const second = session('second-result', { eventCount: 6, lastSeenEventCount: 3 });
+  const page = (sessions: SessionSummary[], layoutRevision = 0) => (
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={sessions}
+      projects={[project]}
+      selectedSessionId="first-result"
+      refreshing={false}
+      layoutRevision={layoutRevision}
+      onRefresh={jest.fn()}
+      onOpenSession={jest.fn()}
+      onRepairProject={jest.fn()}
+    />
+  );
+  const view = render(page([first]));
+  await act(async () => undefined);
+  fireEvent.press(screen.getByLabelText('first-result, acme/website, new answer'));
+  expect(screen.queryByLabelText('Unread messages')).toBeNull();
+  expect(screen.getByText('first-result')).toBeTruthy();
+  expect(screen.queryByText(/1 new result/)).toBeNull();
+  const read = { ...first, lastSeenEventCount: 5 };
+  view.rerender(page([second, read]));
+  const labels = () =>
+    within(screen.getByTestId('work-results'))
+      .getAllByRole('button')
+      .map((row) => row.props.accessibilityLabel as string)
+      .filter((label) => /^(first|second)-result/.test(label));
+  expect(labels()).toEqual([
+    'first-result, acme/website',
+    'second-result, acme/website, new answer',
+  ]);
+  expect(screen.getByTestId('home-summary')).toHaveTextContent(/1 new results/);
+  view.rerender(page([read, { ...second, lastSeenEventCount: 6 }]));
+  expect(labels()).toEqual(['first-result, acme/website', 'second-result, acme/website']);
+  view.rerender(page([read, { ...second, lastSeenEventCount: 6 }], 1));
+  expect(screen.queryByTestId('work-results')).toBeNull();
+});
+
+it('appends a session to its destination category and keeps live actions current', async () => {
+  const client = fakeClient();
+  const result = session('result', { eventCount: 5, lastSeenEventCount: 2 });
+  const worker = session('worker', { status: 'running' });
+  const page = (sessions: SessionSummary[]) => (
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={sessions}
+      projects={[project]}
+      refreshing={false}
+      onRefresh={jest.fn()}
+      onOpenSession={jest.fn()}
+      onRepairProject={jest.fn()}
+    />
+  );
+  const view = render(page([result, worker]));
+  await act(async () => undefined);
+  const asking = { ...question, sessionId: result.sessionId, name: result.name };
+  view.rerender(page([asking, worker]));
+  expect(within(screen.getByTestId('work-needs-you')).getByText('result')).toBeTruthy();
+  expect(screen.queryByTestId('work-results')).toBeNull();
+  const running = { ...result, status: 'running' as const, lastSeenEventCount: 5 };
+  view.rerender(page([running, worker]));
+  expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
+  expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  const labels = within(screen.getByTestId('work-active'))
+    .getAllByRole('button')
+    .map((row) => row.props.accessibilityLabel as string)
+    .filter((label) => /^(worker|result),/.test(label));
+  expect(labels).toEqual(['worker, acme/website, working', 'result, acme/website, working']);
+  expect(screen.getAllByText('result')).toHaveLength(1);
+});
+
+it('drops retained results when they leave the project, are archived or deleted', async () => {
+  const client = fakeClient();
+  const unread = session('retained', { eventCount: 5, lastSeenEventCount: 2 });
+  const page = (sessions: SessionSummary[], projects = [project]) => (
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={sessions}
+      projects={projects}
+      refreshing={false}
+      onRefresh={jest.fn()}
+      onOpenSession={jest.fn()}
+      onRepairProject={jest.fn()}
+    />
+  );
+  const view = render(page([unread]));
+  await act(async () => undefined);
+  const read = { ...unread, lastSeenEventCount: 5 };
+  view.rerender(page([read]));
+  expect(screen.getByText('retained')).toBeTruthy();
+  view.rerender(page([{ ...read, projectId: 'other' }]));
+  expect(screen.queryByText('retained')).toBeNull();
+  view.rerender(page([unread]));
+  view.rerender(page([read], [{ ...project, archived: true }]));
+  expect(screen.queryByText('retained')).toBeNull();
+  view.rerender(page([unread]));
+  view.rerender(page([read]));
+  view.rerender(page([]));
+  expect(screen.queryByText('retained')).toBeNull();
 });

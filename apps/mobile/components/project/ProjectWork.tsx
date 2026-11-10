@@ -303,7 +303,7 @@ export function ProjectWork({
     layout.layoutRevision !== layoutRevision ||
     layout.projectId !== projectId;
   const live = new Map(sessions.map((s) => [s.sessionId, s]));
-  // Now membership follows live facts. Only the order of eligible rows survives.
+  // Decisions and activity follow live facts; reading alone keeps a result in place.
   const needs = retainWorkMembers(
     reset ? [] : layout.needs,
     freshNow.needsYou.flatMap((e) => (e.kind === 'session' ? [e.session.sessionId] : [])),
@@ -312,10 +312,21 @@ export function ProjectWork({
     reset ? [] : layout.active,
     freshNow.active.map((s) => s.sessionId),
   );
-  const results = retainWorkMembers(
-    reset ? [] : layout.results,
-    freshNow.results.map((s) => s.sessionId),
-  );
+  const previousProjects = new Map(layout.source.map((s) => [s.sessionId, s.projectId]));
+  const retainedResults = reset
+    ? []
+    : layout.results.filter((id) => {
+        const session = live.get(id);
+        return (
+          session !== undefined &&
+          session.projectId === previousProjects.get(id) &&
+          !needs.includes(id) &&
+          !active.includes(id)
+        );
+      });
+  const results = retainWorkMembers(reset ? [] : layout.results, [
+    ...new Set([...freshNow.results.map((s) => s.sessionId), ...retainedResults]),
+  ]);
   // All keeps its visit order even after a row finishes or is read.
   const retain = (previous: string[], candidates: string[]) => {
     const kept = reset ? [] : previous.filter((id) => live.has(id));
@@ -360,9 +371,9 @@ export function ProjectWork({
     onSectionsChange?.({
       needs: needsCount,
       active: now.active.length,
-      results: now.results.length,
+      results: freshNow.results.length,
     });
-  }, [onSectionsChange, needsCount, now.active.length, now.results.length]);
+  }, [onSectionsChange, needsCount, now.active.length, freshNow.results.length]);
   const filters: readonly { value: WorkFilter; label: string; icon?: 'star' }[] = [
     { value: 'now', label: nowCount > 0 ? `Now · ${String(nowCount)}` : 'Now' },
     { value: 'all', label: 'All' },
@@ -779,7 +790,7 @@ export function ProjectWork({
           ) : null}
           {now.results.length > 0 ? (
             <View style={styles.section} testID="work-results">
-              <SectionHeader title={`New results · ${String(now.results.length)}`} flush />
+              <SectionHeader title={`Results · ${String(now.results.length)}`} flush />
               <Group>{now.results.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}
