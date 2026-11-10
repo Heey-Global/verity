@@ -7,9 +7,13 @@ description: Use before publishing code, creating a pull request or choosing bra
 
 Open every pull request as a normal, review-ready PR — never a draft. Use `verity repo pr create` and `verity repo pr ready <number>` through the project's code host; these commands support GitHub and Forgejo. If using GitHub-specific tooling, do not pass `--draft` to `gh pr create` and do not create drafts through the API. If a PR you are working on already exists as a draft, mark it ready before delivery. Draft PRs hold back reviews and ready-gated workflows, and they make the session's PR status read as stalled.
 
+# Multiple repositories
+
+A project can contain multiple repositories. Before work in another repository, run `verity repo repository list`, then `verity repo repository open <repository-id>`. Read the target checkout's `AGENTS.md` when present. Run Git and checks there; `verity repo` infers the target or accepts `--repository <id>`. A different assigned repository does not require a new session. Linked projects grant no repository rights, and a 403 alone does not prove that a session change is needed.
+
 # Branch and commit conventions
 
-Keep changes and pull requests on the current session worktree branch. Before creating a pull request, verify that its repository and head branch match that session. Do not create a separate worktree to publish this session's changes; use a separate Verity session for independent branch work. If the branches differ, resolve the session assignment before creating the PR; do not switch branches with uncommitted changes just to satisfy the check.
+Keep changes and pull requests on the branch of the session's checkout for the target repository, including a managed module checkout opened with Verity. Before creating a pull request, verify its repository and head branch against that checkout. Use `verity repo pr create` from module checkouts; `gh pr create` can still enforce the primary session worktree. Do not create an unmanaged worktree to publish this session's changes; use a separate Verity session for independent branch work within the same repository. If the branches differ, resolve the session assignment before creating the PR; do not switch branches with uncommitted changes just to satisfy the check.
 
 Name a branch you create for work on an issue `<type>/<issue>-<slug>` — for example `feat/122-preview-branches` or `fix/130-keyboard-gap`. Verity reads that leading issue number to show the session's Issue chip before a PR exists, so a differently-named branch loses the chip without any error. Branches not tied to an issue may omit the number. Branch types: `feat`, `fix`, `chore`, `refactor`, `docs`, `style`, `test`.
 

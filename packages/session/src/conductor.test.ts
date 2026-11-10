@@ -18,6 +18,7 @@ import {
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
@@ -102,6 +103,7 @@ const RESUME_SET = [
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
@@ -119,14 +121,11 @@ const RESUME_SET = [
  * whichever fragment last grew. Kept above the sandbox fragment's own ceiling
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
- * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 8000 - 3100 = 4900 characters. If they grow past that,
- * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
- * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other. Includes the communication guidance refreshed
- * on resumed turns; the assembled payload is currently 7769 characters.
+ * thing. The repository-discovery directive adds 1466 characters so existing
+ * sessions learn the managed module workflow too. The assembled payload is now
+ * about 9300 characters; keep a small explicit allowance for separators and wording.
  */
-const RESUME_SET_BUDGET = 8000;
+const RESUME_SET_BUDGET = 9500;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present

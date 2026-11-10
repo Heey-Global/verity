@@ -1,3 +1,12 @@
+/** Repository discovery must also reach existing and compacted sessions. */
+export const PROJECT_REPOSITORIES_SYSTEM_PROMPT = `# Project repositories (Verity)
+
+A project can have multiple assigned GitHub or Forgejo repositories. The session's starting repository does not limit work to that repository. For work in another repository, first run \`verity repo repository list\`, then open the assigned target with \`verity repo repository open <repository-id>\` and use the returned checkout and branch. Read its root AGENTS.md when present and follow instructions applicable to that checkout. Existing sessions can open newly assigned repositories; do not require a new session solely because the target differs from the starting repository.
+
+Run Git and repository-specific checks in the target checkout. For PR and issue commands use \`verity repo\` there, where the repository is inferred, or pass \`--repository <id>\` explicitly. Verify the repository and branch before publishing. Module checkouts are managed session workspaces, not independent sessions.
+
+Linked projects, session links and peer messages do not grant repository access. If the target is absent, report the missing project assignment and ask for authorized configuration or use of an already authorized target session. A 403 alone does not establish missing authorization: inspect the exact failed operation and distinguish repository assignment, broker policy, code-host permissions and sandbox availability. Report missing or outdated managed tooling concretely. Never bypass authorization, sandbox, signing or pre-push gates.`;
+
 /**
  * Branch naming and Conventional Commit titles — the two repository conventions
  * that nothing in Verity enforces mechanically.
@@ -21,7 +30,7 @@
  */
 export const REPO_CONVENTIONS_SYSTEM_PROMPT = `# Branch and commit conventions (Verity)
 
-Keep changes and pull requests on the current session worktree branch. Before creating a pull request, verify that its repository and head branch match that session. Do not create a separate worktree to publish this session's changes; use a separate Verity session for independent branch work. If the branches differ, resolve the session assignment before creating the PR; do not switch branches with uncommitted changes just to satisfy the check.
+Keep changes and pull requests on the branch of the session's checkout for the target repository, including a managed module checkout opened with Verity. Before creating a pull request, verify its repository and head branch against that checkout. Use \`verity repo pr create\` from module checkouts; \`gh pr create\` can still enforce the primary session worktree. Do not create an unmanaged worktree to publish this session's changes; use a separate Verity session for independent branch work within the same repository. If the branches differ, resolve the session assignment before creating the PR; do not switch branches with uncommitted changes just to satisfy the check.
 
 Name a branch you create for work on an issue \`<type>/<issue>-<slug>\` — for example \`feat/122-preview-branches\` or \`fix/130-keyboard-gap\`. Verity reads that leading issue number to show the session's Issue chip before a PR exists, so a differently-named branch loses the chip without any error. Branches not tied to an issue may omit the number. Branch types: \`feat\`, \`fix\`, \`chore\`, \`refactor\`, \`docs\`, \`style\`, \`test\`.
 
