@@ -71,6 +71,7 @@ export const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  lastRepairFailure: null,
 };
 
 // How often to reconcile relay migration (Stage 5). Cheap when idle — it only

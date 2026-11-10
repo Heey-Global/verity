@@ -592,6 +592,10 @@ const sandboxUpdateSchema = z.object({
   // Defaulted for the same reason as `selfRepair`: a Server one release behind
   // this app does not send it, and `false` is exactly what that Server means.
   turnBlocked: z.boolean().default(false),
+  // The most recent failed automatic recreate, with its time, so an earlier
+  // failure cannot read as the outcome of the attempt running now. Defaulted for
+  // the same reason as the fields above.
+  lastRepairFailure: z.object({ at: z.string(), message: z.string() }).nullable().default(null),
 });
 export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 

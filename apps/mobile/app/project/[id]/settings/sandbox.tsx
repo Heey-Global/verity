@@ -8,6 +8,7 @@ import {
   projectBadge,
   REBUILDING_PROJECT_BADGE,
   isSecuritySandboxUpdate,
+  sandboxUpdateLastFailure,
   sandboxUpdateSummary,
   usesDevcontainerImage,
   type ProjectRecord,
@@ -193,6 +194,7 @@ function SandboxSection({
   // well as labelling it — one source of truth instead of a boolean that has to
   // stay in agreement with the summary next to it.
   const updateSummary = sandboxUpdateSummary(update);
+  const updateFailure = sandboxUpdateLastFailure(update);
   const driftNotice = toolkitDriftNotice(project);
 
   // Same descriptor the overview dot uses, so both surfaces name the container
@@ -473,6 +475,7 @@ function SandboxSection({
                   'available'}
               </Text>
             </View>
+            {updateFailure ? <Text style={styles.footnote}>{updateFailure}</Text> : null}
             <View style={styles.selfStart}>
               <Button
                 label="Update"

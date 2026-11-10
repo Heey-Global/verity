@@ -350,8 +350,24 @@ const activeDirectories = new Set<string>();
  */
 class BuildStorageCapacityError extends Error {}
 
+/** Whether a failure, or anything in its cause chain, is a build-storage
+ *  capacity refusal: the one failure that released storage can resolve. */
+export function isBuildStorageCapacityRefusal(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== undefined && depth < 8; depth++) {
+    if (current instanceof BuildStorageCapacityError) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export class BuildStorage {
   private reclaimer?: () => Promise<void>;
+  private releaseListener?: () => void;
+  /** Told after an earlier attempt's reservation is released. */
+  setReleaseListener(listener: () => void): void {
+    this.releaseListener = listener;
+  }
+
   setReclaimer(reclaim: () => Promise<void>): void {
     this.reclaimer = reclaim;
   }
@@ -362,6 +378,11 @@ export class BuildStorage {
   /** A waiter was woken and has not yet taken its turn; newcomers queue behind it. */
   private handingOver = false;
   private currentDirectory: string | undefined;
+  /** Who holds this Server's lease, for diagnostics only. Without it a build
+   *  waiting for its turn can name neither the build ahead of it nor how long
+   *  that build has held the lease, so a hung build is indistinguishable from a
+   *  slow one. */
+  private holder: { label: string; projectId?: string; since: number } | undefined;
   private unresolved: UnresolvedBuildAttempt[] = [];
   private warnedUnprovisioned = false;
   private evidenceWarning = '';
@@ -523,7 +544,10 @@ export class BuildStorage {
    * A build holds the lease for at most its commands' bounds, so the wait is
    * bounded too.
    */
-  async admitInTurn(onQueued?: (ahead: number) => void): Promise<BuildStorageLease> {
+  async admitInTurn(
+    onQueued?: (ahead: number, holder?: { label: string; since: number }) => void,
+    owner: { label: string; projectId?: string } = { label: 'unnamed build' },
+  ): Promise<BuildStorageLease> {
     if (this.held || this.handingOver || this.waiting.length > 0) {
       // A refusal that does not depend on the lease answers now, not after the wait;
       // admit() checks everything again once the turn comes.
@@ -532,16 +556,21 @@ export class BuildStorage {
       const turn = new Promise<void>((resolve) => this.waiting.push(resolve));
       // Only a notice: a failing one must not leave a woken turn unclaimed.
       try {
-        onQueued?.(ahead);
+        onQueued?.(ahead, this.holder && { label: this.holder.label, since: this.holder.since });
       } catch {
         /* the wait goes on */
       }
       await turn;
       this.handingOver = false;
     }
+    const held = (lease: BuildStorageLease): BuildStorageLease => {
+      // An unmanaged lease does not take the Server's slot; only a held one has a holder.
+      if (this.held) this.holder = { ...owner, since: Date.now() };
+      return lease;
+    };
     try {
       try {
-        return this.admit();
+        return held(this.admit());
       } catch (error) {
         if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
         this.handingOver = true;
@@ -550,7 +579,7 @@ export class BuildStorage {
         } finally {
           this.handingOver = false;
         }
-        return this.admit();
+        return held(this.admit());
       }
     } finally {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
@@ -921,6 +950,12 @@ export class BuildStorage {
       /^attempt-[\w-]+$/.test(marker.slice(marker.lastIndexOf('/') + 1))
     )
       rmSync(marker, { recursive: true, force: true });
+    // Removing a dead attempt frees real space, as releasing a reservation does.
+    try {
+      this.releaseListener?.();
+    } catch {
+      /* the removal stands */
+    }
   }
 
   private releaseRemoteRecord(directory: string, reason: string): void {
@@ -934,6 +969,12 @@ export class BuildStorage {
     console.warn(
       `Build storage released ${directory.slice(directory.lastIndexOf('/') + 1)}: ${reason}.`,
     );
+    // A notice only: the release is already durable and must not be undone by it.
+    try {
+      this.releaseListener?.();
+    } catch {
+      /* the release stands */
+    }
   }
 
   /** Stronger than the cached unresolved list: any on-disk entry or held lease
@@ -956,6 +997,18 @@ export class BuildStorage {
     } catch {
       return false;
     }
+  }
+
+  /** The build holding this Server's lease, if it was admitted in turn, and how
+   *  many builds wait behind it. */
+  queueState(): {
+    holder?: { label: string; projectId?: string; since: number };
+    waiting: number;
+  } {
+    return {
+      ...(this.held && this.holder ? { holder: { ...this.holder } } : {}),
+      waiting: this.waiting.length,
+    };
   }
 
   /** Earlier attempts that still hold space because their end is not yet confirmed. */
@@ -1470,6 +1523,7 @@ export class BuildStorage {
         else releaseAdmission();
         disposed = true;
         this.held = false;
+        this.holder = undefined;
         this.currentDirectory = undefined;
         activeDirectories.delete(directory);
         this.wakeNext();

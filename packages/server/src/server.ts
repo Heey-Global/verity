@@ -3957,12 +3957,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // One expression for both reasons, deliberately: they set the SAME two fields,
     // and split branches drifting apart is how a sandbox ends up reported as
     // blocked without the `stalled` that older clients read.
-    if (!unrepaired && !blocked) return status;
-    return { ...status, selfRepair: 'stalled', turnBlocked: blocked };
+    // Carried with its time whatever the verdict: while a retry waits or builds,
+    // the status is `converging` and the failure is plainly an earlier one.
+    const failure = status.state === 'current' ? undefined : verdicts.lastFailures?.get(project.id);
+    const withFailure =
+      failure === undefined
+        ? status
+        : {
+            ...status,
+            lastRepairFailure: { at: new Date(failure.at).toISOString(), message: failure.message },
+          };
+    if (!unrepaired && !blocked) return withFailure;
+    return { ...withFailure, selfRepair: 'stalled', turnBlocked: blocked };
   };
   const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
     unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
     turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
+    ...(deps.provisioner?.sandboxRepairLastFailures
+      ? { lastFailures: deps.provisioner.sandboxRepairLastFailures() }
+      : {}),
   });
 
   // Read marks and dismissed Home items of the person asking; a session they

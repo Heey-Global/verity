@@ -8,7 +8,11 @@ import {
 import { stripTrailingSlashes } from './path-text.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
-import type { BuildStorage, BuildStorageLease } from './build-storage.js';
+import {
+  isBuildStorageCapacityRefusal,
+  type BuildStorage,
+  type BuildStorageLease,
+} from './build-storage.js';
 import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
@@ -180,6 +184,8 @@ import {
   IMAGE_UPDATE_DEFER_REPORT_AFTER_MS,
   IMAGE_UPDATE_RECREATE_LIMIT,
   type ProjectContainerClass,
+  SANDBOX_REPAIR_RETRY_MAX_MS,
+  SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
 
 export interface ProjectRelayControl {
@@ -779,6 +785,8 @@ export interface ProvisionerOptions {
   onRunnerReady?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Runs with lifecycle admission fenced, after the Runner stack is ready. */
   beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
+  /** Clock for the reconciler's retry backoff only; defaults to `Date.now`. */
+  now?: (() => number) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
   /** Data-minimised record of every Sandbox recreate: who asked, how long it took
@@ -2021,6 +2029,13 @@ export interface Provisioner {
    * it unions two sets and so allocates per call. It is what lets a client tell a
    * sandbox that is merely waiting its turn from one nothing is going to fix. */
   unrepairedSandboxes?(): ReadonlySet<string>;
+  /** The most recent failed automatic recreate per project, with its time.
+   * Absent on provisioners that do not implement relay migration. */
+  sandboxRepairLastFailures?(): ReadonlyMap<string, { at: number; message: string }>;
+  /** Let failed automatic recreates that build storage refused retry on the next
+   * reconcile pass, once storage has been released. Other failures keep their
+   * backoff: released storage does not fix them. */
+  resetStorageRefusedRepairBackoff?(): void;
   /** Projects whose sandbox update has been deferred behind a live turn for an
    * unbroken {@link IMAGE_UPDATE_DEFER_REPORT_AFTER_MS}. The other
    * half of the distinction {@link unrepairedSandboxes} draws: not "nothing is
@@ -3184,6 +3199,19 @@ export class ProvisionerImpl implements Provisioner {
    *  health verdict, so a failure streak from before it says nothing afterward. */
   private readonly sandboxRepairFailures = new Map<string, number>();
 
+  /** The most recent failed automatic recreate per project, with its time, so a
+   *  client can tell an earlier failure from the attempt that is running now.
+   *  Kept until a recreate succeeds; in memory for the same reason as the
+   *  streak above. */
+  private readonly sandboxRepairLastFailure = new Map<string, { at: number; message: string }>();
+
+  /** When the reconciler may next retry a failed automatic recreate. A refusal
+   *  that persists (no build capacity, a broken devcontainer) would otherwise
+   *  take the Server's single build slot on every tick, every two seconds just
+   *  after a restart, ahead of other projects' builds. Cleared by any successful
+   *  rebuild and by {@link resetSandboxRepairBackoff}. */
+  private readonly sandboxRepairRetryAt = new Map<string, { at: number; storage: boolean }>();
+
   /** Projects whose last automatic recreate persisted `state: failed`. Kept
    * separate from {@link sandboxRepairFailures}: a deferral or unknown probe must
    * break the CONSECUTIVE failure streak without making the failed project
@@ -4182,13 +4210,40 @@ export class ProvisionerImpl implements Provisioner {
    * A project the reconciler has not reached yet, or is deferring around a live
    * turn, is in neither set: that is the repair working, and it reports as
    * converging.
+   *
+   * Neither is a project with a provision or recreate in flight, whoever started
+   * it. The pass retracts its verdict when it next meets such a project, but the
+   * pass that started the attempt is itself waiting on it, and that attempt can
+   * wait for the Server's single build slot for as long as another project's build
+   * holds it. Reporting "stuck" for that whole wait shows an earlier failure as if
+   * it were the current one.
    */
   unrepairedSandboxes(): ReadonlySet<string> {
     const unrepaired = new Set(this.settledSandboxes);
     for (const [projectId, failures] of this.sandboxRepairFailures) {
       if (failures >= SANDBOX_SELF_REPAIR_FAILURE_LIMIT) unrepaired.add(projectId);
     }
+    for (const projectId of this.inFlightProvisions.keys()) unrepaired.delete(projectId);
     return unrepaired;
+  }
+
+  sandboxRepairLastFailures(): ReadonlyMap<string, { at: number; message: string }> {
+    return this.sandboxRepairLastFailure;
+  }
+
+  resetStorageRefusedRepairBackoff(): void {
+    for (const [projectId, retry] of [...this.sandboxRepairRetryAt]) {
+      if (retry.storage) this.sandboxRepairRetryAt.delete(projectId);
+    }
+  }
+
+  /** A rebuild succeeded, whoever started it: a manual Update or Repair ends the
+   *  failure streak as surely as the reconciler's own recreate, and must not
+   *  leave "stuck" up until the reconciler's backoff lets it look again. */
+  private noteSandboxRebuilt(projectId: string): void {
+    this.sandboxRepairFailures.delete(projectId);
+    this.sandboxRepairRetryAt.delete(projectId);
+    this.sandboxRepairLastFailure.delete(projectId);
   }
 
   /**
@@ -4589,6 +4644,13 @@ export class ProvisionerImpl implements Provisioner {
             }
             continue;
           }
+          // Waiting out the backoff of a failed recreate. Only the rebuild waits:
+          // the classification and turn checks above still ran, so a sandbox
+          // that recovered or is deferring around a turn has already updated its
+          // verdict. Checked before the drift throttle so a waiting project does
+          // not spend a slot it will not use.
+          if ((this.sandboxRepairRetryAt.get(project.id)?.at ?? 0) > (this.opts.now ?? Date.now)())
+            continue;
           // Blast radius, as opposed to repetition. The slot is claimed BEFORE the
           // recreate and never given back, including when it throws: a throttle that
           // refunds on failure lets a fleet-wide fault through at full width, which
@@ -4620,7 +4682,7 @@ export class ProvisionerImpl implements Provisioner {
           // Repaired: the recreate issued a fresh generation and a fresh relay,
           // so retract the report now rather than leaving it up for a tick.
           this.disconnectedSandboxes.delete(project.id);
-          this.sandboxRepairFailures.delete(project.id);
+          this.noteSandboxRebuilt(project.id);
           this.pendingSandboxRepairRetries.delete(project.id);
           if (classification === 'orphaned')
             callbacks.onRepaired?.(project.id, {
@@ -4637,6 +4699,26 @@ export class ProvisionerImpl implements Provisioner {
               project.id,
               (this.sandboxRepairFailures.get(project.id) ?? 0) + 1,
             );
+            const streak = this.sandboxRepairFailures.get(project.id) ?? 1;
+            const now = (this.opts.now ?? Date.now)();
+            this.sandboxRepairRetryAt.set(project.id, {
+              at:
+                now +
+                Math.min(
+                  SANDBOX_REPAIR_RETRY_MAX_MS,
+                  SANDBOX_REPAIR_RETRY_MIN_MS * 2 ** Math.min(streak - 1, 10),
+                ),
+              storage: isBuildStorageCapacityRefusal(error),
+            });
+            // First line only and bounded: this is shown to project members
+            // beside the update status, and recreate failures are already
+            // redacted where they carry credentials.
+            this.sandboxRepairLastFailure.set(project.id, {
+              at: now,
+              message: (error instanceof Error ? error.message : 'Sandbox recreate failed')
+                .split('\n')[0]!
+                .slice(0, 500),
+            });
           } else {
             // Consecutive means consecutive completed recreate attempts. A tick
             // that cannot even classify or probe the sandbox breaks the streak;
@@ -4695,6 +4777,14 @@ export class ProvisionerImpl implements Provisioner {
     }
     for (const projectId of [...this.settledSandboxes]) {
       if (!reconciled.has(projectId)) this.settledSandboxes.delete(projectId);
+    }
+    // Unlike the drift budget below, dropping a retry backoff only lets a project
+    // that left and re-entered reconciliation retry at once; it cannot start a loop.
+    for (const projectId of [...this.sandboxRepairRetryAt.keys()]) {
+      if (!reconciled.has(projectId)) this.sandboxRepairRetryAt.delete(projectId);
+    }
+    for (const projectId of [...this.sandboxRepairLastFailure.keys()]) {
+      if (!reconciled.has(projectId)) this.sandboxRepairLastFailure.delete(projectId);
     }
     // `envDriftRecreates` is deliberately NOT pruned here. The two maps look alike
     // and their safety runs opposite ways: dropping a `disconnectedSandboxes` entry
@@ -4821,9 +4911,15 @@ export class ProvisionerImpl implements Provisioner {
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
     const project = await this.claimForCloning(projectId);
+    // Reusing an active sandbox rebuilt nothing, so it ends no failure streak.
     if (project.state === 'active') return this.reuseOrMigrateActive(project, opts);
+    const rebuilt = async (attempt: Promise<ProjectRecord>): Promise<ProjectRecord> => {
+      const record = await attempt;
+      this.noteSandboxRebuilt(projectId);
+      return record;
+    };
     if (project.state === 'container_starting') {
-      return this.runContainerPhase(project, false, opts);
+      return rebuilt(this.runContainerPhase(project, false, opts));
     }
 
     // Phase 2: run the clone (OUTSIDE the lock).
@@ -4837,7 +4933,7 @@ export class ProvisionerImpl implements Provisioner {
     }
 
     // Phase 3: container start (also outside the lock).
-    return this.runContainerPhase(project, false, opts);
+    return rebuilt(this.runContainerPhase(project, false, opts));
   }
 
   async recreateContainer(
@@ -4860,7 +4956,13 @@ export class ProvisionerImpl implements Provisioner {
       return this.observeSandboxRecreate(
         projectId,
         opts.initiator,
-        this.trackProvision(projectId, this.recreateContainerOnce(projectId, opts)),
+        this.trackProvision(
+          projectId,
+          this.recreateContainerOnce(projectId, opts).then((record) => {
+            this.noteSandboxRebuilt(projectId);
+            return record;
+          }),
+        ),
       );
     }
   }
@@ -4947,11 +5049,14 @@ export class ProvisionerImpl implements Provisioner {
           process.env.VERITY_REGISTRY_AUTH,
         ]);
         const message = `devcontainer build failed: ${detail}`;
+        // The warning outlives this attempt until a later container start, and
+        // automatic retries do not replace it. Stamp it so it cannot be read as
+        // the outcome of whatever attempt is running when it is shown.
         await this.opts.store.updateProjectState(
           project.id,
           project.state,
           project.provisionError,
-          message,
+          `devcontainer build failed at ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC: ${detail}`,
         );
         throw new ProvisioningError(message, cause);
       }
@@ -7202,11 +7307,17 @@ export class ProvisionerImpl implements Provisioner {
         await probe?.dispose();
       }
     }
-    const storageLease = await this.opts.buildStorage?.admitInTurn((ahead) => {
-      console.log(
-        `Devcontainer build for ${project.owner}/${project.repo} waits for ${ahead} other image build(s) on this Server to finish.`,
-      );
-    });
+    const storageLease = await this.opts.buildStorage?.admitInTurn(
+      (ahead, holder) => {
+        console.log(
+          `Devcontainer build for ${project.owner}/${project.repo} waits for ${ahead} other image build(s) on this Server to finish` +
+            (holder
+              ? `; ${holder.label} has held the build slot since ${new Date(holder.since).toISOString()}.`
+              : '.'),
+        );
+      },
+      { label: `${project.owner}/${project.repo}`, projectId: project.id },
+    );
     let snapshot: Awaited<ReturnType<typeof createDevcontainerBuildSnapshot>> | undefined;
     try {
       snapshot = await createDevcontainerBuildSnapshot(dirs.clonePath, storageLease?.directory);

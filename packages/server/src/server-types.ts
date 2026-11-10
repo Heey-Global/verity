@@ -25,6 +25,8 @@ import type { VulnerabilitySummary } from './vulnerability-session.js';
 export interface SandboxRepairVerdicts {
   unrepaired: ReadonlySet<string>;
   turnBlocked: ReadonlySet<string>;
+  /** The most recent failed automatic recreate per project, with its time. */
+  lastFailures?: ReadonlyMap<string, { at: number; message: string }>;
 }
 
 export type PublicVeritySettingsRecord = Omit<

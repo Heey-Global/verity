@@ -99,6 +99,8 @@ import {
   ORPHAN_DEFER_TICK_LIMIT,
   PROJECT_ID_LABEL,
   SANDBOX_ENV_COHORTS,
+  SANDBOX_REPAIR_RETRY_MAX_MS,
+  SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import {
@@ -6915,7 +6917,10 @@ describe('ProvisionerImpl (#174)', () => {
       expect(await ctx.store.getProject(id)).toMatchObject({
         state: 'active',
         provisionError: null,
-        provisionWarning: expect.stringContaining('devcontainer build failed'),
+        // Stamped: the warning stays up across later automatic retries.
+        provisionWarning: expect.stringMatching(
+          /^devcontainer build failed at \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC: .*cacheless build failed/,
+        ),
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -10913,9 +10918,16 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       resume?: ProjectRelayControl['resume'];
       withContainerReplace?: ProvisionerOptions['withContainerReplace'];
       recreateEnvDriftedSandboxes?: boolean;
+      now?: () => number;
     } = {},
   ) {
+    // Each reconcile pass here stands for the next tick a retry is due on: the
+    // clock moves past the longest retry backoff whenever it is read. Tests of the
+    // backoff itself pass a clock they control.
+    let clock = 0;
+    const afterBackoff = () => (clock += SANDBOX_REPAIR_RETRY_MAX_MS + 1);
     return createProvisioner({
+      now: opts.now ?? afterBackoff,
       store: ctx.store,
       db: ctx.db,
       docker,
@@ -11503,6 +11515,173 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(migrated).toHaveBeenCalledWith(p.id, {
       envDrift: false,
       imageUpdate: true,
+    });
+  });
+
+  it('reports a stalled update as converging while a new attempt waits or builds', async () => {
+    // A retry can wait for the Server's single build slot for as long as another
+    // project's build holds it. Reporting "stuck" for that whole wait shows an
+    // earlier failure as if it were the current attempt's.
+    const p = await seedActive('image-retry', 'dev-image-retry');
+    const { client } = dockerInspecting({ 'dev-image-retry': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => false);
+    let release!: (error: Error) => void;
+    const attempt = vi
+      .spyOn(
+        provisioner as unknown as {
+          recreateContainerOnce: (id: string, opts: unknown) => Promise<ProjectRecord>;
+        },
+        'recreateContainerOnce',
+      )
+      .mockRejectedValueOnce(new Error('build storage admission rejected'))
+      .mockRejectedValueOnce(new Error('build storage admission rejected'))
+      .mockImplementationOnce(
+        () =>
+          new Promise<ProjectRecord>((_, reject) => {
+            release = reject;
+          }),
+      )
+      .mockResolvedValueOnce(p);
+    // A pass reports its failed recreates by rejecting after it finishes.
+    const tick = () =>
+      provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) }).catch(() => undefined);
+
+    await tick();
+    await tick();
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
+
+    const third = tick();
+    await vi.waitFor(() => expect(attempt).toHaveBeenCalledTimes(3));
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
+
+    // The new attempt failed as well: the verdict is current again, and the
+    // failure is recorded with its time for the status overlay.
+    release(new Error('build storage admission rejected'));
+    await third;
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
+    expect(provisioner.sandboxRepairLastFailures().get(p.id)).toMatchObject({
+      at: expect.any(Number),
+      message: 'build storage admission rejected',
+    });
+
+    // A successful recreate clears both the verdict and the recorded failure.
+    await tick();
+    expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
+    expect(provisioner.sandboxRepairLastFailures().has(p.id)).toBe(false);
+  });
+
+  describe('retry backoff after a failed recreate', () => {
+    // A refusal that persists (no build capacity, a broken devcontainer) used to
+    // take the Server's single build slot on every tick, ahead of other projects.
+    async function failing(id: string) {
+      const p = await seedActive(id, `dev-${id}`);
+      const { client } = dockerInspecting({ [`dev-${id}`]: migratedInspect(p.id) });
+      let time = 1_000_000;
+      const provisioner = makeProvisioner(client, { now: () => time });
+      provisioner.attachProjectBusyProbe(async () => false);
+      const attempt = vi
+        .spyOn(
+          provisioner as unknown as {
+            recreateContainerOnce: (id: string, opts: unknown) => Promise<ProjectRecord>;
+          },
+          'recreateContainerOnce',
+        )
+        .mockRejectedValue(new Error('build storage admission rejected'));
+      const tick = () =>
+        provisioner
+          .reconcileRelays([p], { updateAvailable: new Set([p.id]) })
+          .catch(() => undefined);
+      return { p, provisioner, attempt, tick, advance: (ms: number) => void (time += ms) };
+    }
+
+    it('doubles the wait after each failure up to the maximum and keeps the verdict meanwhile', async () => {
+      const f = await failing('backoff');
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(1);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(1);
+      f.advance(SANDBOX_REPAIR_RETRY_MIN_MS);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(2);
+      // Two failures: reported stuck, and still reported while the retry waits.
+      expect([...f.provisioner.unrepairedSandboxes()]).toEqual([f.p.id]);
+      f.advance(SANDBOX_REPAIR_RETRY_MIN_MS);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(2);
+      expect([...f.provisioner.unrepairedSandboxes()]).toEqual([f.p.id]);
+      f.advance(SANDBOX_REPAIR_RETRY_MIN_MS);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(3);
+      for (let i = 0; i < 8; i++) {
+        f.advance(SANDBOX_REPAIR_RETRY_MAX_MS);
+        await f.tick();
+      }
+      const calls = f.attempt.mock.calls.length;
+      f.advance(SANDBOX_REPAIR_RETRY_MAX_MS - 1);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(calls);
+      f.advance(1);
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(calls + 1);
+    });
+
+    /** The refusal a real BuildStorage gives without capacity, wrapped as the
+     *  recreate path wraps an image preparation failure. */
+    function storageRefusal(): Error {
+      const root = mkdtempSync(join(tmpdir(), 'verity-refusal-'));
+      try {
+        const storage = new BuildStorage(
+          join(root, 'owned'),
+          join(root, 'storage.json'),
+          { estimateBytes: 8 * 1024 ** 3, reserveBytes: 2 * 1024 ** 3, reserveInodes: 1 },
+          () => ({ availableBytes: 0, freeInodes: 1_000_000 }),
+        );
+        try {
+          storage.admit().dispose();
+        } catch (cause) {
+          return new Error('replacement image preparation failed', { cause });
+        }
+        throw new Error('expected a capacity refusal');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    it('retries a storage refusal on the next pass once build storage is released', async () => {
+      const f = await failing('backoff-reset');
+      f.attempt.mockRejectedValue(storageRefusal());
+      await f.tick();
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(1);
+      f.provisioner.resetStorageRefusedRepairBackoff();
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the backoff of a failure that released storage cannot fix', async () => {
+      // A broken devcontainer must not retry on every storage release, which
+      // happens on the five-minute storage reconcile.
+      const f = await failing('backoff-other');
+      await f.tick();
+      f.provisioner.resetStorageRefusedRepairBackoff();
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears the stall, its backoff and its failure once a manual update succeeds', async () => {
+      const f = await failing('backoff-manual');
+      await f.tick();
+      f.advance(SANDBOX_REPAIR_RETRY_MIN_MS);
+      await f.tick();
+      expect([...f.provisioner.unrepairedSandboxes()]).toEqual([f.p.id]);
+      f.attempt.mockResolvedValueOnce(f.p);
+      await f.provisioner.recreateContainer(f.p.id);
+      expect([...f.provisioner.unrepairedSandboxes()]).toEqual([]);
+      expect(f.provisioner.sandboxRepairLastFailures().has(f.p.id)).toBe(false);
+      // No backoff left: the next pass looks at the project again at once.
+      await f.tick();
+      expect(f.attempt).toHaveBeenCalledTimes(4);
     });
   });
 

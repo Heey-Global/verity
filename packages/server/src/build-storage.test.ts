@@ -262,6 +262,36 @@ describe('build storage admission', () => {
 // A second project's build used to fail with "Build storage busy" whenever another
 // project was building; it now waits for its turn.
 describe('build queue', () => {
+  // A build that waits for its turn could not name the build ahead of it, so a
+  // hung build looked exactly like a slow one in the log and the diagnostics.
+  it('names the build holding the slot and how long it has held it', async () => {
+    const f = fixture();
+    const storage = f.manager();
+    expect(storage.queueState()).toEqual({ waiting: 0 });
+    const before = Date.now();
+    const first = await storage.admitInTurn(undefined, {
+      label: 'heey-global/verity',
+      projectId: 'p-verity',
+    });
+    const holders: unknown[] = [];
+    const second = storage.admitInTurn((_ahead, holder) => holders.push(holder), {
+      label: 'heey-global/k8s',
+      projectId: 'p-k8s',
+    });
+    expect(holders).toEqual([{ label: 'heey-global/verity', since: expect.any(Number) as number }]);
+    const state = storage.queueState();
+    expect(state).toMatchObject({ holder: { label: 'heey-global/verity' }, waiting: 1 });
+    expect(state.holder!.since).toBeGreaterThanOrEqual(before);
+    first.dispose();
+    const lease = await second;
+    expect(storage.queueState()).toMatchObject({
+      holder: { label: 'heey-global/k8s' },
+      waiting: 0,
+    });
+    lease.dispose();
+    expect(storage.queueState()).toEqual({ waiting: 0 });
+  });
+
   it('serves waiting builds in arrival order instead of refusing them', async () => {
     const f = fixture();
     const storage = f.manager();
@@ -1217,6 +1247,33 @@ describe('build storage reconciliation', () => {
     ).toHaveLength(1);
     expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
   });
+  // A recreate refused for build storage otherwise waits out its retry backoff
+  // after the space it waited for has already been released. Removing the
+  // released attempt's files signals too; nothing signals without a change.
+  it('signals released storage, and nothing again until more is released', async () => {
+    const f = fixture();
+    attempt(
+      f,
+      'attempt-protected',
+      {},
+      { operation: 'protected-build', protectedBuild: protectedReference },
+    );
+    const manager = f.manager();
+    const released = vi.fn();
+    manager.setReleaseListener(released);
+    const warn = quiet();
+    try {
+      const status = vi.fn(async () => protectedReceipt);
+      await manager.reconcile({ protectedBuildStatus: status });
+      const signalled = released.mock.calls.length;
+      expect(signalled).toBeGreaterThan(0);
+      await manager.reconcile({ protectedBuildStatus: status });
+      expect(released).toHaveBeenCalledTimes(signalled);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('releases a matching failed protected attempt from a durable host receipt', async () => {
     const f = fixture();
     const directory = attempt(

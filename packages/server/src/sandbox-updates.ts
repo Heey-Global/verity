@@ -66,6 +66,16 @@ export interface SandboxUpdateStatus {
    * still gets the `stalled` the route sets alongside it.
    */
   turnBlocked: boolean;
+  /**
+   * The most recent failed automatic recreate of this sandbox, with its time.
+   *
+   * Without a time, an old failure reads as the current attempt's: a retry can
+   * wait for the Server's single build slot while the earlier refusal is still
+   * on screen. Cleared by a successful recreate. Like {@link selfRepair} the
+   * checker always reports `null` and the route overlays the provisioner's
+   * record, which lives in memory and therefore starts empty after a restart.
+   */
+  lastRepairFailure: { at: string; message: string } | null;
 }
 
 /**
@@ -115,6 +125,7 @@ const CURRENT: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  lastRepairFailure: null,
 };
 
 /**
@@ -571,6 +582,7 @@ function available(args: {
     targetRevision: args.targetRevision ?? null,
     selfRepair: 'converging',
     turnBlocked: false,
+    lastRepairFailure: null,
   };
 }
 
@@ -588,5 +600,6 @@ function unknown(reason: string): SandboxUpdateStatus {
     targetRevision: null,
     selfRepair: 'converging',
     turnBlocked: false,
+    lastRepairFailure: null,
   };
 }

@@ -198,6 +198,17 @@ export const runtimeDiagnosticSnapshotSchema = z.object({
     .optional(),
   /** Earlier build attempts whose end is not yet confirmed; each holds only its own estimate. */
   buildStorageReservations: z.array(buildStorageReservationSchema).max(20).optional(),
+  /** The build holding this Server's single build slot, and how many wait behind it. */
+  buildQueue: z
+    .object({
+      holder: z
+        .object({ build: z.string().max(200), since: timestamp })
+        .strict()
+        .optional(),
+      waiting: z.number().int().min(0),
+    })
+    .strict()
+    .optional(),
   buildStorageEvidence: buildStorageEvidenceSchema.optional(),
   builderMigration: builderMigrationSchema.optional(),
   observedAt: timestamp,
@@ -560,6 +571,12 @@ export function createRuntimeDiagnostics(deps: {
   buildStorageReportPath?: string | undefined;
   /** Attempts still reserving build storage, as the Server's build storage tracks them. */
   buildStorageReservations?: (() => UnresolvedBuildAttempt[]) | undefined;
+  buildQueue?:
+    | (() => {
+        holder?: { label: string; projectId?: string; since: number };
+        waiting: number;
+      })
+    | undefined;
   storageReclamation?: (() => Promise<StorageReclamation>) | undefined;
   /** The output tail of a project's last failed devcontainer build. */
   projectBuildFailure?:
@@ -998,6 +1015,7 @@ export function createRuntimeDiagnostics(deps: {
       };
     }
     const reservations = deps.buildStorageReservations?.();
+    const queue = deps.buildQueue?.();
     const buildFailure =
       request.projectId === undefined ? undefined : deps.projectBuildFailure?.(request.projectId);
     let storageReclamation: StorageReclamation | undefined;
@@ -1020,6 +1038,27 @@ export function createRuntimeDiagnostics(deps: {
               reservedBytes: entry.reservedBytes,
               reason: entry.reason.slice(0, 200),
             })),
+          }),
+      ...(queue === undefined || (queue.holder === undefined && queue.waiting === 0)
+        ? {}
+        : {
+            buildQueue: {
+              ...(queue.holder === undefined
+                ? {}
+                : {
+                    holder: {
+                      // A read scoped to one project must not name another
+                      // project's repository; it learns only that the slot is taken.
+                      build:
+                        request.projectId === undefined ||
+                        queue.holder.projectId === request.projectId
+                          ? queue.holder.label.slice(0, 200)
+                          : 'another project',
+                      since: new Date(queue.holder.since).toISOString(),
+                    },
+                  }),
+              waiting: queue.waiting,
+            },
           }),
       ...(buildStorageEvidence === undefined ? {} : { buildStorageEvidence }),
       ...(builderMigration === undefined ? {} : { builderMigration }),
