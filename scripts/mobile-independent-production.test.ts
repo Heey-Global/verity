@@ -219,3 +219,70 @@ jq -r "$4" "$RUNNER_TEMP/run.json"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it('selects the release PR by the built source despite duplicate release titles', () => {
+  const script = production.jobs['finalize-mobile-production']!.steps.find(
+    (step) => step.name === 'Open native production approval',
+  )!.run!;
+  const f = fixture();
+  const source = 'a'.repeat(40);
+  const original = {
+    number: 2455,
+    title: 'chore(release): staging mobile native 1.54.0',
+    merged_at: '2026-01-01',
+    merge_commit_sha: source,
+    base: { ref: 'main' },
+  };
+  try {
+    writeFileSync(
+      join(f.root, 'bin/gh'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$3" == "repos/example/repo/commits/${source}/pulls?per_page=100" ]]
+jq -r "$5" "$RUNNER_TEMP/pulls.json"
+`,
+    );
+    writeFileSync(
+      join(f.root, 'bin/node'),
+      `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1 $2" == 'scripts/production-promotion.ts propose' ]]
+cp "$3" "$RUNNER_TEMP/proposed.json"
+`,
+    );
+    chmodSync(join(f.root, 'bin/node'), 0o755);
+    writeFileSync(
+      join(f.root, 'native-candidates/native-production.json'),
+      JSON.stringify({ source, version: '1.54.0' }),
+    );
+    const duplicate = { ...original, number: 2459, merge_commit_sha: 'b'.repeat(40) };
+    for (const pulls of [
+      [duplicate, original],
+      [original, duplicate],
+      [{ ...original, title: 'chore(main): release mobile 1.54.0' }],
+      [duplicate],
+      [{ ...original, merged_at: null }],
+      [{ ...original, base: { ref: 'other' } }],
+      [{ ...original, title: 'unrelated PR' }],
+      [original, { ...original, number: 2460 }],
+    ]) {
+      rmSync(join(f.root, 'proposed.json'), { force: true });
+      writeFileSync(join(f.root, 'pulls.json'), JSON.stringify(pulls));
+      const result = f.run(`export GITHUB_REPOSITORY=example/repo GH_TOKEN=fixture\n${script}`);
+      const valid =
+        pulls.length === 2
+          ? pulls.includes(duplicate) && pulls.includes(original)
+          : pulls[0]?.title === 'chore(main): release mobile 1.54.0';
+      expect(result.status, result.stderr).toBe(valid ? 0 : 1);
+      if (valid) {
+        expect(JSON.parse(readFileSync(join(f.root, 'proposed.json'), 'utf8'))).toEqual({
+          source,
+          version: '1.54.0',
+          releasePr: original.number,
+        });
+      }
+    }
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
