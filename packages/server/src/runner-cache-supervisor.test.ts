@@ -479,3 +479,30 @@ it('keeps maximum-length legacy ownership pages within the control response limi
   expect(Buffer.byteLength(JSON.stringify(pending))).toBeLessThan(64 * 1024);
   expect(requests).toEqual([]);
 });
+// A session keeps every turn it ever ran. Cancelling each settled one made the
+// deletion's cost grow with the session's history inside a request the Server
+// waits for, until Repair timed out on a pending cleanup. A turn that is still
+// claimed or running must keep being cancelled, or its worker outlives its home.
+it('deletes a session home cancelling only the turns of that session still in flight', async () => {
+  const { root, requests } = await fixture({ ok: true });
+  await turn(root, 'done-1', 'gone', 'settled');
+  await turn(root, 'done-2', 'gone', 'settled');
+  await turn(root, 'live-1', 'gone', 'running');
+  await turn(root, 'live-2', 'gone', 'claimed');
+  await turn(root, 'other-1', 'kept', 'running');
+  const cancel = vi.fn<(turnId: string) => Promise<Record<string, unknown>>>(async () => ({
+    outcome: 'cancelled',
+  }));
+  await expect(
+    handleSupervisorRequest(
+      root,
+      'runner',
+      { protocolVersion: 1, kind: 'delete-session-home', sessionId: 'gone' },
+      { start: () => ({ accepted: true, pending: new Promise(() => {}) }), cancel },
+    ),
+  ).resolves.toEqual({ ok: true });
+  expect(cancel.mock.calls.map(([turnId]) => turnId)).toEqual(['live-1', 'live-2']);
+  expect(requests).toEqual([
+    expect.objectContaining({ kind: 'delete-session-home', sessionId: 'gone' }),
+  ]);
+});

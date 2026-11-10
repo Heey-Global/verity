@@ -2616,24 +2616,39 @@ function sameClaim(state, claim) {
   );
 }
 
+/** Turn states read at once. A project keeps every turn directory, so a scan
+ *  reads thousands of small files; inside the Sandbox each read is a round trip
+ *  through the runtime, and reading them one after another made a scan take
+ *  longer than the requests that perform it may wait. */
+const TURN_SCAN_CONCURRENCY = 16;
+
 export async function listTurns(runtimeDir) {
   const turnsDir = join(runtimeDir, 'turns');
   const entries = await readdir(turnsDir, { withFileTypes: true }).catch((error) => {
     if (error?.code === 'ENOENT') return [];
     throw error;
   });
-  const states = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
-    try {
-      const state = await readTurnState(runtimeDir, entry.name);
-      states.push(state ?? { turnId: entry.name, status: 'ambiguous', reason: 'missing-state' });
-    } catch {
-      // Discovery fails closed per D3: a corrupt directory remains visible and
-      // can never be mistaken for an absent turn that is safe to launch again.
-      states.push({ turnId: entry.name, status: 'ambiguous', reason: 'invalid-state' });
+  const names = entries
+    .filter((entry) => entry.isDirectory() && SAFE_ID.test(entry.name))
+    .map((entry) => entry.name);
+  const states = new Array(names.length);
+  let next = 0;
+  const readNext = async () => {
+    for (let index = next++; index < names.length; index = next++) {
+      const turnId = names[index];
+      try {
+        const state = await readTurnState(runtimeDir, turnId);
+        states[index] = state ?? { turnId, status: 'ambiguous', reason: 'missing-state' };
+      } catch {
+        // Discovery fails closed per D3: a corrupt directory remains visible and
+        // can never be mistaken for an absent turn that is safe to launch again.
+        states[index] = { turnId, status: 'ambiguous', reason: 'invalid-state' };
+      }
     }
-  }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(TURN_SCAN_CONCURRENCY, names.length) }, readNext),
+  );
   return states.sort((a, b) => String(a.turnId).localeCompare(String(b.turnId)));
 }
 
@@ -2968,7 +2983,15 @@ export async function handleSupervisorRequest(
       if (!SAFE_ID.test(request.sessionId ?? '')) throw new Error('invalid sessionId');
       const turns = await listTurns(runtimeDir);
       for (const turn of turns) {
-        if (turn.sessionId === request.sessionId && turnStarter !== undefined)
+        // A settled turn has nothing left to stop. Cancelling it only wrote a
+        // record and read its state back, once per turn the session ever ran,
+        // inside a request the Server waits for. Every other status is still
+        // cancelled, and refused where this supervisor cannot reach the worker.
+        if (
+          turn.sessionId === request.sessionId &&
+          turn.status !== 'settled' &&
+          turnStarter !== undefined
+        )
           await turnStarter.cancel(turn.turnId);
       }
       return await sessionHomeRequest('delete-session-home', request.sessionId);
