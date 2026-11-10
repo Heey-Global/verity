@@ -864,7 +864,36 @@ describe('project page', () => {
     await act(async () => undefined);
   });
 
-  it('keeps unread visible on a dismissible question while background work continues', async () => {
+  it.each([{ status: 'running' as const }, { status: 'idle' as const, backgroundWorking: true }])(
+    'shows work before unread and reveals unread after work stops: %j',
+    async (activity) => {
+      const pending = session('active-answer', {
+        ...activity,
+        eventCount: 9,
+        lastSeenEventCount: 2,
+      });
+      const props = { client: clientWith([]), onOpenSession: jest.fn(), onChanged: jest.fn() };
+      const view = render(<ProjectWork {...props} sessions={[pending]} />);
+      await act(async () => undefined);
+      expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+      expect(screen.queryByLabelText('Unread messages')).toBeNull();
+      expect(screen.queryByText(/Unread/)).toBeNull();
+      expect(screen.getByLabelText('active-answer, working')).toBeTruthy();
+
+      view.rerender(
+        <ProjectWork
+          {...props}
+          sessions={[{ ...pending, status: 'idle', backgroundWorking: false }]}
+        />,
+      );
+      await act(async () => undefined);
+      expect(screen.queryByLabelText('Agent is working')).toBeNull();
+      expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+      expect(screen.getByLabelText('active-answer, new answer')).toBeTruthy();
+    },
+  );
+
+  it('keeps a dismissible question without unread while background work continues', async () => {
     const pending = {
       ...question,
       backgroundWorking: true,
@@ -874,7 +903,7 @@ describe('project page', () => {
     };
     const { client } = await renderPage([pending]);
     const needs = within(screen.getByTestId('work-needs-you'));
-    expect(needs.getByLabelText('Unread messages')).toBeTruthy();
+    expect(needs.queryByLabelText('Unread messages')).toBeNull();
     expect(needs.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
     fireEvent.press(needs.getByRole('button', { name: /form, Which validation library/ }));
     expect(client.setSessionSeen).toHaveBeenCalledWith('form', 9, undefined);

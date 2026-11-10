@@ -452,7 +452,8 @@ export function ProjectWork({
     const needs = waiting?.needs === true;
     const label = sessionLabel(session);
     const working = isActive(session);
-    const unread = unreadIds.has(session.sessionId);
+    // Active work owns the status mark until the agent finishes.
+    const unread = !working && unreadIds.has(session.sessionId);
     const context = overview ? projects.find((p) => p.id === session.projectId) : undefined;
     const subtitle = waiting?.subtitle ?? workSubtitle(session, unread);
     const displaySubtitle = context
@@ -579,15 +580,8 @@ export function ProjectWork({
             ) : undefined
           }
           trailing={
-            (!needs && statusTag !== undefined) ||
-            markers.length > 0 ||
-            (!needs && working && unread) ? (
+            (!needs && statusTag !== undefined) || markers.length > 0 ? (
               <View style={styles.trailing}>
-                {!needs && working && unread ? (
-                  <View accessibilityLabel="Unread messages" accessibilityRole="image">
-                    <TileMark tone="action" />
-                  </View>
-                ) : null}
                 {!needs && statusTag !== undefined ? (
                   <StatusTag intent={statusTag.intent} label={statusTag.label} />
                 ) : null}
