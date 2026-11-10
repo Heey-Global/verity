@@ -2561,6 +2561,9 @@ describe('buildEmbeddedServer', () => {
           dataVolumeRoot,
           hostCloneRoot,
           controlPlaneRunner,
+          // The withheld reply must expire within this test, not after the
+          // production deadline that a slow Sandbox deletion is allowed.
+          ...(layout === 'timeout' ? { sessionHomeDeleteTimeoutMs: 2_000 } : {}),
         });
         const lateRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-late.jsonl');
         if (layout === 'late-binding') {

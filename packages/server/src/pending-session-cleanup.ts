@@ -2,7 +2,34 @@ import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { requestRunnerSupervisor } from '@verity/session';
 import { sessionHomePath } from './session-home.js';
+
+/**
+ * How long the Server waits for the Runner supervisor to answer
+ * `delete-session-home`. The supervisor first cancels the session's turns, then
+ * hands the deletion to the spawn broker and allows that step 30 s without a
+ * reply (`brokerStorageRequest` in verity-runner-supervisor.mjs). The broker
+ * fences late starts, removes the home recursively and purges legacy native
+ * state; a home that still holds a legacy package cache can take tens of
+ * seconds inside the Sandbox. A shorter Server deadline abandons a deletion the
+ * supervisor still owns: the request reports a timeout although it may yet
+ * succeed, and a failed Repair then stops the container mid-deletion. The
+ * deadline therefore exceeds the supervisor's own storage budget, so its
+ * answer, success or a bounded failure, is what the Server records.
+ */
+export const SESSION_HOME_DELETE_TIMEOUT_MS = 60_000;
+
+/** Delete one session home through the project's Runner supervisor. Only an
+ *  explicit `ok: true` answer counts as deleted. */
+export async function deleteRunnerSessionHome(
+  socketPath: string,
+  sessionId: string,
+  timeoutMs = SESSION_HOME_DELETE_TIMEOUT_MS,
+): Promise<void> {
+  // requestRunnerSupervisor resolves only an explicit `ok: true` answer.
+  await requestRunnerSupervisor(socketPath, { kind: 'delete-session-home', sessionId }, timeoutMs);
+}
 
 export interface PendingSessionCleanup {
   sessionId: string;

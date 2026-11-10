@@ -315,6 +315,9 @@ export interface EmbeddedServerConfig {
   controlPlaneRunner?: boolean | undefined;
   /** Internal test seam for startup transcript cleanup; production always uses `on`. */
   transcriptSweep?: 'on' | 'dry' | 'off' | undefined;
+  /** Internal test seam: how long a pending session-home deletion waits for the
+   * Runner supervisor. Production always uses `SESSION_HOME_DELETE_TIMEOUT_MS`. */
+  sessionHomeDeleteTimeoutMs?: number | undefined;
   /** Server-side mount of the private identity volume shared only with the
    * dedicated control-plane runner. */
   controlPlaneRunnerIdentityDir?: string | undefined;
