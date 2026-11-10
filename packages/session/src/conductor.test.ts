@@ -454,6 +454,48 @@ describe('Conductor.sendTurn', () => {
     expect(fake.last().gatewayToolsOnly).not.toBe(true);
   });
 
+  // The run reads untrusted transcripts unattended; a request for wider rights,
+  // a recovered turn or a queued one must not lift its read-only posture.
+  it('runs the Wiki maintenance session read-only with only Verity tools', async () => {
+    await ctx.store.createProject({
+      id: 'wp',
+      owner: 'team',
+      repo: 'wp',
+      containerName: 'wp',
+      state: 'active',
+    });
+    await ctx.store.createSession({
+      sessionId: 'wiki',
+      worktree: '/wt/wiki',
+      model: 'm',
+      projectId: 'wp',
+    });
+    await ctx.store.wikiMaintenance.setSession('wp', 'wiki');
+    await ctx.store.createSession({ sessionId: 'plain', worktree: '/wt/plain', model: 'm' });
+    const fake = scriptedBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('wiki', 'Maintain the Wiki', {
+      permissionMode: 'bypassPermissions',
+      disallowedTools: ['Task'],
+    });
+    expect(fake.last().planning).toBe(true);
+    expect(fake.last().gatewayToolsOnly).toBe(true);
+    expect(fake.last().permissionMode).toBe('plan');
+    // Kept once although the request named one of them too.
+    const disallowed = fake.last().disallowedTools ?? [];
+    expect(disallowed.filter((tool) => tool === 'Task')).toHaveLength(1);
+    for (const tool of ['Bash', 'WebFetch', 'WebSearch', 'Task', 'Write', 'Edit', 'ExitPlanMode'])
+      expect(disallowed).toContain(tool);
+    await conductor.sendTurn('plain', 'Continue', { permissionMode: 'bypassPermissions' });
+    expect(fake.last().planning).not.toBe(true);
+    expect(fake.last().gatewayToolsOnly).not.toBe(true);
+    expect(fake.last().permissionMode).toBe('bypassPermissions');
+  });
+
   it('does not claim a turn when pre-admission migration fails', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const prepare = vi
@@ -7332,6 +7374,45 @@ describe('Conductor mid-turn steering (#101)', () => {
     expect(prompts.find((event) => event.text === 'Merged PR #119')?.steered).toBe(true);
   });
 
+  it('refreshes mockup marks when steering into a running turn', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first');
+    await waitFor(fake.ready);
+    try {
+      // A mark changed after dispatch must reach the live agent with the instruction.
+      await ctx.store.updateSessionMockups('s1', () => ({
+        state: 'pending',
+        revision: 1,
+        screens: [
+          {
+            name: 'Home',
+            attachment: 'a'.repeat(64),
+            mediaType: 'image/png',
+            width: 393,
+            height: 852,
+            verdict: 'discarded',
+          },
+        ],
+      }));
+      expect(await conductor.dispatchTurn('s1', 'Implement the approved screens')).toEqual({
+        queued: false,
+      });
+      expect(fake.steered[0]?.text).toContain('Home: discarded');
+      expect(fake.steered[0]?.text).toContain('Implement the approved screens');
+      expect(await promptTexts('s1')).toContain('Implement the approved screens');
+      expect(await promptTexts('s1')).not.toContain(fake.steered[0]?.text);
+    } finally {
+      fake.release();
+      await waitFor(() => !conductor.isBusy('s1'));
+    }
+  });
+
   it('refuses chat implementation while newer steering awaits prompt persistence', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.startSessionPlanning('s1');
@@ -10824,7 +10905,12 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       expect(conductor.pendingPermissions('x2')).toEqual(['toolu_gone']);
     });
     abort.abort();
-    await expect(answered).resolves.toMatchObject({ decision: { behavior: 'deny' } });
+    const denied = (await answered) as { decision: { behavior: string; message?: string } };
+    expect(denied.decision.behavior).toBe('deny');
+    // An agent told only that "the request expired" read it as a broker failure and kept
+    // retrying; it must learn that nothing ran and that the next card needs the user.
+    expect(denied.decision.message).toMatch(/nothing ran/u);
+    expect(denied.decision.message).toMatch(/approval card needs an answer/u);
     expect(conductor.pendingPermissions('x2')).toEqual([]);
     await expect(
       conductor.decidePermission('x2', 'toolu_gone', { behavior: 'allow' }),

@@ -1,12 +1,12 @@
-// Mockup review (design module): after an accepted plan the agent presents
-// rendered screens and the build waits until the user approves each one or
-// comments on it. The round arrives as the agent's chat message (MockupPager),
-// a slim bar above the composer keeps the review reachable while the chat goes
-// on (MockupReviewBar), and the full-screen review decides one screen at a time
-// (MockupReviewSheet).
+// Mockup review (design module): the agent presents rendered screens and the user
+// marks each one approved or discarded, then explains in the chat. Marks start
+// nothing; the user tells the agent in the chat when to build. The round arrives
+// as the agent's chat message (MockupPager), a slim bar above the composer keeps
+// the review reachable while the chat goes on (MockupReviewBar), and the
+// full-screen review marks one screen at a time (MockupReviewSheet).
+import type { ImageSource } from 'expo-image';
 import type { MockupBarView, MockupReviewScreen, MockupScreenView } from '@verity/mobile';
-import { reviewOrder } from '@verity/mobile';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -16,13 +16,13 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useAttachmentImageSource } from '../../hooks/useAttachmentImageSource';
 import { Icon, type IconName } from '../Icon';
-import { Button, IconButton, StatusTag, Text, TextField } from '../ui';
+import { ImageLightbox } from '../ImageLightbox';
+import { Button, IconButton, StatusTag, Text } from '../ui';
 import { Image } from '../ui/Image';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../ui/SessionBar';
 
@@ -30,15 +30,27 @@ type Verdict = MockupReviewScreen['verdict'];
 
 const STATE_ICON: Record<Verdict, IconName> = {
   approved: 'check-circle',
-  comment: 'message-circle',
+  discarded: 'x-circle',
   open: 'circle',
 };
 
 const STATE_LABEL: Record<Verdict, string> = {
   approved: 'Approved',
-  comment: 'Commented',
+  discarded: 'Discarded',
   open: 'Open',
 };
+
+/** The tone a mark is drawn in: success, attention, or faint while unmarked. */
+function verdictTone(
+  verdict: Verdict | undefined,
+  colors: { success: string; attention: string; textFaint: string },
+): string {
+  return verdict === 'approved'
+    ? colors.success
+    : verdict === 'discarded'
+      ? colors.attention
+      : colors.textFaint;
+}
 
 function MockupPicture({
   screen,
@@ -55,6 +67,42 @@ function MockupPicture({
       contentFit="contain"
       accessibilityLabel={`${screen.name} mockup`}
     />
+  );
+}
+
+/** A screen to look at full size, with the source it was showing when tapped. */
+interface Enlarged {
+  name: string;
+  source: ImageSource;
+}
+
+/** One screen on the review stage; a tap shows it full size in the app's image
+ *  viewer, which on a phone has room the header and the mark bar take here. Not
+ *  tappable until its image has a source, so a tap never opens a viewer later. */
+function MockupStage({
+  screen,
+  onEnlarge,
+}: {
+  screen: MockupReviewScreen;
+  onEnlarge: (enlarged: Enlarged) => void;
+}) {
+  const source = useAttachmentImageSource({ id: screen.attachment, mediaType: screen.mediaType });
+  return (
+    <Pressable
+      accessibilityRole="imagebutton"
+      accessibilityLabel={`Enlarge ${screen.name}`}
+      accessibilityHint="Shows the screen full size"
+      disabled={source === undefined}
+      onPress={() => source !== undefined && onEnlarge({ name: screen.name, source })}
+      style={[styles.flex, screen.verdict === 'discarded' ? styles.dimmed : null]}
+    >
+      <Image
+        source={source}
+        style={styles.image}
+        contentFit="contain"
+        accessibilityLabel={`${screen.name} mockup`}
+      />
+    </Pressable>
   );
 }
 
@@ -83,12 +131,7 @@ export function MockupPager({
   const [width, setWidth] = useState(0);
   const [index, setIndex] = useState(0);
   const screen = screens[Math.min(index, screens.length - 1)]!;
-  const tone =
-    screen.verdict === 'approved'
-      ? theme.colors.success
-      : screen.verdict === 'comment'
-        ? theme.colors.action
-        : theme.colors.textFaint;
+  const tone = verdictTone(screen.verdict, theme.colors);
   return (
     <View
       style={styles.pager}
@@ -163,12 +206,7 @@ export function MockupThumbs({
       {screens.map((screen) => {
         const ratio = screen.width / screen.height;
         const width = Math.min(THUMB_HEIGHT * ratio, THUMB_MAX_WIDTH);
-        const tone =
-          screen.verdict === 'approved'
-            ? theme.colors.success
-            : screen.verdict === 'comment'
-              ? theme.colors.action
-              : theme.colors.textFaint;
+        const tone = verdictTone(screen.verdict, theme.colors);
         return (
           <Pressable
             key={screen.name}
@@ -194,25 +232,13 @@ export function MockupThumbs({
   );
 }
 
-/** The slim bar above the composer while the build waits for the review. */
-export function MockupReviewBar({
-  view,
-  busy,
-  onReview,
-  onSend,
-}: {
-  view: MockupBarView;
-  busy: boolean;
-  onReview: () => void;
-  onSend: () => void;
-}) {
+/** The slim bar above the composer while the review is open. */
+export function MockupReviewBar({ view, onReview }: { view: MockupBarView; onReview: () => void }) {
   const { theme } = useUnistyles();
   return (
     <SessionBar
       trailing={
-        view.action === 'send' ? (
-          <Button label="Send" size="compact" loading={busy} onPress={onSend} />
-        ) : view.action === 'review' ? (
+        view.action === 'review' ? (
           <Button label="Review" size="compact" onPress={onReview} />
         ) : undefined
       }
@@ -237,9 +263,10 @@ export function MockupReviewBar({
 }
 
 /**
- * Full-screen review: one screen large, swipe for the next, Comment and Approve
- * side by side at the bottom. Screens still to decide come first; the order is
- * fixed while the review is open so a verdict does not move the screen away.
+ * Full-screen review: one screen large, swipe for the next, and two equal marks
+ * at the bottom. Tapping Discard or Approve marks the screen, tapping the chosen
+ * one again takes the mark back; nothing is sent to the agent and no work starts.
+ * The screens keep the order they were presented in.
  */
 export function MockupReviewSheet({
   visible,
@@ -249,7 +276,7 @@ export function MockupReviewSheet({
   deciding,
   error,
   onDecide,
-  onSend,
+  onComplete,
   onClose,
 }: {
   visible: boolean;
@@ -259,81 +286,56 @@ export function MockupReviewSheet({
   initialScreen: string | undefined;
   deciding: boolean;
   error: string | undefined;
-  onDecide: (
-    screen: string,
-    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
-  ) => Promise<boolean>;
-  onSend: () => Promise<boolean>;
+  onDecide: (screen: string, decision: { verdict: Verdict }) => Promise<boolean>;
+  onComplete: () => Promise<void>;
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const [order, setOrder] = useState<string[]>([]);
   const [index, setIndex] = useState(0);
   const [width, setWidth] = useState(0);
-  const [draft, setDraft] = useState<string | undefined>(undefined);
   const [scroller, setScroller] = useState<ScrollView | null>(null);
+  const [enlarged, setEnlarged] = useState<Enlarged | undefined>(undefined);
 
-  // Fix the order when the review opens; later verdicts update states in place.
   useEffect(() => {
-    if (!visible) return;
-    const names = reviewOrder(screens).map((screen) => screen.name);
-    setOrder(names);
-    setIndex(Math.max(0, initialScreen === undefined ? 0 : names.indexOf(initialScreen)));
-    setDraft(undefined);
-    // Only on opening: `screens` changes with every verdict.
+    if (!visible) {
+      // A viewer left open must not reappear over the next review.
+      setEnlarged(undefined);
+      return;
+    }
+    const at =
+      initialScreen === undefined ? -1 : screens.findIndex((s) => s.name === initialScreen);
+    setIndex(Math.max(0, at));
+    // Only on opening: `screens` changes with every mark.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, initialScreen]);
 
   useEffect(() => {
     if (scroller !== null && width > 0) scroller.scrollTo({ x: index * width, animated: false });
-    // Reopening a retained modal must align its picture with the verdict target.
+    // Reopening a retained modal must align its picture with the mark target.
   }, [scroller, width, index, visible]);
 
-  const byName = useMemo(() => new Map(screens.map((screen) => [screen.name, screen])), [screens]);
-  const ordered = order
-    .map((name) => byName.get(name))
-    .filter((screen): screen is MockupReviewScreen => screen !== undefined);
-  const current = ordered[Math.min(index, ordered.length - 1)];
-  const open = screens.some((screen) => screen.verdict === 'open');
-  const comments = screens.some((screen) => screen.verdict === 'comment');
-
-  const goNext = () => {
-    const next = ordered.findIndex((screen, at) => at > index && screen.verdict === 'open');
-    if (next >= 0 && scroller !== null) {
-      scroller.scrollTo({ x: next * width, animated: true });
-      setIndex(next);
-    }
-  };
-
-  const approve = async () => {
+  const current = screens[Math.min(index, screens.length - 1)];
+  const mark = (verdict: Exclude<Verdict, 'open'>) => {
     if (current === undefined) return;
-    if (await onDecide(current.name, { verdict: 'approved' })) goNext();
-  };
-  const saveComment = async () => {
-    if (current === undefined || draft === undefined || draft.trim() === '') return;
-    if (await onDecide(current.name, { verdict: 'comment', comment: draft.trim() }))
-      setDraft(undefined);
-  };
-  const reopen = () => {
-    if (current !== undefined) void onDecide(current.name, { verdict: 'open' });
+    void onDecide(current.name, { verdict: current.verdict === verdict ? 'open' : verdict });
   };
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior="padding" style={[styles.sheet, { paddingTop: insets.top }]}>
+      <View style={[styles.sheet, { paddingTop: insets.top }]}>
         <View style={styles.head}>
           <View style={styles.flex}>
             <Text variant="row" numberOfLines={1}>
               {current?.name ?? 'Mockups'}
             </Text>
             <Text variant="subtitle" numberOfLines={1}>
-              {title} · {String(Math.min(index + 1, ordered.length))} of {String(ordered.length)}
+              {title} · {String(Math.min(index + 1, screens.length))} of {String(screens.length)}
             </Text>
           </View>
           {current !== undefined && current.verdict !== 'open' ? (
             <StatusTag
-              intent={current.verdict === 'approved' ? 'ready' : 'optional'}
+              intent={current.verdict === 'approved' ? 'ready' : 'needsSetup'}
               label={STATE_LABEL[current.verdict]}
             />
           ) : null}
@@ -348,105 +350,75 @@ export function MockupReviewSheet({
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={(event) => {
-              setIndex(pageOf(event, width));
-              setDraft(undefined);
-            }}
+            onMomentumScrollEnd={(event) => setIndex(pageOf(event, width))}
           >
-            {ordered.map((screen) => (
+            {screens.map((screen) => (
               <View key={screen.name} style={[styles.stage, { width }]}>
-                <MockupPicture screen={screen} style={styles.image} />
+                <MockupStage screen={screen} onEnlarge={setEnlarged} />
               </View>
             ))}
           </ScrollView>
         </View>
-        {ordered.length > 1 ? <PageDots count={ordered.length} index={index} /> : null}
+        {screens.length > 1 ? <PageDots count={screens.length} index={index} /> : null}
         <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, theme.spacing.md) }]}>
           {error !== undefined ? (
             <Text variant="bodySmall" tone="attention">
               {error}
             </Text>
           ) : null}
-          {draft !== undefined ? (
-            <>
-              <TextField
-                label="Comment"
-                value={draft}
-                onChangeText={setDraft}
-                placeholder="What should change on this screen?"
-                multiline
-                autoFocus
-                maxLength={4000}
-              />
-              <View style={styles.actions}>
-                <View style={styles.flex}>
-                  <Button
-                    label="Cancel"
-                    variant="secondary"
-                    fullWidth
-                    onPress={() => setDraft(undefined)}
-                  />
-                </View>
-                <View style={styles.flex}>
-                  <Button
-                    label="Save comment"
-                    fullWidth
-                    loading={deciding}
-                    disabled={draft.trim() === ''}
-                    onPress={() => void saveComment()}
-                  />
-                </View>
+          {current === undefined ? null : (
+            <View style={styles.actions}>
+              <View style={styles.mark}>
+                <Button
+                  label={current.verdict === 'discarded' ? 'Discarded' : 'Discard'}
+                  icon="x"
+                  size="compact"
+                  variant={current.verdict === 'discarded' ? 'destructive' : 'secondary'}
+                  fullWidth
+                  disabled={deciding}
+                  accessibilityHint={
+                    current.verdict === 'discarded' ? 'Takes the mark back' : undefined
+                  }
+                  onPress={() => mark('discarded')}
+                />
               </View>
-            </>
-          ) : current === undefined ? null : (
-            <>
-              {current.verdict === 'comment' && current.comment !== undefined ? (
-                <Text variant="bodySmall" tone="muted">
-                  Your comment: “{current.comment}”
-                </Text>
-              ) : null}
-              <View style={styles.actions}>
-                <View style={styles.flex}>
-                  {current.verdict === 'approved' ? (
-                    <Button
-                      label="Undo approval"
-                      variant="secondary"
-                      fullWidth
-                      disabled={deciding}
-                      onPress={reopen}
-                    />
-                  ) : (
-                    <Button
-                      label={current.verdict === 'comment' ? 'Edit comment' : 'Comment'}
-                      variant="secondary"
-                      fullWidth
-                      disabled={deciding}
-                      onPress={() => setDraft(current.comment ?? '')}
-                    />
-                  )}
-                </View>
-                <View style={styles.flex}>
-                  <Button
-                    label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
-                    fullWidth
-                    loading={deciding}
-                    disabled={current.verdict === 'approved'}
-                    onPress={() => void approve()}
-                  />
-                  {!open && comments ? (
-                    <Button
-                      label="Send comments"
-                      fullWidth
-                      loading={deciding}
-                      onPress={() => void onSend().then((sent) => sent && onClose())}
-                    />
-                  ) : null}
-                </View>
+              <View style={styles.mark}>
+                <Button
+                  label={current.verdict === 'approved' ? 'Approved' : 'Approve'}
+                  icon="check"
+                  size="compact"
+                  variant={current.verdict === 'approved' ? 'primary' : 'secondary'}
+                  fullWidth
+                  disabled={deciding}
+                  accessibilityHint={
+                    current.verdict === 'approved' ? 'Takes the mark back' : undefined
+                  }
+                  onPress={() => mark('approved')}
+                />
               </View>
-            </>
+            </View>
           )}
+          <Text variant="bodySmall" tone="muted">
+            Already implemented? End this review to remove it from Home and Needs you. Images and
+            marks stay in the chat. This does not start implementation.
+          </Text>
+          <Button
+            label="End review"
+            size="compact"
+            variant="secondary"
+            fullWidth
+            disabled={deciding}
+            onPress={() => void onComplete()}
+          />
         </View>
-      </KeyboardAvoidingView>
+      </View>
+      {enlarged !== undefined ? (
+        <ImageLightbox
+          source={enlarged.source}
+          label={enlarged.name}
+          onClose={() => setEnlarged(undefined)}
+        />
+      ) : null}
     </Modal>
   );
 }
@@ -495,7 +467,10 @@ const styles = StyleSheet.create((theme) => ({
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  actions: { flexDirection: 'row', justifyContent: 'center', gap: theme.spacing.sm },
+  // Two equal, quiet marks rather than a dominant call to action.
+  mark: { width: 150 },
+  dimmed: { opacity: 0.4 },
   row: { gap: theme.spacing.sm, alignItems: 'flex-start' },
   tile: { gap: theme.spacing.xs },
   thumb: {

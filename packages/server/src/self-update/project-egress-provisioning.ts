@@ -209,6 +209,8 @@ async function runProjectEgressProvision(options: ProvisionOptions): Promise<boo
     ],
     env: ['HOME=/tmp', 'TUF_ROOT=/tmp/tuf'],
   });
+  // Signature verification is complete; later failures must not pin the installed image.
+  await docker.removeContainer(verification);
   const server = await managedServerContainerSpec(
     spec,
     options.environment,
@@ -283,7 +285,6 @@ async function runProjectEgressProvision(options: ProvisionOptions): Promise<boo
   if (assessment !== undefined)
     await markManagedStagingAssessment(options.managedRoot!, spec.image, key, true);
   await docker.removeContainer(installation);
-  await docker.removeContainer(verification);
   return true;
 }
 

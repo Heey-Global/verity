@@ -3,6 +3,7 @@ import type { PullRequestStatus } from './forge-provider.js';
 
 interface Entry {
   status: PullRequestStatus | null;
+  visibleStatus: PullRequestStatus | null;
   at: number;
   quietReads: number;
   failures: number;
@@ -76,6 +77,11 @@ function unavailable(status: PullRequestStatus | null): PullRequestStatus | null
 export function createSessionPrCache(options: {
   load(session: SessionRecord): Promise<PullRequestStatus | null>;
   now?: (() => number) | undefined;
+  /** Presentation only; automation continues to receive the original forge status. */
+  present?: (
+    session: SessionRecord,
+    status: PullRequestStatus | null,
+  ) => Promise<PullRequestStatus | null>;
   /** Publish accepted changes from foreground and background discovery alike. */
   onChange?: (session: SessionRecord, status: PullRequestStatus | null) => void;
 }) {
@@ -150,17 +156,37 @@ export function createSessionPrCache(options: {
         failures = Math.min(5, (previous?.failures ?? 0) + 1);
       }
       if (!token.disowned) {
+        const visibleStatus = options.present
+          ? await options
+              .present(session, status)
+              .catch(() =>
+                previous?.visibleStatus === null &&
+                previous.status?.url === status?.url &&
+                status?.phase !== 'open'
+                  ? null
+                  : status,
+              )
+          : status;
+        if (token.disowned) {
+          resolve(null);
+          if (pending.get(key) === token) pending.delete(key);
+          return;
+        }
         const at = now();
         const since = noChecksSince(previous, status, at);
         entries.set(key, {
           status,
+          visibleStatus,
           at,
           quietReads: status === null ? Math.min(5, (previous?.quietReads ?? 0) + 1) : 0,
           failures,
           ...(since === undefined ? {} : { noChecksSince: since }),
         });
-        if (previous === undefined || JSON.stringify(previous.status) !== JSON.stringify(status))
-          options.onChange?.(session, status);
+        if (
+          previous === undefined ||
+          JSON.stringify(previous.visibleStatus) !== JSON.stringify(visibleStatus)
+        )
+          options.onChange?.(session, visibleStatus);
       }
       if (pending.get(key) === token) pending.delete(key);
       resolve(token.disowned ? null : status);
@@ -171,17 +197,24 @@ export function createSessionPrCache(options: {
     void Promise.resolve().then(startNext);
     return token.promise;
   };
-  const invalidate = (worktree: string): void => {
-    entries.delete(worktree);
+  const invalidate = (worktree: string, retainStatus = false): boolean => {
+    const entry = entries.get(worktree);
+    // Tool activity must not turn a failing API into an unbounded retry loop.
+    if (retainStatus && entry && entry.failures > 0 && now() - entry.at < interval(entry, false))
+      return false;
+    if (retainStatus && entry) entries.set(worktree, { ...entry, at: -Infinity });
+    else entries.delete(worktree);
     const running = pending.get(worktree);
     if (running !== undefined) running.disowned = true;
+    return true;
   };
   const prune = (live: ReadonlySet<string>): void => {
     for (const key of new Set([...entries.keys(), ...pending.keys()])) {
       if (!live.has(key)) invalidate(key);
     }
   };
+  /** Cached presentation snapshot; get() retains the raw status for automation. */
   const peek = (worktree: string): PullRequestStatus | null | undefined =>
-    entries.get(worktree)?.status;
+    entries.get(worktree)?.visibleStatus;
   return { get, peek, isDue, invalidate, prune };
 }

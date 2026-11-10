@@ -16,6 +16,7 @@ import {
   type GitOutput,
 } from './branches.js';
 import { ForgeMergePermissionError } from './forge-provider.js';
+import { createForgeStatusCache, selectBranchStatus } from './forge-status-cache.js';
 import type { PullRequestStatus } from './github.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import {
@@ -77,6 +78,64 @@ describe('GET /sessions/:id/branches', () => {
     expect(branchPr).toHaveBeenCalledWith('feat/122-x', worktree);
     await withPr.close();
   });
+
+  it.each(['merged', 'closed'] as const)(
+    'hides a %s PR in both views after real work and keeps it hidden after restart',
+    async (phase) => {
+      await createExistingSession('s1');
+      branchSvc.current.mockResolvedValue('feat/continue');
+      let fingerprint: string | undefined = 'finished-work';
+      let now = 0;
+      let status: PullRequestStatus = {
+        number: 119,
+        title: 'Finished work',
+        url: 'https://example.test/pr/119',
+        phase,
+        pipeline: 'success',
+        mergeable: false,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      const makeApp = () =>
+        buildServer({
+          eventStore: ctx.store,
+          bus,
+          conductor,
+          branches: {
+            ...branchSvc,
+            worktreeFingerprint: async () => fingerprint,
+          } as unknown as NonNullable<ServerDeps['branches']>,
+          branchPrStatus: async () => status,
+          pullRequestCacheNow: () => now,
+        });
+      let server = makeApp();
+      try {
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(119);
+        // Another read with no changes must retain the completion marker.
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(119);
+        fingerprint = 'new-file-contents';
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json()).toMatchObject({
+          pullRequest: null,
+          currentPr: null,
+        });
+        let overview = (await server.inject('/sessions')).json()[0];
+        expect(overview.pr).toBeNull();
+        expect(overview.pullRequest).toBeNull();
+        await server.close();
+        server = makeApp();
+        fingerprint = undefined;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest).toBeNull();
+        status = { ...status, number: 120, url: 'https://example.test/pr/120', phase: 'open' };
+        now += 300_001;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.number).toBe(120);
+        overview = (await server.inject('/sessions')).json()[0];
+        expect(overview.pr?.phase).toBe('open');
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it('includes compact pullRequest status when configured', async () => {
     const worktree = await createExistingSession('s1');
@@ -316,6 +375,107 @@ describe('GET /sessions/:id/branches', () => {
       await cachedApp.close();
     }
   });
+
+  it.each([false, true])(
+    'discovers a new PR before turn completion (another branch: %s)',
+    async (anotherBranch) => {
+      await createExistingSession('s1');
+      await ctx.store.upsertProject({
+        id: 'pr-project',
+        owner: 'team',
+        repo: 'app',
+        containerName: 'app',
+        state: 'active',
+      });
+      await ctx.store.setSessionProject('s1', 'pr-project');
+      branchSvc.current.mockResolvedValue('feat/first');
+      const identity = { authority: 'test', owner: 'team', repo: 'app' };
+      const forge = createForgeStatusCache();
+      const merged: PullRequestStatus = {
+        number: 119,
+        title: 'First PR',
+        url: 'https://example.test/pr/119',
+        phase: 'merged',
+        pipeline: 'success',
+        mergeable: false,
+        checks: { completed: 1, total: 1, successful: 1, failed: 0, pending: 0 },
+      };
+      const next: PullRequestStatus = {
+        ...merged,
+        number: 120,
+        title: 'Next PR',
+        url: 'https://example.test/pr/120',
+        phase: 'open',
+        pipeline: 'running',
+        checks: { completed: 0, total: 1, successful: 0, failed: 0, pending: 1 },
+      };
+      let opened = false;
+      const sessionBranches = vi.fn(async () =>
+        opened && anotherBranch ? ['feat/first', 'feat/next'] : ['feat/first'],
+      );
+      const load = vi.fn(async (branch: string) =>
+        opened && (!anotherBranch || branch === 'feat/next') ? next : merged,
+      );
+      const cachedApp = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: { ...branchSvc, sessionBranches } as unknown as NonNullable<
+          ServerDeps['branches']
+        >,
+        branchPrStatusForBranches: async (branches) =>
+          selectBranchStatus(
+            await Promise.all(
+              branches.map((branch) => forge.read(identity, branch, () => load(branch))),
+            ),
+            'github',
+          ),
+        invalidateProjectPrStatus: () => forge.invalidate(identity),
+      });
+      try {
+        expect((await cachedApp.inject('/sessions/s1/branches')).json().pullRequest).toMatchObject({
+          number: 119,
+          phase: 'merged',
+        });
+        opened = true;
+        bus.publish('s1', {
+          seq: 1,
+          ts: Date.now(),
+          event: {
+            t: 'tool_result',
+            id: 'open-pr',
+            output: 'Created pull request',
+            isError: false,
+          },
+        });
+        // No result event or client request drives discovery of the replacement PR.
+        await vi.waitFor(() =>
+          expect(
+            load.mock.calls.some(
+              ([branch]) =>
+                branch === (anotherBranch ? 'feat/next' : 'feat/first') &&
+                load.mock.calls.length > 1,
+            ),
+          ).toBe(true),
+        );
+        const branches = (await cachedApp.inject('/sessions/s1/branches')).json();
+        const overview = (await cachedApp.inject('/sessions')).json()[0];
+        expect(branches.pullRequest).toMatchObject({
+          number: 120,
+          phase: 'open',
+          pipeline: 'running',
+        });
+        expect(overview.pullRequest).toMatchObject({
+          number: 120,
+          phase: 'open',
+          pipeline: 'running',
+        });
+        expect(overview.pr).toMatchObject({ phase: 'open', pipeline: 'running' });
+      } finally {
+        await cachedApp.close();
+      }
+    },
+  );
 
   it.each(['ci', 'conflict', 'running-conflict'] as const)(
     'repairs %s in the background without app requests or push registration',
@@ -1183,6 +1343,42 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     await withMerge.close();
   });
 
+  it('refuses a confirmed commit the branch has moved past, and merges only that commit', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    branchSvc.current.mockResolvedValue('feat/119-ready');
+    const mergePr = vi
+      .fn<(number: number, wt: string, sha?: string) => Promise<boolean>>()
+      .mockResolvedValue(true);
+    const withMerge = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<Parameters<typeof buildServer>[0]['branches']>,
+      branchPrStatus: vi.fn().mockResolvedValue(prStatus({ headSha: 'abc1234' })),
+      mergePr,
+    });
+
+    // A fix session pushed after the list was shown: nothing unseen merges.
+    const moved = await withMerge.inject({
+      method: 'POST',
+      url: '/sessions/s1/pull-request/merge',
+      payload: { number: 119, expectedHeadSha: 'def5678' },
+    });
+    expect(moved.statusCode).toBe(409);
+    expect(moved.json()).toMatchObject({ code: 'merge_head_changed' });
+    expect(mergePr).not.toHaveBeenCalled();
+
+    const same = await withMerge.inject({
+      method: 'POST',
+      url: '/sessions/s1/pull-request/merge',
+      payload: { number: 119, expectedHeadSha: 'abc1234' },
+    });
+    expect(same.statusCode).toBe(200);
+    // The code host enforces it too, against a push between the check and the merge.
+    expect(mergePr).toHaveBeenCalledWith(119, '/wt/s1', 'abc1234');
+    await withMerge.close();
+  });
+
   it('updates the overview PR projection as part of a successful merge', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     branchSvc.current.mockResolvedValue('feat/119-ready');
@@ -1646,6 +1842,86 @@ describe('POST /sessions/:id/pull-request/merge', () => {
     ]);
     await withMerge.close();
   });
+
+  it.each([
+    [false, false, false],
+    [true, false, false],
+    [false, true, false],
+    [false, false, true],
+  ])(
+    'seeds PR visibility after managed cleanup before admitting later work (deferred: %s, forge unavailable after merge: %s)',
+    async (deferred, failRead, failFingerprint) => {
+      const worktree = await createExistingSession('s1');
+      isBusy.mockReturnValue(deferred);
+      let status: PullRequestStatus = prStatus();
+      let forgeUnavailable = false;
+      let fingerprint: string | undefined = 'before-cleanup';
+      await ctx.store.observeSessionPrVisibility('s1', worktree, status.url, fingerprint);
+      const server = buildServer({
+        eventStore: ctx.store,
+        bus,
+        conductor,
+        branches: {
+          ...branchSvc,
+          worktreeFingerprint: async () => fingerprint,
+          resetToMergedBase: async () => {
+            fingerprint = failFingerprint ? undefined : 'settled-cleanup';
+            return { base: 'main' };
+          },
+        } as unknown as NonNullable<ServerDeps['branches']>,
+        branchPrStatus: async () => {
+          if (forgeUnavailable) throw new Error('forge temporarily unavailable');
+          return status;
+        },
+        mergePr: async () => {
+          status = { ...status, phase: 'merged' };
+          forgeUnavailable = failRead;
+          return true;
+        },
+      });
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/sessions/s1/pull-request/merge',
+          payload: { number: 119 },
+        });
+        expect(response.statusCode).toBe(200);
+        if (deferred) {
+          fingerprint = 'intermediate-work';
+          // A viewed terminal PR must not adopt or compare an intermediate baseline.
+          expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+            'merged',
+          );
+          expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
+            fingerprint: 'before-cleanup',
+            hidden: false,
+          });
+          const cleanup = runWhenIdle.mock.calls.at(-1)?.[1];
+          expect(cleanup).toBeTypeOf('function');
+          await cleanup!();
+        }
+        if (failFingerprint) {
+          expect(
+            await ctx.store.getSessionPrVisibility('s1', worktree, status.url),
+          ).toBeUndefined();
+          fingerprint = 'settled-cleanup';
+          expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+            'merged',
+          );
+        }
+        expect(await ctx.store.getSessionPrVisibility('s1', worktree, status.url)).toEqual({
+          fingerprint: 'settled-cleanup',
+          hidden: false,
+        });
+        forgeUnavailable = false;
+        expect((await server.inject('/sessions/s1/branches')).json().pullRequest?.phase).toBe(
+          'merged',
+        );
+      } finally {
+        await server.close();
+      }
+    },
+  );
 
   it('resets the worktree to the merged base without dispatching a post-merge turn', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });

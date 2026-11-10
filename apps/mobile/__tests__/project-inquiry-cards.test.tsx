@@ -1,9 +1,16 @@
+import { AppState } from 'react-native';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import type { VerityClient } from '@verity/mobile';
 import { SessionRepositories } from '../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../components/project/ProjectInquiryCards';
 
-jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
+jest.mock('expo-router', () => ({
+  router: { push: jest.fn() },
+  useFocusEffect: (effect: () => void | (() => void)) => {
+    const React = jest.requireActual<typeof import('react')>('react');
+    React.useEffect(effect, [effect]);
+  },
+}));
 
 jest.mock('../lib/useScanResource', () => ({
   useScanResource: (load: () => Promise<unknown>) => {
@@ -15,6 +22,15 @@ jest.mock('../lib/useScanResource', () => ({
     return { data, error: undefined, setError: jest.fn(), reload: jest.fn() };
   },
 }));
+
+const initialAppState = AppState.currentState;
+beforeEach(() => {
+  AppState.currentState = 'active';
+});
+afterEach(() => {
+  AppState.currentState = initialAppState;
+  jest.restoreAllMocks();
+});
 
 const inquiry = {
   id: 'i',
@@ -40,6 +56,7 @@ it('approves the concrete request at the target session', async () => {
   await waitFor(() => expect(view.getByText('Approve change')).toBeTruthy());
   fireEvent.press(view.getByText('Approve change'));
   await waitFor(() => expect(decideProjectInquiry).toHaveBeenCalledWith('target', 'i', 'approve'));
+  await waitFor(() => expect(client.listProjectInquiries).toHaveBeenCalledTimes(2));
 });
 
 it('shows source-side status without offering target approval', async () => {

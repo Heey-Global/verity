@@ -48,7 +48,6 @@ import type {
   VeritySettingsPatch,
 } from '@verity/store';
 import {
-  isInstallationPlaceholder,
   isLocalProject,
   LOCAL_PROJECT_OWNER,
   measureLatencyPhase,
@@ -145,6 +144,13 @@ import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
+import {
+  knowledgeRef,
+  noteDeletedSession,
+  hasProjectWiki,
+  noteWikiOccasion,
+  occasionTitle,
+} from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -185,7 +191,11 @@ import {
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
-import { registerProjectCollectionRoutes } from './project-collection-routes.js';
+import {
+  registerProjectPullRequestRoutes,
+  type SessionPullRequestLink,
+} from './project-pull-requests.js';
+import { registerProjectCollectionRoutes, repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
@@ -234,6 +244,16 @@ import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { createMeetingTranscriptController } from './server-meeting-transcripts.js';
 import { registerServerSessionFiles } from './server-session-files.js';
+import { parseSpawnRequestBody } from './session-create-schema.js';
+import { WikiProposals } from './wiki-proposals.js';
+import {
+  startWikiMaintenanceTrigger,
+  WIKI_MAINTENANCE_DISPLAY_PROMPT,
+  WIKI_MAINTENANCE_PROMPT,
+  WIKI_MAINTENANCE_SESSION_NAME,
+  type WikiMaintenanceTrigger,
+} from './wiki-maintenance-trigger.js';
+import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import type {
   ActivityProjection,
@@ -271,6 +291,7 @@ import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { createSessionPrCache } from './session-pr-cache.js';
+import { createPrActivityRefresh } from './pr-activity-refresh.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
@@ -698,10 +719,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     eventStore: deps.eventStore,
     dispatchTurn: dispatchServerTurn,
   });
-  const sessionMockups = createSessionMockups({
-    eventStore: deps.eventStore,
-    dispatchTurn: dispatchServerTurn,
-  });
+  const sessionMockups = createSessionMockups({ eventStore: deps.eventStore });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
   // root, nothing may start work on the project or its sessions: a turn
@@ -1023,10 +1041,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ? {}
             : { debounceMs: deps.pushFirePointDebounceMs }),
         });
+  // Wiki maintenance runs in a quiet session per project that no list shows and
+  // that never notifies anyone; its results surface only as proposals to review.
+  // Filled from the store when the server is ready and as sessions are created.
+  const wikiMaintenanceSessions = new Set<string>();
   const unsubscribePushFirePoints =
     pushFirePoints === undefined
       ? undefined
-      : deps.bus.subscribeAll((sessionId, event) => pushFirePoints.observe(sessionId, event));
+      : deps.bus.subscribeAll((sessionId, event) => {
+          if (!wikiMaintenanceSessions.has(sessionId)) pushFirePoints.observe(sessionId, event);
+        });
   // Scheduling requests run on their own once approved: the service owns holds, the public
   // booking links (one Uplink share and loopback page each) and cleanup; the scheduler resumes
   // all of it from durable state after a restart.
@@ -2672,11 +2696,70 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     return null;
   };
+  const prCleanupPending = new Set<string>();
+  const prVisibilityWrites = new Map<string, Promise<void>>();
+  const withPrVisibility = async <T>(
+    session: SessionRecord,
+    action: () => Promise<T>,
+  ): Promise<T> => {
+    const key = session.worktree;
+    const previous = prVisibilityWrites.get(key);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    prVisibilityWrites.set(key, pending);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (prVisibilityWrites.get(key) === pending) prVisibilityWrites.delete(key);
+    }
+  };
   const sessionPrCache = createSessionPrCache({
     load: sessionPrStatus,
+    present: (session, status) =>
+      withPrVisibility(session, async () => {
+        if (!status || status.phase === 'open' || prCleanupPending.has(session.sessionId))
+          return status;
+        const saved = await deps.eventStore.getSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+        );
+        if (saved?.hidden) return null;
+        const branches = await branchesForSession(session);
+        const fingerprint = await branches?.worktreeFingerprint?.(session.worktree, false);
+        // An unavailable workspace is not evidence that work resumed.
+        if (fingerprint === undefined) return status;
+        const hidden = await deps.eventStore.observeSessionPrVisibility(
+          session.sessionId,
+          session.worktree,
+          status.url,
+          fingerprint,
+        );
+        return hidden ? null : status;
+      }),
     now: deps.pullRequestCacheNow,
     onChange: (session, status) => {
       prSummaryCache.set(session.worktree, { pr: compactPr(status), at: Date.now() });
+      // A merged change is when the product changed. The occasion is recorded once
+      // per pull request; a cache refilled after a restart reports it again. It
+      // names the pull request only: the session's conversation is kept for the
+      // Wiki solely when the user deletes the session as done.
+      if (status?.phase === 'merged' && session.projectId !== null)
+        void noteWikiOccasion(
+          deps.eventStore,
+          {
+            projectId: session.projectId,
+            kind: 'merge',
+            ref: status.url,
+            title: `#${String(status.number)} ${status.title}`,
+            body: `Merged pull request ${status.url} from session ${session.sessionId}.`,
+          },
+          app.log,
+        );
       // Cache completion is not an HTTP mutation; without this the overview waits
       // for a later observation even though the opened session already knows the PR.
       resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
@@ -2732,21 +2815,29 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     clearInterval(prRepairTimer);
     await prRepairSweep;
   });
-  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
-    if (event.t !== 'result') return;
-    // A completed turn may have pushed a new head or opened its first PR. Drop
-    // quiet-session backoff so discovery resumes on the next foreground/background poll.
-    void deps.eventStore
-      .getSession(sessionId)
-      .then((session) => {
-        if (prRepairStopped || session === undefined) return;
-        invalidateBranchCache(session.worktree);
-        invalidatePrSummaryAction(session);
+  const prActivityRefresh = createPrActivityRefresh({
+    refresh: async (sessionId) => {
+      const session = await deps.eventStore.getSession(sessionId);
+      if (prRepairStopped || session === undefined) return;
+      invalidateBranchCache(session.worktree);
+      if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
-      })
-      .catch((err) => app.log.warn({ err, sessionId }, 'PR cache invalidation failed'));
+        return;
+      }
+      if (!invalidatePrSummaryAction(session, true)) return;
+      await sessionPrCache.get(session);
+      resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
+    },
+    onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),
   });
-  app.addHook('onClose', () => unsubscribePrChanges());
+  const unsubscribePrChanges = deps.bus.subscribeAll((sessionId, { event }) => {
+    if (event.t === 'tool_result' || event.t === 'result')
+      prActivityRefresh.notify(sessionId, event.t === 'result');
+  });
+  app.addHook('onClose', async () => {
+    unsubscribePrChanges();
+    await prActivityRefresh.close();
+  });
   const pullRequestReadyMonitor =
     pushRouter !== undefined &&
     deps.branches !== undefined &&
@@ -2798,7 +2889,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       await maybeDispatchPrRepairTurns(session, status);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
-      prSummaryCache.set(worktree, { pr: compactPr(status), at: Date.now() });
+      prSummaryCache.set(worktree, {
+        pr: compactPr(sessionPrCache.peek(worktree) ?? null),
+        at: Date.now(),
+      });
     } catch {
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       // Stamp the attempt time even on failure so the TTL guard still engages —
@@ -2820,12 +2914,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
     prSummaryCache.set(worktree, { pr, at: Date.now() });
   };
-  const invalidatePrSummaryAction = (session: SessionRecord): void => {
+  const invalidatePrSummaryAction = (session: SessionRecord, retainStatus = false): boolean => {
     const { worktree } = session;
-    sessionPrCache.invalidate(worktree);
+    if (!sessionPrCache.invalidate(worktree, retainStatus)) return false;
     if (session.projectId) deps.invalidateProjectPrStatus?.(session.projectId);
     prSummaryGeneration.set(worktree, (prSummaryGeneration.get(worktree) ?? 0) + 1);
-    prSummaryCache.delete(worktree);
+    if (!retainStatus) prSummaryCache.delete(worktree);
+    return true;
   };
   // Read the cached PR summary and schedule a background refresh if stale. Never
   // awaits git/GitHub, so the 2s list poll stays cheap.
@@ -3355,6 +3450,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     pruneBranchCache,
     summarizeSessions,
     collectAttention,
+    // From the store, so a session another server generation created is hidden
+    // too; the local set covers one created moments ago and not yet recorded.
+    hiddenSessionIds: async () => {
+      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
+      for (const id of recorded) wikiMaintenanceSessions.add(id);
+      for (const id of wikiMaintenanceSessions) recorded.add(id);
+      return recorded;
+    },
   });
 
   registerMessageSearchRoute(app, { eventStore: deps.eventStore });
@@ -3435,9 +3538,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const projects = deps.listAvailableRepositories
         ? await deps.listAvailableRepositories()
         : await deps.eventStore.listProjects({ includeHidden: true });
-      return projects
-        .filter((project) => project.kind === 'github')
-        .map((project) => ({ owner: project.owner, repo: project.repo }));
+      return repositoryCatalog(projects).map((project) => ({
+        owner: project.owner,
+        repo: project.repo,
+      }));
     },
     deps.forgejoEnabled === true,
   );
@@ -3588,7 +3692,26 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
+  // Proposals write through the Wiki's file routes, which are registered further below.
+  const sessionFiles: { current?: ReturnType<typeof registerServerSessionFiles> } = {};
+  const wikiFiles = () => {
+    if (!sessionFiles.current) throw new Error('Wiki files are not ready');
+    return sessionFiles.current;
+  };
+  const wikiProposals =
+    deps.dataRoot === undefined
+      ? undefined
+      : new WikiProposals(deps.dataRoot, {
+          readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
+          writeProjectWiki: (projectId, path, content, version) =>
+            wikiFiles().writeProjectWiki(projectId, path, content, version),
+          onFailure: (err, details) =>
+            app.log.warn({ err, ...details }, 'Wiki proposal page could not be written'),
+          onChange: (projectId) =>
+            resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
+        });
   const decidePendingLinkedMessage = registerServerMcpRoutes({
+    wikiProposals,
     inquiryTool: async (sessionId, userId, input) => {
       const request = input as { operation: string; inquiryId: string; answer: string };
       if (request.operation === 'list') {
@@ -4025,6 +4148,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         });
   registerIntegrationRoutes(app, {
     store: deps.eventStore.integrations,
+    onChatDay: (projectId, path, room) =>
+      noteWikiOccasion(
+        deps.eventStore,
+        {
+          projectId,
+          kind: 'chat',
+          ref: knowledgeRef(path),
+          title: `${room} · ${occasionTitle(path)}`,
+          reopen: true,
+        },
+        app.log,
+      ),
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
     ...(deps.matrixConnectorToken !== undefined
       ? { connectorToken: deps.matrixConnectorToken }
@@ -4071,9 +4206,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         project: seen ?? presented,
         settings: publicProjectSettings(settings),
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
+        // What this person may change here, so the app offers only that. The
+        // routes check again; this only spares an edit the server would refuse.
+        viewer: {
+          canManage:
+            deps.authRegistry?.isEnabled() !== true ||
+            (await deps.eventStore.hasProjectPermission(viewer, id, 'manage')),
+        },
       };
     },
     projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
+    renameProject: async (id, name) => {
+      const renamed = await deps.eventStore.renameProject(id, name);
+      // The overview list is memoised; it must show the new name at once.
+      if (renamed !== undefined) deps.invalidateProjectList?.();
+      return renamed;
+    },
     ...(deps.listBrokeredGrants !== undefined ? { listGrants: deps.listBrokeredGrants } : {}),
     ...(deps.revokeBrokeredGrant !== undefined ? { revokeGrant: deps.revokeBrokeredGrant } : {}),
     setSetupStatus: async (id, status) => {
@@ -4661,29 +4809,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         target.forgeConnectionId = connection.id;
         target.kind = connection.provider;
       }
-      // `(owner, repo)` is UNIQUE, so a taken pair would surface as an opaque DB
-      // error AFTER the push already happened. Check first and fail clean.
-      //
-      // Installation-sync placeholders are NOT such a conflict: the sync mints a
-      // row for every repository the GitHub App can see, which includes every
-      // repository this route could ever push to, so treating them as taken
-      // makes linking impossible rather than safe. They are adopted instead —
-      // the reservation below retires the placeholder and, if it turns out to
-      // carry sessions after all, declines with this very same 409 while the
-      // push still has not happened.
-      const conflict = (await deps.eventStore.listProjects({ includeHidden: true })).find(
-        (candidate) =>
-          candidate.id !== project.id &&
-          (candidate.forgeConnectionId ?? 'legacy-github') ===
-            (target.forgeConnectionId ?? 'legacy-github') &&
-          candidate.owner === target.owner &&
-          candidate.repo === target.repo &&
-          !isInstallationPlaceholder(candidate),
-      );
-      if (conflict !== undefined) {
-        reply.code(409);
-        return { error: `${target.owner}/${target.repo} is already registered as a project` };
-      }
+      // The repository may already back other projects: the reservation below
+      // either adopts its installation placeholder or reserves another instance
+      // of it, so this project stays separate from every existing one.
       const performLink = async (): Promise<LinkGitHubResponse | { error: string }> => {
         // Scoped to the TARGET repo, not the project's current (local) identity.
         const token = await deps.ghTokenMint?.(target);
@@ -5094,6 +5222,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         dataRoot: deps.dataRoot,
         sessionId,
         meetingId,
+        log: app.log,
       }),
     onDiscarded: async (sessionId, meeting) => {
       // Independent steps, all attempted: a provider failure must not skip removing the
@@ -5189,7 +5318,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await attendeeMeetings.close();
   });
   meetingTranscripts.registerRoutes();
-  registerServerSessionFiles(app, deps, conductor);
+  sessionFiles.current = registerServerSessionFiles(app, deps, conductor);
+  if (wikiProposals)
+    registerWikiProposalRoutes(app, wikiProposals, async (projectId) => {
+      const project = await deps.eventStore.getProject(projectId);
+      return project !== undefined && !project.hiddenAt;
+    });
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the
@@ -5553,7 +5687,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   registerSessionDeleteRoute(app, {
-    remove: async (request, reply, id, force) => {
+    remove: async (request, reply, id, force, options) => {
       if (conductor.isMovingSession?.(id)) {
         reply.code(409);
         return { error: 'Wait for the session move to finish before deleting.' };
@@ -5599,14 +5733,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         return { error: `session ${id} is busy — finish the turn before deleting it` };
       }
       deletionRequestIds.set(id, request.id);
+      // Read before the transcript goes with the session; only once deletion is admitted.
+      const noteForWiki = () =>
+        noteDeletedSession(deps.eventStore, session, options?.keepForWiki === true, request.log);
       try {
-        if (force) return await sessionDeletions.remove(session);
+        if (force) {
+          await noteForWiki();
+          return await sessionDeletions.remove(session);
+        }
         let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
         const admission = await conductor.tryRunExclusive(id, async () => {
           let release!: () => void;
           const admitted = new Promise<void>((resolve) => {
             release = resolve;
           });
+          await noteForWiki();
           removal = sessionDeletions.remove(session, release);
           // The HTTP deadline must not release an unfinished admission operation.
           void removal.catch(() => undefined);
@@ -5792,6 +5933,115 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       log: app.log,
     }),
   );
+  // One fix session per pull request: concurrent taps of "Fix" in this process
+  // wait for the first, and the durable origin record covers everything else.
+  const pullRequestFixes = new Map<string, Promise<{ sessionId: string; created: boolean }>>();
+  registerProjectPullRequestRoutes(app, {
+    store: deps.eventStore,
+    backend: deps.projectPullRequests,
+    sessionLinks: async (projectId) => {
+      const sessions = (await deps.eventStore.listSessions()).filter(
+        (session) => session.projectId === projectId,
+      );
+      // One lookup per session, read together rather than one after another.
+      const workspaces = await Promise.all(
+        sessions.map((session) =>
+          deps.eventStore.listSessionRepositoryWorkspaces(session.sessionId),
+        ),
+      );
+      return sessions.flatMap((session, index): SessionPullRequestLink[] => {
+        // Only what is already known: the project page reads every session's PR
+        // status, so asking the code host again here would double that traffic.
+        const pr = sessionPrCache.peek(session.worktree);
+        return [
+          {
+            sessionId: session.sessionId,
+            repositoryId: `default:${projectId}`,
+            ...(pr ? { number: pr.number } : {}),
+            name: session.name,
+          },
+          ...workspaces[index]!.map((workspace): SessionPullRequestLink => {
+            const number = (workspace.pullRequest as { number?: unknown } | null | undefined)
+              ?.number;
+            return {
+              sessionId: session.sessionId,
+              repositoryId: workspace.repositoryId,
+              branch: workspace.branch,
+              ...(typeof number === 'number' ? { number } : {}),
+              name: session.name,
+            };
+          }),
+        ];
+      });
+    },
+    startFix: (input) => {
+      const key = `${input.project.id}\u0000${input.resource}`;
+      const running = pullRequestFixes.get(key);
+      if (running) return running;
+      const start = async () => {
+        const repairs = deps.eventStore.repairs;
+        const existing = await repairs.sessionOrigin(input.project.id, input.resource);
+        if (existing && (await deps.eventStore.getSession(existing)))
+          return { sessionId: existing, created: false };
+        const sessionId = randomUUID();
+        const spawned = await sessionCreate.spawn(
+          {
+            projectId: input.project.id,
+            sessionId,
+            name: `Fix PR #${String(input.status.number)}`,
+          },
+          app.log,
+        );
+        if (spawned.statusCode >= 300)
+          throw Object.assign(new Error('The fix session could not be created'), {
+            statusCode: spawned.statusCode >= 500 ? 503 : spawned.statusCode,
+          });
+        // A session that never got its prompt, or lost the claim to another
+        // process, is removed again: a durable origin pointing at it would turn
+        // every later tap into "already fixing", and a duplicate helps no one.
+        const discard = () =>
+          deleteSessionEverywhere(sessionId).catch((error: unknown) => {
+            app.log.warn({ err: error, sessionId }, 'could not remove an unused fix session');
+            return false;
+          });
+        try {
+          const owner = existing
+            ? await repairs.replaceSessionOrigin(
+                input.project.id,
+                input.resource,
+                existing,
+                sessionId,
+              )
+            : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
+          if (owner === undefined)
+            throw Object.assign(new Error('The fix session could not be recorded'), {
+              statusCode: 503,
+            });
+          if (owner !== sessionId) {
+            await discard();
+            return { sessionId: owner, created: false };
+          }
+          await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
+            displayPrompt: `Fix pull request #${String(input.status.number)}`,
+            ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
+          });
+        } catch (error) {
+          // The origin, if recorded, now names a missing session; the next tap
+          // replaces it.
+          await discard();
+          if (typeof (error as { statusCode?: unknown }).statusCode === 'number') throw error;
+          app.log.error({ err: error, sessionId }, 'fix session could not be started');
+          throw Object.assign(new Error('The fix session could not be started. Try again.'), {
+            statusCode: 503,
+          });
+        }
+        return { sessionId, created: true };
+      };
+      const promise = start().finally(() => pullRequestFixes.delete(key));
+      pullRequestFixes.set(key, promise);
+      return promise;
+    },
+  });
   if (deps.repairDiscovery) {
     const qaEnabled = async () => {
       const state = await deps.eventStore.repairs.qa();
@@ -5944,6 +6194,75 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     notifySessionCreated: (sessionId, projectId) =>
       liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
   });
+
+  // Wiki maintenance runs when something new happened in a project (see
+  // wiki-maintenance-trigger.ts and docs/knowledge.md).
+  if (deps.dataRoot !== undefined) {
+    const dataRoot = deps.dataRoot;
+    let wikiMaintenance: WikiMaintenanceTrigger | undefined;
+    app.addHook('onReady', async () => {
+      try {
+        for (const id of await deps.eventStore.wikiMaintenance.sessionIds())
+          wikiMaintenanceSessions.add(id);
+      } catch (err) {
+        // The session list reads them again on every load; the runs still start.
+        app.log.warn({ err }, 'wiki maintenance sessions could not be read');
+      }
+      wikiMaintenance = startWikiMaintenanceTrigger({
+        store: deps.eventStore,
+        hasWiki: (projectId) => hasProjectWiki(dataRoot, projectId),
+        isProjectBusy: (projectId) => isProjectBusy(projectId),
+        ensureSession: async (project) => {
+          const known = (await deps.eventStore.wikiMaintenance.get(project.id))?.sessionId;
+          const existing = known ? await deps.eventStore.getSession(known) : undefined;
+          if (existing?.projectId === project.id) {
+            wikiMaintenanceSessions.add(existing.sessionId);
+            return existing.sessionId;
+          }
+          // Hidden before it exists, so no list or notification ever sees it.
+          const sessionId = randomUUID();
+          wikiMaintenanceSessions.add(sessionId);
+          const created = await sessionCreate.spawn(
+            parseSpawnRequestBody({
+              projectId: project.id,
+              sessionId,
+              name: WIKI_MAINTENANCE_SESSION_NAME,
+            }),
+            app.log,
+          );
+          if (!('sessionId' in created.result)) {
+            wikiMaintenanceSessions.delete(sessionId);
+            return undefined;
+          }
+          try {
+            await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
+          } catch (err) {
+            // Unrecorded, it would show up in lists after a restart and never be reused.
+            await deleteSessionEverywhere(sessionId).catch(() => false);
+            throw err;
+          }
+          return sessionId;
+        },
+        dispatch: (sessionId) =>
+          sessionsBeingReaped.has(sessionId)
+            ? Promise.resolve({ accepted: false })
+            : conductor.dispatchTurnWhenIdle(
+                sessionId,
+                WIKI_MAINTENANCE_PROMPT,
+                {},
+                {
+                  displayPrompt: WIKI_MAINTENANCE_DISPLAY_PROMPT,
+                  validateSession: (session) =>
+                    deps.eventStore.wikiMaintenance.isSession(session.sessionId),
+                },
+              ),
+        log: app.log,
+      });
+    });
+    app.addHook('onClose', async () => {
+      await wikiMaintenance?.stop();
+    });
+  }
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
   // moment it is accepted; live progress flows over the WS stream. What happens to
@@ -6237,7 +6556,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // number-only dep. Newer deployments return the compact PR status for the
       // composer strip; older deps can still provide only the number. Failures
       // degrade to null, never failing the list.
-      const pullRequest =
+      const rawPullRequest =
         deps.branchPrStatusForBranches !== undefined || deps.branchPrStatus !== undefined
           ? await readStage('pr', () =>
               sessionPrCache.get(session, {
@@ -6246,6 +6565,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               }),
             )
           : undefined;
+      const pullRequest =
+        rawPullRequest === undefined ? undefined : (sessionPrCache.peek(session.worktree) ?? null);
       const currentPr =
         pullRequest !== undefined
           ? (pullRequest?.number ?? null)
@@ -6254,7 +6575,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
                 deps.branchPr!(current, session.worktree).catch(() => null),
               )
             : undefined;
-      await maybeDispatchPrRepairTurns(session, pullRequest);
+      await maybeDispatchPrRepairTurns(session, rawPullRequest);
       // Best-effort GitHub identity (#161): owner/repo for the mobile header to build
       // tappable Issue/PR chip URLs. Omitted entirely when there's no resolver or no
       // GitHub remote (resolves to null), and a rejection degrades to omitted — the
@@ -6336,6 +6657,36 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus,
     compactPr,
     applyPrSummaryAction,
+    beforePrCleanup: (session) => {
+      prCleanupPending.add(session.sessionId);
+    },
+    afterPrCleanup: (session, status) =>
+      withPrVisibility(session, async () => {
+        try {
+          if (status?.phase === 'merged') {
+            // Pre-cleanup evidence cannot identify later work, even if probing fails.
+            await deps.eventStore.clearSessionPrVisibility(
+              session.sessionId,
+              session.worktree,
+              status.url,
+            );
+            const branches = await branchesForSession(session);
+            const fingerprint = await branches
+              ?.worktreeFingerprint?.(session.worktree, false)
+              .catch(() => undefined);
+            if (fingerprint !== undefined)
+              await deps.eventStore.resetSessionPrVisibility(
+                session.sessionId,
+                session.worktree,
+                status.url,
+                fingerprint,
+              );
+          }
+        } finally {
+          prCleanupPending.delete(session.sessionId);
+          invalidatePrSummaryAction(session, true);
+        }
+      }),
     invalidatePrSummaryAction,
   });
 

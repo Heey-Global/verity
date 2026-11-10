@@ -43,6 +43,7 @@ function operations(overrides: Partial<ForgeRepositoryOperations> = {}): ForgeRe
     markPullRequestReady: vi.fn().mockResolvedValue(pull),
     viewIssue: vi.fn().mockResolvedValue(null),
     commentOnIssue: vi.fn().mockResolvedValue({ url: 'https://example/c/1' }),
+    readFile: vi.fn().mockResolvedValue(null),
     ...overrides,
   };
 }

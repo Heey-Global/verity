@@ -279,6 +279,8 @@ def kernel_links():
         if len(address) > 32 or not re.fullmatch(r'[a-zA-Z0-9_.:-]{1,15}', name):
             raise ValueError('Unsupported deadline link identity')
         link = {'ifindex': index, 'ifname': name, 'address': address.hex(':')}
+        if 10 in attrs:
+            link['master'] = route_u32(attrs[10])
         if 5 in attrs:
             link['link_index'] = route_u32(attrs[5])
         if 18 in attrs:
@@ -648,6 +650,46 @@ def relay_policy(binding, peer, registration, facts=None):
     return struct.pack('<II', 1, int(registration['codex'])) + b''.join(a.packed for a in addresses) + b''.join(macs)
 
 
+def protected_build_endpoint(binding, namespace, links, mac):
+    """Only a root-registered build anchor may contain the fixed inner CNI bridge.
+
+    Sandbox/relay namespaces retain the one-interface invariant. This record is
+    installed by the host before admitting a separately inspected build anchor;
+    labels and workload-provided metadata never authorize an exception.
+    """
+    path = STATE.parent / 'build-anchors' / (binding_key(binding) + '.json')
+    parent = path.parent
+    parent_stat = parent.lstat()
+    if (not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != 0
+            or parent_stat.st_mode & 0o077 or parent.resolve() != parent):
+        raise ValueError('Untrusted protected build inspection directory')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        value = os.fstat(fd)
+        if (not stat.S_ISREG(value.st_mode) or value.st_uid != 0 or value.st_mode & 0o077
+                or value.st_size > 8192 or value.st_nlink != 1):
+            raise ValueError('Untrusted protected build inspection record')
+        record = json.loads(os.read(fd, 8193))
+    finally:
+        os.close(fd)
+    if (set(record) != {'version', 'binding', 'namespace', 'bootId'} or record['version'] != 1
+            or record['binding'] != binding or record['namespace'] != namespace
+            or record['bootId'] != Path('/proc/sys/kernel/random/boot_id').read_text().strip()):
+        raise ValueError('Protected build inspection identity changed')
+    primary = [link for link in links if link.get('ifname') == 'eth0' and link.get('address') == mac]
+    bridges = [link for link in links if link.get('ifname') == 'vbki0'
+               and link.get('linkinfo', {}).get('info_kind') == 'bridge']
+    if len(primary) != 1 or len(bridges) != 1:
+        raise ValueError('Protected build endpoint or inner bridge changed')
+    for link in links:
+        if link is primary[0] or link is bridges[0]:
+            continue
+        if (link.get('linkinfo', {}).get('info_kind') != 'veth'
+                or link.get('master') not in (bridges[0]['ifindex'], 'vbki0')):
+            raise ValueError('Unexpected protected build namespace link')
+    return primary[0]
+
+
 def endpoint(binding, facts=None):
     facts = facts if facts is not None else InspectionFacts(binding)
     key = binding_key(binding)
@@ -670,7 +712,9 @@ def endpoint(binding, facts=None):
         raise ValueError('Invalid deadline network namespace')
     links = json.loads(run('/usr/bin/nsenter', '--net=' + namespace, '/sbin/ip', '-j', 'link', 'show'))
     links = [link for link in links if link['ifname'] != 'lo']
-    if len(links) != 1 or links[0]['address'] != net['MacAddress']:
+    if len(links) != 1:
+        links = [protected_build_endpoint(binding, namespace, links, net['MacAddress'])]
+    if links[0]['address'] != net['MacAddress']:
         raise ValueError('Deadline namespace endpoint changed')
     candidates = [v for v in facts.host_links()
                   if v['ifindex'] == links[0].get('link_index')]

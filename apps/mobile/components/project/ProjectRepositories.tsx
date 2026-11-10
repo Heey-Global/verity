@@ -1,10 +1,13 @@
 import { type CodeHost, type ProjectRecord, type VerityClient } from '@verity/mobile';
 import { useCallback, useEffect, useState } from 'react';
+import { useUnistyles } from 'react-native-unistyles';
 import { loadCodeHosts } from '../../lib/codeHosts';
+import { repositoryModuleName } from '../../lib/projectRepositories';
 import { useScanResource } from '../../lib/useScanResource';
-import { CodeHostOption, RepositoryPicker } from '../RepositoryPicker';
+import { CodeHostIcon } from '../CodeHostIcon';
+import { AddRepositorySheet } from '../RepositoryPicker';
 import { SettingsGroup } from '../settings/SettingsChrome';
-import { Button, Card, CardHead, Group, Text, TextField, useConfirm } from '../ui';
+import { Group, IconButton, Row, StatusTag, Text, useConfirm } from '../ui';
 
 export function ProjectRepositories({
   client,
@@ -19,9 +22,7 @@ export function ProjectRepositories({
   const setResourceError = resource.setError;
   const [hosts, setHosts] = useState<CodeHost[]>([]);
   const [githubRepositories, setGithubRepositories] = useState<ProjectRecord[]>([]);
-  const [hostId, setHostId] = useState<string>();
-  const [selected, setSelected] = useState<string | null>(null);
-  const [name, setName] = useState('');
+  const { theme } = useUnistyles();
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [confirm, sheet] = useConfirm();
@@ -32,7 +33,6 @@ export function ProjectRepositories({
         if (!active) return;
         setHosts(result.hosts);
         setGithubRepositories(result.githubRepositories);
-        setHostId(result.hosts[0]?.id);
       })
       .catch((error: unknown) => {
         if (active)
@@ -42,25 +42,38 @@ export function ProjectRepositories({
       active = false;
     };
   }, [client, setResourceError]);
-  const host = hosts.find((item) => item.id === hostId);
-  const add = async () => {
-    if (!host || !selected) return;
-    const [owner, repo] = selected.split('/');
+  const connected = (resource.data ?? []).filter((item) => item.removedAt === null);
+  // Repositories already in this project are not offered again; repositories
+  // that other projects use stay available.
+  const exclude = (host: CodeHost) =>
+    connected
+      .filter(
+        (item) =>
+          item.kind === host.provider &&
+          (host.provider !== 'forgejo' || item.forgeConnectionId === host.id),
+      )
+      .map((item) => `${item.owner}/${item.repo}`);
+  const add = async (host: CodeHost, repository: string) => {
+    const [owner, repo] = repository.split('/');
     if (!owner || !repo) return;
+    const name = repositoryModuleName(
+      (resource.data ?? []).map((item) => item.name),
+      owner,
+      repo,
+    );
     setBusy(true);
     try {
       await client.addProjectRepository(projectId, {
-        name: name.trim() || repo,
+        name,
         kind: host.provider,
         owner,
         repo,
         ...(host.provider === 'forgejo' ? { forgeConnectionId: host.id } : {}),
       });
       setAdding(false);
-      setSelected(null);
-      setName('');
       resource.reload();
     } catch (error) {
+      setAdding(false);
       resource.setError(error instanceof Error ? error.message : 'Could not connect repository.');
     } finally {
       setBusy(false);
@@ -82,86 +95,68 @@ export function ProjectRepositories({
   return (
     <SettingsGroup
       title="Project repositories"
-      description="Connect modules from any available code host. Each repository has its own branches and pull requests."
+      description="Each repository has its own branches and pull requests."
     >
       {resource.error ? <Text tone="attention">{resource.error}</Text> : null}
-      {resource.data
-        ?.filter((item) => item.removedAt === null)
-        .map((item) => (
-          <Card stacked key={item.id}>
-            <CardHead
-              title={item.name}
-              subtitle={`${item.owner}/${item.repo}${item.isDefault ? ' · Default' : ''}`}
-            />
-            {!item.isDefault ? (
-              <Button
-                label={`Disconnect ${item.name}`}
-                variant="text"
-                disabled={busy}
-                onPress={() =>
-                  confirm({
-                    title: 'Disconnect repository?',
-                    message:
-                      'Existing code and history stay available. New remote actions for this connection will be blocked.',
-                    confirmLabel: 'Disconnect',
-                    destructive: true,
-                    onConfirm: () => void remove(item.id),
-                  })
-                }
-              />
-            ) : null}
-          </Card>
+      <Group>
+        {connected.map((item) => (
+          <Row
+            key={item.id}
+            leading={
+              item.kind === 'github' || item.kind === 'forgejo'
+                ? {
+                    element: <CodeHostIcon provider={item.kind} color={theme.colors.textMuted} />,
+                  }
+                : { icon: 'folder', quiet: true }
+            }
+            title={item.name}
+            subtitle={`${item.owner}/${item.repo}`}
+            trailing={
+              item.isDefault ? (
+                <StatusTag intent="optional" label="Default" />
+              ) : (
+                <IconButton
+                  icon="trash-2"
+                  accessibilityLabel={`Remove ${item.name}`}
+                  disabled={busy}
+                  onPress={() =>
+                    confirm({
+                      title: 'Remove repository?',
+                      message:
+                        'Existing code and history stay available. New remote actions for this repository will be blocked.',
+                      confirmLabel: 'Remove',
+                      destructive: true,
+                      onConfirm: () => void remove(item.id),
+                    })
+                  }
+                />
+              )
+            }
+          />
         ))}
-      <Button
-        label={adding ? 'Cancel' : 'Add repository'}
-        variant="secondary"
-        disabled={busy}
-        onPress={() => setAdding(!adding)}
-      />
-      {adding ? (
-        <>
-          <Group>
-            {hosts.map((candidate) => (
-              <CodeHostOption
-                key={candidate.id}
-                host={candidate}
-                selected={candidate.id === hostId}
-                disabled={busy}
-                onPress={() => {
-                  setHostId(candidate.id);
-                  setSelected(null);
-                }}
-              />
-            ))}
-          </Group>
-          {host ? (
-            <RepositoryPicker
-              client={client}
-              host={host}
-              initialGithubRepositories={githubRepositories}
-              selected={selected}
-              onSelect={setSelected}
-              disabled={busy}
-              autoSelect={false}
-            />
-          ) : (
-            <Text>Connect a code host in Connectors first.</Text>
-          )}
-          <TextField
-            label="Module name"
-            value={name}
-            onChangeText={setName}
-            maxLength={128}
-            disabled={busy}
-          />
-          <Button
-            label="Connect repository"
-            loading={busy}
-            disabled={!selected}
-            onPress={() => void add()}
-          />
-        </>
+        <Row
+          leading={{ icon: 'plus' }}
+          title="Add repository"
+          navigates
+          disabled={busy || hosts.length === 0}
+          onPress={() => setAdding(true)}
+        />
+      </Group>
+      {hosts.length === 0 && resource.data !== undefined ? (
+        <Text variant="footnote" tone="faint">
+          Connect a code host in Connectors first.
+        </Text>
       ) : null}
+      <AddRepositorySheet
+        client={client}
+        visible={adding}
+        hosts={hosts}
+        githubRepositories={githubRepositories}
+        exclude={exclude}
+        disabled={busy}
+        onAdd={(host, repository) => void add(host, repository)}
+        onClose={() => setAdding(false)}
+      />
       {sheet}
     </SettingsGroup>
   );

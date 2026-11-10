@@ -1,4 +1,4 @@
-import type { SessionFileContent, VerityClient } from '@verity/mobile';
+import { resolveKnowledgeLink, type SessionFileContent, type VerityClient } from '@verity/mobile';
 import { Stack, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
@@ -14,16 +14,24 @@ import {
   folderTitle,
   knowledgeDownloadUrl,
   parentFolder,
+  pushKnowledge,
   readKnowledge,
   writeKnowledge,
   type KnowledgeScope,
 } from './knowledgeScope';
+import { useKnowledgePane } from './KnowledgePane';
+import { invalidateWikiCatalog, useWikiCatalog } from './useWikiCatalog';
+import { WikiPageFooter, WikiPageHeader, wikiEntry } from './WikiPageParts';
 
 /**
  * One knowledge file for reading: Markdown rendered across the full width,
  * with Source a tab away. Edit (where the server allows it) swaps in the text
  * for editing, with Cancel and Save where Edit was; Download hands the original
  * to the share sheet.
+ *
+ * A project's Wiki page reads as a page: its title in place of the file name,
+ * links to other pages, decisions and sources that open them, and below it what
+ * it links to and what links here.
  *
  * `stack` puts the name and actions into the navigation header of its own
  * screen; `pane` draws them itself, for the wide layout's right column, with a
@@ -87,6 +95,7 @@ export function KnowledgeFileView({
     setSaving(true);
     try {
       const next = await writeKnowledge(client, scope, file, draft, content.version);
+      if (scope.kind === 'project') invalidateWikiCatalog(scope.projectId);
       if (current.current !== target) return;
       setContent(next);
       setDraft(undefined);
@@ -134,7 +143,32 @@ export function KnowledgeFileView({
       .finally(() => setDownloading(false));
   }, [client, file, projectId, scope]);
 
-  const name = file.split('/').at(-1) ?? file;
+  // Only Wiki files are pages; a source opens without reading the catalog.
+  const wiki = useWikiCatalog(
+    client,
+    scope.kind === 'project' && file.startsWith('insights/') ? scope.projectId : null,
+  );
+  const entry = wikiEntry(wiki.catalog, file);
+  const name =
+    entry?.kind === 'page'
+      ? entry.page.title
+      : entry?.kind === 'decision'
+        ? entry.decision.title
+        : (file.split('/').at(-1) ?? file);
+  const pane = useKnowledgePane();
+  const openFile = useCallback(
+    (target: string) =>
+      pane ? pane.openFile(scope, target) : pushKnowledge(scope, { file: target }),
+    [pane, scope],
+  );
+  const openLink = useCallback(
+    (url: string) => {
+      if (scope.kind !== 'project') return undefined;
+      const target = resolveKnowledgeLink(file, url);
+      return target ? () => openFile(target) : undefined;
+    },
+    [file, openFile, scope.kind],
+  );
   const editing = draft !== undefined;
   const dirty = editing && draft !== content?.content;
   const report = useRef(onDirtyChange);
@@ -244,7 +278,17 @@ export function KnowledgeFileView({
           listStyle={styles.list}
           bodyStyle={styles.listBody}
           textStyle={styles.source}
-          renderMarkdown={(item) => <MarkdownItem item={item} />}
+          renderMarkdown={(item) => <MarkdownItem item={item} openLink={openLink} />}
+          header={
+            wiki.catalog && entry ? (
+              <WikiPageHeader catalog={wiki.catalog} file={file} />
+            ) : undefined
+          }
+          footer={
+            wiki.catalog && entry ? (
+              <WikiPageFooter catalog={wiki.catalog} file={file} onOpen={openFile} />
+            ) : undefined
+          }
         />
       </View>
     );
@@ -261,32 +305,35 @@ export function KnowledgeFileView({
           }}
         />
       ) : (
-        <FileSheetHeader
-          title={name}
-          subtitle={folderTitle(scope, parentFolder(file))}
-          trailing={
-            <View style={styles.actions}>
-              {actions}
-              {onClose ? (
-                <HeaderIconButton
-                  icon="x"
-                  accessibilityLabel="Close file"
-                  onPress={() =>
-                    dirty
-                      ? confirm({
-                          title: 'Discard changes?',
-                          message: 'Your edits to this file are not saved.',
-                          confirmLabel: 'Discard',
-                          destructive: true,
-                          onConfirm: onClose,
-                        })
-                      : onClose()
-                  }
-                />
-              ) : null}
-            </View>
-          }
-        />
+        // The header lines up with the text below it rather than the column's edge.
+        <View style={styles.paneHeader}>
+          <FileSheetHeader
+            title={name}
+            subtitle={folderTitle(scope, parentFolder(file))}
+            trailing={
+              <View style={styles.actions}>
+                {actions}
+                {onClose ? (
+                  <HeaderIconButton
+                    icon="x"
+                    accessibilityLabel="Close file"
+                    onPress={() =>
+                      dirty
+                        ? confirm({
+                            title: 'Discard changes?',
+                            message: 'Your edits to this file are not saved.',
+                            confirmLabel: 'Discard',
+                            destructive: true,
+                            onConfirm: onClose,
+                          })
+                        : onClose()
+                    }
+                  />
+                ) : null}
+              </View>
+            }
+          />
+        </View>
       )}
       {content?.warning ? (
         <Text variant="subtitle" tone="muted" style={styles.warning}>
@@ -302,6 +349,7 @@ export function KnowledgeFileView({
 const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, backgroundColor: theme.colors.background },
   actions: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  paneHeader: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md },
   reader: { flex: 1, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.sm },
   list: { flex: 1 },
   listBody: { paddingVertical: theme.spacing.md, gap: theme.spacing.xs },

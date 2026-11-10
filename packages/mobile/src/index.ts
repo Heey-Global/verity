@@ -64,7 +64,7 @@ export {
   type ProjectBadge,
   type ProjectTone,
 } from './ui/projectBadge.js';
-export { projectDisplayName, projectRepoRef } from './ui/projectName.js';
+export { projectDisplayName, projectRepoRef, projectTitle } from './ui/projectName.js';
 export {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
@@ -78,6 +78,7 @@ export {
   type AgentEventDescriptor,
   type AgentEventTone,
 } from './ui/agentEvent.js';
+export { splitNoticeText } from './ui/systemNotice.js';
 export {
   APP_LINK_PROJECT_SETTINGS_PAGES,
   APP_LINK_SCHEME,
@@ -120,6 +121,7 @@ export {
   planProposalContent,
   planProposalCounts,
   planDecisionAnswer,
+  planDecisionAnswers,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,
@@ -424,6 +426,8 @@ export {
   type ProjectRuntimeLogs,
   type ProjectRuntimeStarted,
   type ProjectSettings,
+  type ProjectProfile,
+  type ProjectProfilePatch,
   type ProjectSettingsPatch,
   type ProjectAgent,
   type ProjectDesignLevel,
@@ -693,7 +697,7 @@ export {
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
 
-export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {
   cancelSessionSwitch,
   exportSessionSwitchTimings,
@@ -754,7 +758,6 @@ export {
   mockupBarView,
   mockupProgress,
   mockupRoundView,
-  reviewOrder,
   type MockupBarView,
   type MockupRoundView,
   type MockupScreenView,
@@ -769,4 +772,42 @@ export type {
   AssistantQuestion,
 } from '@verity/events';
 
-export { type ProjectRepository, type ProjectInquiry } from './projectCollaboration.js';
+export {
+  type ProjectRepository,
+  type ProjectInquiry,
+  type RepositoryInstructions,
+} from './projectCollaboration.js';
+export {
+  PULL_REQUEST_STATES,
+  pullRequestAction,
+  pullRequestCounts,
+  pullRequestSummary,
+  type ProjectPullRequest,
+  type PullRequestCounts,
+  type PullRequestState,
+  type RepositoryPullRequests,
+} from './projectPullRequests.js';
+export {
+  resolveKnowledgeLink,
+  WIKI_INDEX,
+  WIKI_LOG,
+  type KnowledgePath,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+  type WikiReviewItem,
+  type WikiTopic,
+} from '@verity/events';
+
+export {
+  sessionWorkSections,
+  sessionAgentWorking,
+  sessionWorkActive,
+  retainWorkMembers,
+  WORK_PROBLEM_LABELS,
+  type SessionWorkEntry,
+  type SessionWorkSections,
+} from './ui/sessionWork.js';

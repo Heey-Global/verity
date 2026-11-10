@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { z } from 'zod';
+import { projectNpmPublications } from './npm-publication-projection.js';
+import {
+  npmPackageIdentity,
+  npmReleaseEligibility,
+  type NpmInstallPolicy,
+} from './package-install-grants.js';
 import {
   brokeredHttpStreamTransport,
   type BrokeredHttpStreamTransport,
@@ -14,6 +20,8 @@ interface Artifact {
   algorithm: 'sha256' | 'sha512';
   digest: string;
   filename: string;
+  npmIdentity?: string;
+  published?: unknown;
 }
 export const PACKAGE_ARTIFACT_BASE_URL = 'http://verity-package-broker:8080';
 export interface PackageArtifactResponse {
@@ -48,6 +56,33 @@ function upstreamUrl(value: string, host: string, prefix: string): URL {
   )
     reject();
   return url;
+}
+function npmArtifact(
+  name: string,
+  version: string,
+  dist: Record<string, unknown>,
+  published: unknown,
+): Artifact | undefined {
+  const integrity =
+    typeof dist.integrity === 'string'
+      ? /^(sha512|sha256)-([A-Za-z0-9+/]+={0,2})$/u.exec(dist.integrity)
+      : null;
+  if (!integrity) return undefined;
+  const algorithm = integrity[1] as 'sha256' | 'sha512';
+  const digest = integrity[2]!;
+  if (Buffer.from(digest, 'base64').length !== (algorithm === 'sha512' ? 64 : 32)) reject(502);
+  if (typeof dist.tarball !== 'string') reject(502);
+  const url = upstreamUrl(dist.tarball, 'registry.npmjs.org', `/${name}/-/`);
+  const filename = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
+  if (!/^[a-zA-Z0-9._-]+\.tgz$/u.test(filename)) reject(502);
+  return {
+    url: url.href,
+    algorithm,
+    digest,
+    filename,
+    npmIdentity: npmPackageIdentity(name, version),
+    published,
+  };
 }
 async function bounded(
   response: IncomingMessage,
@@ -99,7 +134,78 @@ export function createPackageArtifactBroker(
     artifactBase: string,
   ): string =>
     `${artifactBase}${PREFIX}file/${ecosystem}/${Buffer.from(name).toString('base64url')}/${value.algorithm}/${Buffer.from(value.digest, 'base64').toString('hex')}/${encodeURIComponent(value.filename)}`;
+  const project = async (
+    name: string,
+    versions: readonly string[],
+    signal: AbortSignal,
+    authorized: () => Promise<boolean>,
+    selectArtifact?: Parameters<typeof projectNpmPublications>[4],
+  ): Promise<Awaited<ReturnType<typeof projectNpmPublications>>> => {
+    const check = async (): Promise<void> => {
+      if (signal.aborted || !(await authorized()) || signal.aborted) reject(401);
+    };
+    const initial = new URL(`https://registry.npmjs.org/${encodeURIComponent(name)}`);
+    let url = initial;
+    for (let redirects = 0; ; redirects++) {
+      await check();
+      const response = await transport({
+        hostname: url.hostname,
+        path: url.pathname,
+        method: 'GET',
+        headers: { accept: 'application/json', 'accept-encoding': 'identity' },
+        body: Buffer.alloc(0),
+        signal,
+      });
+      await check().catch((error: unknown) => {
+        response.destroy();
+        throw error;
+      });
+      if ([301, 302, 303, 307, 308].includes(response.statusCode ?? 0)) {
+        const location = response.headers.location;
+        response.destroy();
+        if (redirects >= 2 || typeof location !== 'string') reject(502);
+        url = upstreamUrl(new URL(location, url).href, initial.hostname, initial.pathname);
+        continue;
+      }
+      if (response.statusCode !== 200) {
+        response.destroy();
+        reject(response.statusCode === 404 ? 404 : 502);
+      }
+      const facts = await projectNpmPublications(
+        response,
+        name,
+        new Set(versions),
+        signal,
+        selectArtifact,
+      );
+      await check();
+      return facts;
+    }
+  };
   return {
+    async publicationTimes(
+      name: string,
+      versions: readonly string[],
+      signal: AbortSignal,
+      authorized: () => Promise<boolean>,
+    ): Promise<{ versions: ReadonlySet<string>; times: ReadonlyMap<string, unknown> }> {
+      if (
+        name.length > 214 ||
+        !npmName.test(name) ||
+        versions.length > 5000 ||
+        versions.some((version) => !/^[0-9A-Za-z.+_-]{1,128}$/u.test(version))
+      )
+        reject();
+      if (++inFlight > 2) {
+        inFlight--;
+        reject(429);
+      }
+      try {
+        return await project(name, versions, signal, authorized);
+      } finally {
+        inFlight--;
+      }
+    },
     async advisories(
       input: unknown,
       signal: AbortSignal,
@@ -183,6 +289,7 @@ export function createPackageArtifactBroker(
       signal: AbortSignal,
       authorized: () => Promise<boolean>,
       artifactBase = PACKAGE_ARTIFACT_BASE_URL,
+      npmPolicy?: NpmInstallPolicy,
     ): Promise<PackageArtifactResponse> {
       if (++inFlight > 2) {
         inFlight--;
@@ -265,6 +372,16 @@ export function createPackageArtifactBroker(
           // A lockfile URL is only a content selector, never reusable authority.
           // Re-fetch provider metadata on every request, including after restart.
           if (!selected) reject(404);
+          if (selected.npmIdentity) {
+            if (npmPolicy && !npmPolicy.packages.has(selected.npmIdentity)) reject(403);
+            const eligibility = npmReleaseEligibility(
+              selected.published,
+              npmPolicy?.minimumAgeDays ?? 3,
+            );
+            if (!eligibility.availableAt) reject(409);
+            if (!eligibility.eligible && !npmPolicy?.exceptions.has(selected.npmIdentity))
+              reject(409);
+          }
           const body = await fetch(
             new URL(selected.url),
             ARTIFACT_LIMIT,
@@ -278,6 +395,35 @@ export function createPackageArtifactBroker(
         if (path.startsWith('npm/')) {
           const name = path.slice(4);
           if (name.length > 214 || !npmName.test(name)) reject();
+          if (selector || legacyNpm) {
+            const metadata = await project(name, [], signal, authorized, (candidate) => {
+              const value = npmArtifact(name, candidate.version, candidate.dist, undefined);
+              if (!value) return false;
+              return (
+                !!(
+                  legacyNpm &&
+                  new URL(value.url).pathname === `/${legacyNpm[1]!}/-/${legacyNpm[2]!}`
+                ) ||
+                !!(
+                  selector &&
+                  selector[3] === value.algorithm &&
+                  selector[4] === Buffer.from(value.digest, 'base64').toString('hex') &&
+                  selector[5] === value.filename
+                )
+              );
+            });
+            if (!metadata.artifact) reject(404);
+            const version = metadata.artifact.version;
+            // JSON object order is not authority: time may precede versions.
+            let publication = metadata.times;
+            if (!publication.has(version)) {
+              const refreshed = await project(name, [version], signal, authorized);
+              if (!refreshed.versions.has(version)) reject(404);
+              publication = refreshed.times;
+            }
+            selected = npmArtifact(name, version, metadata.artifact.dist, publication.get(version));
+            return await download();
+          }
           const data = record.parse(
             JSON.parse(
               (
@@ -291,25 +437,19 @@ export function createPackageArtifactBroker(
           );
           if (data.name !== name) reject(502);
           const versions = record.parse(data.versions);
+          const times = record.safeParse(data.time);
           const rewritten: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
           for (const [version, raw] of Object.entries(versions)) {
             const manifest = record.parse(raw);
             const dist = record.parse(manifest.dist);
             // Old SHA1-only releases stay unavailable, rather than weakening integrity.
-            const integrity =
-              typeof dist.integrity === 'string'
-                ? /^(sha512|sha256)-([A-Za-z0-9+/]+={0,2})$/u.exec(dist.integrity)
-                : null;
-            if (!integrity) continue;
-            const algorithm = integrity[1] as 'sha256' | 'sha512';
-            const digest = integrity[2]!;
-            if (Buffer.from(digest, 'base64').length !== (algorithm === 'sha512' ? 64 : 32))
-              reject(502);
-            if (typeof dist.tarball !== 'string') reject(502);
-            const url = upstreamUrl(dist.tarball, 'registry.npmjs.org', `/${name}/-/`);
-            const filename = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
-            if (!/^[a-zA-Z0-9._-]+\.tgz$/u.test(filename)) reject(502);
-            const artifact = { url: url.href, algorithm, digest, filename };
+            const artifact = npmArtifact(
+              name,
+              version,
+              dist,
+              times.success ? times.data[version] : undefined,
+            );
+            if (!artifact) continue;
             select(artifact);
             rewritten[version] = {
               ...manifest,
@@ -319,7 +459,6 @@ export function createPackageArtifactBroker(
               },
             };
           }
-          if (selector || legacyNpm) return await download();
           const tags = record.parse(data['dist-tags']);
           data['dist-tags'] = Object.fromEntries(
             Object.entries(tags).filter(

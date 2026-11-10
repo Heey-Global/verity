@@ -83,16 +83,17 @@ case, a trailing slash or the Zoom subdomain.
   the link out; joining reads it on the server.
 - `POST /live-meetings/calendar/:eventKey/join` joins. With `{ "sessionId" }`
   the meeting starts in that session, otherwise unassigned. A second join is
-  refused with 409 and the running meeting's id. A meeting that ended, or that
-  starts more than 15 minutes from now, is refused with 409; an unknown
-  session with 404.
+  refused with 409 and the running meeting's id. A meeting that ended is
+  refused with 409; an unknown session with 404.
+  An explicit join is allowed before the scheduled start.
 - `POST /live-meetings/calendar/:eventKey/skip` skips a meeting. A skipped
   meeting can still be joined.
 
 These are administrator routes, like the calendar settings. In the app, the
 online source of a session's meeting screen lists these meetings under "From
 your calendar"; a meeting that is on or starts within 15 minutes is picked
-automatically, and picking one replaces typing the link, which stays available
+automatically. Any listed online meeting can be picked and joined earlier;
+picking one replaces typing the link, which stays available
 behind "Enter link manually". Meetings that run without a project appear there
 with "Continue here", which moves them into the session with everything said
 so far.
@@ -119,8 +120,9 @@ it has a session.
 The new-meeting screen offers calendar selection for both sources. Selecting an
 entry fills the title; in-person meetings still use the device microphone.
 Timed events without an online link are available for in-person recording.
-Online entry points require a supported meeting link and remain subject to the
-join window. Entries come from the watched calendars selected under Settings ›
+Online entry points require a supported meeting link and an event that has not
+ended. You can explicitly join before its scheduled start. Entries come from
+the watched calendars selected under Settings ›
 Google › Meeting calendars. An empty selection offers a shortcut to that page;
 failed calendar reads are shown as errors rather than as an empty calendar.
 

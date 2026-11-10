@@ -1,8 +1,8 @@
 import { type VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { View } from 'react-native';
-import { useScanResource } from '../../lib/useScanResource';
+import { useProjectInquiries } from '../../hooks/useProjectInquiries';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 
 /** The same durable target-side approval is shown on Home and in the session. */
@@ -15,12 +15,7 @@ export function ProjectInquiryCards({
   sessionId?: string;
   projectId?: string;
 }) {
-  const resource = useScanResource(
-    useCallback(
-      () => client.listProjectInquiries(sessionId, projectId),
-      [client, sessionId, projectId],
-    ),
-  );
+  const resource = useProjectInquiries(client, sessionId, projectId);
   const [busy, setBusy] = useState<string>();
   const decide = async (targetSessionId: string, id: string, decision: 'approve' | 'reject') => {
     setBusy(id);

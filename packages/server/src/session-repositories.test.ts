@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { EventStore, ProjectRecord } from '@verity/store';
-import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, access, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,7 +9,7 @@ import {
   removeSessionRepositoryWorkspaces,
 } from './session-repositories.js';
 
-function harness(planning = false, forge = false) {
+function harness(planning = false, forge = false, cloneRoot = '/clones') {
   const project = {
     id: 'p',
     kind: 'github',
@@ -40,7 +40,7 @@ function harness(planning = false, forge = false) {
     getSession: vi.fn(async () => ({
       projectId: 'p',
       planning: planning ? 'active' : 'implemented',
-      worktree: '/clones/project/sessions/s',
+      worktree: `${cloneRoot}/project/sessions/s`,
     })),
     getProject: vi.fn(async () => project),
     forgeConnections: { get: vi.fn(async () => ({ baseUrl: 'https://forge.test:8443' })) },
@@ -51,7 +51,7 @@ function harness(planning = false, forge = false) {
     upsertSessionRepositoryWorkspace: save,
   } as unknown as EventStore;
   return {
-    service: createSessionRepositories({ store, cloneRoot: '/clones', git: () => git }),
+    service: createSessionRepositories({ store, cloneRoot, git: () => git }),
     git,
     save,
     revoke: () => {
@@ -64,6 +64,9 @@ it('creates isolated module workspaces without resetting existing branch history
   const result = (await h.service.open('s', 'r')) as { workspace: { worktree: string } };
   expect(result.workspace.worktree).toMatch(/^\/clones\/project\/\.verity-repositories\//);
   expect(h.git.mock.calls.some(([args]) => args.includes('clone'))).toBe(true);
+  expect(h.git.mock.calls.find(([args]) => args.includes('clone'))?.[0]).toContain(
+    'http.https://github.com.version=HTTP/1.1',
+  );
   expect(h.git.mock.calls.some(([args]) => args.includes('-B'))).toBe(false);
   expect(h.save).toHaveBeenCalledTimes(1);
 });
@@ -81,6 +84,7 @@ it('persists broker proxy, CA and a host-specific capability helper before cross
   await h.service.open('s', 'r');
   const clone = h.git.mock.calls.find(([args]) => args.includes('clone'))?.[0];
   expect(clone).toContain('http.https://forge.test:8443.proxy=http://broker:8080');
+  expect(clone).toContain('http.https://forge.test:8443.version=HTTP/1.1');
   expect(clone).toContain('http.https://forge.test:8443.sslCAInfo=/run/verity/forge-proxy/ca.crt');
   expect(clone).toContain(
     "credential.https://forge.test:8443.helper=!VERITY_FORGE_AUTHORITY='forge.test:8443' /opt/agent-seed/bin/verity-gh-cred",
@@ -94,6 +98,35 @@ it('returns a container-accessible module path to sandbox callers', async () => 
   expect(opened.workspace.worktree).toMatch(/^\/work\/\.verity-repositories\//);
   expect(opened.workspace.worktree).not.toContain('/clones/');
 });
+it("points the agent at an opened repository's own AGENTS.md, and only when it exists", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'module-instructions-'));
+  try {
+    const h = harness(false, false, root);
+    // The session backend loads only its starting worktree's AGENTS.md; without
+    // this pointer an agent would work in the module without the module's rules.
+    const without = await h.service.openForSandbox('s', 'r');
+    expect(without).not.toHaveProperty('instructions');
+    const opened = (await h.service.open('s', 'r')) as { workspace: { worktree: string } };
+    await mkdir(opened.workspace.worktree, { recursive: true });
+    await writeFile(join(opened.workspace.worktree, 'AGENTS.md'), 'Run the API tests.');
+    const withFile = await h.service.openForSandbox('s', 'r');
+    expect(withFile.instructions).toBe(`${withFile.workspace.worktree}/AGENTS.md`);
+    expect(withFile.instructions).toMatch(/^\/work\/\.verity-repositories\//u);
+    // `AGENTS.md -> CLAUDE.md` inside the checkout is a file the agent can read;
+    // a link out of the checkout is not reported, whatever it points at.
+    await rm(join(opened.workspace.worktree, 'AGENTS.md'));
+    await writeFile(join(opened.workspace.worktree, 'CLAUDE.md'), 'Shared rules.');
+    await symlink('CLAUDE.md', join(opened.workspace.worktree, 'AGENTS.md'));
+    expect((await h.service.openForSandbox('s', 'r')).instructions).toBe(withFile.instructions);
+    await rm(join(opened.workspace.worktree, 'AGENTS.md'));
+    await writeFile(join(root, 'outside.md'), 'Not this repository.');
+    await symlink(join(root, 'outside.md'), join(opened.workspace.worktree, 'AGENTS.md'));
+    expect(await h.service.openForSandbox('s', 'r')).not.toHaveProperty('instructions');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it('cleans deterministic module paths after workspace database rows have disappeared', async () => {
   const root = await mkdtemp(join(tmpdir(), 'module-cleanup-'));
   try {

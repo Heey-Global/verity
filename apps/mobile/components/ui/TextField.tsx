@@ -35,6 +35,7 @@ export function TextField({
   maxLength,
   accessibilityLabel,
   labelAccessory,
+  inline = false,
 }: {
   label: string;
   value: string;
@@ -59,6 +60,10 @@ export function TextField({
   accessibilityLabel?: string;
   /** A status beside the label, e.g. whether a write-only secret is stored. */
   labelAccessory?: ReactNode;
+  /** Text edited in place inside a card that already names it: no visible
+   *  label and no field chrome, so the text reads like the card's other
+   *  content. `label` still names the field for VoiceOver. */
+  inline?: boolean;
 }) {
   const { theme } = useUnistyles();
   const [focused, setFocused] = useState(false);
@@ -68,7 +73,7 @@ export function TextField({
     literalInput || secret || keyboardType === 'url' || keyboardType === 'email-address';
   return (
     <View style={styles.wrap}>
-      {labelAccessory !== undefined ? (
+      {inline ? null : labelAccessory !== undefined ? (
         <View style={styles.labelRow}>
           <Text style={styles.label}>{label}</Text>
           {labelAccessory}
@@ -83,8 +88,9 @@ export function TextField({
         style={[
           styles.field,
           multiline ? styles.multiline : null,
-          focused ? styles.focused : null,
+          focused && !inline ? styles.focused : null,
           error !== undefined && !focused ? styles.error : null,
+          inline ? styles.inline : null,
           disabled ? styles.disabled : null,
         ]}
       >
@@ -233,6 +239,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   error: { borderColor: tint(theme.colors.attention, 'border') },
   disabled: { opacity: 0.4 },
+  inline: {
+    minHeight: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
   input: {
     flex: 1,
     minHeight: 44,

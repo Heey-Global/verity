@@ -1,4 +1,5 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
@@ -288,6 +289,8 @@ export interface ServerDeps {
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
+  /** Open pull requests of a project's repositories, with merge, for its Repositories page. */
+  projectPullRequests?: ProjectPullRequestBackend;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
    * Live compact PR status for a session spanning SEVERAL branches — the most-

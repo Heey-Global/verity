@@ -1,3 +1,5 @@
+import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
   DEFAULT_SANDBOX_OOM_SCORE_ADJ,
@@ -131,6 +133,7 @@ import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '
 import {
   DockerError,
   type DockerClient,
+  type DockerContainerSummary,
   type ContainerInspect,
   type ContainerSpec,
   type CreateContainerResult,
@@ -375,6 +378,7 @@ const defaultGitRunner: GitRunner = async (args, opts) => {
  *  message carries the build stderr so the provisioner can surface a truncated
  *  `provision_error`. Kept injectable so tests never spawn a real build. */
 export type DevcontainerBuildSpawner = (args: {
+  projectId?: string;
   storageLease?: BuildStorageLease;
   signal?: AbortSignal;
   workspaceFolder: string;
@@ -757,6 +761,7 @@ export interface LinkCloneToGitHubResult {
 export interface ProvisionerOptions {
   /** Host egress service client; present only when the host service is configured. */
   projectEgress?: ProjectEgressLifecycle;
+  protectedDevcontainerBuild?: DevcontainerBuildSpawner;
   /** The system-wide network protection switch, read at each container start. When
    * absent, a configured `projectEgress` protects every start. */
   projectEgressEnabled?: () => Promise<boolean>;
@@ -776,6 +781,16 @@ export interface ProvisionerOptions {
   beforeRunnerAdmission?: ((project: ProjectRecord) => Promise<void>) | undefined;
   /** Data-minimised lifecycle observer. It must never affect a transition. */
   onSandboxLifecycle?: ((event: ProjectSandboxLifecycleEvent) => void) | undefined;
+  /** Data-minimised record of every Sandbox recreate: who asked, how long it took
+   *  and whether it worked. It must never affect the recreate. */
+  onSandboxRecreate?:
+    | ((event: {
+        projectId: string;
+        initiator: AuditInitiator;
+        outcome: 'succeeded' | 'failed';
+        durationMs: number;
+      }) => void)
+    | undefined;
   /** Reports why a sleeping Sandbox could not use the retained-container fast path. */
   onSandboxWakeFallback?:
     ((event: { projectId: string; reason: SandboxWakeFallbackReason }) => void) | undefined;
@@ -1961,6 +1976,8 @@ export interface Provisioner {
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
    * Sandboxes that already carry a protected runtime mount. */
   reconcileRunnerSupervisors?(projects: readonly ProjectRecord[]): Promise<void>;
+  /** Retry proven-owned abandoned networks without disturbing retained Sandboxes. */
+  reconcileProjectNetworks?(): Promise<void>;
   /** Stage 5 (Temporary Public Previews): migrate legacy shared-network sandboxes
    * onto their relay + project network rather than silently reusing them. No-op
    * unless relay mode is configured. */
@@ -3193,8 +3210,9 @@ export class ProvisionerImpl implements Provisioner {
    *  recreate rather than each racing a stop/remove against the others. */
   private readonly turnSandboxRepairs = new Map<
     string,
-    { promise: Promise<boolean>; requestingSessionIds: Set<string> }
+    { promise: Promise<boolean>; requestingSessionIds: Set<string>; ownerToken: object }
   >();
+  private readonly projectMutationContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();
   private readonly projectSandboxActivities = new Map<string, number>();
   private readonly projectSandboxLastActivities = new Map<string, number>();
   private readonly projectWakeAttempts = new Map<string, Promise<ProjectRecord>>();
@@ -3236,8 +3254,13 @@ export class ProvisionerImpl implements Provisioner {
       return existing.promise;
     }
     const requestingSessionIds = new Set([requestingSessionId, ...(queuedSessionIds ?? [])]);
-    const attempt = this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options);
-    this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds });
+    const ownerToken = {};
+    const context = new Map(this.projectMutationContext.getStore());
+    context.set(projectId, ownerToken);
+    const attempt = this.projectMutationContext.run(context, () =>
+      this.repairSandboxForTurnOnce(projectId, requestingSessionIds, options),
+    );
+    this.turnSandboxRepairs.set(projectId, { promise: attempt, requestingSessionIds, ownerToken });
     try {
       return await attempt;
     } finally {
@@ -3329,9 +3352,11 @@ export class ProvisionerImpl implements Provisioner {
     });
     // Install synchronously before the first await. New backend admissions now
     // wait; the checks below account for work that entered before this barrier.
+    const ownerToken = {};
     this.turnSandboxRepairs.set(projectId, {
       promise: barrier,
       requestingSessionIds: new Set(),
+      ownerToken,
     });
     try {
       if ((this.projectSandboxActivities.get(projectId) ?? 0) > 0) {
@@ -3340,7 +3365,9 @@ export class ProvisionerImpl implements Provisioner {
       if (this.projectBusyProbe && (await this.projectBusyProbe(projectId, exceptSessionIds))) {
         throw new ProvisioningError(`project ${projectId} has a turn in flight`);
       }
-      return await mutation();
+      const context = new Map(this.projectMutationContext.getStore());
+      context.set(projectId, ownerToken);
+      return await this.projectMutationContext.run(context, mutation);
     } finally {
       releaseBarrier(true);
       const current = this.turnSandboxRepairs.get(projectId);
@@ -3602,6 +3629,30 @@ export class ProvisionerImpl implements Provisioner {
     });
   }
 
+  /** Docker-owned helpers survive a Server restart and keep the runtime fenced.
+   * Older project toolkits do not know that fence, so admission must also check
+   * the daemon before restarting any container that can access the runtime. */
+  private async assertNoRunnerCacheMaintenance(projectId: string): Promise<void> {
+    if (this.opts.runnerSupervisor !== true || this.opts.dataVolumeRoot === undefined) return;
+    if (this.opts.docker.listContainers === undefined)
+      throw new ProvisioningError('Runner cache maintenance inventory is unavailable');
+    let containers: DockerContainerSummary[];
+    try {
+      containers = await this.opts.docker.listContainers();
+    } catch (cause) {
+      throw new ProvisioningError('Runner cache maintenance inventory is unavailable', cause);
+    }
+    if (
+      containers.some(
+        (container) =>
+          container.labels?.[PROJECT_ID_LABEL] === projectId &&
+          container.labels?.['verity.component'] === 'runner-cache-maintenance' &&
+          !['exited', 'dead'].includes(container.state ?? ''),
+      )
+    )
+      throw new ProvisioningError('Runner cache maintenance is still in progress');
+  }
+
   async ensureProjectSandboxAwake(
     projectId: string,
     requestingSessionIds?: ReadonlySet<string>,
@@ -3664,6 +3715,7 @@ export class ProvisionerImpl implements Provisioner {
         async () => {
           const project = await this.opts.store.getProject(projectId);
           if (project === undefined) throw new ProvisioningError('project gone mid-wake');
+          await this.assertNoRunnerCacheMaintenance(projectId);
           if (project.state !== 'sleeping' || project.sleepCompatibilityFingerprint == null) {
             throw new ProvisioningError(`project ${projectId} is not sleeping`);
           }
@@ -4293,6 +4345,38 @@ export class ProvisionerImpl implements Provisioner {
     };
   }
 
+  private networkCleanupCursor = 0;
+  async reconcileProjectNetworks(): Promise<void> {
+    const docker = this.opts.docker;
+    if (!docker.listNetworks || !docker.inspectNetwork || !docker.removeNetwork) return;
+    const failures: unknown[] = [];
+    const inventory = await docker.listNetworks();
+    const candidates = Array.from(
+      { length: Math.min(inventory.length, 16) },
+      (_, index) => inventory[(this.networkCleanupCursor + index) % inventory.length]!,
+    );
+    this.networkCleanupCursor = inventory.length
+      ? (this.networkCleanupCursor + candidates.length) % inventory.length
+      : 0;
+    for (const candidate of candidates) {
+      const projectId = candidate.Labels?.['verity.project-id'];
+      if (!projectId || candidate.Name !== projectNetworkName(projectId)) continue;
+      if (this.inFlightProvisions.has(projectId) || this.turnSandboxRepairs.has(projectId))
+        continue;
+      try {
+        await this.withProjectExclusiveMutation(projectId, async () => {
+          const project = await this.opts.store.getProject(projectId);
+          // Active, retained and transitional projects own their network even with no endpoints.
+          if (project && project.state !== 'absent' && project.state !== 'failed') return;
+          await removeLegacyProjectNetwork(docker, projectId, candidate.Id);
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Project network cleanup deferred');
+  }
+
   /**
    * Stage 5 reconciliation (Temporary Public Previews spike §6/§7.5). Once relay
    * mode is on, existing shared-network sandboxes must be RECREATED onto their own
@@ -4693,14 +4777,20 @@ export class ProvisionerImpl implements Provisioner {
    */
   async provision(projectId: string, opts: ProvisionOptions = {}): Promise<ProjectRecord> {
     this.markProjectSandboxActivity(projectId);
-    // Coalesce onto an already-running attempt (see inFlightProvisions). The
-    // joining caller's own `opts` are intentionally ignored — it observes the
-    // running attempt's outcome, exactly as if its request had arrived while
-    // that attempt's 202 was still in flight.
-    const running = this.inFlightProvisions.get(projectId);
-    if (running !== undefined) return running;
-    const attempt = this.provisionOnce(projectId, opts);
-    return this.trackProvision(projectId, attempt);
+    for (;;) {
+      const repair = this.turnSandboxRepairs.get(projectId);
+      if (
+        repair !== undefined &&
+        this.projectMutationContext.getStore()?.get(projectId) !== repair.ownerToken
+      ) {
+        await repair.promise.catch(() => undefined);
+        continue;
+      }
+      // No await separates the barrier check from registering this attempt.
+      const running = this.inFlightProvisions.get(projectId);
+      if (running !== undefined) return running;
+      return this.trackProvision(projectId, this.provisionOnce(projectId, opts));
+    }
   }
 
   /** The ownership promise settles only after reference cleanup has released the gate. */
@@ -4721,6 +4811,7 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
+    await this.assertNoRunnerCacheMaintenance(projectId);
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
     const project = await this.claimForCloning(projectId);
@@ -4747,14 +4838,53 @@ export class ProvisionerImpl implements Provisioner {
     projectId: string,
     opts: RecreateContainerOptions = {},
   ): Promise<ProjectRecord> {
-    // Unlike `provision`, a recreate does NOT coalesce: it promises a fresh
-    // container + forced image pull, which a run already past those steps
-    // cannot deliver. Reject instead — same contract as the state check below.
-    if (this.inFlightProvisions.has(projectId)) {
-      throw new ProvisioningError(`project ${projectId} is already provisioning`);
+    for (;;) {
+      const repair = this.turnSandboxRepairs.get(projectId);
+      if (
+        repair !== undefined &&
+        this.projectMutationContext.getStore()?.get(projectId) !== repair.ownerToken
+      ) {
+        await repair.promise.catch(() => undefined);
+        continue;
+      }
+      // A lifecycle owner may call recreate itself; unrelated callers wait above.
+      // Recreate promises a fresh replacement and cannot join another provision.
+      if (this.inFlightProvisions.has(projectId))
+        throw new ProvisioningError(`project ${projectId} is already provisioning`);
+      return this.observeSandboxRecreate(
+        projectId,
+        opts.initiator,
+        this.trackProvision(projectId, this.recreateContainerOnce(projectId, opts)),
+      );
     }
-    const attempt = this.recreateContainerOnce(projectId, opts);
-    return this.trackProvision(projectId, attempt);
+  }
+
+  private async observeSandboxRecreate(
+    projectId: string,
+    initiator: AuditInitiator | undefined,
+    recreate: Promise<ProjectRecord>,
+  ): Promise<ProjectRecord> {
+    const startedAt = Date.now();
+    const report = (outcome: 'succeeded' | 'failed'): void => {
+      try {
+        this.opts.onSandboxRecreate?.({
+          projectId,
+          initiator: initiator ?? UNKNOWN_INITIATOR,
+          outcome,
+          durationMs: Math.max(0, Date.now() - startedAt),
+        });
+      } catch {
+        // Observability never changes Sandbox lifecycle behavior.
+      }
+    };
+    try {
+      const project = await recreate;
+      report('succeeded');
+      return project;
+    } catch (error) {
+      report('failed');
+      throw error;
+    }
   }
 
   /** Whether this process still owns provisioning/replacement work for a project.
@@ -4772,6 +4902,7 @@ export class ProvisionerImpl implements Provisioner {
     if (project === undefined) {
       throw new ProvisioningError('project gone mid-recreate');
     }
+    await this.assertNoRunnerCacheMaintenance(projectId);
     if (project.state === 'cloning' || project.state === 'container_starting') {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
     }
@@ -5704,7 +5835,7 @@ export class ProvisionerImpl implements Provisioner {
     opts: RecreateContainerOptions = {},
     preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
-    const relayAttempt = { started: false };
+    const relayAttempt: { started: boolean; generation?: string } = { started: false };
     try {
       return await this.runContainerPhaseAttempt(
         project,
@@ -5724,6 +5855,23 @@ export class ProvisionerImpl implements Provisioner {
             { cause: cleanupError },
           );
         }
+      }
+      try {
+        if (relayAttempt.generation) {
+          const binding = await this.opts.projectEgress?.current(project.id);
+          if (binding?.generation === relayAttempt.generation)
+            await this.opts.projectEgress?.retire({
+              projectId: project.id,
+              containerGeneration: binding.generation,
+            });
+        }
+        await removeLegacyProjectNetwork(this.opts.docker, project.id);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Project provisioning and network cleanup failed',
+          { cause: cleanupError },
+        );
       }
       throw error;
     }
@@ -5750,7 +5898,7 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     forcePull = false,
     opts: RecreateContainerOptions = {},
-    relayAttempt: { started: boolean } = { started: false },
+    relayAttempt: { started: boolean; generation?: string } = { started: false },
     preparedImage?: ProjectImage,
   ): Promise<ProjectRecord> {
     await this.opts.store.updateProjectState(project.id, 'container_starting');
@@ -5873,6 +6021,7 @@ export class ProvisionerImpl implements Provisioner {
     // A fenced predecessor is retired either way; a switched-off server starts open.
     await this.retireEgressGeneration(project.id);
     if (egress !== undefined) {
+      relayAttempt.generation = generation;
       sandboxNetwork = (
         await egress.create({
           projectId: project.id,
@@ -5882,7 +6031,7 @@ export class ProvisionerImpl implements Provisioner {
     } else {
       sandboxNetwork = projectNetworkName(project.id);
       await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-        labels: { 'verity.project-id': project.id },
+        labels: { 'verity.project-id': project.id, 'verity.component': 'project-network' },
       });
     }
 
@@ -6273,6 +6422,8 @@ export class ProvisionerImpl implements Provisioner {
         { key: `http.${forgeOrigin}.proxy`, value: forgeProxyUrl },
         { key: `http.${forgeOrigin}.sslCAInfo`, value: FORGE_PROXY_CA_FILE },
         { key: `http.${forgeOrigin}.sslVerify`, value: 'true' },
+        // The broker terminates TLS into an HTTP/1.x parser.
+        { key: `http.${forgeOrigin}.version`, value: 'HTTP/1.1' },
         { key: 'credential.interactive', value: 'false' },
       );
     }
@@ -6623,6 +6774,7 @@ export class ProvisionerImpl implements Provisioner {
       // sandbox reaches the control-plane signing broker by service DNS name.
       ...(sandboxNetwork ? { network: sandboxNetwork } : {}),
     };
+    await this.assertNoRunnerCacheMaintenance(project.id);
     try {
       let containerId: string;
       let reusedExisting = false;
@@ -6954,7 +7106,10 @@ export class ProvisionerImpl implements Provisioner {
       .where('project_id', '=', project.id)
       .executeTakeFirst();
     const devcontainerDir = join(dirs.clonePath, '.devcontainer');
-    const build = this.opts.devcontainerBuild;
+    const protectedBuild = await this.projectEgressEnabled();
+    const build = protectedBuild
+      ? this.opts.protectedDevcontainerBuild
+      : this.opts.devcontainerBuild;
     const dockerHost = this.opts.dockerHostForBuild;
     if (policy?.devcontainer_enabled === false || !this.isDir(devcontainerDir)) {
       return {
@@ -6963,8 +7118,10 @@ export class ProvisionerImpl implements Provisioner {
         usesConfiguredOverride: !usesDefaultImage,
       };
     }
-    if (await this.projectEgressEnabled())
-      throw new Error('Devcontainer builds are unavailable while network protection is on');
+    if (protectedBuild && build === undefined)
+      throw new Error(
+        'The protected devcontainer builder is not ready; update the managed host builder before retrying',
+      );
     if (build === undefined || dockerHost === undefined) {
       throw new Error(
         'Devcontainer build support is unavailable; configure the secure builder or disable repository devcontainers for this project',
@@ -6992,7 +7149,8 @@ export class ProvisionerImpl implements Provisioner {
         `${DEVCONTAINER_NODE_FEATURE_REF}:${JSON.stringify(DEVCONTAINER_NODE_FEATURE_OPTIONS)}\n${feature.identity}:${JSON.stringify(DEVCONTAINER_TOOLKIT_FEATURE_OPTIONS)}` +
           // Only for Dockerfiles the pin applies to, so every other project keeps
           // its cached image across this change.
-          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : ''),
+          (pinsBase ? `\n${DEVCONTAINER_BASE_IMAGE_ARG}=${baseImageRef}` : '') +
+          (protectedBuild ? `\nprotected-build-v1:${project.id}` : ''),
       );
       return {
         devcontainerDir,
@@ -7001,6 +7159,9 @@ export class ProvisionerImpl implements Provisioner {
         derivedTag: devcontainerImageTag(project.owner, project.repo, hash),
       };
     };
+    // Protected builds always consult the host supervisor. A daemon tag alone
+    // proves neither project ownership nor that the image was built under policy.
+    // Their host-owned layer cache still avoids repeated work within a project.
     // Reusing an existing image builds nothing, so it must not need build storage.
     // The derived tag depends only on `.devcontainer`, so name it from a copy of that
     // directory alone, without a lease that a busy or blocked build storage would
@@ -7008,7 +7169,7 @@ export class ProvisionerImpl implements Provisioner {
     // another project's build holds or blocks the storage. Anything this shortcut
     // cannot decide (an unconfined config, a configuration the snapshot refuses)
     // falls through to the full path below, which reports it.
-    if (!forceRebuild && this.opts.docker.imageExists !== undefined) {
+    if (!protectedBuild && !forceRebuild && this.opts.docker.imageExists !== undefined) {
       let probe: DevcontainerBuildSnapshot | undefined;
       try {
         probe = await createDevcontainerBuildSnapshot(dirs.clonePath, undefined, {
@@ -7060,6 +7221,7 @@ export class ProvisionerImpl implements Provisioner {
       // to re-run — it checksums the copied context files, so an unchanged tree
       // is a cheap all-hit no-op and a changed one rebuilds and re-tags in place.
       if (
+        !protectedBuild &&
         !forceRebuild &&
         devcontainerBuildInputsConfined(snapshotDevcontainerDir) &&
         this.opts.docker.imageExists !== undefined
@@ -7141,6 +7303,7 @@ export class ProvisionerImpl implements Provisioner {
       });
       try {
         await build({
+          ...(protectedBuild ? { projectId: project.id } : {}),
           ...(storageLease === undefined ? {} : { storageLease }),
           workspaceFolder: snapshot.workspaceFolder,
           imageName: derivedTag,
@@ -7634,6 +7797,7 @@ export class DeprovisionerImpl implements Deprovisioner {
     // through `onTeardownFailure`, so the wedged relay is in the log instead of
     // showing up later as an unexplained hang.
     await bestEffort('relay-stop', () => this.projectRelay?.stop(project.id));
+    await bestEffort('network-remove', () => removeLegacyProjectNetwork(this.docker, project.id));
     // The purge seams are synchronous by type (`statSync`/`rmSync` by default),
     // and no timer in the process — including this step's own bound — fires
     // while a synchronous call blocks the event loop. The bound therefore

@@ -21,10 +21,15 @@ spec = importlib.util.spec_from_file_location(
     'egress_install', Path(__file__).with_name('project-egress-install.py'))
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
-ASSETS = (*base.ASSETS, 'node', 'native-runtime-pins.env')
+LEGACY_ASSETS = (*base.ASSETS, 'node', 'native-runtime-pins.env')
+ASSETS = (*LEGACY_ASSETS,
+          'devcontainer.js', 'docker-buildx', 'protected-build-attempt',
+          'protected-build-toolchain.json')
 SERVICE = 'verity-egress-host.service'
 INVENTORY_CONTRACT = 'etc/verity-egress-server/inventory-contract.json'
 ASSESSMENT_CONFIG = 'etc/verity-egress/assessment.json'
+BUILD_SLICE = 'etc/systemd/system/verity-buildkit.slice'
+BUILD_DROPIN = 'etc/systemd/system/verity-buildkit.service.d/protected-budget.conf'
 ASSESSMENT_NOTICE = 'etc/verity-egress-server/assessment.json'
 
 
@@ -105,7 +110,7 @@ def prepare_release(release, files):
         info = release.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o222:
             raise ValueError('Untrusted managed release directory')
-        if {p.name for p in release.iterdir()} != set(ASSETS):
+        if {p.name for p in release.iterdir()} != set(files):
             raise ValueError('Managed release contains unexpected files')
         for name, data in files.items():
             info = (release / name).lstat()
@@ -117,7 +122,7 @@ def prepare_release(release, files):
     temporary = Path(tempfile.mkdtemp(prefix='.prepare-', dir=release.parent))
     try:
         for name, data in files.items():
-            base.atomic_file(temporary / name, data, 0o555 if name == 'node' else 0o444)
+            base.atomic_file(temporary / name, data, 0o555 if name in ('node', 'docker-buildx', 'protected-build-attempt') else 0o444)
         temporary.chmod(0o555)
         base.sync_directory(temporary)
         os.rename(temporary, release)
@@ -130,15 +135,38 @@ def prepare_release(release, files):
 
 def reject_bridge_collisions(root, run):
     """A reserved name alone never authorizes fencing someone else's network."""
-    bridges = {p.name for p in (root / 'sys/class/net').glob('vep*')}
+    bridges = {p.name for prefix in ('vep*', 'veb*')
+               for p in (root / 'sys/class/net').glob(prefix)}
     if not bridges:
         return
     registry = root / 'var/lib/verity-egress/registry.json'
     state = json.loads(private_file(registry)) if registry.exists() else {'records': []}
+    bindings = [record['binding'] for record in state['records']]
+    controller = root / 'var/lib/verity/protected-build/controller.json'
+    if any(name.startswith('veb') for name in bridges) and controller.exists():
+        request = json.loads(private_file(controller)).get('request')
+        if not isinstance(request, dict) or not all(isinstance(request.get(key), str) for key in ('projectId', 'attemptId')):
+            raise ValueError('Invalid protected build controller registry')
+        key = base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+        checkpoint = root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
+        point = json.loads(private_build_file(root, checkpoint))
+        binding = point.get('binding', {})
+        if (binding.get('projectId') != request['projectId'] or point.get('attemptId') != request['attemptId']
+                or not re.fullmatch(r'veb[a-f0-9]{12}', binding.get('bridge', ''))):
+            raise ValueError('Invalid protected build bridge registry')
+        if point.get('pending'):
+            inspected = json.loads(run('/usr/bin/docker', 'network', 'inspect', binding['networkName']))
+            if (len(inspected) != 1 or inspected[0].get('Name') != binding['networkName']
+                    or inspected[0].get('Driver') != 'bridge'
+                    or inspected[0].get('EnableIPv6') is not True
+                    or inspected[0].get('Labels', {}).get('io.verity.build-intent') != binding['networkId']
+                    or inspected[0].get('Options', {}).get('com.docker.network.bridge.name') != binding['bridge']):
+                raise ValueError('Protected build creation intent changed')
+            binding = dict(binding, networkId=inspected[0]['Id'])
+        bindings.append(binding)
     owned = set()
-    for record in state['records']:
-        binding = record['binding']
-        if not re.fullmatch(r'vep[a-f0-9]{12}', binding['bridge']):
+    for binding in bindings:
+        if not re.fullmatch(r've[pb][a-f0-9]{12}', binding['bridge']):
             raise ValueError('Invalid managed bridge registry')
         if binding['bridge'] not in bridges:
             continue
@@ -163,7 +191,7 @@ def write_status(root, gid, reason, available=False):
     return {'available': available, 'reason': reason, 'controlGid': gid}
 
 
-def unit_files(files, gid):
+def unit_files(files, gid, root=Path('/'), data_volume=None):
     units = {}
     for name, relative in base.UNITS.items():
         content = files[name].decode().replace('/usr/bin/node ', '/opt/verity-egress/node ')
@@ -176,16 +204,41 @@ def unit_files(files, gid):
         # intentional controller-only upgrade while Docker remains running.
         content = content.replace('Upholds=verity-egress-host.service\n', '')
         if name == 'verity-egress-host.service':
+            if data_volume is not None:
+                if not isinstance(data_volume, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', data_volume):
+                    raise ValueError('Invalid protected build data volume')
+                content = content.replace('ReadWritePaths=',
+                    'ReadWritePaths=-/var/lib/docker/volumes/' + data_volume + '/_data/build-storage ', 1)
             # Atomic endpoint refresh needs the parent writable under the
             # controller's ProtectSystem=strict filesystem namespace.
             content = content.replace('ReadWritePaths=',
-                                      'ReadWritePaths=/etc/verity-egress ', 1)
+                                      'ReadWritePaths=/etc/verity-egress /var/lib/verity/protected-build ', 1)
             content = content.replace('ExecStartPre=',
                                       'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
                                       'project-egress-managed.py verify-runtime\n'
                                       'ExecStartPre=/usr/bin/python3 /usr/local/libexec/verity/'
                                       'project-egress-managed.py refresh-authority\nExecStartPre=', 1)
         units[relative] = content.encode()
+    # Match the ordinary builder's budget: protected attempts share it, never add
+    # another host-sized allowance. Existing custom smaller limits stay smaller.
+    cpus = max(1, len(os.sched_getaffinity(0)) // 2)
+    memory = min(8192, max(2048, os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE') // 1024 // 1024 // 4))
+    installed_unit = root / 'etc/systemd/system/verity-buildkit.service'
+    if installed_unit.exists():
+        metadata = installed_unit.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise ValueError('Untrusted existing builder budget')
+        text = installed_unit.read_text()
+        prior_cpu = re.search(r'^CPUQuota=([1-9][0-9]*)%$', text, re.M)
+        prior_memory = re.search(r'^MemoryMax=([1-9][0-9]*)([MG])$', text, re.M)
+        if not prior_cpu or not prior_memory:
+            raise ValueError('Unknown existing builder budget')
+        cpus_quota = min(cpus * 100, int(prior_cpu[1]))
+        memory = min(memory, int(prior_memory[1]) * (1024 if prior_memory[2] == 'G' else 1))
+    else:
+        cpus_quota = cpus * 100
+    units[BUILD_SLICE] = (f'[Unit]\nDescription=Shared Verity build budget\n[Slice]\nCPUQuota={cpus_quota}%\nMemoryMax={memory}M\nMemorySwapMax=0\nTasksMax=512\n').encode()
+    units[BUILD_DROPIN] = b'[Service]\nSlice=verity-buildkit.slice\n'
     return units
 
 
@@ -224,9 +277,10 @@ def refresh_authority(root=Path('/'), run=base.command):
     base.atomic_file(authority_path, (json.dumps(authority) + '\n').encode(), 0o600)
 
 
-TRANSACTION_FILES = frozenset((*base.UNITS.values(),
+TRANSACTION_FILES = frozenset((*base.UNITS.values(), BUILD_SLICE, BUILD_DROPIN,
     'usr/local/libexec/verity/project-egress-managed.py',
     'usr/local/libexec/verity/project-egress-install.py',
+    'usr/local/libexec/verity-buildkit/protected-build-attempt',
     'etc/verity-egress/relay.json', 'etc/verity-egress/authority.json',
     'etc/verity-egress/database.json', ASSESSMENT_CONFIG))
 JOURNAL = 'var/lib/verity-egress/install-transaction.json'
@@ -236,15 +290,19 @@ def verified_release(root, target):
     release = Path(target)
     if release.parent != root / 'opt/verity-egress-releases' or not re.fullmatch('[a-f0-9]{64}', release.name):
         raise ValueError('Managed release link is untrusted')
+    names = {path.name for path in release.iterdir()}
+    assets = ASSETS if names == set(ASSETS) else LEGACY_ASSETS if names == set(LEGACY_ASSETS) else None
+    if assets is None:
+        raise ValueError('Managed release contains unexpected files')
     files = {}
-    for name in ASSETS:
+    for name in assets:
         path = release / name
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o222:
             raise ValueError('Managed release asset is untrusted')
         files[name] = path.read_bytes()
     prepare_release(release, files)
-    if base.digest(b''.join(name.encode() + files[name] for name in ASSETS)) != release.name:
+    if base.digest(b''.join(name.encode() + files[name] for name in assets)) != release.name:
         raise ValueError('Managed release identity no longer matches its content')
     return release
 
@@ -266,7 +324,8 @@ def recover_transaction(root, run):
     if (not isinstance(value, dict) or set(value) != {'version', 'previous', 'target', 'snapshots'}
             or value['version'] != 1 or not isinstance(value['snapshots'], dict)
             or not set(value['snapshots']) <= TRANSACTION_FILES
-            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json', ASSESSMENT_CONFIG}) <= set(value['snapshots'])):
+            or not (TRANSACTION_FILES - {'etc/verity-egress/database.json', ASSESSMENT_CONFIG, BUILD_SLICE, BUILD_DROPIN,
+                                           'usr/local/libexec/verity-buildkit/protected-build-attempt'}) <= set(value['snapshots'])):
         raise ValueError('Invalid managed transaction journal')
     release = verified_release(root, value['target'])
     previous = value['previous']
@@ -304,7 +363,8 @@ def recover_transaction(root, run):
             if path.parent.exists():
                 base.sync_directory(path.parent)
         else:
-            base.atomic_file(path, data, 0o600 if relative.startswith('etc/verity-egress/') else 0o644)
+            base.atomic_file(path, data, 0o600 if relative.startswith('etc/verity-egress/') else
+                             0o755 if relative.endswith('/protected-build-attempt') else 0o644)
     if previous is None:
         current.unlink(missing_ok=True)
         base.sync_directory(current.parent)
@@ -373,7 +433,7 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/verity-egress /etc/verity-egress /etc/verity-egress-server /run/verity-egress /etc/systemd/system /usr/local/libexec/verity /opt
+ReadWritePaths=/var/lib/verity-egress /etc/verity-egress /etc/verity-egress-server /run/verity-egress /etc/systemd/system /usr/local/libexec/verity /usr/local/libexec/verity-buildkit /opt
 RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 '''
     dropin = b'[Unit]\nRequires=verity-egress-recovery.service\nAfter=verity-egress-recovery.service\n'
@@ -429,6 +489,75 @@ def recover_boot(root=Path('/'), run=base.command):
         return result
 
 
+def private_build_file(root, path):
+    parent = path.parent
+    while parent != root:
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022):
+            raise ValueError('Untrusted protected build directory')
+        parent = parent.parent
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 131072):
+            raise ValueError('Untrusted protected build state')
+        return os.read(fd, 131073)
+    finally:
+        os.close(fd)
+
+
+def stopped_build_images(root, run):
+    """Retention evidence comes only from the private controller checkpoint.
+
+    No build is resumed here. Container shape, namespace and cgroup termination
+    remain mandatory in the controller before cleanup can remove anything.
+    """
+    directory = root / 'var/lib/verity/protected-build'
+    controller = directory / 'controller.json'
+    if not controller.exists() and not controller.is_symlink():
+        return set()
+    record = json.loads(private_build_file(root, controller))
+    request = record.get('request', {})
+    if not all(isinstance(request.get(k), str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', request[k])
+               for k in ('projectId', 'attemptId')):
+        raise ValueError('Invalid protected build retention request')
+    key = base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+    checkpoint = directory / 'attempts' / key / 'checkpoint.json'
+    if not checkpoint.exists() and not checkpoint.is_symlink():
+        return set()  # Controller intent can precede network allocation.
+    point = json.loads(private_build_file(root, checkpoint))
+    binding = point.get('binding', {})
+    if (point.get('attemptId') != request['attemptId']
+            or binding.get('projectId') != request['projectId']
+            or binding.get('generation') != request['attemptId']
+            or binding.get('networkName') != 'verity-build-' + key[:32]
+            or binding.get('bridge') != 'veb' + key[:12]
+            or not re.fullmatch(r'[a-f0-9]{64}', binding.get('networkId', ''))):
+        raise ValueError('Invalid protected build retention checkpoint')
+    container = point.get('containerId')
+    if container is not None and not re.fullmatch(r'[a-f0-9]{64}', container):
+        raise ValueError('Invalid protected build retention identity')
+    # Also cover a crash between container creation and checkpoint persistence.
+    selector = ('id=' + container if container else
+                'name=^/verity-build-anchor-' + key[:32] + '$')
+    found = run('/usr/bin/docker', '--host=unix:///var/run/docker.sock', 'container', 'ls',
+                '--all', '--quiet', '--no-trunc', '--filter', selector).strip().splitlines()
+    if not found:
+        return set()
+    if (len(found) != 1 or not re.fullmatch(r'[a-f0-9]{64}', found[0])
+            or (container and found[0] != container)):
+        raise ValueError('Protected build retention identity mismatch')
+    inspected = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
+                               'container', 'inspect', found[0]))
+    if (not isinstance(inspected, list) or len(inspected) != 1
+            or inspected[0].get('Id') != found[0]
+            or not isinstance(inspected[0].get('Config', {}).get('Image'), str)):
+        raise ValueError('Protected build retention inspection mismatch')
+    return {inspected[0]['Config']['Image']}
+
+
 def reconcile_stopped_relay_policy(root, run, target):
     """The stopped controller can no longer append an old-image relay after this read."""
     registry = root / 'var/lib/verity-egress/registry.json'
@@ -436,7 +565,7 @@ def reconcile_stopped_relay_policy(root, run, target):
     if (not isinstance(state, dict) or state.get('version') != 1
             or not isinstance(state.get('records'), list) or len(state['records']) > 10000):
         raise ValueError('Invalid stopped relay registry')
-    active = set()
+    active = stopped_build_images(root, run)
     for record in state['records']:
         if not isinstance(record, dict):
             raise ValueError('Invalid stopped relay record')
@@ -482,6 +611,41 @@ def reconcile_stopped_relay_policy(root, run, target):
     return (json.dumps(new, sort_keys=True) + '\n').encode()
 
 
+def prepare_build_storage(root, volume):
+    """Create the narrow writable mount before systemd builds its namespace."""
+    if volume is None:
+        return
+    parent = root / 'var/lib/docker/volumes' / volume / '_data'
+    # Docker's volume directory is trusted; _data belongs to the Server user.
+    base.trusted_parent(parent, root)
+    if not stat.S_ISDIR(parent.lstat().st_mode):
+        raise ValueError('Untrusted protected build data volume')
+    with_parent = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        owner = os.fstat(with_parent)
+        created = False
+        try:
+            os.mkdir('build-storage', 0o700, dir_fd=with_parent)
+            created = True
+        except FileExistsError:
+            pass
+        if not stat.S_ISDIR(os.stat('build-storage', dir_fd=with_parent, follow_symlinks=False).st_mode):
+            raise ValueError('Untrusted protected build storage directory')
+        child = os.open('build-storage', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=with_parent)
+        try:
+            if created:
+                os.fchown(child, owner.st_uid, owner.st_gid)
+                os.fsync(with_parent)
+            info = os.fstat(child)
+            if info.st_uid != owner.st_uid or info.st_mode & 0o022:
+                raise ValueError('Untrusted protected build storage directory')
+        finally:
+            os.close(child)
+    finally:
+        os.close(with_parent)
+
+
 def activate(root, run, release, files, configs, gid):
     current = root / 'opt/verity-egress'
     if current.exists() and not current.is_symlink():
@@ -490,8 +654,11 @@ def activate(root, run, release, files, configs, gid):
     if old_target is not None:
         verified_release(root, old_target)
     helpers = {'usr/local/libexec/verity/project-egress-managed.py': Path(__file__).read_bytes(),
-               'usr/local/libexec/verity/project-egress-install.py': Path(base.__file__).read_bytes()}
-    changes = {**unit_files(files, gid), **helpers, **configs}
+               'usr/local/libexec/verity/project-egress-install.py': Path(base.__file__).read_bytes(),
+               'usr/local/libexec/verity-buildkit/protected-build-attempt': files['protected-build-attempt']}
+    relay_config = json.loads(configs.get('etc/verity-egress/relay.json', b'{}'))
+    changes = {**unit_files(files, gid, root, relay_config.get('dataVolume')), **helpers, **configs}
+    prepare_build_storage(root, relay_config.get('dataVolume'))
     snapshots = {}
     for relative in changes:
         path = root / relative
@@ -527,7 +694,8 @@ def activate(root, run, release, files, configs, gid):
             changes[relay_path] = reconcile_stopped_relay_policy(root, run, configs[relay_path])
         base.switch_link(current, str(release))
         for relative, data in changes.items():
-            base.atomic_file(root / relative, data, 0o600 if relative in configs else 0o644)
+            base.atomic_file(root / relative, data, 0o600 if relative in configs else
+                             0o755 if relative.endswith('/protected-build-attempt') else 0o644)
         run('/usr/bin/systemctl', 'daemon-reload')
         # Starting the bootstrap does not restart an already-running Docker daemon.
         run('/usr/bin/systemctl', 'start', 'verity-egress-bootstrap.service')
@@ -562,7 +730,11 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
     for relative, mode, group in [('var/lib/verity-egress', 0o700, 0),
                                   ('etc/verity-egress', 0o700, 0),
                                   ('etc/verity-egress-server', 0o750, gid),
-                                  ('run/verity-egress', 0o750, gid)]:
+                                  ('run/verity-egress', 0o750, gid),
+                                  ('var/lib/verity/protected-build', 0o700, 0),
+                                  ('run/netns', 0o755, 0),
+                                  ('run/verity-buildkit', 0o755, 0),
+                                  ('usr/local/libexec/verity-buildkit', 0o755, 0)]:
         directory(root / relative, root, mode, group)
     state = root / 'var/lib/verity-egress'
     lock_fd = os.open(state / 'install.lock', os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -582,6 +754,9 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
         release = root / 'opt/verity-egress-releases' / identity
         base.trusted_parent(release / 'entry', root)
         prepare_release(release, files)
+        # Collision checks precede recovery too: the new denial helper fences
+        # reserved build bridges even when restoring an interrupted old update.
+        reject_bridge_collisions(root, run)
         # Recovery precedes preflight, including retries on a now-unsupported host.
         write_status(root, gid, 'provisioning_in_progress')
         try:

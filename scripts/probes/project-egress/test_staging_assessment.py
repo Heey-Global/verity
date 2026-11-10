@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -92,6 +93,27 @@ class StagingAssessmentTests(unittest.TestCase):
         self.assertFalse(any('restart' in call or 'stop' in call for call in self.calls))
         with self.assertRaisesRegex(ValueError, 'accepted native'):
             installer.accepted_native_profile(self.root, self.execute, str(self.release / 'node'))
+
+    def test_assessment_recovers_the_legacy_api_mount_unit_without_starting_it(self):
+        unit = self.root / 'etc/systemd/system/sys-fs-bpf.mount'
+        unit.parent.mkdir(parents=True)
+        unit.write_bytes(installer.LEGACY_BPFFS_UNIT)
+        enabled = unit.parent / 'multi-user.target.wants/sys-fs-bpf.mount'
+        enabled.parent.mkdir()
+        enabled.symlink_to('../sys-fs-bpf.mount')
+
+        def execute(*args):
+            if 'sys-fs-bpf.mount' in args:
+                raise subprocess.CalledProcessError(1, args)
+            return self.execute(*args)
+
+        descriptor = installer.prepare_staging_assessment(
+            self.root, execute, str(self.release / 'node'), self.authorization)
+        self.assertEqual(self.validate(descriptor), descriptor['profile'])
+        self.assertFalse(unit.exists())
+        self.assertFalse(enabled.is_symlink())
+        self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+        self.assertTrue((self.root / 'etc/tmpfiles.d/verity-egress-bpf.conf').is_file())
 
     def test_supported_assessment_versions_bind_exact_identity(self):
         for version in installer.STAGING_DOCKER_VERSIONS:

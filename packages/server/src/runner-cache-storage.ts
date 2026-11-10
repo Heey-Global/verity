@@ -1,3 +1,5 @@
+import { cacheHelperDiagnostic, cacheMaintenanceResponse } from './runner-cache-helper.js';
+import { MaintenanceImageError } from './maintenance-image.js';
 import type { RunnerCacheReclamationReport } from '@verity/events';
 import { z } from 'zod';
 
@@ -6,23 +8,13 @@ const MAX_RUNTIMES = 1000;
 const MAX_SESSIONS = 512;
 const PASS_BUDGET_MS = 60_000;
 const bytes = z.number().safe().nonnegative();
-const responseSchema = z.object({
-  ok: z.literal(true),
-  report: z.object({
-    observedAt: z.iso.datetime({ offset: true }),
-    sharedBytes: bytes.nullable(),
-    legacyBytes: bytes.nullable(),
-    removedBytes: bytes,
-    legacyCachesRemoved: bytes,
-    sharedCachePruned: z.boolean(),
-    usageComplete: z.boolean(),
-    blockers: z.array(z.string().max(500)).max(100),
-  }),
-});
 
 // Never copy exception messages or arbitrary peer strings into host diagnostics.
 const maintenanceFailure = z.object({
   code: z.enum([
+    'runtime-not-idle',
+    'maintenance-helper-failed',
+    'maintenance-helper-retention-blocked',
     'turn-ownership-unknown',
     'turn-inventory-unavailable',
     'broker-access-denied',
@@ -34,6 +26,12 @@ const maintenanceFailure = z.object({
     'supervisor-rejected',
     'invalid-response',
   ]),
+  phase: z.enum(['create', 'start', 'wait', 'inspect', 'logs', 'response']).optional(),
+  memoryBytes: bytes.optional(),
+  pidsLimit: bytes.optional(),
+  exitCode: z.number().safe().int().optional(),
+  outputBytes: bytes.optional(),
+  reason: cacheHelperDiagnostic.optional(),
   counts: z
     .object({
       missingState: bytes.max(1_000_000),
@@ -42,14 +40,31 @@ const maintenanceFailure = z.object({
     })
     .optional(),
 });
-function failureReason(error: unknown): string {
+// The supervisor raises these from its own turn inventory before any broker
+// request or maintenance helper starts. They track runtime state rather than a
+// failing helper, so backing off would only hide a cleared refusal for an hour.
+export const STATE_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  'runtime-not-idle',
+  'turn-ownership-unknown',
+  'turn-inventory-unavailable',
+]);
+function isStateRefusal(error: unknown): boolean {
+  const record = typeof error === 'object' && error !== null ? error : {};
+  const parsed = maintenanceFailure.safeParse(
+    'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
+  );
+  return parsed.success && STATE_REFUSAL_CODES.has(parsed.data.code);
+}
+function primaryFailureReason(error: unknown): string {
+  if (error instanceof MaintenanceImageError) return `[${error.code}]`;
   const record = typeof error === 'object' && error !== null ? error : {};
   const parsed = maintenanceFailure.safeParse(
     'runnerCacheFailure' in record ? record.runnerCacheFailure : undefined,
   );
   if (parsed.success) {
-    const { code, counts } = parsed.data;
-    return `[${code}]${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
+    const { code, counts, exitCode, outputBytes, reason, phase, memoryBytes, pidsLimit } =
+      parsed.data;
+    return `[${code}]${phase === undefined ? '' : ` phase=${phase}`}${memoryBytes === undefined ? '' : ` memoryBytes=${memoryBytes}`}${pidsLimit === undefined ? '' : ` pidsLimit=${pidsLimit}`}${reason === undefined ? '' : ` reason=${reason}`}${exitCode === undefined ? '' : ` exitCode=${exitCode}`}${outputBytes === undefined ? '' : ` outputBytes=${outputBytes}`}${counts === undefined ? '' : ` missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`}`;
   }
   const code = 'code' in record ? record.code : undefined;
   if (code === 'EACCES' || code === 'EPERM') return '[supervisor-access-denied]';
@@ -58,7 +73,18 @@ function failureReason(error: unknown): string {
   if (error instanceof z.ZodError) return '[invalid-response]';
   return '[unclassified-failure]';
 }
+function failureReason(error: unknown): string {
+  const cleanupFailed =
+    typeof error === 'object' &&
+    error !== null &&
+    'runnerCacheCleanupFailed' in error &&
+    error.runnerCacheCleanupFailed === true;
+  return `${primaryFailureReason(error)}${cleanupFailed ? ' cleanupFailed=true' : ''}`;
+}
+
 const safeBlockers = new Set([
+  'Runner cache maintenance inventory is incomplete',
+  'Runner turn ownership is unknown; legacy package caches were retained',
   'Shared cache is busy',
   'session home ownership is unknown',
   'session home is in use',
@@ -101,12 +127,19 @@ export class RunnerCacheStorage {
   private flight: Promise<void> | undefined;
   private report: RunnerCacheReclamationReport | undefined;
   private readonly maxBytes: number;
+  private nextProject: string | undefined;
+  private readonly pendingProjects = new Set<string>();
+  private continuationTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopped = false;
+  private readonly retries = new Map<string, { failures: number; after: number }>();
 
   constructor(
     private readonly deps: {
       listRuntimes: () => Promise<RunnerRuntime[]>;
       request: (projectId: string, sessionIds: string[], maxBytes: number) => Promise<unknown>;
       maxBytes?: number | undefined;
+      now?: () => number;
+      onFailure?: (failure: { projectId: string; reason: string; retryAfter?: string }) => void;
     },
   ) {
     this.maxBytes = deps.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -118,18 +151,35 @@ export class RunnerCacheStorage {
     return this.report;
   }
 
+  stop(): Promise<void> {
+    this.stopped = true;
+    clearTimeout(this.continuationTimer);
+    this.continuationTimer = undefined;
+    return this.flight ?? Promise.resolve();
+  }
+
   runOnce(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
     if (this.flight) return this.flight;
     this.flight = this.collect().finally(() => {
       this.flight = undefined;
+      if (!this.stopped && this.pendingProjects.size > 0 && this.continuationTimer === undefined) {
+        this.continuationTimer = setTimeout(() => {
+          this.continuationTimer = undefined;
+          void this.runOnce().catch(() => undefined);
+        }, 1000);
+        this.continuationTimer.unref();
+      }
     });
     return this.flight;
   }
 
   private async collect(): Promise<void> {
-    const deadline = Date.now() + PASS_BUDGET_MS;
+    const now = this.deps.now ?? Date.now;
+    const startedAt = now();
+    const deadline = startedAt + PASS_BUDGET_MS;
     const report: RunnerCacheReclamationReport = {
-      observedAt: new Date().toISOString(),
+      observedAt: new Date(startedAt).toISOString(),
       sharedBytes: 0,
       legacyBytes: 0,
       removedBytes: 0,
@@ -147,12 +197,37 @@ export class RunnerCacheStorage {
     try {
       const runtimes = await this.deps.listRuntimes();
       if (runtimes.length > MAX_RUNTIMES) {
-        incomplete('Runner cache inventory exceeds the runtime limit; caches retained.');
-      } else {
+        incomplete(
+          'Runner cache inventory exceeds the per-pass runtime limit; remaining caches retained.',
+        );
+      }
+      {
         const seen = new Set<string>();
-        for (const runtime of runtimes) {
+        const ordered = [...runtimes].sort((a, b) => a.projectId.localeCompare(b.projectId));
+        const start =
+          this.nextProject === undefined
+            ? 0
+            : Math.max(
+                0,
+                ordered.findIndex((r) => r.projectId === this.nextProject),
+              );
+        const rotated = [...ordered.slice(start), ...ordered.slice(0, start)];
+        const present = new Set(ordered.map((runtime) => runtime.projectId));
+        for (const projectId of this.pendingProjects)
+          if (!present.has(projectId)) this.pendingProjects.delete(projectId);
+        for (const projectId of this.retries.keys())
+          if (!present.has(projectId)) this.retries.delete(projectId);
+        // Finish inventories before their inactivity TTL; regular projects retain
+        // their rotating cursor once each bounded continuation has completed.
+        const priority = [
+          ...rotated.filter((runtime) => this.pendingProjects.has(runtime.projectId)),
+          ...rotated.filter((runtime) => !this.pendingProjects.has(runtime.projectId)),
+        ];
+        for (const runtime of priority.slice(0, MAX_RUNTIMES)) {
+          if (this.stopped) break;
           // An in-flight broker request has its own bound; do not start another after this budget.
-          if (Date.now() >= deadline) {
+          if (now() >= deadline) {
+            this.nextProject = runtime.projectId;
             incomplete('Runner cache collection deadline reached; remaining caches retained.');
             break;
           }
@@ -164,6 +239,7 @@ export class RunnerCacheStorage {
             continue;
           }
           seen.add(runtime.projectId);
+          this.nextProject = rotated[(rotated.indexOf(runtime) + 1) % rotated.length]?.projectId;
           const sessionIds = [...new Set(runtime.sessionIds)];
           if (sessionIds.length > MAX_SESSIONS) {
             incomplete(
@@ -171,10 +247,21 @@ export class RunnerCacheStorage {
             );
             continue;
           }
+          const retry = this.retries.get(runtime.projectId);
+          if (retry && retry.after > now()) {
+            incomplete(
+              `Project ${runtime.projectId}: runner cache maintenance retry deferred until ${new Date(retry.after).toISOString()}; caches retained where unverified.`,
+            );
+            continue;
+          }
           try {
-            const { report: project } = responseSchema.parse(
+            const response = cacheMaintenanceResponse.parse(
               await this.deps.request(runtime.projectId, sessionIds, this.maxBytes),
             );
+            this.retries.delete(runtime.projectId);
+            if (response.maintenancePending) this.pendingProjects.add(runtime.projectId);
+            else this.pendingProjects.delete(runtime.projectId);
+            const project = response.report;
             const sharedBytes =
               report.sharedBytes === null || project.sharedBytes === null
                 ? null
@@ -200,6 +287,12 @@ export class RunnerCacheStorage {
             report.sharedCachesPruned += Number(project.sharedCachePruned);
             report.usageComplete &&=
               project.usageComplete && project.sharedBytes !== null && project.legacyBytes !== null;
+            if (project.turnOwnershipCounts && report.blockers.length < 100) {
+              const counts = project.turnOwnershipCounts;
+              report.blockers.push(
+                `Project ${runtime.projectId}: [turn-ownership-unknown] missingState=${counts.missingState}, invalidState=${counts.invalidState}, unsettledWithoutSession=${counts.unsettledWithoutSession}`,
+              );
+            }
             for (const blocker of project.blockers) {
               if (report.blockers.length < 100)
                 report.blockers.push(
@@ -207,6 +300,22 @@ export class RunnerCacheStorage {
                 );
             }
           } catch (error) {
+            if (isStateRefusal(error)) this.retries.delete(runtime.projectId);
+            else {
+              const failures = Math.min((retry?.failures ?? 0) + 1, 10);
+              this.retries.set(runtime.projectId, {
+                failures,
+                after: now() + Math.min(5 * 60_000 * 2 ** (failures - 1), 60 * 60_000),
+              });
+            }
+            this.pendingProjects.delete(runtime.projectId);
+            this.deps.onFailure?.({
+              projectId: runtime.projectId,
+              reason: failureReason(error),
+              ...(this.retries.has(runtime.projectId)
+                ? { retryAfter: new Date(this.retries.get(runtime.projectId)!.after).toISOString() }
+                : {}),
+            });
             incomplete(
               `Project ${runtime.projectId}: ${failureReason(error)} runner cache maintenance unavailable or invalid; caches retained where unverified.`,
             );
@@ -214,6 +323,7 @@ export class RunnerCacheStorage {
         }
       }
     } catch {
+      this.pendingProjects.clear();
       incomplete('Runner cache inventory is unavailable; caches retained.');
     }
     this.report = report;

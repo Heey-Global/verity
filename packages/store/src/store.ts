@@ -1,4 +1,5 @@
 import { ProjectInquiryStore } from './project-inquiries.js';
+import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
   egressDestinationDb,
   withEgressDestinationTransaction,
@@ -105,9 +106,10 @@ export interface SessionRecord {
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
 
-/** `pending`: screens wait for the reviewer. `revising`: the reviewer sent comments
- *  and the agent is reworking them. `approved`: every screen was approved, and the
- *  implementation went on. */
+/** `pending`: screens wait for the reviewer, who marks each one and discusses them
+ *  in the chat. `revising`: written by earlier versions, which sent comments for a
+ *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
+ *  the review ended. */
 export type SessionMockupState = 'pending' | 'revising' | 'approved';
 
 /** One presented screen. The image is a snapshot in the attachment store, so the
@@ -119,9 +121,35 @@ export interface MockupScreenRecord {
   mediaType: 'image/png' | 'image/jpeg';
   width: number;
   height: number;
-  verdict: 'open' | 'approved' | 'comment';
-  /** The reviewer's comment while `verdict` is `comment`. */
-  comment?: string;
+  verdict: MockupVerdict;
+}
+
+/** The reviewer's mark on one screen. Only marks: neither starts any work. */
+export type MockupVerdict = 'open' | 'approved' | 'discarded';
+
+/** Stored screens, with marks from earlier versions mapped onto the current ones:
+ *  a commented screen was one the reviewer did not accept, so it reads as
+ *  discarded and never as approved. */
+export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
+  if (!Array.isArray(raw)) return [];
+  // A malformed entry is dropped rather than failing every load of the session.
+  const entries = raw.filter(
+    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === 'string' &&
+      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
+      typeof (entry as { width?: unknown }).width === 'number' &&
+      typeof (entry as { height?: unknown }).height === 'number',
+  );
+  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
+    name,
+    attachment,
+    mediaType,
+    width,
+    height,
+    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
+  }));
 }
 
 export interface SessionMockupReview {
@@ -138,17 +166,24 @@ export interface SessionMockups {
   screens: MockupScreenRecord[];
 }
 
+/** A round an earlier version left `revising` already handed its comments to the
+ *  agent; nothing moves it on any more, so it reads as open for marks again. */
+export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
+  return state === 'revising' ? 'pending' : state;
+}
+
 function mockupReview(
-  state: SessionMockupState | null,
+  rawState: SessionMockupState | null,
   revision: number,
   screens: unknown,
 ): { mockupReview?: SessionMockupReview } {
+  const state = storedMockupState(rawState);
   if (state === null) return {};
   return {
     mockupReview: {
       state,
       revision,
-      screens: Array.isArray(screens) ? (screens as MockupScreenRecord[]) : [],
+      screens: storedMockupScreens(screens),
     },
   };
 }
@@ -307,11 +342,17 @@ export function isInstallationPlaceholder(
 /** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
 export interface ProjectRecord {
   id: string;
+  /** The project's own name, independent of its repositories. Set when the
+   *  project is created, changed only by {@link EventStore.renameProject}. */
+  name: string;
   owner: string;
   repo: string;
   containerName: string;
   kind?: ProjectKind;
   forgeConnectionId?: string | null;
+  /** 1 for the first project of a repository; a further project of the same
+   *  repository takes the next number. Absent on records from older readers. */
+  repositoryInstance?: number;
   /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
    *  for `local` projects and preserved when they are linked to GitHub, so the
    *  clone (and every session worktree persisted under it) never moves. */
@@ -429,7 +470,23 @@ export interface ProjectUpsertInput {
   /** Mark this repo as intentionally added to the project overview. Installation
    *  sync omits it so unadded `absent` repos stay picker-only. */
   overviewVisible?: boolean;
+  /** The project's name. Only written on INSERT; omitted, it is derived with
+   *  {@link defaultProjectName}. An existing project keeps its name. */
+  name?: string;
 }
+
+/** Maximum UTF-16 length, matching API validation and native text input limits. */
+export const PROJECT_NAME_MAX_CHARS = 100;
+
+/** The name a project carries when none was given: its repository name, or a
+ *  local project's directory name — what the app showed before projects had
+ *  names of their own, and what migration 0204 copied into existing rows. */
+export function defaultProjectName(project: { repo: string }): string {
+  return project.repo;
+}
+
+/** A rename the store refuses: empty after trimming, or over the limit. */
+export class InvalidProjectNameError extends Error {}
 
 export interface SessionBackendStateRecord {
   contextFingerprint?: string;
@@ -521,6 +578,8 @@ export interface ProjectSettingsRecord {
   googleDriveAccessMode: 'read-only' | 'read-write';
   /** Design module: whether plans include mockups the user approves before the build. */
   designLevel: ProjectDesignLevel;
+  /** One line shown under the project's name; null when none was written. */
+  description: string | null;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -579,6 +638,7 @@ type ProjectSettingsKey =
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
   | 'designLevel'
+  | 'description'
   | 'allowedAgents';
 
 /** `off`: no mockups. `on_request`: mockups when the user asks for them.
@@ -1101,6 +1161,20 @@ export interface RunningTurnRecord {
   /** ADR 0006 Stage 4: the idempotency key for this turn's StartTurn (D2), or null
    * as for {@link turnId}. Recovery repeats StartTurn under it. */
   startCommandId: string | null;
+}
+
+/** Local identities are evidence to compare, never an ownership assignment. */
+export interface RunnerTurnOwnershipRequest {
+  turnId: string;
+  startCommandId?: string;
+  runnerInstanceId?: string;
+}
+
+/** Ownership does not assert that a turn has settled or that its cache is idle. */
+export interface RunnerTurnOwnership {
+  turnId: string;
+  sessionId?: string;
+  conflict: boolean;
 }
 
 /**
@@ -1673,8 +1747,8 @@ export class EventStore implements EventSink {
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher, (action) =>
-      this.egressDestinationMutation(action),
+    this.integrations = new IntegrationStore(db, cipher, (action, changesDestinations) =>
+      this.egressDestinationMutation(action, changesDestinations),
     );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
@@ -1684,6 +1758,8 @@ export class EventStore implements EventSink {
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
     this.projectInquiries = new ProjectInquiryStore(db);
+    this.wikiOccasions = new WikiOccasionStore(db);
+    this.wikiMaintenance = new WikiMaintenanceStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
@@ -1699,6 +1775,9 @@ export class EventStore implements EventSink {
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
   readonly projectInquiries: ProjectInquiryStore;
+  /** What a project's Wiki may need to reflect, until a maintenance run read it. */
+  readonly wikiOccasions: WikiOccasionStore;
+  readonly wikiMaintenance: WikiMaintenanceStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
@@ -3482,11 +3561,9 @@ export class EventStore implements EventSink {
       )
         return undefined;
       const next = change({
-        state: row.mockup_review,
+        state: storedMockupState(row.mockup_review),
         revision: row.mockup_revision,
-        screens: Array.isArray(row.mockup_screens)
-          ? (row.mockup_screens as MockupScreenRecord[])
-          : [],
+        screens: storedMockupScreens(row.mockup_screens),
       });
       if (next === undefined) return undefined;
       await tx
@@ -3803,6 +3880,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName(input),
           owner: input.owner,
           repo: input.repo,
           container_name: input.containerName,
@@ -3857,6 +3935,65 @@ export class EventStore implements EventSink {
       .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
       .executeTakeFirst();
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Keep a terminal PR hidden after the workspace first changes, across restarts. */
+  async observeSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<boolean> {
+    const result = await sql<{ hidden: boolean }>`
+      insert into session_pr_visibility(session_id, worktree, pr_url, fingerprint, hidden)
+      values (${sessionId}, ${worktree}, ${url}, ${fingerprint}, false)
+      on conflict (session_id, worktree, pr_url) do update set
+        hidden = session_pr_visibility.hidden or
+          session_pr_visibility.fingerprint <> excluded.fingerprint
+      returning hidden
+    `.execute(this.db);
+    return result.rows[0]!.hidden;
+  }
+
+  async getSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+  ): Promise<{ fingerprint: string; hidden: boolean } | undefined> {
+    return this.db
+      .selectFrom('session_pr_visibility')
+      .select(['fingerprint', 'hidden'])
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .executeTakeFirst();
+  }
+
+  /** Seed the final baseline after managed post-merge housekeeping has settled. */
+  async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_pr_visibility')
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .execute();
+  }
+
+  async resetSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('session_pr_visibility')
+      .values({ session_id: sessionId, worktree, pr_url: url, fingerprint, hidden: false })
+      .onConflict((oc) =>
+        oc
+          .columns(['session_id', 'worktree', 'pr_url'])
+          .doUpdateSet({ fingerprint, hidden: false }),
+      )
+      .execute();
   }
 
   /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
@@ -4093,7 +4230,11 @@ export class EventStore implements EventSink {
         ),
       ])
       .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`);
+      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
+      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
+      .where(
+        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
+      );
     if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
     if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
     if (input.cursor !== undefined) {
@@ -5934,35 +6075,6 @@ export class EventStore implements EventSink {
       .execute();
   }
 
-  /** Commit the reviewed snapshot and its continuation together for restart recovery. */
-  async enqueueMockupContinuation(
-    input: QueuedTurnInput,
-    review: SessionMockups,
-    previousScreens: SessionMockups['screens'] = review.screens,
-  ): Promise<boolean> {
-    return this.db.transaction().execute(async (tx) => {
-      const result = await tx
-        .updateTable('sessions')
-        .set({ mockup_review: review.state, mockup_screens: JSON.stringify(review.screens) })
-        .where('session_id', '=', input.sessionId)
-        .where('mockup_revision', '=', review.revision)
-        .where('mockup_review', '=', 'pending')
-        .where(sql<boolean>`mockup_screens::jsonb = ${JSON.stringify(previousScreens)}::jsonb`)
-        .executeTakeFirst();
-      if (result.numUpdatedRows === 0n) return false;
-      await tx
-        .insertInto('queued_turns')
-        .values({
-          id: input.id,
-          session_id: input.sessionId,
-          prompt: input.prompt,
-          opts: JSON.stringify(input.opts),
-        })
-        .execute();
-      return true;
-    });
-  }
-
   /** Accept a plan and its implementation backlog entry together. A restart
    * between acceptance and the live queue update must still recover the work. */
   async enqueuePlanImplementation(
@@ -6222,6 +6334,85 @@ export class EventStore implements EventSink {
     await query.execute();
   }
 
+  /** Resolve a bounded maintenance page against Server-owned execution records.
+   * The caller derives sessionIds from the runtime's authoritative routing, including
+   * dedicated control-plane routing. Query all owners before applying that scope:
+   * filtering first would hide a conflicting binding in another runtime. */
+  async resolveRunnerTurnOwnership(input: {
+    sessionIds: string[];
+    turns: RunnerTurnOwnershipRequest[];
+  }): Promise<RunnerTurnOwnership[]> {
+    const safeId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+    if (
+      input.sessionIds.length > 512 ||
+      input.turns.length > 512 ||
+      input.sessionIds.some((id) => !safeId.test(id)) ||
+      new Set(input.sessionIds).size !== input.sessionIds.length ||
+      new Set(input.turns.map((turn) => turn.turnId)).size !== input.turns.length ||
+      input.turns.some(
+        (turn) =>
+          !safeId.test(turn.turnId) ||
+          (turn.startCommandId !== undefined && !safeId.test(turn.startCommandId)) ||
+          (turn.runnerInstanceId !== undefined && !safeId.test(turn.runnerInstanceId)),
+      )
+    )
+      throw new Error('Invalid runner ownership inventory');
+    if (input.turns.length === 0) return [];
+    const turnIds = input.turns.map((turn) => turn.turnId);
+    const allowed = new Set(input.sessionIds);
+    return this.db
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .execute(async (tx) => {
+        // Bound distinct identities, not frames: a long valid turn can have many frames.
+        const frames = await tx
+          .selectFrom('runner_frames')
+          .select(['turn_id', 'session_id', 'runner_instance_id'])
+          .where('turn_id', 'in', turnIds)
+          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
+          .distinct()
+          .limit(1025)
+          .execute();
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'session_id', 'start_command_id'])
+          .where('turn_id', 'in', turnIds)
+          .limit(1025)
+          .execute();
+        if (frames.length > 1024 || running.length > 1024)
+          throw new Error('Runner ownership inventory limit');
+        return input.turns.map((turn) => {
+          const boundFrames = frames.filter((row) => row.turn_id === turn.turnId);
+          const boundRunning = running.filter((row) => row.turn_id === turn.turnId);
+          const owners = new Set([
+            ...boundFrames.map((row) => row.session_id),
+            ...boundRunning.map((row) => row.session_id),
+          ]);
+          const conflict =
+            owners.size > 1 ||
+            [...owners].some((owner) => !safeId.test(owner)) ||
+            new Set(boundFrames.map((row) => row.runner_instance_id)).size > 1 ||
+            boundFrames.some(
+              (row) =>
+                turn.runnerInstanceId !== undefined &&
+                row.runner_instance_id !== turn.runnerInstanceId,
+            ) ||
+            boundRunning.some(
+              (row) =>
+                row.start_command_id === null ||
+                !safeId.test(row.start_command_id) ||
+                (turn.startCommandId !== undefined && row.start_command_id !== turn.startCommandId),
+            );
+          const owner = owners.size === 1 ? [...owners][0] : undefined;
+          return {
+            turnId: turn.turnId,
+            ...(owner !== undefined && allowed.has(owner) && !conflict ? { sessionId: owner } : {}),
+            conflict: conflict || (owner !== undefined && !allowed.has(owner)),
+          };
+        });
+      });
+  }
+
   /** All in-flight markers. At startup a non-empty result flags sessions whose
    * turn was abandoned by a crash/restart. */
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
@@ -6304,11 +6495,13 @@ export class EventStore implements EventSink {
 
   private projectRowToRecord(row: {
     id: string;
+    name?: string | null;
     owner: string;
     repo: string;
     container_name: string;
     kind?: string | null;
     forge_connection_id?: string | null;
+    repository_instance?: number | null;
     clone_dir?: string | null;
     image_ref: string | null;
     image_override_ref?: string | null;
@@ -6335,11 +6528,13 @@ export class EventStore implements EventSink {
   }): ProjectRecord {
     return {
       id: row.id,
+      name: row.name ?? defaultProjectName(row),
       owner: row.owner,
       repo: row.repo,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
       forgeConnectionId: row.forge_connection_id ?? null,
+      repositoryInstance: row.repository_instance ?? 1,
       cloneDir: row.clone_dir ?? null,
       imageRef: row.image_ref,
       imageOverrideRef: row.image_override_ref ?? null,
@@ -6376,11 +6571,13 @@ export class EventStore implements EventSink {
   private readonly projectColumns = [
     'forge_connection_id',
     'id',
+    'name',
     'kind',
     'owner',
     'repo',
     'container_name',
     'kind',
+    'repository_instance',
     'clone_dir',
     'image_ref',
     'image_override_ref',
@@ -6429,6 +6626,23 @@ export class EventStore implements EventSink {
    *          `deleteProject` (slice 3) between insert and lookup.
    */
   async upsertProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Knowledge lifecycle mutations take this lock before touching a project
+      // row. Match that order here so sync cannot deadlock with hide/delete.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      return this.upsertPrimaryProject(tx, input);
+    });
+    if (!row) {
+      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
+      // drops the returning clause — a contract bug, not a runtime path.
+      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
+    }
+    return this.projectRowToRecord(row);
+  }
+
+  /** The body of {@link upsertProject}: always targets the repository's first
+   *  project (instance 1). The caller holds the project lifecycle lock. */
+  private async upsertPrimaryProject(tx: Transaction<Database>, input: ProjectUpsertInput) {
     // Lowercase the canonical (owner, repo) and the derived container_name so
     // the persisted form honours §19.0/§19.2's lowercase-persist contract
     // (without forcing every caller — including GitHub-sync — to remember).
@@ -6438,161 +6652,302 @@ export class EventStore implements EventSink {
     const legacyContainerNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
     const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
 
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Knowledge lifecycle mutations take this lock before touching a project
-      // row. Match that order here so sync cannot deadlock with hide/delete.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      // A sync may omit the connection, but must never change the provider of
-      // an existing project identified by its durable ID.
-      const byId = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('id', '=', input.id)
-        .executeTakeFirst();
-      if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
+    // A sync may omit the connection, but must never change the provider of
+    // an existing project identified by its durable ID.
+    const byId = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id', 'repository_instance'])
+      .where('id', '=', input.id)
+      .executeTakeFirst();
+    // The upsert resolves by the repository's first project. A further project
+    // of the same repository must never be rewritten into, or confused with, it.
+    if (byId && byId.repository_instance !== 1) {
+      throw new ProjectIdentityClaimConflict(
+        'Project is a further project of its repository and cannot be upserted',
+      );
+    }
+    if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
+      input = { ...input, forgeConnectionId: byId.forge_connection_id };
+    }
+    const existingBinding = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id'])
+      .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+      .where('owner', '=', owner)
+      .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
+      .executeTakeFirst();
+    if (
+      existingBinding !== undefined &&
+      ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+        (input.forgeConnectionId !== undefined &&
+          existingBinding.forge_connection_id !== null &&
+          existingBinding.forge_connection_id !== input.forgeConnectionId))
+    ) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    const claimed = await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner,
+        repo,
+        project_id: input.id,
+        forge_connection_id: input.forgeConnectionId ?? null,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+      )
+      .returning('project_id')
+      .executeTakeFirst();
+    if (claimed === undefined) {
+      const [claim, existing] = await Promise.all([
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirstOrThrow(),
+        tx
+          .selectFrom('projects')
+          .select('id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      if (existing === undefined || claim.project_id !== existing.id) {
+        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
       }
-      if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
-        input = { ...input, forgeConnectionId: byId.forge_connection_id };
-      }
-      const existingBinding = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+    }
+    const project = await tx
+      .insertInto('projects')
+      .values({
+        id: input.id,
+        name: input.name ?? defaultProjectName({ repo }),
+        owner,
+        repo,
+        container_name: containerName,
+        kind: input.kind ?? 'github',
+        forge_connection_id: input.forgeConnectionId ?? null,
+        clone_dir: input.cloneDir ?? null,
+        image_ref: input.imageRef ?? null,
+        image_override_ref: input.imageRef ?? null,
+        state: input.state,
+        archived: input.archived ?? false,
+        overview_visible: input.overviewVisible ?? false,
+        provision_error: null,
+        provision_warning: null,
+      })
+      .onConflict((oc) =>
+        oc.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doUpdateSet({
+          // Preserve custom adopted container names, but migrate old deterministic
+          // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
+          // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
+          // can keep pointing at a legacy Dogfood container and miss current
+          // runtime mounts and gateway routing configuration.
+          container_name: shouldMigrateLegacyContainerName
+            ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
+            : sql`projects.container_name`,
+          // Provisioning-owned state stays untouched (the worker's
+          // `cloning/container_starting/active/failed` survives a sync pass).
+          // The image fields are only touched when the caller EXPLICITLY sets an
+          // override: `input.imageRef === undefined` means
+          // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
+          // across slice-2 list refreshes), while `null` means "explicitly
+          // clear the pin" (operator-driven unpin). Slice 2's sync passes
+          // undefined → no-op.
+          // `toolkit_identity` travels with `image_ref` because it is a
+          // statement ABOUT that image: an operator pinning a NEW one has
+          // pinned something nothing has attested, and carrying the old
+          // verdict forward would let the new image inherit an all-clear it
+          // never earned. The next provisioning writes the real answer.
+          //
+          // Which is why the clear is conditional on the image actually
+          // moving. Re-saving the same pin — an idempotent settings write, a
+          // re-add of a project that never changed — leaves the effective
+          // image exactly as attested, so discarding the verdict there would
+          // manufacture an "unknown toolkit" warning about an image that was
+          // checked and passed, and it would stay wrong until the next
+          // provisioning. `is distinct from` compares against the PRE-update
+          // row (`projects.` in an ON CONFLICT update), and treats a null on
+          // either side as a difference rather than as unknown.
+          ...(input.imageRef !== undefined
+            ? {
+                image_ref: input.imageRef,
+                image_override_ref: input.imageRef,
+                toolkit_identity: sql<
+                  string | null
+                >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
+              }
+            : {}),
+          ...(input.forgeConnectionId !== undefined
+            ? { forge_connection_id: input.forgeConnectionId }
+            : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.archived !== undefined ? { archived: input.archived } : {}),
+          ...(input.overviewVisible !== undefined
+            ? { overview_visible: input.overviewVisible }
+            : {}),
+          // `restore` (the POST /projects re-add path) un-hides an existing
+          // row. Omitted by the installation sync, so a re-sync of a repo the
+          // operator deleted keeps it hidden rather than resurrecting it.
+          ...(input.restore === true ? { hidden_at: null } : {}),
+          updated_at: sql`now()`,
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    if (project && input.archived !== undefined) {
+      // Every project of the repository shares its archive state.
+      await tx
+        .updateTable('projects')
+        .set({ archived: input.archived, updated_at: sql`now()` })
+        .where('forge_scope', '=', project.forge_scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .executeTakeFirst();
-      if (
-        existingBinding !== undefined &&
-        ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
-          (input.forgeConnectionId !== undefined &&
-            existingBinding.forge_connection_id !== null &&
-            existingBinding.forge_connection_id !== input.forgeConnectionId))
-      ) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
-      }
-      const claimed = await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: input.id,
-          forge_connection_id: input.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .returning('project_id')
-        .executeTakeFirst();
-      if (claimed === undefined) {
-        const [claim, existing] = await Promise.all([
-          tx
-            .selectFrom('project_identity_claims')
-            .select('project_id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirstOrThrow(),
-          tx
-            .selectFrom('projects')
-            .select('id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirst(),
-        ]);
-        if (existing === undefined || claim.project_id !== existing.id) {
-          throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-        }
-      }
+        .where('repository_instance', '>', 1)
+        .where('archived', '!=', input.archived)
+        .execute();
+    }
+    if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+    return project;
+  }
+
+  /**
+   * Add a repository-backed project the operator chose. While the repository's
+   * first project (instance 1) is only an installation placeholder, it is
+   * adopted; when the operator had removed it, it is restored — both exactly as
+   * {@link upsertProject} does. Once that repository already backs a visible
+   * project (or a link is reserving it), a separate project is created as the
+   * next instance, with its own ID, clone directory and container. An existing
+   * project is never returned or reset for another project's request.
+   */
+  async createRepositoryProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const owner = input.owner.toLowerCase();
+    const repo = input.repo.toLowerCase();
+    const scope = input.forgeConnectionId ?? 'legacy-github';
+    const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const [primary, claim] = await Promise.all([
+        tx
+          .selectFrom('projects')
+          .select(['id', 'kind', 'state', 'overview_visible', 'hidden_at', 'archived'])
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      const adoptable =
+        primary === undefined
+          ? claim === undefined
+          : claim?.project_id === primary.id &&
+            (primary.hidden_at !== null ||
+              isInstallationPlaceholder({
+                kind: primary.kind as ProjectKind,
+                state: primary.state as ProjectState,
+                overviewVisible: primary.overview_visible,
+              }));
+      const repositoryArchive =
+        primary ??
+        (await tx
+          .selectFrom('projects')
+          .select('archived')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .orderBy('repository_instance', 'asc')
+          .executeTakeFirst());
+      if (adoptable)
+        return this.upsertPrimaryProject(tx, {
+          ...input,
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+        });
+      const instance = await this.claimNextRepositoryInstance(
+        tx,
+        { owner, repo, forgeConnectionId: input.forgeConnectionId },
+        input.id,
+      );
+      // The project ID keeps the directory and container apart from every other
+      // project of this repository, whatever the repository is called.
       const project = await tx
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
-          container_name: containerName,
+          repository_instance: instance,
+          container_name: `${input.containerName}--${input.id}`.toLowerCase(),
           kind: input.kind ?? 'github',
           forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: input.cloneDir ?? null,
+          clone_dir: `${input.cloneDir ?? `${owner}-${repo}`}-${input.id}`,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
           state: input.state,
-          archived: input.archived ?? false,
-          overview_visible: input.overviewVisible ?? false,
+          // Archival is a property of the repository, recorded by the
+          // installation sync on its first project.
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+          overview_visible: input.overviewVisible ?? true,
           provision_error: null,
           provision_warning: null,
         })
-        .onConflict((oc) =>
-          oc.columns(['forge_scope', 'owner', 'repo']).doUpdateSet({
-            // Preserve custom adopted container names, but migrate old deterministic
-            // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
-            // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
-            // can keep pointing at a legacy Dogfood container and miss current
-            // runtime mounts and gateway routing configuration.
-            container_name: shouldMigrateLegacyContainerName
-              ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
-              : sql`projects.container_name`,
-            // Provisioning-owned state stays untouched (the worker's
-            // `cloning/container_starting/active/failed` survives a sync pass).
-            // The image fields are only touched when the caller EXPLICITLY sets an
-            // override: `input.imageRef === undefined` means
-            // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
-            // across slice-2 list refreshes), while `null` means "explicitly
-            // clear the pin" (operator-driven unpin). Slice 2's sync passes
-            // undefined → no-op.
-            // `toolkit_identity` travels with `image_ref` because it is a
-            // statement ABOUT that image: an operator pinning a NEW one has
-            // pinned something nothing has attested, and carrying the old
-            // verdict forward would let the new image inherit an all-clear it
-            // never earned. The next provisioning writes the real answer.
-            //
-            // Which is why the clear is conditional on the image actually
-            // moving. Re-saving the same pin — an idempotent settings write, a
-            // re-add of a project that never changed — leaves the effective
-            // image exactly as attested, so discarding the verdict there would
-            // manufacture an "unknown toolkit" warning about an image that was
-            // checked and passed, and it would stay wrong until the next
-            // provisioning. `is distinct from` compares against the PRE-update
-            // row (`projects.` in an ON CONFLICT update), and treats a null on
-            // either side as a difference rather than as unknown.
-            ...(input.imageRef !== undefined
-              ? {
-                  image_ref: input.imageRef,
-                  image_override_ref: input.imageRef,
-                  toolkit_identity: sql<
-                    string | null
-                  >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
-                }
-              : {}),
-            ...(input.forgeConnectionId !== undefined
-              ? { forge_connection_id: input.forgeConnectionId }
-              : {}),
-            ...(input.kind !== undefined ? { kind: input.kind } : {}),
-            ...(input.archived !== undefined ? { archived: input.archived } : {}),
-            ...(input.overviewVisible !== undefined
-              ? { overview_visible: input.overviewVisible }
-              : {}),
-            // `restore` (the POST /projects re-add path) un-hides an existing
-            // row. Omitted by the installation sync, so a re-sync of a repo the
-            // operator deleted keeps it hidden rather than resurrecting it.
-            ...(input.restore === true ? { hidden_at: null } : {}),
-            updated_at: sql`now()`,
-          }),
-        )
         .returningAll()
-        .executeTakeFirst();
-      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+        .executeTakeFirstOrThrow();
+      await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
       return project;
     });
-    if (!row) {
-      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
-      // drops the returning clause — a contract bug, not a runtime path.
-      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
-    }
+    if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
     return this.projectRowToRecord(row);
+  }
+
+  /** Reserve the next free instance of a repository for `projectId`. The
+   *  caller holds the project lifecycle lock, which serializes allocation. */
+  private async claimNextRepositoryInstance(
+    tx: Transaction<Database>,
+    target: { owner: string; repo: string; forgeConnectionId?: string | null | undefined },
+    projectId: string,
+  ): Promise<number> {
+    const scope = target.forgeConnectionId ?? 'legacy-github';
+    const next = await sql<{ instance: number }>`
+      select coalesce(max(repository_instance), 0) + 1 as instance from (
+        select repository_instance from projects
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+        union all
+        select repository_instance from project_identity_claims
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+      ) taken
+    `.execute(tx);
+    const instance = Number(next.rows[0]?.instance ?? 2);
+    await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner: target.owner,
+        repo: target.repo,
+        repository_instance: instance,
+        project_id: projectId,
+        forge_connection_id: target.forgeConnectionId ?? null,
+      })
+      .execute();
+    return instance;
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -6612,7 +6967,9 @@ export class EventStore implements EventSink {
           project_id: input.id,
           forge_connection_id: input.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .returning('project_id')
         .executeTakeFirst();
       if (claimed === undefined) {
@@ -6622,6 +6979,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
           container_name: input.containerName.toLowerCase(),
@@ -6642,6 +7000,31 @@ export class EventStore implements EventSink {
       return project;
     });
     return this.projectRowToRecord(row);
+  }
+
+  /**
+   * Gives a project a new name. Only the name changes: owner, repo, container,
+   * clone directory and every repository link stay as they are. Duplicate names
+   * across projects are allowed — the ID identifies a project, not its name.
+   *
+   * @throws {InvalidProjectNameError} when the trimmed name is empty or longer
+   *         than {@link PROJECT_NAME_MAX_CHARS}.
+   * @returns the renamed project, or `undefined` when it does not exist.
+   */
+  async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
+    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
+      throw new InvalidProjectNameError(
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      );
+    const row = await this.db
+      .updateTable('projects')
+      .set({ name: trimmed, updated_at: sql`now()` })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirst();
+    return row ? this.projectRowToRecord(row) : undefined;
   }
 
   async getProject(id: string): Promise<ProjectRecord | undefined> {
@@ -6785,14 +7168,26 @@ export class EventStore implements EventSink {
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
     // caller can pass the raw GitHub-display form without having to know about
     // our persistence normalisation.
-    const row = await this.db
+    // Several projects may share a repository; this answers its first one.
+    // Callers that must not guess use listProjectsByOwnerRepo.
+    return (await this.listProjectsByOwnerRepo(owner, repo, forgeConnectionId))[0];
+  }
+
+  /** Every project of one repository, hidden ones included, first instance first. */
+  async listProjectsByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord[]> {
+    const rows = await this.db
       .selectFrom('projects')
       .select(this.projectColumns)
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner.toLowerCase())
       .where('repo', '=', repo.toLowerCase())
-      .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+      .orderBy('repository_instance')
+      .execute();
+    return rows.map((row) => this.projectRowToRecord(row));
   }
 
   /**
@@ -6816,6 +7211,8 @@ export class EventStore implements EventSink {
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
     const row = await this.db.transaction().execute(async (tx) => {
+      // Serialize archive inheritance with installation sync and identity allocation.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const existing = await tx
         .selectFrom('projects')
         .select(this.projectColumns)
@@ -6826,35 +7223,53 @@ export class EventStore implements EventSink {
       if (existing === undefined) return undefined;
       const targetOwner = target.owner.toLowerCase();
       const targetRepo = target.repo.toLowerCase();
-      // The placeholder stays intact while publication runs. Retire it only in
-      // this final transaction, alongside the local project's identity rewrite,
-      // so a pre-publication failure can restore its claim without losing any of
-      // its dependent configuration.
-      await this.retireInstallationPlaceholder(
-        tx,
-        targetOwner,
-        targetRepo,
-        id,
-        target.forgeConnectionId,
-      );
-      await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner: targetOwner,
-          repo: targetRepo,
-          project_id: id,
-          forge_connection_id: target.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .execute();
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('project_id')
+      const targetProject = await tx
+        .selectFrom('projects')
+        .select('archived')
         .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', targetOwner)
         .where('repo', '=', targetRepo)
+        .orderBy('repository_instance', 'asc')
         .executeTakeFirst();
-      if (claim?.project_id !== id) {
+      const findClaim = () =>
+        tx
+          .selectFrom('project_identity_claims')
+          .select('repository_instance')
+          .where('project_id', '=', id)
+          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', targetOwner)
+          .where('repo', '=', targetRepo)
+          .executeTakeFirst();
+      let claim = await findClaim();
+      if (claim === undefined || claim.repository_instance === 1) {
+        // The placeholder stays intact while publication runs. Retire it only in
+        // this final transaction, alongside the local project's identity rewrite,
+        // so a pre-publication failure can restore its claim without losing any of
+        // its dependent configuration.
+        await this.retireInstallationPlaceholder(
+          tx,
+          targetOwner,
+          targetRepo,
+          id,
+          target.forgeConnectionId,
+        );
+      }
+      if (claim === undefined) {
+        await tx
+          .insertInto('project_identity_claims')
+          .values({
+            owner: targetOwner,
+            repo: targetRepo,
+            project_id: id,
+            forge_connection_id: target.forgeConnectionId ?? null,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+          )
+          .execute();
+        claim = await findClaim();
+      }
+      if (claim === undefined) {
         throw new ProjectIdentityClaimConflict(
           `project identity ${targetOwner}/${targetRepo} is not reserved`,
         );
@@ -6864,6 +7279,8 @@ export class EventStore implements EventSink {
         .set({
           owner: targetOwner,
           repo: targetRepo,
+          repository_instance: claim.repository_instance,
+          archived: targetProject?.archived ?? false,
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
@@ -6924,6 +7341,7 @@ export class EventStore implements EventSink {
           kind: 'local',
           owner: LOCAL_PROJECT_OWNER,
           repo: localRepo,
+          repository_instance: 1,
           forge_connection_id: null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
           latest_release_tag: null,
@@ -6975,6 +7393,7 @@ export class EventStore implements EventSink {
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner)
       .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
       .where('id', '!=', forProjectId)
       .executeTakeFirst();
     if (holder === undefined) return false;
@@ -7029,7 +7448,10 @@ export class EventStore implements EventSink {
   ): Promise<boolean> {
     const owner = target.owner.toLowerCase();
     const repo = target.repo.toLowerCase();
+    const scope = target.forgeConnectionId ?? 'legacy-github';
     return this.db.transaction().execute(async (tx) => {
+      // Serializes instance allocation with project creation and other links.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const project = await tx
         .selectFrom('projects')
         .select(['id', 'owner', 'repo', 'forge_scope'])
@@ -7055,6 +7477,14 @@ export class EventStore implements EventSink {
             claim.repo !== repo),
       );
       if (hasDifferentPendingTarget) return false;
+      // A retry of this project's own pending link keeps the instance it holds.
+      if (
+        claims.some(
+          (claim) => claim.forge_scope === scope && claim.owner === owner && claim.repo === repo,
+        )
+      ) {
+        return true;
+      }
       // Keep a sync placeholder (and all of its dependent configuration) intact
       // while publication runs; only transfer its claim temporarily. The final
       // link transaction retires it atomically with the identity rewrite, while
@@ -7063,22 +7493,26 @@ export class EventStore implements EventSink {
         .selectFrom('projects')
         .select(['id', 'kind', 'state', 'overview_visible'])
         .forUpdate()
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .where('id', '!=', id)
         .executeTakeFirst();
       if (holder !== undefined) {
+        // The repository already backs a project: this one becomes another,
+        // independent project of the same repository.
         if (
           !isInstallationPlaceholder({
             kind: holder.kind as ProjectKind,
             state: holder.state as ProjectState,
             overviewVisible: holder.overview_visible,
-          })
+          }) ||
+          (await this.installationPlaceholderHasDependents(tx, holder.id))
         ) {
-          return false;
+          await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+          return true;
         }
-        if (await this.installationPlaceholderHasDependents(tx, holder.id)) return false;
         // Hide the placeholder before releasing its row lock. createSession
         // takes a SHARE lock and rejects hidden projects, so this closes the
         // check-vs-spawn race for the entire external push window. `infinity`
@@ -7109,16 +7543,22 @@ export class EventStore implements EventSink {
           project_id: id,
           forge_connection_id: target.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .execute();
       const claim = await tx
         .selectFrom('project_identity_claims')
         .select('project_id')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .executeTakeFirst();
-      return claim?.project_id === id;
+      if (claim?.project_id === id) return true;
+      // Another link is reserving the first instance; take the next one.
+      await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+      return true;
     });
   }
 
@@ -7140,15 +7580,28 @@ export class EventStore implements EventSink {
         .where('kind', '=', 'local')
         .executeTakeFirst();
       if (local === undefined) return;
-      const placeholder = await tx
-        .selectFrom('projects')
-        .select(['id', 'kind', 'state', 'overview_visible'])
-        .forUpdate()
+      const claim = await tx
+        .selectFrom('project_identity_claims')
+        .select('repository_instance')
+        .where('project_id', '=', id)
         .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .where('id', '!=', id)
         .executeTakeFirst();
+      // Only the first instance can have been taken over from a placeholder.
+      const placeholder =
+        claim?.repository_instance === 1
+          ? await tx
+              .selectFrom('projects')
+              .select(['id', 'kind', 'state', 'overview_visible'])
+              .forUpdate()
+              .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+              .where('owner', '=', owner)
+              .where('repo', '=', repo)
+              .where('repository_instance', '=', 1)
+              .where('id', '!=', id)
+              .executeTakeFirst()
+          : undefined;
       if (
         placeholder !== undefined &&
         isInstallationPlaceholder({
@@ -7722,6 +8175,7 @@ export class EventStore implements EventSink {
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
       design_level: ProjectDesignLevel;
+      description: string | null;
       allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
@@ -7747,6 +8201,7 @@ export class EventStore implements EventSink {
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
       designLevel: row.design_level,
+      description: row.description,
       allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -7769,6 +8224,7 @@ export class EventStore implements EventSink {
     'google_drive_folder_name',
     'google_drive_access_mode',
     'design_level',
+    'description',
     'allowed_agents',
     'created_at',
     'updated_at',
@@ -8934,6 +9390,7 @@ export class EventStore implements EventSink {
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
       design_level: patch.designLevel ?? 'on_request',
+      description: normalizeSetting(patch.description),
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
@@ -9016,6 +9473,9 @@ export class EventStore implements EventSink {
               ? { google_drive_access_mode: patch.googleDriveAccessMode }
               : {}),
             ...(patch.designLevel !== undefined ? { design_level: patch.designLevel } : {}),
+            ...(patch.description !== undefined
+              ? { description: normalizeSetting(patch.description) }
+              : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
               : {}),

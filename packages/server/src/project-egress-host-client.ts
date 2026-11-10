@@ -1,3 +1,8 @@
+import { DockerError, DOCKER_ADDRESS_POOL_EXHAUSTED } from './docker.js';
+import {
+  inventoryFailureReason,
+  ProjectEgressInventoryError,
+} from './project-egress-inventory-error.js';
 import { request } from 'node:http';
 import {
   ProjectEgressHealthError,
@@ -39,6 +44,15 @@ export function createProjectEgressHostClient(options: {
     if (!/^[a-f0-9]{64}$/u.test(token)) throw new ProjectEgressHealthError('invalid_configuration');
     const command = projectEgressHostRequest.parse(input);
     const body = JSON.stringify(command);
+    const context = {
+      operation: command.operation,
+      projectId:
+        'projectId' in command
+          ? command.projectId
+          : 'binding' in command
+            ? command.binding.projectId
+            : undefined,
+    };
     return new Promise<ProjectEgressHostResponse>((resolve, reject) => {
       const abort = new AbortController();
       // A total deadline, including response reads, not an inactivity timeout.
@@ -46,7 +60,7 @@ export function createProjectEgressHostClient(options: {
       const fail = (reason: ProjectEgressHealthReason) => {
         clearTimeout(timer);
         abort.abort();
-        reject(new ProjectEgressHealthError(reason));
+        reject(new ProjectEgressHealthError(reason, context));
       };
       const call = request(
         {
@@ -86,6 +100,37 @@ export function createProjectEgressHostClient(options: {
                   typeof refused === 'object' && refused !== null && 'reason' in refused
                     ? refused.reason
                     : undefined;
+                if (
+                  command.operation === 'allocate-network' &&
+                  reason === 'address_pool_exhausted'
+                ) {
+                  clearTimeout(timer);
+                  abort.abort();
+                  reject(
+                    new DockerError({
+                      kind: 'address_pool_exhausted',
+                      message: DOCKER_ADDRESS_POOL_EXHAUSTED,
+                    }),
+                  );
+                  return;
+                }
+                const inventoryReason = inventoryFailureReason(reason);
+                if (command.operation.startsWith('inventory-') && inventoryReason) {
+                  clearTimeout(timer);
+                  abort.abort();
+                  const correlationId =
+                    typeof refused === 'object' &&
+                    refused !== null &&
+                    'correlationId' in refused &&
+                    typeof refused.correlationId === 'string' &&
+                    /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(
+                      refused.correlationId,
+                    )
+                      ? refused.correlationId
+                      : undefined;
+                  reject(new ProjectEgressInventoryError(inventoryReason, correlationId));
+                  return;
+                }
                 fail(
                   command.operation === 'health' && reason === 'mandatory_inventory_incomplete'
                     ? reason
@@ -98,20 +143,30 @@ export function createProjectEgressHostClient(options: {
               );
               if (
                 command.operation === 'inventory-begin' ||
+                command.operation === 'inventory-abort' ||
                 command.operation === 'inventory-commit' ||
                 command.operation === 'inventory-renew'
               ) {
                 if (
                   !('token' in result) ||
                   result.state !==
-                    (command.operation === 'inventory-begin'
-                      ? 'inventory-denied'
-                      : 'inventory-ready') ||
+                    (command.operation === 'inventory-abort'
+                      ? 'inventory-aborted'
+                      : command.operation === 'inventory-begin'
+                        ? 'inventory-denied'
+                        : 'inventory-ready') ||
                   result.token !== command.token
                 )
                   throw new Error('Mismatched inventory acknowledgement');
               } else if (command.operation === 'health') {
                 if (result.state !== 'health') throw new Error('Mismatched host health');
+              } else if (command.operation === 'allocate-network') {
+                if (
+                  result.state !== 'network-allocated' ||
+                  result.binding.projectId !== command.projectId ||
+                  result.binding.generation !== command.generation
+                )
+                  throw new Error('Mismatched host allocation');
               } else if (command.operation === 'current') {
                 if (
                   result.state !== 'current' ||

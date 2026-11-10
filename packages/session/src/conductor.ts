@@ -1,5 +1,9 @@
 import { QA_ANALYSIS_SYSTEM_PROMPT } from '@verity/events';
-import { ASSISTANT_SYSTEM_PROMPT, KNOWLEDGE_CONTEXT_INSTRUCTIONS } from '@verity/events';
+import {
+  ASSISTANT_SYSTEM_PROMPT,
+  KNOWLEDGE_CONTEXT_INSTRUCTIONS,
+  mockupReviewPrompt,
+} from '@verity/events';
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -16,10 +20,27 @@ import {
 } from '@verity/events';
 import { isLocalProject } from '@verity/store';
 import { PLANNING_PERMISSION_MODE } from './runner.js';
+
+/** Additional Claude restrictions alongside the backend-specific Verity tool boundary. */
+const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'WebFetch',
+  'WebSearch',
+  'Task',
+  'Agent',
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  // Nobody would see a plan approval it raised.
+  'ExitPlanMode',
+  'EnterPlanMode',
+] as const;
 import type {
   EventStore,
   PlanningConsent,
-  SessionMockups,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
@@ -752,9 +773,6 @@ export interface DispatchTurnOptions extends PromptOrigin {
   /** Atomically accept this plan revision with the durable implementation queue. */
   planningRevision?: number;
   planningConsent?: PlanningConsent;
-  /** Reviewed snapshot to commit atomically with the continuation backlog. */
-  mockupContinuation?: SessionMockups;
-  mockupPreviousScreens?: SessionMockups['screens'];
 }
 
 interface QueuedConductorTurn extends PromptOrigin {
@@ -1587,6 +1605,18 @@ export class Conductor {
         : QA_ANALYSIS_SYSTEM_PROMPT;
       resumeSessionId = undefined;
     }
+    // A Wiki maintenance run reads untrusted transcripts with nobody watching. Its
+    // posture is the session's, never the request's: read-only like planning (the
+    // gateway then admits only its Wiki operations) and without web access.
+    if (await this.deps.store.wikiMaintenance.isSession(sessionId)) {
+      builtRunOpts.planning = true;
+      builtRunOpts.gatewayToolsOnly = true;
+      builtRunOpts.permissionMode = PLANNING_PERMISSION_MODE;
+      builtRunOpts.disallowedTools = [
+        ...new Set([...(builtRunOpts.disallowedTools ?? []), ...WIKI_MAINTENANCE_DISALLOWED_TOOLS]),
+      ];
+      this.runningPlanning.set(sessionId, true);
+    }
     // Every assistant turn, fresh or resumed: it reads untrusted mail and notes, so it
     // acts only through Verity's server-checked tools (docs/assistant.md).
     const assistantSession = (await this.deps.store.assistant.settings()).session_id === sessionId;
@@ -1618,6 +1648,7 @@ export class Conductor {
     }
     runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
     runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
+    runOpts.appendSystemPrompt += this.mockupReviewSection(session);
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
@@ -3621,11 +3652,7 @@ export class Conductor {
     // check and the write) do we fall back to enqueueing behind it (#90 Stage A),
     // which runs the message as a fresh `--resume` turn the moment claude is free.
     // Validate the prompt here too so we never steer/queue a blank turn.
-    if (
-      this.inFlight.has(sessionId) ||
-      dispatchOpts.planningRevision !== undefined ||
-      dispatchOpts.mockupContinuation !== undefined
-    ) {
+    if (this.inFlight.has(sessionId) || dispatchOpts.planningRevision !== undefined) {
       if (opts.requireStandalone === true) throw new SessionBusyError(sessionId);
       if (!turnHasContent(prompt, opts))
         throw new Error('turn must have a prompt or an attachment');
@@ -3635,7 +3662,8 @@ export class Conductor {
       // it runs as a `--resume` turn that materializes the file correctly. Images
       // still steer into the running turn as before.
       const hasFileAttachment = opts.attachments?.some((a) => a.kind === 'file') ?? false;
-      const planning = (await this.deps.store.getSession(sessionId))?.planning === 'active';
+      const currentSession = await this.deps.store.getSession(sessionId);
+      const planning = currentSession?.planning === 'active';
       // A mode change needs a fresh turn; steering retains the live permissions.
       const runningPlanning = this.runningPlanning.get(sessionId);
       const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
@@ -3649,7 +3677,7 @@ export class Conductor {
       if (
         turn &&
         (await turn.steer({
-          text: prompt,
+          text: prompt + (currentSession ? this.mockupReviewSection(currentSession) : ''),
           ...(opts.attachments ? { attachments: opts.attachments } : {}),
         }))
       ) {
@@ -3690,17 +3718,6 @@ export class Conductor {
               dispatchOpts.planningRevision,
               (event) => this.deps.bus?.publish(sessionId, event),
               dispatchOpts.planningConsent,
-            ))
-          ) {
-            accepted = false;
-            return;
-          }
-        } else if (dispatchOpts.mockupContinuation !== undefined) {
-          if (
-            !(await this.deps.store.enqueueMockupContinuation(
-              input,
-              dispatchOpts.mockupContinuation,
-              dispatchOpts.mockupPreviousScreens,
             ))
           ) {
             accepted = false;
@@ -5408,6 +5425,7 @@ export class Conductor {
               context?.prompt ?? (await this.projectMemoryPrompt(session));
             runOpts.appendSystemPrompt += await this.projectKnowledgePrompt(session);
             runOpts.appendSystemPrompt += await this.assignedTasksPrompt(session);
+            runOpts.appendSystemPrompt += this.mockupReviewSection(session);
             contextProjectId = session.projectId;
           }
         }
@@ -6234,6 +6252,13 @@ export class Conductor {
     const memory = settings?.memory?.trim();
     if (memory === undefined || memory.length === 0) return '';
     return `\n\n## Project memory (operator-curated; may be stale — verify before relying on it)\n${memory}`;
+  }
+
+  /** The round under review and the user's marks, on every turn while it waits:
+   *  a resumed context would otherwise act on marks the user has changed since. */
+  private mockupReviewSection(session: SessionRecord): string {
+    const prompt = mockupReviewPrompt(session.mockupReview);
+    return prompt ? `\n\n${prompt}` : '';
   }
 
   /** The per-turn "Assigned tasks" section, framed like the other appended blocks. */

@@ -130,6 +130,7 @@ function build(
                   'verity_start_planning',
                   'verity_present_plan',
                   'verity_present_mockups',
+                  'verity_complete_mockups',
                   'verity_end_planning',
                   'verity_tasks',
                   'verity_repairs',
@@ -679,6 +680,44 @@ describe('mockup presentation through the project gateway', () => {
     expect(harness.invocations).toEqual([]);
   });
 
+  it('ends the review through the gateway without an approval card or new work', async () => {
+    const { harness, token } = await mockupCaller();
+    await withListener(harness, async (socketPath) => {
+      let id = 0;
+      const call = (name: string, args: Record<string, unknown>) =>
+        postUnix(socketPath, `Bearer ${token}`, {
+          jsonrpc: '2.0',
+          id: ++id,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        });
+      const output = async (name: string, args: Record<string, unknown> = {}) => {
+        const response = await call(name, args);
+        const result = (
+          JSON.parse(response.body) as {
+            result: { isError?: boolean; content: { text: string }[] };
+          }
+        ).result;
+        expect(result.isError).toBeUndefined();
+        return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+      };
+      await output('verity_present_mockups', { screens: [{ name: 'Home', path: 'home.png' }] });
+      await harness.store.updateSessionMockups('s1', (current) => ({
+        ...current,
+        screens: current.screens.map((screen) => ({ ...screen, verdict: 'discarded' })),
+      }));
+      expect(await output('verity_complete_mockups')).toMatchObject({ completed: true });
+      // The marks stay as the user left them; ending the review approves nothing.
+      expect((await harness.store.getSession('s1'))?.mockupReview).toMatchObject({
+        state: 'approved',
+        screens: [{ name: 'Home', verdict: 'discarded' }],
+      });
+      expect(await output('verity_complete_mockups')).toMatchObject({ completed: false });
+    });
+    expect(harness.approvals).toEqual([]);
+    expect(harness.invocations).toEqual([]);
+  });
+
   it.each([false, true])(
     'refuses presentation while planning (live turn restriction=%s)',
     async (planningTurn) => {
@@ -704,6 +743,46 @@ describe('mockup presentation through the project gateway', () => {
       expect(harness.invocations).toEqual([]);
     },
   );
+});
+
+it('refuses planning exceptions to the Wiki maintenance session', async () => {
+  const harness = build({ planningTools: true });
+  await harness.store.createProject({
+    id: 'p1',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'alpha',
+    cloneDir: '__local__-alpha',
+    containerName: 'verity-alpha',
+    state: 'active',
+  });
+  await harness.store.createSession({
+    sessionId: 's1',
+    projectId: 'p1',
+    worktree: '/tmp/verity-wiki-s1',
+    model: 'claude-opus-5',
+  });
+  await harness.store.wikiMaintenance.setSession('p1', 's1');
+  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
+  await withListener(harness, async (socketPath) => {
+    for (const [name, args] of [
+      ['verity_tasks', { action: 'list' }],
+      ['verity_repairs', { action: 'status' }],
+      ['verity_app_help', { topic: 'github' }],
+      ['verity_start_planning', {}],
+    ] as const) {
+      const response = await postUnix(socketPath, `Bearer ${token}`, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      });
+      const result = JSON.parse(response.body) as { result: { isError?: boolean } };
+      expect(result.result.isError, name).toBe(true);
+      expect(response.body).toContain('Wiki maintenance allows only Wiki operations');
+    }
+  });
+  expect(harness.approvals).toHaveLength(0);
 });
 
 it('keeps the session task list available while planning, unlike external tools', async () => {

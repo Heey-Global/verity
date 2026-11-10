@@ -14,8 +14,16 @@ type PairedRoutePolicy =
  * including collections and cross-project actions. */
 const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
+    routeScopeKey('POST', '/sessions/:id/mockups'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/inquiry-grants'),
     { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('PATCH', '/projects/:id/profile'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
     routeScopeKey('PUT', '/projects/:id/inquiry-grants'),
@@ -36,6 +44,22 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [
     routeScopeKey('GET', '/projects/:id/repositories'),
     { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/repository-instructions'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/pull-requests'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/merge'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/pull-requests/:repositoryId/:number/fix'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
   ],
   [
     routeScopeKey('POST', '/projects/:id/repositories'),
@@ -82,11 +106,40 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('GET', '/projects/:id/knowledge/wiki'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('GET', '/projects/:id/knowledge/files/download'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [
+    routeScopeKey('DELETE', '/projects/:id/knowledge/files'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
     routeScopeKey('PUT', '/projects/:id/knowledge/files/content'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/files/rename'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  // Proposed Wiki changes are read like the Wiki and decided like an edit of it.
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/proposals'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge/proposals/:proposalId'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/proposals/:proposalId/apply'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/knowledge/proposals/:proposalId/reject'),
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
@@ -208,6 +261,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
   [routeScopeKey('GET', '/projects/:id'), { kind: 'project', parameter: 'id', permission: 'read' }],
   [
     routeScopeKey('GET', '/projects/:id/github/issues'),
+    { kind: 'project', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/issues'),
     { kind: 'project', parameter: 'id', permission: 'read' },
   ],
   [

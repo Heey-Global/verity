@@ -101,6 +101,8 @@ export interface ProjectSettingsRecord {
   googleDriveAccessMode: 'read-only' | 'read-write';
   /** Design module: whether plans include mockups the user approves before the build. */
   designLevel: 'off' | 'on_request' | 'required';
+  /** One line shown under the project's name; null when none was written. */
+  description: string | null;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -122,6 +124,7 @@ type ProjectSettingsKey =
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
   | 'designLevel'
+  | 'description'
   | 'allowedAgents';
 
 type ProjectSettingsPatch = {

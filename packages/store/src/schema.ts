@@ -15,6 +15,24 @@ export interface ProjectInquirySessionsTable {
   change_approved: Generated<boolean>;
 }
 
+export interface WikiOccasionsTable {
+  id: string;
+  project_id: string;
+  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
+  ref: string;
+  title: string;
+  body: string | null;
+  created_at: Generated<Date>;
+  closed_at: Date | null;
+}
+
+/** The quiet session a project's Wiki is maintained in, and its last run. */
+export interface WikiMaintenanceTable {
+  project_id: string;
+  session_id: string | null;
+  last_run_at: Date | null;
+}
+
 export interface ProjectInquiriesTable {
   id: string;
   source_session_id: string;
@@ -431,6 +449,12 @@ export interface ProjectsTable {
   owner: string;
   /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** The project's own name, shown wherever the project is named. NULL only
+   *  for rows written before migration 0204 by an older writer. */
+  name: ColumnType<string | null, string | null | undefined, string | null>;
+  /** 1 for the first project of a repository; each further project of the same
+   *  repository takes the next number. Part of the unique repository identity. */
+  repository_instance: ColumnType<number, number | undefined, number>;
   /** `verity-<owner>--<repo>` — single hyphen-slug, lowercased. */
   container_name: string;
   /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
@@ -524,6 +548,7 @@ interface ProjectIdentityClaimsTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   owner: string;
   repo: string;
+  repository_instance: ColumnType<number, number | undefined, never>;
   project_id: string;
   created_at: ColumnType<Date, string | undefined, never>;
 }
@@ -565,6 +590,8 @@ export interface ProjectSettingsTable {
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
   /** Design module: whether plans include mockups to approve before implementation. */
   design_level: Generated<'off' | 'on_request' | 'required'>;
+  /** One line shown under the project's name; null when none was written. */
+  description: ColumnType<string | null, string | null | undefined, string | null>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,
@@ -1011,6 +1038,15 @@ interface SessionPendingNoteTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Baselines and permanent retirement of completed PRs from active session UI. */
+interface SessionPrVisibilityTable {
+  session_id: string;
+  worktree: string;
+  pr_url: string;
+  fingerprint: string;
+  hidden: boolean;
+}
+
 /** Durable de-dupe markers for server-authored automatic turns. */
 interface SessionAutomationMarkerTable {
   session_id: string;
@@ -1199,6 +1235,7 @@ interface TrustedCliOutputsTable {
   session_id: string;
   expires_at: ColumnType<Date, string, string>;
   next_sequence: number;
+  started_at: ColumnType<Date, string | undefined, never>;
   /** Encrypted completion metadata; null while the invocation is running. */
   result: string | null;
 }
@@ -1744,6 +1781,8 @@ export interface Database {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
+  wiki_occasions: WikiOccasionsTable;
+  wiki_maintenance: WikiMaintenanceTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
@@ -1847,6 +1886,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  session_pr_visibility: SessionPrVisibilityTable;
   pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;

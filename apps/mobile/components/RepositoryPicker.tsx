@@ -7,7 +7,7 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { CodeHostIcon } from './CodeHostIcon';
 import { settingsStyles as styles } from './settings/settingsStyles';
-import { Button, Group, Row, StatusTag, Text, TextField } from './ui';
+import { Button, Group, Row, SearchField, Sheet, StatusTag, Text, TextField } from './ui';
 
 export type Repository = { owner: string; repo: string; archived?: boolean | undefined };
 const repositoryName = (repository: Repository) => `${repository.owner}/${repository.repo}`;
@@ -20,6 +20,8 @@ export function RepositoryPicker({
   onSelect,
   disabled = false,
   autoSelect = true,
+  exclude,
+  onAdd,
 }: {
   client: VerityClient;
   host: CodeHost;
@@ -32,6 +34,11 @@ export function RepositoryPicker({
   /** Preselect the first active repository. Off where a choice has consequences
    *  a single tap should not trigger (linking pushes history). */
   autoSelect?: boolean;
+  /** `owner/repo` names left out of the list, such as those already connected. */
+  exclude?: readonly string[] | undefined;
+  /** Turns the list into one-tap actions: a row adds its repository instead of
+   *  selecting it, so no separate confirm button is needed. */
+  onAdd?: ((repository: string) => void) | undefined;
 }) {
   const { theme } = useUnistyles();
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -87,41 +94,74 @@ export function RepositoryPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSelect, client, generation, host, initialGithubRepositories]);
 
+  const offered = useMemo(() => {
+    const excluded = new Set(exclude?.map((name) => name.toLowerCase()));
+    return repositories.filter(
+      (repository) => !excluded.has(repositoryName(repository).toLowerCase()),
+    );
+  }, [exclude, repositories]);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle === ''
-      ? repositories
-      : repositories.filter((repository) =>
-          repositoryName(repository).toLowerCase().includes(needle),
-        );
-  }, [query, repositories]);
+      ? offered
+      : offered.filter((repository) => repositoryName(repository).toLowerCase().includes(needle));
+  }, [query, offered]);
 
   return (
     <>
-      <TextField
-        label="Search repositories"
-        value={query}
-        onChangeText={setQuery}
-        placeholder={`owner/repository on ${host.title}`}
-        literal
-        disabled={disabled || loading || repositories.length === 0}
-      />
+      {onAdd ? (
+        <SearchField
+          value={query}
+          onChangeText={setQuery}
+          placeholder={`Search ${host.title} repositories`}
+        />
+      ) : (
+        <TextField
+          label="Search repositories"
+          value={query}
+          onChangeText={setQuery}
+          placeholder={`owner/repository on ${host.title}`}
+          literal
+          disabled={disabled || loading || repositories.length === 0}
+        />
+      )}
       {loading ? (
         <ActivityIndicator color={theme.colors.text} />
       ) : visible.length > 0 ? (
         <Group>
-          {visible.map((repository) => (
-            <Row
-              key={repositoryName(repository)}
-              title={repositoryName(repository)}
-              {...(repository.archived
-                ? { trailing: <StatusTag intent="optional" label="Archived" /> }
-                : {})}
-              selected={selected === repositoryName(repository)}
-              disabled={disabled}
-              onPress={() => onSelect(repositoryName(repository))}
-            />
-          ))}
+          {visible.map((repository) =>
+            onAdd ? (
+              <Row
+                key={repositoryName(repository)}
+                leading={{
+                  element: <CodeHostIcon provider={host.provider} color={theme.colors.textMuted} />,
+                }}
+                title={repository.repo}
+                subtitle={repositoryName(repository)}
+                trailing={
+                  repository.archived ? (
+                    <StatusTag intent="optional" label="Archived" />
+                  ) : (
+                    <Text tone="faint">Add</Text>
+                  )
+                }
+                disabled={disabled}
+                accessibilityLabel={`Add ${repositoryName(repository)}`}
+                onPress={() => onAdd(repositoryName(repository))}
+              />
+            ) : (
+              <Row
+                key={repositoryName(repository)}
+                title={repositoryName(repository)}
+                {...(repository.archived
+                  ? { trailing: <StatusTag intent="optional" label="Archived" /> }
+                  : {})}
+                selected={selected === repositoryName(repository)}
+                disabled={disabled}
+                onPress={() => onSelect(repositoryName(repository))}
+              />
+            ),
+          )}
         </Group>
       ) : (
         <>
@@ -129,7 +169,9 @@ export function RepositoryPicker({
             {error ??
               (repositories.length === 0
                 ? `No repositories on ${host.title} yet.`
-                : 'No repository matches the search.')}
+                : offered.length === 0
+                  ? 'Every repository is already connected.'
+                  : 'No repository matches the search.')}
           </Text>
           <View style={styles.selfStart}>
             <Button
@@ -170,3 +212,66 @@ export function CodeHostOption({
     />
   );
 }
+
+/**
+ * The "Add repository" sheet: the code hosts to choose from when there are
+ * several, and one tap on a repository adds it. Shared by the project's
+ * repositories and New project, so both offer repositories the same way.
+ */
+export function AddRepositorySheet({
+  client,
+  visible,
+  hosts,
+  githubRepositories,
+  exclude,
+  disabled = false,
+  onAdd,
+  onClose,
+}: {
+  client: VerityClient;
+  visible: boolean;
+  hosts: readonly CodeHost[];
+  githubRepositories?: readonly Repository[] | undefined;
+  /** `owner/repo` names of the host left out, such as those already chosen. */
+  exclude: (host: CodeHost) => readonly string[];
+  disabled?: boolean;
+  onAdd: (host: CodeHost, repository: string) => void;
+  onClose: () => void;
+}) {
+  const [hostId, setHostId] = useState<string | undefined>(hosts[0]?.id);
+  const host = hosts.find((candidate) => candidate.id === hostId) ?? hosts[0];
+  return (
+    <Sheet visible={visible} title="Add repository" onClose={onClose}>
+      {hosts.length > 1 ? (
+        <Group>
+          {hosts.map((candidate) => (
+            <CodeHostOption
+              key={candidate.id}
+              host={candidate}
+              selected={candidate.id === host?.id}
+              disabled={disabled}
+              onPress={() => setHostId(candidate.id)}
+            />
+          ))}
+        </Group>
+      ) : null}
+      {host ? (
+        <RepositoryPicker
+          // A fresh list per host: its search and selection belong to that host.
+          key={host.id}
+          client={client}
+          host={host}
+          initialGithubRepositories={githubRepositories}
+          selected={null}
+          onSelect={ignoreSelection}
+          disabled={disabled}
+          autoSelect={false}
+          exclude={exclude(host)}
+          onAdd={(repository) => onAdd(host, repository)}
+        />
+      ) : null}
+    </Sheet>
+  );
+}
+
+const ignoreSelection = () => undefined;

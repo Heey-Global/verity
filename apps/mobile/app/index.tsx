@@ -11,6 +11,7 @@ import {
   rowPressIn,
 } from '../lib/sessionSwitchTiming';
 import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
+import { projectTitle } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { SessionDragSlot } from '../components/SessionDragSlot';
@@ -75,6 +76,8 @@ import {
   Alert,
   Animated,
   type LayoutChangeEvent,
+  type FlatList,
+  type ScrollView,
   Linking,
   type ListRenderItemInfo,
   Pressable,
@@ -128,16 +131,23 @@ import { SessionChat } from './session/[id]';
 import { HomeInbox } from '../components/home/HomeInbox';
 import { ProviderUsageGroup, ProviderUsageStrip } from '../components/ProviderUsage';
 import { HomeTabBar, type HomeTab } from '../components/home/HomeTabBar';
+import { pressHomeTab } from '../components/home/pressHomeTab';
 import { useNewDesign } from '../lib/homePreferences';
 import { ProjectPage } from '../components/project/ProjectPage';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
-import { KnowledgePaneContext, type KnowledgePane } from '../components/knowledge/KnowledgePane';
+import {
+  followMove,
+  KnowledgePaneContext,
+  type KnowledgePane,
+} from '../components/knowledge/KnowledgePane';
 import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
+import { useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
+import { deleteSessionRequest } from '../lib/deleteSessionRequest';
 
 export default function SessionsScreen() {
   const client = useMemo(() => createVerityClient(), []);
@@ -207,7 +217,11 @@ function SessionList({ client }: { client: VerityClient }) {
     ]);
   }, []);
   const knowledgePane = useMemo<KnowledgePane>(
-    () => ({ openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })) }),
+    () => ({
+      openFile: (scope, file) => afterDiscard(() => setKnowledgeFile({ scope, file })),
+      moved: (scope, from, to) =>
+        setKnowledgeFile((current) => followMove(current, scope, from, to)),
+    }),
     [afterDiscard],
   );
   // Any other way to a session (a deep link, a move, a deletion) as well —
@@ -278,6 +292,7 @@ function SessionList({ client }: { client: VerityClient }) {
     providerLimitRows,
     serverAttention,
   } = useSessionList(client);
+  const [confirm, confirmSheet] = useConfirm();
   // On a wide screen the usage sits in the header beside the wordmark, so it
   // stays in view whatever the left column shows. The header lays out whatever
   // the overview hands it as `headerRight`, centred between title and search.
@@ -304,8 +319,8 @@ function SessionList({ client }: { client: VerityClient }) {
     [setFavorite],
   );
   const onDeleteSession = useCallback(
-    (session: SessionSummary) => confirmDeleteSession(session, remove),
-    [remove],
+    (session: SessionSummary) => confirm(deleteRequest(session, remove)),
+    [confirm, remove],
   );
   const authRequired = error !== undefined && isAuthRequiredError(error);
   const { unread, markSeen } = useUnread(client, sessions);
@@ -528,6 +543,7 @@ function SessionList({ client }: { client: VerityClient }) {
       setDragOrder(null);
     }
   }, [projects, draggingProjectId, dragOrder]);
+  const [overviewLayoutRevision, setOverviewLayoutRevision] = useState(0);
   const [refreshingOverview, setRefreshingOverview] = useState(false);
   const [updatingProjectIds, setUpdatingProjectIds] = useState<Set<string>>(() => new Set());
   const updatingProjectIdsRef = useRef(new Set<string>());
@@ -736,6 +752,19 @@ function SessionList({ client }: { client: VerityClient }) {
     // Consumed: the same link must open the page again after "Projects" closed it.
     router.setParams({ project: undefined });
   }, [projectParam, newDesign]);
+  const homeScrollRef = useRef<ScrollView>(null);
+  const onHomeTabPress = (next: HomeTab) =>
+    pressHomeTab(next, {
+      tab: homeTab,
+      setTab: setHomeTab,
+      projectOpen: wide && openProjectId !== null,
+      verityOpen: wide && verityOpen,
+      closeProject: () => setOpenProjectId(null),
+      closeVerity: () => setVerityOpen(false),
+      scrollProjects: () =>
+        (reorder.listRef.current as FlatList | null)?.scrollToOffset({ offset: 0, animated: true }),
+      scrollHome: () => homeScrollRef.current?.scrollTo({ y: 0, animated: true }),
+    });
   const [homeCount, setHomeCount] = useState(0);
   const openSessionFromHome = useCallback(
     (sessionId: string, options?: { mockups?: boolean }) => {
@@ -843,6 +872,8 @@ function SessionList({ client }: { client: VerityClient }) {
             group={item}
             client={client}
             now={Date.now()}
+            unread={unread}
+            layoutRevision={overviewLayoutRevision}
             reorder={reorder}
             renderedOrder={activeGroupIds}
             sortable={isReorderableGroup(item)}
@@ -894,6 +925,7 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [
       activeGroupIds,
+      overviewLayoutRevision,
       collapsedOverride,
       toggleProjectGroup,
       draggingProjectId,
@@ -948,6 +980,7 @@ function SessionList({ client }: { client: VerityClient }) {
     try {
       await Promise.allSettled([refresh(), refreshProjects()]);
     } finally {
+      setOverviewLayoutRevision((value) => value + 1);
       setRefreshingOverview(false);
     }
   }, [refresh, refreshProjects]);
@@ -958,8 +991,10 @@ function SessionList({ client }: { client: VerityClient }) {
   // stale banner.
   const onDeleteRenaming = useCallback(() => {
     if (!renaming) return;
-    confirmDeleteSession(renaming, remove, () => setRenaming(null));
-  }, [renaming, remove]);
+    // One sheet at a time: the confirmation replaces the rename sheet.
+    setRenaming(null);
+    confirm(deleteRequest(renaming, remove, true));
+  }, [confirm, renaming, remove]);
 
   // What the open page shows, as text: polls hand back fresh arrays even when
   // nothing changed, and its detail route is not cheap, so it reloads only when
@@ -1135,7 +1170,8 @@ function SessionList({ client }: { client: VerityClient }) {
           displayName={sessionLabel(renaming)}
           projectId={renaming.projectId ?? null}
           projectName={
-            projects.find((project) => project.id === renaming.projectId)?.repo ?? 'No project'
+            projectTitle(projects.find((project) => project.id === renaming.projectId)) ??
+            'No project'
           }
           canMove={
             renaming.status !== 'running' &&
@@ -1151,7 +1187,7 @@ function SessionList({ client }: { client: VerityClient }) {
           client={client}
           projects={projects
             .filter((project) => project.kind === 'local')
-            .map((project) => ({ id: project.id, name: project.repo }))}
+            .map((project) => ({ id: project.id, name: projectTitle(project) }))}
           linkableSessions={sessions
             .filter((candidate) => isLinkableSession(candidate, renaming.sessionId, projects))
             .map((candidate) => ({
@@ -1159,7 +1195,7 @@ function SessionList({ client }: { client: VerityClient }) {
               name: sessionLabel(candidate),
               projectId: candidate.projectId!,
               projectName:
-                projects.find((project) => project.id === candidate.projectId)?.repo ??
+                projectTitle(projects.find((project) => project.id === candidate.projectId)) ??
                 candidate.projectId!,
               detail: modelDisplayName(candidate.model),
             }))}
@@ -1188,6 +1224,8 @@ function SessionList({ client }: { client: VerityClient }) {
         // Home beside the page shows the same items; it must not offer an answered one again.
         reloadOn={reloadToken}
         onInboxSaved={() => void Promise.allSettled([refresh({ silent: true }), refreshProjects()])}
+        // The project list beside the page names the project too.
+        onProjectChanged={() => void refreshProjects()}
         onSessionChanged={(sessionId, deleted) => {
           // The list and the session pane beside the page show the same sessions.
           if (deleted && selectedId === sessionId) setSelectedId(null);
@@ -1210,6 +1248,7 @@ function SessionList({ client }: { client: VerityClient }) {
         ]}
       >
         <HomeInbox
+          scrollRef={homeScrollRef}
           client={client}
           sessions={sessions}
           projects={projects}
@@ -1231,7 +1270,7 @@ function SessionList({ client }: { client: VerityClient }) {
       </View>
       <HomeTabBar
         tab={homeTab}
-        onChange={setHomeTab}
+        onChange={onHomeTabPress}
         count={homeCount}
         bottomInset={insets.bottom}
       />
@@ -1251,6 +1290,7 @@ function SessionList({ client }: { client: VerityClient }) {
         <View style={styles.flex}>
           <ProviderUsageStrip rows={providerLimitRows} />
           {sidebar}
+          {confirmSheet}
         </View>
       </SchedulingDiagnostics>
     );
@@ -1260,6 +1300,7 @@ function SessionList({ client }: { client: VerityClient }) {
       <View style={styles.splitRow}>
         <View style={[styles.leftPane, { width: sidebarWidth }]}>
           <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
+          {confirmSheet}
         </View>
         <View style={styles.rightPane}>
           {knowledgeFile ? (
@@ -1858,7 +1899,7 @@ const ProjectGroup = memo(function ProjectGroup({
                 <Pressable
                   style={styles.projectIconButton}
                   accessibilityRole="button"
-                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
+                  accessibilityLabel={`Start new session in ${projectTitle(defaultNewSessionProject)}`}
                   onPress={() => onNewSession(defaultNewSessionProject)}
                 >
                   <Icon name="plus" size={20} color={theme.colors.action} />
@@ -1871,7 +1912,7 @@ const ProjectGroup = memo(function ProjectGroup({
                       projectId: defaultNewSessionProject.id,
                     },
                   }}
-                  accessibilityLabel={`Start new session in ${defaultNewSessionProject.repo}`}
+                  accessibilityLabel={`Start new session in ${projectTitle(defaultNewSessionProject)}`}
                   asChild
                 >
                   <Pressable style={styles.projectIconButton} accessibilityRole="button">
@@ -1891,16 +1932,16 @@ const ProjectGroup = memo(function ProjectGroup({
 });
 
 // Delete is destructive + irreversible (drops history, removes the worktree), so
-// confirm with a native alert before firing. Called from the rename modal (opened
-// by a row long-press) and from the row's swipe/context-menu action; `onConfirmed`
-// lets the modal close itself after the delete.
-function confirmDeleteSession(
+// it is confirmed first, with the offer to keep a project session for its Wiki.
+// Used from the rename modal (opened by a row long-press, closed before asking)
+// and from the row's swipe/context-menu action.
+function deleteRequest(
   session: SessionSummary,
-  remove: (sessionId: string, opts?: { force?: boolean }) => Promise<void>,
-  onConfirmed?: () => void,
-): void {
-  const deleteSession = (force = false) => {
-    void remove(session.sessionId, { force }).catch((error: unknown) => {
+  remove: (sessionId: string, opts?: { force?: boolean; wiki?: boolean }) => Promise<void>,
+  afterSheet = false,
+) {
+  const deleteSession = (wiki: boolean, force = false) => {
+    void remove(session.sessionId, { force, wiki }).catch((error: unknown) => {
       if (error instanceof VerityApiError && error.status === 409 && !force) {
         Alert.alert(
           'Session is still running',
@@ -1910,7 +1951,7 @@ function confirmDeleteSession(
             {
               text: 'Delete anyway',
               style: 'destructive',
-              onPress: () => deleteSession(true),
+              onPress: () => deleteSession(wiki, true),
             },
           ],
         );
@@ -1921,22 +1962,15 @@ function confirmDeleteSession(
         error instanceof Error ? error.message : 'Please try again.',
       );
     });
-    onConfirmed?.();
   };
-
-  Alert.alert(
-    'Delete session?',
-    `This permanently removes "${sessionLabel(session)}" — its history${session.automation ? ', its automation,' : ''} and worktree. This can't be undone.`,
-    [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          deleteSession();
-        },
-      },
-    ],
+  return deleteSessionRequest(
+    {
+      label: sessionLabel(session),
+      projectId: session.projectId ?? null,
+      automation: Boolean(session.automation),
+    },
+    ({ wiki }) => deleteSession(wiki),
+    afterSheet,
   );
 }
 

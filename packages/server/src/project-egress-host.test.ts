@@ -1,3 +1,7 @@
+import { DockerError } from './docker.js';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
+import { createProjectEgressHostClient } from './project-egress-host-client.js';
+import { ProtectedBuildHost } from './project-egress-build.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, chmod, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -254,15 +258,35 @@ it('stores atomically and refuses corrupt or symlinked registry files', async ()
 it('requires authentication on the real Unix listener and never exposes raw execution', async () => {
   const root = await directory();
   const { host, deps } = fixture();
-  servers.push(
-    await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+  const buildReady = vi.fn(async () => true);
+  const builds = new ProtectedBuildHost(
+    {
+      ready: buildReady,
+      prepare: async () => {},
+      renew: async () => {},
+      start: async () => {},
+      status: async () => 'running',
+      deny: async () => {},
+      stop: async () => {},
+      ended: async () => true,
+      remove: async () => {},
+    },
+    async () => {},
   );
-  const send = (token: string, body: unknown) =>
+  servers.push(
+    await listenProjectEgressHost({
+      directory: root,
+      token: 'a'.repeat(64),
+      controller: host,
+      builds,
+    }),
+  );
+  const send = (token: string, body: unknown, path = '/v1/command') =>
     new Promise<number>((resolve, reject) => {
       const call = request(
         {
           socketPath: join(root, 'control.sock'),
-          path: '/v1/command',
+          path,
           method: 'POST',
           headers: { authorization: `Bearer ${token}` },
         },
@@ -274,6 +298,11 @@ it('requires authentication on the real Unix listener and never exposes raw exec
       call.on('error', reject);
       call.end(JSON.stringify(body));
     });
+  expect(await send('wrong', { operation: 'health' }, '/v1/build')).toBe(401);
+  expect(buildReady).not.toHaveBeenCalled();
+  expect(await send('a'.repeat(64), { operation: 'health' }, '/v1/build')).toBe(200);
+  expect(buildReady).toHaveBeenCalledTimes(1);
+  expect(await send('a'.repeat(64), { operation: 'exec', command: 'true' }, '/v1/build')).toBe(409);
   expect(await send('wrong', { operation: 'health' })).toBe(401);
   expect(await send('a'.repeat(64), { operation: 'health' })).toBe(200);
   expect(deps.save).not.toHaveBeenCalled();
@@ -656,5 +685,508 @@ it('secures a fresh Docker bind directory before reading the missing host regist
     }
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('carries sanitized inventory errors through the authenticated real listener with safe correlation', async () => {
+  const root = await directory();
+  const { host } = fixture();
+  vi.spyOn(host, 'execute').mockRejectedValue(
+    new ProjectEgressInventoryError('inventory_dns_failed'),
+  );
+  const log = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    servers.push(
+      await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+    );
+    const command = createProjectEgressHostClient({
+      socketPath: join(root, 'control.sock'),
+      token: 'a'.repeat(64),
+    });
+    const refused = await command({
+      operation: 'inventory-commit',
+      token: '00000000-0000-4000-8000-000000000001',
+      hosts: ['private.example.org'],
+      addresses: [],
+    }).catch((error: unknown) => error);
+    if (!(refused instanceof ProjectEgressInventoryError))
+      throw new Error('Expected inventory refusal');
+    expect(refused.reason).toBe('inventory_dns_failed');
+    expect(refused.correlationId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(log).toHaveBeenCalledWith('verity: inventory command refused', {
+      operation: 'inventory-commit',
+      reason: 'inventory_dns_failed',
+      correlationId: refused.correlationId,
+    });
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private.example.org');
+    expect(JSON.stringify(log.mock.calls)).not.toContain('00000000-0000-4000-8000-000000000001');
+  } finally {
+    log.mockRestore();
+  }
+});
+
+it('durably reserves host allocation before Docker create and recovers a failed creation after restart', async () => {
+  const f = fixture();
+  const identity = { projectId: binding.projectId, generation: binding.generation };
+  const allocateNetwork = vi.fn(async () => {
+    expect(f.saved().pendingNetworks).toEqual([identity]);
+    throw new Error('daemon response lost');
+  });
+  const cleanupPendingNetwork = vi.fn(async () => {});
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    { ...f.deps, allocateNetwork, cleanupPendingNetwork },
+  );
+  await expect(host.execute({ operation: 'allocate-network', ...identity })).rejects.toThrow(
+    'response lost',
+  );
+  const restarted = new ProjectEgressHost(f.saved(), {
+    ...f.deps,
+    allocateNetwork,
+    cleanupPendingNetwork,
+  });
+  await restarted.cleanupNetworks();
+  expect(cleanupPendingNetwork).toHaveBeenCalledWith(identity);
+  expect(f.saved().pendingNetworks).toEqual([]);
+});
+it('serializes pending cleanup behind creation and preserves registered live networks', async () => {
+  const f = fixture();
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const cleanupPendingNetwork = vi.fn(async () => {});
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...f.deps,
+      allocateNetwork: async () => {
+        await wait;
+        return binding;
+      },
+      cleanupPendingNetwork,
+    },
+  );
+  const creating = host.execute({
+    operation: 'allocate-network',
+    projectId: binding.projectId,
+    generation: binding.generation,
+  });
+  const cleaning = host.cleanupNetworks();
+  release();
+  await expect(creating).resolves.toEqual({ state: 'network-allocated', binding });
+  await cleaning;
+  expect(cleanupPendingNetwork).not.toHaveBeenCalled();
+  expect(f.saved().pendingNetworks).toEqual([]);
+  expect(f.saved().records).toHaveLength(1);
+});
+it('retries retired cleanup after failure while retaining deny fences and permanent tombstones', async () => {
+  const f = fixture({ version: 1, records: [{ binding, retired: true, containers: {} }] });
+  const cleanupNetwork = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('Docker offline'))
+    .mockResolvedValue(true);
+  const host = new ProjectEgressHost(f.saved(), { ...f.deps, cleanupNetwork });
+  await expect(host.cleanupNetworks()).rejects.toThrow('cleanup deferred');
+  await host.cleanupNetworks();
+  expect(cleanupNetwork).toHaveBeenCalledTimes(2);
+  expect(f.deps.apply).toHaveBeenCalledTimes(2);
+  await expect(host.execute(start)).rejects.toThrow('Retired');
+});
+
+it('retries a failed explicit retirement stop after restart before removing its network', async () => {
+  const f = fixture();
+  await f.host.execute({ operation: 'register', binding });
+  await f.host.execute(start);
+  f.deps.stopContainer.mockRejectedValueOnce(new Error('Docker temporarily unavailable'));
+  await expect(
+    f.host.execute({
+      operation: 'retire',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).rejects.toThrow('container stop failed');
+  const cleanupNetwork = vi.fn(async () => {
+    expect(f.deps.stopContainer).toHaveBeenCalledTimes(2);
+    return true;
+  });
+  const restarted = new ProjectEgressHost(f.saved(), { ...f.deps, cleanupNetwork });
+  await restarted.cleanupNetworks();
+  expect(cleanupNetwork).toHaveBeenCalledWith(binding, { sandbox: id }, undefined);
+  expect(f.saved().records[0]?.networkRemoved).toBe(true);
+  await expect(restarted.execute(start)).rejects.toThrow('Retired');
+});
+
+it('accepts a matching allocation acknowledgement through the authenticated host transport', async () => {
+  const root = await directory();
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    { ...deps, allocateNetwork: async () => binding },
+  );
+  servers.push(
+    await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+  );
+  const command = createProjectEgressHostClient({
+    socketPath: join(root, 'control.sock'),
+    token: 'a'.repeat(64),
+  });
+  await expect(
+    command({
+      operation: 'allocate-network',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).resolves.toEqual({ state: 'network-allocated', binding });
+});
+
+it('returns only a fixed address-pool diagnostic through authenticated network allocation', async () => {
+  const root = await directory();
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...deps,
+      allocateNetwork: async () => {
+        throw new DockerError({
+          kind: 'address_pool_exhausted',
+          message: 'private daemon details',
+        });
+      },
+    },
+  );
+  servers.push(
+    await listenProjectEgressHost({ directory: root, token: 'a'.repeat(64), controller: host }),
+  );
+  const command = createProjectEgressHostClient({
+    socketPath: join(root, 'control.sock'),
+    token: 'a'.repeat(64),
+  });
+  const error = await command({
+    operation: 'allocate-network',
+    projectId: 'p1',
+    generation: 'g1',
+  }).catch((error: unknown) => error);
+  expect(error).toBeInstanceOf(DockerError);
+  expect(error).toMatchObject({
+    kind: 'address_pool_exhausted',
+    message: expect.stringContaining('default-address-pools'),
+  });
+  expect(String(error)).not.toContain('private daemon details');
+});
+
+it('recovers the allocation intent when network creation succeeded but registration inspection failed', async () => {
+  const f = fixture();
+  const cleanupPendingNetwork = vi.fn(async () => {});
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...f.deps,
+      allocateNetwork: async () => binding,
+      inspectNetwork: async () => {
+        throw new Error('inspection interrupted');
+      },
+    },
+  );
+  await expect(
+    host.execute({
+      operation: 'allocate-network',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    }),
+  ).rejects.toThrow('inspection interrupted');
+  expect(f.saved().records).toEqual([]);
+  const restarted = new ProjectEgressHost(f.saved(), { ...f.deps, cleanupPendingNetwork });
+  await restarted.cleanupNetworks();
+  expect(cleanupPendingNetwork).toHaveBeenCalledExactlyOnceWith({
+    projectId: binding.projectId,
+    generation: binding.generation,
+  });
+});
+
+it('keeps failed pending cleanup intents durable and eventually visits entries beyond the bounded batch', async () => {
+  const f = fixture();
+  const pendingNetworks = Array.from({ length: 9 }, (_, i) => ({
+    projectId: 'p1',
+    generation: `g${i}`,
+  }));
+  const cleanupPendingNetwork = vi.fn(async () => {
+    throw new Error('unknown ownership');
+  });
+  const host = new ProjectEgressHost(
+    { version: 1, records: [], pendingNetworks },
+    { ...f.deps, cleanupPendingNetwork },
+  );
+  await expect(host.cleanupNetworks()).rejects.toThrow('cleanup deferred');
+  expect(cleanupPendingNetwork).toHaveBeenCalledTimes(8);
+  await expect(host.cleanupNetworks()).rejects.toThrow('cleanup deferred');
+  expect(cleanupPendingNetwork).toHaveBeenCalledWith(pendingNetworks[8]);
+  expect(f.deps.save).not.toHaveBeenCalled();
+});
+
+it('expires a completed allocation with a lost reply and no future provisioning, even after host restart', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const f = fixture();
+    const host = new ProjectEgressHost(
+      { version: 1, records: [] },
+      { ...f.deps, allocateNetwork: async () => binding },
+    );
+    await host.execute({
+      operation: 'allocate-network',
+      projectId: binding.projectId,
+      generation: binding.generation,
+    });
+    const cleanupNetwork = vi.fn(async () => true);
+    const restarted = new ProjectEgressHost(f.saved(), { ...f.deps, cleanupNetwork });
+    await restarted.cleanupNetworks();
+    expect(cleanupNetwork).not.toHaveBeenCalled();
+    vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+    await expect(restarted.execute(start)).rejects.toThrow('allocation expired');
+    await restarted.cleanupNetworks();
+    expect(cleanupNetwork).toHaveBeenCalledWith(binding, {}, true);
+    expect(f.saved().records[0]).toMatchObject({
+      retired: true,
+      allocationAbandoned: true,
+      networkRemoved: true,
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('does not block another project query or admission behind slow retired Docker housekeeping', async () => {
+  const f = fixture({ version: 1, records: [{ binding, retired: true, containers: {} }] });
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const host = new ProjectEgressHost(f.saved(), {
+    ...f.deps,
+    cleanupNetwork: async () => {
+      entered();
+      await wait;
+      return true;
+    },
+  });
+  const cleaning = host.cleanupNetworks();
+  await started;
+  await expect(
+    host.execute({ operation: 'current', projectId: 'another-project' }),
+  ).resolves.toMatchObject({ state: 'current', binding: null });
+  release();
+  await cleaning;
+});
+
+it('clears allocation expiry after verified transport and preserves the connected generation after the deadline', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const f = fixture({
+      version: 1,
+      records: [
+        {
+          binding,
+          retired: false,
+          allocationExpiresAt: Date.now() + 5 * 60_000,
+          containers: { sandbox: id, relay: 'c'.repeat(64) },
+        },
+      ],
+    });
+    const cleanupNetwork = vi.fn(async () => true);
+    const host = new ProjectEgressHost(f.saved(), {
+      ...f.deps,
+      cleanupNetwork,
+      inspectTransport: async () => ({
+        sandbox: {
+          address: '172.30.0.3',
+          mac: '02:42:ac:1e:00:03',
+          device: 'vethsandbox',
+          index: 10,
+        },
+        relay: { address: '172.30.0.2', mac: '02:42:ac:1e:00:02', device: 'vethrelay', index: 11 },
+        codex: true,
+      }),
+    });
+    await expect(host.execute(start)).resolves.toMatchObject({ state: 'started-connected' });
+    expect(f.saved().records[0]?.allocationExpiresAt).toBeUndefined();
+    vi.setSystemTime(Date.now() + 10 * 60_000);
+    await host.cleanupNetworks();
+    expect(cleanupNetwork).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('logs correlated protected-build refusals without exposing raw exception data', async () => {
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => {
+          throw new Error('SECRET /private/daemon/path');
+        },
+        prepare: async () => {},
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'running',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove: async () => {},
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const call = request(
+        {
+          socketPath: join(root, 'control.sock'),
+          path: '/v1/build',
+          method: 'POST',
+          headers: { authorization: `Bearer ${'a'.repeat(64)}` },
+        },
+        (reply) => {
+          let body = '';
+          reply.on('data', (chunk: Buffer) => {
+            body += chunk.toString();
+          });
+          reply.on('end', () => resolve({ status: reply.statusCode!, body }));
+        },
+      );
+      call.on('error', reject);
+      call.end(JSON.stringify({ operation: 'health' }));
+    });
+    expect(response.status).toBe(409);
+    const diagnostic = JSON.parse(response.body) as { reason: string; correlationId: string };
+    expect(diagnostic).toMatchObject({
+      reason: 'operation_refused',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'health',
+      reason: diagnostic.reason,
+      correlationId: diagnostic.correlationId,
+    });
+    expect(response.body + JSON.stringify(warn.mock.calls)).not.toMatch(/SECRET|\/private/u);
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('carries a correlated startup refusal through host control and confirms release after containment', async () => {
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { superviseProtectedBuild } = await import('./project-egress-build-worker.js');
+  const { ProtectedBuildFailure } = await import('./project-egress-build-error.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const remove = vi.fn(async () => {});
+  const buildRequest = {
+    projectId: 'project-a',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    snapshot: 'attempt-a/verity-build-a',
+    image: `verity-devc-repo:${'a'.repeat(12)}`,
+    noCache: false,
+  };
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => true,
+        prepare: async () => {
+          throw new ProtectedBuildFailure('files_prepare_failed', {
+            cause: new Error('SECRET /private/path'),
+          });
+        },
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'failed',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove,
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const result = await superviseProtectedBuild(buildRequest, client);
+    expect(result).toMatchObject({
+      success: false,
+      failure: {
+        reason: 'files_prepare_failed',
+        correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+      },
+    });
+    expect(remove).toHaveBeenCalledExactlyOnceWith(buildRequest);
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'begin',
+      ...result.failure,
+    });
+    expect(JSON.stringify(result) + JSON.stringify(warn.mock.calls)).not.toMatch(
+      /SECRET|\/private/u,
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it('keeps an address-pool refusal on the build route parseable with its correlation id', async () => {
+  // A reason outside the build allowlist made the client drop both the reason and the reference.
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const builds = {
+      execute: async () => {
+        throw new DockerError({ kind: 'address_pool_exhausted', message: 'pool exhausted' });
+      },
+    } as unknown as ProtectedBuildHost;
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const refused: unknown = await client({ operation: 'health' }).catch((error: unknown) => error);
+    expect(refused).toMatchObject({
+      reason: 'address_pool_exhausted',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      'verity: protected build operation refused',
+      expect.objectContaining({ reason: 'address_pool_exhausted' }),
+    );
+  } finally {
+    warn.mockRestore();
   }
 });

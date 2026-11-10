@@ -1,3 +1,5 @@
+import { retainLatestCacheHelper } from './cache-helper-retention.js';
+import { generationNetworkIdentity } from './project-network-cleanup.js';
 import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
@@ -86,6 +88,7 @@ import {
   type DockerClient,
   type ContainerSpec,
   type ContainerInspect,
+  type DockerContainerSummary,
 } from './docker.js';
 import {
   CONTAINER_GENERATION_LABEL,
@@ -381,7 +384,9 @@ function fakeDocker(overrides?: Partial<DockerClient> & { createdContainerId?: s
     | 'removeContainer'
     | 'inspectContainer'
     | 'ensureNetwork'
+    | 'listContainers'
   > = {
+    listContainers: vi.fn(async () => []),
     ensureNetwork: vi.fn(async (name: string) => {
       calls.push({ method: 'ensureNetwork', payload: name });
     }),
@@ -483,6 +488,7 @@ function fakeGit(canned: Array<{ match: RegExp; stdout?: string; reject?: boolea
 describe('resolveImage (#174)', () => {
   const baseProject = {
     id: randomUUID(),
+    name: 'Fixture project',
     owner: 'example-org',
     repo: 'example-repo',
     containerName: 'dev-example-org-example-repo',
@@ -597,6 +603,426 @@ describe('ProvisionerImpl (#174)', () => {
     return id;
   }
 
+  it.each(['absent', 'failed', 'active', 'cloning', 'container_starting'] as const)(
+    'network reconciliation preserves retained projects and cleans only abandoned empty networks (%s)',
+    async (state) => {
+      const id = await seedProject(state);
+      if (state === 'active')
+        await ctx.store.updateProjectSleepState(id, 'sleeping', {
+          sleepCompatibilityFingerprint: 'retained',
+          sleepingSince: new Date(),
+          wakeStartedAt: null,
+        });
+      const network = {
+        Id: 'a'.repeat(64),
+        Name: projectNetworkName(id),
+        Driver: 'bridge' as const,
+        Labels: { 'verity.project-id': id },
+        Options: {},
+        Containers: {},
+      };
+      const removeNetwork = vi.fn(async () => {});
+      const { client: docker } = fakeDocker({
+        listNetworks: async () => [network],
+        inspectNetwork: async () => network,
+        listContainers: async () => [],
+        removeNetwork,
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+      });
+      await provisioner.reconcileProjectNetworks();
+      expect(removeNetwork).toHaveBeenCalledTimes(['absent', 'failed'].includes(state) ? 1 : 0);
+    },
+  );
+  it('network reconciliation waits for a later pass while a project mutation owns admission', async () => {
+    const id = await seedProject();
+    const network = {
+      Id: 'a'.repeat(64),
+      Name: projectNetworkName(id),
+      Driver: 'bridge' as const,
+      Labels: { 'verity.project-id': id },
+      Options: {},
+      Containers: {},
+    };
+    const removeNetwork = vi.fn(async () => {});
+    const { client: docker } = fakeDocker({
+      listNetworks: async () => [network],
+      inspectNetwork: async () => network,
+      listContainers: async () => [],
+      removeNetwork,
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mutation = provisioner.withProjectExclusiveMutation(id, () => wait);
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).not.toHaveBeenCalled();
+    release();
+    await mutation;
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).toHaveBeenCalledExactlyOnceWith(network.Id);
+  });
+
+  it.each(['running', 'restarting', 'created', 'paused', 'unknown', undefined])(
+    'blocks a retained wake while a labelled cache helper is %s',
+    async (state) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            ...(state === undefined ? {} : { state }),
+            labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      expect(
+        calls.some((call) => ['createContainer', 'startContainer'].includes(call.method)),
+      ).toBe(false);
+      expect((await ctx.store.getProject(id))?.state).toBe('sleeping');
+    },
+  );
+
+  it.each(['created', 'running', 'ambiguous-created'] as const)(
+    'cache helper retention recovery preserves wake admission safety for %s',
+    async (kind) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const now = Date.now();
+      const labels = { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' };
+      const state = kind === 'running' ? 'running' : 'created';
+      const summaries = new Map<string, DockerContainerSummary>([
+        [
+          'unfinished',
+          {
+            id: 'unfinished',
+            imageId: 'helper-image',
+            state,
+            labels: { ...labels },
+            created: (now - 1000) / 1000,
+            names: [
+              kind === 'ambiguous-created'
+                ? 'unverified-name'
+                : 'verity-cache-maintenance-11111111-1234-1234-1234-123456789abc',
+            ],
+          },
+        ],
+        [
+          'previous-failure',
+          {
+            id: 'previous-failure',
+            imageId: 'helper-image',
+            state: 'exited',
+            labels: { ...labels },
+            created: (now - 3000) / 1000,
+            names: ['verity-cache-maintenance-22222222-1234-1234-1234-123456789abc'],
+          },
+        ],
+      ]);
+      const inspections = new Map<string, ContainerInspect>([
+        [
+          'unfinished',
+          {
+            id: 'unfinished',
+            running: kind === 'running',
+            status: state,
+            imageId: 'helper-image',
+            labels: { ...labels },
+          },
+        ],
+        [
+          'previous-failure',
+          {
+            id: 'previous-failure',
+            running: false,
+            status: 'exited',
+            exitCode: 1,
+            finishedAt: new Date(now - 2000).toISOString(),
+            imageId: 'helper-image',
+            labels: { ...labels },
+          },
+        ],
+      ]);
+      let collecting = false;
+      const removeStoppedContainer = vi.fn(async (containerId: string) => {
+        expect(collecting).toBe(true);
+        const inspected = inspections.get(containerId);
+        if (inspected?.running) throw new Error('container is running');
+        summaries.delete(containerId);
+        inspections.delete(containerId);
+      });
+      const { client: docker, calls } = fakeDocker({
+        listContainers: async () => structuredClone([...summaries.values()]),
+        inspectContainer: async (containerId) =>
+          structuredClone(inspections.get(containerId) ?? { id: containerId, running: true }),
+        removeStoppedContainer,
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      const result = await provisioner.withProjectExclusiveMutation(id, async () => {
+        collecting = true;
+        try {
+          return await retainLatestCacheHelper({ docker, projectId: id, now });
+        } finally {
+          collecting = false;
+        }
+      });
+      if (kind === 'created') {
+        expect(result).toEqual({
+          blocked: false,
+          removed: ['unfinished'],
+          retained: ['previous-failure'],
+        });
+        expect(removeStoppedContainer.mock.calls).toEqual([['unfinished']]);
+        expect([...summaries.keys()]).toEqual(['previous-failure']);
+        // Keeping the never-started container would wedge this independent admission guard forever.
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'project relay does not support wake',
+        );
+      } else {
+        expect(result).toMatchObject({ blocked: true, removed: [] });
+        expect(removeStoppedContainer).not.toHaveBeenCalled();
+        await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+          'Runner cache maintenance is still in progress',
+        );
+        expect(
+          calls.some((call) => ['createContainer', 'startContainer'].includes(call.method)),
+        ).toBe(false);
+      }
+      expect(calls.some((call) => call.method === 'removeContainer')).toBe(false);
+    },
+  );
+
+  it.each(['provision', 'recreateContainer'] as const)(
+    'blocks %s before a surviving cache helper can lose exclusion',
+    async (operation) => {
+      const id = await seedProject(operation === 'provision' ? 'absent' : 'active');
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            state: 'running',
+            labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner[operation](id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it.each(['exited', 'dead', 'unrelated-project', 'name-only'])(
+    'does not treat %s as a live owned cache helper',
+    async (kind) => {
+      const id = await seedProject('active');
+      await ctx.store.updateProjectSleepState(id, 'sleeping', {
+        sleepCompatibilityFingerprint: 'retained',
+        sleepingSince: new Date(),
+        wakeStartedAt: null,
+      });
+      const { client: docker } = fakeDocker({
+        listContainers: vi.fn(async () => [
+          {
+            id: 'helper',
+            imageId: 'helper-image',
+            names: ['verity-cache-maintenance-name-only'],
+            state: ['exited', 'dead'].includes(kind) ? kind : 'running',
+            labels:
+              kind === 'name-only'
+                ? {}
+                : {
+                    'verity.project-id': kind === 'unrelated-project' ? 'other-project' : id,
+                    'verity.component': 'runner-cache-maintenance',
+                  },
+          },
+        ]),
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      // Reaching normal wake admission proves the helper guard did not block.
+      await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow(
+        'project relay does not support wake',
+      );
+    },
+  );
+
+  it.each(['missing', 'failed'])(
+    'retains admission when cache helper inventory is %s',
+    async (kind) => {
+      const id = await seedProject();
+      const { client: docker, calls } = fakeDocker({
+        listContainers: vi.fn(async () => {
+          throw new Error('daemon unavailable');
+        }),
+      });
+      if (kind === 'missing') delete docker.listContainers;
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        'Runner cache maintenance inventory is unavailable',
+      );
+      expect(calls).toEqual([]);
+      expect((await ctx.store.getProject(id))?.state).toBe('absent');
+    },
+  );
+
+  it.each(['provision', 'recreateContainer'] as const)(
+    'waits for the maintenance owner before %s inspects surviving helpers',
+    async (operation) => {
+      const id = await seedProject(operation === 'provision' ? 'absent' : 'active');
+      const listContainers = vi.fn(async () => [
+        {
+          id: 'helper',
+          imageId: 'helper-image',
+          state: 'running',
+          labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+        },
+      ]);
+      const { client: docker, calls } = fakeDocker({ listContainers });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => undefined,
+        defaultImageRef: 'sandbox:test',
+        hostCloneRoot: '/work',
+        dataVolumeRoot: '/srv',
+        runnerSupervisor: true,
+      });
+      let release!: () => void;
+      let entered!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const maintenance = provisioner.withProjectExclusiveMutation(id, async () => {
+        entered();
+        await pending;
+      });
+      await started;
+      const admission = provisioner[operation](id);
+      const rejected = expect(admission).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(provisioner.isProjectProvisioning(id)).toBe(false);
+        expect(listContainers).not.toHaveBeenCalled();
+      } finally {
+        // Simulate a lost Docker wait: the local owner ends while its helper survives.
+        release();
+      }
+      await maintenance;
+      await rejected;
+      expect(listContainers).toHaveBeenCalledOnce();
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it('allows an exclusive lifecycle owner to call recreate without waiting on itself', async () => {
+    const id = await seedProject('active');
+    const { client: docker } = fakeDocker({
+      listContainers: vi.fn(async () => [
+        {
+          id: 'helper',
+          imageId: 'helper-image',
+          state: 'running',
+          labels: { 'verity.project-id': id, 'verity.component': 'runner-cache-maintenance' },
+        },
+      ]),
+    });
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      dataVolumeRoot: '/srv',
+      runnerSupervisor: true,
+    });
+    await provisioner.withProjectExclusiveMutation(id, async () => {
+      await expect(provisioner.recreateContainer(id)).rejects.toThrow(
+        'Runner cache maintenance is still in progress',
+      );
+    });
+  });
+
   it('drains pending cleanup after the runner starts and before a retained wake admits turns', async () => {
     const id = await seedProject('active');
     const retained = {
@@ -702,6 +1128,16 @@ describe('ProvisionerImpl (#174)', () => {
       const host = new ProjectEgressHost(
         { version: 1, records: [] },
         {
+          allocateNetwork: async (identity) => {
+            const names = generationNetworkIdentity(identity.projectId, identity.generation);
+            networkName = names.networkName;
+            events.push('network.create');
+            return {
+              ...identity,
+              ...names,
+              networkId: (++sequence).toString(16).padStart(64, '0'),
+            };
+          },
           save: async () => {},
           apply: async () => {
             events.push('deny');
@@ -5503,7 +5939,7 @@ describe('ProvisionerImpl (#174)', () => {
 
       await expect(provisioner.provision(id)).resolves.toMatchObject({ state: 'active' });
       expect(ensureNetwork).toHaveBeenCalledWith(projectNetworkName(id), {
-        labels: { 'verity.project-id': id },
+        labels: { 'verity.project-id': id, 'verity.component': 'project-network' },
       });
       const created = dockerCalls.find((c) => c.method === 'createContainer');
       expect((created?.payload as ContainerSpec).network).toBe(projectNetworkName(id));
@@ -6945,7 +7381,7 @@ describe('ProvisionerImpl (#174)', () => {
         expect(spec.env).toContain(
           'VERITY_PROJECT_REPO_URL=http://relay:8080/internal/project/repo',
         );
-        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 6 : 1}`);
+        expect(spec.env).toContain(`GIT_CONFIG_COUNT=${proxyTest ? 7 : 1}`);
         if (proxyTest) {
           const caPath = join(secretRoot, 'git', `forge_proxy_ca.${id}.crt`);
           expect(spec.binds).toContain(`${caPath}:/run/verity/forge-proxy/ca.crt:ro`);
@@ -6959,6 +7395,7 @@ describe('ProvisionerImpl (#174)', () => {
           expect(spec.env).toContain(`GIT_CONFIG_KEY_2=http.${origin}.proxy`);
           expect(spec.env).toContain('GIT_CONFIG_VALUE_2=http://relay:8080');
           expect(spec.env).toContain('GIT_CONFIG_VALUE_3=/run/verity/forge-proxy/ca.crt');
+          expect(gitConfigEnv(spec.env ?? [])[`http.${origin}.version`]).toBe('HTTP/1.1');
         } else
           expect(spec.env?.some((entry) => entry.startsWith('VERITY_FORGE_MODE='))).toBe(false);
         expect(spec.env).toContain(`GIT_CONFIG_KEY_0=credential.${origin}.helper`);
@@ -7978,6 +8415,67 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
     return { root, clonePath };
   }
+
+  it('uses only the protected executor and does not trust a tag-only cache hit', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const openBuild = vi.fn<DevcontainerBuildSpawner>();
+      const protectedBuild = vi.fn<DevcontainerBuildSpawner>(async () => {
+        throw new Error('protected-executor-reached');
+      });
+      const imageExists = vi.fn(async () => true);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+        projectEgressEnabled: async () => true,
+        projectEgress: {} as ProjectEgressLifecycle,
+        devcontainerBuild: openBuild,
+        protectedDevcontainerBuild: protectedBuild,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow('protected-executor-reached');
+      expect(protectedBuild).toHaveBeenCalledWith(expect.objectContaining({ projectId: id }));
+      expect(openBuild).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a missing protected executor without falling back to the open builder', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const openBuild = vi.fn<DevcontainerBuildSpawner>();
+      const imageExists = vi.fn(async () => true);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker({ imageExists }).client,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'image:test',
+        hostCloneRoot: root,
+        projectEgressEnabled: async () => true,
+        projectEgress: {} as ProjectEgressLifecycle,
+        devcontainerBuild: openBuild,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+      });
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        'protected devcontainer builder is not ready',
+      );
+      expect(openBuild).not.toHaveBeenCalled();
+      expect(imageExists).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it.each(['measured', 'previous', 'missing', 'unavailable'] as const)(
     'retains the production snapshot and admission after uncertain remote failure (%s image)',
@@ -9646,6 +10144,59 @@ describe('DeprovisionerImpl (#174)', () => {
     await ctx.store.upsertProject({ id, ...baseInput, state: stateOverride });
     return id;
   }
+
+  it('retries an interrupted deprovision network cleanup through reconciliation without purging project files', async () => {
+    const id = await seedProject();
+    const order: string[] = [];
+    const network = {
+      Id: 'a'.repeat(64),
+      Name: projectNetworkName(id),
+      Driver: 'bridge' as const,
+      Labels: { 'verity.project-id': id },
+      Options: {},
+      Containers: {},
+    };
+    const removeNetwork = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Docker offline'))
+      .mockResolvedValue(undefined);
+    const { client: docker } = fakeDocker({
+      stopContainer: async () => {
+        order.push('stop');
+      },
+      removeContainer: async () => {
+        order.push('remove');
+      },
+      inspectNetwork: async () => network,
+      listContainers: async () => [],
+      listNetworks: async () => [network],
+      removeNetwork,
+    });
+    const removeDir = vi.fn();
+    const deprovisioner = new DeprovisionerImpl(
+      ctx.store,
+      ctx.db,
+      docker,
+      '/data/dev',
+      undefined,
+      removeDir,
+    );
+    await expect(deprovisioner.deprovision(id, { purge: false })).resolves.toMatchObject({
+      state: 'absent',
+    });
+    expect(order).toEqual(['stop', 'remove']);
+    expect(removeNetwork).toHaveBeenCalledExactlyOnceWith(network.Id);
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+    });
+    await provisioner.reconcileProjectNetworks();
+    expect(removeNetwork).toHaveBeenCalledTimes(2);
+    expect(removeDir).not.toHaveBeenCalled();
+  });
 
   it('revokes public previews before mutating the project container', async () => {
     const id = await seedProject();

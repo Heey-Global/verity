@@ -120,6 +120,18 @@ on. Both devices read the same projection of the session
 request ids, and are refused unless the user is an administrator and the
 assistant is on.
 
+Both devices show it the same way:
+
+- **The conversation** is one continuing chat. On the phone the panel opens at
+  its newest entry, with earlier ones above it and day headings between them;
+  replies render their Markdown as an agent's reply does in a session. Work the
+  assistant hands to a project appears in the chat as a card with its state.
+- **Needs you** holds the open cases. On the phone they are Home's "For you"
+  items; the Watch lists the same items under its title and V button, as the
+  iPhone last read them, and says how old the list is once it is no longer
+  fresh. The assistant's own question is answered on either device; Home's other
+  items are decided on the phone.
+
 Requests are meant to be answered quickly:
 
 - The session runs on Claude Sonnet 5.5. An assistant session created on the
@@ -146,6 +158,7 @@ Requests are meant to be answered quickly:
 ## Not yet included
 
 - Capture from a widget, Control Center or the Dynamic Island.
+- Answering Home's items from the Watch; it lists them and points to the phone.
 - Starting a meeting directly in a granted project; meetings start in the
   assistant session.
 - Reading other projects' knowledge or listing sessions of granted projects.

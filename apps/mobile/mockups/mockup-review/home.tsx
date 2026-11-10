@@ -29,7 +29,8 @@ export default function HomeReviewMockup() {
           />
           <MockupThumbs screens={SAMPLE_SCREENS} />
           <Text variant="bodySmall" tone="muted">
-            1 of 3 approved, 1 comment. Implementation waits for your review.
+            1 approved · 1 discarded · 1 to review. Implementation starts when you say so in the
+            chat.
           </Text>
           <View style={styles.actions}>
             <Button label="Review" size="compact" onPress={ignore} />

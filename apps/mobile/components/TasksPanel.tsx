@@ -1,5 +1,15 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Icon } from './Icon';
+import { FileRowActions } from './files/FileRowActions';
 import { TaskIssuesList } from './TaskIssuesList';
+import { handOffSession, type HandOffSession } from './HandOffRow';
+import {
+  ProjectTaskRow,
+  TaskEditSheet,
+  TaskSummary,
+  useScreenReader,
+} from './project/ProjectTaskRows';
+import { Group } from './ui';
 import { createVerityClient } from '../lib/client';
 import {
   projectDisplayName,
@@ -8,7 +18,7 @@ import {
   type Task,
   type TaskContext,
   type SessionSummary,
-  type ProjectGitHubIssues,
+  type RepositoryIssues,
 } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
@@ -16,7 +26,6 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
-  PanResponder,
   Pressable,
   Text,
   TextInput,
@@ -27,8 +36,6 @@ import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyb
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { saveTaskPreferences, useTaskPreferences } from '../lib/taskPreferences';
 import { openTaskAttachment } from '../lib/taskAttachments';
-import type { AttachAnchor } from '../lib/attachMenu';
-import { ActionMenu, type ActionMenuItem } from './ActionMenu';
 import { dispatchTasks } from '../lib/taskDispatch';
 import { patchTask, removeTask, resolveTaskConflict, useTasks } from '../lib/tasksStore';
 
@@ -73,15 +80,6 @@ export function TaskListBody({
   const busyRef = useRef(false);
   const [dispatching, setDispatching] = useState<'new' | 'existing' | null>(null);
   const [undo, setUndo] = useState<string[]>([]);
-  const [menu, setMenu] = useState<{ task: Task; anchor: AttachAnchor } | null>(null);
-  const anchors = useRef(new Map<string, View>());
-  // The "…" card opens pinned to the row's own button, like the chat's message menu.
-  const openMenu = (task: Task) =>
-    anchors.current
-      .get(task.id)
-      ?.measureInWindow((x, y, width, height) =>
-        setMenu({ task, anchor: { x, y, width, height } }),
-      );
   const preferences = useTaskPreferences();
   const selectedProjectId =
     suppliedContext.projectId ??
@@ -92,36 +90,66 @@ export function TaskListBody({
     projectId: selectedProjectId,
     sessionId: selectedProjectId === suppliedContext.projectId ? suppliedContext.sessionId : null,
   };
-  const [github, setGithub] = useState<{ projectId: string; data: ProjectGitHubIssues } | null>(
-    null,
-  );
-  const [githubError, setGithubError] = useState<string | null>(null);
-  const [githubRetry, setGithubRetry] = useState(0);
+  const [issues, setIssues] = useState<{
+    projectId: string;
+    repositories: RepositoryIssues[];
+  } | null>(null);
+  const [issuesError, setIssuesError] = useState<string | null>(null);
+  const [issuesRetry, setIssuesRetry] = useState(0);
+  // The record names the default repository for servers without per-repository
+  // issues; the read itself needs only the id, so a list still loading does not
+  // hide the issues.
+  const issueProject:
+    | (Pick<ProjectRecord, 'id'> & Partial<Pick<ProjectRecord, 'kind' | 'owner' | 'repo'>>)
+    | undefined =
+    projects.find((project) => project.id === context.projectId) ??
+    (context.projectId !== null ? { id: context.projectId } : undefined);
   useEffect(() => {
     let active = true;
-    setGithub(null);
-    setGithubError(null);
-    if (context.projectId) {
-      const projectId = context.projectId;
+    // A retry keeps the list it is retrying, so the tab and its healthy
+    // sections stay while the answer is on its way; another project starts empty.
+    setIssues((current) => (current?.projectId === issueProject?.id ? current : null));
+    setIssuesError(null);
+    if (issueProject) {
+      const projectId = issueProject.id;
       const client = createVerityClient();
+      // Inside the promise, so a client without the read fails like a failed read.
       if (client)
-        void client
-          .listProjectGitHubIssues(projectId)
-          .then((data) => {
-            if (active) setGithub({ projectId, data });
+        void Promise.resolve()
+          .then(() => client.listProjectIssues(issueProject))
+          .then((repositories) => {
+            if (active) setIssues({ projectId, repositories });
           })
           .catch(() => {
-            if (active) setGithubError('Could not load GitHub issues');
+            if (active) setIssuesError('Could not load issues');
           });
     }
     return () => {
       active = false;
     };
-  }, [context.projectId, githubRetry]);
-  const githubData = github?.projectId === context.projectId ? github.data : null;
-  const githubConnected = githubData?.connected === true;
+    // The project record is read for its repository; its identity is the id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [issueProject?.id, issueProject?.kind, issueProject?.owner, issueProject?.repo, issuesRetry]);
+  const repositories = issues?.projectId === context.projectId ? issues.repositories : [];
+  // The tab appears once the server listed a repository, even one whose host
+  // did not answer: its section carries the retry, which a hidden tab would not.
+  const issuesShown = repositories.length > 0;
+  const issueCount = repositories.reduce(
+    (sum, repository) => sum + (repository.status === 'ok' ? repository.issues.length : 0),
+    0,
+  );
+  // Named as the Overview names them: by the hosts that answered.
+  const issueKinds = new Set(
+    repositories
+      .filter((repository) => repository.status === 'ok')
+      .map((repository) => repository.kind),
+  );
+  const issuesLabel =
+    issueKinds.size === 1 ? `${issueKinds.has('forgejo') ? 'Forgejo' : 'GitHub'} Issues` : 'Issues';
+  const screenReader = useScreenReader();
+  const [editing, setEditing] = useState<Task | null>(null);
   const tab =
-    (preferences.tab === 'issues' && !githubConnected) ||
+    (preferences.tab === 'issues' && !issuesShown) ||
     (preferences.tab === 'agent' && (context.sessionId === null || scope === 'project'))
       ? 'mine'
       : preferences.tab;
@@ -271,13 +299,64 @@ export function TaskListBody({
       </Text>
     </Pressable>
   );
+  // The text a row shows: the title, or the dictated text while no title could
+  // be made from it.
+  const taskText = (task: Task) =>
+    !!task.detail &&
+    (task.titleGenerationStatus === 'pending' || task.titleGenerationStatus === 'failed')
+      ? task.detail
+      : task.title;
+  const sessionState = (task: Task): HandOffSession | undefined => {
+    if (task.sessionId === null) return undefined;
+    const session = sessions.find((item) => item.sessionId === task.sessionId);
+    // A deleted session leaves nothing to open.
+    return session === undefined ? undefined : handOffSession(session);
+  };
+  const openSession = (id: string) => {
+    onLeave();
+    router.push({ pathname: '/session/[id]', params: { id } });
+  };
+  const projectRow = (task: Task) => {
+    const syncing = pending.some((op) => op.id === task.id);
+    const subtitle = [
+      taskAge(task.createdAt),
+      ...(task.attachments.length
+        ? [
+            `${String(task.attachments.length)} attachment${task.attachments.length === 1 ? '' : 's'}`,
+          ]
+        : []),
+      ...(syncing ? ['waiting to sync'] : []),
+    ].join(' · ');
+    return (
+      <ProjectTaskRow
+        key={task.id}
+        task={task}
+        text={taskText(task)}
+        subtitle={subtitle}
+        session={sessionState(task)}
+        busy={busy}
+        conflict={
+          conflicts.includes(task.id)
+            ? (errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.')
+            : undefined
+        }
+        undo={undo.includes(task.id)}
+        screenReader={screenReader}
+        onHandOff={implementable(task) ? () => implement([task]) : undefined}
+        onOpenSession={() => {
+          if (task.sessionId !== null) openSession(task.sessionId);
+        }}
+        onToggleDone={() => complete(task)}
+        onEdit={() => setEditing(task)}
+        onDelete={() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))}
+        onResolveConflict={(keepMine) => {
+          void run(() => resolveTaskConflict(task.id, keepMine));
+        }}
+      />
+    );
+  };
   const row = (task: Task) => {
-    const pan = PanResponder.create({
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 20 && Math.abs(g.dx) > Math.abs(g.dy),
-      onPanResponderRelease: (_, g) => {
-        if (Math.abs(g.dx) > 40) openMenu(task);
-      },
-    });
+    if (scope === 'project') return projectRow(task);
     const isDone = task.status === 'done';
     const descriptionFirst =
       !!task.detail &&
@@ -302,201 +381,210 @@ export function TaskListBody({
     const canImplement = implementable(task);
     const inThisProject = context.sessionId !== null && task.projectId === context.projectId;
     return (
-      <View key={task.id} {...pan.panHandlers} style={styles.row}>
-        <View style={styles.rowMain}>
-          <Pressable
-            disabled={busy}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: isDone }}
-            accessibilityLabel={isDone ? 'Reopen task' : 'Complete task'}
-            hitSlop={8}
-            onPress={() => complete(task)}
-            style={styles.check}
-          >
-            <Icon
-              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
-              size={20}
-              color={
-                isDone
-                  ? theme.colors.success
-                  : task.status === 'in_progress'
-                    ? theme.colors.action
-                    : theme.colors.textFaint
-              }
-            />
-          </Pressable>
-          {/* The text is the editor: tap to change it, leave the field to save. */}
-          <View style={styles.rowBody}>
-            {descriptionFirst && isDone ? (
-              <Text selectable style={styles.title}>
-                {task.detail}
-              </Text>
-            ) : descriptionFirst ? (
-              <TaskTitleInput
-                key="description"
-                task={{ ...task, title: task.detail! }}
-                onSave={(detail) => patchTask(task, { detail })}
-              />
-            ) : isDone ? (
-              <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
-            ) : (
-              <TaskTitleInput
-                key="title"
-                task={task}
-                onSave={(title) =>
-                  patchTask(task, { title }).catch((error: unknown) => {
-                    Alert.alert(
-                      'Could not save task',
-                      error instanceof Error ? error.message : 'Try again',
-                    );
-                    throw error;
-                  })
+      <FileRowActions
+        key={task.id}
+        label={task.title}
+        disabled={busy}
+        onMove={() => setMoving(task)}
+        onDelete={() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))}
+      >
+        <View style={styles.row}>
+          <View style={styles.rowMain}>
+            <Pressable
+              disabled={busy}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: isDone }}
+              accessibilityLabel={isDone ? 'Reopen task' : 'Complete task'}
+              hitSlop={8}
+              onPress={() => complete(task)}
+              style={styles.check}
+            >
+              <Icon
+                name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
+                size={20}
+                color={
+                  isDone
+                    ? theme.colors.success
+                    : task.status === 'in_progress'
+                      ? theme.colors.action
+                      : theme.colors.textFaint
                 }
               />
-            )}
-            <Text style={styles.meta}>{meta}</Text>
-            {task.detail && !descriptionFirst ? (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ expanded: descriptions.includes(task.id) }}
-                  onPress={() =>
-                    setDescriptions((ids) =>
-                      ids.includes(task.id)
-                        ? ids.filter((id) => id !== task.id)
-                        : [...ids, task.id],
-                    )
+            </Pressable>
+            {/* The text is the editor: tap to change it, leave the field to save. */}
+            <View style={styles.rowBody}>
+              {descriptionFirst && isDone ? (
+                <Text selectable style={styles.title}>
+                  {task.detail}
+                </Text>
+              ) : descriptionFirst ? (
+                <TaskTitleInput
+                  key="description"
+                  task={{ ...task, title: task.detail! }}
+                  onSave={(detail) => patchTask(task, { detail })}
+                />
+              ) : isDone ? (
+                <Text style={[styles.title, styles.titleDone]}>{task.title}</Text>
+              ) : (
+                <TaskTitleInput
+                  key="title"
+                  task={task}
+                  onSave={(title) =>
+                    patchTask(task, { title }).catch((error: unknown) => {
+                      Alert.alert(
+                        'Could not save task',
+                        error instanceof Error ? error.message : 'Try again',
+                      );
+                      throw error;
+                    })
                   }
-                >
-                  <Text style={styles.link}>
-                    {descriptions.includes(task.id) ? 'Hide description' : 'Show description'}
-                  </Text>
-                </Pressable>
-                {descriptions.includes(task.id) ? (
-                  <Text selectable style={styles.description}>
-                    {task.detail}
-                  </Text>
-                ) : null}
-              </>
-            ) : null}
-          </View>
-          <Pressable
-            ref={(node) => {
-              if (node) anchors.current.set(task.id, node);
-              else anchors.current.delete(task.id);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Task actions"
-            hitSlop={8}
-            onPress={() => openMenu(task)}
-            style={styles.more}
-          >
-            <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
-          </Pressable>
-        </View>
-        {conflicts.includes(task.id) ? (
-          <View style={styles.indent}>
-            <Text accessibilityRole="alert" style={styles.conflict}>
-              {errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.'}
-            </Text>
-            <View style={styles.chips}>
-              {chip('Keep my edit', () => {
-                void run(() => resolveTaskConflict(task.id, true));
-              })}
-              {chip('Use server version', () => {
-                void run(() => resolveTaskConflict(task.id, false));
-              })}
+                />
+              )}
+              <Text style={styles.meta}>{meta}</Text>
+              {task.detail && !descriptionFirst ? (
+                <>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: descriptions.includes(task.id) }}
+                    onPress={() =>
+                      setDescriptions((ids) =>
+                        ids.includes(task.id)
+                          ? ids.filter((id) => id !== task.id)
+                          : [...ids, task.id],
+                      )
+                    }
+                  >
+                    <Text style={styles.link}>
+                      {descriptions.includes(task.id) ? 'Hide description' : 'Show description'}
+                    </Text>
+                  </Pressable>
+                  {descriptions.includes(task.id) ? (
+                    <Text selectable style={styles.description}>
+                      {task.detail}
+                    </Text>
+                  ) : null}
+                </>
+              ) : null}
             </View>
           </View>
-        ) : null}
-        {undo.includes(task.id) ? (
-          <Pressable style={styles.indent} onPress={() => complete(task)}>
-            <Text style={styles.link}>Undo</Text>
-          </Pressable>
-        ) : null}
-        {task.attachments.map((attachment, index) => (
-          <Pressable
-            key={attachment.hash}
-            style={styles.indent}
-            onPress={() => {
-              void run(() => openTaskAttachment(task, index, pending));
-            }}
-          >
-            <Text style={styles.link} numberOfLines={1}>
-              ↗ {attachment.filename}
-            </Text>
-          </Pressable>
-        ))}
-        {task.sessionId && task.sessionId !== context.sessionId ? (
-          <Pressable
-            style={styles.indent}
-            onPress={() => {
-              onLeave();
-              router.push({ pathname: '/session/[id]', params: { id: task.sessionId! } });
-            }}
-          >
-            <Text style={styles.link}>↳ Open session</Text>
-          </Pressable>
-        ) : null}
-        {canImplement ? (
-          <View style={[styles.chips, styles.indent]}>
-            {inThisProject
-              ? chip('↳ This Session', () => implement([task], context.sessionId!), {
-                  accent: true,
-                })
-              : null}
-            {chip('+ New Session', () => implement([task]))}
-          </View>
-        ) : null}
-      </View>
+          {conflicts.includes(task.id) ? (
+            <View style={styles.indent}>
+              <Text accessibilityRole="alert" style={styles.conflict}>
+                {errors?.[task.id] ?? 'Changed on another device. Your edit is kept locally.'}
+              </Text>
+              <View style={styles.chips}>
+                {chip('Keep my edit', () => {
+                  void run(() => resolveTaskConflict(task.id, true));
+                })}
+                {chip('Use server version', () => {
+                  void run(() => resolveTaskConflict(task.id, false));
+                })}
+              </View>
+            </View>
+          ) : null}
+          {undo.includes(task.id) ? (
+            <Pressable style={styles.indent} onPress={() => complete(task)}>
+              <Text style={styles.link}>Undo</Text>
+            </Pressable>
+          ) : null}
+          {task.attachments.map((attachment, index) => (
+            <Pressable
+              key={attachment.hash}
+              style={styles.indent}
+              onPress={() => {
+                void run(() => openTaskAttachment(task, index, pending));
+              }}
+            >
+              <Text style={styles.link} numberOfLines={1}>
+                ↗ {attachment.filename}
+              </Text>
+            </Pressable>
+          ))}
+          {task.sessionId && task.sessionId !== context.sessionId ? (
+            <Pressable
+              style={styles.indent}
+              onPress={() => {
+                onLeave();
+                router.push({ pathname: '/session/[id]', params: { id: task.sessionId! } });
+              }}
+            >
+              <Text style={styles.link}>↳ Open session</Text>
+            </Pressable>
+          ) : null}
+          {canImplement ? (
+            <View style={[styles.chips, styles.indent]}>
+              {inThisProject
+                ? chip('↳ This Session', () => implement([task], context.sessionId!), {
+                    accent: true,
+                  })
+                : null}
+              {chip('+ New Session', () => implement([task]))}
+            </View>
+          ) : null}
+        </View>
+      </FileRowActions>
     );
   };
   const agentRow = (task: Task) => {
     const isDone = task.status === 'done';
     return (
-      <View key={task.id} style={styles.row}>
-        <View style={styles.rowMain}>
-          <View style={styles.check}>
-            <Icon
-              name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
-              size={20}
-              color={
-                isDone
-                  ? theme.colors.success
-                  : task.status === 'in_progress'
-                    ? theme.colors.action
-                    : theme.colors.textFaint
-              }
-            />
+      <FileRowActions
+        key={task.id}
+        label={task.title}
+        disabled={busy}
+        deleteLabel="Drop step"
+        moveLabel="Move to my tasks"
+        onMove={() => {
+          void run(() =>
+            patchTask(task, {
+              origin: 'user',
+              sessionId: null,
+              ...(isDone ? {} : { status: 'open' as const }),
+            }),
+          );
+        }}
+        onDelete={() =>
+          confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' }))
+        }
+      >
+        <View style={styles.row}>
+          <View style={styles.rowMain}>
+            <Pressable
+              disabled={busy}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: isDone }}
+              accessibilityLabel={isDone ? 'Reopen step' : 'Complete step'}
+              onPress={() => complete(task)}
+              hitSlop={8}
+              style={styles.check}
+            >
+              <Icon
+                name={isDone ? 'check-circle' : task.status === 'in_progress' ? 'loader' : 'circle'}
+                size={20}
+                color={
+                  isDone
+                    ? theme.colors.success
+                    : task.status === 'in_progress'
+                      ? theme.colors.action
+                      : theme.colors.textFaint
+                }
+              />
+            </Pressable>
+            <View style={styles.rowBody}>
+              <Text style={[styles.title, isDone ? styles.titleDone : null]}>{task.title}</Text>
+              <Text style={styles.meta}>
+                {isDone ? 'done' : task.status === 'in_progress' ? 'in progress' : 'open'} ·{' '}
+                {taskAge(task.createdAt)}
+              </Text>
+            </View>
           </View>
-          <View style={styles.rowBody}>
-            <Text style={[styles.title, isDone ? styles.titleDone : null]}>{task.title}</Text>
-            <Text style={styles.meta}>
-              {isDone ? 'done' : task.status === 'in_progress' ? 'in progress' : 'open'} ·{' '}
-              {taskAge(task.createdAt)}
-            </Text>
-          </View>
-          <Pressable
-            ref={(node) => {
-              if (node) anchors.current.set(task.id, node);
-              else anchors.current.delete(task.id);
-            }}
-            accessibilityRole="button"
-            accessibilityLabel="Step actions"
-            accessibilityHint="Opens step actions"
-            onPress={() => openMenu(task)}
-            style={styles.more}
-            hitSlop={8}
-          >
-            <Icon name="more-horizontal" size={18} color={theme.colors.textMuted} />
-          </Pressable>
+          {undo.includes(task.id) ? (
+            <Pressable style={styles.indent} onPress={() => complete(task)}>
+              <Text style={styles.link}>Undo</Text>
+            </Pressable>
+          ) : null}
         </View>
-        {undo.includes(task.id) ? (
-          <Pressable style={styles.indent} onPress={() => complete(task)}>
-            <Text style={styles.link}>Undo</Text>
-          </Pressable>
-        ) : null}
-      </View>
+      </FileRowActions>
     );
   };
   // iOS will not present an alert while the menu's modal is still fading out,
@@ -519,71 +607,12 @@ export function TaskListBody({
       350,
     );
   };
-  const menuItems = (task: Task): ActionMenuItem[] => {
-    const isDone = task.status === 'done';
-    const close = (work: () => void) => () => {
-      setMenu(null);
-      work();
-    };
-    if (task.origin === 'agent')
-      return [
-        ...(isDone
-          ? []
-          : [
-              {
-                icon: 'check-circle' as const,
-                title: 'Mark done',
-                subtitle: 'The agent no longer needs to do this',
-                onPress: close(() => complete(task)),
-              },
-            ]),
-        {
-          icon: 'corner-up-left',
-          title: 'Move to my tasks',
-          subtitle: 'Keep it in your own list',
-          onPress: close(() => {
-            void run(() =>
-              patchTask(task, {
-                origin: 'user',
-                sessionId: null,
-                // Adopted work starts fresh in the operator's list.
-                ...(isDone ? {} : { status: 'open' as const }),
-              }),
-            );
-          }),
-        },
-        {
-          icon: 'x-circle',
-          title: 'Drop step',
-          subtitle: 'Remove it from the agent’s plan',
-          destructive: true,
-          onPress: close(() =>
-            confirm('Drop this step?', 'Drop', task, () => patchTask(task, { status: 'dropped' })),
-          ),
-        },
-      ];
-    return [
-      {
-        icon: isDone ? 'rotate-ccw' : 'check-circle',
-        title: isDone ? 'Reopen' : 'Mark done',
-        subtitle: isDone ? 'Put it back on your list' : 'Tick it off your list',
-        onPress: close(() => complete(task)),
-      },
-      {
-        icon: 'folder',
-        title: 'Move',
-        subtitle: 'To another project',
-        onPress: close(() => setMoving(task)),
-      },
-      {
-        icon: 'trash-2',
-        title: 'Delete',
-        subtitle: 'Remove the task for good',
-        destructive: true,
-        onPress: close(() => confirm('Delete task?', 'Delete', task, () => removeTask(task.id))),
-      },
-    ];
-  };
+
+  const tabs = [
+    'mine',
+    ...(context.sessionId !== null && scope === 'panel' ? (['agent'] as const) : []),
+    ...(issuesShown ? (['issues'] as const) : []),
+  ] as const;
   return (
     <>
       {suppliedContext.projectId === null ? (
@@ -604,56 +633,52 @@ export function TaskListBody({
           ) : null}
         </View>
       ) : null}
-      <View style={styles.tabs} accessibilityRole="tablist">
-        {(
-          [
-            'mine',
-            ...(context.sessionId !== null && scope === 'panel' ? (['agent'] as const) : []),
-            ...(githubConnected ? (['issues'] as const) : []),
-          ] as const
-        ).map((value) => (
-          <Pressable
-            key={value}
-            accessibilityRole="tab"
-            disabled={preferences.loaded === false}
-            accessibilityLabel={
-              value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'GitHub Issues'
-            }
-            accessibilityState={{ selected: tab === value }}
-            onPress={() => selectTab(value)}
-            style={[styles.tab, tab === value ? styles.tabSelected : null]}
-          >
-            <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
-              {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
-            </Text>
-            <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
-              <Text
-                style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
-              >
-                {value === 'mine'
-                  ? String(
-                      tasks.filter(
-                        (task) =>
-                          !isStep(task) &&
-                          task.status !== 'done' &&
-                          task.status !== 'dropped' &&
-                          (scope === 'panel' || task.projectId === context.projectId),
-                      ).length,
-                    )
-                  : value === 'agent'
-                    ? `${String(agentDone)}/${String(agentAll.length)}`
-                    : String(githubData?.issues.length ?? 0)}
+      {tabs.length > 1 || scope === 'panel' ? (
+        <View style={styles.tabs} accessibilityRole="tablist">
+          {tabs.map((value) => (
+            <Pressable
+              key={value}
+              accessibilityRole="tab"
+              disabled={preferences.loaded === false}
+              accessibilityLabel={
+                value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : issuesLabel
+              }
+              accessibilityState={{ selected: tab === value }}
+              onPress={() => selectTab(value)}
+              style={[styles.tab, tab === value ? styles.tabSelected : null]}
+            >
+              <Text style={[styles.tabLabel, tab === value ? styles.tabLabelSelected : null]}>
+                {value === 'mine' ? 'Mine' : value === 'agent' ? 'Agent' : 'Issues'}
               </Text>
-            </View>
-          </Pressable>
-        ))}
-      </View>
-      {githubError ? (
+              <View style={[styles.count, tab === value ? styles.tabCountSelected : null]}>
+                <Text
+                  style={[styles.countLabel, tab === value ? styles.tabCountLabelSelected : null]}
+                >
+                  {value === 'mine'
+                    ? String(
+                        tasks.filter(
+                          (task) =>
+                            !isStep(task) &&
+                            task.status !== 'done' &&
+                            task.status !== 'dropped' &&
+                            (scope === 'panel' || task.projectId === context.projectId),
+                        ).length,
+                      )
+                    : value === 'agent'
+                      ? `${String(agentDone)}/${String(agentAll.length)}`
+                      : String(issueCount)}
+                </Text>
+              </View>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {issuesError ? (
         <View style={styles.footer}>
           <Text accessibilityRole="alert" style={styles.meta}>
-            {githubError}
+            {issuesError}
           </Text>
-          {chip('Retry GitHub', () => setGithubRetry((value) => value + 1))}
+          {chip('Retry issues', () => setIssuesRetry((value) => value + 1))}
         </View>
       ) : null}
       {dispatching ? (
@@ -687,21 +712,37 @@ export function TaskListBody({
         </KeyboardAwareScrollView>
       ) : (
         <KeyboardAwareScrollView bottomOffset={24}>
-          {tab === 'issues' && context.projectId && githubData ? (
+          {tab === 'issues' && context.projectId && issuesShown ? (
             <TaskIssuesList
               key={context.projectId}
               projectId={context.projectId}
-              projectName={projectName(context.projectId)}
               currentSessionId={context.sessionId ?? undefined}
-              issues={githubData.issues}
-              viewerLogin={githubData.viewerLogin}
-              onOpenSession={(id) => {
-                onLeave();
-                router.push({ pathname: '/session/[id]', params: { id } });
-              }}
+              repositories={repositories}
+              onRetry={() => setIssuesRetry((value) => value + 1)}
+              onOpenSession={openSession}
             />
           ) : null}
-          {(tab === 'issues' ? [] : tab === 'agent' ? agentGroups : groups).map((group) => (
+          {scope === 'project' && tab === 'mine'
+            ? groups.map((group) => (
+                <View key={group.key}>
+                  <TaskSummary
+                    open={group.items.filter((task) => task.status !== 'done').length}
+                    done={done.length}
+                  />
+                  {group.items.length > 0 ? (
+                    <Group>{group.items.map(projectRow)}</Group>
+                  ) : (
+                    <Text style={styles.meta}>No open tasks. Add one with +.</Text>
+                  )}
+                </View>
+              ))
+            : null}
+          {(tab === 'issues' || scope === 'project'
+            ? []
+            : tab === 'agent'
+              ? agentGroups
+              : groups
+          ).map((group) => (
             <View key={group.key}>
               <Pressable
                 disabled={!group.collapsible}
@@ -771,12 +812,35 @@ export function TaskListBody({
           </Text>
         </Pressable>
       ) : null}
-      {menu ? (
-        <ActionMenu
-          anchor={menu.anchor}
-          label="Task actions"
-          items={menuItems(tasks.find((task) => task.id === menu.task.id) ?? menu.task)}
-          onClose={() => setMenu(null)}
+      {scope === 'project' ? (
+        <TaskEditSheet
+          task={editing}
+          text={editing ? taskText(editing) : ''}
+          onClose={() => setEditing(null)}
+          onSave={async (text) => {
+            if (!editing) return;
+            // Busy like every other task action, so the row's swipe and V wait
+            // for the save; failing keeps the sheet open with the text.
+            if (busyRef.current) throw new Error('Another task action is running');
+            busyRef.current = true;
+            setBusy(true);
+            const describes = taskText(editing) !== editing.title;
+            try {
+              await patchTask(editing, describes ? { detail: text } : { title: text });
+            } catch (error) {
+              Alert.alert(
+                'Could not save task',
+                error instanceof Error ? error.message : 'Try again',
+              );
+              throw error;
+            } finally {
+              busyRef.current = false;
+              setBusy(false);
+            }
+          }}
+          onOpenAttachment={(index) => {
+            if (editing) void run(() => openTaskAttachment(editing, index, pending));
+          }}
         />
       ) : null}
     </>
@@ -817,44 +881,46 @@ export function TasksPanel({
   );
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior="padding"
-        style={[styles.backdrop, wide ? styles.backdropWide : null]}
-      >
-        <Pressable
-          accessibilityLabel="Close Tasks"
-          onPress={onClose}
-          style={StyleSheet.absoluteFill}
-        />
-        <View
-          style={[
-            styles.panel,
-            { height: height * 0.7, maxHeight: '100%' },
-            wide
-              ? {
-                  width: 380,
-                  marginTop: Math.min(y, height * 0.25),
-                  marginLeft: side === 'left' ? 38 : width - 418,
-                }
-              : styles.panelSheet,
-          ]}
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={[styles.backdrop, wide ? styles.backdropWide : null]}
         >
-          {wide ? null : <View style={styles.grabber} />}
-          <View style={styles.head}>
-            <Text style={styles.heading} accessibilityRole="header">
-              Tasks
-            </Text>
-            {headerButton('Capture task', 'mic', onCapture)}
-            {headerButton('Close', 'x', onClose)}
-          </View>
-          <TaskListBody
-            context={context}
-            projects={projects}
-            sessions={sessions}
-            onLeave={onClose}
+          <Pressable
+            accessibilityLabel="Close Tasks"
+            onPress={onClose}
+            style={StyleSheet.absoluteFill}
           />
-        </View>
-      </KeyboardAvoidingView>
+          <View
+            style={[
+              styles.panel,
+              { height: height * 0.7, maxHeight: '100%' },
+              wide
+                ? {
+                    width: 380,
+                    marginTop: Math.min(y, height * 0.25),
+                    marginLeft: side === 'left' ? 38 : width - 418,
+                  }
+                : styles.panelSheet,
+            ]}
+          >
+            {wide ? null : <View style={styles.grabber} />}
+            <View style={styles.head}>
+              <Text style={styles.heading} accessibilityRole="header">
+                Tasks
+              </Text>
+              {headerButton('Capture task', 'mic', onCapture)}
+              {headerButton('Close', 'x', onClose)}
+            </View>
+            <TaskListBody
+              context={context}
+              projects={projects}
+              sessions={sessions}
+              onLeave={onClose}
+            />
+          </View>
+        </KeyboardAvoidingView>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

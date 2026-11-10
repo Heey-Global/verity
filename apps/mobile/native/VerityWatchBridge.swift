@@ -25,6 +25,12 @@ class VerityWatchBridge: Module {
       VerityWatchInbox.shared.setProjects(
         scope: scope, projects: projects, lastProjectId: lastProjectId)
     }
+    AsyncFunction("pendingInboxActions") { () -> [[String: Any]] in
+      VerityWatchInbox.shared.pendingInboxActions()
+    }
+    AsyncFunction("completeInboxAction") { (id: String, result: [String: Any]) in
+      VerityWatchInbox.shared.completeInboxAction(id, result: result)
+    }
     AsyncFunction("pendingAnswers") { () -> [[String: Any]] in
       VerityWatchInbox.shared.pendingAnswers()
     }
@@ -45,6 +51,9 @@ class VerityWatchBridge: Module {
     }
     AsyncFunction("setVerity") { (snapshot: [String: Any]?) in
       VerityWatchInbox.shared.setVerity(snapshot)
+    }
+    AsyncFunction("setInbox") { (inbox: [String: Any]?) in
+      VerityWatchInbox.shared.setInbox(inbox)
     }
     AsyncFunction("discardWaiting") { () -> Int in
       VerityWatchInbox.shared.discardWaiting()

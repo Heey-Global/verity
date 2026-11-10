@@ -8,6 +8,7 @@ const PAIRS = [
   'features/verity-sandbox-toolkit/bin/verity-egress-connector',
   'features/verity-sandbox-toolkit/bin/verity-memory-guard',
   'features/verity-sandbox-toolkit/bin/verity-package-policy',
+  'features/verity-sandbox-toolkit/bin/verity-npm-preflight',
 ] as const;
 
 const runtimeExports = (source: string): Set<string> =>

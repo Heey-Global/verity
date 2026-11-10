@@ -28,6 +28,7 @@ const renamed: Record<string, string> = {
   verity_start_planning: 'verity_planning_start',
   verity_present_plan: 'verity_planning_present',
   verity_present_mockups: 'verity_mockups_present',
+  verity_complete_mockups: 'verity_mockups_complete',
   verity_secret_output: 'verity_secret_read_output',
   verity_diagnostics: 'verity_diagnostics_read',
   verity_app_help: 'verity_app_help_lookup',
@@ -58,9 +59,18 @@ export function capabilityVariants(legacyName: GatewayToolName, schema: Schema):
       const name =
         legacyName === 'verity_end_planning'
           ? `verity_planning_${verb}`
-          : value
-            ? `verity_${domain}_${verb}`
-            : (renamed[legacyName] ?? legacyName);
+          : // A Wiki proposal belongs to the Wiki, though the knowledge broker carries it.
+            value === 'propose_wiki'
+            ? 'verity_wiki_propose'
+            : value === 'read_wiki_page'
+              ? 'verity_wiki_read_page'
+              : value === 'read_wiki_occasions'
+                ? 'verity_wiki_read_occasions'
+                : value === 'close_wiki_occasions'
+                  ? 'verity_wiki_close_occasions'
+                  : value
+                    ? `verity_${domain}_${verb}`
+                    : (renamed[legacyName] ?? legacyName);
       const inputSchema: Schema & { properties: Record<string, Schema> } = {
         ...branch,
         properties: { ...properties },

@@ -17,9 +17,10 @@ const journal = {
 } as UpdateJournal;
 function fixture() {
   const jobs = new Map<string, { spec: ContainerSpec; inspect: ContainerInspect }>();
+  let nextId = 0;
   const docker = {
     createContainer: vi.fn(async (spec: ContainerSpec) => {
-      const id = String(jobs.size + 1).repeat(64);
+      const id = String(++nextId).padStart(64, '0');
       jobs.set(id, {
         spec,
         inspect: {
@@ -159,11 +160,13 @@ describe('authenticated runtime service renewal', () => {
       })
       .mockRejectedValueOnce(new Error('connection lost'));
     await expect(h.run()).rejects.toThrow('connection lost');
-    expect(h.jobs.size).toBe(2);
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
     await h.run();
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
-    expect(h.docker.startContainer).toHaveBeenCalledTimes(2);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
+    expect(h.docker.startContainer).toHaveBeenCalledTimes(3);
     expect(h.jobs.size).toBe(0);
   });
   it.each([
@@ -253,9 +256,11 @@ describe('authenticated runtime service renewal', () => {
     const h = fixture();
     h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
     await expect(h.run()).rejects.toThrow('receipt mismatch');
-    expect(h.jobs.size).toBe(2);
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
     await h.run();
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
     expect(h.jobs.size).toBe(0);
   });
   it.each(['create', 'inspect', 'verify-wait'] as const)(
@@ -278,7 +283,7 @@ describe('authenticated runtime service renewal', () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('start disconnected'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('replaces only an owned Created job and never accepts extra security options', async () => {
     const h = fixture();
@@ -291,7 +296,7 @@ describe('authenticated runtime service renewal', () => {
     const old = install.inspect.id;
     await h.run();
     expect(h.docker.removeContainer).toHaveBeenCalledWith(old);
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(4);
   });
   it('never removes a foreign Created job', async () => {
     const h = fixture();
@@ -302,7 +307,10 @@ describe('authenticated runtime service renewal', () => {
     const install = [...h.jobs.values()].find((job) => job.spec.pidMode === 'host')!;
     install.inspect.labels = { ...install.inspect.labels, 'verity.update-id': 'foreign' };
     await expect(h.run()).rejects.toMatchObject({ recovery: 'unchanged' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledTimes(2);
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
   });
   it('does not report unchanged when re-verification fails after an earlier install started', async () => {
     const h = fixture();
@@ -312,7 +320,7 @@ describe('authenticated runtime service renewal', () => {
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
     h.docker.waitContainer.mockRejectedValueOnce(new Error('verification disconnected'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('retains recovery-required if inventory fails after an ambiguous install start', async () => {
     const h = fixture();
@@ -322,7 +330,7 @@ describe('authenticated runtime service renewal', () => {
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
     h.docker.listContainers.mockRejectedValueOnce(new Error('inventory unavailable'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('rejects malformed service capability declarations', () => {
     expect(
@@ -341,8 +349,13 @@ describe('authenticated runtime service renewal', () => {
 
 async function egressJobFixture(stage: 'install' | 'verify' = 'install') {
   const h = fixture();
-  h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
-  await expect(h.run()).rejects.toThrow('receipt mismatch');
+  if (stage === 'verify') {
+    h.docker.waitContainer.mockRejectedValueOnce(new Error('verification disconnected'));
+    await expect(h.run()).rejects.toThrow('verification disconnected');
+  } else {
+    h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
+    await expect(h.run()).rejects.toThrow('receipt mismatch');
+  }
   const job = [...h.jobs.values()].find(
     (item) => item.spec.labels?.['verity.renewal-stage'] === stage,
   )!;

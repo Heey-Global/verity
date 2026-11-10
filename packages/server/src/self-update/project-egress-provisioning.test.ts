@@ -143,6 +143,21 @@ it('independently verifies the release before authorizing the bounded host onesh
   expect(jobs[1]?.command).toEqual(['/opt/verity-install/deploy/host/verity-egress-provision']);
   expect(jobs[1]?.env).toContain('VERITY_EGRESS_DEPLOYMENT_NETWORK=verity-net');
 });
+it('removes successful verification before downstream preparation can fail', async () => {
+  const daemon = docker();
+  daemon.listContainers.mockResolvedValue([]);
+  await expect(
+    provisionProjectEgressHost({
+      docker: daemon as unknown as DockerClient,
+      journal,
+      spec: spec(),
+      environment: { DATABASE_URL: 'postgres://verity:private@postgres/verity' },
+    }),
+  ).rejects.toThrow('requires one control-plane database');
+  expect(runHostRenewalJob).toHaveBeenCalledOnce();
+  expect(daemon.removeContainer).toHaveBeenCalledWith('job');
+});
+
 it('refuses a protected deployment whose predecessor cannot recover its authority', async () => {
   const initial = spec();
   const protectedSpec = {

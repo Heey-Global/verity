@@ -19,7 +19,8 @@
     ".": {
       "entry": [
         "scripts/probes/project-egress/adapter-smoke.ts",
-        "scripts/probes/project-egress/host-smoke.ts"
+        "scripts/probes/project-egress/host-smoke.ts",
+        "features/verity-sandbox-toolkit/bin/verity-package-install.mjs"
       ]
     }
   }

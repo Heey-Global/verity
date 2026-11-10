@@ -1,9 +1,30 @@
+import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
+import { homeAnswersSpec } from './home-answers';
+import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
+import { planCardSpec } from './plan-card';
+import { projectNamesSpec } from './project-names';
+import { repositoriesSpec } from './repositories';
+import { sourceActionsSpec } from './source-actions';
 import type { MockupScreen, MockupSpec } from './types';
+import { wikiSpec } from './wiki';
+import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
-export const MOCKUP_SPECS: readonly MockupSpec[] = [factorySpec, mockupReviewSpec];
+export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  sessionGroupsSpec,
+  factorySpec,
+  homeAnswersSpec,
+  mockupReviewSpec,
+  instructionSourcesSpec,
+  planCardSpec,
+  projectNamesSpec,
+  repositoriesSpec,
+  sourceActionsSpec,
+  wikiSpec,
+  wikiMaintenanceSpec,
+];
 
 export function findMockup(
   specId: string | undefined,

@@ -397,7 +397,12 @@ it('fences existing packet grants before inventory ACK and leaves unchanged hear
   expect(f.deadline.revoke.mock.calls.length).toBeGreaterThan(priorRevokes);
   expect(f.deadline.clearRelay).not.toHaveBeenCalled();
   expect(f.apply.mock.calls.at(-1)?.[0]).toContain('tcp dport { 53, 8080, 8443 }');
+  await host.execute({ operation: 'inventory-abort', token: initial });
+  expect(inventory.ready()).toBe(false);
   await host.execute({ operation: 'inventory-commit', token, hosts: [], addresses: [] });
+  await host.execute({ operation: 'inventory-abort', token: initial });
+  expect(inventory.ready()).toBe(true);
+
   const revokes = f.deadline.revoke.mock.calls.length;
   await host.execute({
     operation: 'inventory-renew',

@@ -52,9 +52,31 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   tip is covered by that marker or each pending commit is explicitly tagged
   `[skip review]`. When the repository declares lint or format checks but
   compatible dependencies are missing, the hook automatically prepares them with
-  `verity-dependencies install`, then runs the checks. Older seeds fall back to
-  `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a lockfile).
-  Installation errors block the push; no additional confirmation is required.
+  `verity-dependencies install`, then runs the checks. A missing helper is a
+  provisioning error and blocks the push; the hook never falls back to a private
+  npm installation. Installation errors block the push; no additional confirmation
+  is required.
+- `bin/verity-dependencies` prepares npm dependencies in central staging under the
+  repository's common Git directory, keyed by dependency inputs, configuration,
+  local package sources and runtime. One preparation runs per project at a time;
+  equal identities wait for the same preparation. Only a complete, policy-verified
+  inventory is published atomically. A receiving session gets independent files
+  with workspace links restored to its own sources. Existing local patches and
+  incomplete files are preserved before replacement; shared writable packages and
+  hardlinks are not used. Declared workspace executables target the receiving
+  sources; like npm, activation restores executable bits and normalizes CRLF
+  shebangs. Non-regular or external executable targets are rejected; CRLF
+  normalization is bounded to 1 MiB.
+  New central preparations require an npm lockfile with a `packages` map,
+  project-local workspace links and no workspace-nested `node_modules` layout.
+  Unsupported layouts fail explicitly rather than installing privately. Compatible
+  existing installations remain reusable. The two ready inventory slots are
+  bounded; preparation and activation locks protect active inventories during
+  cleanup. A full inventory blocks publication when no slot can be reclaimed.
+  Deployment must ship both identical helper copies and refresh existing sandbox
+  tooling. Large npm metadata also requires the Core metadata-parser fix in the
+  running server; updating a checkout alone does not update that server. Source
+  checks do not establish that either component has been deployed.
 - `bin/verity-local-checks` records an explicit skip: `skip` writes
   `.agents/.local-checks-skip` with a fingerprint of `package.json` and the
   lockfile, `reset` forgets it, `status` reports whether it still applies.

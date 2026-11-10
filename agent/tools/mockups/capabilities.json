@@ -9,5 +9,16 @@
     "compatibility": {
       "name": "verity_present_mockups"
     }
+  },
+  {
+    "name": "verity_mockups_complete",
+    "title": "Verity · Mockups · Complete",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_complete_mockups"
+    }
   }
 ]

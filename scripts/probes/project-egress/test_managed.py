@@ -68,6 +68,77 @@ class ManagedTests(unittest.TestCase):
         return managed.provision(self.source, self.relay, self.authority, CONTROL_GID,
                                  self.root, run or self.execute, check, group_setup=lambda *_: None, **kwargs)
 
+    def test_protected_toolchain_is_immutable_and_helper_is_transactional(self):
+        self.assertTrue(self.provision()['available'])
+        release = (self.root / 'opt/verity-egress').resolve()
+        for name in ('node', 'devcontainer.js', 'docker-buildx', 'protected-build-toolchain.json'):
+            self.assertEqual((release / name).read_bytes(), name.encode())
+            self.assertEqual((release / name).stat().st_mode & 0o222, 0)
+        helper = self.root / 'usr/local/libexec/verity-buildkit/protected-build-attempt'
+        self.assertEqual(helper.read_bytes(), b'protected-build-attempt')
+        self.assertEqual(helper.stat().st_mode & 0o777, 0o755)
+        self.assertIn('Slice=verity-buildkit.slice', (self.root / managed.BUILD_DROPIN).read_text())
+        self.assertIn('MemoryMax=', (self.root / managed.BUILD_SLICE).read_text())
+        self.assertIn('usr/local/libexec/verity-buildkit/protected-build-attempt', managed.TRANSACTION_FILES)
+
+    def test_controller_needs_no_ephemeral_cni_mounts_after_reboot(self):
+        self.assertTrue(self.provision()['available'])
+        unit = (self.root / managed.base.UNITS['verity-egress-host.service']).read_text()
+        writable = next(line for line in unit.splitlines() if line.startswith('ReadWritePaths='))
+        self.assertNotIn('/run/netns', writable)
+        self.assertNotIn('/run/verity-buildkit', writable)
+
+    def test_existing_smaller_builder_budget_bounds_protected_attempts(self):
+        unit = self.root / 'etc/systemd/system/verity-buildkit.service'
+        unit.parent.mkdir(parents=True)
+        unit.write_text('[Service]\nCPUQuota=50%\nMemoryMax=512M\n')
+        self.assertTrue(self.provision()['available'])
+        budget = (self.root / managed.BUILD_SLICE).read_text()
+        self.assertIn('CPUQuota=50%', budget)
+        self.assertIn('MemoryMax=512M', budget)
+
+    def test_protected_export_can_write_only_the_managed_data_volume(self):
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
+        parent = self.root / 'var/lib/docker/volumes/verity-data/_data'
+        parent.mkdir(parents=True)
+        storage = parent / 'build-storage'
+        self.assertFalse(storage.exists())
+        def execute(*args):
+            if args == ('/usr/bin/systemctl', 'start', managed.SERVICE):
+                self.assertTrue(storage.is_dir())
+                self.assertEqual(storage.stat().st_uid, parent.stat().st_uid)
+                self.assertEqual(storage.stat().st_mode & 0o777, 0o700)
+            return self.execute(*args)
+        self.assertTrue(self.provision(run=execute)['available'])
+        (storage / 'preserved').write_text('existing build')
+        self.assertTrue(self.provision(run=execute)['available'])
+        self.assertEqual((storage / 'preserved').read_text(), 'existing build')
+        unit = (self.root / managed.base.UNITS['verity-egress-host.service']).read_text()
+        self.assertIn('-/var/lib/docker/volumes/verity-data/_data/build-storage ', unit)
+        self.assertNotIn('ReadWritePaths=/var/lib/docker/volumes ', unit)
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"../foreign"}')
+        with self.assertRaises(ValueError):
+            self.provision()
+
+    def test_build_storage_rejects_symlink_before_controller_start(self):
+        parent = self.root / 'var/lib/docker/volumes/verity-data/_data'
+        parent.mkdir(parents=True)
+        (parent / 'build-storage').symlink_to(self.source, target_is_directory=True)
+        self.relay.write_text('{"packetEnforcement":true,"dataVolume":"verity-data"}')
+        with self.assertRaises((OSError, ValueError)):
+            self.provision()
+        self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
+
+    def test_prior_release_without_protected_assets_remains_recoverable(self):
+        files = {name: self.source.joinpath(name).read_bytes() for name in managed.LEGACY_ASSETS}
+        identity = managed.base.digest(b''.join(name.encode() + files[name] for name in managed.LEGACY_ASSETS))
+        release = self.root / 'opt/verity-egress-releases' / identity
+        managed.prepare_release(release, files)
+        self.assertEqual(managed.verified_release(self.root, str(release)), release)
+        (release / 'node').chmod(0o644)
+        with self.assertRaises(ValueError):
+            managed.verified_release(self.root, str(release))
+
     def unsupported(self, *_):
         raise ValueError('Kernel has no accepted native installation profile')
 
@@ -305,6 +376,109 @@ class ManagedTests(unittest.TestCase):
         inspect = max(i for i, args in enumerate(self.calls) if 'container' in args and 'inspect' in args)
         self.assertLess(stop, inspect)
 
+    def build_anchor_policy(self):
+        old, target = ['sha256:' + c * 64 for c in 'ab']
+        request = {'projectId': 'project-a', 'attemptId': 'attempt-a'}
+        key = managed.base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+        root = self.root / 'var/lib/verity/protected-build'
+        managed.base.atomic_file(root / 'controller.json', json.dumps({
+            'request': request, 'phase': 'running', 'ended': False}).encode(), 0o600)
+        managed.base.atomic_file(root / 'attempts' / key / 'checkpoint.json', json.dumps({
+            'binding': {'projectId': request['projectId'], 'generation': request['attemptId'],
+                        'networkId': 'c' * 64, 'networkName': 'verity-build-' + key[:32],
+                        'bridge': 'veb' + key[:12]},
+            'attemptId': request['attemptId'], 'containerId': 'd' * 64}).encode(), 0o600)
+        managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json',
+            json.dumps({'image': old, 'packetEnforcement': True}).encode(), 0o600)
+        return old, target, key
+
+    def test_build_only_image_is_retained_across_skipped_release_and_retries(self):
+        old, target, key = self.build_anchor_policy()
+        for running in (True, False):
+            def run(*args):
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old},
+                                   'State': {'Running': running}}])
+            result = managed.reconcile_stopped_relay_policy(self.root, run,
+                json.dumps({'image': target, 'packetEnforcement': True}))
+            self.assertEqual(json.loads(result)['previousImage'], old)
+            managed.base.atomic_file(self.root / 'etc/verity-egress/relay.json', result, 0o600)
+        # Lost removal replies must not keep obsolete image authority forever.
+        result = managed.reconcile_stopped_relay_policy(self.root, lambda *args: '', result)
+        self.assertNotIn('previousImage', json.loads(result))
+
+    def test_build_retention_rejects_foreign_image_and_replaced_identity(self):
+        old, target, key = self.build_anchor_policy()
+        for identity, image in [('e' * 64, old), ('d' * 64, 'sha256:' + 'f' * 64)]:
+            def run(*args):
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': identity, 'Config': {'Image': image}}])
+            with self.assertRaises(ValueError):
+                managed.reconcile_stopped_relay_policy(self.root, run,
+                    json.dumps({'image': target, 'packetEnforcement': True}))
+
+    def test_partial_build_without_container_checkpoint_retains_installed_image(self):
+        old, target, key = self.build_anchor_policy()
+        path = self.root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
+        point = json.loads(path.read_text())
+        point.pop('containerId')
+        managed.base.atomic_file(path, json.dumps(point).encode(), 0o600)
+        selectors = []
+        def run(*args):
+            if 'ls' in args:
+                selectors.append(args[-1])
+                return 'd' * 64
+            return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old}}])
+        result = managed.reconcile_stopped_relay_policy(self.root, run,
+            json.dumps({'image': target, 'packetEnforcement': True}))
+        self.assertEqual(json.loads(result)['previousImage'], old)
+        self.assertEqual(selectors, ['name=^/verity-build-anchor-' + key[:32] + '$'])
+
+    def test_build_retention_rejects_untrusted_checkpoint_and_inspection_failure(self):
+        old, target, key = self.build_anchor_policy()
+        path = self.root / 'var/lib/verity/protected-build/attempts' / key / 'checkpoint.json'
+        data = path.read_bytes()
+        def run(*args):
+            if 'ls' in args:
+                return 'd' * 64
+            raise RuntimeError('daemon unavailable')
+        with self.assertRaises(RuntimeError):
+            managed.reconcile_stopped_relay_policy(self.root, run,
+                json.dumps({'image': target, 'packetEnforcement': True}))
+        path.chmod(0o644)
+        with self.assertRaises(ValueError):
+            managed.stopped_build_images(self.root, run)
+        path.chmod(0o600)
+        point = json.loads(data)
+        point['binding']['projectId'] = 'another-project'
+        managed.base.atomic_file(path, json.dumps(point).encode(), 0o600)
+        with self.assertRaises(ValueError):
+            managed.stopped_build_images(self.root, run)
+
+    def test_build_created_after_snapshot_is_retained_before_replacement_start(self):
+        old, target = ['sha256:' + c * 64 for c in 'ab']
+        self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
+        self.provision()
+        self.relay.write_text(json.dumps({'image': target, 'packetEnforcement': True}))
+        observed = []
+        def run(*args):
+            if 'stop' in args and args[-1] == managed.SERVICE:
+                self.build_anchor_policy()
+            if 'container' in args:
+                if 'ls' in args:
+                    return 'd' * 64
+                return json.dumps([{'Id': 'd' * 64, 'Config': {'Image': old}}])
+            if 'start' in args and args[-1] == managed.SERVICE:
+                policy = json.loads((self.root / 'etc/verity-egress/relay.json').read_text())
+                self.assertEqual(policy['image'], target)
+                self.assertEqual(policy['previousImage'], old)
+                observed.append(True)
+            return self.execute(*args)
+        self.provision(run=run)
+        self.assertEqual(observed, [True])
+
     def test_stopped_relay_reconciliation_rejects_unknown_third_or_changed_contract(self):
         old, older, target, foreign = ['sha256:' + c * 64 for c in 'abcd']
         self.relay.write_text(json.dumps({'image': old, 'packetEnforcement': True}))
@@ -394,11 +568,51 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual((self.root / 'opt/verity-egress/node').stat().st_mode & 0o777, 0o555)
 
     def test_unmanaged_prefix_collision_never_applies_rules(self):
-        (self.root / 'sys/class/net/vep-unrelated').mkdir(parents=True)
-        with self.assertRaisesRegex(ValueError, 'collides'):
-            self.provision()
-        self.assertFalse(any(cmd[-1] == 'deny' for cmd in self.calls))
-        self.assertFalse((self.root / 'etc/systemd').exists())
+        for prefix in ('vep', 'veb'):
+            with self.subTest(prefix=prefix):
+                bridge = self.root / ('sys/class/net/' + prefix + '-unrelated')
+                bridge.mkdir(parents=True)
+                try:
+                    with self.assertRaisesRegex(ValueError, 'collides'):
+                        self.provision()
+                    self.assertFalse(any(cmd[-1] == 'deny' for cmd in self.calls))
+                    self.assertFalse((self.root / 'etc/systemd').exists())
+                finally:
+                    bridge.rmdir()
+
+    def test_build_bridge_ownership_requires_private_checkpoint_and_live_network_identity(self):
+        bridge = 'veb' + 'a' * 12
+        (self.root / 'sys/class/net' / bridge).mkdir(parents=True)
+        request = {'projectId': 'project-one', 'attemptId': 'attempt-one'}
+        state = self.root / 'var/lib/verity/protected-build'
+        state.mkdir(parents=True)
+        controller = state / 'controller.json'
+        controller.write_text(json.dumps({'request': request}))
+        controller.chmod(0o600)
+        key = managed.base.digest((request['projectId'] + '\0' + request['attemptId']).encode())
+        checkpoint = state / 'attempts' / key / 'checkpoint.json'
+        checkpoint.parent.mkdir(parents=True)
+        binding = {'projectId': request['projectId'], 'bridge': bridge, 'networkId': 'b' * 64}
+        checkpoint.write_text(json.dumps({'binding': binding, 'attemptId': request['attemptId']}))
+        checkpoint.chmod(0o600)
+        network = {'Id': binding['networkId'], 'Driver': 'bridge',
+                   'Options': {'com.docker.network.bridge.name': bridge}}
+        managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        network['Id'] = 'c' * 64
+        with self.assertRaisesRegex(ValueError, 'identity changed'):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        binding['networkName'] = 'verity-build-intent'
+        point = {'binding': binding, 'attemptId': request['attemptId'], 'pending': True}
+        checkpoint.write_text(json.dumps(point))
+        network.update(Name=binding['networkName'], EnableIPv6=True,
+                       Labels={'io.verity.build-intent': binding['networkId']})
+        managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        network['Labels']['io.verity.build-intent'] = 'd' * 64
+        with self.assertRaisesRegex(ValueError, 'intent changed'):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
+        checkpoint.chmod(0o666)
+        with self.assertRaises(ValueError):
+            managed.reject_bridge_collisions(self.root, lambda *_: json.dumps([network]))
 
     def test_failed_upgrade_restores_bundle_and_config_without_touching_docker(self):
         self.provision()

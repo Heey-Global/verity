@@ -51,7 +51,7 @@ it('keeps generated files quiet but reports unsupported files before opening Det
   expect(screen.getByText(/Some files could not/)).toBeOnTheScreen();
 });
 
-it('hides Wiki controls in Code and Raw Sources and reports unknown save status', () => {
+it('hides Wiki controls in Code and Sources and reports unknown save status', () => {
   const props = { documentSession: false, disabled: false, navigate: jest.fn() };
   const { rerender } = render(<WikiDetails {...props} root="worktree" />);
   expect(screen.queryByText('Details')).toBeNull();

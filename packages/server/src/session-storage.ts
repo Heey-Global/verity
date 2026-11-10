@@ -159,6 +159,7 @@ export class SessionStorage {
   ) => Promise<{ ran: true; value: T } | { ran: false }>;
   private blocked: (projectId: string) => boolean = () => true;
   private flight: Promise<void> | undefined;
+  private readonly shutdown = new AbortController();
   lastReport?: SessionStorageReport;
   constructor(
     private readonly deps: {
@@ -369,7 +370,12 @@ export class SessionStorage {
       await rm(path);
     });
   }
+  stop(): Promise<void> {
+    this.shutdown.abort();
+    return this.flight ?? Promise.resolve();
+  }
   runOnce(): Promise<void> {
+    if (this.shutdown.signal.aborted) return Promise.resolve();
     if (this.flight) return this.flight;
     this.flight = this.sweep().finally(() => {
       this.flight = undefined;
@@ -379,7 +385,7 @@ export class SessionStorage {
   private async sweep(): Promise<void> {
     if (!this.claim) return;
     const now = this.deps.now?.() ?? Date.now();
-    const signal = AbortSignal.timeout(60_000);
+    const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(60_000)]);
     const report: SessionStorageReport = {
       observedAt: new Date(now).toISOString(),
       dependenciesRemoved: [],
@@ -395,6 +401,7 @@ export class SessionStorage {
     const projects = await this.deps.listProjects();
     const sessions = await this.deps.listSessions();
     for (const project of projects) {
+      if (signal.aborted) return;
       if (project.kind === 'control_plane' || this.blocked(project.id)) continue;
       const owned = sessions.filter((s) => s.projectId === project.id);
       for (const session of owned) {
@@ -479,6 +486,7 @@ export class SessionStorage {
           });
         }
     }
+    if (signal.aborted) return;
     await this.sampleUsage(
       sessions
         .filter(

@@ -255,9 +255,9 @@ EOF
     DEPENDENCIES_READY=false
     if DEPENDENCIES_BIN=$(resolve_sibling verity-dependencies); then
       if "$DEPENDENCIES_BIN" status; then DEPENDENCIES_READY=true; fi
-    elif [ -d "${REPO_ROOT}/node_modules" ]; then
-      # Compatibility with older seeds; new seeds always ship the helper.
-      DEPENDENCIES_READY=true
+    else
+      echo "PUSH BLOCKED - dependency helper missing; rebuild the container to restore managed central preparation." >&2
+      exit 2
     fi
     if [ "$DEPENDENCIES_READY" != true ]; then
       if ! LOCAL_CHECKS_BIN=$(resolve_sibling verity-local-checks); then
@@ -279,22 +279,10 @@ EOF
         LOCAL_CHECKS="skip"
       else
         echo "pre-push: preparing dependencies automatically for lint and format…" >&2
-        if [ -n "${DEPENDENCIES_BIN:-}" ]; then
-          if ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" install) ||
-             ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" status); then
-            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
-            exit 2
-          fi
-        else
-          if [ -f "${REPO_ROOT}/package-lock.json" ] || [ -f "${REPO_ROOT}/npm-shrinkwrap.json" ]; then
-            INSTALL_ACTION=ci
-          else
-            INSTALL_ACTION=install
-          fi
-          if ! (cd "$REPO_ROOT" && npm "$INSTALL_ACTION" --ignore-scripts); then
-            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
-            exit 2
-          fi
+        if ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" install) ||
+           ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" status); then
+          echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
+          exit 2
         fi
       fi
     fi

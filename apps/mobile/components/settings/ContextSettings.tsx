@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createVerityClient } from '../../lib/client';
 import { Button, TextField, useConfirm } from '../ui';
+import { ProjectInstructionsSettings } from './ProjectInstructionsSettings';
 import { SettingsGroup, SettingsMessage, SettingsPanel, SettingsScaffold } from './SettingsChrome';
 
 type Snapshot = { instructions: string; memory: string; revision: number | string };
@@ -8,10 +9,13 @@ type ContextSettingsProps = { projectId?: string; kind: 'instructions' | 'memory
 
 export function ContextSettings(props: ContextSettingsProps) {
   // Each scope owns its draft and requests. Navigation must never reuse either.
+  if (props.projectId !== undefined && props.kind === 'instructions')
+    return <ProjectInstructionsSettings key={props.projectId} projectId={props.projectId} />;
   return <ContextSettingsEditor key={JSON.stringify([props.projectId, props.kind])} {...props} />;
 }
 
-/** Saving one field preserves the other from the same revision; conflicts keep the draft. */
+/** Personal context and project Memory. Saving one field preserves the other from the
+ *  same revision; conflicts keep the draft. Project Instructions have their own screen. */
 function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
   const client = useMemo(() => createVerityClient(), []);
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -26,8 +30,6 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
       try {
         let next: Snapshot;
         if (!projectId) next = await client.getUserContext();
-        else if (kind === 'instructions')
-          next = { ...(await client.getProjectInstructions(projectId)), memory: '' };
         else {
           next = { ...(await client.getProjectMemory(projectId)), instructions: '' };
         }
@@ -55,14 +57,6 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
           [kind]: value,
           revision: Number(snapshot.revision),
         });
-      else if (kind === 'instructions')
-        next = {
-          ...(await client.replaceProjectInstructions(projectId, {
-            instructions: value,
-            revision: String(snapshot.revision),
-          })),
-          memory: '',
-        };
       else {
         next = {
           ...(await client.replaceProjectMemory(projectId, {
@@ -116,9 +110,7 @@ function ContextSettingsEditor({ projectId, kind }: ContextSettingsProps) {
         title={projectId ? `Project ${title}` : `Personal ${title}`}
         description={
           kind === 'instructions'
-            ? projectId
-              ? 'Rules for this project. Repository AGENTS.md remains developer-owned.'
-              : 'Your rules across projects. Visible only to you.'
+            ? 'Your rules across projects. Visible only to you.'
             : 'Facts learned by the agent. Review, edit or clear them here. Clearing does not erase past conversations.'
         }
       >

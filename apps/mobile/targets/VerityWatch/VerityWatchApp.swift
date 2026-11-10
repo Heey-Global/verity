@@ -21,8 +21,8 @@ struct VerityWatchApp: App {
     WindowGroup {
       CaptureView().environmentObject(CaptureStore.shared)
         .onOpenURL { url in
-          guard WatchCaptureComplication.isRecordingURL(url) else { return }
-          CaptureStore.shared.start()
+          guard WatchCaptureComplication.isHomeURL(url) else { return }
+          CaptureStore.shared.showHome()
         }
     }
     .onChange(of: scenePhase) { _, phase in
@@ -41,7 +41,7 @@ struct CaptureView: View {
     } else if let confirmation = store.confirmation {
       SavedView(confirmation: confirmation)
     } else {
-      HomeView()
+      HomeView().id(store.homeGeneration)
     }
   }
 }
@@ -50,6 +50,7 @@ struct CaptureView: View {
 /// its answers, and what was said here. The V in the title bar starts talking.
 private struct HomeView: View {
   @EnvironmentObject private var store: CaptureStore
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some View {
     NavigationStack {
@@ -68,30 +69,47 @@ private struct HomeView: View {
           )
           .font(.footnote).foregroundStyle(.secondary)
         }
+        if let inbox = currentInbox {
+          NeedsYouSection(inbox: inbox)
+        }
         if let reply = store.verity?.reply, !reply.isEmpty {
-          NavigationLink { ReplyDetail(text: reply) } label: {
-            Text(reply).font(.footnote).lineLimit(5)
+          Section {
+            NavigationLink { ReplyDetail(text: reply) } label: {
+              Text(reply).font(.footnote).lineLimit(3)
+                .onAppear { if scenePhase == .active { store.recordDisplayedReply() } }
+                .onChange(of: store.verity?.replyId) { _, _ in
+                  if scenePhase == .active { store.recordDisplayedReply() }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                  if phase == .active { store.recordDisplayedReply() }
+                }
+            }
+          } header: {
+            Text("Verity").textCase(nil)
           }
         }
-        if store.captures.isEmpty && store.verity?.reply == nil {
+        if store.verity?.reply == nil && currentInbox == nil {
           Text("Tap the V and tell Verity what you need: a task, a question, an appointment.")
             .font(.footnote).foregroundStyle(.secondary)
         }
-        ForEach(store.captures) { capture in
-          NavigationLink { CaptureDetail(id: capture.id) } label: { CaptureRow(capture: capture) }
-            .listRowBackground(rowBackground(inFlight: capture.inFlight))
+        if !store.pendingCaptures.isEmpty {
+          NavigationLink { PendingRecordingsView() } label: {
+            Text("Pending recordings · \(store.pendingCaptures.count)")
+              .font(.footnote).foregroundStyle(sky)
+          }
         }
       }
       .navigationTitle { Text("Verity").foregroundStyle(accent) }
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button(action: store.start) {
-            VerityMarkShape().fill(.white)
-              .aspectRatio(VerityMarkShape.aspectRatio, contentMode: .fit)
-              .frame(width: 16)
+            VerityOriginalMark()
+              .frame(width: 17.4, height: 12.2)
+              .frame(width: 26, height: 26)
+              .background(accent.opacity(15.0 / 255), in: Circle())
               .frame(width: 34, height: 34)
-              .background(highlight, in: Circle())
-              .overlay(Circle().stroke(accent.opacity(0.55)))
+              .background(Color(red: 0x0c / 255, green: 0x0e / 255, blue: 0x17 / 255), in: Circle())
+              .overlay(Circle().stroke(Color(red: 0x22 / 255, green: 0x26 / 255, blue: 0x3a / 255)))
           }
           .buttonStyle(.plain)
           .accessibilityLabel("Talk to Verity")
@@ -100,14 +118,12 @@ private struct HomeView: View {
     }
   }
 
-  /// The usual dark row; a capture still on its way carries a magenta stripe.
-  private func rowBackground(inFlight: Bool) -> some View {
-    RoundedRectangle(cornerRadius: 10).fill(Color(white: 0.09))
-      .overlay(alignment: .leading) {
-        if inFlight {
-          Capsule().fill(accent).frame(width: 3).padding(.vertical, 6).padding(.leading, 3)
-        }
-      }
+  /// Home's open items for the signed-in account, when there are any.
+  private var currentInbox: WatchInbox? {
+    guard let inbox = store.inbox, !inbox.items.isEmpty,
+      inbox.scope == store.projectList.scope
+    else { return nil }
+    return inbox
   }
 }
 
@@ -129,7 +145,8 @@ private struct StatusRow: View {
         case (_, "working"):
           ProgressView().controlSize(.mini).tint(sky)
           Text("Verity is working")
-        case (_, "needs_you"): Text("Verity needs you").foregroundStyle(accent)
+        // Waiting on an answer is a next step, not a problem: the action color.
+        case (_, "needs_you"): Text("Verity needs you").foregroundStyle(sky)
         case (_, "failed"): Text("Stopped with an error").foregroundStyle(recordRed)
         default: Text("Ready")
         }
@@ -164,6 +181,115 @@ private struct QuestionSection: View {
   }
 }
 
+/// Home's "For you" items. Supported quick actions are sent to the paired
+/// iPhone; items requiring another interface keep their iPhone handoff.
+private struct NeedsYouSection: View {
+  let inbox: WatchInbox
+
+  var body: some View {
+    Section {
+      ForEach(inbox.items) { item in
+        NavigationLink { InboxItemDetail(item: item) } label: { InboxItemRow(item: item) }
+      }
+    } header: {
+      Text("Needs you · \(inbox.total)").textCase(nil)
+    } footer: {
+      // An old list may already be done on the iPhone; say how old it is. The
+      // timeline re-checks while the screen stays open.
+      TimelineView(.periodic(from: .now, by: 60)) { context in
+        if context.date.timeIntervalSince(inbox.at) > 10 * 60 {
+          Text("As of \(inbox.at.formatted(date: .omitted, time: .shortened))")
+        }
+      }
+    }
+  }
+}
+
+private struct InboxItemRow: View {
+  let item: WatchInbox.Item
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(item.title).font(.footnote).lineLimit(2)
+      HStack(spacing: 4) {
+        InboxTag(item: item)
+        Text(item.context).lineLimit(1).foregroundStyle(.secondary)
+      }
+      .font(.caption2)
+    }
+  }
+}
+
+/// The item's tag in its tone, as on Home: a word, never color alone.
+private struct InboxTag: View {
+  let item: WatchInbox.Item
+
+  var body: some View {
+    Text(item.tag.uppercased()).fontWeight(.semibold).foregroundStyle(tone)
+  }
+
+  private var tone: Color {
+    switch item.tone {
+    case "attention": return recordRed
+    case "success": return .green
+    case "action": return sky
+    default: return .secondary
+    }
+  }
+}
+
+private struct InboxItemDetail: View {
+  @EnvironmentObject private var store: CaptureStore
+  @State private var confirmingMerge = false
+  let item: WatchInbox.Item
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 6) {
+        InboxTag(item: item).font(.caption2)
+        Text(item.title).font(.headline)
+        if !item.context.isEmpty {
+          Text(item.context).font(.footnote).foregroundStyle(.secondary)
+        }
+        if let message = item.message, !message.isEmpty {
+          Text(message).font(.footnote)
+        }
+        if store.completedInboxActions.contains(item.id) {
+          Label("Done", systemImage: "checkmark").foregroundStyle(.green)
+        } else if store.pendingInboxActions.contains(item.id) {
+          ProgressView("Working…")
+        } else {
+          ForEach(item.actions) { action in
+            Button(action.label) {
+              if action.kind == "merge" { confirmingMerge = true }
+              else { store.performInboxAction(item: item, action: action) }
+            }
+          }
+          if let error = store.inboxActionErrors[item.id] {
+            Text(error).font(.footnote).foregroundStyle(recordRed)
+          }
+          if item.actions.isEmpty {
+            Label("Decide on iPhone", systemImage: "iphone")
+              .font(.footnote).foregroundStyle(.secondary)
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .navigationTitle("Needs you")
+    .confirmationDialog("Merge \(item.title)?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+      Button("Merge") {
+        if let action = item.actions.first(where: { $0.kind == "merge" }) {
+          store.performInboxAction(item: item, action: action)
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("\(item.context)\nPR #\(item.actions.first(where: { $0.kind == "merge" })?.number ?? 0)\nMethod: server-selected repository default")
+    }
+  }
+}
+
 /// A reply too long for the list, scrollable; the whole conversation is on iPhone.
 private struct ReplyDetail: View {
   let text: String
@@ -176,6 +302,37 @@ private struct ReplyDetail: View {
           .font(.footnote).foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+}
+
+/// Only recoverable recordings live here; completed inputs belong to the conversation.
+private struct PendingRecordingsView: View {
+  @EnvironmentObject private var store: CaptureStore
+  @State private var deleting: Capture?
+
+  var body: some View {
+    List {
+      ForEach(store.pendingCaptures) { capture in
+        NavigationLink { CaptureDetail(id: capture.id) } label: { CaptureRow(capture: capture) }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) { deleting = capture } label: {
+              Label("Delete recording", systemImage: "xmark")
+            }
+          }
+      }
+    }
+    .navigationTitle("Pending recordings")
+    .confirmationDialog("Delete this recording?", isPresented: Binding(
+      get: { deleting != nil }, set: { if !$0 { deleting = nil } }
+    ), titleVisibility: .visible) {
+      Button("Delete recording", role: .destructive) {
+        if let capture = deleting { store.discardCapture(capture.id) }
+        deleting = nil
+      }
+      Button("Keep recording", role: .cancel) { deleting = nil }
+    } message: {
+      Text("Local audio cannot be recovered. Anything already received by iPhone may still be processed.")
     }
   }
 }
@@ -220,6 +377,9 @@ private struct CaptureDetail: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 8) {
         Text(capture.title).font(.body)
+        if capture.state == .failed {
+          Button("Try again") { store.retryCapture(capture.id) }
+        }
         Text(
           [whenLabel(capture.createdAt), capture.durationLabel]
             .compactMap { $0 }.joined(separator: " · ")

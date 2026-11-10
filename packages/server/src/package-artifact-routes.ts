@@ -15,6 +15,7 @@ import {
   PACKAGE_ARTIFACT_BASE_URL,
 } from './package-artifact-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
+import { npmInstallGrant } from './package-install-grants.js';
 
 function capability(header: string | undefined): string {
   const bearer = bearerToken(header);
@@ -46,11 +47,12 @@ export function registerPackageArtifactRoutes(
       const identity = internalConnectionIdentity(request);
       const generation = internalConnectionGenerationSignal(request);
       const token = capability(request.headers.authorization);
+      const installGrant = npmInstallGrant(token);
       const authorized = async (): Promise<boolean> => {
         if (!identity || !generation || generation.aborted || !token) return false;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const binding = await Promise.race([
-          options.capabilities.resolve(token).catch(() => undefined),
+          options.capabilities.resolve(installGrant?.sourceToken ?? token).catch(() => undefined),
           new Promise<undefined>((resolve) => {
             timer = setTimeout(() => resolve(undefined), 1000);
             timer.unref();
@@ -60,6 +62,10 @@ export function registerPackageArtifactRoutes(
         });
         return (
           !generation.aborted &&
+          (!installGrant ||
+            (npmInstallGrant(token) === installGrant &&
+              installGrant.projectId === identity.projectId &&
+              installGrant.containerGeneration === identity.containerGeneration)) &&
           binding?.projectId === identity.projectId &&
           binding.containerGeneration === identity.containerGeneration
         );
@@ -108,11 +114,18 @@ export function registerPackageArtifactRoutes(
       poll.unref();
       try {
         const path = (request.params as { '*': string })['*'];
+        if (
+          installGrant &&
+          request.method !== 'POST' &&
+          !path.startsWith('npm/') &&
+          !path.startsWith('file/npm/')
+        )
+          return reply.code(403).send({ error: 'installation grant is restricted to npm' });
         const base = options.artifactBaseUrl?.(identity) ?? PACKAGE_ARTIFACT_BASE_URL;
         const response =
           request.method === 'POST'
             ? await broker.advisories(request.body, controller.signal, authorized)
-            : await broker.serve(path, controller.signal, authorized, base);
+            : await broker.serve(path, controller.signal, authorized, base, installGrant?.policy);
         if (controller.signal.aborted || !(await authorized()))
           return reply.code(401).send({ error: 'unauthorized' });
         reply.header('cache-control', 'no-store');

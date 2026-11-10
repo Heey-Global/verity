@@ -62,6 +62,9 @@ export {
 // harness reaches it through `@verity/store/testing`.
 export {
   EventStore,
+  defaultProjectName,
+  InvalidProjectNameError,
+  PROJECT_NAME_MAX_CHARS,
   SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
   type PlanningConsent,
@@ -79,6 +82,9 @@ export {
   type SessionMockupReview,
   type SessionMockups,
   type MockupScreenRecord,
+  type MockupVerdict,
+  storedMockupScreens,
+  storedMockupState,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -88,6 +94,8 @@ export {
   type GoogleSlideImageCleanupRecord,
   type SessionInput,
   type RunningTurnRecord,
+  type RunnerTurnOwnership,
+  type RunnerTurnOwnershipRequest,
   type QueuedTurnRecord,
   type QueuedTurnInput,
   type ProjectRecord,
@@ -305,6 +313,16 @@ export {
   type AddProjectRepositoryInput,
   type SessionRepositoryWorkspaceRecord,
 } from './project-repositories.js';
+
+export {
+  WIKI_OCCASION_BODY_LIMIT,
+  WikiMaintenanceStore,
+  WikiOccasionStore,
+  type WikiMaintenanceRecord,
+  type RecordWikiOccasion,
+  type WikiOccasion,
+  type WikiOccasionKind,
+} from './wiki-occasions.js';
 
 export {
   ProjectInquiryStore,

@@ -1,3 +1,10 @@
+import { createDockerClient, DockerError } from './docker.js';
+import { createHostProjectNetworks } from './project-egress-network-cleanup.js';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
+import {
+  createNativeProtectedBuildHost,
+  protectedBuildBootstrapRules,
+} from './project-egress-build-host.js';
 import { openProjectEgressInventoryHistory } from './project-egress-inventory-history.js';
 import { ProjectEgressHealthError } from './project-egress-health.js';
 import { createManagedSystemInventory } from './project-egress-system-inventory.js';
@@ -32,7 +39,11 @@ import { egressRelayPolicy } from './project-egress-relay-policy.js';
 /** Managed host entrypoint. Activation requires a validated runtime profile and complete inventory. */
 import { readFile } from 'node:fs/promises';
 import { ProjectEgressHost, projectEgressBootstrapRules } from './project-egress-host.js';
-import { applyProjectFenceRules, projectFenceTable } from './project-egress-fence.js';
+import {
+  applyProjectFenceRules,
+  projectFenceTable,
+  type ProjectFenceDependencies,
+} from './project-egress-fence.js';
 import { listenProjectEgressHost } from './project-egress-host-control.js';
 import {
   inspectEgressHostContainer,
@@ -52,7 +63,10 @@ if (!['deny', 'restore', 'serve'].includes(mode ?? ''))
 // Paths are host installation constants, not request-controlled configuration.
 await applyProjectFenceRules(projectEgressBootstrapRules());
 // ExecStopPost must fence even a corrupt registry or missing Docker daemon.
-if (mode === 'deny') process.exit(0);
+if (mode === 'deny') {
+  await applyProjectFenceRules(protectedBuildBootstrapRules());
+  process.exit(0);
+}
 verifyProjectEgressServiceManager(
   (await promisify(execFile)('/usr/bin/systemctl', ['--version'], { timeout: 5000 })).stdout,
   await readFile('/proc/1/comm', 'utf8'),
@@ -105,6 +119,7 @@ const { resolve, resolveProtected } =
       });
 const inventoryHistory = await openProjectEgressInventoryHistory('/var/lib/verity-egress');
 let inventoryPersistenceFailed = false;
+let inventoryPersistenceFailures = 0;
 const resolveInventory: typeof resolveProtected = async (host) => {
   try {
     const result = await resolveProtected(host);
@@ -112,6 +127,7 @@ const resolveInventory: typeof resolveProtected = async (host) => {
       await inventoryHistory.addAddresses(result.addresses);
     } catch (error) {
       inventoryPersistenceFailed = true;
+      inventoryPersistenceFailures++;
       throw error;
     }
     return result;
@@ -128,6 +144,7 @@ const resolveInventory: typeof resolveProtected = async (host) => {
         await inventoryHistory.addAddresses(addresses);
       } catch (failure) {
         inventoryPersistenceFailed = true;
+        inventoryPersistenceFailures++;
         throw failure;
       }
     }
@@ -140,8 +157,8 @@ let protectedAddresses = createProtectedAddressInventory({
   configuredHosts: [
     ...new Set([...inventoryHistory.hosts(), ...(authority?.mandatoryHosts ?? [])]),
   ],
-  reportConfiguredFailure: (host, error) => {
-    console.error(`Configured broker host ${host} could not be resolved`, error);
+  reportConfiguredFailure: () => {
+    console.error('verity: protected inventory DNS refresh failed');
   },
 });
 const managedInventory = authority?.managedInventoryComplete === false;
@@ -153,19 +170,29 @@ const systemInventory = createManagedSystemInventory({
     if (managedInventory && authority) authority.managedInventoryComplete = false;
   },
   replace: async (hosts, addresses) => {
-    if (!authority) throw new Error('Direct authority is not configured');
+    if (!authority) throw new ProjectEgressInventoryError('inventory_not_configured');
     try {
       await inventoryHistory.addHosts([...deploymentMandatoryHosts, ...hosts]);
       await inventoryHistory.addAddresses(addresses);
-    } catch (error) {
+    } catch {
       inventoryPersistenceFailed = true;
-      throw error;
+      inventoryPersistenceFailures++;
+      throw new ProjectEgressInventoryError('inventory_persistence_failed');
     }
     const next = createProtectedAddressInventory({
       resolve: resolveInventory,
       configuredHosts: inventoryHistory.dnsHosts([...deploymentMandatoryHosts, ...hosts]),
     });
-    await next.refresh();
+    const persistenceFailuresBeforeRefresh = inventoryPersistenceFailures;
+    try {
+      await next.refresh();
+    } catch {
+      throw new ProjectEgressInventoryError(
+        inventoryPersistenceFailures !== persistenceFailuresBeforeRefresh
+          ? 'inventory_persistence_failed'
+          : 'inventory_dns_failed',
+      );
+    }
     protectedAddresses = next;
     inventoryPersistenceFailed = false;
     authority.mandatoryHosts = inventoryHistory.hosts();
@@ -173,6 +200,49 @@ const systemInventory = createManagedSystemInventory({
   },
 });
 const deadline = hostProjectDeadlineEnforcer();
+const fenceDependencies: Omit<ProjectFenceDependencies, 'policyCurrent' | 'deadline'> = {
+  inspect: inspectProjectFenceAttachment,
+  apply: applyProjectFenceRules,
+  ...(() => {
+    const checks = egressHostDirectChecks(authority, {
+      allows: (address) => protectedAddresses.allows(address),
+    });
+    return {
+      directTargetAllowed: async (host: string) =>
+        !inventoryPersistenceFailed &&
+        systemInventory.ready() &&
+        (await checks.directTargetAllowed(host)),
+      destinationAllowed: async (address: string) =>
+        !inventoryPersistenceFailed &&
+        systemInventory.ready() &&
+        !inventoryHistory.protectedAddress(address) &&
+        (await checks.destinationAllowed(address)),
+    };
+  })(),
+  reportSystemFailure: (target, error) =>
+    console.error(`System destination ${target.host} was not admitted`, error),
+  resolve,
+  existing: async (binding) => {
+    const tables = z
+      .object({
+        nftables: z.array(
+          z.object({ table: z.object({ family: z.string(), name: z.string() }).optional() }),
+        ),
+      })
+      .parse(
+        JSON.parse(
+          (
+            await promisify(execFile)('/usr/sbin/nft', ['-j', 'list', 'tables'], {
+              timeout: 1000,
+            })
+          ).stdout,
+        ),
+      );
+    return tables.nftables.some(
+      (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
+    );
+  },
+};
 const enforcement = createProjectEgressHostEnforcement({
   deadline,
   store: policyStore,
@@ -181,56 +251,22 @@ const enforcement = createProjectEgressHostEnforcement({
   reportRequestFailure: (error) => console.error('Destination request was not recorded', error),
   directAuthority: () => authority !== undefined,
   inspect: inspectEgressHostDirect,
-  dependencies: {
-    inspect: inspectProjectFenceAttachment,
-    apply: applyProjectFenceRules,
-    ...(() => {
-      const checks = egressHostDirectChecks(authority, {
-        allows: (address) => protectedAddresses.allows(address),
-      });
-      return {
-        directTargetAllowed: async (host: string) =>
-          !inventoryPersistenceFailed &&
-          systemInventory.ready() &&
-          (await checks.directTargetAllowed(host)),
-        destinationAllowed: async (address: string) =>
-          !inventoryPersistenceFailed &&
-          systemInventory.ready() &&
-          !inventoryHistory.protectedAddress(address) &&
-          (await checks.destinationAllowed(address)),
-      };
-    })(),
-    reportSystemFailure: (target, error) =>
-      console.error(`System destination ${target.host} was not admitted`, error),
-    resolve,
-    existing: async (binding) => {
-      const tables = z
-        .object({
-          nftables: z.array(
-            z.object({ table: z.object({ family: z.string(), name: z.string() }).optional() }),
-          ),
-        })
-        .parse(
-          JSON.parse(
-            (
-              await promisify(execFile)('/usr/sbin/nft', ['-j', 'list', 'tables'], {
-                timeout: 1000,
-              })
-            ).stdout,
-          ),
-        );
-      return tables.nftables.some(
-        (item) => item.table?.family === 'inet' && item.table.name === projectFenceTable(binding),
-      );
-    },
-  },
+  dependencies: fenceDependencies,
 });
 
 const verifyHost = async () => {
   const info: unknown = JSON.parse(await projectEgressHostDocker('info', '--format', '{{json .}}'));
   verifyProjectEgressDockerHost(info);
 };
+const hostNetworkDocker = createDockerClient({
+  baseUrl: 'unix:///var/run/docker.sock:/v1.47',
+  timeoutMs: 3000,
+});
 const controller = new ProjectEgressHost(await store.load(), {
+  ...createHostProjectNetworks(
+    createDockerClient({ baseUrl: 'unix:///var/run/docker.sock:/v1.47', timeoutMs: 250 }),
+    hostNetworkDocker,
+  ),
   ...(managedInventory ? { systemInventory } : {}),
   verifyHealth: async () => {
     if (inventoryPersistenceFailed)
@@ -265,31 +301,82 @@ const controller = new ProjectEgressHost(await store.load(), {
     await projectEgressHostDocker('container', 'start', id);
   },
   stopContainer: async (id) => {
-    await projectEgressHostDocker('container', 'stop', '--time', '1', id);
+    try {
+      await projectEgressHostDocker('container', 'stop', '--time', '1', id);
+    } catch (error) {
+      // A concurrent retired-generation cleanup may already have removed this exact ID.
+      try {
+        await hostNetworkDocker.inspectContainer(id);
+      } catch (inspectionError) {
+        if (
+          inspectionError instanceof DockerError &&
+          inspectionError.kind === 'container_not_found'
+        )
+          return;
+      }
+      throw error;
+    }
   },
 });
+const builds =
+  relayPolicy?.packetEnforcement === true
+    ? await createNativeProtectedBuildHost({
+        imageRef: relayPolicy.image,
+        ...(relayPolicy.previousImage === undefined
+          ? {}
+          : { cleanupImageRef: relayPolicy.previousImage }),
+        dataVolume: relayPolicy.dataVolume,
+        dependencies: { ...fenceDependencies, deadline },
+        verifyReady: async () => {
+          systemInventory.verify();
+          if (inventoryPersistenceFailed)
+            throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+          verifyEgressHostAuthorityReady(authority);
+          await verifyServingRuntimeRegistration();
+          await verifyHost();
+        },
+      })
+    : undefined;
 if (mode === 'restore') {
+  await builds?.restore();
   await controller.restore(relayPolicy?.packetEnforcement === true);
   deadline.close();
   await database?.destroy();
 } else {
   const refreshProtected = () =>
-    protectedAddresses.refresh().catch((error: unknown) => {
+    protectedAddresses.refresh().catch(() => {
       // The previous complete inventory ages out; direct admission then fails closed.
-      console.error('Protected destination inventory refresh failed', error);
+      console.error('verity: protected destination inventory refresh failed', {
+        reason: inventoryPersistenceFailed
+          ? 'inventory_persistence_failed'
+          : 'inventory_dns_failed',
+      });
     });
   if (authority !== undefined) await refreshProtected();
   const inventoryTimer =
     authority === undefined ? undefined : setInterval(() => void refreshProtected(), 60_000);
   inventoryTimer?.unref();
   const service = await serveProjectEgressHost({
-    restore: () => controller.restore(),
-    deny: () => controller.shutdown(),
+    restore: async () => {
+      await builds?.restore();
+      await controller.restore();
+    },
+    deny: async () => {
+      await Promise.all([builds?.close(), controller.shutdown()]);
+    },
     verifyHost,
-    revalidate: () => controller.revalidate(),
+    revalidate: async () => {
+      await builds?.controller.revalidate();
+      await controller.revalidate();
+    },
     listen: async () => {
       const token = (await readFile('/etc/verity-egress/control.key', 'utf8')).trim();
-      return listenProjectEgressHost({ directory: '/run/verity-egress', token, controller });
+      return listenProjectEgressHost({
+        directory: '/run/verity-egress',
+        token,
+        controller,
+        ...(builds ? { builds: builds.controller } : {}),
+      });
     },
     notifyReady: async () => {
       if (!process.env.NOTIFY_SOCKET) throw new Error('Systemd readiness channel is required');
@@ -299,7 +386,40 @@ if (mode === 'restore') {
       });
     },
   });
+  let networkSweepRunning = false;
+  const sweepNetworks = async () => {
+    if (networkSweepRunning) return;
+    networkSweepRunning = true;
+    try {
+      await controller.cleanupNetworks();
+    } catch (error) {
+      console.error('Project network cleanup deferred', error);
+    } finally {
+      networkSweepRunning = false;
+    }
+  };
+  await sweepNetworks();
+  const networkSweep = setInterval(() => void sweepNetworks(), 60_000);
+  networkSweep.unref();
+  let sweeping = false;
+  const buildSweep = builds
+    ? setInterval(() => {
+        if (sweeping) return;
+        sweeping = true;
+        void builds.controller
+          .revalidate()
+          .catch((error: unknown) => {
+            console.error('Protected build supervision failed', error);
+          })
+          .finally(() => {
+            sweeping = false;
+          });
+      }, 1000)
+    : undefined;
+  buildSweep?.unref();
   const stop = () => {
+    clearInterval(buildSweep);
+    clearInterval(networkSweep);
     clearInterval(inventoryTimer);
     void service.stop().then(
       async () => {

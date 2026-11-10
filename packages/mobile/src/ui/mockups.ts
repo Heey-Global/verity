@@ -14,7 +14,6 @@ export interface MockupScreenView {
   width: number;
   height: number;
   verdict?: MockupVerdict;
-  comment?: string;
 }
 
 export interface MockupRoundView {
@@ -71,49 +70,37 @@ export function mockupRoundView(
     screens: live
       ? screens.map((screen) => {
           const state = current.screens.find((entry) => entry.name === screen.name);
-          if (state === undefined) return screen;
-          return state.comment !== undefined
-            ? { ...screen, verdict: state.verdict, comment: state.comment }
-            : { ...screen, verdict: state.verdict };
+          return state === undefined ? screen : { ...screen, verdict: state.verdict };
         })
       : screens,
   };
 }
 
-const ORDER: Record<MockupVerdict, number> = { open: 0, comment: 1, approved: 2 };
-
-/** Screens still to decide first, then commented, then approved; stable within. */
-export function reviewOrder<T extends { verdict?: MockupVerdict }>(screens: readonly T[]): T[] {
-  return screens
-    .map((screen, index) => ({ screen, index }))
-    .sort(
-      (a, b) =>
-        ORDER[a.screen.verdict ?? 'open'] - ORDER[b.screen.verdict ?? 'open'] || a.index - b.index,
-    )
-    .map(({ screen }) => screen);
-}
-
-/** "1 of 3 approved · 1 comment" */
+/** "1 approved · 1 discarded"; "2 screens to review" while nothing is marked. */
 export function mockupProgress(review: Pick<MockupReview, 'screens'>): string {
-  const approved = review.screens.filter((screen) => screen.verdict === 'approved').length;
-  const comments = review.screens.filter((screen) => screen.verdict === 'comment').length;
-  const parts = [`${String(approved)} of ${String(review.screens.length)} approved`];
-  if (comments > 0) parts.push(`${String(comments)} ${comments === 1 ? 'comment' : 'comments'}`);
+  const count = (verdict: MockupVerdict) =>
+    review.screens.filter((screen) => screen.verdict === verdict).length;
+  const approved = count('approved');
+  const discarded = count('discarded');
+  const open = count('open');
+  const parts: string[] = [];
+  if (approved > 0) parts.push(`${String(approved)} approved`);
+  if (discarded > 0) parts.push(`${String(discarded)} discarded`);
+  if (open > 0) parts.push(`${String(open)} to review`);
   return parts.join(' · ');
 }
 
 export interface MockupBarView {
   title: string;
   subtitle: string;
-  /** The button: review the screens, or send the comments once nothing is open. */
-  action: 'review' | 'send' | undefined;
+  /** Opens the full-screen review; absent while an earlier version revises. */
+  action: 'review' | undefined;
 }
 
 /**
- * The slim bar above the composer while the build waits for the review. Absent
- * once the review is approved or before mockups were presented. When every
- * screen is decided but some carry comments, the round cannot complete by
- * approving, so the bar offers to send the comments instead.
+ * The slim bar above the composer while the review is open. Marks never end the
+ * review: it stays until the user tells the agent in the chat to build, and the
+ * agent ends it. Absent before mockups were presented and after the review ended.
  */
 export function mockupBarView(review: MockupReview | undefined): MockupBarView | undefined {
   if (review === undefined || review.screens.length === 0) return undefined;
@@ -125,10 +112,9 @@ export function mockupBarView(review: MockupReview | undefined): MockupBarView |
     };
   if (review.state !== 'pending') return undefined;
   const open = review.screens.some((screen) => screen.verdict === 'open');
-  const comments = review.screens.some((screen) => screen.verdict === 'comment');
   return {
-    title: open ? 'Mockups waiting for you' : 'Send your comments',
+    title: open ? 'Mockups waiting for you' : 'Mockups reviewed',
     subtitle: mockupProgress(review),
-    action: !open && comments ? 'send' : 'review',
+    action: 'review',
   };
 }

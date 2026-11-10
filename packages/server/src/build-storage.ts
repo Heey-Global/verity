@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
 
 const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
@@ -58,9 +59,12 @@ const ownerSchema = z.object({
   /** The host admission marker this attempt holds, released with it. */
   admissionMarker: z.string().optional(),
 });
+const protectedBuildReference = protectedBuildRequest.pick({ projectId: true, attemptId: true });
+type ProtectedBuildReference = z.infer<typeof protectedBuildReference>;
 const remoteRecordSchema = z.object({
   version: z.literal(1),
-  operation: z.enum(['build-export', 'image-import']),
+  operation: z.enum(['build-export', 'image-import', 'protected-build']),
+  protectedBuild: protectedBuildReference.optional(),
   hostBootId: z.uuid(),
   hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
   startedAt: z.iso.datetime(),
@@ -100,6 +104,9 @@ const TRANSPORT_FAILURE =
  * leaves the remote state unknown, and reconciliation decides later.
  */
 export function remoteOperationEnded(operation: RemoteOperation, output: string): boolean {
+  // Only the authenticated build supervisor can establish termination; default
+  // BuildKit idleness and build-produced output say nothing about a private worker.
+  if (operation === 'protected-build') return false;
   const lines = output
     .split('\n')
     .map((line) => line.trim())
@@ -212,7 +219,8 @@ export interface BuildStorageLease {
     command: string,
     args: string[],
     options: {
-      remoteOperation?: 'build-export' | 'image-import';
+      remoteOperation?: 'build-export' | 'image-import' | 'protected-build';
+      protectedBuild?: ProtectedBuildReference;
       env: NodeJS.ProcessEnv;
       signal?: AbortSignal;
       timeout: number;
@@ -435,7 +443,7 @@ export class BuildStorage {
           if (this.liveChild(marker)) continue;
           const remote = this.readRemoteRecord(marker);
           if (remote !== undefined) {
-            if (remote === 'invalid') continue;
+            if (remote === 'invalid' || remote.operation === 'protected-build') continue;
             if (
               remote.operation === 'build-export' &&
               (idleBefore === undefined || Date.parse(remote.startedAt) >= idleBefore)
@@ -669,6 +677,9 @@ export class BuildStorage {
                     version: 1,
                     ...identity,
                     operation: options.remoteOperation,
+                    ...(options.protectedBuild === undefined
+                      ? {}
+                      : { protectedBuild: protectedBuildReference.parse(options.protectedBuild) }),
                     startedAt: new Date().toISOString(),
                   },
             ),
@@ -963,7 +974,12 @@ export class BuildStorage {
    * outlived every command bound.
    */
   async reconcile(
-    probe: { buildkitIdle?: BuildkitIdleProbe } = {},
+    probe: {
+      buildkitIdle?: BuildkitIdleProbe;
+      protectedBuildStatus?: (reference: ProtectedBuildReference) => Promise<unknown>;
+      /** Host reply to the `slot` query; covers records written before it was asked. */
+      protectedBuildSlot?: () => Promise<unknown>;
+    } = {},
     now: number = Date.now(),
   ): Promise<UnresolvedBuildAttempt[]> {
     const namespace = readlinkSync('/proc/self/ns/pid');
@@ -980,7 +996,80 @@ export class BuildStorage {
       }
       return idle;
     };
+    let slotIdle: Promise<boolean> | undefined;
+    let slotAskedAt = 0;
+    const protectedSlotIdle = () =>
+      (slotIdle ??= (async () => {
+        slotAskedAt = Date.now();
+        try {
+          const reply = protectedBuildReply.safeParse(await probe.protectedBuildSlot?.());
+          return reply.success && 'idle' in reply.data && reply.data.idle;
+        } catch {
+          return false;
+        }
+      })());
+    const protectedEnded = async (record: z.infer<typeof remoteRecordSchema>): Promise<boolean> => {
+      if (record.operation !== 'protected-build') return false;
+      if (record.protectedBuild === undefined) {
+        // Records from before attempt identities were stored cannot be matched to a
+        // receipt. The host has one slot and refuses a new build until the previous
+        // one is proven ended, so an idle slot proves every earlier attempt ended.
+        const idle = await protectedSlotIdle();
+        return idle && Date.parse(record.startedAt) < slotAskedAt;
+      }
+      const reference = record.protectedBuild;
+      try {
+        const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));
+        return (
+          reply.success &&
+          'record' in reply.data &&
+          reply.data.record.ended &&
+          ['succeeded', 'failed'].includes(reply.data.record.phase) &&
+          reply.data.record.request.projectId === reference.projectId &&
+          reply.data.record.request.attemptId === reference.attemptId
+        );
+      } catch {
+        return false;
+      }
+    };
     this.sweepAdmissionMarkers(namespace);
+    // Admission-only leases have no artifact directory through which to query the host.
+    if (this.admissionDirectory !== undefined) {
+      const leases = join(this.admissionDirectory, 'leases');
+      if (existsSync(leases))
+        for (const entry of readdirSync(leases, { withFileTypes: true })) {
+          if (
+            !/^attempt-[\w-]+$/.test(entry.name) ||
+            !entry.isDirectory() ||
+            entry.isSymbolicLink()
+          )
+            continue;
+          const marker = join(leases, entry.name);
+          try {
+            const owner = ownerSchema.parse(
+              JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8')),
+            );
+            const record = this.readRemoteRecord(marker);
+            if (record === undefined || record === 'invalid') continue;
+            const clientGone = () =>
+              owner.namespace === namespace
+                ? !(existsProcess(owner.pid) && processStart(owner.pid) === owner.start) &&
+                  !this.liveChild(marker)
+                : now - Date.parse(record.startedAt) > CLIENT_MAX_AGE_MS;
+            if (!clientGone() || !(await protectedEnded(record))) continue;
+            if (
+              !clientGone() ||
+              JSON.stringify(this.readRemoteRecord(marker)) !== JSON.stringify(record)
+            )
+              continue;
+            this.releaseRemoteRecord(marker, 'the protected builder confirmed the attempt ended');
+            rmSync(marker, { recursive: true });
+          } catch {
+            // An unreadable marker or unconfirmed host response retains its admission fence.
+          }
+        }
+      this.sweepAdmissionMarkers(namespace);
+    }
     // Orphan markers have no artifact record through which the ordinary pass can
     // ask the worker. Reuse the same probe and retain unknown remote outcomes.
     if (
@@ -1033,6 +1122,12 @@ export class BuildStorage {
           Date.parse(record.startedAt) < askedAt
         )
           reason = 'the build client has exited and the builder reports no running build';
+        else if (
+          record.operation === 'protected-build' &&
+          clientGone() &&
+          (await protectedEnded(record))
+        )
+          reason = 'the protected builder confirmed the attempt ended';
         else if (record.operation === 'image-import' && clientGone())
           reason = 'the image import client has exited';
         if (reason === undefined) continue;
@@ -1044,7 +1139,7 @@ export class BuildStorage {
         if (
           current === undefined ||
           current === 'invalid' ||
-          current.startedAt !== record.startedAt
+          JSON.stringify(current) !== JSON.stringify(record)
         )
           continue;
         this.releaseRemoteRecord(directory, reason);
@@ -1194,6 +1289,9 @@ export class BuildStorage {
               JSON.stringify({
                 version: 1,
                 operation: options.remoteOperation,
+                ...(options.protectedBuild === undefined
+                  ? {}
+                  : { protectedBuild: protectedBuildReference.parse(options.protectedBuild) }),
                 hostBootId: report.hostBootId,
                 hostIdentity: report.hostIdentity,
                 startedAt: new Date().toISOString(),

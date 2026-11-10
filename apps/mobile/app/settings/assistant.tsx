@@ -1,3 +1,4 @@
+import { projectTitle } from '@verity/mobile';
 import { useCallback, useMemo, useState } from 'react';
 import { router } from 'expo-router';
 import {
@@ -94,7 +95,7 @@ export default function AssistantSettingsScreen() {
               <SettingsNavRow
                 key={project.id}
                 icon="folder"
-                title={`${project.owner}/${project.repo}`}
+                title={projectTitle(project)}
                 value={MODE_LABEL[mode]}
                 onPress={() => router.push(`/project/${project.id}/settings/assistant`)}
               />

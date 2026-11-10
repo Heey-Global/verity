@@ -1,4 +1,5 @@
 import { ProjectInquiryCards } from '../project/ProjectInquiryCards';
+import { ProjectWork } from '../project/ProjectWork';
 import {
   createPushReplyPerformer,
   formatChoiceAnswer,
@@ -15,19 +16,21 @@ import {
 } from '@verity/mobile';
 import { randomUUID } from 'expo-crypto';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
 import { VerityMark } from '../VerityMark';
 import { MockupThumbs } from '../session/MockupReview';
+import { AnswerButtons, AnswerSheet, answerId } from '../project/AnswerSheet';
 import { Button, CaptureField, Card, CardHead, StatusTag, Text } from '../ui';
 import { Disclosure } from '../ui/Disclosure';
 import { tint } from '../ui/tint';
 import { useTaskPreferences } from '../../lib/taskPreferences';
 import { taskAccountScope } from '../../lib/tasksStore';
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
+import { syncWatchInbox } from '../../lib/watchCapture';
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
@@ -36,15 +39,20 @@ const CLOCK_TICK_MS = 30_000;
 /** What Resume sends: a crashed session continues by taking a new turn. */
 export const RESUME_PROMPT = 'Continue where you stopped.';
 
-const TAG_INTENT = { attention: 'needsSetup', success: 'ready', neutral: 'optional' } as const;
+const TAG_INTENT = {
+  attention: 'needsSetup',
+  action: 'action',
+  success: 'ready',
+  neutral: 'optional',
+} as const;
 
 /**
- * Home: Verity's line and capture on top, then every item across all projects
- * that needs the operator, each with its answers in place
+ * Home: Verity's line and capture on top, then the same live work sections as
+ * the project view, across all projects and with their context
  * (docs/design-system.md § 5.8 "Home presence").
  *
- * Items come from {@link inboxItems}, so they follow the same rules as the
- * project list's markers; {@link useInboxFeed} answers and dismisses them.
+ * {@link ProjectWork} owns session placement and rows in both views;
+ * {@link useInboxFeed} answers and dismisses the explicit inbox decisions.
  */
 export function HomeInbox({
   client,
@@ -58,8 +66,10 @@ export function HomeInbox({
   onRepairProject,
   onCountChange,
   onOpenVerity,
+  scrollRef,
 }: {
   client: VerityClient;
+  scrollRef?: Ref<ScrollView>;
   sessions: readonly SessionSummary[];
   projects: readonly ProjectRecord[];
   /** The session shown in the wide layout's right pane, drawn as selected. */
@@ -71,13 +81,21 @@ export function HomeInbox({
   /** Where "Open" on a project item leads; the project route when omitted. */
   onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
-  /** How many items Home shows, for the tab bar's count. */
+  /** How many entries need the user, excluding running work and unread results. */
   onCountChange?: (count: number) => void;
   /** Opens Verity's page from her header. */
   onOpenVerity?: (() => void) | undefined;
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
+  const workSessions = useMemo(() => {
+    const archived = new Set(
+      projects.filter((project) => project.archived === true).map((project) => project.id),
+    );
+    return sessions.filter(
+      (session) => session.projectId == null || !archived.has(session.projectId),
+    );
+  }, [sessions, projects]);
   const all = useMemo(
     () => inboxItems({ sessions, projects, meetings, now }),
     [sessions, projects, meetings, now],
@@ -94,22 +112,78 @@ export function HomeInbox({
     onOpenProject,
     onRepairProject,
   });
-  useEffect(() => onCountChange?.(feed.items.length), [feed.items.length, onCountChange]);
+  const [counts, setCounts] = useState({ needs: 0, active: 0, results: 0 });
+  const onSectionsChange = useCallback((next: typeof counts) => {
+    setCounts((current) =>
+      current.needs === next.needs &&
+      current.active === next.active &&
+      current.results === next.results
+        ? current
+        : next,
+    );
+  }, []);
+  useEffect(() => onCountChange?.(counts.needs), [counts.needs, onCountChange]);
+  const changed = useCallback(() => onRefresh(), [onRefresh]);
+  const renderItem = (item: InboxItem) => (
+    <InboxCard
+      key={item.key}
+      item={item}
+      selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
+      pending={feed.pending.get(item.key) ?? false}
+      disabled={feed.pending.has(item.key)}
+      onDismiss={item.dismiss !== undefined ? () => feed.dismiss(item) : undefined}
+      onAction={(action) => {
+        feed.run(item, action).catch(() => {
+          Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
+        });
+      }}
+    />
+  );
+  const summaryParts = [
+    counts.needs === feed.items.length
+      ? inboxSummary(feed.items)
+      : counts.needs > 0
+        ? `${String(counts.needs)} need you`
+        : inboxSummary([]),
+    ...(counts.active > 0 ? [`${String(counts.active)} in progress`] : []),
+    ...(counts.results > 0 ? [`${String(counts.results)} new results`] : []),
+  ];
+  // The watch lists the same items under "Needs you" (targets/VerityWatch).
+  // The account the items were read for: taken when their sources arrive, so a
+  // list still from the previous account is never sent under the next one.
+  const itemsScope = useMemo(() => taskAccountScope(), [sessions, projects, meetings]);
+  // The clock tick resends an unchanged list now and then, so its time stays true.
+  useEffect(() => {
+    const signedIn = taskAccountScope();
+    // Signed out, or switched before the new account's lists arrived: clear it.
+    if (signedIn !== itemsScope) syncWatchInbox([], null);
+    else syncWatchInbox(feed.items, itemsScope);
+  }, [feed.items, itemsScope, now]);
 
   return (
     <ScrollView
+      ref={scrollRef}
       contentContainerStyle={styles.content}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       testID="home-inbox"
     >
-      <VerityHeader summary={inboxSummary(feed.items)} onOpen={onOpenVerity} />
-      {feed.items.length > 0 ? (
-        <Text variant="eyebrow" style={styles.section}>
-          For you
-        </Text>
-      ) : null}
+      <VerityHeader summary={summaryParts.join(' · ')} onOpen={onOpenVerity} />
       <ProjectInquiryCards client={client} />
-      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} />
+      <ProjectWork
+        client={client}
+        sessions={workSessions}
+        projects={projects}
+        feed={feed}
+        overview
+        selectedSessionId={selectedSessionId}
+        leadingRows={feed.items.filter((item) => item.kind === 'meeting').map(renderItem)}
+        renderProjectItem={renderItem}
+        renderSessionItem={(item) => (item.kind === 'permission' ? renderItem(item) : undefined)}
+        onSectionsChange={onSectionsChange}
+        onOpenSession={onOpenSession}
+        onChanged={changed}
+      />
+      <InboxFeedList feed={feed} selectedSessionId={selectedSessionId} hiddenOnly />
     </ScrollView>
   );
 }
@@ -152,13 +226,24 @@ export function useInboxFeed({
 }) {
   const perform = useMemo(() => createPushReplyPerformer(client), [client]);
   const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
-  const [pending, setPending] = useState<string | null>(null);
+  // Item key → the answer being sent for it. Per item, so a slow answer (a merge
+  // waiting on the code host) never locks the answers of every other item.
+  const [pending, setPending] = useState<ReadonlyMap<string, string>>(() => new Map());
   // One reply id per item until it is delivered: a second tap after a `retry`
   // (whose first request may have landed) reuses it, so the server's idempotency
   // key turns it into the same reply instead of a second prompt.
   const replyIds = useRef(new Map<string, string>());
   // State re-renders too late to stop a fast double tap; the ref does not.
-  const running = useRef(false);
+  const running = useRef(new Set<string>());
+  const release = useCallback((key: string) => {
+    running.current.delete(key);
+    setPending((current) => {
+      if (!current.has(key)) return current;
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  }, []);
 
   // A dismissal or restore shows before it is saved: `true` hides, `false` shows,
   // until the synced lists agree or the item is gone.
@@ -241,9 +326,9 @@ export function useInboxFeed({
       if (action.kind === 'repair_project') return onRepairProject(action.projectId);
       const reply = replyFor(action);
       if (reply === null) return;
-      if (running.current) return;
-      running.current = true;
-      setPending(item.key);
+      if (running.current.has(item.key)) return;
+      running.current.add(item.key);
+      setPending((current) => new Map(current).set(item.key, answerId(action)));
       const replyKey = `${item.key}:${action.kind}:${action.label}`;
       const replyId = replyIds.current.get(replyKey) ?? randomUUID();
       replyIds.current.set(replyKey, replyId);
@@ -258,11 +343,10 @@ export function useInboxFeed({
         setSettled((current) => new Set(current).add(item.key));
         onSaved?.();
       } finally {
-        running.current = false;
-        setPending(null);
+        release(item.key);
       }
     },
-    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform],
+    [onOpenSession, onOpenProject, onRepairProject, onSaved, perform, release],
   );
   const dismiss = useCallback(
     (item: InboxItem) => {
@@ -270,14 +354,14 @@ export function useInboxFeed({
         const skip = item.actions.find((action) => action.kind === 'skip_meeting');
         if (skip)
           run(item, skip).catch(() => {
-            setPending(null);
+            release(item.key);
             Alert.alert('Not sent', 'Something went wrong. Try again in a moment.');
           });
         return;
       }
       setDismissed(item, true);
     },
-    [run, setDismissed],
+    [run, setDismissed, release],
   );
 
   return {
@@ -296,20 +380,22 @@ export function useInboxFeed({
 function InboxFeedList({
   feed,
   selectedSessionId,
+  hiddenOnly = false,
 }: {
   feed: InboxFeed;
   selectedSessionId?: string | null | undefined;
+  hiddenOnly?: boolean;
 }) {
   const { items, hidden, pending, showHidden, toggleHidden, run, dismiss, restore } = feed;
   return (
     <>
-      {items.map((item) => (
+      {(hiddenOnly ? [] : items).map((item) => (
         <InboxCard
           key={item.key}
           item={item}
           selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
-          pending={pending === item.key}
-          disabled={pending !== null}
+          pending={pending.get(item.key) ?? false}
+          disabled={pending.has(item.key)}
           onDismiss={item.dismiss !== undefined ? () => dismiss(item) : undefined}
           onAction={(action) => {
             // `perform` reports failures as outcomes; anything it throws is
@@ -420,7 +506,8 @@ export function InboxCard({
 }: {
   item: InboxItem;
   selected: boolean;
-  pending: boolean;
+  /** The {@link answerId} of the answer being sent, which shows the spinner. */
+  pending: string | false;
   disabled: boolean;
   onAction: (action: InboxAction) => void;
   /** Shows the X that sets the item aside. */
@@ -429,6 +516,13 @@ export function InboxCard({
   onRestore?: (() => void) | undefined;
 }) {
   const restoring = onRestore !== undefined;
+  const [answering, setAnswering] = useState(false);
+  const answers = item.actions.filter((action) => action.kind === 'answer');
+  const otherActions = item.actions.filter((action) => action.kind !== 'answer');
+  const ownAnswer = otherActions.find((action) => action.kind === 'open_session');
+  // Labels can stay the same while the underlying answer or question changes.
+  const answerKey = JSON.stringify([item.key, item.title, item.message, answers]);
+  useEffect(() => setAnswering(false), [answerKey, restoring, disabled]);
   return (
     <View testID={restoring ? `inbox-hidden-${item.kind}` : `inbox-item-${item.kind}`}>
       <Card stacked selected={selected} muted={restoring}>
@@ -482,19 +576,45 @@ export function InboxCard({
           {restoring ? (
             <Button label="Restore" size="compact" variant="secondary" onPress={onRestore} />
           ) : null}
-          {(restoring ? [] : item.actions).map((action, index) => (
+          {restoring ? null : (
+            <AnswerButtons
+              answers={answers}
+              pending={pending}
+              disabled={disabled}
+              onAnswer={onAction}
+              onMore={() => setAnswering(true)}
+            />
+          )}
+          {(restoring ? [] : otherActions).map((action, index) => (
             <Button
               key={`${String(index)}:${action.kind}:${action.label}`}
               label={action.label}
-              size="compact"
-              variant={index === 0 ? 'primary' : 'secondary'}
-              loading={pending && index === 0}
+              size={item.kind === 'permission' ? 'compact' : 'small'}
+              variant={item.kind === 'permission' && index === 0 ? 'primary' : 'secondary'}
+              loading={pending === answerId(action)}
               disabled={disabled}
               onPress={() => onAction(action)}
             />
           ))}
         </View>
       </Card>
+      <AnswerSheet
+        item={answering && !restoring && !disabled ? item : null}
+        answers={answers}
+        onAnswer={(action) => {
+          setAnswering(false);
+          onAction(action);
+        }}
+        onOpenSession={
+          ownAnswer === undefined
+            ? undefined
+            : () => {
+                setAnswering(false);
+                onAction(ownAnswer);
+              }
+        }
+        onClose={() => setAnswering(false)}
+      />
     </View>
   );
 }
@@ -595,7 +715,6 @@ const styles = StyleSheet.create((theme) => {
     identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
     // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
     capturePressed: { opacity: 0.7 },
-    section: { marginTop: theme.spacing.sm, marginBottom: theme.spacing.xs },
     hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
     actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   };

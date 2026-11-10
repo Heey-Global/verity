@@ -320,9 +320,9 @@ describe('multi-architecture runtime image publication', () => {
     expect(staged?.run).toContain('${image}:sha-${short_sha}-arm64');
   });
 
-  it('builds the Server while the release gate runs without bypassing it', () => {
-    // Waiting for published siblings here silently puts the Server build on the
-    // critical path after the gate, which is where every release waited for it.
+  it('builds the Server with its verified toolkit without bypassing publication gates', () => {
+    // The fixed build toolchain needs the verified Feature digest. Ordinary image
+    // staging stays parallel; deployable Server tags remain behind the smoke gate.
     const prepare = workflow.jobs['prepare-server-build-context'];
     expect([prepare.needs].flat()).toEqual(['release-please']);
     const build = workflow.jobs['build-server'];
@@ -330,9 +330,10 @@ describe('multi-architecture runtime image publication', () => {
       'release-please',
       'stage-bundled-images',
       'prepare-server-build-context',
+      'publish-toolkit',
     ]);
-    // That is only safe while everything upstream of it stays ungated too and
-    // it pushes nothing a deployment resolves: a `vX.Y.Z` or `latest` pushed
+    // Bundled image staging must stay ungated and the Server build must push
+    // nothing a deployment resolves: a `vX.Y.Z` or `latest` pushed
     // from here would ship a Server the smoke never approved.
     for (const name of [
       'stage-bundled-images',

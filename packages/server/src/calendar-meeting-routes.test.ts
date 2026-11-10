@@ -134,6 +134,22 @@ it('joins into the session of the meeting screen', async () => {
   );
 });
 
+it('allows an explicit join many hours before the scheduled start', async () => {
+  const { app, start } = serve();
+  const response = await app.inject({
+    method: 'POST',
+    url: `/live-meetings/calendar/${key('tomorrow')}/join`,
+    payload: { sessionId: 'session-1' },
+  });
+  expect(response.statusCode).toBe(200);
+  expect(start).toHaveBeenCalledWith(
+    'session-1',
+    'https://teams.microsoft.com/l/x',
+    true,
+    'Meeting tomorrow',
+  );
+});
+
 it('joins unassigned from a notification and refuses a second join', async () => {
   const { app, start } = serve();
   const url = `/live-meetings/calendar/${key('soon')}/join`;
@@ -169,7 +185,6 @@ it('skips a meeting, and joining afterwards is still possible', async () => {
 it.each([
   ['an unknown meeting', 'unknown', 404],
   ['a meeting that ended', 'ended', 409],
-  ['a meeting many hours ahead', 'tomorrow', 409],
 ])('refuses to join %s', async (_, eventId, status) => {
   const { app, start } = serve();
   const response = await app.inject({

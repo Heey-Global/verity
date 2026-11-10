@@ -1,0 +1,50 @@
+[
+  {
+    "name": "verity_wiki_propose",
+    "title": "Verity \u00b7 Wiki \u00b7 Propose",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "propose_wiki"
+    }
+  },
+  {
+    "name": "verity_wiki_read_occasions",
+    "title": "Verity \u00b7 Wiki \u00b7 Read Occasions",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "read_wiki_occasions"
+    }
+  },
+  {
+    "name": "verity_wiki_close_occasions",
+    "title": "Verity \u00b7 Wiki \u00b7 Close Occasions",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "close_wiki_occasions"
+    }
+  },
+  {
+    "name": "verity_wiki_read_page",
+    "title": "Verity \u00b7 Wiki \u00b7 Read Page",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": "wiki-maintain",
+    "compatibility": {
+      "name": "verity_knowledge",
+      "operation": "read_wiki_page"
+    }
+  }
+]

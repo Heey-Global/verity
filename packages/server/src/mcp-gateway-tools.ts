@@ -108,7 +108,12 @@ export function createMcpGatewayToolExecutor(options: {
   }) => {
     if (toolName === 'verity_secret_output') {
       if (options.trustedCliOutput === undefined) throw new Error('trusted CLI output unavailable');
-      const input = request as { invocationId: string; cursor?: number };
+      const input = request as { invocationId?: string; cursor?: number };
+      if (input.invocationId === undefined) {
+        // A page cursor without its run is a malformed read, not a request for the listing.
+        if (input.cursor !== undefined) throw new Error('cursor requires invocationId');
+        return options.trustedCliOutput.list({ projectId, sessionId });
+      }
       return options.trustedCliOutput.read(
         { projectId, sessionId },
         input.invocationId,
@@ -206,6 +211,7 @@ export function createMcpGatewayToolExecutor(options: {
       toolName === 'verity_present_plan' ||
       toolName === 'verity_end_planning' ||
       toolName === 'verity_present_mockups' ||
+      toolName === 'verity_complete_mockups' ||
       toolName === 'verity_repairs' ||
       toolName === 'verity_assistant' ||
       toolName === 'verity_qa_analysis' ||

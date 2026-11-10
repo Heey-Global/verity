@@ -1,16 +1,18 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { AccessibilityInfo, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, StyleSheet, Text, View } from 'react-native';
 
 import {
   Button,
   CardHead,
+  IconButton,
   ConfirmSheet,
   Row,
   useConfirm,
   StatusDot,
   StatusTag,
+  SystemNotice,
   TextField,
   ToggleRow,
 } from './index';
@@ -40,13 +42,73 @@ describe('Button', () => {
 });
 
 describe('Row', () => {
+  // The action sits beside the pressable area so VoiceOver reaches both; drawn
+  // inside as well, the row would show it twice or bury it in the row's label.
+  it('draws its action once, outside the pressable area, in place of trailing', () => {
+    const onPress = jest.fn();
+    const onAct = jest.fn();
+    render(
+      <Row
+        title="Ship it"
+        onPress={onPress}
+        trailing={<Text>Trailing value</Text>}
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+    expect(screen.queryByText('Trailing value')).toBeNull();
+    fireEvent.press(screen.getByText('Act'));
+    expect(onAct).toHaveBeenCalled();
+    expect(onPress).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByText('Ship it'));
+    expect(onPress).toHaveBeenCalled();
+    screen.unmount();
+    render(
+      <Row
+        title="Ship it"
+        action={<Button label="Act" variant="secondary" size="compact" onPress={onAct} />}
+      />,
+    );
+    expect(screen.getAllByText('Act')).toHaveLength(1);
+  });
+
+  // Dimmed on the wrapper and again on the pressable, a busy row fell to about
+  // 16 % instead of the one disabled opacity.
+  it('dims a disabled row with an action once, the action included', () => {
+    render(
+      <Row
+        title="Ship it"
+        onPress={jest.fn()}
+        disabled
+        action={<IconButton icon="play" accessibilityLabel="Act" disabled onPress={jest.fn()} />}
+      />,
+    );
+    const opacities = (start: { parent: unknown } | null) => {
+      const found: number[] = [];
+      // Host views only: a wrapper component repeats the style it passes down.
+      for (
+        let node = start as (typeof start & { type: unknown; props: { style?: unknown } }) | null;
+        node;
+        node = node.parent as typeof node
+      ) {
+        if (typeof node.type !== 'string') continue;
+        const style = StyleSheet.flatten(node.props.style as never) as
+          { opacity?: number } | undefined;
+        if (style?.opacity !== undefined && style.opacity < 1) found.push(style.opacity);
+      }
+      return found;
+    };
+    expect(opacities(screen.getByText('Ship it'))).toHaveLength(1);
+    expect(opacities(screen.getByLabelText('Act'))).toHaveLength(1);
+  });
+
   it('highlights the active destination and keeps its trailing content', () => {
     const { rerender } = render(
       <Row title="Session" active onPress={jest.fn()} trailing="Running" />,
     );
     const row = screen.getByRole('button', { name: 'Session, Running' });
     expect(row.props.accessibilityState).toMatchObject({ selected: true });
-    expect(row).toHaveStyle({ backgroundColor: tint(lightTheme.colors.action, 'fill') });
+    expect(row).toHaveStyle({ backgroundColor: lightTheme.colors.surfaceAlt });
     expect(screen.getByText('Running')).toBeOnTheScreen();
     rerender(<Row title="Session" onPress={jest.fn()} trailing="Running" />);
     expect(
@@ -55,8 +117,41 @@ describe('Row', () => {
       selected: false,
     });
     expect(screen.getByRole('button', { name: 'Session, Running' })).not.toHaveStyle({
-      backgroundColor: tint(lightTheme.colors.action, 'fill'),
+      backgroundColor: lightTheme.colors.surfaceAlt,
     });
+  });
+
+  it('highlights the whole active row while keeping answers independently pressable', () => {
+    const onOpen = jest.fn();
+    const onAnswer = jest.fn();
+    const { rerender } = render(
+      <Row
+        title="Question"
+        active
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    expect(StyleSheet.flatten(container.props.style)).toMatchObject({
+      backgroundColor: lightTheme.colors.surfaceAlt,
+    });
+    expect(container.findAllByProps({ accessibilityLabel: 'Answer' })).not.toHaveLength(0);
+    fireEvent.press(screen.getByRole('button', { name: 'Answer' }));
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+    rerender(
+      <Row
+        title="Question"
+        onPress={onOpen}
+        answers={<Button label="Answer" onPress={onAnswer} />}
+      />,
+    );
+    expect(StyleSheet.flatten(container.props.style)).toBeUndefined();
   });
 
   // The chevron promises navigation; a row that only acts in place must not show it.
@@ -222,6 +317,23 @@ describe('ToggleRow', () => {
 });
 
 describe('TextField', () => {
+  // Inline text sits in a card whose head already names it: a second visible
+  // label repeats the head, but VoiceOver still needs the field's name.
+  it('drops the visible label and field chrome inline, but keeps the field named', () => {
+    render(
+      <TextField label="Project instructions" value="Rules" onChangeText={jest.fn()} inline />,
+    );
+    expect(screen.queryByText('Project instructions')).toBeNull();
+    const input = screen.getByLabelText('Project instructions');
+    let ancestor = input.parent;
+    while (ancestor && ancestor.type !== View) ancestor = ancestor.parent;
+    const field = StyleSheet.flatten(ancestor!.props.style);
+    expect(field.borderWidth).toBe(0);
+    expect(field.backgroundColor).toBe('transparent');
+    fireEvent(input, 'focus');
+    expect(StyleSheet.flatten(ancestor!.props.style).borderWidth).toBe(0);
+  });
+
   it('keeps a native stacking context around the input before and after focus', () => {
     render(<TextField label="Meeting link" value="" onChangeText={jest.fn()} keyboardType="url" />);
     const input = screen.getByLabelText('Meeting link');
@@ -449,6 +561,62 @@ describe('useConfirm', () => {
     });
     expect(screen.getByRole('button', { name: 'Remove' })).toBeEnabled();
   });
+
+  function Asking({
+    onConfirm,
+    afterSheet = false,
+  }: {
+    onConfirm: (option: boolean) => void;
+    afterSheet?: boolean;
+  }) {
+    const [confirm, sheet] = useConfirm();
+    return (
+      <>
+        <Button
+          label="Delete session"
+          onPress={() =>
+            confirm({
+              title: 'Delete session?',
+              message: 'It is removed.',
+              confirmLabel: 'Delete',
+              option: { title: 'Use for the Wiki', initial: true },
+              afterSheet,
+              onConfirm,
+            })
+          }
+        />
+        {sheet}
+      </>
+    );
+  }
+
+  // The switch is part of the answer: its final value, not its initial one,
+  // reaches the action.
+  it('hands the switch’s final value to the action', async () => {
+    const onConfirm = jest.fn();
+    render(<Asking onConfirm={onConfirm} />);
+    fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+    fireEvent.press(screen.getByText('Use for the Wiki'));
+    await act(async () => {
+      fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
+    });
+    expect(onConfirm).toHaveBeenCalledWith(false);
+  });
+
+  // Asked right after another sheet closed, it waits for that sheet's fade-out,
+  // but it does appear even when the interaction never settles.
+  it('appears after a closing sheet has faded out', () => {
+    jest.useFakeTimers();
+    try {
+      render(<Asking onConfirm={jest.fn()} afterSheet />);
+      fireEvent.press(screen.getByRole('button', { name: 'Delete session' }));
+      expect(screen.queryByText('Delete session?')).toBeNull();
+      act(() => jest.advanceTimersByTime(400));
+      expect(screen.getByText('Delete session?')).toBeOnTheScreen();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('tint', () => {
@@ -529,6 +697,13 @@ describe('toneColor', () => {
 });
 
 describe('CardHead', () => {
+  it('draws a leading mark in the same tile a row uses', () => {
+    render(<CardHead title="acme/api" leading={{ element: <View testID="host-mark" /> }} />);
+    let tile = screen.getByTestId('host-mark').parent;
+    while (tile && (tile.type !== View || tile.props.style === undefined)) tile = tile.parent;
+    expect(StyleSheet.flatten(tile!.props.style)).toMatchObject({ width: 32, height: 32 });
+  });
+
   // Sharing the row's trailing rule (shrink, at most 45 %) cut a card's tag to
   // "PERMISSI…" beside the dismiss button; the tag is the card's verdict.
   it('keeps the status tag whole and lets the title give way', () => {
@@ -542,5 +717,43 @@ describe('CardHead', () => {
     const style = StyleSheet.flatten(screen.getByTestId('card-head-trailing').props.style);
     expect(style.flexShrink).toBe(0);
     expect(style.maxWidth).toBeUndefined();
+  });
+});
+
+describe('SystemNotice', () => {
+  // Raw diagnostics are never the explanation: they stay folded until asked for.
+  it('keeps technical output behind Details and names the state in words', () => {
+    render(
+      <SystemNotice
+        intent="needsSetup"
+        title="Agent couldn’t start"
+        detail="Your message wasn’t sent to the agent."
+        technical="codex: refused"
+      />,
+    );
+    expect(screen.getByText('Agent couldn’t start')).toBeOnTheScreen();
+    expect(screen.getByLabelText('Agent couldn’t start, needs attention')).toBeOnTheScreen();
+    expect(screen.queryByText('codex: refused')).toBeNull();
+    fireEvent.press(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText('codex: refused')).toBeOnTheScreen();
+    fireEvent.press(screen.getByRole('button', { name: 'Hide details' }));
+    expect(screen.queryByText('codex: refused')).toBeNull();
+  });
+
+  it('shows progress with a spinner and opens its target when it links somewhere', () => {
+    const onPress = jest.fn();
+    const { rerender } = render(<SystemNotice intent="transient" title="Preparing" />);
+    expect(screen.getByLabelText('Preparing, in progress')).toBeOnTheScreen();
+    rerender(
+      <SystemNotice
+        intent="unknown"
+        title="Agent planned 3 steps"
+        link="Tasks"
+        onPress={onPress}
+        accessibilityLabel="Agent planned 3 steps. Open Tasks"
+      />,
+    );
+    fireEvent.press(screen.getByRole('button', { name: 'Agent planned 3 steps. Open Tasks' }));
+    expect(onPress).toHaveBeenCalledTimes(1);
   });
 });

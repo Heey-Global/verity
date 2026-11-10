@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { managedEgressConfiguration } from './project-egress-managed-config.js';
 import { openProjectEgressHostStore } from './project-egress-host-runtime.js';
 import { readEgressHostConfiguration } from './project-egress-host-authority.js';
+import { protectedBuildRetainedImages } from './project-egress-build-retention.js';
 
 const output = process.argv[2];
 if (!output || process.argv.length !== 3) throw new Error('Expected private output directory');
@@ -82,6 +83,35 @@ try {
       throw new Error('Protected relay inspection is incomplete');
     activeRelayImages.push((inspected[0] as { Config: { Image: string } }).Config.Image);
   }
+  activeRelayImages.push(
+    ...(await protectedBuildRetainedImages(async (id) => {
+      const listed = (
+        await run(
+          '/usr/local/bin/docker',
+          [
+            '--host=unix:///var/run/docker.sock',
+            'container',
+            'ls',
+            '--all',
+            '--quiet',
+            '--no-trunc',
+            '--filter',
+            `id=${id}`,
+          ],
+          { timeout: 10000, maxBuffer: 65536 },
+        )
+      ).stdout.trim();
+      if (!listed) return undefined;
+      if (listed !== id) throw new Error('Protected build retention identity mismatch');
+      return (
+        await run(
+          '/usr/local/bin/docker',
+          ['--host=unix:///var/run/docker.sock', 'container', 'inspect', id],
+          { timeout: 10000, maxBuffer: 1024 * 1024 },
+        )
+      ).stdout;
+    })),
+  );
   const configuration = managedEgressConfiguration({
     env: process.env,
     databaseInspection: inspection,

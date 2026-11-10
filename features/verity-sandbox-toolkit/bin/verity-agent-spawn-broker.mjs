@@ -100,6 +100,103 @@ export async function runnerStackHealth(options = {}) {
   };
 }
 
+/**
+ * Whether the hops an agent turn depends on accept connections yet, seen from
+ * inside the Sandbox: the local egress connector, and the relay listeners behind
+ * it for Claude, Codex and the broker (which also carries the `verity` MCP
+ * gateway). A relay container is reported running by Docker before its process
+ * listens, so a turn admitted in that window fails with a refused connection.
+ *
+ * Only TCP connects, closed at once: no request, no TLS handshake and no model
+ * call leaves the Sandbox, so the probe is safe to repeat while the relay starts.
+ * Read-only; targets come from this container's own environment, never from the
+ * request.
+ */
+export async function runnerEgressReadiness(options = {}) {
+  const env = options.env ?? process.env;
+  const connect = options.connect ?? probeTcp;
+  const fetchReady = options.fetch ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? 1_000;
+  const hop = async (value) => {
+    if (!value) return 'not_configured';
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return 'invalid';
+    }
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return 'invalid';
+    // A URL keeps an IPv6 literal bracketed; a socket connect wants it bare.
+    return await connect(url.hostname.replace(/^\[(.*)\]$/u, '$1'), port, timeoutMs);
+  };
+  const connector = async () => {
+    const port = Number(env.VERITY_CLAUDE_CONNECTOR_PORT);
+    if (!env.VERITY_CLAUDE_CONNECTOR_PORT) return 'not_configured';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return 'invalid';
+    try {
+      const response = await fetchReady(`http://127.0.0.1:${port}/__verity/ready`, {
+        signal: globalThis.AbortSignal.timeout(timeoutMs),
+        redirect: 'error',
+      });
+      if (!response.ok) return 'unreachable';
+      const body = JSON.parse(await response.text());
+      return body !== null && typeof body === 'object' && body.ready === true
+        ? 'ready'
+        : 'unreachable';
+    } catch (error) {
+      return tcpFailure(error);
+    }
+  };
+  const [local, claude, codex, broker] = await Promise.all([
+    connector(),
+    hop(env.VERITY_CLAUDE_EGRESS_URL),
+    hop(env.VERITY_CODEX_EGRESS_URL),
+    hop(env.VERITY_MCP_GATEWAY_URL),
+  ]);
+  return {
+    ok: true,
+    egressReadinessVersion: 1,
+    connector: local,
+    claude,
+    codex,
+    broker,
+  };
+}
+
+function tcpFailure(error) {
+  const codes = [];
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    if (typeof current.code === 'string') codes.push(current.code);
+    if (Array.isArray(current.errors))
+      for (const nested of current.errors)
+        if (typeof nested?.code === 'string') codes.push(nested.code);
+    current = current.cause;
+  }
+  if (codes.includes('ECONNREFUSED')) return 'refused';
+  if (codes.includes('ENOTFOUND') || codes.includes('EAI_AGAIN')) return 'unresolved';
+  if (codes.includes('ETIMEDOUT') || error?.name === 'TimeoutError' || error?.name === 'AbortError')
+    return 'timeout';
+  return 'unreachable';
+}
+
+function probeTcp(host, port, timeoutMs) {
+  return new Promise((resolveProbe) => {
+    const socket = createConnection({ host, port });
+    let settled = false;
+    const finish = (state) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolveProbe(state);
+    };
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
+    socket.once('connect', () => finish('ready'));
+    socket.once('error', (error) => finish(tcpFailure(error)));
+  });
+}
+
 export const AGENT_SPAWN_PROTOCOL_VERSION = 1;
 /**
  * Where `opencode acp` keeps everything that is not its config: session storage
@@ -742,6 +839,18 @@ async function validateSpawnRequest(raw, options) {
     throw new Error('Invalid knowledge isolation policy');
   if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
     throw new Error('Invalid planning isolation policy');
+  if (raw.gatewayToolsOnly === true && raw.knowledgeIsolation === true)
+    throw new Error('Native tool isolation cannot use the separate knowledge runtime');
+  if (raw.gatewayToolsOnly !== undefined && typeof raw.gatewayToolsOnly !== 'boolean')
+    throw new Error('Invalid native tool isolation policy');
+  if (
+    raw.gatewayToolsOnly === true &&
+    raw.command === 'codex-acp' &&
+    (typeof raw.gatewayToolsModel !== 'string' ||
+      !/^codex\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(raw.gatewayToolsModel) ||
+      raw.gatewayToolsModel === 'codex/default')
+  )
+    throw new Error('Native tool isolation requires a concrete Codex model');
   return {
     kind: 'agent',
     command: raw.command,
@@ -750,6 +859,10 @@ async function validateSpawnRequest(raw, options) {
     sessionEnv: raw.sessionEnv,
     knowledgeIsolation: raw.knowledgeIsolation === true,
     planning: raw.planning === true,
+    gatewayToolsOnly: raw.gatewayToolsOnly === true,
+    ...(raw.gatewayToolsOnly === true && raw.command === 'codex-acp'
+      ? { gatewayToolsModel: raw.gatewayToolsModel }
+      : {}),
   };
 }
 
@@ -1138,6 +1251,92 @@ async function packageCacheDirectory(options) {
   return cache;
 }
 
+/** Admission and offline maintenance share an inode; children inherit the open-file-description lease. */
+export async function acquireRuntimeAdmissionLease(options, exclusive = false) {
+  const runtime = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
+  const root = await lstat(runtime);
+  if (
+    !root.isDirectory() ||
+    root.isSymbolicLink() ||
+    (options.runnerUid === undefined && root.uid !== process.getuid()) ||
+    (root.mode & 0o002) !== 0 ||
+    (await realpath(runtime)) !== runtime
+  )
+    throw new Error('unsafe runner runtime');
+  validateRunnerRuntimeStats(root, options);
+  const handle = await open(
+    join(runtime, 'admission.lock'),
+    constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.uid !== process.getuid() ||
+      metadata.nlink !== 1 ||
+      (metadata.mode & 0o077) !== 0
+    )
+      throw new Error('invalid runtime admission lease');
+    await new Promise((resolveLock, rejectLock) => {
+      const child = spawn(
+        '/usr/bin/flock',
+        [...(exclusive ? ['--exclusive', '--nonblock'] : ['--shared', '--wait', '30']), '3'],
+        { stdio: ['ignore', 'ignore', 'ignore', handle.fd] },
+      );
+      child.once('error', rejectLock);
+      child.once('exit', (code) =>
+        code === 0 ? resolveLock() : rejectLock(new Error('runner runtime is in use')),
+      );
+    });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+/** Caller must independently prove that every runtime consumer supports exclusion or is stopped. */
+export async function reclaimPackageCachesOffline(request, options) {
+  const lease = await acquireRuntimeAdmissionLease(options, true);
+  try {
+    return await reclaimPackageCaches(request, { ...options, runtimeAdmissionLockFd: lease.fd });
+  } finally {
+    await lease.close();
+  }
+}
+
+async function packageCacheMaintenanceMain(runtimeDir) {
+  let input = '';
+  const inputDeadline = setTimeout(() => {
+    process.stdin.destroy(new Error('package cache maintenance request timed out'));
+  }, 5_000);
+  try {
+    for await (const chunk of process.stdin) {
+      input += chunk.toString();
+      if (Buffer.byteLength(input) > 96 * 1024)
+        throw new Error('invalid package cache maintenance request');
+    }
+  } finally {
+    clearTimeout(inputDeadline);
+  }
+  const request = JSON.parse(input);
+  if (!isObject(request) || !Array.isArray(request.sessionIds) || request.sessionIds.length > 512)
+    throw new Error('invalid package cache maintenance request');
+  const report = await reclaimPackageCachesOffline(request, {
+    runtimeDir,
+    agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+    agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+    runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+    runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+  });
+  const output = JSON.stringify({ ok: true, report });
+  if (Buffer.byteLength(output) > 64 * 1024)
+    throw new Error('invalid package cache maintenance result');
+  process.stdout.write(output);
+  return true;
+}
+
 /** flock's open-file-description lease survives broker death in the spawned child. */
 export async function acquirePackageCacheLease(options, exclusive = false) {
   await packageCacheDirectory(options);
@@ -1230,7 +1429,15 @@ async function maintainPackageCache(parent, options, budget, maxBytes, shared = 
         fileURLToPath(import.meta.url),
         '--package-cache-leaf',
       ],
-      { stdio: ['pipe', 'pipe', 'ignore'], env: { PATH: '/usr/local/bin:/usr/bin:/bin' } },
+      {
+        stdio: [
+          'pipe',
+          'pipe',
+          'ignore',
+          ...(options.runtimeAdmissionLockFd === undefined ? [] : [options.runtimeAdmissionLockFd]),
+        ],
+        env: { PATH: '/usr/local/bin:/usr/bin:/bin' },
+      },
     );
     let output = '';
     const timer = setTimeout(
@@ -1789,6 +1996,67 @@ function planningRuntimeRoots(request, options) {
   return [];
 }
 
+/** Explicit metadata prevents model-owned patch/code-mode tools from bypassing feature switches. */
+export function restrictedCodexModelCatalog(model) {
+  if (
+    typeof model !== 'string' ||
+    !/^codex\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model) ||
+    model === 'codex/default'
+  )
+    throw new Error('Native tool isolation requires a concrete Codex model');
+  const slug = model.slice('codex/'.length);
+  return {
+    models: [
+      {
+        slug,
+        display_name: slug,
+        description: 'Verity tool isolation',
+        base_instructions:
+          'You are Verity. Complete the supplied assignment using only the provided Verity tools.',
+        default_reasoning_level: 'medium',
+        supported_reasoning_levels: ['minimal', 'low', 'medium', 'high', 'xhigh'].map((effort) => ({
+          effort,
+          description: effort,
+        })),
+        shell_type: 'disabled',
+        visibility: 'list',
+        supported_in_api: true,
+        priority: 0,
+        support_verbosity: false,
+        apply_patch_tool_type: null,
+        truncation_policy: { mode: 'bytes', limit: 10000 },
+        experimental_supported_tools: [],
+        tool_mode: null,
+        input_modalities: ['text'],
+        node_repl_disabled: true,
+        include_skills_usage_instructions: false,
+        include_plugin_usage_instructions: false,
+        include_apps_usage_instructions: false,
+      },
+    ],
+  };
+}
+
+export function restrictedOpenCodePermissions() {
+  return [
+    { action: '*', resource: '*', effect: 'deny' },
+    { action: 'verity_*', resource: '*', effect: 'allow' },
+  ];
+}
+
+export function restrictedOpenCodePolicies() {
+  return [
+    { action: 'provider.use', resource: '*', effect: 'deny' },
+    { action: 'provider.use', resource: 'verity', effect: 'allow' },
+    { action: 'tool.use', resource: '*', effect: 'deny' },
+    { action: 'tool.use', resource: 'verity_*:*', effect: 'allow' },
+    { action: 'skill.use', resource: '*', effect: 'deny' },
+    { action: 'plugin.use', resource: '*', effect: 'deny' },
+    { action: 'mcp.use', resource: '*', effect: 'deny' },
+    { action: 'mcp.use', resource: 'verity', effect: 'allow' },
+  ];
+}
+
 /** Build a broker-owned configuration tree, separate from writable runtime data. */
 export async function materializeManagedAgentHome(request, options, connectorUrl) {
   const { uid, gid } = validateIdentity(options);
@@ -1854,16 +2122,64 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
         `sqlite_home = ${JSON.stringify(join(home, 'codex-state'))}`,
         `log_dir = ${JSON.stringify(join(home, 'state'))}`,
         'skills.include_instructions = false',
+        ...(request.gatewayToolsOnly === true
+          ? [
+              'web_search = "disabled"',
+              ...(request.command === 'codex-acp'
+                ? [
+                    `model = ${JSON.stringify(request.gatewayToolsModel.slice('codex/'.length))}`,
+                    `model_catalog_json = ${JSON.stringify(join(home, 'codex', 'restricted-models.json'))}`,
+                  ]
+                : []),
+            ]
+          : []),
         codexConfig,
         '[features]',
         'multi_agent = false',
         'plugins = false',
+        ...(request.gatewayToolsOnly === true
+          ? [
+              ...[
+                'shell_tool',
+                'unified_exec',
+                'multi_agent_v2',
+                'goals',
+                'view_image',
+                'apps',
+                'browser_use',
+                'browser_use_external',
+                'browser_use_full_cdp_access',
+                'computer_use',
+                'in_app_browser',
+                'image_generation',
+                'tool_suggest',
+                'sleep_tool',
+                'skill_search',
+                'skill_mcp_dependency_install',
+                'code_mode_host',
+                'code_mode',
+                'hooks',
+                'deferred_executor',
+                'context_management',
+                'chronicle',
+              ].map((name) => `${name} = false`),
+              '[tools.experimental_request_user_input]',
+              'enabled = false',
+            ]
+          : []),
         '[hooks]',
         // No trusted projects are imported from the former user home. Codex's
         // loader disables project-local config, hooks and exec policies by default.
       ].join('\n'),
     );
     await chmod(configFile, 0o644);
+    if (request.gatewayToolsOnly === true && request.command === 'codex-acp') {
+      await policyWrite(
+        join(home, 'codex', 'restricted-models.json'),
+        JSON.stringify(restrictedCodexModelCatalog(request.gatewayToolsModel)),
+        { mode: 0o644 },
+      );
+    }
     const writable = async (path) => {
       try {
         await mkdir(path, { mode: 0o700 });
@@ -1943,6 +2259,12 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     if (request.command === 'opencode-acp') {
       const path = join(home, 'config', 'opencode.json');
       await chown(path, process.getuid(), process.getgid());
+      if (request.gatewayToolsOnly === true) {
+        const config = JSON.parse(await readFile(path, 'utf8'));
+        config.policies = restrictedOpenCodePolicies();
+        config.permissions = restrictedOpenCodePermissions();
+        await policyWrite(path, JSON.stringify(config), { mode: 0o644 });
+      }
       await chmod(path, 0o644);
     }
     for (const path of [
@@ -2085,6 +2407,10 @@ function normalSessionRoots(options, agentPath) {
 }
 
 export function agentLaunchSpec(request, options) {
+  if (request.gatewayToolsOnly && request.knowledgeIsolation)
+    throw new Error('Native tool isolation cannot use the separate knowledge runtime');
+  if (request.gatewayToolsOnly && !request.managedHome && !request.knowledgeHome)
+    throw new Error('Native tool isolation requires broker-owned configuration');
   const { uid, gid } = validateIdentity(options);
   const setprivPath = options.setprivPath ?? '/usr/bin/setpriv';
   const normalConfinement =
@@ -2191,17 +2517,24 @@ export function agentLaunchSpec(request, options) {
         ...(request.command === 'opencode-acp'
           ? {
               OPENCODE_CONFIG_CONTENT: JSON.stringify({
-                instructions: request.knowledgeIsolation ? [] : [join(request.cwd, 'AGENTS.md')],
+                instructions:
+                  request.knowledgeIsolation || request.gatewayToolsOnly
+                    ? []
+                    : [join(request.cwd, 'AGENTS.md')],
                 websearch: { provider: 'exa' },
-                policies: [
-                  { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
-                  { action: 'provider.use', resource: '*', effect: 'deny' },
-                  { action: 'provider.use', resource: 'verity', effect: 'allow' },
-                ],
-                permissions: [
-                  { action: 'external_directory', resource: '*', effect: 'ask' },
-                  { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
-                ],
+                policies: request.gatewayToolsOnly
+                  ? restrictedOpenCodePolicies()
+                  : [
+                      { action: 'integration.use', resource: 'plugin:*', effect: 'deny' },
+                      { action: 'provider.use', resource: '*', effect: 'deny' },
+                      { action: 'provider.use', resource: 'verity', effect: 'allow' },
+                    ],
+                permissions: request.gatewayToolsOnly
+                  ? restrictedOpenCodePermissions()
+                  : [
+                      { action: 'external_directory', resource: '*', effect: 'ask' },
+                      { action: 'external_directory', resource: '/knowledge/**', effect: 'allow' },
+                    ],
               }),
             }
           : {}),
@@ -3551,6 +3884,22 @@ async function readConnectorUrl(path, expectedUid) {
 }
 
 export async function runAgentSpawnBroker(options = {}) {
+  if (options.enforceRoot !== false && process.getuid?.() !== 0)
+    throw new Error('agent spawn broker must run as root');
+  const admissionLease = await acquireRuntimeAdmissionLease(options);
+  let brokerLock;
+  try {
+    return await runAgentSpawnBrokerOnce(options, admissionLease, (lock) => {
+      brokerLock = lock;
+    });
+  } catch (error) {
+    await brokerLock?.close();
+    await admissionLease.close();
+    throw error;
+  }
+}
+
+async function runAgentSpawnBrokerOnce(options, admissionLease, onLock) {
   if (options.enforceRoot !== false && process.getuid?.() !== 0) {
     throw new Error('agent spawn broker must run as root');
   }
@@ -3591,6 +3940,7 @@ export async function runAgentSpawnBroker(options = {}) {
   const identity = validateIdentity(options);
   const managedRoots = await resolveAgentWorktreeRoots(options);
   const lock = await acquireLock(join(controlDir, 'agent-spawn-broker.lock'));
+  onLock(lock);
   await removeLegacyTrustedCliSecretFiles(options);
   const socketPath = join(controlDir, 'agent-spawn-broker.sock');
   await rm(socketPath, { force: true });
@@ -3601,8 +3951,14 @@ export async function runAgentSpawnBroker(options = {}) {
     options.connectorConfigPath ?? join(controlDir, 'egress-connector.url');
   const connectorConfigOwner = options.enforceRoot === false ? (process.getuid?.() ?? 0) : 0;
   let closing = false;
-  const spawnChild =
-    options.spawnChild ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+  const spawnChild = (command, args, spawnOptions) => {
+    const stdio = Array.isArray(spawnOptions.stdio)
+      ? [...spawnOptions.stdio]
+      : Array(3).fill(spawnOptions.stdio ?? 'pipe');
+    // Managed servers and escaped descendants must keep offline maintenance excluded too.
+    stdio.push(admissionLease.fd);
+    return (options.spawnChild ?? spawn)(command, args, { ...spawnOptions, stdio });
+  };
   // Codex opens one shared SQLite state runtime for every fresh ACP process. Its
   // startup path can return EAGAIN when two processes open that runtime together,
   // even after all databases already exist. Serialize only that startup window:
@@ -3682,7 +4038,10 @@ export async function runAgentSpawnBroker(options = {}) {
             ok: true,
             protocolVersion: AGENT_SPAWN_PROTOCOL_VERSION,
             managedAgentConfig: true,
+            gatewayToolsOnlyVersion: 1,
             persistentSessionHomes: true,
+            cacheMaintenanceVersion: 2,
+            runtimeAdmissionFenceVersion: 1,
             planningIsolation: scriptIsolation.available,
             knowledgeIsolation: scriptIsolation.available,
             scriptIsolation: scriptIsolation.available,
@@ -3697,6 +4056,19 @@ export async function runAgentSpawnBroker(options = {}) {
         ) {
           protocolFailed = true;
           send(socket, await runnerStackHealth({ ...options, controlDir }));
+          socket.end();
+          return;
+        }
+        if (
+          isObject(raw) &&
+          raw.protocolVersion === AGENT_SPAWN_PROTOCOL_VERSION &&
+          raw.kind === 'egress-readiness'
+        ) {
+          protocolFailed = true;
+          send(
+            socket,
+            await runnerEgressReadiness({ env: options.env, ...options.egressReadiness }),
+          );
           socket.end();
           return;
         }
@@ -3853,7 +4225,9 @@ export async function runAgentSpawnBroker(options = {}) {
             request.kind === 'agent' &&
             !request.knowledgeIsolation &&
             !request.planning &&
-            (options.enforceRoot !== false || connectorUrl !== undefined)
+            (options.enforceRoot !== false ||
+              connectorUrl !== undefined ||
+              request.gatewayToolsOnly)
           ) {
             const isolated = await materializeManagedAgentHome(request, options, connectorUrl);
             request.managedHome = isolated.home;
@@ -4086,6 +4460,7 @@ export async function runAgentSpawnBroker(options = {}) {
       await new Promise((resolveClose) => server.close(resolveClose));
       await rm(socketPath, { force: true });
       await lock.close();
+      await admissionLease.close();
     },
   };
 }
@@ -4139,37 +4514,39 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       ? SHARED_SESSION_ROOT
       : undefined;
   const launch =
-    process.argv[2] === '--package-cache-leaf'
-      ? packageCacheLeafMain()
-      : process.argv[2] === '--probe'
-        ? probeAgentSpawnBroker(controlDir)
-        : runAgentSpawnBroker({
-            runtimeDir,
-            controlDir,
-            ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
-            agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
-            agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
-            runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
-            runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
-            // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
-            // by nothing else — but a project image CAN declare the same name, so
-            // the value is re-checked against the mounted inode here rather than
-            // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
-            // group, no grant, which is every project Sandbox.
-            ...(() => {
-              const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
-              return dockerGid === undefined ? {} : { dockerGid };
-            })(),
-            // Thread the broker's own (container-provided) environment into the
-            // Claude child through the `childEnvironment` allowlist. The container
-            // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
-            // runner-supervisor path; without this the allowlisted copy() has no
-            // source and Claude never sees the config dir, so its transcript would
-            // land off the shared mount. The allowlist bounds exposure to the
-            // vetted keys only — inherited OAuth/API/egress secrets never cross
-            // (see the "passes only the local Claude connector coordinates" test).
-            env: process.env,
-          });
+    process.argv[2] === '--reclaim-package-caches-maintenance'
+      ? packageCacheMaintenanceMain(runtimeDir)
+      : process.argv[2] === '--package-cache-leaf'
+        ? packageCacheLeafMain()
+        : process.argv[2] === '--probe'
+          ? probeAgentSpawnBroker(controlDir)
+          : runAgentSpawnBroker({
+              runtimeDir,
+              controlDir,
+              ...(sharedSessionRoot === undefined ? {} : { sharedSessionRoot }),
+              agentUid: Number(process.env.VERITY_AGENT_UID ?? 1000),
+              agentGid: Number(process.env.VERITY_AGENT_GID ?? 1000),
+              runnerUid: Number(process.env.VERITY_RUNNER_RUNTIME_UID ?? 1101),
+              runnerGid: Number(process.env.VERITY_RUNNER_RUNTIME_GID ?? 1101),
+              // ADR 0006 Amendment 1. Set by `verity-control-plane-runner-start` and
+              // by nothing else — but a project image CAN declare the same name, so
+              // the value is re-checked against the mounted inode here rather than
+              // trusted. See {@link resolveDockerGid}: no socket owned by the claimed
+              // group, no grant, which is every project Sandbox.
+              ...(() => {
+                const dockerGid = resolveDockerGid(process.env, (path) => statSync(path).gid);
+                return dockerGid === undefined ? {} : { dockerGid };
+              })(),
+              // Thread the broker's own (container-provided) environment into the
+              // Claude child through the `childEnvironment` allowlist. The container
+              // sets CLAUDE_CONFIG_DIR=/run/verity-runner/claude on the
+              // runner-supervisor path; without this the allowlisted copy() has no
+              // source and Claude never sees the config dir, so its transcript would
+              // land off the shared mount. The allowlist bounds exposure to the
+              // vetted keys only — inherited OAuth/API/egress secrets never cross
+              // (see the "passes only the local Claude connector coordinates" test).
+              env: process.env,
+            });
   launch
     .then((broker) => {
       if (typeof broker === 'boolean') {
@@ -4181,9 +4558,19 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
       process.once('SIGINT', shutdown);
     })
     .catch((error) => {
-      process.stderr.write(
-        `verity-agent-spawn-broker: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
+      if (process.argv[2] === '--reclaim-package-caches-maintenance') {
+        process.stdout.write(
+          JSON.stringify({
+            ok: false,
+            code:
+              error?.message === 'runner runtime is in use' ? 'runtime-busy' : 'maintenance-failed',
+          }),
+        );
+      } else {
+        process.stderr.write(
+          `verity-agent-spawn-broker: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
       process.exitCode = 1;
     });
 }

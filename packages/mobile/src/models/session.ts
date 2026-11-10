@@ -13,6 +13,7 @@ import {
   type SessionDetail,
   type SessionHistoryPage,
   type MockupReview,
+  type MockupReviewScreen,
   type SessionPlanning,
   type TurnRequest,
 } from '../api.js';
@@ -164,7 +165,7 @@ export interface SessionModelState {
   decidingPlanning: boolean;
   /** The mockup review the agent presented, if any; drives the review bar. */
   mockupReview: MockupReview | undefined;
-  /** True while a mockup verdict or the comments are being sent. */
+  /** True while a mockup mark is being saved. */
   decidingMockup: boolean;
   /** Why the last mockup decision failed, if it did. */
   mockupError: string | undefined;
@@ -256,8 +257,7 @@ function sameMockupReview(a: MockupReview | undefined, b: MockupReview | undefin
       return (
         screen.name === other.name &&
         screen.attachment === other.attachment &&
-        screen.verdict === other.verdict &&
-        screen.comment === other.comment
+        screen.verdict === other.verdict
       );
     })
   );
@@ -1450,25 +1450,16 @@ export class SessionModel {
     void this.loadActivity();
   }
 
-  /** Approve, comment on or reopen one mockup screen. Approving the last open
-   * screen makes the server continue the build; the review then reads `approved`. */
+  /** Mark one mockup screen approved or discarded, or take the mark back. Marks
+   * start nothing: the user tells the agent in the chat when to build. */
   async decideMockup(
     screen: string,
-    decision: { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string },
+    decision: { verdict: MockupReviewScreen['verdict'] },
   ): Promise<boolean> {
     const review = this._mockupReview;
     if (this._decidingMockup || review === undefined) return false;
     return this.mockupAction(() =>
       this.opts.client.decideMockup(this.opts.sessionId, review.revision, screen, decision),
-    );
-  }
-
-  /** Hand the commented screens to the agent for a revised round. */
-  async sendMockupComments(): Promise<boolean> {
-    const review = this._mockupReview;
-    if (this._decidingMockup || review === undefined) return false;
-    return this.mockupAction(() =>
-      this.opts.client.sendMockupComments(this.opts.sessionId, review.revision),
     );
   }
 
@@ -1489,6 +1480,17 @@ export class SessionModel {
     }
     void this.loadActivity();
     return ok;
+  }
+
+  /** Close the round the user is viewing, without changing marks or sending a turn. */
+  async completeMockups(revision: number): Promise<boolean> {
+    if (
+      this._decidingMockup ||
+      this._mockupReview === undefined ||
+      this._mockupReview.revision !== revision
+    )
+      return false;
+    return this.mockupAction(() => this.opts.client.completeMockups(this.opts.sessionId, revision));
   }
 
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {

@@ -94,10 +94,52 @@ describe('assistant message timing', () => {
           requestId: 'req-1',
           outcome: 'result',
           firstMs: 1_200,
+          firstAnswerMs: undefined,
+          queueMs: 300,
+          promptSeq: 1,
           doneMs: 3_000,
         },
         'verity: assistant message timing',
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('distinguishes tools and nested text from the first visible answer before turn completion', () => {
+    vi.useFakeTimers();
+    try {
+      let publish: (event: AgentEvent) => void = () => undefined;
+      const log = { info: vi.fn(), warn: vi.fn() };
+      const timing = watchAssistantTiming(
+        (_id, listener) => {
+          publish = (event) => listener({ seq: 42, ts: Date.now(), event });
+          return () => undefined;
+        },
+        log,
+        { sessionId: 'assistant', requestId: 'watch-1', prompt: 'Hello' },
+      );
+      vi.advanceTimersByTime(200);
+      publish({ t: 'prompt', text: 'Hello' });
+      vi.advanceTimersByTime(100);
+      publish({ t: 'tool_call', id: 't', name: 'verity_tasks', input: {} });
+      publish({ t: 'text', delta: 'nested', parentToolId: 't' });
+      publish({ t: 'text', delta: '   ' });
+      expect(log.info).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(400);
+      publish({ t: 'text', delta: 'Hello back' });
+      expect(log.info).toHaveBeenCalledExactlyOnceWith(
+        {
+          sessionId: 'assistant',
+          requestId: 'watch-1',
+          promptSeq: 42,
+          firstAnswerMs: 700,
+          queueMs: 200,
+        },
+        'verity: assistant first answer',
+      );
+      publish({ t: 'text', delta: ' again' });
+      expect(log.info).toHaveBeenCalledTimes(1);
+      timing.cancel();
     } finally {
       vi.useRealTimers();
     }

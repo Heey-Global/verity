@@ -1,21 +1,24 @@
 import type { VerityClient } from '@verity/mobile';
 import { useMemo, useState } from 'react';
 import { ScrollView, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { createVerityClient } from '../../lib/client';
 import { SettingsMessage, SettingsScaffold } from '../settings/SettingsChrome';
-import { Button } from '../ui';
+import { Button, Text } from '../ui';
+import { Icon } from '../Icon';
 import { KnowledgeFileView } from './KnowledgeFileView';
 import { KnowledgeFolder } from './KnowledgeFolder';
 import { useKnowledgePane } from './KnowledgePane';
 import {
   folderTitle,
-  parentFolder,
   pushKnowledge,
   scopeTitle,
+  WIKI,
   type KnowledgeScope,
 } from './knowledgeScope';
+import { WikiInfoButton } from './WikiGuide';
+import { WikiProposalScreen } from './WikiProposal';
 
 /**
  * A knowledge route: one folder or one file per screen, so the header's back
@@ -26,10 +29,13 @@ export function KnowledgeScreen({
   scope,
   folder = '',
   file,
+  proposal,
 }: {
   scope: KnowledgeScope;
   folder?: string | undefined;
   file?: string | undefined;
+  /** A proposed Wiki change to review, by id. */
+  proposal?: string | undefined;
 }) {
   const client = useMemo(() => createVerityClient(), []);
   if (!client)
@@ -40,10 +46,25 @@ export function KnowledgeScreen({
         subtitle={`Connect to your Verity server to browse ${scopeTitle(scope)}.`}
       />
     );
+  if (proposal && scope.kind === 'project')
+    return <WikiProposalScreen client={client} projectId={scope.projectId} proposalId={proposal} />;
   if (file !== undefined && file !== '')
     return <KnowledgeFileView client={client} scope={scope} file={file} chrome="stack" />;
   return (
-    <SettingsScaffold title={folderTitle(scope, folder)} detail state={NO_STATE}>
+    <SettingsScaffold
+      title={folderTitle(scope, folder)}
+      detail
+      state={NO_STATE}
+      headerAction={
+        scope.kind === 'project' && folder === WIKI ? (
+          <WikiInfoButton
+            client={client}
+            projectId={scope.projectId}
+            onOpenFile={(next) => pushKnowledge(scope, { file: next })}
+          />
+        ) : undefined
+      }
+    >
       <KnowledgeFolder
         client={client}
         scope={scope}
@@ -53,12 +74,6 @@ export function KnowledgeScreen({
       />
     </SettingsScaffold>
   );
-}
-
-/** One level up in the wide column. A project lists Decisions beside the Wiki
- *  at its top, so going up from Decisions returns there, not into the Wiki. */
-function upFrom(scope: KnowledgeScope, folder: string): string {
-  return scope.kind === 'project' && folder === 'insights/decisions' ? '' : parentFolder(folder);
 }
 
 // The folder list reports its own load failure in place, with Retry beside it.
@@ -74,36 +89,81 @@ const NO_STATE = { error: undefined, saving: false };
 export function EmbeddedKnowledge({
   client,
   scope,
+  start = '',
   exit,
 }: {
   client: VerityClient;
   scope: KnowledgeScope;
+  /** The folder the library opens at and never leaves upwards, such as a
+   *  project's Wiki opened from its page. */
+  start?: string;
   /** Where "‹" at the top level leads, when the library is not the page's root. */
   exit?: { label: string; onPress: () => void };
 }) {
+  const { theme } = useUnistyles();
   const pane = useKnowledgePane();
-  const [folder, setFolder] = useState('');
+  const [folder, setFolder] = useState(start);
   const open = {
     folder: (next: string) => (pane ? setFolder(next) : pushKnowledge(scope, { folder: next })),
     file: (next: string) =>
       pane ? pane.openFile(scope, next) : pushKnowledge(scope, { file: next }),
   };
-  const up = upFrom(scope, folder);
-  const back =
-    folder !== '' ? { label: folderTitle(scope, up), onPress: () => setFolder(up) } : exit;
+  const levels = [{ path: start, label: folderTitle(scope, start) }];
+  if (folder !== start) {
+    const parts = folder
+      .slice(start ? start.length + 1 : 0)
+      .split('/')
+      .filter(Boolean);
+    parts.forEach((_part, index) => {
+      const path = [start, ...parts.slice(0, index + 1)].filter(Boolean).join('/');
+      levels.push({ path, label: folderTitle(scope, path) });
+    });
+  }
   return (
     <View style={styles.root} testID="embedded-knowledge">
-      {back ? (
-        <View style={styles.back}>
-          <Button
-            label={back.label}
-            icon="chevron-left"
-            variant="text"
-            size="compact"
-            onPress={back.onPress}
-          />
-        </View>
-      ) : null}
+      <View style={styles.pathRow}>
+        <ScrollView
+          horizontal
+          style={styles.pathScroll}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.breadcrumb}
+        >
+          {exit ? (
+            <>
+              <Button
+                label={exit.label}
+                icon="chevron-left"
+                variant="text"
+                size="compact"
+                onPress={exit.onPress}
+              />
+              <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+            </>
+          ) : null}
+          {levels.map((level, index) => (
+            <View key={level.path} style={styles.breadcrumb}>
+              {index > 0 ? (
+                <Icon name="chevron-right" size={14} color={theme.colors.textFaint} />
+              ) : null}
+              {index === levels.length - 1 ? (
+                <Text variant="subtitle" numberOfLines={1}>
+                  {level.label}
+                </Text>
+              ) : (
+                <Button
+                  label={level.label}
+                  variant="text"
+                  size="compact"
+                  onPress={() => setFolder(level.path)}
+                />
+              )}
+            </View>
+          ))}
+        </ScrollView>
+        {scope.kind === 'project' && folder === WIKI ? (
+          <WikiInfoButton client={client} projectId={scope.projectId} onOpenFile={open.file} />
+        ) : null}
+      </View>
       <KnowledgeFolder
         key={folder}
         client={client}
@@ -127,6 +187,8 @@ export function KnowledgeColumn(props: Parameters<typeof EmbeddedKnowledge>[0]) 
 
 const styles = StyleSheet.create((theme) => ({
   root: { gap: theme.spacing.sm },
-  back: { alignItems: 'flex-start', marginLeft: -theme.spacing.sm },
+  pathRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  pathScroll: { flexGrow: 1, flexShrink: 1 },
+  breadcrumb: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs },
   column: { padding: theme.spacing.lg },
 }));

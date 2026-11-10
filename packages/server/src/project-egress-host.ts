@@ -1,3 +1,4 @@
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   transportRules,
   directCorridorRules,
@@ -25,6 +26,7 @@ const hostname = z
 export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('health') }),
   z.strictObject({ operation: z.literal('inventory-begin'), token: z.uuid() }),
+  z.strictObject({ operation: z.literal('inventory-abort'), token: z.uuid() }),
   z.strictObject({ operation: z.literal('inventory-renew'), token: z.uuid(), hash: objectId }),
   z.strictObject({
     operation: z.literal('inventory-commit'),
@@ -34,6 +36,7 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   }),
   z.strictObject({ operation: z.literal('current'), projectId: identity }),
   z.strictObject({ operation: z.literal('register'), binding: networkBinding }),
+  z.strictObject({ operation: z.literal('allocate-network'), ...reference }),
   z.strictObject({ operation: z.literal('prepare'), ...reference }),
   z.strictObject({ operation: z.literal('connect'), ...reference }),
   z.strictObject({ operation: z.literal('refresh-direct'), ...reference }),
@@ -48,7 +51,10 @@ export const projectEgressHostRequest = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('resolve-direct'), ...reference, name: hostname }),
 ]);
 export const projectEgressHostResponse = z.discriminatedUnion('state', [
-  z.strictObject({ state: z.enum(['inventory-denied', 'inventory-ready']), token: z.uuid() }),
+  z.strictObject({
+    state: z.enum(['inventory-denied', 'inventory-ready', 'inventory-aborted']),
+    token: z.uuid(),
+  }),
   z.strictObject({
     state: z.literal('health'),
     protocolVersion: z.literal(1),
@@ -64,6 +70,7 @@ export const projectEgressHostResponse = z.discriminatedUnion('state', [
     state: z.enum(['denied', 'started-denied', 'retired', 'direct-refreshed', 'direct-revoked']),
     generation: identity,
   }),
+  z.strictObject({ state: z.literal('network-allocated'), binding: networkBinding }),
   z.strictObject({
     state: z.literal('resolved'),
     generation: identity,
@@ -87,12 +94,17 @@ export type ProjectEgressNetworkBinding = z.infer<typeof networkBinding>;
 const recordSchema = z.strictObject({
   binding: networkBinding,
   retired: z.boolean(),
+  networkRemoved: z.boolean().optional(),
+  cleanupContainers: z.boolean().optional(),
+  allocationExpiresAt: z.number().int().positive().optional(),
+  allocationAbandoned: z.boolean().optional(),
   bootId: z.uuid().optional(),
   containers: z.strictObject({ sandbox: objectId.optional(), relay: objectId.optional() }),
 });
 export const projectEgressHostState = z.strictObject({
   version: z.literal(1),
   records: z.array(recordSchema).max(10000),
+  pendingNetworks: z.array(z.strictObject(reference)).max(10000).optional(),
 });
 export type ProjectEgressHostState = z.infer<typeof projectEgressHostState>;
 type RecordState = z.infer<typeof recordSchema>;
@@ -122,6 +134,7 @@ interface Dependencies {
   systemInventory?: {
     invalidate(): void;
     begin(token: string): void;
+    abort(token: string): void;
     commit(token: string, hosts: readonly string[], addresses: readonly string[]): Promise<void>;
     ready(): boolean;
     renew(hash: string): void;
@@ -151,6 +164,16 @@ interface Dependencies {
     binding: ProjectEgressNetworkBinding,
     ids: { sandbox: string; relay: string },
   ): Promise<EgressTransport | undefined>;
+  allocateNetwork?(identity: {
+    projectId: string;
+    generation: string;
+  }): Promise<ProjectEgressNetworkBinding>;
+  cleanupNetwork?(
+    binding: ProjectEgressNetworkBinding,
+    containers?: { sandbox?: string | undefined; relay?: string | undefined },
+    discoverUnstarted?: boolean,
+  ): Promise<boolean>;
+  cleanupPendingNetwork?(identity: { projectId: string; generation: string }): Promise<void>;
   startContainer(id: string): Promise<void>;
   stopContainer(id: string): Promise<void>;
 }
@@ -265,7 +288,7 @@ export class ProjectEgressHost {
       }
     }
   }
-  private serialize<T>(action: () => Promise<T>): Promise<T> {
+  private serialize<T>(action: () => T | Promise<T>): Promise<T> {
     const pending = this.queue.then(async () => {
       if (!this.healthy) throw new Error('Host registry requires restart');
       return action();
@@ -372,6 +395,92 @@ export class ProjectEgressHost {
       }
     });
   }
+  private networkCleanupCursor = 0;
+  private pendingNetworkCleanupCursor = 0;
+  /** Each network is serialized separately so queued starts and renewals can run between entries. */
+  async cleanupNetworks(): Promise<void> {
+    // Unclaimed allocations cannot hold a subnet forever after a lost Server reply.
+    await this.serialize(async () => {
+      for (const record of this.state.records
+        .filter(
+          (entry) =>
+            entry.allocationExpiresAt !== undefined && entry.allocationExpiresAt <= Date.now(),
+        )
+        .slice(0, 8)) {
+        await this.deny(record);
+        record.retired = true;
+        record.cleanupContainers = true;
+        record.allocationAbandoned = true;
+        delete record.allocationExpiresAt;
+        await this.save();
+      }
+    });
+    const retired = this.state.records.filter((record) => record.retired && !record.networkRemoved);
+    const candidates = Array.from(
+      { length: Math.min(retired.length, 8) },
+      (_, index) => retired[(this.networkCleanupCursor + index) % retired.length]!,
+    );
+    this.networkCleanupCursor = retired.length
+      ? (this.networkCleanupCursor + candidates.length) % retired.length
+      : 0;
+    const failures: unknown[] = [];
+    for (const record of candidates) {
+      try {
+        const permitted = await this.serialize(async () => {
+          if (!record.retired || record.networkRemoved || !this.deps.cleanupNetwork) return false;
+          await this.deny(record);
+          return true;
+        });
+        if (!permitted) continue;
+        // Retired identities cannot start or be reassigned. Slow Docker housekeeping must
+        // not occupy the global admission/renewal queue used by other generations.
+        if (record.cleanupContainers)
+          for (const id of containerIds(record)) await this.deps.stopContainer(id);
+        const removed = await this.deps.cleanupNetwork!(
+          record.binding,
+          record.cleanupContainers ? record.containers : {},
+          record.allocationAbandoned,
+        );
+        if (removed)
+          await this.serialize(async () => {
+            record.networkRemoved = true;
+            await this.save();
+          });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    const intents = [...(this.state.pendingNetworks ?? [])];
+    const pendingCandidates = Array.from(
+      { length: Math.min(intents.length, 8) },
+      (_, index) => intents[(this.pendingNetworkCleanupCursor + index) % intents.length]!,
+    );
+    this.pendingNetworkCleanupCursor = intents.length
+      ? (this.pendingNetworkCleanupCursor + pendingCandidates.length) % intents.length
+      : 0;
+    for (const pending of pendingCandidates) {
+      try {
+        const permitted = await this.serialize(() => {
+          if (!this.deps.cleanupPendingNetwork) return false;
+          if (!this.state.pendingNetworks?.some((entry) => key(entry) === key(pending)))
+            return false;
+          return !this.state.records.some((record) => key(record.binding) === key(pending));
+        });
+        if (!permitted) continue;
+        // A pending identity is reserved and cannot register/start while being recovered.
+        await this.deps.cleanupPendingNetwork!(pending);
+        await this.serialize(async () => {
+          this.state.pendingNetworks = this.state.pendingNetworks!.filter(
+            (entry) => key(entry) !== key(pending),
+          );
+          await this.save();
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Project network cleanup deferred');
+  }
   execute(input: unknown): Promise<ProjectEgressHostResponse> {
     const request = projectEgressHostRequest.parse(input);
     if (request.operation === 'inventory-begin') {
@@ -380,12 +489,17 @@ export class ProjectEgressHost {
     }
     if (
       request.operation === 'inventory-begin' ||
+      request.operation === 'inventory-abort' ||
       request.operation === 'inventory-commit' ||
       request.operation === 'inventory-renew'
     ) {
       return this.serialize(async () => {
         if (!this.deps.systemInventory || !this.deps.enforcement)
-          throw new Error('Managed system inventory is not configured');
+          throw new ProjectEgressInventoryError('inventory_not_configured');
+        if (request.operation === 'inventory-abort') {
+          this.deps.systemInventory.abort(request.token);
+          return { state: 'inventory-aborted', token: request.token };
+        }
         if (request.operation === 'inventory-renew') {
           this.deps.systemInventory.renew(request.hash);
           return { state: 'inventory-ready', token: request.token };
@@ -409,7 +523,10 @@ export class ProjectEgressHost {
           }),
         );
         const failures = outcomes.filter((outcome) => outcome.status === 'rejected');
-        if (failures.length) throw new Error('System inventory fencing failed');
+        if (failures.length) {
+          this.deps.systemInventory.abort(request.token);
+          throw new ProjectEgressInventoryError('inventory_fencing_failed');
+        }
         return { state: 'inventory-denied', token: request.token };
       });
     }
@@ -464,7 +581,48 @@ export class ProjectEgressHost {
           ...(this.deps.enforcement ? { packetEnforcement: true } : {}),
         };
       }
+      if (request.operation === 'allocate-network') {
+        if (!this.deps.allocateNetwork) throw new Error('Host network allocation unavailable');
+        if (
+          this.state.records.some(
+            (record) =>
+              key(record.binding) === key(request) ||
+              (!record.retired && record.binding.projectId === request.projectId),
+          )
+        )
+          throw new Error('Retire the current generation before replacement');
+        if (
+          this.state.records.length >= 10000 ||
+          (this.state.pendingNetworks?.length ?? 0) >= 10000
+        )
+          throw new Error('Host registry capacity exceeded');
+        if (this.state.pendingNetworks?.some((pending) => key(pending) === key(request)))
+          throw new Error('Network allocation requires recovery');
+        const pending = { projectId: request.projectId, generation: request.generation };
+        (this.state.pendingNetworks ??= []).push(pending);
+        // The host owns creation and recovery; a lost response cannot orphan an unregistered network.
+        await this.save();
+        const binding = await this.deps.allocateNetwork(pending);
+        if (key(binding) !== key(pending)) throw new Error('Allocated network identity mismatch');
+        await this.deps.inspectNetwork(binding, []);
+        const record: RecordState = {
+          binding,
+          retired: false,
+          allocationExpiresAt: Date.now() + 5 * 60_000,
+          containers: {},
+          ...(this.deps.bootId ? { bootId: this.deps.bootId } : {}),
+        };
+        this.state.records.push(record);
+        this.state.pendingNetworks = this.state.pendingNetworks.filter(
+          (entry) => key(entry) !== key(pending),
+        );
+        await this.save();
+        await this.prepare(record);
+        return { state: 'network-allocated', binding: structuredClone(binding) };
+      }
       if (request.operation === 'register') {
+        if (this.state.pendingNetworks?.some((pending) => key(pending) === key(request.binding)))
+          throw new Error('Network allocation recovery in progress');
         const existing = this.state.records.find(
           (record) => key(record.binding) === key(request.binding),
         );
@@ -505,6 +663,7 @@ export class ProjectEgressHost {
       if (request.operation === 'retire') {
         await this.deny(record);
         record.retired = true;
+        record.cleanupContainers = true;
         await this.save();
         // A failed stop leaves a permanent deny fence and cannot reactivate.
         const stopped = await Promise.allSettled(
@@ -520,6 +679,8 @@ export class ProjectEgressHost {
         return { state: 'retired', generation: record.binding.generation };
       }
       if (record.retired) throw new Error('Retired generation');
+      if (record.allocationExpiresAt !== undefined && record.allocationExpiresAt <= Date.now())
+        throw new Error('Network allocation expired; provision a fresh generation');
       if (request.operation === 'prepare') {
         await this.prepare(record);
         return { state: 'denied', generation: record.binding.generation };
@@ -580,6 +741,15 @@ export class ProjectEgressHost {
         await this.prepare(record);
         const transport = await this.connect(record);
         if (!transport) throw new Error('Both transport roles must be running');
+        if (record.allocationExpiresAt !== undefined) {
+          delete record.allocationExpiresAt;
+          try {
+            await this.save();
+          } catch (error) {
+            await this.deny(record);
+            throw error;
+          }
+        }
         return {
           state: 'connected',
           generation: record.binding.generation,
@@ -614,6 +784,10 @@ export class ProjectEgressHost {
         await this.deps.inspectContainer(record.binding, request.containerId, request.role);
         await this.deps.inspectNetwork(record.binding, containerIds(record));
         transport = await this.connect(record);
+        if (transport && record.allocationExpiresAt !== undefined) {
+          delete record.allocationExpiresAt;
+          await this.save();
+        }
       } catch (error) {
         const containment = await Promise.allSettled([
           Promise.resolve().then(() => this.deny(record)),

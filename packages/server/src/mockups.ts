@@ -1,24 +1,16 @@
-// Design module: the agent presents rendered mockups and the user approves or
-// comments on each screen before the rest of an accepted plan is built. The agent
-// stops after presenting (its prompt says so); the server owns what happens next:
-// approving every screen starts the continuation turn, sending comments starts a
-// revision turn. Images are copied into the attachment store when presented, so a
-// round in the chat keeps showing what was reviewed after the files change.
-import {
-  MOCKUPS_APPROVED_DISPLAY,
-  MOCKUPS_APPROVED_PROMPT,
-  mockupFeedbackDisplay,
-  mockupFeedbackPrompt,
-} from '@verity/events';
-import type { EventStore, MockupScreenRecord, SessionMockups } from '@verity/store';
+// Design module: the agent presents rendered mockups and the user marks each screen
+// as approved or discarded, then discusses them in the chat. Marks only record the
+// user's opinion and never start a turn: the user tells the agent in the chat to
+// implement, and the agent ends the review before it goes on. Images are copied
+// into the attachment store when presented, so a round in the chat keeps showing
+// what was reviewed after the files change.
+import type { EventStore, MockupScreenRecord, MockupVerdict, SessionMockups } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import type { PlanningDeps } from './planning.js';
 import { readWorktreeFile } from './worktree-file.js';
 
 const MAX_MOCKUP_SCREENS = 12;
 const MAX_MOCKUP_BYTES = 15 * 1024 * 1024;
-const MAX_MOCKUP_COMMENT = 4_000;
 
 export const presentMockupsRequestSchema = z
   .object({
@@ -78,68 +70,39 @@ function validMockupSize(image: Pick<MockupScreenRecord, 'mediaType' | 'width' |
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 /** The next round: new images open for review, except a screen that is unchanged
- *  from an approved one, which keeps its approval. */
+ *  from the round before, which keeps its mark. A discarded screen presented
+ *  unchanged therefore stays discarded and never turns into an approval. */
 export function nextMockupRound(
   current: SessionMockups,
-  screens: readonly Omit<MockupScreenRecord, 'verdict' | 'comment'>[],
+  screens: readonly Omit<MockupScreenRecord, 'verdict'>[],
 ): SessionMockups {
   const next = screens.map((screen): MockupScreenRecord => {
     const before = current.screens.find((old) => old.name === screen.name);
-    const kept = before?.verdict === 'approved' && before.attachment === screen.attachment;
-    return { ...screen, verdict: kept ? 'approved' : 'open' };
+    const kept = before !== undefined && before.attachment === screen.attachment;
+    return { ...screen, verdict: kept ? before.verdict : 'open' };
   });
-  return {
-    state: next.every((screen) => screen.verdict === 'approved') ? 'approved' : 'pending',
-    revision: current.revision + 1,
-    screens: next,
-  };
+  return { state: 'pending', revision: current.revision + 1, screens: next };
 }
 
-export type MockupDecision =
-  { verdict: 'approved' | 'open' } | { verdict: 'comment'; comment: string };
+export type MockupDecision = { verdict: MockupVerdict };
 
 export type MockupActionResult =
   | { ok: true; review: SessionMockups }
-  | { ok: false; code: 'notFound' | 'stale' | 'notPending' | 'noComments' | 'unknownScreen' };
+  | { ok: false; code: 'notFound' | 'stale' | 'notPending' | 'unknownScreen' };
 
 export interface MockupDeps {
   eventStore: Pick<EventStore, 'getSession' | 'updateSessionMockups' | 'putAttachment'>;
-  dispatchTurn: PlanningDeps['dispatchTurn'];
 }
 
 export function createSessionMockups(deps: MockupDeps) {
   const store = deps.eventStore;
-
-  /** The conductor commits this transition with the durable continuation. */
-  async function dispatchAfter(
-    sessionId: string,
-    after: SessionMockups,
-    prompt: string,
-    displayPrompt: string,
-    initiatedBy: { userId: string } | undefined,
-    previousScreens?: SessionMockups['screens'],
-  ): Promise<boolean> {
-    const result = await deps.dispatchTurn(
-      sessionId,
-      prompt,
-      {},
-      {
-        displayPrompt,
-        queueBehindActiveTurn: true,
-        mockupContinuation: after,
-        ...(previousScreens !== undefined ? { mockupPreviousScreens: previousScreens } : {}),
-        ...(initiatedBy !== undefined ? { initiatedBy } : {}),
-      },
-    );
-    return result.accepted !== false;
-  }
 
   return {
     /** Snapshot the images and open a new round. Answers the stored round. */
     async present(sessionId: string, request: PresentMockupsRequest): Promise<SessionMockups> {
       const session = await store.getSession(sessionId);
       if (!session) throw new Error('session not found');
-      const screens: Omit<MockupScreenRecord, 'verdict' | 'comment'>[] = [];
+      const screens: Omit<MockupScreenRecord, 'verdict'>[] = [];
       for (const screen of request.screens) {
         const bytes = await readWorktreeFile(session.worktree, screen.path, {
           label: `mockup "${screen.name}" path`,
@@ -159,79 +122,51 @@ export function createSessionMockups(deps: MockupDeps) {
       return stored;
     },
 
-    /** Record one screen's verdict. Approving the last open screen ends the review
-     *  and starts the continuation turn. */
+    /** Record one screen's mark. A mark never starts work, not even the last approval. */
     async decide(
       sessionId: string,
       revision: number,
       name: string,
       decision: MockupDecision,
-      initiatedBy?: { userId: string },
     ): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
-      let approved: SessionMockups | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
         if (current.revision !== revision) failure = { ok: false, code: 'stale' };
         else if (current.state !== 'pending') failure = { ok: false, code: 'notPending' };
         else if (!current.screens.some((screen) => screen.name === name))
           failure = { ok: false, code: 'unknownScreen' };
         if (failure) return undefined;
-        const screens = current.screens.map((screen): MockupScreenRecord => {
-          if (screen.name !== name) return screen;
-          const rest = { ...screen };
-          delete rest.comment;
-          return decision.verdict === 'comment'
-            ? { ...rest, verdict: 'comment', comment: decision.comment }
-            : { ...rest, verdict: decision.verdict };
-        });
-        if (screens.every((screen) => screen.verdict === 'approved')) {
-          approved = { ...current, state: 'approved', screens };
-          // The final verdict is committed only with the durable continuation.
-          return current;
-        }
-        return { ...current, screens };
+        return {
+          ...current,
+          screens: current.screens.map((screen) =>
+            screen.name === name ? { ...screen, verdict: decision.verdict } : screen,
+          ),
+        };
       });
       if (!stored) return failure ?? { ok: false, code: 'notFound' };
-      if (approved !== undefined) {
-        const after = approved;
-        const started = await dispatchAfter(
-          sessionId,
-          after,
-          MOCKUPS_APPROVED_PROMPT,
-          MOCKUPS_APPROVED_DISPLAY,
-          initiatedBy,
-          stored.screens,
-        );
-        return started ? { ok: true, review: after } : { ok: false, code: 'stale' };
-      }
       return { ok: true, review: stored };
     },
 
-    /** Hand the round's comments to the agent, which revises and presents again. */
-    async sendComments(
-      sessionId: string,
-      revision: number,
-      initiatedBy?: { userId: string },
-    ): Promise<MockupActionResult> {
+    /** End a review without changing its marks or starting work. A device supplies
+     *  the revision it saw so a new round cannot be closed by an old screen. */
+    async complete(sessionId: string, revision?: number): Promise<MockupActionResult> {
       let failure: MockupActionResult | undefined;
       const stored = await store.updateSessionMockups(sessionId, (current) => {
-        if (current.revision !== revision) failure = { ok: false, code: 'stale' };
-        else if (current.state !== 'pending') failure = { ok: false, code: 'notPending' };
-        else if (!current.screens.some((screen) => screen.verdict === 'comment'))
-          failure = { ok: false, code: 'noComments' };
-        return failure ? undefined : current;
+        if (revision !== undefined && current.revision !== revision) {
+          failure = { ok: false, code: 'stale' };
+          return undefined;
+        }
+        // Retrying the same device request is safe, but the agent's existing
+        // no-revision call still reports that there was nothing left to close.
+        if (revision !== undefined && current.state === 'approved') return current;
+        if (current.state !== 'pending' && current.state !== 'revising') {
+          failure = { ok: false, code: 'notPending' };
+          return undefined;
+        }
+        return { ...current, state: 'approved' };
       });
       if (!stored) return failure ?? { ok: false, code: 'notFound' };
-      const comments = stored.screens.filter((screen) => screen.verdict === 'comment').length;
-      const after: SessionMockups = { ...stored, state: 'revising' };
-      const started = await dispatchAfter(
-        sessionId,
-        after,
-        mockupFeedbackPrompt(stored.screens),
-        mockupFeedbackDisplay(comments),
-        initiatedBy,
-      );
-      return started ? { ok: true, review: after } : { ok: false, code: 'stale' };
+      return { ok: true, review: stored };
     },
   };
 }
@@ -239,56 +174,52 @@ export function createSessionMockups(deps: MockupDeps) {
 export type SessionMockupActions = ReturnType<typeof createSessionMockups>;
 
 const sessionParams = z.object({ id: z.string().min(1) });
-const decideBody = z
-  .object({
-    action: z.literal('decide'),
-    revision: z.number().int().nonnegative(),
-    screen: z.string().min(1).max(80),
-    verdict: z.enum(['approved', 'open']),
-  })
-  .strict();
-const commentBody = z
-  .object({
-    action: z.literal('decide'),
-    revision: z.number().int().nonnegative(),
-    screen: z.string().min(1).max(80),
-    verdict: z.literal('comment'),
-    comment: z.string().trim().min(1).max(MAX_MOCKUP_COMMENT),
-  })
-  .strict();
-const sendBody = z
-  .object({ action: z.literal('send'), revision: z.number().int().nonnegative() })
-  .strict();
+const decideBody = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('mark'),
+      revision: z.number().int().nonnegative(),
+      screen: z.string().min(1).max(80),
+      verdict: z.enum(['approved', 'discarded', 'open']),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('complete'),
+      revision: z.number().int().nonnegative(),
+    })
+    .strict(),
+]);
 
 const ERRORS: Record<Exclude<MockupActionResult, { ok: true }>['code'], [number, string]> = {
   notFound: [404, 'session not found'],
   stale: [409, 'The mockups were updated. Please review the current ones.'],
   notPending: [409, 'These mockups are not waiting for review.'],
-  noComments: [409, 'Comment on at least one screen before sending.'],
   unknownScreen: [409, 'This screen is not part of the current mockups.'],
 };
 
-/** `POST /sessions/:id/mockups` — the reviewer decides a screen or sends comments. */
+/** `POST /sessions/:id/mockups` — mark a screen or explicitly end the current
+ * review. Neither action grants approval to implement or queues a turn. */
 export function registerMockupRoutes(
   app: FastifyInstance,
   deps: { mockups: SessionMockupActions },
 ): void {
   app.post('/sessions/:id/mockups', async (request, reply) => {
     const { id } = sessionParams.parse(request.params);
-    const body = parseMockupBody(request.body);
-    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
+    const body = decideBody.safeParse(request.body);
+    if (!body.success) {
+      reply.code(400);
+      return {
+        error: 'Mark a screen or end the current review with its revision.',
+        code: 'invalid',
+      };
+    }
     const result =
-      body.action === 'send'
-        ? await deps.mockups.sendComments(id, body.revision, initiatedBy)
-        : await deps.mockups.decide(
-            id,
-            body.revision,
-            body.screen,
-            body.verdict === 'comment'
-              ? { verdict: 'comment', comment: body.comment }
-              : { verdict: body.verdict },
-            initiatedBy,
-          );
+      body.data.action === 'complete'
+        ? await deps.mockups.complete(id, body.data.revision)
+        : await deps.mockups.decide(id, body.data.revision, body.data.screen, {
+            verdict: body.data.verdict,
+          });
     if (!result.ok) {
       const [status, error] = ERRORS[result.code];
       reply.code(status);
@@ -296,14 +227,4 @@ export function registerMockupRoutes(
     }
     return { mockupReview: result.review };
   });
-}
-
-type MockupBody =
-  z.infer<typeof decideBody> | z.infer<typeof commentBody> | z.infer<typeof sendBody>;
-
-/** Both decide shapes share their `action`, so the verdict picks the schema. */
-function parseMockupBody(body: unknown): MockupBody {
-  const fields = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>;
-  if (fields.action === 'send') return sendBody.parse(body);
-  return (fields.verdict === 'comment' ? commentBody : decideBody).parse(body);
 }

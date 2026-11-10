@@ -196,6 +196,36 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
     expect(calls.at(-1)).toEqual({ action: 'issue.comment', number: 7, body: 'On it' });
   });
 
+  it("prints an opened repository's path and branch, and points at its own AGENTS.md", async () => {
+    const workspace = { worktree: '/work/.verity-repositories/abc/def', branch: 'verity/x' };
+    const { run } = await fixture((body, reply) =>
+      ok(
+        body.repositoryId === 'with-rules'
+          ? { workspace, instructions: `${workspace.worktree}/AGENTS.md` }
+          : { workspace },
+      )(body, reply),
+    );
+    const withRules = await run(binRoot, [
+      'repository',
+      'open',
+      'with-rules',
+      '--session',
+      'current-session',
+    ]);
+    // Scripts read exactly these two lines; the pointer must not join them.
+    expect(withRules.stdout).toBe(`${workspace.worktree}\nverity/x\n`);
+    expect(withRules.stderr).toContain(`read ${workspace.worktree}/AGENTS.md before working`);
+    const plain = await run(binRoot, [
+      'repository',
+      'open',
+      'plain',
+      '--session',
+      'current-session',
+    ]);
+    expect(plain.stdout).toBe(`${workspace.worktree}\nverity/x\n`);
+    expect(plain.stderr).toBe('');
+  });
+
   it('prints the raw response with --json', async () => {
     const { run } = await fixture(ok({ host: 'Forgejo', pullRequest: pull }));
     const result = await run(binRoot, ['pr', 'view', '12', '--json']);

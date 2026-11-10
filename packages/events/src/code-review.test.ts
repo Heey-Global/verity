@@ -41,4 +41,13 @@ describe('CODE_REVIEW_SYSTEM_PROMPT', () => {
     expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('code_review');
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/--no-verify/);
   });
+
+  it('requires the synchronous review result before ending or marking', () => {
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('synchronous');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('nohup');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('wait or poll');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('exit status');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('report the concrete failure');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('Do not mark a failed or interrupted review');
+  });
 });

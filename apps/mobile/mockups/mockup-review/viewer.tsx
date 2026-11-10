@@ -2,14 +2,15 @@ import { Image, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Button, StatusTag, Text } from '../../components/ui';
+import { Button, IconButton, StatusTag, Text } from '../../components/ui';
 import { PageDots, SAMPLE_SCREENS } from './parts';
 
 const ignore = () => undefined;
 
 /**
  * Full-screen review, opened from Home, the chat or the session bar: one screen large,
- * swipe for the next, Comment and Approve side by side at the bottom.
+ * swipe for the next, and two equal marks at the bottom. This screen was discarded:
+ * its mark shows in the tag and the button, and the image is dimmed.
  */
 export default function ViewerMockup() {
   const { theme } = useUnistyles();
@@ -25,29 +26,39 @@ export default function ViewerMockup() {
             Pricing page · {String(index + 1)} of {String(SAMPLE_SCREENS.length)}
           </Text>
         </View>
-        <StatusTag intent="optional" label="Commented" />
+        <StatusTag intent="needsSetup" label="Discarded" />
+        <IconButton icon="x" accessibilityLabel="Close review" onPress={ignore} />
       </View>
       <View style={styles.stage}>
         <Image
           source={current.image}
           resizeMode="contain"
           accessibilityLabel={`${current.name} mockup`}
-          style={styles.image}
+          style={[styles.image, styles.dimmed]}
         />
       </View>
       <PageDots count={SAMPLE_SCREENS.length} index={index} />
       <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, theme.spacing.md) }]}>
-        {current.state.kind === 'comment' ? (
-          <Text variant="bodySmall" tone="muted">
-            Your comment: “{current.state.text}”
-          </Text>
-        ) : null}
         <View style={styles.actions}>
-          <View style={styles.flex}>
-            <Button label="Edit comment" variant="secondary" fullWidth onPress={ignore} />
+          <View style={styles.mark}>
+            <Button
+              label="Discarded"
+              icon="x"
+              size="compact"
+              variant="destructive"
+              fullWidth
+              onPress={ignore}
+            />
           </View>
-          <View style={styles.flex}>
-            <Button label="Approve" fullWidth onPress={ignore} />
+          <View style={styles.mark}>
+            <Button
+              label="Approve"
+              icon="check"
+              size="compact"
+              variant="secondary"
+              fullWidth
+              onPress={ignore}
+            />
           </View>
         </View>
       </View>
@@ -81,5 +92,7 @@ const styles = StyleSheet.create((theme) => ({
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
-  actions: { flexDirection: 'row', gap: theme.spacing.sm },
+  actions: { flexDirection: 'row', justifyContent: 'center', gap: theme.spacing.sm },
+  mark: { width: 150 },
+  dimmed: { opacity: 0.4 },
 }));

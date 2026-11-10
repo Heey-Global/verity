@@ -1,6 +1,39 @@
 import { expect, it, vi } from 'vitest';
 import { authorizePairedRoute, type PairedRoutePolicyStore } from './paired-route-policy.js';
 
+it('requires execute access to mark or end a session mockup review', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (userId, projectId, permission) =>
+      projectId === 'shared' && (permission === 'read' || userId === 'executor'),
+    getSession: async (id) =>
+      id === 'session'
+        ? { projectId: 'shared' }
+        : id === 'foreign'
+          ? { projectId: 'other' }
+          : undefined,
+  };
+  expect(
+    await authorizePairedRoute(store, 'reader', 'POST', '/sessions/:id/mockups', { id: 'session' }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'session',
+    }),
+  ).toBe('allow');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'foreign',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'executor', 'POST', '/sessions/:id/mockups', {
+      id: 'missing',
+    }),
+  ).toBe('not_found');
+});
+
 it('resolves project and session reads while keeping undeclared routes administrator-only', async () => {
   const store: PairedRoutePolicyStore = {
     isActiveLocalUser: vi.fn(async (userId) => userId !== 'disabled'),
@@ -189,6 +222,7 @@ it('scopes direct project knowledge reads and edits to project permissions', asy
     '/projects/:id/knowledge/files',
     '/projects/:id/knowledge/files/content',
     '/projects/:id/knowledge/files/download',
+    '/projects/:id/knowledge/wiki',
   ]) {
     expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'p' })).toBe('allow');
     expect(await authorizePairedRoute(store, 'reader', 'GET', route, { id: 'other' })).toBe(
@@ -202,6 +236,37 @@ it('scopes direct project knowledge reads and edits to project permissions', asy
   ).toBe('forbidden');
   expect(
     await authorizePairedRoute(store, 'manager', 'PUT', '/projects/:id/knowledge/files/content', {
+      id: 'p',
+    }),
+  ).toBe('allow');
+});
+
+it('requires project management permission to delete Wiki entries', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (user, project, permission) =>
+      project === 'p' && user === 'manager' && permission === 'manage',
+    getSession: async () => undefined,
+  };
+  expect(
+    await authorizePairedRoute(store, 'reader', 'DELETE', '/projects/:id/knowledge/files', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'DELETE', '/projects/:id/knowledge/files', {
+      id: 'p',
+    }),
+  ).toBe('allow');
+  // Renaming a source changes the library like deleting it does.
+  expect(
+    await authorizePairedRoute(store, 'reader', 'POST', '/projects/:id/knowledge/files/rename', {
+      id: 'p',
+    }),
+  ).toBe('forbidden');
+  expect(
+    await authorizePairedRoute(store, 'manager', 'POST', '/projects/:id/knowledge/files/rename', {
       id: 'p',
     }),
   ).toBe('allow');
@@ -241,4 +306,28 @@ it('lets a reader keep their own view state but hides resources they cannot read
       'not_found',
     );
   }
+});
+
+it('lets a manager rename a project without opening the rest of its settings', async () => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async () => true,
+    isActiveAdministrator: async () => false,
+    hasProjectPermission: async (userId, projectId, permission) =>
+      projectId === 'shared' && (permission === 'read' || userId === 'manager'),
+    getSession: async () => undefined,
+  };
+  const profile = '/projects/:id/profile';
+  expect(await authorizePairedRoute(store, 'manager', 'PATCH', profile, { id: 'shared' })).toBe(
+    'allow',
+  );
+  // Reading a project is not enough to rename it.
+  expect(await authorizePairedRoute(store, 'reader', 'PATCH', profile, { id: 'shared' })).toBe(
+    'forbidden',
+  );
+  // The settings route keeps every other project setting with administrators.
+  expect(
+    await authorizePairedRoute(store, 'manager', 'PATCH', '/projects/:id/settings', {
+      id: 'shared',
+    }),
+  ).toBe('forbidden');
 });

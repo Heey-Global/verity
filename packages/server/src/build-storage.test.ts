@@ -66,6 +66,21 @@ function fixture() {
   };
 }
 const commandOptions = { env: process.env, timeout: 5000, maxBuffer: 1024 * 1024 };
+const protectedRequest = {
+  projectId: 'project-a',
+  attemptId: '11111111-1111-4111-8111-111111111111',
+  snapshot: 'attempt-a/verity-build-a',
+  image: `verity-devc-repo:${'a'.repeat(12)}`,
+  noCache: false,
+};
+const protectedReference = {
+  projectId: protectedRequest.projectId,
+  attemptId: protectedRequest.attemptId,
+};
+const protectedReceipt = {
+  version: 1,
+  record: { request: protectedRequest, phase: 'failed', ended: true },
+};
 
 describe('build storage admission', () => {
   it('does not mistake an inaccessible reservation path for an absent directory', () => {
@@ -485,6 +500,41 @@ describe('owned attempt recovery and cancellation', () => {
 });
 
 describe('durable remote operation guard', () => {
+  it('retains protected work after a failed local worker, even with daemon-looking output', async () => {
+    const f = fixture();
+    const manager = f.manager();
+    const lease = manager.acquire();
+    await expect(
+      lease.run(
+        process.execPath,
+        [
+          '-e',
+          'console.error("ERROR: failed to solve: process exited; buildkit idle"); process.exit(1)',
+        ],
+        { ...commandOptions, remoteOperation: 'protected-build' },
+      ),
+    ).rejects.toThrow();
+    lease.dispose();
+    manager.acquire().dispose();
+    expect(manager.unresolvedAttempts()).toEqual([
+      expect.objectContaining({ operation: 'protected-build' }),
+    ]);
+    expect(remoteOperationEnded('protected-build', '{"success":true}')).toBe(false);
+  });
+
+  it('releases protected work after the trusted worker confirms remote termination', async () => {
+    const f = fixture();
+    const manager = f.manager();
+    const lease = manager.acquire();
+    await lease.run(process.execPath, ['-e', 'console.log("confirmed by fixed worker")'], {
+      ...commandOptions,
+      remoteOperation: 'protected-build',
+    });
+    expect(manager.unresolvedAttempts()).toEqual([]);
+    lease.dispose();
+    expect(existsSync(lease.directory)).toBe(false);
+  });
+
   it.each(['timeout', 'abort', 'failure'] as const)(
     'retains reservation and artifacts after remote %s',
     async (reason) => {
@@ -618,6 +668,69 @@ describe('host maintenance admission', () => {
     const marker = orphan(f);
     await f.manager.reconcile();
     expect(existsSync(marker)).toBe(false);
+  });
+  it('queries protected status for orphan admission markers and never trusts BuildKit idleness', async () => {
+    const f = admission();
+    const marker = orphan(f);
+    writeFileSync(
+      join(marker, 'remote-operation.json'),
+      JSON.stringify({
+        version: 1,
+        operation: 'protected-build',
+        protectedBuild: protectedReference,
+        hostBootId: '11111111-1111-4111-8111-111111111111',
+        hostIdentity: 'a'.repeat(64),
+        startedAt: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    );
+    await f.manager.reconcile({ buildkitIdle: async () => true });
+    expect(existsSync(marker)).toBe(true);
+    const status = vi.fn(async () => protectedReceipt);
+    await f.manager.reconcile({ protectedBuildStatus: status });
+    expect(status).toHaveBeenCalledWith(protectedReference);
+    expect(existsSync(marker)).toBe(false);
+  });
+  it('recovers foreign-namespace protected admission only after both client bounds and host proof', async () => {
+    const f = admission();
+    const marker = orphan(f, 'attempt-foreign-protected', { namespace: 'pid:[previous-server]' });
+    writeFileSync(
+      join(marker, 'remote-operation.json'),
+      JSON.stringify({
+        version: 1,
+        operation: 'protected-build',
+        protectedBuild: protectedReference,
+        hostBootId: '11111111-1111-4111-8111-111111111111',
+        hostIdentity: 'a'.repeat(64),
+        startedAt: new Date().toISOString(),
+      }),
+    );
+    const status = vi.fn(async () => protectedReceipt);
+    await f.manager.reconcile({ protectedBuildStatus: status });
+    expect(status).not.toHaveBeenCalled();
+    expect(existsSync(marker)).toBe(true);
+    await f.manager.reconcile({ protectedBuildStatus: status }, Date.now() + 2 * 3600_000);
+    expect(status).toHaveBeenCalledWith(protectedReference);
+    expect(existsSync(marker)).toBe(false);
+  });
+  it('persists protected attempt identity in artifact and independent admission records', async () => {
+    const f = admission();
+    const lease = f.manager.acquire();
+    try {
+      await expect(
+        lease.run('false', [], {
+          ...commandOptions,
+          remoteOperation: 'protected-build',
+          protectedBuild: protectedReference,
+        }),
+      ).rejects.toThrow();
+      const marker = join(f.gate, 'leases', readdirSync(join(f.gate, 'leases'))[0]!);
+      for (const directory of [lease.directory, marker])
+        expect(
+          JSON.parse(readFileSync(join(directory, 'remote-operation.json'), 'utf8')),
+        ).toMatchObject({ operation: 'protected-build', protectedBuild: protectedReference });
+    } finally {
+      lease.dispose();
+    }
   });
   it('sweeps during admission and keeps the current live owner', () => {
     const f = admission();
@@ -1061,6 +1174,156 @@ describe('build storage reconciliation', () => {
   };
   const quiet = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
 
+  it('releases a legacy protected reservation once the host reports its single slot idle', async () => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
+    const status = vi.fn();
+    const slot = vi.fn(async () => ({ version: 1, idle: true }));
+    const warn = quiet();
+    try {
+      expect(
+        await f.manager().reconcile({ protectedBuildStatus: status, protectedBuildSlot: slot }),
+      ).toEqual([]);
+      expect(slot).toHaveBeenCalledTimes(1);
+      expect(status).not.toHaveBeenCalled();
+      expect(existsSync(directory)).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it.each([
+    ['a busy slot', async () => ({ version: 1, idle: false })],
+    ['an unreachable host', async () => Promise.reject(new Error('unreachable'))],
+    ['a host without the slot query', async () => Promise.reject(new Error('refused'))],
+    ['a malformed reply', async () => ({ version: 1, record: { ended: true } })],
+  ])('retains a legacy protected reservation for %s', async (_label, slot) => {
+    const f = fixture();
+    const directory = attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
+    expect(await f.manager().reconcile({ protectedBuildSlot: slot })).toHaveLength(1);
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
+  it('does not let an idle slot release a legacy record written after the query', async () => {
+    // The answer only covers attempts that began before the host was asked.
+    const f = fixture();
+    const directory = attempt(
+      f,
+      'attempt-legacy',
+      {},
+      { operation: 'protected-build', startedAt: new Date(Date.now() + 60_000).toISOString() },
+    );
+    expect(
+      await f.manager().reconcile({ protectedBuildSlot: async () => ({ version: 1, idle: true }) }),
+    ).toHaveLength(1);
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
+  it('releases a matching failed protected attempt from a durable host receipt', async () => {
+    const f = fixture();
+    const directory = attempt(
+      f,
+      'attempt-protected',
+      {},
+      {
+        operation: 'protected-build',
+        protectedBuild: protectedReference,
+      },
+    );
+    const status = vi.fn(async () => protectedReceipt);
+    const warn = quiet();
+    try {
+      expect(await f.manager().reconcile({ protectedBuildStatus: status })).toEqual([]);
+      expect(status).toHaveBeenCalledWith(protectedReference);
+      expect(existsSync(directory)).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it.each([
+    undefined,
+    { version: 1, record: { ...protectedReceipt.record, ended: false, phase: 'stopping' } },
+    { version: 1, record: { ...protectedReceipt.record, phase: 'running' } },
+    {
+      version: 1,
+      record: { ...protectedReceipt.record, request: { ...protectedRequest, projectId: 'other' } },
+    },
+    {
+      version: 1,
+      record: {
+        ...protectedReceipt.record,
+        request: { ...protectedRequest, attemptId: '22222222-2222-4222-8222-222222222222' },
+      },
+    },
+    { version: 1, record: { ended: true } },
+  ])('retains protected reservations for incomplete or mismatched proof: %j', async (reply) => {
+    const f = fixture();
+    const directory = attempt(
+      f,
+      'attempt-protected',
+      {},
+      {
+        operation: 'protected-build',
+        protectedBuild: protectedReference,
+      },
+    );
+    expect(
+      await f.manager().reconcile({
+        buildkitIdle: async () => true,
+        protectedBuildStatus: async () => reply,
+      }),
+    ).toHaveLength(1);
+    expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+  });
+  it('retains legacy protected records and unreachable host outcomes even after client age bounds', async () => {
+    const f = fixture();
+    attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
+    attempt(
+      f,
+      'attempt-unreachable',
+      {},
+      { operation: 'protected-build', protectedBuild: protectedReference },
+    );
+    expect(
+      await f.manager().reconcile(
+        {
+          buildkitIdle: async () => true,
+          protectedBuildStatus: async () => {
+            throw new Error('unreachable');
+          },
+        },
+        Date.now() + 4 * 3600_000,
+      ),
+    ).toHaveLength(2);
+  });
+  it('does not apply a protected receipt after the persisted attempt changes during the query', async () => {
+    const f = fixture();
+    const directory = attempt(
+      f,
+      'attempt-protected',
+      {},
+      {
+        operation: 'protected-build',
+        protectedBuild: protectedReference,
+      },
+    );
+    expect(
+      await f.manager().reconcile({
+        protectedBuildStatus: async () => {
+          const path = join(directory, 'remote-operation.json');
+          const current = JSON.parse(readFileSync(path, 'utf8'));
+          writeFileSync(
+            path,
+            JSON.stringify({
+              ...current,
+              protectedBuild: {
+                ...protectedReference,
+                attemptId: '22222222-2222-4222-8222-222222222222',
+              },
+            }),
+          );
+          return protectedReceipt;
+        },
+      }),
+    ).toHaveLength(1);
+  });
   it('releases a finished build once the worker reports no running build', async () => {
     const f = fixture();
     // The incident's shape: a failed solve left behind by an older Server.

@@ -78,9 +78,16 @@ export function watchAssistantTiming(
   const accepted = Date.now();
   let started = false;
   let firstMs: number | undefined;
-  const stop = subscribe(turn.sessionId, ({ event }) => {
+  let firstAnswerMs: number | undefined;
+  let queueMs: number | undefined;
+  let promptSeq: number | undefined;
+  const stop = subscribe(turn.sessionId, ({ event, seq }) => {
     if (!started) {
-      started = event.t === 'prompt' && event.text === turn.prompt;
+      started = event.t === 'prompt' && event.peer === undefined && event.text === turn.prompt;
+      if (started) {
+        promptSeq = seq;
+        queueMs = Date.now() - accepted;
+      }
       return;
     }
     const topLevel = !('parentToolId' in event) || event.parentToolId === undefined;
@@ -90,6 +97,13 @@ export function watchAssistantTiming(
       (event.t === 'text' || event.t === 'tool_call' || event.t === 'error')
     )
       firstMs = Date.now() - accepted;
+    if (firstAnswerMs === undefined && topLevel && event.t === 'text' && event.delta.trim()) {
+      firstAnswerMs = Date.now() - accepted;
+      log.info(
+        { sessionId: turn.sessionId, requestId: turn.requestId, promptSeq, firstAnswerMs, queueMs },
+        'verity: assistant first answer',
+      );
+    }
     if (event.t === 'result' || event.t === 'interrupted') finish(event.t);
   });
   const timer = setTimeout(() => finish('unfinished'), 15 * 60_000);
@@ -103,6 +117,9 @@ export function watchAssistantTiming(
         requestId: turn.requestId,
         outcome,
         firstMs,
+        firstAnswerMs,
+        queueMs,
+        promptSeq,
         doneMs: Date.now() - accepted,
       },
       'verity: assistant message timing',

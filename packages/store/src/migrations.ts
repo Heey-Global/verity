@@ -5450,3 +5450,134 @@ migrations['0197_project_inquiries'] = {
     await sql`drop table project_inquiry_grants`.execute(db);
   },
 };
+
+migrations['0198_project_repository_instances'] = {
+  // A repository may back several projects. Every existing project keeps
+  // instance 1, so its identity, clone and container stay exactly as before;
+  // another project for the same repository takes the next instance.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column repository_instance integer not null default 1
+      check (repository_instance >= 1)`.execute(db);
+    await sql`alter table project_identity_claims add column repository_instance integer not null
+      default 1 check (repository_instance >= 1)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq
+      on projects(forge_scope, owner, repo, repository_instance)`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo, repository_instance)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    // Rolling back would merge projects that share a repository; refuse instead.
+    await sql`do $$ begin
+      if exists (select 1 from projects where repository_instance > 1)
+        or exists (select 1 from project_identity_claims where repository_instance > 1) then
+        raise exception 'projects share a repository; remove the additional projects first';
+      end if;
+    end $$`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq on projects(forge_scope, owner, repo)`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims drop column repository_instance`.execute(db);
+    await sql`alter table projects drop column repository_instance`.execute(db);
+  },
+};
+
+migrations['0199_session_pr_visibility'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_pr_visibility (
+      session_id text not null references sessions(session_id) on delete cascade,
+      worktree text not null,
+      pr_url text not null,
+      fingerprint text not null,
+      hidden boolean not null default false,
+      primary key (session_id, worktree, pr_url)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_pr_visibility`.execute(db);
+  },
+};
+
+migrations['0200_wiki_occasions'] = {
+  // What happened in a project that its Wiki may need to reflect. A row stays
+  // open until a maintenance run has read it; closing it drops any text kept
+  // for that run, such as the messages of a session deleted as done.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_occasions (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      kind text not null check(kind in ('source','meeting','decision','chat','session','merge')),
+      ref text not null,
+      title text not null,
+      body text,
+      created_at timestamptz not null default now(),
+      closed_at timestamptz,
+      unique(project_id,kind,ref)
+    )`.execute(db);
+    await sql`create index wiki_occasions_open on wiki_occasions(project_id,created_at)
+      where closed_at is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_occasions`.execute(db);
+  },
+};
+
+migrations['0201_project_description'] = {
+  // One line under the project's name on its page, written by its managers.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings add column description text
+      check (char_length(description) <= 200)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings drop column description`.execute(db);
+  },
+};
+
+migrations['0202_wiki_maintenance'] = {
+  // One row per project whose Wiki was maintained: the quiet session the runs
+  // happen in and when the last run started. The session is hidden from every
+  // list; deleting it only means the next run creates a new one.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_maintenance (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text unique references sessions(session_id) on delete set null,
+      last_run_at timestamptz
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_maintenance`.execute(db);
+  },
+};
+
+migrations['0203_trusted_cli_output_listing'] = {
+  // Lets an agent whose wait for a secret command was cut off find the run
+  // again: list its own session's retained records, newest first.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table trusted_cli_outputs
+      add column started_at timestamptz not null default now()`.execute(db);
+    await sql`create index trusted_cli_outputs_owner
+      on trusted_cli_outputs(project_id, session_id, started_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index trusted_cli_outputs_owner`.execute(db);
+    await sql`alter table trusted_cli_outputs drop column started_at`.execute(db);
+  },
+};
+
+migrations['0204_project_name'] = {
+  // A project's own name, independent of the repositories it connects. Every
+  // existing project keeps the name the app showed it under: its repository
+  // (or, for a local project, directory) name. Connecting, disconnecting or
+  // syncing repositories never writes it; only a rename does.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column name text
+      check (char_length(btrim(name)) between 1 and 200)`.execute(db);
+    await sql`update projects set name = repo`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects drop column name`.execute(db);
+  },
+};

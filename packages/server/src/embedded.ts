@@ -1,3 +1,73 @@
+import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
+import {
+  resolveInstallationListToken,
+  resolveRepoWorktreeFetchAuthHeader,
+  isProjectSettingsReader,
+  materializeControlPlaneAgentEnv,
+  startClaudeCredentialSync,
+  withControlPlaneAgentCredentials,
+  prepareControlPlaneRunnerForTurn,
+  isUntaggedImageRepository,
+  startRunnerSupervisorReconciler,
+  CONTROL_PLANE_RUNNER_PROJECT_ID,
+  SWEEP_SHUTDOWN_WAIT_MS,
+  candidateRunnerProjectIds,
+  acpSupervisorWiringRefusal,
+  rejectLatestImageRef,
+  publishedDevcontainerFeatureRef,
+  toolkitFeatureRefIsConfigured,
+  resolveToolkitFeatureRef,
+  devcontainerProvisionerOptionsForDockerBaseUrl,
+  branchRenameAppliesToSession,
+  createProjectTurnPreparationSerializer,
+  syncProjectsFromInstallation,
+  readBundledDevcontainerFeature,
+  refreshProjectGitHubToken,
+  createProjectWorktreeFactory,
+} from './embedded-support.js';
+export {
+  resolveInstallationListToken,
+  resolveRepoWorktreeFetchAuthHeader,
+  materializeControlPlaneAgentEnv,
+  startClaudeCredentialSync,
+  withControlPlaneAgentCredentials,
+  prepareControlPlaneRunnerForTurn,
+  startRunnerSupervisorReconciler,
+  candidateRunnerProjectIds,
+  parseNonNegativeInt,
+  parseDefaultOnFlag,
+  parsePushEnabled,
+  acpSupervisorWiringRefusal,
+  parseByteSize,
+  parseSwapSize,
+  parseCpuCores,
+  devcontainerBuildOptionsForDockerBaseUrl,
+  normalizeFeatureTag,
+  publishedDevcontainerFeatureRef,
+  toolkitFeatureRefIsConfigured,
+  resolveToolkitFeatureRef,
+  devcontainerProvisionerOptionsForDockerBaseUrl,
+  branchRenameAppliesToSession,
+  createProjectTurnPreparationSerializer,
+  syncProjectsFromInstallation,
+  readBundledDevcontainerFeature,
+  refreshProjectGitHubToken,
+  createProjectWorktreeFactory,
+} from './embedded-support.js';
+import type { EmbeddedServerConfig, EmbeddedServer, EmbeddedSecretJobs } from './embedded-types.js';
+export type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
+import {
+  buildRunnerConductorWiring,
+  runnerSandboxPath,
+  RUNNER_CONTAINER_PROJECT_ROOT,
+} from './embedded-runner-wiring.js';
+export {
+  buildRunnerConductorWiring,
+  runnerSandboxPath,
+  runnerAuthorizationProjectId,
+  RUNNER_CONTAINER_PROJECT_ROOT,
+} from './embedded-runner-wiring.js';
 import { resolveForgeRepositoryBinding } from './forge-repository-binding.js';
 import { createProjectEgressInventorySynchronizer } from './project-egress-system-inventory.js';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
@@ -15,6 +85,11 @@ import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
+  RunnerCacheMaintenance,
+  reclaimSleepingRunnerCaches,
+  cacheMaintenanceFailure,
+} from './runner-cache-maintenance.js';
+import {
   retireStoppedContainers,
   retireCompletedUpdateContainers,
 } from './stopped-container-gc.js';
@@ -25,11 +100,13 @@ import {
   createForgeStatusCache,
   type ForgeStatusIdentity,
 } from './forge-status-cache.js';
+import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
-import { pinToolkitFeature } from './devcontainer-feature-pin.js';
+import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
@@ -56,32 +133,28 @@ import { getDockerExecDiagnostics } from './docker-exec-diagnostics.js';
 export { parsePort } from './deployment-port.js';
 import { sandboxNotReadyError } from '@verity/events';
 import {
+  classifyProbeError,
+  parseEgressReadiness,
+  waitForSandboxTurnReadiness,
+  type SandboxEgressProbe,
+} from './sandbox-turn-readiness.js';
+import {
   ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
   AcpCodexBackend,
   AcpOpenCodeBackend,
   CODEX_DEFAULT_MODEL,
-  FileTailRunnerClient,
   InMemoryEventBus,
   isCodexModel,
   isRunnerSupervisorBackend,
-  LoopbackRunnerClient,
-  SupervisorRunnerClient,
   requestRunnerSupervisor,
-  SupervisorRunnerRecovery,
   brokeredGrantTarget,
   brokeredGrantToolName,
   encodeCwd,
   runnerSupervisorBackendLabel,
   type Backend,
-  type ConductorDeps,
-  type EventBus,
-  type RunnerClient,
   type RunnerSupervisorBackend,
-  type SupervisorRunnerClientOptions,
-  type SupervisorRunnerRecoveryOptions,
   type TurnPreparationContext,
-  transcriptPath,
 } from '@verity/session';
 import {
   createPostgresDb,
@@ -90,17 +163,15 @@ import {
   keyMatchesVerifier,
   migrateToLatest,
   migrationProvider,
-  ProjectIdentityClaimConflict,
   SealedError,
   TranscriptStore,
-  type VeritySettingsPatch,
   type Database,
   type ProjectRecord,
 } from '@verity/store';
-import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 
-import { existsSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
@@ -108,25 +179,10 @@ import { dirname, join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
-export async function resolveInstallationListToken(
-  dbTokenMint: () => Promise<string | undefined>,
-): Promise<string | undefined> {
-  return dbTokenMint();
-}
-
-export async function resolveRepoWorktreeFetchAuthHeader(
-  repoIdentity: () => Promise<RepoIdentity | null>,
-  dbTokenMint: GitHubProjectTokenMint,
-): Promise<string | undefined> {
-  const identity = await repoIdentity();
-  const token = identity ? await dbTokenMint(identity) : undefined;
-  return token ? gitAuthHeader(token) : undefined;
-}
-
 import { buildControlPlane } from './app.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
-import type { ServerDeps, ServerUpdateController } from './server.js';
+
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createTrustedCliOutputStore } from './trusted-cli-output.js';
@@ -143,15 +199,13 @@ import {
   createGitWorktreeProvisioner,
   repairAdminGitdirs,
   repairProjectAdminGitdirs,
-  type WorktreeProvisioner,
-  type GitWorktreeOptions,
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, runDockerGc, type DockerGcPolicy } from './docker-gc.js';
+import { startDockerGcScheduler, runDockerGc } from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -160,11 +214,7 @@ import {
 } from './preview-share-manager.js';
 import { UplinkControlClient, premiumFeatureSwitches } from './uplink-control-client.js';
 import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
-import {
-  createRemoteConnectorPool,
-  remoteDataUrlForControl,
-  type RemoteConnectorPoolOptions,
-} from './remote-control-connector.js';
+import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
 import { createDeferredLogger } from './deferred-logger.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
 import {
@@ -173,50 +223,34 @@ import {
   PINNED_RUNSC_PATH,
   PROJECT_RUNSC_RUNTIME,
 } from './gvisor-runtime-config.js';
-import {
-  createBrokeredSecretJobExecutor,
-  type BrokeredSecretJobExecutor,
-} from './brokered-secret-job-executor.js';
+import { createBrokeredSecretJobExecutor } from './brokered-secret-job-executor.js';
 import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
 import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
-import { createMcpGatewayTokens, type McpGatewayTokens } from './mcp-gateway-tokens.js';
+import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
-import {
-  createPostgresSecretGrantStore,
-  createSecretGrantBroker,
-  type SecretResolver,
-  type WorkloadAuthorizer,
-} from './secret-grant-broker.js';
+import { createPostgresSecretGrantStore, createSecretGrantBroker } from './secret-grant-broker.js';
 import {
   createDopplerSecretNameLister,
   createDopplerSecretResolver,
   DopplerSecretResolutionError,
   listDopplerProjectSecretNames,
   resolveDopplerProjectSecret,
-  type DopplerSecretResolverOptions,
 } from './doppler-secret-resolver.js';
-import type { SecretGrantIssuer } from './secret-authorization.js';
-import {
-  createPostgresSecretJobFrameSpool,
-  type SecretJobFrameSpool,
-} from './secret-job-frame-spool.js';
-import {
-  createSecretJobService,
-  type SecretJobAuthorization,
-  type SecretJobService,
-} from './secret-job-service.js';
+
+import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
+import { createSecretJobService } from './secret-job-service.js';
 import { registerSecretJobRoutes } from './secret-job-routes.js';
 import { createPostgresSecretJobStore } from './secret-job-store.js';
 import { createPostgresSecretProviderCatalog } from './secret-provider-catalog.js';
 import { registerSecretProviderRoutes } from './secret-provider-routes.js';
 import { createPostgresSecretRevocationStore } from './secret-revocation.js';
 import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
-import type { RunGrantClaims, StreamingRedactorProfile } from '@verity/secret-contracts';
+import type { RunGrantClaims } from '@verity/secret-contracts';
 import {
   createRuntimeReadinessGate,
   validateRuntimeReadinessTtl,
@@ -227,8 +261,7 @@ import {
   createSessionCleanupProcessor,
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
-import { supervisorSocketReachable } from './runner-supervisor-socket.js';
-import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
+
 import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
 import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import {
@@ -245,7 +278,6 @@ import {
   resolveGitHubAppIdentity,
   type GitHubAppCreds,
   type GitHubAppIdentityResult,
-  type GitHubProjectTokenMint,
 } from './github-app-token.js';
 import { defaultManifestConvert } from './github-manifest.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
@@ -257,7 +289,6 @@ import {
   DeprovisionerImpl,
   projectClonePath,
   gitAuthHeader,
-  defaultDevcontainerBuildSpawner,
   devcontainerBuilderIdle,
   projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
@@ -272,7 +303,7 @@ import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { reportToolkitDrift } from './toolkit-drift.js';
 import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
-import { containerNameFor } from './canonical.js';
+
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
 import {
   createSleepingSessionGit,
@@ -280,18 +311,14 @@ import {
   createSandboxGit,
   withSleepingSessionGit,
 } from './sandbox-git.js';
-import { projectSettingsEnv, type ProjectEnvironmentSettings } from './project-settings-env.js';
+import { projectSettingsEnv } from './project-settings-env.js';
 import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
 import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
 import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
 import { createBrokeredHttpTool } from './brokered-http-tool.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
-import {
-  ClaudeOAuthResolutionError,
-  createClaudeOAuthTokenProvider,
-  type ClaudeOAuthTokenProvider,
-} from './claudeUsage.js';
+import { ClaudeOAuthResolutionError } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import {
   createClaudeEgressIdentityService,
@@ -315,1571 +342,24 @@ import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
+import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
+import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import {
-  readCodexAccessToken,
-  type AgentGatewayConfiguration,
-  type CodexCredentialUpdate,
-} from './agent-gateway-control.js';
+import { readCodexAccessToken, type AgentGatewayConfiguration } from './agent-gateway-control.js';
 import {
   startAgentGatewaySynchronizer,
   type AgentGatewaySynchronizer,
 } from './agent-gateway-sync.js';
 import { validateAgentGatewayRoutingConfig } from './agent-gateway-url.js';
-
-type RepoIdentity = { owner: string; repo: string };
-
-interface ProjectSettingsReader {
-  getProjectSettings(projectId: string): Promise<ProjectEnvironmentSettings | undefined>;
-}
-
-function isProjectSettingsReader(value: unknown): value is ProjectSettingsReader {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'getProjectSettings' in value &&
-    typeof value.getProjectSettings === 'function'
-  );
-}
-
-export async function materializeControlPlaneAgentEnv(
-  secretRoot: string,
-  /** Environment the agent will inherit; only read, to append to any git config
-   *  entries it already carries. Defaults to this process's. */
-  inherited: NodeJS.ProcessEnv = process.env,
-): Promise<NodeJS.ProcessEnv> {
-  const env: NodeJS.ProcessEnv = {};
-  const claudeDir = join(secretRoot, 'claude');
-  const credentialsPath = join(claudeDir, '.credentials.json');
-  // Always isolate Claude from the server user's default ~/.claude, including
-  // while logged out. Authentication is injected separately as an access token.
-  mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
-  env.CLAUDE_CONFIG_DIR = claudeDir;
-  if (existsSync(credentialsPath)) {
-    // Remove legacy refresh credentials from the runtime projection. Claude
-    // children authenticate only with the centrally refreshed access-token env.
-    // Truncate rather than unlink so any old bind mount loses the secret too.
-    await writeFile(credentialsPath, '', { mode: 0o600 });
-  }
-
-  const codexDir = join(secretRoot, 'codex');
-  const authPath = join(codexDir, 'auth.json');
-  mkdirSync(codexDir, { recursive: true, mode: 0o700 });
-  env.CODEX_HOME = codexDir;
-  if (existsSync(authPath)) {
-    // Legacy control-plane credentials must disappear before any child can
-    // inspect this isolated home. Routed Codex runs only in the dedicated Runner.
-    await writeFile(authPath, '', { mode: 0o600 });
-  }
-
-  Object.assign(env, await materializeControlPlaneGitSigner(secretRoot, inherited));
-  return env;
-}
-
-/**
- * Point a control-plane agent's git at a signer that explains itself.
- *
- * The control-plane container is not a place Verity provisions for committing.
- * Broker signing needs four things a project sandbox is given at creation — the
- * `verity-git-sign` wrapper, `curl` and `jq` for its HTTP call, the broker URL,
- * and a capability token file — and the container has none of them. The token
- * could not simply be added either: a signing capability is bound to a project
- * AND a container generation, and the control plane has no sandbox generation to
- * bind to. Repo work belongs in a project session, which has all of it.
- *
- * Without this, that lands as a puzzle rather than an answer. The repo's own
- * config asks for signed commits, no wrapper is reachable, so git falls back to
- * plain `ssh-keygen` and reports `No private key found for public key …` — which
- * reads as a lost or misconfigured key, and invites exactly the improvisations
- * the project forbids: hunting for another key, or committing through the API.
- *
- * So the failure is made to say what is actually true. Only `-Y sign` is
- * intercepted; every other invocation is handed to the real `ssh-keygen`, so
- * signature VERIFICATION keeps working in a control-plane session — git uses the
- * same program for both, and refusing wholesale would break reading history.
- */
-async function materializeControlPlaneGitSigner(
-  secretRoot: string,
-  inherited: NodeJS.ProcessEnv = process.env,
-): Promise<NodeJS.ProcessEnv> {
-  const gitDir = join(secretRoot, 'git');
-  mkdirSync(gitDir, { recursive: true, mode: 0o700 });
-  const signerPath = join(gitDir, 'control-plane-git-sign');
-  // Write beside it and rename into place. Every control-plane session
-  // materializes this same path, and `writeFile` truncates before it writes — a
-  // session starting while another one is mid-write would otherwise execute an
-  // empty or half-written script, turning a deterministic refusal into a random
-  // one and breaking signature verification with it. Rename within one directory
-  // is atomic, so a concurrent exec sees either the old file or the new one.
-  const stagedPath = `${signerPath}.${randomUUID()}`;
-  await writeFile(
-    stagedPath,
-    `#!/bin/sh
-# Generated by Verity. The control-plane container does not sign commits.
-if [ "\${1:-}" = "-Y" ] && [ "\${2:-}" = "sign" ]; then
-  echo "verity: the control-plane container cannot sign commits — it has no signing broker token," >&2
-  echo "and a signing capability is bound to a project sandbox generation, which it does not have." >&2
-  echo "Do repo work in a project session for this repository: commit, review and push from there." >&2
-  exit 1
-fi
-exec ssh-keygen "$@"
-`,
-    { mode: 0o700 },
-  );
-  await chmod(stagedPath, 0o700);
-  await rename(stagedPath, signerPath);
-  // APPEND rather than claim index 0: `GIT_CONFIG_COUNT` addresses one shared
-  // list, so overwriting the count would silently drop every entry already in the
-  // environment — a credential helper, a proxy setting, anything a deployment
-  // passes in. Appending also puts this last, and git lets the last entry for a
-  // key win, so the refusal still takes precedence.
-  const inheritedCount = Number.parseInt(inherited.GIT_CONFIG_COUNT ?? '', 10);
-  const index = Number.isInteger(inheritedCount) && inheritedCount > 0 ? inheritedCount : 0;
-  // Env-level git config outranks the repo's own, so this also neutralizes a
-  // stale `gpg.ssh.program` left in a checkout — the failure stays the explained
-  // one no matter which repo a control-plane session is standing in.
-  return {
-    GIT_CONFIG_COUNT: String(index + 1),
-    [`GIT_CONFIG_KEY_${String(index)}`]: 'gpg.ssh.program',
-    [`GIT_CONFIG_VALUE_${String(index)}`]: signerPath,
-  };
-}
-
-interface ClaudeCredentialStore {
-  getVeritySettings(): Promise<
-    | {
-        claudeCodeOauthCredentialsJson?: string | null;
-        codexAuthJson?: string | null;
-      }
-    | undefined
-  >;
-  updateVeritySettings(patch: VeritySettingsPatch): Promise<unknown>;
-}
-
-export function startClaudeCredentialSync(
-  store: ClaudeCredentialStore,
-  secretRoot: string,
-  onError: (error: unknown) => void = () => undefined,
-): {
-  close: () => Promise<void>;
-  persistCredentials: (patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>;
-  getAccessToken: ClaudeOAuthTokenProvider;
-  persistCodexCredentialUpdate: (update: CodexCredentialUpdate) => Promise<boolean>;
-  onCredentialsChanged: (listener: () => void) => () => void;
-} {
-  const claudeDir = join(secretRoot, 'claude');
-  mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
-  let closed = false;
-  let tail = Promise.resolve();
-  const credentialListeners = new Set<() => void>();
-  const notifyCredentialListeners = (): void => {
-    for (const listener of credentialListeners) {
-      queueMicrotask(() => {
-        try {
-          listener();
-        } catch {
-          // Notifications are advisory; periodic reconciliation remains the fallback.
-        }
-      });
-    }
-  };
-
-  const exclusive = <T>(task: () => Promise<T>): Promise<T> => {
-    const run = tail.then(task, task);
-    tail = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  };
-  const persistCredentials = (
-    patch: VeritySettingsPatch,
-    persist: () => Promise<void>,
-  ): Promise<void> =>
-    exclusive(async () => {
-      if (closed) throw new Error('Claude credential synchronization is closed');
-      // All explicit server writers participate in this lock. DB is committed
-      // first; runtime directories and Codex auth are projected afterwards.
-      await persist();
-      if (patch.claudeCodeOauthCredentialsJson !== undefined) {
-        // An explicit login/logout is newer operator intent than a rotated bundle
-        // retained after a failed DB write. Never let that old retry win later.
-        tokenProvider.discardPendingCredentials?.();
-      }
-      await materializeControlPlaneAgentEnv(secretRoot);
-      notifyCredentialListeners();
-    });
-  const syncFromDatabase = (): Promise<void> =>
-    exclusive(async () => {
-      if (closed) return;
-      await materializeControlPlaneAgentEnv(secretRoot);
-    });
-  const tokenProvider = createClaudeOAuthTokenProvider({
-    credentialsPath: '/dev/null',
-    // A child may run for several minutes after spawn and cannot receive an
-    // updated environment. Refresh early enough that normal long turns do not
-    // cross the access-token expiry boundary.
-    expirySkewMs: 10 * 60_000,
-    credentialsJsonProvider: async () => {
-      const value = (await store.getVeritySettings())?.claudeCodeOauthCredentialsJson;
-      return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
-    },
-    credentialsJsonUpdater: async (credentialsJson) => {
-      await store.updateVeritySettings({
-        claudeCodeOauthCredentialsJson: credentialsJson,
-      });
-      await materializeControlPlaneAgentEnv(secretRoot);
-      notifyCredentialListeners();
-    },
-  });
-  const getAccessToken: ClaudeOAuthTokenProvider = (): Promise<string | undefined> =>
-    exclusive(async () => {
-      if (closed) return undefined;
-      // Only this queue is allowed to consume the rotating refresh token. Claude
-      // children receive the resulting access token through their environment and
-      // therefore never race each other at the provider refresh endpoint.
-      return tokenProvider();
-    });
-  if (tokenProvider.statusForCredentials !== undefined) {
-    getAccessToken.statusForCredentials = tokenProvider.statusForCredentials;
-  }
-  const persistCodexCredentialUpdate = (update: CodexCredentialUpdate): Promise<boolean> =>
-    exclusive(async () => {
-      if (closed) return false;
-      const current = (await store.getVeritySettings())?.codexAuthJson;
-      if (
-        typeof current !== 'string' ||
-        createHash('sha256').update(current).digest('hex') !== update.sourceRevision
-      ) {
-        return false;
-      }
-      if (createHash('sha256').update(update.authJson).digest('hex') !== update.updatedRevision) {
-        throw new Error('Codex gateway credential update revision mismatch');
-      }
-      await store.updateVeritySettings({ codexAuthJson: update.authJson });
-      notifyCredentialListeners();
-      return true;
-    });
-  // The encrypted DB is the sole durable source. Claude children receive an
-  // access token via env and never own the rotating refresh token.
-  void syncFromDatabase().catch(onError);
-
-  return {
-    close: async () => {
-      if (closed) {
-        await tail;
-        return;
-      }
-      closed = true;
-      await tail;
-      credentialListeners.clear();
-    },
-    persistCredentials,
-    getAccessToken,
-    persistCodexCredentialUpdate,
-    onCredentialsChanged(listener): () => void {
-      credentialListeners.add(listener);
-      return () => credentialListeners.delete(listener);
-    },
-  };
-}
-
-export function withControlPlaneAgentCredentials(
-  selected: Backend,
-  /** Receives the environment the agent would otherwise inherit, so anything it
-   *  produces can be computed against it rather than against `process.env` alone
-   *  — the per-call `env` sits in between, and a git config list must be appended
-   *  to the EFFECTIVE one or it silently drops entries. */
-  loadEnv: (inherited: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>,
-): Backend {
-  const safeInheritedKeys = new Set([
-    'CI',
-    'COLORTERM',
-    'FORCE_COLOR',
-    'LANG',
-    'LC_ALL',
-    'LC_CTYPE',
-    'NO_COLOR',
-    'PATH',
-    'SHELL',
-    'TERM',
-    'TMPDIR',
-    'TZ',
-  ]);
-  const safeInheritedEnv = (source: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-    Object.fromEntries(
-      Object.entries(source).filter(
-        ([key]) =>
-          safeInheritedKeys.has(key) ||
-          key === 'GIT_CONFIG_COUNT' ||
-          /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/u.test(key),
-      ),
-    );
-  const mergeEnv = async (env: NodeJS.ProcessEnv | undefined): Promise<NodeJS.ProcessEnv> => {
-    const inherited = {
-      ...safeInheritedEnv(process.env),
-      ...safeInheritedEnv(env ?? {}),
-    };
-    return { ...inherited, ...(await loadEnv(inherited)) };
-  };
-  return {
-    ...(selected.runnerSupervisorBackend !== undefined
-      ? { runnerSupervisorBackend: selected.runnerSupervisorBackend }
-      : {}),
-    run: async (opts) => selected.run({ ...opts, env: await mergeEnv(opts.env) }),
-    ...(selected.query !== undefined
-      ? { query: async (input) => selected.query?.({ ...input, env: await mergeEnv(input.env) }) }
-      : {}),
-    ...(selected.closeSession !== undefined
-      ? { closeSession: (sessionId: string) => selected.closeSession?.(sessionId) }
-      : {}),
-  };
-}
-
-/** Repair the dedicated Runner's identity before using its socket as the
- * availability signal. On a fresh managed install, unlock and the Updater's
- * volume preparation can race; the first identity publish may therefore fail
- * before the directory has its final group/mode. The turn is the next safe
- * retry point, but only if publishing happens before the socket check. */
-export async function prepareControlPlaneRunnerForTurn(options: {
-  enabled: boolean;
-  dataVolumeRoot?: string | undefined;
-  refreshIdentity?: (() => Promise<void>) | undefined;
-  awaitIdentity?: (() => Promise<void>) | undefined;
-  socketExists?: ((path: string) => boolean) | undefined;
-}): Promise<boolean> {
-  if (!options.enabled || options.dataVolumeRoot === undefined) return false;
-  await options.refreshIdentity?.();
-  await options.awaitIdentity?.();
-  return (options.socketExists ?? existsSync)(
-    join(options.dataVolumeRoot, 'runners', CONTROL_PLANE_RUNNER_PROJECT_ID, 'supervisor.sock'),
-  );
-}
 import { DockerProjectRuntime } from './project-runtime.js';
-import {
-  DEFAULT_SANDBOX_IMAGE_FALLBACK,
-  DEFAULT_TOOLKIT_FEATURE_FALLBACK,
-} from './sandbox-artifacts.js';
-import { createSandboxUpdateChecker, type SandboxVersionSource } from './sandbox-updates.js';
+import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
+import { createSandboxUpdateChecker } from './sandbox-updates.js';
 import { adoptHandedOffSecretKey } from './self-update/secret-key-adopter.js';
 import { notifyManagedMatrixConfigured } from './self-update/server-update-controller.js';
 import { SERVER_COMPAT } from './self-update/compat.js';
 import { openBackupRuntime } from './backup/runtime.js';
-import type { ReleaseChannelResolver } from './self-update/release-channel.js';
+
 import type { VeritySettingsRecord } from '@verity/store';
-
-export interface EmbeddedServerConfig {
-  /** TLS termination for a direct Server. Managed mode terminates at its Gateway. */
-  https?: ServerDeps['https'];
-  unlockClientIdentity?: ServerDeps['unlockClientIdentity'];
-  webAppDir?: ServerDeps['webAppDir'];
-  browserRequestOrigin?: ServerDeps['browserRequestOrigin'];
-  /** Optional installer-issued authority that gates first initialization. */
-  devicePairing?: ServerDeps['devicePairing'];
-  /** Verified official release channel supplied by the managed deployment bootstrap. */
-  serverUpdateResolver?: ReleaseChannelResolver | undefined;
-  /** Control boundary to the managed Updater, supplied by the same bootstrap. */
-  serverUpdateController?: ServerUpdateController | undefined;
-  /** Where the release notifier remembers what it last announced. Absent = no
-   *  notification; see the same field on `ServerDeps` for why that is the default. */
-  serverUpdateNotifierStatePath?: string | undefined;
-  /** A real Postgres connection string. Postgres is the only runtime database,
-   * so the production entrypoint (main.ts) always sets this and
-   * {@link buildEmbeddedServer} refuses to start without it — unless the caller
-   * injects {@link EmbeddedServerConfig.openDatabase}. */
-  databaseUrl?: string | undefined;
-  /**
-   * The data key handed over by the Server this one replaces (ADR 0008 D8).
-   *
-   * Set only by the self-update path, and only after this process has won the
-   * control-plane generation. It is checked against the stored verifier before
-   * it unlocks anything, so a key from elsewhere leaves the store sealed rather
-   * than encrypting new secrets under something the operator's password cannot
-   * reproduce.
-   */
-  adoptedSecretKeyMaterial?: string | undefined;
-  /** Production-only generation expected by every pooled PostgreSQL connection. */
-  controlPlaneFence?: {
-    readonly generation: number;
-    readonly holderId: string;
-    readonly operationId: string;
-  };
-  /**
-   * TEST-ONLY seam for opening the store, taking precedence over
-   * `databaseUrl`. The hermetic test harness injects the pglite dialect from
-   * `@verity/store/testing` here, which is what keeps pglite a devDependency:
-   * no production code path imports WASM Postgres, so `npm ci --omit=dev` does
-   * not ship it. Production leaves this undefined and `databaseUrl` decides.
-   */
-  openDatabase?: ((config: EmbeddedServerConfig) => Kysely<Database>) | undefined;
-  /** Root for on-disk server state. Today only the runtime secrets directory
-   * reads it; the test harness also uses it as the pglite data directory via
-   * `openDatabase`. Omit for ephemeral state. */
-  dataDir?: string | undefined;
-  /** Google Drive OAuth iOS client id (ADR 0009), from `GOOGLE_AUTH_ID`. Baked
-   *  into the server env at image build (no runtime Doppler). Non-secret; the app
-   *  reads it via `/settings` to build the PKCE request. */
-  googleDriveClientId?: string | undefined;
-  stagingGoogleClientId?: string | undefined;
-  /** Host-visible root for runtime-materialized files that spawned sibling
-   * Docker containers bind-mount (gateway config, Git signing metadata). When
-   * Verity talks to the host Docker daemon from inside a container, this path
-   * must be mounted into Verity at the identical host path; a named /data volume
-   * is not visible to sibling containers. */
-  secretMaterializationRoot?: string | undefined;
-  /** Default permission mode for conductor turns (defaults to the runner's).
-   * Validated against {@link ALLOWED_PERMISSION_MODES} — an unknown value throws
-   * at build time rather than failing the first turn's spawn in the background. */
-  permissionMode?: string | undefined;
-  /** Root dir under which `POST /sessions` provisions a spawn worktree per agent
-   * (defaults to `<tmpdir>/verity-sessions`). */
-  workspacesDir?: string | undefined;
-  /** The project git repository a spawned agent branches from (e.g. `/work` —
-   * the Verity repo). When set, `POST /sessions` provisions a REAL git worktree
-   * on a fresh branch (§8); omit to fall back to an empty scratch dir. */
-  repoDir?: string | undefined;
-  /** Test seam for the DB-backed, project-scoped GitHub App token mint. */
-  githubProjectTokenMint?: GitHubProjectTokenMint | undefined;
-
-  /** Enable the Codex CLI backend and discover its visible model ids daily. */
-  codexEnabled?: boolean | undefined;
-  /** Explicit Codex model allow-list. When omitted, the bundled Codex CLI catalog is used. */
-  codexModels?: readonly string[] | undefined;
-  /** Test seam for the bundled Codex catalog (the sealed-boot seed). Production uses
-   *  `codex debug models --bundled`, which needs neither an unlock nor a CODEX_HOME. */
-  codexBundledModelLoader?: (() => Promise<string[]>) | undefined;
-  /** Enable Expo push-token registration + sender (ADR 0008). */
-  pushEnabled?: boolean | undefined;
-  /** Optional Expo push-security access token. Never logged or persisted. */
-  expoAccessToken?: string | undefined;
-  /** Enable Fastify request/error logging. Off by default. */
-  logger?: boolean | undefined;
-  /** Docker API base URL. Two forms are supported (ADR 0003 R2):
-   *  - HTTP socket-proxy (§17 fleet), e.g. `http://127.0.0.1:9234/v1.41`.
-   *  - Mounted host unix socket, e.g. `unix:///var/run/docker.sock` (optionally
-   *    `unix:///var/run/docker.sock:/v1.41`) for a standalone Server started
-   *    with `-v /var/run/docker.sock:/var/run/docker.sock` — no proxy sidecar.
-   *  When set, the multi-repo fleet-registry provisioner and deprovisioner are wired —
-   *  `POST /sessions { project }` and
-   *  `POST /projects/:id/deprovision` become operational. Omit → those routes
-   *  return 503 (multi-repo fleet registry not configured). */
-  dockerBaseUrl?: string | undefined;
-  /** Injected host egress lifecycle (tests and probes); otherwise built from the socket and key. */
-  projectEgress?: ProjectEgressLifecycle | undefined;
-  /** Host egress service control socket and key file. Both present → network protection
-   *  becomes available; whether it applies is the system-wide `projectEgressEnabled` setting. */
-  projectEgressSocketPath?: string | undefined;
-  projectEgressProvisioningPending?: boolean | undefined;
-  projectEgressKeyPath?: string | undefined;
-  projectEgressInventoryRequired?: (() => boolean) | undefined;
-  diagnosticServerContainerId?: string | undefined;
-  hostDiagnosticSnapshotPath?: string | undefined;
-  /** Enable fail-closed Docker/runsc readiness for the production Secret Job Executor path. */
-  secretJobRuntimeRequired?: boolean | undefined;
-  /** Test seam; production derives this checker from dockerBaseUrl and the pinned runtime config. */
-  secretJobRuntimeReadiness?: (() => Promise<void>) | undefined;
-  /** Test/deployment tuning for the public health probe's Docker-attestation cache. */
-  secretJobRuntimeReadinessTtlMs?: number | undefined;
-  /**
-   * Enable the durable Brokered Secrets execution core. Provider resolution and current-policy
-   * checks remain explicit collaborators until the first restricted provider/profile lands; every
-   * persistence, crypto, Docker, audit, revocation, redaction, and key-binding seam is composed here.
-   */
-  secretJobs?:
-    | {
-        /** Transitional/test resolver seam. Production should configure `doppler` instead. */
-        resolveSecrets?: SecretResolver;
-        /** Real provider resolver. Production defaults to the durable server-owned catalog. */
-        doppler?: Omit<DopplerSecretResolverOptions, 'catalog' | 'readCredential'>;
-        authorizeWorkload: WorkloadAuthorizer;
-        authorizeCurrentClaims: (claims: RunGrantClaims) => Promise<boolean>;
-        /** Project-scoped administration boundary for provider credentials and catalog records. */
-        authorizeProviderAdministration?: (
-          actorId: string,
-          projectId: string,
-        ) => boolean | Promise<boolean>;
-        redactorProfile: StreamingRedactorProfile;
-        executorImageRepository: string;
-        /** Build the approval/policy boundary around this exact durable grant issuer. */
-        createAuthorization: (grants: SecretGrantIssuer) => SecretJobAuthorization;
-        authorizeInvocation: (
-          actor: import('./secret-authorization.js').AuthenticatedApprovalActor,
-          invocation: import('@verity/secret-contracts').SecretToolInvocation,
-        ) => Promise<boolean>;
-        /**
-         * Resolve the authenticated approval principal for a privately attested model tool call.
-         * Omit to keep native dispatch disabled while the authenticated HTTP path remains active.
-         */
-      }
-    | undefined;
-  /** Optional `X-Registry-Auth` value for base-image pulls (ADR 0003 R6 / #299)
-   *  — base64-encoded JSON `{username,password}` or an identity token, for a
-   *  private registry. Default unset: the product base image is public on ghcr,
-   *  so no auth is sent. Sourced from `VERITY_REGISTRY_AUTH`. Never logged. */
-  registryAuth?: string | undefined;
-  /** Default image ref for project containers (centrally pinned, §19.5). When
-   * `dockerBaseUrl` is set but this is absent, a built-in default is used. */
-  defaultProjectImage?: ProjectImageRefSource | undefined;
-  /** Display version for the resolved default image. This may be a semver tag
-   * while `defaultProjectImage` remains pinned by digest for reproducibility. */
-  defaultProjectImageVersion?: SandboxVersionSource | undefined;
-  /** Explicit published verity-sandbox-toolkit Feature ref for project
-   * devcontainer builds. Production resolves `:latest` lazily with a short
-   * cache so the build input is pinned but not stale. */
-  devcontainerFeatureRef?: (string | (() => Promise<string | undefined>)) | undefined;
-  /** Whether {@link devcontainerFeatureRef} is CONFIGURATION rather than a ref
-   *  this deployment resolved for itself — only configuration may outrank the
-   *  Feature baked into the Server image (see
-   *  {@link toolkitFeatureRefIsConfigured}). `main.ts` passes a resolver
-   *  function either way, so its presence cannot answer this; the answer has to
-   *  travel with it. Omitted → read from the environment, which is what a
-   *  caller that sets neither is relying on anyway. */
-  devcontainerFeatureRefConfigured?: boolean | undefined;
-  claudeConfigVolume?: string | undefined;
-  codexConfigVolume?: string | undefined;
-  /** Origin allowlist for the WebSocket upgrade (anti-CSWSH, audit C1). Only
-   *  enforced when non-empty; native mobile clients (no Origin) always pass. */
-  wsAllowedOrigins?: readonly string[] | undefined;
-  /** Unix socket owned by the standalone agent-gateway process. When set, the
-   * server mirrors current TLS material and peer bindings over this control-only
-   * channel. */
-  agentGatewayControlSocket?: string | undefined;
-  /** Ephemeral key used to unseal the standalone gateway's encrypted spill.
-   * Delivered to the gateway only over its private Unix control socket. */
-  agentGatewayUnsealKey?: string | undefined;
-  /** Stable agent-gateway HTTPS origin. Every project is routed through it;
-   *  required for every Docker-backed server. */
-  agentGatewayUrl?: string | undefined;
-  /** Standalone Claude listener port; must match the stable gateway URL. */
-  agentGatewayClaudePort?: number | undefined;
-  /** Claude-egress gateway activation (ADR 0006 D10). The internal HTTPS origin a
-   *  project relay forwards Claude traffic to, e.g. `https://verity:9443`.
-   *  When set (with {@link claudeConnectorPort}), the server mints a per-project
-   *  client identity, projects it read-only into each sandbox, and runs ONE
-   *  multi-tenant mTLS gateway that injects the real OAuth token server-side — so no
-   *  OAuth token or CA private key is ever at rest in a sandbox. Omit → dormant
-   *  (today's behaviour). Opt-in. */
-  claudeEgressGatewayUrl?: string | undefined;
-  codexEgressGatewayUrl?: string | undefined;
-  /** Loopback port the sandbox's Claude connector listens on. Required together
-   *  with {@link claudeEgressGatewayUrl}. */
-  claudeConnectorPort?: number | undefined;
-  /** Gateway certificate CN/SAN and the SNI the connector pins. Defaults to the
-   *  hostname of {@link claudeEgressGatewayUrl}. */
-  claudeEgressServerName?: string | undefined;
-  /** Recreate sandboxes that carry only PART of an env block the provisioner writes
-   *  whole — a sandbox built before the Codex egress leg existed, for instance, which
-   *  answers every Codex request with a 502 until it is rebuilt. Default true.
-   *  `VERITY_RECREATE_ENV_DRIFTED_SANDBOXES=off` turns it off for a deployment that
-   *  would rather keep serving those 502s than have containers rebuilt under it. */
-  recreateEnvDriftedSandboxes?: boolean | undefined;
-  /** Bind host for the gateway listener. Defaults to `0.0.0.0` so project relays
-   *  reach it over the control-plane network. The listener mandates mTLS
-   *  (client cert required, TLS 1.3), so unauthenticated peers are rejected at the
-   *  handshake — but the gateway port must NEVER be host-published (`docker -p`):
-   *  keep it on the internal sandbox network only. */
-  claudeEgressGatewayHost?: string | undefined;
-  /** Digest-pinned hardened relay image. Required for every Docker-backed server. */
-  projectRelayImage?: string | undefined;
-  /** Supplementary group shared by the non-root server and relay. */
-  projectRelayGid?: number | undefined;
-  /** Complete public-preview runtime. The subscription key is deliberately not
-   * part of config: it is loaded from encrypted Verity settings. */
-  /** Local preview transport is available independently of Uplink. */
-  resolvePreviewConnectorImage?: (() => Promise<string | undefined>) | undefined;
-  publicPreviews?:
-    | {
-        resolveConnectorImage: () => Promise<string | undefined>;
-        uplinkUrl: string;
-        expectedInstallationId?: string;
-        serverVersion: string;
-        /** Explicitly configured fixed ingress; absent in the production entrypoint. */
-        remoteControl?: Pick<RemoteConnectorPoolOptions, 'localHost' | 'localPort'>;
-      }
-    | undefined;
-  /** Sandbox runtime hardening (security review C1). The provisioner always drops
-   *  all capabilities, blocks privilege escalation, and caps PIDs by default; these
-   *  tune it. See main.ts for the `VERITY_SANDBOX_*` env mapping. */
-  sandboxPidsLimit?: number | undefined;
-  sandboxMemoryBytes?: number | undefined;
-  sandboxMemoryReservationBytes?: number | undefined;
-  sandboxHostReserveBytes?: number | undefined;
-  sandboxOomScoreAdj?: number | undefined;
-  sandboxSwapBytes?: number | undefined;
-  sandboxNanoCpus?: number | undefined;
-  sandboxCpuShares?: number | undefined;
-  sandboxCapAdd?: string[] | undefined;
-  sandboxAllowPrivilegeEscalation?: boolean | undefined;
-  /** Upstream resolvers for gVisor project Sandboxes (`VERITY_SANDBOX_DNS_SERVERS`). Unset →
-   *  the project relay, which forwards to Docker's embedded resolver. */
-  sandboxDnsServers?: readonly string[] | undefined;
-  /** Port for a SECOND, non-published HTTP listener that serves the `/internal/*`
-   *  routes (audit H1 follow-up). When set, `/internal/*` (the commit-signing
-   *  broker) is reachable ONLY on this listener — the public API port 404s it — so
-   *  the broker is off the host/LAN surface entirely. Project sandboxes use
-   *  generation-bound UDS listeners through their relay, never this TCP listener. */
-  internalPort?: number | undefined;
-  /** Root for project clones (e.g. `<VERITY_ROOT>/workspaces`). Required when
-   * `dockerBaseUrl` is set. */
-  hostCloneRoot?: string | undefined;
-  /** Named data volume + its in-server mount root (security review, M16). When set,
-   *  per-project mounts (the `/work` clone + materialized secrets, all under
-   *  `dataVolumeRoot`) are emitted as named-volume subpaths so sibling sandboxes
-   *  resolve them by volume name — no host path / chown. `dataVolumeRoot` is where
-   *  the server has the volume mounted (i.e. `VERITY_ROOT`). */
-  dataVolume?: string | undefined;
-  dataVolumeRoot?: string | undefined;
-  /** Host-disk garbage collection (`docker-gc.ts`). Enabled by default wherever a
-   *  Docker client exists: both caches it sweeps — superseded `verity-devc-*`
-   *  image generations and orphaned anonymous volumes — are created by Verity
-   *  itself and grow without bound otherwise. Set to `false` only when an external
-   *  janitor owns the host's Docker disk. */
-  dockerGc?: boolean | undefined;
-  /** Overrides for {@link DEFAULT_DOCKER_GC_POLICY}. */
-  dockerGcPolicy?: Partial<DockerGcPolicy> | undefined;
-  /** Shared npm download-cache maintenance target, in allocated bytes (default 4 GiB). */
-  runnerCacheMaxBytes?: number | undefined;
-  /** Host-visible agent-seed directory mounted into project containers. */
-  agentSeedHostPath?: string | undefined;
-  /** Explicitly enable the unauthenticated dev-server runtime endpoint. */
-  enableProjectRuntime?: boolean | undefined;
-  /**
-   * Opt-in (ADR 0006 Stage 2.2-prep): route conductor turns through the proven
-   * event-file + control-socket transport (a {@link FileTailRunnerClient}) instead
-   * of the default in-process loopback. The RunnerServer still runs IN-PROCESS —
-   * only the turn's event stream + control now ride the real file/socket wire, the
-   * exact wiring that stays when the RunnerServer later moves into the Sandbox.
-   *
-   * DEFAULT OFF: absent/false ⇒ the conductor keeps its byte-for-byte loopback
-   * dispatch path (no behavior change). Sourced from `VERITY_RUNNER_TRANSPORT === '1'`.
-   */
-  runnerTransport?: boolean | undefined;
-  /** Opt-in ADR 0006 Stage 3 supervisor mount/start. Turns remain on the existing
-   * RunnerClient until the later remote-attach and production-routing stages. */
-  runnerSupervisor?: boolean | undefined;
-  /** Route Claude control-plane turns through the dedicated supervisor service. */
-  controlPlaneRunner?: boolean | undefined;
-  /** Internal test seam for startup transcript cleanup; production always uses `on`. */
-  transcriptSweep?: 'on' | 'dry' | 'off' | undefined;
-  /** Server-side mount of the private identity volume shared only with the
-   * dedicated control-plane runner. */
-  controlPlaneRunnerIdentityDir?: string | undefined;
-  /** Group shared by the Server and supervised Runner runtime volumes. */
-  runnerRuntimeGid?: number | undefined;
-  /** Assert that the configured default image is Verity's managed sandbox. */
-  runnerSupervisorTrustedDefaultImage?: boolean | undefined;
-  /** Test/deployment tuning for the external supervisor watchdog. */
-  runnerSupervisorReconcileIntervalMs?: number | undefined;
-}
-
-export interface EmbeddedServer {
-  app: FastifyInstance;
-  /** Present only when the complete Secret Job collaborator set was configured atomically. */
-  secretJobs?: EmbeddedSecretJobs;
-  /** The self-update secret-key handoff seam (ADR 0008 D8). */
-  secretKeyHandoff: EmbeddedSecretKeyHandoff;
-  /**
-   * The STORE-READ phase of the startup transcript sweep. Absent without a data volume.
-   *
-   * Resolves once the sweep has read the live session ids and worktrees, which is
-   * everything it wants from the database; the directory walk behind it runs on. The
-   * split is the point — the reads must not be in flight when {@link close} destroys the
-   * connection, while a close that waited out a walk of a large volume would turn a
-   * SIGTERM into a SIGKILL. Never rejects.
-   */
-  transcriptSweep?: Promise<void> | undefined;
-  /**
-   * The same sweep including its directory walk, resolving to what it did — or to
-   * `undefined` if it failed (the failure is logged either way). Absent under the same
-   * conditions as {@link transcriptSweep}.
-   *
-   * {@link close} does wait on this, but only after aborting it: the walk stops between
-   * files, so the wait is one in-flight `fs` call rather than the volume. What it did not
-   * reach, the next boot reaches — while a walk still deleting after `close()` resolved
-   * would be deleting under a caller that believes the server is down. It is also here so
-   * a caller that wants the outcome — a test pinning the wiring, a one-shot run that
-   * reports it — can read the counts rather than poll the filesystem and guess when the
-   * walk is done. Never rejects.
-   */
-  transcriptSweepWalk?: Promise<SweepResult | undefined> | undefined;
-  /** Stop the server and close the database. Idempotent — repeat/concurrent
-   * calls coalesce onto the first teardown (a double SIGINT/SIGTERM is safe). */
-  close: (options?: { preserveProjectRelays?: boolean }) => Promise<void>;
-}
-
-/**
- * How the entrypoint reaches the in-memory data key for an update.
- *
- * Kept to the narrowest surface that ADR 0008 D8 needs, and off the Fastify
- * app entirely: the key travels between two Verity processes over the Updater's
- * control socket, and never over a route a device could reach.
- */
-interface EmbeddedSecretKeyHandoff {
-  /** Key material to seal for the successor, or undefined while sealed. */
-  exportKeyMaterial(): string | undefined;
-}
-
-interface EmbeddedSecretJobs {
-  broker: ReturnType<typeof createSecretGrantBroker>;
-  executor: BrokeredSecretJobExecutor;
-  frames: SecretJobFrameSpool;
-  service: SecretJobService;
-}
-
-function isUntaggedImageRepository(repository: string): boolean {
-  if (repository.includes('@')) return false;
-  const components = repository.split('/');
-  if (components.some((component) => component.length === 0)) return false;
-
-  const imageName = components.at(-1);
-  if (imageName === undefined || imageName.includes(':')) return false;
-
-  const repositoryComponent = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
-  if (components.length === 1) return repositoryComponent.test(imageName);
-
-  const [registry, ...path] = components;
-  if (registry === undefined) return false;
-  const registryMatch = /^(?<host>[a-z0-9]+(?:[.-][a-z0-9]+)*)(?::(?<port>[0-9]+))?$/.exec(
-    registry,
-  );
-  if (registryMatch === null) return false;
-  const port = registryMatch.groups?.port;
-  if (port !== undefined && (Number(port) < 1 || Number(port) > 65_535)) return false;
-  return path.every((component) => repositoryComponent.test(component));
-}
-
-/**
- * Run an external, non-overlapping watchdog for Sandbox-local supervisors.
- * Identity selection happens in Docker Exec, so this does not rely on setuid
- * inside a `no-new-privileges` Sandbox.
- */
-export function startRunnerSupervisorReconciler(
-  reconcile: () => Promise<void>,
-  intervalMs = 5_000,
-  onError: (error: unknown) => void = () => undefined,
-  errorReportIntervalMs = 60_000,
-): () => Promise<void> {
-  let inFlight: Promise<void> | undefined;
-  let stopped = false;
-  let lastErrorReportAt = Number.NEGATIVE_INFINITY;
-  const timer = setInterval(
-    () => {
-      if (inFlight !== undefined || stopped) return;
-      inFlight = reconcile()
-        .catch((error: unknown) => {
-          const now = Date.now();
-          if (now - lastErrorReportAt >= errorReportIntervalMs) {
-            lastErrorReportAt = now;
-            onError(error);
-          }
-        })
-        .finally(() => {
-          inFlight = undefined;
-        });
-    },
-    Math.max(1, intervalMs),
-  );
-  timer.unref();
-  return async () => {
-    stopped = true;
-    clearInterval(timer);
-    await inFlight;
-  };
-}
-
-/**
- * Build the runner-related Conductor wiring (ADR 0006). Three mutually exclusive
- * postures, selected by the deployment flags:
- *
- *  - `runnerSupervisor` (Stage 5c, opt-in): each PROJECT turn runs through a
- *    {@link SupervisorRunnerClient} bound to that project's runner-supervisor socket
- *    under `<dataVolumeRoot>/runners/<projectId>`, so an in-flight turn survives a
- *    Server restart on the Sandbox. The Server owns verbatim transcript render+tail
- *    over the shared runner-runtime mount ({@link ServerTranscript}), so
- *    `serverManagedTranscript` omits the per-turn `opts.transcript` (keeping the
- *    supervisor launch guard fail-closed and the server-side tail the single writer),
- *    and {@link SupervisorRunnerRecovery} lets startup recovery REATTACH a still-live
- *    turn (D7) instead of settling it `interrupted`. Project-less Claude ACP and Codex
- *    control-plane sessions (e.g. Verity Control) use the dedicated `verity-control`
- *    supervisor so their approval-gated tools retain the same boundary.
- *  - `runnerTransport` (Stage 2.2-prep, opt-in): the proven in-process
- *    {@link FileTailRunnerClient} event-file/control-socket transport, unchanged.
- *  - neither (DEFAULT): no `runner` override ⇒ the Conductor's in-process loopback,
- *    byte-for-byte the current path, and no `serverManagedTranscript`/`runnerRecovery`.
- *
- * The supervisor posture additionally requires `dataVolumeRoot` (where the provisioner
- * roots each project's runner runtime); absent it there is no socket to bind, so the
- * wiring degrades to the `runnerTransport`/default posture rather than build a broken
- * client.
- */
-export function buildRunnerConductorWiring(deps: {
-  runnerSupervisor: boolean;
-  runnerTransport: boolean;
-  dataVolumeRoot: string | undefined;
-  /** Fixed project identity used by the separately supervised control-plane runner.
-   *  When absent, project-less sessions retain the legacy loopback behavior. */
-  controlPlaneProjectId?: string | undefined;
-  isControlPlaneProject?: ((projectId: string) => Promise<boolean>) | undefined;
-  hostCloneRoot?: string | undefined;
-  containerProjectRoot?: string | undefined;
-  store: SupervisorRunnerClientOptions['store'];
-  bus: EventBus;
-  transcript: TranscriptStore;
-  allocateEventFile: () => string;
-  allocateControlSocket: () => string;
-  getSession: SupervisorRunnerRecoveryOptions['getSession'];
-  onMissingSupervisorSocket?:
-    ((input: { projectId: string; socketPath: string; reason: string }) => void) | undefined;
-  /** ADR 0014 D1: per-turn bearer registry for the loopback MCP gateway. Only ACP
-   *  turns are issued one; the supervisor client decides that from its own backend. */
-  mcpGatewayTokens?: McpGatewayTokens | undefined;
-  /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
-  mcpProxyTokens?: McpGatewayTokens | undefined;
-  listProjectHttpMcpServers?:
-    ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
-  /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
-   *  `channel` is supplied by the runner client from its own backend (ADR 0014 D3). */
-  autoApprovePermission?:
-    | ((
-        sessionId: string,
-        request: import('@verity/adapter-claude').PermissionRequest,
-        channel: import('@verity/session').BrokeredGrantChannel,
-      ) => Promise<boolean>)
-    | undefined;
-}): Pick<ConductorDeps, 'runner' | 'runnerRecovery' | 'serverManagedTranscript'> {
-  if (deps.runnerSupervisor && deps.dataVolumeRoot !== undefined) {
-    const dataVolumeRoot = deps.dataVolumeRoot;
-    const sandboxPath = (path: string): string =>
-      runnerSandboxPath(path, deps.hostCloneRoot, deps.containerProjectRoot);
-    return {
-      serverManagedTranscript: true,
-      runnerRecovery: new SupervisorRunnerRecovery({
-        dataVolumeRoot,
-        getSession: async (sessionId) => {
-          const session = await deps.getSession(sessionId);
-          if (
-            session?.projectId !== null &&
-            session?.projectId !== undefined &&
-            deps.controlPlaneProjectId !== undefined &&
-            deps.isControlPlaneProject !== undefined &&
-            (await deps.isControlPlaneProject(session.projectId))
-          ) {
-            return { projectId: deps.controlPlaneProjectId };
-          }
-          return session;
-        },
-        ...(deps.controlPlaneProjectId === undefined
-          ? {}
-          : { controlPlaneProjectId: deps.controlPlaneProjectId }),
-      }),
-      runner: async (backend, context) => {
-        // Every supervised backend is an ACP one and vice versa (see
-        // `RUNNER_SUPERVISOR_BACKENDS`), so ask the closed set rather than restating
-        // its members here — a third and fourth agent were exactly the drift this
-        // hand-rolled disjunction was waiting for.
-        const isAcpBackend = isRunnerSupervisorBackend(backend.runnerSupervisorBackend);
-        const controlPlaneTurn =
-          isAcpBackend &&
-          (context.projectId === null ||
-            (deps.isControlPlaneProject !== undefined &&
-              (await deps.isControlPlaneProject(context.projectId))));
-        // Every ACP backend is runnable there, and that is a property of the container
-        // rather than of this function: the control-plane Runner is a single fixed
-        // container built and launched by the deployment
-        // (`deploy/bin/verity-control-plane-runner-start`) rather than a Sandbox the
-        // provisioner composes per project, so each backend's configuration has to be
-        // put into its spec by hand. OpenCode's was, and is held there by
-        // `scripts/verity-compose.test.ts`: the read-only `secrets/opencode` mount,
-        // `OPENCODE_CONFIG`, `XDG_CONFIG_HOME`, and an egress leg it shares with Codex
-        // (the connector routes /opencode over the Codex gateway, so the certificates
-        // that reach one reach the other). Until that landed this refused
-        // `opencode-acp` here, because a turn started without it spawns an agent with
-        // no provider and fails somewhere inside the first prompt rather than saying
-        // so — and the loopback is not an alternative for any ACP backend.
-        const useControlPlaneRunner = controlPlaneTurn;
-        const runnerProjectId = useControlPlaneRunner
-          ? deps.controlPlaneProjectId
-          : (context.projectId ?? undefined);
-        // A deployment without the dedicated control-plane runner retains the
-        // legacy loopback only for non-ACP backends. ACP must never start in
-        // the credential-bearing Server process.
-        if (runnerProjectId === undefined) {
-          if (isAcpBackend) {
-            throw new Error('ACP control-plane turns require the dedicated control-plane runner.');
-          }
-          return new LoopbackRunnerClient(backend);
-        }
-        // Only backends with a native worker adapter may cross this process boundary.
-        // Nothing Verity ships lands here any more — OpenCode was the last backend
-        // without one and now declares `opencode-acp` — so this is the fallback for a
-        // backend that declares no supervisor protocol, including a test double.
-        if (backend.runnerSupervisorBackend === undefined) {
-          return new LoopbackRunnerClient(backend);
-        }
-        const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-        // Provisioning can deliberately disable the Sandbox supervisor for a project
-        // when its container boundary is not safe for Stage 5c. Native backends may
-        // still use the legacy in-process loopback, but ACP must never do so:
-        // its adapter belongs behind the Sandbox spawn broker and its MCP gateway
-        // capability is minted for that boundary. Starting it in the credential-bearing
-        // Server would silently undo the transport migration's isolation guarantee.
-        //
-        // The question is whether a turn can be STARTED through the socket, so ask
-        // that — a presence check answers a different one. A retired generation leaves
-        // its socket inode behind on the shared runtime volume, and the Server cannot
-        // remove it: the runtime directory belongs to the Runner runtime GID and the
-        // Server holds only traverse on it (that asymmetry is the ADR 0006 boundary,
-        // not an oversight). A leftover inode passed `existsSync`, so every turn in
-        // such a project died with `connect ECONNREFUSED` — the loopback fallback
-        // right here never ran, for the exact condition it was written for.
-        const supervisorSocket = join(runtimeDir, 'supervisor.sock');
-        if (!(await supervisorSocketReachable(supervisorSocket))) {
-          const reason = existsSync(supervisorSocket)
-            ? 'the project supervisor socket is not accepting connections; its Sandbox generation was retired or its supervisor was disabled after a boundary attestation warning, leaving the socket behind'
-            : 'the project supervisor socket is missing; provisioning may have disabled the supervisor after a Sandbox boundary attestation warning, or the container runtime keeps the socket inside the Sandbox (gVisor without the runsc-project registration)';
-          deps.onMissingSupervisorSocket?.({
-            projectId: runnerProjectId,
-            socketPath: supervisorSocket,
-            reason,
-          });
-          if (isAcpBackend) {
-            throw new Error(
-              `ACP requires a reachable project supervisor; ${reason}. Repair the project before sending another message.`,
-            );
-          }
-          return new LoopbackRunnerClient(
-            backend,
-            `## Native Verity tools unavailable\n\nThis project is running through the loopback runner because ${reason}. Native brokered tools such as \`verity_http_request\` and \`verity_secret_run\` are unavailable for this session. Report this reason when a request needs one of those tools; do not silently claim only that the tool is absent. Check the project's provision warning for the attestation detail.`,
-          );
-        }
-        const ephemeral = context.ephemeralEventSink !== undefined;
-        const projectHttpMcpServers =
-          ephemeral || context.projectId === null || deps.listProjectHttpMcpServers === undefined
-            ? []
-            : await deps.listProjectHttpMcpServers(context.projectId);
-        const gatewayToolContext =
-          !ephemeral && context.sessionId !== null
-            ? {
-                // Runtime selection and authorization identity are different for a
-                // persisted control-plane project: it executes on the fixed
-                // `verity-control` sidecar, but grants/audit/secret bindings belong
-                // to the real persisted project record.
-                projectId: runnerAuthorizationProjectId(context.projectId, runnerProjectId),
-                sessionId: context.sessionId,
-              }
-            : undefined;
-        // A gateway-eligible ACP turn that has a session to attribute to must also have
-        // the registry that mints its bearer. Its absence is a misassembled Server, not
-        // a runtime condition the turn can recover from. Ephemeral and meta-query turns
-        // legitimately have no gateway context. `opencode-acp` joined the named
-        // brokered-tool backends with ADR 0014 Amendment 4 and is held to the same
-        // requirement: a Server that would start it tool-less and silent is the failure
-        // this closes, whichever of the three adapters runs the turn.
-        if (
-          gatewayToolContext !== undefined &&
-          deps.mcpGatewayTokens === undefined &&
-          (backend.runnerSupervisorBackend === 'claude-acp' ||
-            backend.runnerSupervisorBackend === 'codex-acp' ||
-            backend.runnerSupervisorBackend === 'opencode-acp')
-        ) {
-          throw new Error(
-            'the Server was composed without mcpGatewayTokens; a brokered-tool ACP turn cannot start without the per-turn gateway bearer registry',
-          );
-        }
-        let ephemeralSeq = 0;
-        const ephemeralFrames = new Set<string>();
-        const supervisorClient: SupervisorRunnerClient = new SupervisorRunnerClient(backend, {
-          runtimeDir,
-          // This construction used to pass no budget at all and silently inherited the
-          // client's old one-second default — which is how a `start-turn` on a busy
-          // host became `runner supervisor request timed out: start-turn` while the
-          // worker it started was alive and well. Starts have their own two-phase
-          // budget now; this governs the short control requests (`get-turn`, `cancel`,
-          // `steer`) and matches the other production call sites.
-          timeoutMs: 15_000,
-          onTelemetry: (telemetry) => {
-            // One line per start, only when it is worth reading: a start that had to be
-            // reconciled or retried, one that failed, or one slow enough that the next
-            // report of a "hanging" turn should be able to point at a number. A prompt
-            // `terminal` is as routine as a prompt `created` — it is what a turn
-            // cancelled before its worker existed looks like — so both are quiet.
-            if (
-              (telemetry.outcome === 'created' || telemetry.outcome === 'terminal') &&
-              telemetry.startMs < 5_000 &&
-              telemetry.reconciled === undefined
-            ) {
-              return;
-            }
-            console.warn(
-              `verity: runner start ${telemetry.outcome} ${JSON.stringify({
-                projectId: runnerProjectId,
-                turnId: telemetry.turnId,
-                acceptMs: telemetry.acceptMs,
-                startMs: telemetry.startMs,
-                artifactMs: telemetry.artifactMs,
-                activeStarts: telemetry.activeStarts,
-                eventLoopDelayMs: telemetry.eventLoopDelayMs,
-                outcome: telemetry.outcome,
-                reconciled: telemetry.reconciled,
-                // The one field that says WHICH failure this was. Without it a
-                // `failed` line is the same log the incident started from: a
-                // timestamp and a turn id, and nothing to act on.
-                error: telemetry.error,
-              })}`,
-            );
-          },
-          store: ephemeral
-            ? {
-                ingestRunnerFrame: (_sessionId, frame) => {
-                  const key = `${frame.runnerInstanceId}\0${frame.turnId}\0${frame.frameSeq}`;
-                  if (ephemeralFrames.has(key)) {
-                    return Promise.resolve({ outcome: 'duplicate' as const });
-                  }
-                  ephemeralFrames.add(key);
-                  if (frame.event !== undefined) context.ephemeralEventSink!(frame.event);
-                  ephemeralSeq += 1;
-                  return Promise.resolve({
-                    outcome: 'accepted' as const,
-                    seq: ephemeralSeq,
-                    ts: Date.now(),
-                  });
-                },
-              }
-            : deps.store,
-          bus: ephemeral ? new InMemoryEventBus() : deps.bus,
-          transcript: ephemeral
-            ? undefined
-            : backend.runnerSupervisorBackend === 'claude-acp'
-              ? new ServerTranscript({
-                  runtimeDir,
-                  transcript: deps.transcript,
-                  ...(isAcpBackend && context.sessionId
-                    ? { veritySessionId: context.sessionId }
-                    : {}),
-                })
-              : backend.runnerSupervisorBackend === 'codex-acp'
-                ? new ServerCodexTranscript({
-                    runtimeDir,
-                    transcript: deps.transcript,
-                    ...(isAcpBackend && context.sessionId
-                      ? { veritySessionId: context.sessionId }
-                      : {}),
-                  })
-                : undefined,
-          persistentSessionHomes: isAcpBackend && !ephemeral,
-          mapAttachmentPath: sandboxPath,
-          mapTurnOptions: (opts) => ({
-            ...opts,
-            worktree: sandboxPath(opts.worktree),
-            cwd: sandboxPath(opts.cwd),
-            ...(projectHttpMcpServers.length === 0
-              ? {}
-              : {
-                  mcpServers: projectHttpMcpServers.map((server) => ({
-                    name: server.name,
-                    url: 'verity-internal://mcp-proxy',
-                    headers: [{ name: 'X-Verity-MCP-Binding', value: server.id }],
-                  })),
-                }),
-          }),
-          ...(ephemeral || deps.autoApprovePermission === undefined
-            ? {}
-            : { autoApprovePermission: deps.autoApprovePermission }),
-          ...(deps.mcpGatewayTokens === undefined || gatewayToolContext === undefined
-            ? {}
-            : {
-                mcpGatewayTokens: {
-                  issue: (turnId: string) =>
-                    deps.mcpGatewayTokens!.issue({
-                      projectId: gatewayToolContext.projectId,
-                      sessionId: gatewayToolContext.sessionId,
-                      turnId,
-                    }),
-                  release: (token: string) =>
-                    deps.mcpGatewayTokens!.release({
-                      projectId: gatewayToolContext.projectId,
-                      token,
-                    }),
-                },
-              }),
-          ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
-            ? {}
-            : {
-                mcpProxyTokens: {
-                  issue: (turnId: string) =>
-                    deps.mcpProxyTokens!.issue({
-                      projectId: gatewayToolContext.projectId,
-                      sessionId: gatewayToolContext.sessionId,
-                      turnId,
-                    }),
-                  release: (token: string) =>
-                    deps.mcpProxyTokens!.release({
-                      projectId: gatewayToolContext.projectId,
-                      token,
-                    }),
-                },
-              }),
-        });
-        if (!ephemeral) return supervisorClient;
-        const ephemeralClient: RunnerClient = {
-          startTurn: (opts, hooks) => {
-            let backendSessionId: string | undefined;
-            const turn = supervisorClient.startTurn(opts, {
-              ...hooks,
-              onSession: async (id) => {
-                backendSessionId = id;
-                await hooks.onSession?.(id);
-              },
-            });
-            const cleanup = async (): Promise<void> => {
-              const paths: string[] = [];
-              if (opts.turnId !== undefined) paths.push(join(runtimeDir, 'turns', opts.turnId));
-              if (backendSessionId !== undefined) {
-                if (backend.runnerSupervisorBackend === 'claude-acp') {
-                  paths.push(
-                    transcriptPath({
-                      cwd: sandboxPath(opts.cwd),
-                      sessionId: backendSessionId,
-                      claudeHome: join(runtimeDir, 'claude'),
-                    }),
-                  );
-                } else if (backend.runnerSupervisorBackend === 'codex-acp') {
-                  paths.push(...(await codexRolloutFiles(runtimeDir, backendSessionId)));
-                }
-              }
-              await Promise.all(
-                paths.map(async (path) => await rm(path, { recursive: true, force: true })),
-              );
-            };
-            return {
-              ...turn,
-              result: turn.result.then(
-                async (result) => {
-                  await cleanup();
-                  return result;
-                },
-                async (error: unknown) => {
-                  await cleanup();
-                  throw error;
-                },
-              ),
-            };
-          },
-        };
-        return ephemeralClient;
-      },
-    };
-  }
-  if (deps.runnerTransport) {
-    return {
-      runner: (backend) =>
-        new FileTailRunnerClient(backend, {
-          store: deps.store,
-          bus: deps.bus,
-          allocateEventFile: deps.allocateEventFile,
-          allocateControlSocket: deps.allocateControlSocket,
-          ...(deps.autoApprovePermission === undefined
-            ? {}
-            : { autoApprovePermission: deps.autoApprovePermission }),
-        }),
-    };
-  }
-  return {};
-}
-
-/**
- * Where a project's clone is mounted inside its Sandbox, and so the root of every path a
- * session's backend sees.
- *
- * A named constant rather than two `'/work'` literals because two different callers map
- * the same worktree through {@link runnerSandboxPath}: the runner wiring, when it launches
- * a turn, and the transcript purge plus the startup sweep, when they look for — or spare —
- * the files that turn wrote. A second literal that drifted from this one would leave the
- * sweep's live-worktree guard matching nothing, and that guard is the only thing keeping a
- * switched-away session's unreproducible `subagents/` tree from being collected.
- */
-export const RUNNER_CONTAINER_PROJECT_ROOT = '/work';
-
-/** Map a Server-visible project worktree into the single-project Runner mount.
- * The first relative component is the repository directory itself; the Runner
- * mounts that directory at `containerProjectRoot`, including for the persisted
- * `verity-control` project. Paths outside the clone root are already expressed
- * in a shared namespace (for example `/srv/verity/sessions`) and stay unchanged —
- * as is every path when there is no clone root at all, which is the same answer the
- * runner itself gets from this function, so the two cannot disagree. */
-export function runnerSandboxPath(
-  path: string,
-  hostCloneRoot: string | undefined,
-  containerProjectRoot = RUNNER_CONTAINER_PROJECT_ROOT,
-): string {
-  if (hostCloneRoot === undefined) return path;
-  const rel = relative(hostCloneRoot, path);
-  if (rel === '' || rel.startsWith('..') || rel.includes(`..${sep}`)) return path;
-  const [, ...rest] = rel.split(sep);
-  return join(containerProjectRoot, ...rest);
-}
-
-/**
- * The synthetic project id of the dedicated control-plane runner (ADR 0006 Amendment 1).
- *
- * Not a row in `projects`: it names the shared runtime directory that control-plane ACP
- * turns are routed to, and therefore the directory their transcripts land in. Shared
- * with {@link candidateRunnerProjectIds} so that a purge searching for those transcripts
- * and the factory that put them there cannot disagree about where they are.
- */
-const CONTROL_PLANE_RUNNER_PROJECT_ID = CONTROL_PLANE_PROJECT_ID;
-
-/** How long {@link EmbeddedServer.close} waits for the transcript sweep's two boot
- * queries before destroying the database under them. Generous for a query that has
- * normally finished long before any close, short enough that a stuck one cannot hold a
- * SIGTERM past its grace period. */
-const SWEEP_SHUTDOWN_WAIT_MS = 5_000;
-
-/**
- * Every runner runtime a session's backend transcripts could be sitting in.
- *
- * WHICH runtime holds them is decided by the backend, not by the project alone: the
- * `runner` factory above routes supervisor-backed Claude ACP and Codex turns of a
- * control-plane project to the shared `verity-control` runtime. Mirroring that condition
- * in the purge would re-break it the next
- * time it moves, so the purge searches every candidate instead — safe because each path
- * it builds is derived from the session's own backend session ids, which are globally
- * unique. A hit under either runtime is this session's file, never a stranger's.
- *
- * An empty result means the session left nothing on any runner runtime: a project-less
- * session on a non-ACP backend gets `LoopbackRunnerClient` (see the `runnerProjectId ===
- * undefined` branch above), which writes no runtime files at all.
- */
-export function candidateRunnerProjectIds(input: {
-  projectId: string | null;
-  /** Whether {@link input.projectId} names a `control_plane` project. */
-  isControlPlaneProject: boolean;
-  /** Whether this deployment runs the dedicated control-plane runner. */
-  controlPlaneRunner: boolean;
-}): string[] {
-  const ids: string[] = [];
-  if (input.projectId !== null) ids.push(input.projectId);
-  if (input.controlPlaneRunner && (input.projectId === null || input.isControlPlaneProject)) {
-    ids.push(CONTROL_PLANE_RUNNER_PROJECT_ID);
-  }
-  return ids;
-}
-
-/** Keep authorization bound to a persisted project even when execution is
- * multiplexed through a synthetic dedicated Runner identity. */
-export function runnerAuthorizationProjectId(
-  projectId: string | null,
-  runnerProjectId: string,
-): string {
-  return projectId ?? runnerProjectId;
-}
-
-/** Parse a non-negative integer env value (e.g. `VERITY_SANDBOX_PIDS_LIMIT`).
- *  Unset/empty → `undefined` (the caller's default applies). Set-but-invalid
- *  THROWS rather than silently disabling a resource limit. */
-export function parseNonNegativeInt(value: string | undefined): number | undefined {
-  if (value === undefined || value.trim() === '') return undefined;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`invalid value "${value}": expected a non-negative integer`);
-  }
-  return n;
-}
-
-/** A default-on deployment flag: unset and empty stay on, the established false
- * spellings are an explicit opt-out, and anything else is a typo worth failing on
- * rather than silently reading as one or the other. `name` only shapes the error. */
-export function parseDefaultOnFlag(value: string | undefined, name: string): boolean {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === undefined || normalized === '' || ['1', 'true', 'on'].includes(normalized)) {
-    return true;
-  }
-  if (['0', 'false', 'off'].includes(normalized)) return false;
-  throw new Error(`invalid ${name} (expected 1/true/on or 0/false/off)`);
-}
-
-/** Push is available without an Expo server credential. Treat the established
- * deployment false spellings as an explicit opt-out; unset and empty stay on. */
-export function parsePushEnabled(value: string | undefined): boolean {
-  return parseDefaultOnFlag(value, 'VERITY_PUSH_ENABLED');
-}
-
-/** ACP adapters must only run behind the supervised sandbox boundary. */
-export function acpSupervisorWiringRefusal(input: {
-  runnerSupervisorBackend: string | undefined;
-  runnerSupervisor: boolean;
-  dataVolumeRootAvailable: boolean;
-  dockerAvailable: boolean;
-  cloneRootAvailable: boolean;
-}): string | undefined {
-  if (!isRunnerSupervisorBackend(input.runnerSupervisorBackend)) return undefined;
-  return input.runnerSupervisor &&
-    input.dataVolumeRootAvailable &&
-    input.dockerAvailable &&
-    input.cloneRootAvailable
-    ? undefined
-    : 'ACP requires complete runner supervisor wiring. Enable the project supervisor before sending another message.';
-}
-
-/** Parse a memory size (`VERITY_SANDBOX_MEMORY`) into bytes. Accepts a plain byte
- *  count or a `k`/`m`/`g`/`t` (optionally `b`) suffix, e.g. `512m`, `4g`, `2gb`.
- *  Unset/empty → `undefined` (unlimited). Set-but-invalid THROWS. */
-export function parseByteSize(value: string | undefined): number | undefined {
-  if (value === undefined || value.trim() === '') return undefined;
-  const m = /^(\d+(?:\.\d+)?)\s*([kmgt])?b?$/i.exec(value.trim());
-  if (m === null) {
-    throw new Error(`invalid byte size "${value}": expected e.g. 512m, 4g, or a byte count`);
-  }
-  const unit = m[2]?.toLowerCase();
-  const scale =
-    unit === 'k'
-      ? 1024
-      : unit === 'm'
-        ? 1024 ** 2
-        : unit === 'g'
-          ? 1024 ** 3
-          : unit === 't'
-            ? 1024 ** 4
-            : 1;
-  const bytes = Math.floor(Number(m[1]) * scale);
-  if (!Number.isSafeInteger(bytes) || bytes <= 0) {
-    throw new Error(`invalid byte size "${value}": value is outside the supported range`);
-  }
-  return bytes;
-}
-
-/** Parse a swap allowance (`VERITY_SANDBOX_SWAP`) into bytes. Same syntax as
- *  {@link parseByteSize}, plus `0` for "no swap" — the one value a memory ceiling
- *  must never take, and the default here. Unset/empty → `undefined` (default). */
-export function parseSwapSize(value: string | undefined): number | undefined {
-  if (value !== undefined && /^0+(?:\.0+)?\s*[kmgt]?b?$/i.test(value.trim())) return 0;
-  return parseByteSize(value);
-}
-
-/** Parse a CPU-core count (`VERITY_SANDBOX_CPUS`, e.g. `1.5`) into Docker
- *  nano-CPUs (1 core = 1e9). Unset/empty → `undefined` (unlimited). Invalid THROWS. */
-export function parseCpuCores(value: string | undefined): number | undefined {
-  if (value === undefined || value.trim() === '') return undefined;
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`invalid CPU count "${value}": expected a positive number of cores`);
-  }
-  return Math.floor(n * 1e9);
-}
-
-export function devcontainerBuildOptionsForDockerBaseUrl(dockerBaseUrl: string): {
-  devcontainerBuild: typeof defaultDevcontainerBuildSpawner;
-  dockerHostForBuild: string;
-} {
-  return {
-    devcontainerBuild: defaultDevcontainerBuildSpawner,
-    dockerHostForBuild: dockerHostFor(dockerBaseUrl),
-  };
-}
-
-// Reached when neither `VERITY_SANDBOX_TOOLKIT_FEATURE_REF` nor a caller-supplied
-// ref names one — `main.ts` always resolves one, so this is the embedder default.
-// It named 1.14.1, one train older than the 1.14.9 the other fallback named and
-// just as gone: the reset deleted the toolkit Feature package outright, so every
-// tag of it 404s. Shared with the rest rather than re-derived here, which is how
-// this one came to lag the other by eight patch versions unnoticed.
-const DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF = DEFAULT_TOOLKIT_FEATURE_FALLBACK;
-
-function rejectLatestImageRef(ref: string, label: string): string {
-  const trimmed = ref.trim();
-  if (trimmed.endsWith(':latest')) {
-    throw new Error(`${label} must be pinned to a version or digest, not :latest`);
-  }
-  return trimmed;
-}
-
-/**
- * The toolkit Feature is published to GHCR under BARE semver tags (`…:1.14.0`).
- * The `v`-prefixed tags (`…:v1.14.0`) are visible-version image indexes, NOT
- * resolvable devcontainer Feature manifests — the devcontainer CLI fails with
- * "could not resolve Feature manifest" on them. Auto-detect and strip a leading
- * `v` from the tag so a ref pinned either way resolves. Digest pins (`@sha256:…`)
- * and tagless refs are returned untouched.
- */
-export function normalizeFeatureTag(ref: string): string {
-  if (ref.includes('@')) return ref;
-  const lastSlash = ref.lastIndexOf('/');
-  const colon = ref.indexOf(':', lastSlash + 1);
-  if (colon === -1) return ref;
-  const tag = ref.slice(colon + 1);
-  return /^v\d/.test(tag) ? `${ref.slice(0, colon)}:${tag.slice(1)}` : ref;
-}
-
-/** The repository portion of an OCI ref (drops any `:tag` and `@digest`). */
-function featureRepoFromRef(ref: string): string {
-  const at = ref.indexOf('@');
-  const noDigest = at === -1 ? ref : ref.slice(0, at);
-  const lastSlash = noDigest.lastIndexOf('/');
-  const colon = noDigest.indexOf(':', lastSlash + 1);
-  return colon === -1 ? noDigest : noDigest.slice(0, colon);
-}
-
-export function publishedDevcontainerFeatureRef(
-  ref = process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF ?? DEFAULT_SANDBOX_TOOLKIT_FEATURE_REF,
-): { ref: string; version: string; identity: string } | undefined {
-  const trimmed = ref.trim();
-  if (trimmed.length === 0) return undefined;
-  const pinned = normalizeFeatureTag(
-    rejectLatestImageRef(trimmed, 'VERITY_SANDBOX_TOOLKIT_FEATURE_REF'),
-  );
-  return { ref: pinned, version: 'published', identity: pinned };
-}
-
-/**
- * Whether the toolkit Feature ref is operator CONFIGURATION rather than a ref
- * this Server resolved for itself.
- *
- * The distinction cannot be read off the ref, and getting it wrong is how the
- * bundle stopped mattering in production. A digest pin used to win outright —
- * written for the case where an operator names one exact Feature artifact. But
- * `main.ts` resolves the published default through `createPublishedDefaultResolver`,
- * which hands this function a DIGEST too, walked back from the `:latest` channel
- * tag. The two are indistinguishable by shape, so on every deployed Server the
- * auto-resolved digest silently outranked the bundle — and that bundle is the
- * trust root the runner-boundary attestation compares each Sandbox against.
- * Between a toolkit publish and the Server release that follows it, `:latest` is
- * a NEWER toolkit than this Server can vouch for, so every devcontainer project
- * built in that window got a Sandbox whose attestation was guaranteed to fail
- * and whose Runner supervisor was therefore switched off.
- *
- * Reading the env var directly settles it: only an operator names a ref there.
- * Blank is NOT configuration — `deploy/docker-compose.yml` passes the variable
- * through as `${VERITY_SANDBOX_TOOLKIT_FEATURE_REF:-}`, so every stock
- * deployment sets it empty, and `main.ts` maps empty to the release default it
- * resolves for itself. That is exactly the ref the bundle has to outrank.
- */
-export function toolkitFeatureRefIsConfigured(
-  raw = process.env.VERITY_SANDBOX_TOOLKIT_FEATURE_REF,
-): boolean {
-  return raw !== undefined && raw.trim().length > 0;
-}
-
-/**
- * Resolve the toolkit Feature to inject into project devcontainer builds.
- *
- * On a real Server host the Feature is BAKED into the image; we read its exact
- * `version` from that bundle and pin the GHCR Feature to it (bare semver tag) so
- * the sandbox toolkit always matches what this server ships. We reference GHCR —
- * NOT the local bundle path — because the devcontainer CLI rejects absolute
- * local Feature paths ("An Absolute path to a local feature is not allowed"); the
- * bundle is the version-of-record, GHCR is the resolvable source.
- *
- * Off-server (dev/test), the bundle is absent → fall back to the published ref.
- * A blank `VERITY_SANDBOX_TOOLKIT_FEATURE_REF` disables the Feature entirely —
- * but only on this default env-reading path, which a deployed Server never
- * takes: `main.ts` passes a resolver whose empty value means "the ref this
- * release was published with", not "no Feature" (see `deploy/README.md`).
- *
- * A digest-pinned published ref outranks the bundle only when an operator
- * CONFIGURED it — see {@link toolkitFeatureRefIsConfigured} for why the digest
- * alone cannot decide that.
- */
-export function resolveToolkitFeatureRef(
-  bundled = readBundledDevcontainerFeature(),
-  published = publishedDevcontainerFeatureRef(),
-  configured = toolkitFeatureRefIsConfigured(),
-): { ref: string; version: string; identity: string } | undefined {
-  if (bundled === undefined) return published;
-  if (published === undefined) return undefined;
-  if (configured && published.ref.includes('@')) return published;
-  // semantic-release owns the published artifact version; the source tree keeps
-  // the bundled devcontainer Feature at this placeholder, which is not a GHCR
-  // tag. Fall back to the configured published ref instead of injecting an
-  // unresolvable `:0.0.0-managed` Feature into project devcontainer builds.
-  if (bundled.version === '0.0.0-managed') return published;
-  const repo = featureRepoFromRef(published.ref);
-  return {
-    ref: `${repo}:${bundled.version.replace(/^v/, '')}`,
-    version: bundled.version,
-    identity: bundled.identity,
-  };
-}
-
-export function devcontainerProvisionerOptionsForDockerBaseUrl(
-  dockerBaseUrl: string,
-  devcontainerFeature: DevcontainerFeatureSource | undefined = publishedDevcontainerFeatureRef(),
-): {
-  devcontainerBuild: typeof defaultDevcontainerBuildSpawner;
-  dockerHostForBuild: string;
-  devcontainerFeature?: DevcontainerFeatureSource;
-} {
-  const buildOptions = devcontainerBuildOptionsForDockerBaseUrl(dockerBaseUrl);
-  return devcontainerFeature !== undefined
-    ? { ...buildOptions, devcontainerFeature }
-    : buildOptions;
-}
-
-/**
- * Whether the auto-derived branch name may be applied to this session's worktree.
- * Control-plane sessions run in a plain host directory rather than a git worktree,
- * so there is no branch to rename — and `autoRename`'s opening `git rev-parse
- * --abbrev-ref HEAD` fails outright there, which used to surface to the operator as
- * a failed turn. Mirrors the server's `branchesForSession`, which withholds the
- * branch service from control-plane projects for the same reason. A session with no
- * project keeps the old behavior (the branch service decides).
- */
-export async function branchRenameAppliesToSession(
-  session: { projectId: string | null; worktree?: string },
-  getProject: (projectId: string) => Promise<Pick<ProjectRecord, 'kind'> | undefined>,
-): Promise<boolean> {
-  if (session.worktree?.split('/').includes('.verity-document-sessions')) return false;
-  if (session.projectId === null) return true;
-  const project = await getProject(session.projectId);
-  return project?.kind !== 'control_plane' && project?.kind !== 'local';
-}
-
-/** Project-scoped admission used by embedded session backends. It serializes
- * foreground preparation, exposes the live waiter set to repair ownership, releases
- * the queue on every failure path, and keeps background resolutions fail-fast. */
-export function createProjectTurnPreparationSerializer(deps: {
-  waitForRepair: (projectId: string, sessionId: string) => Promise<void>;
-  repairInFlight: (projectId: string) => boolean;
-  wrapBackground: (projectId: string, backend: Backend) => Backend;
-}): (
-  projectId: string,
-  sessionId: string,
-  canWait: boolean,
-  prepare: (queuedSessionIds: ReadonlySet<string>) => Promise<Backend | undefined>,
-) => Promise<Backend | undefined> {
-  const tails = new Map<string, Promise<void>>();
-  const waitersByProject = new Map<string, Set<string>>();
-  return async (projectId, sessionId, canWait, prepare) => {
-    if (!canWait) {
-      if (tails.has(projectId) || deps.repairInFlight(projectId)) {
-        // Transient by construction: something else is making this Sandbox ready
-        // right now. The background resolution declines to queue behind it, which
-        // must not end up as a `crashed` badge on a session that is fine.
-        throw sandboxNotReadyError('project Sandbox preparation is already in progress');
-      }
-      const backend = await prepare(new Set([sessionId]));
-      return backend === undefined ? undefined : deps.wrapBackground(projectId, backend);
-    }
-    const previous = tails.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    tails.set(projectId, current);
-    const waiters = waitersByProject.get(projectId) ?? new Set<string>();
-    waitersByProject.set(projectId, waiters);
-    waiters.add(sessionId);
-    try {
-      await deps.waitForRepair(projectId, sessionId);
-      await previous;
-      return await prepare(waiters);
-    } finally {
-      waiters.delete(sessionId);
-      if (waiters.size === 0) waitersByProject.delete(projectId);
-      release();
-      if (tails.get(projectId) === current) tails.delete(projectId);
-    }
-  };
-}
 
 /**
  * Compose the control-plane server for a single-host deployment: a real Postgres
@@ -1996,8 +476,14 @@ export async function buildEmbeddedServer(
   // A controller restart starts incomplete; periodic re-synchronization repairs
   // that state. Configuration writes always use the synchronous prechange barrier.
   const synchronizeSystemInventory = () =>
-    systemInventorySync?.refresh().catch(() => {
-      console.warn('verity: system destination inventory synchronization unavailable');
+    systemInventorySync?.refresh().catch((error: unknown) => {
+      console.warn('verity: system destination inventory synchronization unavailable', {
+        operation: 'inventory-refresh',
+        reason: error instanceof ProjectEgressInventoryError ? error.reason : 'host_not_ready',
+        ...(error instanceof ProjectEgressInventoryError && error.correlationId
+          ? { correlationId: error.correlationId }
+          : {}),
+      });
     });
   await synchronizeSystemInventory();
   const systemInventoryTimer = systemInventorySync
@@ -2105,6 +591,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_present_mockups',
+            'verity_complete_mockups',
             'verity_tasks',
             'verity_repairs',
             'verity_qa_analysis',
@@ -2132,6 +619,7 @@ export async function buildEmbeddedServer(
             'verity_present_plan',
             'verity_end_planning',
             'verity_present_mockups',
+            'verity_complete_mockups',
             'verity_tasks',
             'verity_repairs',
             'verity_qa_analysis',
@@ -2665,18 +1153,94 @@ export async function buildEmbeddedServer(
   };
   const sharedForgeStatus = createForgeStatusCache();
   const statusScopes = new Map<string, ForgeStatusIdentity>();
-  const readProjectStatus = async (project: ProjectRecord, branch: string) => {
-    if (project.kind === 'local' || project.kind === 'control_plane') return null;
-    const provider = await projectForgeProvider(eventStore, githubForge, project);
-    if (!provider?.repositoryPrService) return null;
+  const statusIdentity = async (
+    project: ProjectRecord,
+    provider: NonNullable<Awaited<ReturnType<typeof projectForgeProvider>>>,
+  ): Promise<ForgeStatusIdentity> => {
     const token = await provider.mintProjectToken(project);
     if (!token) throw new Error('Forge credentials unavailable');
     const authority = `${project.forgeConnectionId ?? 'github'}:${createHash('sha256').update(token).digest('hex')}`;
-    const identity = { authority, owner: project.owner, repo: project.repo };
-    statusScopes.set(project.id, identity);
+    return { authority, owner: project.owner, repo: project.repo };
+  };
+  /** `remember` records the identity as the project's status scope; a project's
+   *  additional repositories share its id, so only its default repository does. */
+  const readProjectStatus = async (project: ProjectRecord, branch: string, remember = true) => {
+    if (project.kind === 'local' || project.kind === 'control_plane') return null;
+    const provider = await projectForgeProvider(eventStore, githubForge, project);
+    if (!provider?.repositoryPrService) return null;
+    const identity = await statusIdentity(project, provider);
+    if (remember) statusScopes.set(project.id, identity);
     return sharedForgeStatus.read(identity, branch, () =>
       provider.repositoryPrService!(project).prStatusForBranch(branch),
     );
+  };
+  const isDefaultRepository = async (project: ProjectRecord) => {
+    const stored = await eventStore.getProject(project.id);
+    return (
+      stored !== undefined &&
+      stored.kind === project.kind &&
+      stored.owner === project.owner &&
+      stored.repo === project.repo
+    );
+  };
+  const projectPullRequests: ProjectPullRequestBackend = {
+    list: async (project) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.discover) throw new Error('Pull request listing unsupported');
+      const pulls = new Map<number, ForgeDiscoveryPage['pulls'][number]>();
+      // Three pages cover any open list a person scans on a phone; the host's
+      // pages are newest first, so a cut drops the oldest pull requests.
+      for (let page = 1; page <= 3; page += 1) {
+        const result = await provider.discover(project, page);
+        if (result.errors?.some((error) => error.step === 'pulls'))
+          throw new Error('Pull requests unavailable');
+        for (const pull of result.pulls) pulls.set(pull.number, pull);
+        if (result.pulls.length < 30) break;
+      }
+      const remember = await isDefaultRepository(project);
+      const deadline = Date.now() + 12_000;
+      const rows = [...pulls.values()];
+      const statuses = new Array<PullRequestStatus | null>(rows.length).fill(null);
+      let next = 0;
+      // Statuses are read a few at a time against one budget: a cold cache over
+      // many pull requests leaves the slow ones without status instead of
+      // turning the whole repository unavailable.
+      const worker = async () => {
+        while (next < rows.length && Date.now() < deadline) {
+          const index = next++;
+          const pull = rows[index]!;
+          if (pull.fork) continue;
+          let timer: NodeJS.Timeout | undefined;
+          const status = await Promise.race([
+            readProjectStatus(project, pull.branch, remember).catch(() => null),
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+            }),
+          ]).finally(() => clearTimeout(timer));
+          statuses[index] =
+            status && status.number === pull.number && status.phase === 'open' ? status : null;
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, rows.length) }, worker));
+      return {
+        webUrl: provider.cloneUrl(project).replace(/\.git$/u, ''),
+        pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
+      };
+    },
+    status: async (project, branch) =>
+      readProjectStatus(project, branch, await isDefaultRepository(project)),
+    merge: async (project, number, expectedHeadSha) => {
+      const provider = await projectForgeProvider(eventStore, githubForge, project);
+      if (!provider?.repositoryPrService) return false;
+      try {
+        return await provider.repositoryPrService(project).mergePr(number, expectedHeadSha);
+      } finally {
+        // A failed cache invalidation must not turn a completed merge into an error.
+        await statusIdentity(project, provider)
+          .then((identity) => sharedForgeStatus.invalidate(identity))
+          .catch(() => undefined);
+      }
+    },
   };
   const readWorktreeStatus = async (branch: string, worktree: string) => {
     const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
@@ -3281,6 +1845,24 @@ export async function buildEmbeddedServer(
       return;
     }
   };
+  /** Ask the project's runner supervisor whether its agent connections accept
+   *  connects yet. A toolkit without the request keeps its previous behaviour. */
+  const probeSandboxEgressReadiness = async (
+    runnersVolumeRoot: string,
+    projectId: string,
+  ): Promise<SandboxEgressProbe> => {
+    try {
+      return parseEgressReadiness(
+        await requestRunnerSupervisor(
+          join(runnersVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+          { kind: 'egress-readiness' },
+          3_000,
+        ),
+      );
+    } catch (error) {
+      return classifyProbeError(error);
+    }
+  };
   const projectRelayControlRef: { current: ProjectRelayControl | undefined } = {
     current: undefined,
   };
@@ -3701,6 +2283,10 @@ export async function buildEmbeddedServer(
       ? configuredDevcontainerFeatureRef.trim().length > 0
       : toolkitFeatureRefIsConfigured());
   const imageReferences = createProjectImageReferences(db);
+  const maintenanceImages = projectDocker
+    ? new MaintenanceImages(projectDocker, imageReferences)
+    : undefined;
+  const preparedWorktreeImages = new Map<string, string>();
   // Durable audit trail for project image builds (ADR 0028). The Server generation is
   // read from this container's own label once; outside a managed deployment it is null.
   let auditServer: AuditServerIdentity | undefined;
@@ -3753,9 +2339,13 @@ export async function buildEmbeddedServer(
       ? undefined
       : async () =>
           pinToolkitFeature(
-            typeof selectedDevcontainerFeature === 'function'
-              ? await selectedDevcontainerFeature()
-              : selectedDevcontainerFeature,
+            releaseToolkitFeature(
+              typeof selectedDevcontainerFeature === 'function'
+                ? await selectedDevcontainerFeature()
+                : selectedDevcontainerFeature,
+              process.env.VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE,
+              devcontainerFeatureRefConfigured,
+            ),
           );
   if (projectDocker !== undefined && config.hostCloneRoot) {
     if (config.dockerBaseUrl === undefined) {
@@ -4044,6 +2634,15 @@ export async function buildEmbeddedServer(
       projectEgressEnabled: async () =>
         (await eventStore.getVeritySettingsRaw())?.projectEgressEnabled === true,
       buildStorage,
+      ...(config.projectEgressSocketPath && config.projectEgressKeyPath
+        ? {
+            protectedDevcontainerBuild: createProtectedDevcontainerBuilder({
+              root: buildStorage.root,
+              socketPath: config.projectEgressSocketPath,
+              keyPath: config.projectEgressKeyPath,
+            }),
+          }
+        : {}),
       buildFailureLogDirectory: join(
         config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
         'build-failures',
@@ -4126,7 +2725,28 @@ export async function buildEmbeddedServer(
         listenerDiscovery?.invalidateProject(project.id);
         await projectAgentGatewayIdentity(true);
       },
-      onSandboxLifecycle: (event) => projectSandboxLifecycleTelemetry.record(event),
+      onSandboxLifecycle: (event) => {
+        projectSandboxLifecycleTelemetry.record(event);
+        // One line per transition, so a turn that failed right after a wake can be
+        // placed against it; the aggregate above cannot say which project woke.
+        app.log[event.outcome === 'failed' ? 'warn' : 'info'](
+          event,
+          'verity: project Sandbox lifecycle transition',
+        );
+      },
+      onSandboxRecreate: ({ initiator, ...event }) => {
+        // The cause without the person: which trigger or session asked, never a user id.
+        const cause =
+          initiator.kind === 'system'
+            ? { initiator: initiator.kind, trigger: initiator.trigger }
+            : initiator.kind === 'session'
+              ? { initiator: initiator.kind, sessionId: initiator.sessionId }
+              : { initiator: initiator.kind };
+        app.log[event.outcome === 'failed' ? 'warn' : 'info'](
+          { ...event, ...cause },
+          'verity: project Sandbox recreated',
+        );
+      },
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
@@ -4817,27 +3437,59 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: (projectId, sessionId, operation, signal) =>
-            // Wait for the project owner before taking preview locks: that owner
-            // may itself need preview teardown in order to finish.
-            provisioner.withProjectExclusiveMutation(
-              projectId,
-              () =>
-                withStorageProjectMutation(projectId, async () => {
-                  if (managedDevServerManager?.hasRunningServers(projectId))
-                    throw new Error('Managed dev server is active');
-                  if (
-                    (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
-                    (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
-                      ['creating', 'active', 'revoking'].includes(s.state),
+          mutate: async (projectId, sessionId, operation, signal) => {
+            const run = (imageId?: string, recheck?: () => Promise<void>) =>
+              // Wait for the project owner before taking preview locks: that owner
+              // may itself need preview teardown in order to finish.
+              provisioner.withProjectExclusiveMutation(
+                projectId,
+                () =>
+                  withStorageProjectMutation(projectId, async () => {
+                    if (managedDevServerManager?.hasRunningServers(projectId))
+                      throw new Error('Managed dev server is active');
+                    if (
+                      (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+                      (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
+                        ['creating', 'active', 'revoking'].includes(s.state),
+                      )
                     )
-                  )
-                    throw new Error('Public preview is active');
-                  await operation();
-                }),
-              sessionId ? new Set([sessionId]) : undefined,
-              signal,
-            ),
+                      throw new Error('Public preview is active');
+                    await recheck?.();
+                    if (imageId) preparedWorktreeImages.set(projectId, imageId);
+                    try {
+                      await operation();
+                    } finally {
+                      preparedWorktreeImages.delete(projectId);
+                    }
+                  }),
+                sessionId ? new Set([sessionId]) : undefined,
+                signal,
+              );
+            const project = await eventStore.getProject(projectId);
+            if (project?.state === 'sleeping') {
+              const parent = await projectDocker
+                .inspectContainer(project.containerName)
+                .catch((error: unknown) => {
+                  if (error instanceof DockerError && error.kind === 'container_not_found')
+                    return undefined;
+                  throw error;
+                });
+              if (!parent) {
+                const selected =
+                  typeof defaultProjectImage === 'function'
+                    ? await defaultProjectImage()
+                    : defaultProjectImage;
+                if (!selected || !maintenanceImages)
+                  throw new MaintenanceImageError('image-unavailable');
+                return maintenanceImages.withImage(
+                  selected,
+                  (image, recheck) => run(image.id, recheck),
+                  signal,
+                );
+              }
+            }
+            return run();
+          },
           withGit: async (project, operation) => {
             if (config.dataVolume && !dataVolumeRoot)
               throw new Error('Data volume root is unavailable');
@@ -4878,16 +3530,17 @@ export async function buildEmbeddedServer(
                   hostRoot,
                   dockerBaseUrl: config.dockerBaseUrl!,
                   maintenance: {
-                    fallback: {
-                      imageId:
-                        typeof defaultProjectImage === 'function'
-                          ? await defaultProjectImage()
-                          : defaultProjectImage,
-                      runtime: PROJECT_RUNSC_RUNTIME,
-                      memoryBytes: 512 * 1024 ** 2,
-                      nanoCpus: 1_000_000_000,
-                      pidsLimit: 128,
-                    },
+                    ...(preparedWorktreeImages.has(project.id)
+                      ? {
+                          fallback: {
+                            imageId: preparedWorktreeImages.get(project.id)!,
+                            runtime: PROJECT_RUNSC_RUNTIME,
+                            memoryBytes: 512 * 1024 ** 2,
+                            nanoCpus: 1_000_000_000,
+                            pidsLimit: 128,
+                          },
+                        }
+                      : {}),
                   },
                   ...(config.dataVolume && dataVolumeRoot
                     ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
@@ -4912,10 +3565,88 @@ export async function buildEmbeddedServer(
           pr: (project, branch) => readProjectStatus(project, branch),
         })
       : undefined;
+  const runnerCacheMaintenance = new RunnerCacheMaintenance({
+    request: (projectId, request) =>
+      requestRunnerSupervisor(
+        join(dataVolumeRoot!, 'runners', projectId, 'supervisor.sock'),
+        request,
+        30_000,
+      ),
+    resolveOwners: (input) => eventStore.resolveRunnerTurnOwnership(input),
+    offline: async (projectId, sessionIds, maxBytes) => {
+      if (
+        !projectDocker ||
+        !dataVolumeRoot ||
+        !provisioner?.withProjectExclusiveMutation ||
+        config.runnerSupervisor !== true ||
+        config.runnerSupervisorTrustedDefaultImage !== true ||
+        projectId === CONTROL_PLANE_RUNNER_PROJECT_ID
+      )
+        throw cacheMaintenanceFailure('runtime-not-idle');
+      const project = await eventStore.getProject(projectId);
+      if (project?.state !== 'sleeping' || project.imageOverrideRef)
+        throw cacheMaintenanceFailure('runtime-not-idle');
+      const selected =
+        typeof defaultProjectImage === 'function'
+          ? await defaultProjectImage()
+          : defaultProjectImage;
+      if (!selected || !maintenanceImages) throw new MaintenanceImageError('image-unavailable');
+      return maintenanceImages.withImage(selected, (image, recheck) =>
+        provisioner.withProjectExclusiveMutation(projectId, () =>
+          withStorageProjectMutation(projectId, async () => {
+            const assertIdle = async () => {
+              const project = await eventStore.getProject(projectId);
+              if (
+                project?.state !== 'sleeping' ||
+                project.imageOverrideRef ||
+                managedDevServerManager?.hasRunningServers(projectId) ||
+                (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
+                (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
+                  ['creating', 'active', 'revoking'].includes(share.state),
+                )
+              )
+                throw cacheMaintenanceFailure('runtime-not-idle');
+              const sessions = new Set(
+                (await eventStore.listSessions())
+                  .filter((session) => session.projectId === projectId)
+                  .map((session) => session.sessionId),
+              );
+              if (sessions.size !== sessionIds.length || sessionIds.some((id) => !sessions.has(id)))
+                throw cacheMaintenanceFailure('runtime-not-idle');
+              if (
+                (await eventStore.listRunningTurns()).some((turn) => sessions.has(turn.sessionId))
+              )
+                throw cacheMaintenanceFailure('runtime-not-idle');
+            };
+            await assertIdle();
+            await recheck();
+            const self = await projectDocker.inspectContainer(hostname());
+            return reclaimSleepingRunnerCaches({
+              docker: projectDocker,
+              projectId,
+              runtimeRoot: join(dataVolumeRoot, 'runners', projectId),
+              image: image.id,
+              runtime: PROJECT_RUNSC_RUNTIME,
+              serverContainerId: self.id,
+              runtimeGid: config.runnerRuntimeGid ?? 1101,
+              ...(config.dataVolume
+                ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
+                : {}),
+              sessionIds,
+              maxBytes,
+              assertIdle,
+            });
+          }),
+        ),
+      );
+    },
+  });
   const runnerCacheStorage =
     dataVolumeRoot === undefined
       ? undefined
       : new RunnerCacheStorage({
+          onFailure: (failure) =>
+            app.log.warn(failure, 'Runner cache maintenance failed; unverified caches retained'),
           ...(config.runnerCacheMaxBytes !== undefined
             ? { maxBytes: config.runnerCacheMaxBytes }
             : {}),
@@ -4941,11 +3672,7 @@ export async function buildEmbeddedServer(
               .map(([projectId, ids]) => ({ projectId, sessionIds: [...ids] }));
           },
           request: (projectId, sessionIds, maxBytes) =>
-            requestRunnerSupervisor(
-              join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
-              { kind: 'reclaim-package-caches', sessionIds, maxBytes },
-              30_000,
-            ),
+            runnerCacheMaintenance.request(projectId, sessionIds, maxBytes),
         });
   const cleanupAbort = new AbortController();
   const cleanupProcessor =
@@ -5428,6 +4155,7 @@ export async function buildEmbeddedServer(
         return { available: false, reason: 'This project has no supported repository provider' };
       return githubQAAnalysis(project, request, authorize);
     },
+    projectPullRequests,
     repairDiscovery: async (project, pageNumber) => {
       const provider = await projectForgeProvider(eventStore, githubForge, project);
       if (!provider?.discover) throw new Error('Repository monitoring unsupported');
@@ -6068,6 +4796,23 @@ export async function buildEmbeddedServer(
               // latest rotating credential and wait for the gateway to acknowledge
               // that exact cached identity configuration.
               await synchronizeAgentGatewayForTurn();
+              // The checks above trust Docker's `running`, which a relay reaches
+              // before its process listens. Confirm from inside the Sandbox that
+              // the connections this agent needs accept connects before launching
+              // it; until then the turn waits visibly instead of failing on a
+              // refused connection.
+              if (dataVolumeRoot !== undefined) {
+                await waitForSandboxTurnReadiness({
+                  projectId: project.id,
+                  sessionId: preparation.sessionId,
+                  agent: isClaudeSession ? 'claude' : isCodexSession ? 'codex' : 'opencode',
+                  relayed: projectRelayEnabled,
+                  canWait: preparation.canWait,
+                  waitingOn: (message) => preparation.waitingOn(message),
+                  probe: () => probeSandboxEgressReadiness(dataVolumeRoot, project.id),
+                  log: app.log,
+                });
+              }
             }
             // A Claude project agent is pointed at the sandbox connector with only the
             // placeholder, so the real token never enters the untrusted sandbox.
@@ -6244,6 +4989,12 @@ export async function buildEmbeddedServer(
     });
   };
 
+  app.addHook('onClose', async () => {
+    maintenanceImages?.abort();
+    await runnerCacheStorage?.stop();
+    await sessionStorage?.stop();
+  });
+
   if (embeddedSecretJobs !== undefined) {
     registerSecretJobRoutes(app, embeddedSecretJobs.service, (header) => {
       const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];
@@ -6356,11 +5107,25 @@ export async function buildEmbeddedServer(
       if (reconciling) return;
       reconciling = true;
       try {
-        const unresolved = await storage.reconcile(
-          buildDockerHost === undefined
+        const unresolved = await storage.reconcile({
+          ...(buildDockerHost === undefined
             ? {}
-            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) },
-        );
+            : { buildkitIdle: () => devcontainerBuilderIdle(buildDockerHost) }),
+          ...(config.projectEgressSocketPath && config.projectEgressKeyPath
+            ? {
+                protectedBuildStatus: (reference: { projectId: string; attemptId: string }) =>
+                  createProtectedBuildClient({
+                    socketPath: config.projectEgressSocketPath!,
+                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+                  })({ operation: 'status', ...reference }),
+                protectedBuildSlot: () =>
+                  createProtectedBuildClient({
+                    socketPath: config.projectEgressSocketPath!,
+                    token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
+                  })({ operation: 'slot' }),
+              }
+            : {}),
+        });
         if (unresolved.length > 0)
           app.log.warn(
             { attempts: unresolved },
@@ -6514,9 +5279,11 @@ export async function buildEmbeddedServer(
         const result = await retireStoppedContainers({
           docker: projectDocker,
           listProjects: () => eventStore.listProjects(),
+          // Match helper execution: acquire lifecycle ownership before preview/storage
+          // barriers, and hold both until result collection/retention finishes.
           withProjectMutation: (id, run) =>
-            withStorageProjectMutation(id, () =>
-              provisioner.withProjectExclusiveMutation(id, async () => {
+            provisioner.withProjectExclusiveMutation(id, () =>
+              withStorageProjectMutation(id, async () => {
                 if (managedDevServerManager?.hasRunningServers(id))
                   throw new Error('Managed dev server is active');
                 if (
@@ -6682,244 +5449,4 @@ export async function buildEmbeddedServer(
         await db.destroy();
       })()),
   };
-}
-
-/**
- * Refresh the `projects` cache against the live GitHub-App-installation list
- * (concept §19, #174). Each repo from {@link GitHubInstallationService.listInstallationRepos}
- * is upserted with `state='absent'` — the provisioning-worker-owned `state`
- * (cloning/container_starting/active/failed) survives the upsert because
- * `EventStore.upsertProject`'s ON CONFLICT branch keeps it. New repos land as
- * `absent`; the mobile picker discovers them on the next `GET /projects`. The
- * GitHub archive flag is refreshed on every sync so pickers can suppress
- * archived repositories.
- *
- * `eventStore` is a per-call instance (the route handler creates one — cheap,
- * just holds a kysely handle; the shared `db` is the real durable resource). If
- * the installation service degrades to `[]` (token absent / GitHub unreachable)
- * the function STILL returns the persisted cache so the picker stays usable
- * offline — re-sync will land on the next `GET` once GitHub is reachable.
- *
- * `image_ref` is intentionally NOT set by the sync — its value comes from Verity's
- * default-project-image config (or a per-repo override, slice 3 only); the upsert
- * lets NULL survive a refresh for installations-registered rows that the operator
- * hasn't explicitly pinned yet.
- *
- * IDs: a fresh `randomUUID()` is minted per call, BUT only the FIRST insert for a
- * given `(owner, repo)` consumes it — the ON CONFLICT branch's `doUpdateSet` skips
- * the `id` column, so a row's identity is established at first insert and stable
- * across re-syncs. A `session.project_id` FK bound to a project id therefore
- * survives list refreshes (the project row identity never flips).
- */
-export async function syncProjectsFromInstallation(
-  eventStore: EventStore,
-  installation: GitHubInstallationService,
-  opts?: { includeHidden?: boolean },
-): Promise<ProjectRecord[]> {
-  // Live repos first; if GitHub is unreachable we keep `[]` so the per-repo
-  // upsert loop is a no-op — the persisted cache below still surfaces the rows
-  // we already have.
-  const live = await installation
-    .listInstallationRepos()
-    .catch(() => [] as { owner: string; repo: string; archived?: boolean }[]);
-
-  // Repeated overview polls must not acquire the global knowledge lifecycle
-  // lock and rewrite every unchanged repository, starving unrelated reads.
-  const existing = new Map(
-    (await eventStore.listProjects({ includeHidden: true }))
-      .filter(
-        (project) =>
-          (project.kind === undefined || project.kind === 'github') &&
-          (project.forgeConnectionId ?? 'legacy-github') === 'legacy-github',
-      )
-      .map((project) => [`${project.owner.toLowerCase()}/${project.repo.toLowerCase()}`, project]),
-  );
-
-  // The container_name is the canonical hyphen-slug form derived from the
-  // (owner, repo) — `upsertProject` lowercases again on its side, this is just
-  // pre-derivation so the input matches what will be persisted.
-  const { randomUUID } = await import('node:crypto');
-  for (const r of live) {
-    const containerName = containerNameFor({
-      owner: r.owner.toLowerCase(),
-      repo: r.repo.toLowerCase(),
-    });
-    const owner = r.owner.toLowerCase();
-    const repo = r.repo.toLowerCase();
-    const current = existing.get(`${owner}/${repo}`);
-    const legacyNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
-    if (
-      current &&
-      current.archived === (r.archived ?? false) &&
-      !legacyNames.includes(current.containerName)
-    ) {
-      continue;
-    }
-    try {
-      await eventStore.upsertProject({
-        id: randomUUID(),
-        owner: r.owner,
-        repo: r.repo,
-        containerName,
-        state: 'absent',
-        archived: r.archived ?? false,
-      });
-    } catch (error) {
-      // A link that has reserved this identity holds the claim while its push
-      // runs, with no `projects` row to update yet — so the upsert reports the
-      // pair as spoken for. That is a repo mid-adoption, not a broken sync:
-      // skip it and let the next pass see the finished project. Without this,
-      // one in-flight link would throw straight out of `GET /projects` and take
-      // the entire project list down with it.
-      if (!(error instanceof ProjectIdentityClaimConflict)) throw error;
-    }
-  }
-
-  return eventStore.listProjects({ includeHidden: opts?.includeHidden === true });
-}
-
-/** Read the bundled `verity-sandbox-toolkit` Feature metadata from the Server image
- *  (R3.1/#299). The directory defaults to `/opt/verity-features/verity-sandbox-toolkit`
- *  (the Dockerfile bind path) and is overridable via `VERITY_FEATURE_DIR` for
- *  tests/alternate layouts. Parses the Feature's `devcontainer-feature.json` for
- *  its `version`, hashes the Feature directory contents, and returns
- *  `{ ref: <dir>, version, identity }`.
- *
- *  Fail-soft: the file is absent on dev/test/non-Server hosts, so a missing
- *  file, unreadable file, malformed JSON, or a missing/blank `version` all
- *  resolve to `undefined` (+ a warn log) rather than throwing while reading.
- *  When project Docker provisioning is active, repos without `.devcontainer/`
- *  still run on the base sandbox image; repos with `.devcontainer/` fail closed
- *  before build if this Feature is unavailable. */
-export function readBundledDevcontainerFeature():
-  { ref: string; version: string; identity: string } | undefined {
-  const dir = process.env.VERITY_FEATURE_DIR ?? '/opt/verity-features/verity-sandbox-toolkit';
-  const manifestPath = join(dir, 'devcontainer-feature.json');
-  let raw: string;
-  try {
-    raw = readFileSync(manifestPath, 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    // ENOENT/ENOTDIR is the expected dev/test/non-Server case — stay quiet there;
-    // only warn on unexpected read errors (e.g. permissions).
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      console.warn(
-        `verity: could not read bundled devcontainer feature at ${manifestPath}: ${String(error)}`,
-      );
-    }
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(raw) as { version?: unknown };
-    const version = typeof parsed.version === 'string' ? parsed.version.trim() : '';
-    if (version.length === 0) {
-      console.warn(
-        `verity: bundled devcontainer feature at ${manifestPath} has no usable "version" — ignoring.`,
-      );
-      return undefined;
-    }
-    return { ref: dir, version, identity: bundledFeatureIdentity(dir) };
-  } catch (error) {
-    console.warn(
-      `verity: bundled devcontainer feature at ${manifestPath} is not valid JSON: ${String(error)}`,
-    );
-    return undefined;
-  }
-}
-
-function bundledFeatureIdentity(dir: string): string {
-  const hash = createHash('sha256');
-  const files: string[] = [];
-  const walk = (current: string): void => {
-    for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    )) {
-      const abs = join(current, entry.name);
-      if (entry.isDirectory()) {
-        walk(abs);
-      } else if (entry.isFile()) {
-        files.push(abs);
-      }
-    }
-  };
-  walk(dir);
-  for (const file of files) {
-    const rel = relative(dir, file).split(sep).join('/');
-    const content = readFileSync(file);
-    hash.update(`path:${rel.length}:`);
-    hash.update(rel);
-    hash.update('\n');
-    hash.update(`file:${content.length}:`);
-    hash.update(content);
-    hash.update('\n');
-  }
-  return `sha256:${hash.digest('hex')}`;
-}
-
-/**
- * "Refresh" a project's GitHub token. With the on-demand token broker there is no
- * per-project token FILE to rewrite — the sandbox obtains a repo-scoped token on
- * demand via its capability. This warms the supplied mint's cache (when present)
- * and surfaces failures to the caller; it never writes into the clone dir, so no
- * token lands in the sandbox's /work.
- */
-export async function refreshProjectGitHubToken(
-  project: ProjectRecord,
-  mint: GitHubProjectTokenMint,
-): Promise<void> {
-  await mint(project);
-}
-
-/**
- * Build the `deps.projectWorktrees` factory (§19.3 seam) that gives each
- * per-project session worktree a `refreshBase` fetch authenticated with the
- * PROJECT-scoped GitHub token — the same short-TTL App installation token
- * (`repositories:[project.repo]`) the {@link GitHubProjectTokenMint} issues for
- * {@link refreshProjectGitHubToken}. Single source of truth: the header is built
- * from `gitAuthHeader` (the exact form `provisioner.ts` uses for its clone/fetch),
- * so the session-worktree path and the clone path authenticate identically.
- *
- * The token is minted FRESH inside `fetchAuthHeader` (resolved per fetch) so a
- * rotated ~1h-TTL token is always current. When the mint yields no token (App
- * creds unavailable) the fetch runs tokenless — same fallback as elsewhere.
- *
- * Without this, `createGitWorktreeProvisioner`'s fetch of a private project repo
- * outside the container's global git-credential scope falls through to that
- * narrow global token and fails with `remote: Repository not found`.
- */
-
-export function createProjectWorktreeFactory(
-  mint: GitHubProjectTokenMint,
-  forgeConnection?: (
-    project: ProjectRecord,
-  ) => ReturnType<NonNullable<GitWorktreeOptions['fetchConnection']>>,
-): (
-  project: ProjectRecord,
-  projectClone: string,
-  // `git` is an optional injection seam (tests); production omits it and the
-  // real `git` runs. `baseBranch`/`refreshBase` are the fields the server's
-  // `worktreeOpts` supplies at the `deps.projectWorktrees(...)` call site.
-  worktreeOpts?: Pick<GitWorktreeOptions, 'baseBranch' | 'refreshBase' | 'git'>,
-) => WorktreeProvisioner {
-  return (project, projectClone, worktreeOpts) =>
-    createGitWorktreeProvisioner({
-      ...worktreeOpts,
-      repoDir: projectClone,
-      worktreeRoot: join(projectClone, '.verity-sessions'),
-      ...(project.kind === 'forgejo'
-        ? {
-            fetchConnection: async () => {
-              if (!forgeConnection) throw new Error('Forgejo connection unavailable');
-              return forgeConnection(project);
-            },
-          }
-        : {}),
-      fetchAuthHeader: async () => {
-        if (project.kind === 'forgejo') return undefined;
-        // On-demand mint only — no project-clone `.gh-token` file exists anymore
-        // (it would sit in the sandbox's /work; the sandbox uses the token broker).
-        const token = await mint(project);
-        return token ? gitAuthHeader(token) : undefined;
-      },
-    });
 }

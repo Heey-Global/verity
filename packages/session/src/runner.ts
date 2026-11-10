@@ -132,6 +132,8 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM
 export const nodeSpawner: Spawner = (command, args, options) => {
   if (options.planning === true)
     throw new Error('Planning requires the isolated agent spawn broker');
+  if (options.gatewayToolsOnly === true)
+    throw new Error('Verity-tools-only turns require the isolated agent spawn broker');
   // stdin: `/dev/null` when the caller feeds the child nothing (the whole prompt
   // rides on argv); a pipe when there is an initial payload to write or the caller
   // holds the channel open. stderr is piped and drained into a bounded buffer so it

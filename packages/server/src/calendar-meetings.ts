@@ -14,8 +14,6 @@ import {
 
 /** How far ahead the start screen lists meetings. */
 const UPCOMING_HORIZON_MS = 12 * 60 * 60 * 1000;
-/** How early a meeting can be joined; a bot sent hours ahead would only wait in the lobby. */
-const JOIN_EARLY_MS = 15 * 60 * 1000;
 
 type MeetingProvider = 'meet' | 'teams' | 'zoom';
 
@@ -167,18 +165,13 @@ export async function listUpcomingMeetings(
 }
 
 /** Whether a listed meeting can be joined now: it has a call link, nobody joined it
- *  yet, and it is inside the join window. */
+ *  yet, and it has not ended. */
 export function canJoinNow(meeting: UpcomingMeeting, at: number): boolean {
-  return (
-    meeting.provider !== null &&
-    meeting.meetingId === null &&
-    meeting.endsAt > at &&
-    meeting.startsAt - at <= JOIN_EARLY_MS
-  );
+  return meeting.provider !== null && meeting.meetingId === null && meeting.endsAt > at;
 }
 
 /**
- * Sends Verity into a watched calendar's meeting for `sessionId`, inside the join window.
+ * Sends Verity into a watched calendar's meeting for `sessionId`, including before its scheduled start.
  * Throws {@link CalendarEventNotFoundError}, {@link CalendarJoinWindowError},
  * `CalendarEventAlreadyJoinedError` or the start's own error.
  */
@@ -191,9 +184,5 @@ export async function joinWatchedMeeting(
   const event = await deps.store.calendarWatch.getEvent(eventKey);
   if (!event) throw new CalendarEventNotFoundError();
   if (event.endsAt <= now()) throw new CalendarJoinWindowError('This meeting has ended.');
-  if (event.startsAt - now() > JOIN_EARLY_MS)
-    throw new CalendarJoinWindowError(
-      'This meeting starts later. Join it shortly before it begins.',
-    );
   return joinCalendarMeeting(deps, eventKey, sessionId);
 }

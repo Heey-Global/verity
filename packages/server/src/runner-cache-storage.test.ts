@@ -1,5 +1,11 @@
+import { readFile } from 'node:fs/promises';
+import { MaintenanceImageError } from './maintenance-image.js';
 import { describe, expect, it, vi } from 'vitest';
-import { RunnerCacheStorage, runnerCacheTargetFromEnv } from './runner-cache-storage.js';
+import {
+  RunnerCacheStorage,
+  STATE_REFUSAL_CODES,
+  runnerCacheTargetFromEnv,
+} from './runner-cache-storage.js';
 
 function response(overrides = {}) {
   return {
@@ -19,6 +25,25 @@ function response(overrides = {}) {
 }
 
 describe('runner cache storage', () => {
+  it.each([
+    'image-unavailable',
+    'image-preparation-failed',
+    'image-preparation-timeout',
+    'image-preparation-cancelled',
+  ] as const)('reports %s separately from unsupported capabilities', async (code) => {
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request: async () => {
+        throw new MaintenanceImageError(code);
+      },
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.blockers).toEqual([
+      `Project one: [${code}] runner cache maintenance unavailable or invalid; caches retained where unverified.`,
+    ]);
+    expect(storage.lastReport?.removedBytes).toBe(0);
+  });
+
   it('collects sequentially with a shared default target and aggregates retained usage separately from removals', async () => {
     let active = 0;
     const request = vi.fn(async (id: string) => {
@@ -161,6 +186,140 @@ describe('runner cache storage', () => {
     }
   });
 
+  it('resumes with the next project after a deadline instead of starving it', async () => {
+    let time = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => time);
+    try {
+      const request = vi.fn(async () => {
+        time += 60_000;
+        return response();
+      });
+      const storage = new RunnerCacheStorage({
+        listRuntimes: async () => [
+          { projectId: 'one', sessionIds: [] },
+          { projectId: 'two', sessionIds: [] },
+        ],
+        request,
+      });
+      await storage.runOnce();
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(request).toHaveBeenNthCalledWith(1, 'one', [], 4 * 1024 ** 3);
+      expect(request).toHaveBeenNthCalledWith(2, 'two', [], 4 * 1024 ** 3);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('rotates a runtime inventory larger than the per-pass limit', async () => {
+    const request = vi.fn(async () => response());
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () =>
+        Array.from({ length: 1001 }, (_, index) => ({
+          projectId: `p${String(index).padStart(4, '0')}`,
+          sessionIds: [],
+        })),
+      request,
+    });
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(1000);
+    expect(storage.lastReport?.usageComplete).toBe(false);
+    await storage.runOnce();
+    expect(request).toHaveBeenNthCalledWith(1001, 'p1000', [], 4 * 1024 ** 3);
+  });
+
+  it('resumes incomplete scans promptly without waiting for the daily scheduler', async () => {
+    vi.useFakeTimers();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...response({ usageComplete: false, legacyBytes: null }),
+        maintenancePending: true,
+      })
+      .mockResolvedValue(response());
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(storage.lastReport?.usageComplete).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      await storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('drains an active continuation before shutdown and admits no further projects', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce({ ...response(), maintenancePending: true })
+      .mockResolvedValueOnce(response())
+      .mockImplementationOnce(async () => {
+        await active;
+        return response();
+      });
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [
+        { projectId: 'one', sessionIds: [] },
+        { projectId: 'two', sessionIds: [] },
+      ],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(request).toHaveBeenCalledTimes(3);
+      let closed = false;
+      const closing = storage.stop().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      release();
+      await closing;
+      expect(closed).toBe(true);
+      await storage.runOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(3);
+    } finally {
+      release();
+      await storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels continuation scheduling when the Server closes', async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(async () => ({
+      ...response({ usageComplete: false }),
+      maintenancePending: true,
+    }));
+    const storage = new RunnerCacheStorage({
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+    });
+    try {
+      await storage.runOnce();
+      await storage.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      await storage.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('reports failed enumeration as unknown rather than zero', async () => {
     const storage = new RunnerCacheStorage({
       listRuntimes: async () => {
@@ -282,4 +441,171 @@ describe('bounded runner cache failure diagnostics', () => {
     expect(storage.lastReport?.blockers[0]).toContain('[unclassified-cache-blocker]');
     expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
   });
+});
+
+describe('runner cache maintenance retry backoff', () => {
+  it('backs off failures per project, caps the delay, and resets after success', async () => {
+    let now = 0;
+    let fail = true;
+    const request = vi.fn(async (id: string) => {
+      if (id === 'bad' && fail) throw new Error('unavailable');
+      return response();
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => now,
+      listRuntimes: async () => [
+        { projectId: 'bad', sessionIds: [] },
+        { projectId: 'good', sessionIds: [] },
+      ],
+      request,
+    });
+    const badCalls = () => request.mock.calls.filter(([id]) => id === 'bad').length;
+    const goodCalls = () => request.mock.calls.filter(([id]) => id === 'good').length;
+    for (const delay of [5, 10, 20, 40, 60, 60]) {
+      await storage.runOnce();
+      const before = badCalls();
+      now += delay * 60_000 - 1;
+      await storage.runOnce();
+      expect(badCalls()).toBe(before);
+      expect(storage.lastReport).toMatchObject({ usageComplete: false, sharedBytes: null });
+      expect(storage.lastReport?.blockers.join(' ')).toContain('retry deferred');
+      now += 1;
+    }
+    fail = false;
+    await storage.runOnce();
+    const successes = badCalls();
+    await storage.runOnce();
+    expect(badCalls()).toBe(successes + 1);
+    expect(goodCalls()).toBe(14);
+    fail = true;
+    await storage.runOnce();
+    const before = badCalls();
+    now += 5 * 60_000;
+    await storage.runOnce();
+    expect(badCalls()).toBe(before + 1);
+  });
+
+  it('does not back off refusals the supervisor raises before starting maintenance', async () => {
+    // Derive the pre-helper codes from the supervisor: a new pre-helper refusal
+    // left out of STATE_REFUSAL_CODES would silently defer recovery for an hour.
+    const supervisor = await readFile(
+      new URL(
+        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    const reclaim = supervisor.slice(
+      supervisor.indexOf("case 'reclaim-package-caches':"),
+      supervisor.indexOf(
+        'brokerStorageRequest(',
+        supervisor.indexOf("case 'reclaim-package-caches':"),
+      ),
+    );
+    const codes = [...reclaim.matchAll(/fail\('([a-z-]+)'/gu)].map(([, code]) => code!);
+    expect(codes.length).toBeGreaterThan(0);
+    for (const code of codes) {
+      expect(STATE_REFUSAL_CODES).toContain(code);
+      let refuse = true;
+      const request = vi.fn(async () => {
+        if (refuse) throw Object.assign(new Error('blocked'), { runnerCacheFailure: { code } });
+        return response();
+      });
+      const storage = new RunnerCacheStorage({
+        now: () => 0,
+        listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+        request,
+      });
+      await storage.runOnce();
+      expect(storage.lastReport?.blockers.join(' ')).toContain(`[${code}]`);
+      refuse = false;
+      await storage.runOnce();
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(storage.lastReport?.blockers.join(' ')).not.toContain('retry deferred');
+    }
+  });
+
+  it('stamps the report with the injected clock', async () => {
+    const storage = new RunnerCacheStorage({
+      now: () => Date.UTC(2030, 0, 2),
+      listRuntimes: async () => [],
+      request: async () => response(),
+    });
+    await storage.runOnce();
+    expect(storage.lastReport?.observedAt).toBe('2030-01-02T00:00:00.000Z');
+  });
+
+  it('discards retry state for removed projects', async () => {
+    let present = true;
+    const request = vi.fn(async () => {
+      throw new Error('unavailable');
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => 0,
+      listRuntimes: async () => (present ? [{ projectId: 'one', sessionIds: [] }] : []),
+      request,
+    });
+    await storage.runOnce();
+    present = false;
+    await storage.runOnce();
+    present = true;
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('helper failure reporting and backoff', () => {
+  it('logs only safe diagnostics and defers further helper requests', async () => {
+    const onFailure = vi.fn();
+    const request = vi.fn(async () => {
+      throw Object.assign(new Error('/private/token'), {
+        runnerCacheFailure: {
+          code: 'maintenance-helper-failed',
+          phase: 'start',
+          memoryBytes: 256 * 1024 ** 2,
+          pidsLimit: 32,
+          exitCode: 2,
+          outputBytes: 60,
+          reason: 'resource-unavailable',
+          stderr: '/private/token',
+        },
+        runnerCacheCleanupFailed: true,
+      });
+    });
+    const storage = new RunnerCacheStorage({
+      now: () => 0,
+      listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+      request,
+      onFailure,
+    });
+    await storage.runOnce();
+    await storage.runOnce();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+      projectId: 'one',
+      reason:
+        '[maintenance-helper-failed] phase=start memoryBytes=268435456 pidsLimit=32 reason=resource-unavailable exitCode=2 outputBytes=60 cleanupFailed=true',
+      retryAfter: '1970-01-01T00:05:00.000Z',
+    });
+    expect(JSON.stringify(storage.lastReport)).not.toContain('/private/token');
+    expect(storage.lastReport?.blockers.join(' ')).toContain('retry deferred');
+  });
+  it.each([{ reason: '/private/token' }, { phase: '/private/token' }])(
+    'does not log arbitrary helper metadata supplied by peers: %j',
+    async (metadata) => {
+      const onFailure = vi.fn();
+      const storage = new RunnerCacheStorage({
+        listRuntimes: async () => [{ projectId: 'one', sessionIds: [] }],
+        onFailure,
+        request: async () => {
+          throw Object.assign(new Error('unavailable'), {
+            runnerCacheFailure: { code: 'maintenance-helper-failed', ...metadata },
+          });
+        },
+      });
+      await storage.runOnce();
+      expect(onFailure.mock.calls[0]?.[0].reason).toBe('[unclassified-failure]');
+      expect(JSON.stringify(onFailure.mock.calls)).not.toContain('/private/token');
+    },
+  );
 });

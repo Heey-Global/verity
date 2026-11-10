@@ -83,13 +83,19 @@ function group(sessions: SessionSummary[], over: Partial<SessionProjectGroup> = 
   } as SessionProjectGroup;
 }
 
-function renderCard(item: SessionProjectGroup, onOpen?: () => void, expanded = false) {
+function renderCard(
+  item: SessionProjectGroup,
+  onOpen?: () => void,
+  expanded = false,
+  unread: ReadonlySet<string> = new Set(),
+) {
   const onToggle = jest.fn();
   render(
     <ProjectCard
       group={item}
       client={{} as VerityClient}
       now={Date.now()}
+      unread={unread}
       reorder={{ reportCompactHeight: jest.fn() } as unknown as ProjectReorderController}
       renderedOrder={[item.id]}
       sortable
@@ -125,6 +131,24 @@ describe('project card facts', () => {
       Date.now(),
     );
     expect(facts.running).toBe(2);
+  });
+
+  // A working session's unread mark gives way to its working one in the session
+  // rows; counting it here would light the card blue for work still running.
+  it('counts only idle unread sessions as new and notes any working one', () => {
+    const sessions = [
+      session('a', { status: 'running' }),
+      session('b'),
+      session('c'),
+      session('d', { backgroundWorking: true }),
+    ];
+    const facts = projectCardFacts(group(sessions), Date.now(), new Set(['a', 'b', 'd']));
+    expect(facts.fresh).toBe(1);
+    expect(facts.working).toBe(true);
+    const idle = projectCardFacts(group([session('b')]), Date.now(), new Set(['b']));
+    expect(idle.working).toBe(false);
+    const item = group([session('b'), session('c')]);
+    expect(projectCardLine(item, projectCardFacts(item, Date.now(), new Set(['b'])))).toBe('1 new');
   });
 
   it('names the project’s own problem as its health', () => {
@@ -170,6 +194,40 @@ describe('project card', () => {
     expect(screen.queryByTestId('project-work')).toBeNull();
     fireEvent.press(screen.getByLabelText(/^website,/));
     expect(onOpen).toHaveBeenCalled();
+  });
+
+  // The marks are the card's only cue at a glance; one in the wrong tone says
+  // "new" for running work or hides the work entirely.
+  it('marks working before new, and leaves new to the waiting count', () => {
+    renderCard(
+      group([session('a', { status: 'running' }), session('b')]),
+      jest.fn(),
+      false,
+      new Set(['b']),
+    );
+    expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    screen.unmount();
+
+    renderCard(group([session('b')]), jest.fn(), false, new Set(['b']));
+    expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-waiting-p1')).toBeNull();
+    screen.unmount();
+
+    renderCard(group([ask('a'), session('b')]), jest.fn(), false, new Set(['b']));
+    expect(screen.queryByTestId('project-card-mark-p1')).toBeNull();
+    expect(screen.getByLabelText('1 waiting for you')).toBeTruthy();
+    screen.unmount();
+
+    renderCard(group([session('c')]), jest.fn());
+    expect(screen.queryByTestId('project-card-mark-p1')).toBeNull();
+    expect(screen.queryByTestId('project-card-waiting-p1')).toBeNull();
+  });
+
+  it('shows the project’s own work as working, not as a spinner', () => {
+    renderCard(group([], { health: { label: 'Updating security', tone: 'working' } }), jest.fn());
+    expect(screen.getByLabelText('Updating security')).toBeTruthy();
+    expect(screen.queryByLabelText('Updating security, in progress')).toBeNull();
   });
 
   it('shows the sessions of a group without a page in place', () => {

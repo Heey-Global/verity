@@ -180,6 +180,10 @@ case "$group $cmd" in
     ;;
   'repository open')
     jq -r '.workspace | "\(.worktree)\n\(.branch)"' <<<"$response"
+    # On stderr, so scripts reading the two lines above keep working.
+    instructions="$(jq -r '.instructions // empty' <<<"$response")"
+    [ -z "$instructions" ] ||
+      printf 'This repository has its own instructions: read %s before working in it and follow them alongside the project instructions.\n' "$instructions" >&2
     ;;
   'pr create')
     jq -r '"Opened pull request #\(.pullRequest.number) on \(.host): \(.pullRequest.url)"' <<<"$response"

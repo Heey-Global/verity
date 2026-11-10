@@ -29,6 +29,61 @@ function deferred<T>() {
 }
 
 describe('shared session PR cache', () => {
+  it('refreshes terminal status on activity while retaining failure backoff and identity', async () => {
+    let now = 0;
+    const load = vi
+      .fn<() => Promise<PullRequestStatus | null>>()
+      .mockResolvedValueOnce({ ...pr, phase: 'merged', pipeline: 'success' })
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValue({ ...pr, number: 2 });
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    expect(cache.invalidate(session.worktree, true)).toBe(true);
+    expect(await cache.get(session)).toMatchObject({ number: 1, pipeline: 'unknown' });
+    now = 1_000;
+    expect(cache.invalidate(session.worktree, true)).toBe(false);
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(2);
+    now = 30_000;
+    expect(cache.invalidate(session.worktree, true)).toBe(true);
+    expect(await cache.get(session)).toMatchObject({ number: 2, phase: 'open' });
+  });
+
+  it('uses fresh forge identity and phase when presentation fails', async () => {
+    let status = pr;
+    let fail = false;
+    const cache = createSessionPrCache({
+      load: async () => status,
+      present: async (_session, current) => {
+        if (fail) throw new Error('workspace unavailable');
+        return current;
+      },
+    });
+    await cache.get(session);
+    status = { ...pr, phase: 'merged' };
+    fail = true;
+    cache.invalidate(session.worktree, true);
+    await cache.get(session);
+    expect(cache.peek(session.worktree)?.phase).toBe('merged');
+    status = { ...pr, number: 2, url: 'https://example.test/pr/2' };
+    cache.invalidate(session.worktree, true);
+    await cache.get(session);
+    expect(cache.peek(session.worktree)).toEqual(status);
+  });
+
+  it('keeps hidden terminal PR status available to automation', async () => {
+    const terminal = { ...pr, phase: 'merged' as const };
+    const onChange = vi.fn();
+    const cache = createSessionPrCache({
+      load: async () => terminal,
+      present: async () => null,
+      onChange,
+    });
+    expect(await cache.get(session)).toEqual(terminal);
+    expect(cache.peek(session.worktree)).toBeNull();
+    expect(onChange).toHaveBeenCalledWith(session, null);
+  });
+
   it('shares an in-flight read and its result across foreground and background consumers', async () => {
     const read = deferred<PullRequestStatus>();
     const load = vi.fn(() => read.promise);

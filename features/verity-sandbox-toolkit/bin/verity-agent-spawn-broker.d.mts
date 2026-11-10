@@ -5,6 +5,14 @@ export const DEFAULT_RUNTIME_DIR: string;
 export const DEFAULT_CONTROL_DIR: string;
 export const DEFAULT_WORKTREE_ROOT: string;
 export const DEFAULT_SCRIPT_SANDBOX_PATH: string;
+export function acquireRuntimeAdmissionLease(
+  options: AgentSpawnBrokerOptions,
+  exclusive?: boolean,
+): Promise<import('node:fs/promises').FileHandle>;
+export function reclaimPackageCachesOffline(
+  request: { sessionIds: string[]; maxBytes: number },
+  options: AgentSpawnBrokerOptions,
+): ReturnType<typeof reclaimPackageCaches>;
 export function acquirePackageCacheLease(
   options: AgentSpawnBrokerOptions,
   exclusive?: boolean,
@@ -50,8 +58,12 @@ export function resolveDockerGid(
 
 export interface AgentSpawnBrokerOptions {
   runtimeDir?: string;
+  /** Internal inherited fence for an offline owner-operation child. */
+  runtimeAdmissionLockFd?: number;
   controlDir?: string;
   enforceRoot?: boolean;
+  /** Test seam for the `egress-readiness` request; production reads the container environment. */
+  egressReadiness?: Parameters<typeof runnerEgressReadiness>[0];
   agentUid: number;
   agentGid: number;
   runnerUid?: number;
@@ -112,6 +124,8 @@ export function agentLaunchSpec(
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     knowledgeIsolation?: boolean;
     planning?: boolean;
+    gatewayToolsOnly?: boolean;
+    gatewayToolsModel?: string;
     knowledgeHome?: string;
     managedHome?: string;
     args: string[];
@@ -124,6 +138,8 @@ export function materializeManagedAgentHome(
   request: {
     command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp';
     planning?: boolean;
+    gatewayToolsOnly?: boolean;
+    gatewayToolsModel?: string;
     sessionEnv?: Record<string, string>;
   },
   options: AgentSpawnBrokerOptions,
@@ -266,6 +282,23 @@ export function prepareSessionHome(
   options: AgentSpawnBrokerOptions,
 ): Promise<string>;
 
+export type EgressHopState =
+  'ready' | 'refused' | 'unresolved' | 'timeout' | 'unreachable' | 'invalid' | 'not_configured';
+
+export function runnerEgressReadiness(options?: {
+  env?: NodeJS.ProcessEnv;
+  connect?: (host: string, port: number, timeoutMs: number) => Promise<EgressHopState>;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<{
+  ok: true;
+  egressReadinessVersion: 1;
+  connector: EgressHopState;
+  claude: EgressHopState;
+  codex: EgressHopState;
+  broker: EgressHopState;
+}>;
+
 export function runnerStackHealth(options?: {
   env?: NodeJS.ProcessEnv;
   controlDir?: string;
@@ -278,3 +311,15 @@ export function runnerStackHealth(options?: {
   memoryGuard: boolean;
   connector: boolean;
 }>;
+
+export function restrictedCodexModelCatalog(model: string): { models: Record<string, unknown>[] };
+export function restrictedOpenCodePermissions(): {
+  action: string;
+  resource: string;
+  effect: string;
+}[];
+export function restrictedOpenCodePolicies(): {
+  action: string;
+  resource: string;
+  effect: string;
+}[];

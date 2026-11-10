@@ -40,13 +40,111 @@ selection. General XDG caches, backend state, authentication and transcripts sta
 inside their existing session/isolation boundaries. The runner does not otherwise
 configure a private pnpm store or Yarn cache; their defaults remain unchanged.
 
-Scheduled collection and **Reclaim now** use the same broker maintenance request.
-For known, inactive sessions, collection removes only the legacy
-`session-homes/<session-hash>/cache/_cacache` tree. It acquires the same cross-process
+Scheduled collection and **Reclaim now** negotiate cache-maintenance version 2
+and turn-ownership version 1 with the supervisor, and admission-fence version 1
+with the broker. Older active runtimes remain explicit unsupported blockers.
+New turn claims atomically persist the Verity session identity; this is distinct
+from a backend conversation identifier. Legacy ownership is resolved from
+Server running-turn identities or immutable ingested-frame bindings, with exact
+matching of any local start-command and runner-instance identity. Conflicts and
+missing evidence never imply settlement.
+
+Live collection scans at most 256 turn-directory entries per request. The
+supervisor retains one bounded continuation with a five-minute inactivity timeout.
+The Server schedules coalesced one-second follow-up passes, prioritizes unfinished
+inventories and rotates regular projects after a deadline. Passes remain bounded
+and sequential; Server shutdown cancels follow-up scheduling.
+Incomplete scans cannot delete legacy caches. New turn admission invalidates a
+scan, and the final broker transaction excludes concurrent claims. A verified
+unsettled turn blocks only its owning session. Unmapped ambiguous turns retain
+all potentially affected legacy homes, while independently leased shared-cache
+maintenance can proceed. Missing-state counts stay visible in diagnostics.
+
+For known inactive sessions, collection removes only
+`session-homes/<session-hash>/cache/_cacache`. It acquires the same cross-process
 session-home lease as turn admission and rechecks live ownership; a busy home is
-retained. Unknown ownership, unsafe paths, symlinks and unsupported broker versions
-produce blockers rather than deletion. Files outside `_cacache`, including private
-backend caches and session history, are not cache-cleanup targets.
+retained. Unknown ownership, unsafe paths, symlinks and unsupported broker
+versions produce blockers rather than deletion. Files outside `_cacache`,
+including private backend caches and session history, remain intact. Archived
+known sessions are included; unknown home hashes do not establish deletion.
+
+A sleeping project with no supervisor listener can use a short-lived trusted
+sandbox helper without waking its project. This fallback requires the project
+lifecycle and preview/storage barriers, fresh idle/session/turn checks, a complete
+Docker consumer inventory, the trusted managed default image and no explicit
+project image override. Active, special/control-plane and unknown runtimes do not
+qualify merely because their socket is absent. Unknown consumers or live leases
+retain data. The helper mounts only that runtime subtree, has no network, uses a
+read-only root filesystem and bounded resources, and invokes the broker's fixed
+maintenance operation. It independently holds an exclusive runtime admission
+flock plus home/cache leases. Brokers and their surviving children inherit the
+shared admission fence; normal starts wait while offline maintenance owns it.
+Project lifecycle admission also checks for unfinished helper containers after a
+Server restart, protecting older toolkits that lack the fence. Transport failure
+leaves a running or unverified helper and its fence intact. Helpers confirmed
+stopped after successful valid results are removed without volumes. Failed work,
+invalid results and lost start/wait replies retain at most one verified terminal
+helper per project for diagnosis. Scheduled GC and later maintenance attempts use
+the same retention check under lifecycle and storage barriers, including result
+collection. Removal never forces a running container to stop.
+
+The helper imports and calls the broker's offline operation in one Node process;
+it does not keep a second Node runtime alive just to launch maintenance. Its
+256 MiB memory/swap ceiling and external 25-second timeout remain unchanged.
+Failures back off independently per project, from five minutes up to one hour;
+success resets that delay. Pre-helper runtime-state refusals remain immediately
+retryable. Retry state is in memory and resets when the Server restarts.
+
+Helper failures include the phase (`create`, `start`, `wait`, `inspect`, `logs`
+or `response`), configured `memoryBytes` and `pidsLimit`, and an exit code when
+known. Output byte count and an allowlisted `reason` are included when logs are
+available, in reports and Server warnings. Reasons distinguish broker import or
+capability failures, invalid requests/responses, a busy runtime, maintenance
+failure, timeout and resource unavailability. The exact tini `exec timeout failed:
+Cannot allocate memory` diagnostic is classified as `resource-unavailable`;
+it does not establish that the container memory ceiling caused the failure.
+Exit 137 alone is not proof of OOM. Unknown output remains `unknown`; raw output,
+exception messages and private paths are never forwarded. `cleanupFailed=true`
+marks a secondary cleanup failure while preserving the primary diagnostics.
+
+### Recovering stopped maintenance helpers
+
+Cache-helper retention requires the exact project/component labels, managed name,
+matching list/inspect image identity and a known terminal state and timestamp.
+Created failed-start containers require verified creation time and are removed
+without retaining them: they have never run and would otherwise keep project
+admission fenced. Their failure phase remains in bounded reports. Exited/dead
+containers use finish time. The newest verified completed-run evidence is retained,
+with a deterministic ID tie-break. Older verified helpers are removed non-forcibly without volumes,
+including helpers left by older releases. A zero exit code alone is insufficient
+to establish a valid result; leftover zero-exit helpers remain diagnostic evidence.
+The last retained helper may expire under the existing seven-day GC policy;
+other stopped-container grace periods are unchanged.
+
+Running helpers, ambiguous identity or timestamps, failed inventory, and removal
+errors prevent further helper creation. These produce
+`maintenance-helper-retention-blocked` or a cleanup failure rather than continued
+accumulation. Protected unknown runs can temporarily prevent the numerical bound.
+A disconnected wait is reconciled only after fresh inspection proves termination.
+The existing per-project retry backoff remains unchanged. No manual deletion is
+required for this scheduled convergence, and general container/volume pruning is
+not a substitute for verified ownership and lifecycle checks.
+
+After an authorized rollout, compare a read-only baseline with fresh cache and GC
+`observedAt` reports: helper counts and terminal states per project, retained last
+failure, cleanup blockers, selected image/runtime, image pins and filesystem
+used/free bytes. Verify an actual successful helper result separately from fewer
+containers. Pin estimates overlap shared image layers and do not establish
+reclaimable or reclaimed bytes. Startup ENOMEM still requires evidence from the
+same runtime and configured container/host limits; neither that message nor code
+publication establishes a fix or host OOM. Live pulls, restarts, reconciliation
+and cleanup require separate authorization.
+
+### Offline cache policy and reporting
+
+Offline reclamation can clear a known home's regenerable cache despite ambiguous
+historical turn state only after proving no consumer can write and acquiring the
+exclusive runtime fence. It does not alter the turn state or claim settlement.
 
 The embedded Server's `runnerCacheMaxBytes` setting defaults to 4 GiB per project.
 For the Server entrypoint, set `VERITY_RUNNER_NPM_CACHE_MAX_BYTES` to a positive
@@ -69,7 +167,7 @@ legacy-cache removal counts, shared-cache cleanup counts and blockers. Missing o
 partial measurements remain unknown/incomplete. These file-allocation figures
 are separate from filesystem free-space change and cannot establish an exact
 host-disk saving in the presence of shared allocation or concurrent host activity.
-Collection is bounded and sequential; unavailable runtime sockets and inventories
+Collection is bounded and sequential; unavailable or unsafe runtimes and inventories
 that exceed request limits remain explicit blockers.
 
 Maintenance failures use allowlisted codes in `storageReclamation.runnerCaches.blockers`:
@@ -88,7 +186,8 @@ can still produce an unclassified refusal.
 identifier is protected just as a missing or invalid state is. Settled states
 need no session identifier. These counts explain a refusal; they do not prove
 that a turn is abandoned or authorize deletion. A sleeping project's unavailable
-supervisor does not cause the collector to wake it or bypass the broker.
+supervisor does not cause the collector to wake it; the separately fenced helper
+reuses broker validation and leases.
 
 Deleting a session already queues durable cleanup outside session foreign-key
 cascades. The existing worker retries broker cleanup, which fences the deleted
@@ -100,15 +199,48 @@ whole session home.
 `runners/<project>/turns` contains persisted execution requests, state and events.
 There is currently no scheduled age/size retention for these turn directories.
 This package-cache collector does not remove them or introduce transcript
-retention. Their lifecycle needs a separate policy that preserves recovery and
-execution evidence.
+retention. Their lifecycle needs a separately approved policy that preserves recovery and
+execution evidence. Settled-turn retention remains disabled. A future policy
+must require Server acknowledgement of durable terminal ingestion/fencing and
+retain a terminal tombstone or permanent pruned-turn index: deleting the whole
+turn directory could otherwise let a retry execute the same turn identity again.
+Local settled state and age alone are insufficient.
+
+Maintenance prepares a missing trusted default sandbox image on demand. It uses
+only the selected repository digest, verifies the local identity after download,
+and reserves the reference against image GC until helper use finishes. Cache
+maintenance and sleeping-worktree maintenance share preparation; retained Git
+template containers continue to supply their own image. Downloads run before
+project mutation locks, share work for the same digest, and run sequentially.
+Preparation has a 30-second caller deadline (including queue time); the last
+cancelled caller aborts and drains its download before releasing the reservation.
+A later pass retries after a failed preparation. Server shutdown cancels downloads
+and drains active cache and worktree maintenance.
+
+Image failures report `image-unavailable`, `image-preparation-failed`,
+`image-preparation-timeout` or `image-preparation-cancelled`, rather than claiming
+an unsupported broker. Preparation never substitutes an older sandbox or wakes a
+project, and preserves all ownership and idle checks. Publication of an image
+does not prove local availability: after an authorized rollout verify the selected
+sandbox digest, its local availability and a fresh maintenance `observedAt`.
+No separate Docker toolkit image is required for this helper; the sandbox must
+contain the matching broker. Existing running runtimes still need supported
+reconciliation to gain new capabilities.
 
 Rollout requires both the Server release and the matching sandbox toolkit/broker.
-An older broker cannot perform cache maintenance; the Server reports that state
-instead of falling back to direct filesystem deletion. After the usual release
+An older active broker cannot perform the new maintenance protocol; the Server
+reports that state instead of falling back to direct filesystem deletion. After the usual release
 and production promotion, verify the installed sandbox version, cache paths,
-activity blockers, remaining cache allocation and filesystem change. A successful
-code test does not establish live host reclamation or a converged growth trend.
+activity blockers, remaining cache allocation and filesystem change. Capture a baseline and post-rollout observations of sleeping-helper attempts,
+legacy-cache count and allocated bytes removed/remaining, shared-cache allocation,
+unknown-home and turn blockers, turn-directory count/allocation, stopped
+helper/image pins, and filesystem used/free bytes. Compare growth again after
+24 and 48 hours. Verify capabilities of existing custom and default runtimes,
+not only the Server version. Rollback disables the new maintenance path and
+preserves additive identity metadata; removed npm download caches regenerate on
+demand. A successful code test does not establish live host reclamation or a
+converged growth trend. Release publication, promotion and deployment require
+their normal approvals.
 
 ## Worktree lifecycle and recovery
 

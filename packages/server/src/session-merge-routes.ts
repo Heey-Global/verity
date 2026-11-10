@@ -38,11 +38,19 @@ export interface SessionMergeRouteDeps {
   sessionPrStatus: (session: SessionRecord) => Promise<PullRequestStatus | null>;
   compactPr: (status: PullRequestStatus | null) => PrSummary | null;
   applyPrSummaryAction: (session: SessionRecord, summary: PrSummary | null) => void;
+  beforePrCleanup?: (session: SessionRecord) => void;
+  afterPrCleanup?: (session: SessionRecord, status: PullRequestStatus | null) => Promise<void>;
   invalidatePrSummaryAction: (session: SessionRecord) => void;
 }
 
 const mergePullRequestBody = z.object({
   number: z.number().int().positive(),
+  // The commit the operator confirmed. When given, a branch that moved since
+  // (for example a fix session pushing) is refused rather than merged unseen.
+  expectedHeadSha: z
+    .string()
+    .regex(/^[0-9a-f]{7,64}$/u)
+    .optional(),
 });
 
 function buildLocalMergeDisplayPrompt(): string {
@@ -93,7 +101,7 @@ export function registerSessionMergeRoutes(
     '/sessions/:id/pull-request/merge',
     async (request, reply): Promise<{ merged: true } | { error: string; code?: string }> => {
       const { id } = sessionParams.parse(request.params);
-      const { number } = mergePullRequestBody.parse(request.body);
+      const { number, expectedHeadSha } = mergePullRequestBody.parse(request.body);
       if (!deps.mergePr) {
         reply.code(503);
         return { error: 'pull request merging is not configured' };
@@ -124,6 +132,7 @@ export function registerSessionMergeRoutes(
       // Undefined when no resolver is injected — the reset then falls back to the
       // project's base branch, as it always did.
       let mergedBaseRef: string | undefined;
+      let mergedPrStatus: PullRequestStatus | null = null;
       // The push payload is a routing hint, never authorization. Re-resolve the
       // session's PR at action time so a forged/stale notification cannot merge an
       // arbitrary PR from the repository. Older injected deployments without a PR
@@ -138,6 +147,7 @@ export function registerSessionMergeRoutes(
             code: 'merge_status_unavailable',
           };
         }
+        mergedPrStatus = { ...current, phase: 'merged' };
         if (current?.number === number && current.phase === 'merged') {
           applyPrSummaryAction(session, compactPr(current));
           // Preserve idempotency while still repairing a checkout left stale by
@@ -180,6 +190,18 @@ export function registerSessionMergeRoutes(
           reply.code(409);
           return { error: `pull request #${String(number)} is no longer ready to merge` };
         }
+        if (
+          expectedHeadSha !== undefined &&
+          current.headSha !== undefined &&
+          current.headSha !== expectedHeadSha
+        ) {
+          applyPrSummaryAction(session, compactPr(current));
+          reply.code(409);
+          return {
+            error: `pull request #${String(number)} changed since it was shown; refresh before merging`,
+            code: 'merge_head_changed',
+          };
+        }
         if (current.viewerCanMerge === false) {
           reply.code(403);
           return {
@@ -193,7 +215,11 @@ export function registerSessionMergeRoutes(
       }
       let permissionDenied = false;
       let unknownError = false;
-      const merged = await deps.mergePr(number, session.worktree).catch((error: unknown) => {
+      const merging =
+        expectedHeadSha === undefined
+          ? deps.mergePr(number, session.worktree)
+          : deps.mergePr(number, session.worktree, expectedHeadSha);
+      const merged = await merging.catch((error: unknown) => {
         permissionDenied = error instanceof ForgeMergePermissionError;
         unknownError = !permissionDenied;
         return false;
@@ -227,6 +253,7 @@ export function registerSessionMergeRoutes(
         reply.code(409);
         return { error: `pull request #${String(number)} could not be merged` };
       }
+      deps.beforePrCleanup?.(session);
       applyPrSummaryAction(session, {
         phase: 'merged',
         pipeline: 'success',
@@ -237,50 +264,61 @@ export function registerSessionMergeRoutes(
       // force-checks-out the worktree, so it must never run under a live turn. The
       // transcript marker and pending agent note are written only after the cleanup
       // attempt, so the next real turn sees the final post-merge state.
+      let cleanupObserved = false;
+      const finishCleanup = async (): Promise<void> => {
+        cleanupObserved = true;
+        await deps.afterPrCleanup?.(session, mergedPrStatus).catch((err: unknown) => {
+          request.log.warn({ err, sessionId: id }, 'Post-merge PR visibility update failed');
+        });
+      };
       await conductor
         .runWhenIdle(id, async () => {
           let note = `Pull request #${String(number)} was merged.`;
-          const branches = await branchesForSession(session);
-          if (branches) {
-            try {
-              // Against the branch the PR merged into, not the project's base: a
-              // stacked PR targets another session's branch, and resetting to the
-              // project base would force-check-out a commit without the merged work.
-              //
-              // Re-resolved now that the merge has landed, because a base retargeted
-              // between the pre-merge check and the merge itself would leave the
-              // earlier answer describing a branch this PR did not merge into. This
-              // reads GitHub rather than the pre-merge row because a successful merge
-              // drops the PR service's per-branch cache (`github.ts`); without that it
-              // would replay the very answer it is meant to re-check. The pre-merge
-              // value stands in when the PR no longer resolves — GitHub deletes the
-              // head branch this looks the PR up by.
-              const settled = await sessionPrStatus(session).catch(() => null);
-              const target =
-                settled?.number === number && settled.phase === 'merged'
-                  ? (settled.baseRef ?? mergedBaseRef)
-                  : mergedBaseRef;
-              const { base, deletedBranch } = await branches.resetToMergedBase(
-                session.worktree,
-                target === undefined ? {} : { base: target },
-              );
-              const deletedClause = deletedBranch
-                ? ` and the merged local branch "${deletedBranch}" was deleted`
-                : '';
-              // Purely informational — the reset already happened; the agent is not
-              // instructed to do anything (the detached HEAD is the server's doing).
-              note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
-            } catch {
-              // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
-              // on failure the worktree MAY already be reset (only the branch delete
-              // failed) or not (the fetch/checkout failed). We can't tell which here, so
-              // word it neutrally — never falsely claim the reset did or didn't happen.
-              note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
+          try {
+            const branches = await branchesForSession(session);
+            if (branches) {
+              try {
+                // Against the branch the PR merged into, not the project's base: a
+                // stacked PR targets another session's branch, and resetting to the
+                // project base would force-check-out a commit without the merged work.
+                //
+                // Re-resolved now that the merge has landed, because a base retargeted
+                // between the pre-merge check and the merge itself would leave the
+                // earlier answer describing a branch this PR did not merge into. This
+                // reads GitHub rather than the pre-merge row because a successful merge
+                // drops the PR service's per-branch cache (`github.ts`); without that it
+                // would replay the very answer it is meant to re-check. The pre-merge
+                // value stands in when the PR no longer resolves — GitHub deletes the
+                // head branch this looks the PR up by.
+                const settled = await sessionPrStatus(session).catch(() => null);
+                const target =
+                  settled?.number === number && settled.phase === 'merged'
+                    ? (settled.baseRef ?? mergedBaseRef)
+                    : mergedBaseRef;
+                const { base, deletedBranch } = await branches.resetToMergedBase(
+                  session.worktree,
+                  target === undefined ? {} : { base: target },
+                );
+                const deletedClause = deletedBranch
+                  ? ` and the merged local branch "${deletedBranch}" was deleted`
+                  : '';
+                // Purely informational — the reset already happened; the agent is not
+                // instructed to do anything (the detached HEAD is the server's doing).
+                note = `Pull request #${String(number)} was merged and your worktree has been reset to ${base} (detached at the merged commit)${deletedClause}.`;
+              } catch {
+                // Housekeeping is non-atomic (fetch → detach → delete the merged branch):
+                // on failure the worktree MAY already be reset (only the branch delete
+                // failed) or not (the fetch/checkout failed). We can't tell which here, so
+                // word it neutrally — never falsely claim the reset did or didn't happen.
+                note = `Pull request #${String(number)} was merged, but the automatic worktree cleanup afterwards did not fully complete.`;
+              }
             }
-          }
-          if (projectCheckoutSyncFailed) {
-            note +=
-              " The project's managed default-branch checkout could not be refreshed automatically.";
+            if (projectCheckoutSyncFailed) {
+              note +=
+                " The project's managed default-branch checkout could not be refreshed automatically.";
+            }
+          } finally {
+            await finishCleanup();
           }
           // The merge and cleanup need no model reasoning. Keep the detail available
           // to the agent on its next genuine turn, while showing the user one concise
@@ -288,7 +326,9 @@ export function registerSessionMergeRoutes(
           await deps.eventStore.appendPendingNote(id, note).catch(() => undefined);
           await conductor.emitMerged(id, number).catch(() => undefined);
         })
-        .catch(() => undefined);
+        .catch(async () => {
+          if (!cleanupObserved) await finishCleanup();
+        });
       return { merged: true };
     },
   );

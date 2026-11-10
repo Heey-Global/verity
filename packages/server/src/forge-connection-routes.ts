@@ -139,7 +139,9 @@ export function registerForgeConnectionRoutes(
         async () => (await store.forgeConnections.credentials(id))?.personalToken ?? undefined,
         connection.customCaPem,
       );
-      return { repositories: await transport.repositories() };
+      return {
+        repositories: (await transport.repositories()).filter((repository) => !repository.archived),
+      };
     } catch (error) {
       return failure(reply, error);
     }

@@ -2,6 +2,8 @@ import type { SessionPr } from './api.js';
 
 export interface PullRequestStatusMutation {
   sessionId: string;
+  /** The action's PR identity, so a late response cannot overwrite its successor. */
+  number?: number;
   /** Exact action projection when known; absent requests immediate reconciliation. */
   pr?: SessionPr;
 }

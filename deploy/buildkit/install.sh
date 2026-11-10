@@ -4,7 +4,7 @@ set -euo pipefail
 [[ $EUID == 0 ]] || { echo 'Run as root on the Docker host.' >&2; exit 1; }
 source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # renovate: datasource=docker depName=moby/buildkit
-buildkit_image=moby/buildkit:v0.34.1@sha256:99368f3e46177c6405b9740e4461d91cee004128daeecca78d4ceac50ec1da5c
+buildkit_image=moby/buildkit:v0.34.2@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
 builder_gid=${VERITY_BUILDKIT_GID:-1102}
 [[ $builder_gid =~ ^[0-9]+$ && $builder_gid -gt 0 && $builder_gid -lt 65535 ]] || { echo 'Invalid VERITY_BUILDKIT_GID' >&2; exit 1; }
 # Serialize release installation with the separately scheduled snapshotter transaction.
@@ -101,6 +101,16 @@ mv /etc/verity-buildkit/buildkitd.toml.new /etc/verity-buildkit/buildkitd.toml
 resources=$(bash "$source_dir/resources.sh")
 cpu_quota=$(sed -n 's/^CPU_QUOTA=//p' <<<"$resources")
 memory_max=$(sed -n 's/^MEMORY_MAX=//p' <<<"$resources")
+cat > /etc/systemd/system/verity-buildkit.slice <<SLICE
+[Unit]
+Description=Shared Verity build budget
+[Slice]
+CPUQuota=$cpu_quota
+MemoryMax=$memory_max
+MemorySwapMax=0
+TasksMax=512
+SLICE
+chmod 0644 /etc/systemd/system/verity-buildkit.slice
 sed -e "s/@CPU_QUOTA@/$cpu_quota/" -e "s/@MEMORY_MAX@/$memory_max/" "$source_dir/verity-buildkit.service" \
     > /etc/systemd/system/verity-buildkit.service.new
 chmod 0644 /etc/systemd/system/verity-buildkit.service.new

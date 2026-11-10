@@ -17,14 +17,21 @@ jest.mock('../../lib/taskPreferences', () => ({
 }));
 jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.scope }));
 
-import type { ProjectRecord, SessionSummary, UpcomingMeeting, VerityClient } from '@verity/mobile';
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
-import { Alert } from 'react-native';
+import type {
+  InboxItem,
+  ProjectRecord,
+  SessionSummary,
+  UpcomingMeeting,
+  VerityClient,
+} from '@verity/mobile';
+import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
+import { Alert, StyleSheet } from 'react-native';
+import { darkTheme, lightTheme } from '../../theme/tokens';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
-import { HomeInbox, RESUME_PROMPT, replyFor } from './HomeInbox';
+import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -80,7 +87,7 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
 async function renderInbox(
   sessions: SessionSummary[],
   client = fakeClient(),
-  extra: { selectedSessionId?: string; onOpenVerity?: () => void } = {},
+  extra: { selectedSessionId?: string; onOpenVerity?: () => void; projects?: ProjectRecord[] } = {},
 ) {
   const onOpenSession = jest.fn();
   const onRepairProject = jest.fn();
@@ -125,7 +132,7 @@ it('says so when nothing needs the operator', async () => {
 
 it('answers a question in place and hides it until the session moves on', async () => {
   const { client, onCountChange } = await renderInbox([question]);
-  expect(await screen.findByText('Which validation library?')).toBeTruthy();
+  expect(await screen.findByText(/Which validation library\?$/)).toBeTruthy();
   expect(screen.getByTestId('home-summary').props.children).toBe('1 question');
   await act(async () => {
     fireEvent.press(screen.getByRole('button', { name: 'Zod' }));
@@ -135,19 +142,150 @@ it('answers a question in place and hides it until the session moves on', async 
     prompt: 'Zod',
     clientReplyId: jest.mocked(randomUUID).mock.results.at(-1)?.value,
   });
-  expect(screen.queryByText('Which validation library?')).toBeNull();
+  expect(screen.queryByText(/Which validation library\?$/)).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
+});
+
+it('opens long answers in full before sending a selected answer', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const longQuestion = {
+    ...question,
+    openChoices: {
+      question: 'How should access work?',
+      options: [{ label }, { label: 'Use the database' }],
+    },
+  };
+  const { client } = await renderInbox([longQuestion]);
+  expect(screen.queryByText(label)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '2 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  expect(client.sendTurn).not.toHaveBeenCalled();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: label })));
+  expect(client.sendTurn).toHaveBeenCalledTimes(1);
+  expect(client.sendTurn).toHaveBeenCalledWith('form', expect.objectContaining({ prompt: label }));
+  expect(screen.queryByRole('button', { name: '2 answers' })).toBeNull();
+});
+
+it('keeps opening a long-answer sheet separate from writing an own answer', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const { client, onOpenSession } = await renderInbox([
+    { ...question, openChoices: { question: 'How?', options: [{ label }] } },
+  ]);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Open session' }));
+  expect(onOpenSession).toHaveBeenCalledWith('form');
+  expect(client.sendTurn).not.toHaveBeenCalled();
+  expect(screen.queryByText(label)).toBeNull();
+});
+
+it('sends a long answer only once when tapped twice before the sheet closes', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const client = fakeClient();
+  let resolveSend!: (value: object) => void;
+  client.sendTurn.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+  );
+  await renderInbox(
+    [{ ...question, openChoices: { question: 'How?', options: [{ label }] } }],
+    client,
+  );
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  const choice = screen.getByRole('button', { name: label });
+  act(() => {
+    fireEvent.press(choice);
+    fireEvent.press(choice);
+  });
+  expect(client.sendTurn).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText(label)).toBeNull();
+  await act(async () => resolveSend({}));
+});
+
+it('removes a long-answer sheet when another client resolves the question', async () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const { client, rerender, onOpenSession, onRepairProject } = await renderInbox([
+    { ...question, openChoices: { question: 'How?', options: [{ label }] } },
+  ]);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  rerender(
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={[session('form')]}
+      projects={[project]}
+      refreshing={false}
+      onRefresh={jest.fn()}
+      onOpenSession={onOpenSession}
+      onRepairProject={onRepairProject}
+    />,
+  );
+  expect(screen.queryByText(label)).toBeNull();
+  expect(client.sendTurn).not.toHaveBeenCalled();
+});
+
+it('closes an open sheet when its question changes or the card becomes hidden', () => {
+  const label = 'Build the admin bot with a token stored in Doppler';
+  const item: InboxItem = {
+    key: 'q',
+    kind: 'question',
+    title: 'How?',
+    tag: 'Question',
+    tone: 'attention',
+    context: 'Project',
+    at: 0,
+    actions: [{ kind: 'answer', label, answer: label, sessionId: 'form' }],
+  };
+  const props = {
+    item,
+    selected: false,
+    pending: false as const,
+    disabled: false,
+    onAction: jest.fn(),
+  };
+  const view = render(<InboxCard {...props} />);
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  expect(screen.getByText(label)).toBeTruthy();
+  view.rerender(
+    <InboxCard
+      {...props}
+      item={{
+        ...item,
+        actions: [
+          {
+            kind: 'answer',
+            label,
+            answer: 'A changed payload behind the same label',
+            sessionId: 'form',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.queryByText(label)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  view.rerender(
+    <InboxCard
+      {...props}
+      item={{ ...item, actions: [{ ...item.actions[0]!, label: `${label} instead` }] }}
+    />,
+  );
+  expect(screen.queryByText(`${label} instead`)).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: '1 answers' }));
+  view.rerender(<InboxCard {...props} onRestore={jest.fn()} />);
+  expect(screen.queryByText(label)).toBeNull();
 });
 
 it('keeps an item when the answer could not be delivered', async () => {
   const client = fakeClient();
   client.sendTurn.mockRejectedValueOnce(new Error('network down'));
   await renderInbox([question], client);
-  await screen.findByText('Which validation library?');
+  await screen.findByText(/Which validation library\?$/);
   await act(async () => {
     fireEvent.press(screen.getByRole('button', { name: 'Valibot' }));
   });
-  expect(screen.getByText('Which validation library?')).toBeTruthy();
+  expect(screen.getByText(/Which validation library\?$/)).toBeTruthy();
   // The first request may have landed: the retry must carry the same idempotency
   // key, or the agent receives the answer twice.
   await act(async () => {
@@ -209,7 +347,7 @@ it('offers an online meeting inside the join window and survives a failed calend
   unmount();
 
   await renderInbox([question], fakeClient(Promise.reject(new Error('calendar unavailable'))));
-  expect(await screen.findAllByText('Which validation library?')).toHaveLength(1);
+  expect(await screen.findAllByText(/Which validation library\?$/)).toHaveLength(1);
 });
 
 it('opens a project and hands repair to the overview', async () => {
@@ -330,7 +468,7 @@ describe('dismissing', () => {
 
   it('hides an item at once, saves it for the operator and keeps it out of the count', async () => {
     const { client, onCountChange } = await renderInbox([dismissible]);
-    await screen.findByText('Which validation library?');
+    await screen.findByText(/Which validation library\?$/);
     await act(async () => {
       fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
     });
@@ -339,7 +477,7 @@ describe('dismissing', () => {
       expect.stringMatching(/^question:form/),
       true,
     );
-    expect(screen.queryByText('Which validation library?')).toBeNull();
+    expect(screen.queryByText(/Which validation library\?$/)).toBeNull();
     expect(screen.getByTestId('home-summary').props.children).toBe('Nothing needs you right now.');
     expect(onCountChange).toHaveBeenLastCalledWith(0);
     expect(screen.getByRole('button', { name: '1 hidden' })).toBeTruthy();
@@ -350,11 +488,11 @@ describe('dismissing', () => {
     const client = fakeClient();
     client.setSessionInboxDismissed.mockRejectedValueOnce(new Error('offline'));
     await renderInbox([dismissible], client);
-    await screen.findByText('Which validation library?');
+    await screen.findByText(/Which validation library\?$/);
     await act(async () => {
       fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
     });
-    expect(screen.getByText('Which validation library?')).toBeTruthy();
+    expect(screen.getByText(/Which validation library\?$/)).toBeTruthy();
     expect(alert).toHaveBeenCalledWith('Not hidden', expect.any(String));
     expect(screen.queryByRole('button', { name: '1 hidden' })).toBeNull();
   });
@@ -363,7 +501,7 @@ describe('dismissing', () => {
     const key = 'question:form:';
     // The key is derived from the question; read the live one off a first render.
     const first = await renderInbox([dismissible]);
-    await screen.findByText('Which validation library?');
+    await screen.findByText(/Which validation library\?$/);
     await act(async () => {
       fireEvent.press(screen.getByRole('button', { name: 'Dismiss' }));
     });
@@ -378,7 +516,7 @@ describe('dismissing', () => {
     const { client, onCountChange } = await renderInbox([
       { ...question, inboxDismissed: [savedKey] },
     ]);
-    expect(screen.queryByText('Which validation library?')).toBeNull();
+    expect(screen.queryByText(/Which validation library\?$/)).toBeNull();
     expect(onCountChange).toHaveBeenLastCalledWith(0);
     fireEvent.press(screen.getByRole('button', { name: '1 hidden' }));
     expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
@@ -388,13 +526,15 @@ describe('dismissing', () => {
       fireEvent.press(screen.getByRole('button', { name: 'Restore' }));
     });
     expect(client.setSessionInboxDismissed).toHaveBeenCalledWith('form', savedKey, false);
-    expect(screen.getByTestId('inbox-item-question')).toBeTruthy();
+    expect(
+      within(screen.getByTestId('work-needs-you')).getByText(/Which validation library\?$/),
+    ).toBeTruthy();
     expect(onCountChange).toHaveBeenLastCalledWith(1);
   });
 
   it('offers no X when the server cannot keep a dismissal', async () => {
     await renderInbox([question]);
-    await screen.findByText('Which validation library?');
+    await screen.findByText(/Which validation library\?$/);
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
   });
 
@@ -429,4 +569,115 @@ it('opens Verity’s page from her header only when Home is given the way there'
 it('keeps Verity’s header a plain identity without a page to open', async () => {
   await renderInbox([]);
   expect(screen.queryByTestId('home-verity')).toBeNull();
+});
+
+it('shows a waiting mockup review as a normal action rather than a problem', async () => {
+  await renderInbox([
+    session('review', {
+      mockupReview: {
+        state: 'pending',
+        revision: 1,
+        screens: [
+          {
+            name: 'Home',
+            attachment: 'a'.repeat(64),
+            mediaType: 'image/png',
+            width: 1,
+            height: 1,
+            verdict: 'open',
+          },
+        ],
+      },
+    }),
+  ]);
+  expect(screen.getByLabelText('Mockups, waiting for you')).toBeTruthy();
+  const style = StyleSheet.flatten(screen.getByText('Mockups').props.style) as { color: string };
+  expect([darkTheme.colors.action, lightTheme.colors.action]).toContain(style.color);
+  expect(screen.queryByLabelText('Mockups, needs attention')).toBeNull();
+});
+
+it('uses the project work groups across projects without counting progress or unread results as decisions', async () => {
+  const running = session('agent-working', { status: 'running' });
+  const ci = session('checks-running', {
+    pr: { phase: 'open', pipeline: 'running', mergeable: null },
+  });
+  const failed = session('checks-failed', {
+    pr: { phase: 'open', pipeline: 'failure', mergeable: false },
+  });
+  const unread = session('new-answer', { eventCount: 8, lastSeenEventCount: 4 });
+  const { onCountChange } = await renderInbox([question, running, ci, failed, unread]);
+  const needs = within(screen.getByTestId('work-needs-you'));
+  const active = within(screen.getByTestId('work-active'));
+  const results = within(screen.getByTestId('work-results'));
+  expect(needs.getByText('form')).toBeTruthy();
+  expect(
+    needs.getByRole('button', { name: /form, acme\/website, Which validation library/ }),
+  ).toBeTruthy();
+  expect(needs.getByText('checks-failed')).toBeTruthy();
+  expect(active.getByText('agent-working')).toBeTruthy();
+  expect(active.getByText('checks-running')).toBeTruthy();
+  expect(results.getByText('new-answer')).toBeTruthy();
+  expect(screen.getByText('Needs you · 2')).toBeTruthy();
+  expect(screen.getByText('In progress · 2')).toBeTruthy();
+  expect(screen.getByText('New results · 1')).toBeTruthy();
+  expect(onCountChange).toHaveBeenLastCalledWith(2);
+  expect(screen.queryByRole('tab', { name: /^Now/ })).toBeNull();
+});
+
+it('moves a Home session from work to a question and back without refreshing', async () => {
+  const running = session('form', { status: 'running' });
+  const { rerender, client, onOpenSession, onRepairProject } = await renderInbox([running]);
+  const page = (sessions: SessionSummary[]) => (
+    <HomeInbox
+      client={client as unknown as VerityClient}
+      sessions={sessions}
+      projects={[project]}
+      refreshing={false}
+      onRefresh={jest.fn()}
+      onOpenSession={onOpenSession}
+      onRepairProject={onRepairProject}
+    />
+  );
+  expect(within(screen.getByTestId('work-active')).getByText('form')).toBeTruthy();
+  rerender(page([question]));
+  expect(within(screen.getByTestId('work-needs-you')).getByText('form')).toBeTruthy();
+  expect(screen.queryByTestId('work-active')).toBeNull();
+  rerender(page([running]));
+  expect(within(screen.getByTestId('work-active')).getByText('form')).toBeTruthy();
+  expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  expect(screen.getAllByText('form')).toHaveLength(1);
+});
+
+it('keeps simultaneous permission and question decisions visible in one session position', async () => {
+  const waiting: SessionSummary = {
+    ...question,
+    pendingPermissions: ['permission-1'],
+    permissionAwaitingInput: true,
+  };
+  const { onCountChange } = await renderInbox([waiting]);
+  const needs = within(screen.getByTestId('work-needs-you'));
+  expect(needs.getByText('Permission needed')).toBeTruthy();
+  expect(needs.getByText(/Which validation library\?$/)).toBeTruthy();
+  expect(needs.getByRole('button', { name: 'Zod' })).toBeTruthy();
+  expect(onCountChange).toHaveBeenLastCalledWith(1);
+});
+
+it('keeps archived project problems, running work and unread results out of Home', async () => {
+  const archived = { ...project, archived: true };
+  const sessions = [
+    session('failed', { pr: { phase: 'open', pipeline: 'failure', mergeable: false } }),
+    session('conflict', {
+      pr: { phase: 'open', pipeline: 'unknown', mergeable: false, mergeState: 'dirty' },
+    }),
+    session('disconnected', {
+      attention: [{ code: 'sandbox_disconnected', message: 'Connection lost' }],
+    }),
+    session('working', { status: 'running' }),
+    session('unread', { eventCount: 8, lastSeenEventCount: 2 }),
+  ];
+  const { onCountChange } = await renderInbox(sessions, fakeClient(), { projects: [archived] });
+  expect(screen.queryByTestId('work-needs-you')).toBeNull();
+  expect(screen.queryByTestId('work-active')).toBeNull();
+  expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(onCountChange).toHaveBeenLastCalledWith(0);
 });

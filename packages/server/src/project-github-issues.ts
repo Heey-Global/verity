@@ -1,5 +1,10 @@
-import type { FastifyInstance } from 'fastify';
-import { isLocalProject, type EventStore, type ProjectRecord } from '@verity/store';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
+import {
+  isLocalProject,
+  projectForRepository,
+  type EventStore,
+  type ProjectRecord,
+} from '@verity/store';
 import { z } from 'zod';
 import type { ForgeIssueList } from './forge-provider.js';
 import type { HttpFetch } from './github.js';
@@ -58,25 +63,133 @@ export async function listProjectGitHubIssues(
   return { connected: true, viewerLogin: null, issues };
 }
 
+/** Open issues of one repository connected to a project. `unavailable` means its
+ *  code host could not be asked (down, slow, no credentials) — never "no issues". */
+export type RepositoryIssues = {
+  id: string;
+  name: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  isDefault: boolean;
+} & (
+  | { status: 'ok'; viewerLogin: string | null; issues: ForgeIssueList['issues'] }
+  | { status: 'unavailable' }
+);
+
+/** Bounds one repository's whole listing, pages included, so a slow host cannot
+ *  hold the list for every other repository. */
+const REPOSITORY_ISSUES_TIMEOUT_MS = 20_000;
+
+/**
+ * Open issues of every GitHub or Forgejo repository connected to the project,
+ * the default repository first. Each repository is asked on its own, so one
+ * failing host marks only its own entry unavailable. A repository the server
+ * has no credentials for is left out, as the single-repository route reported
+ * it disconnected: a retry could never reach it.
+ */
+export async function listProjectIssues(
+  store: Pick<EventStore, 'listProjectRepositories'>,
+  project: ProjectRecord,
+  list: ((repository: ProjectRecord) => Promise<ForgeIssueList>) | undefined,
+  timeoutMs = REPOSITORY_ISSUES_TIMEOUT_MS,
+  /** Told why a repository is unavailable, which its entry does not say. */
+  onError?: (repositoryId: string, error: unknown) => void,
+): Promise<RepositoryIssues[]> {
+  if (!list) return [];
+  const repositories = (await store.listProjectRepositories(project.id))
+    .filter(
+      (repository) =>
+        repository.removedAt === null &&
+        (repository.kind === 'github' || repository.kind === 'forgejo'),
+    )
+    .sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  const listed = await Promise.all(
+    repositories.map(async (repository): Promise<RepositoryIssues | undefined> => {
+      const identity = {
+        id: repository.id,
+        name: repository.isDefault ? `${repository.owner}/${repository.repo}` : repository.name,
+        kind: repository.kind as 'github' | 'forgejo',
+        owner: repository.owner,
+        repo: repository.repo,
+        isDefault: repository.isDefault,
+      };
+      const unavailable = { ...identity, status: 'unavailable' as const };
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const result = await Promise.race([
+          list(projectForRepository(project, repository)),
+          new Promise<'timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('timeout'), timeoutMs);
+          }),
+        ]);
+        if (result === 'timeout') {
+          onError?.(repository.id, new Error('timed out'));
+          return unavailable;
+        }
+        if (!result.connected) return undefined;
+        return {
+          ...identity,
+          status: 'ok',
+          viewerLogin: result.viewerLogin,
+          issues: result.issues,
+        };
+      } catch (error) {
+        onError?.(repository.id, error);
+        return unavailable;
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+  return listed.filter((entry) => entry !== undefined);
+}
+
 export function registerProjectGitHubIssueRoutes(
   app: FastifyInstance,
   deps: {
-    store: Pick<EventStore, 'getProject' | 'listReadableProjectIds'>;
+    store: Pick<EventStore, 'getProject' | 'listReadableProjectIds' | 'listProjectRepositories'>;
+    /** Lists one repository; called with the project bound to that repository. */
     list?: ((project: ProjectRecord) => Promise<ProjectGitHubIssues>) | undefined;
   },
 ): void {
-  app.get('/projects/:id/github/issues', async (request, reply) => {
+  const readable = async (request: FastifyRequest): Promise<ProjectRecord | undefined> => {
     const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
     const project = await deps.store.getProject(id);
     if (
       !project ||
       (request.localUserId !== null &&
         !(await deps.store.listReadableProjectIds(request.localUserId)).includes(id))
-    ) {
-      return reply.code(404).send({ error: 'project not found' });
-    }
+    )
+      return undefined;
+    return project;
+  };
+  // The default repository only; kept for app versions that predate `/issues`.
+  app.get('/projects/:id/github/issues', async (request, reply) => {
+    const project = await readable(request);
+    if (!project) return reply.code(404).send({ error: 'project not found' });
     if (isLocalProject(project) || !deps.list)
       return { connected: false, viewerLogin: null, issues: [] };
     return deps.list(project);
+  });
+  app.get('/projects/:id/issues', async (request, reply) => {
+    const project = await readable(request);
+    if (!project) return reply.code(404).send({ error: 'project not found' });
+    reply.header('cache-control', 'no-store');
+    // As the default-repository route: a local project has no code host to ask.
+    if (isLocalProject(project)) return { repositories: [] };
+    return {
+      repositories: await listProjectIssues(
+        deps.store,
+        project,
+        deps.list,
+        undefined,
+        (repositoryId, error) =>
+          request.log.warn(
+            { err: error, projectId: project.id, repositoryId },
+            'repository issues unavailable',
+          ),
+      ),
+    };
   });
 }

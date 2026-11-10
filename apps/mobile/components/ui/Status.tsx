@@ -3,8 +3,8 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { tint } from './tint';
 
-/** The five status intents (docs/design-system.md § 8). */
-export type StatusIntent = 'ready' | 'needsSetup' | 'optional' | 'transient' | 'unknown';
+/** The status intents (docs/design-system.md § 8). */
+export type StatusIntent = 'action' | 'ready' | 'needsSetup' | 'optional' | 'transient' | 'unknown';
 
 /**
  * The state of a single element as a small uppercase word on a tinted ground
@@ -12,15 +12,34 @@ export type StatusIntent = 'ready' | 'needsSetup' | 'optional' | 'transient' | '
  * it (`Soon` on a feature card); elsewhere `optional` is plain muted text, which
  * `StatusText` renders. `transient` shows a spinner next to its word.
  */
-export function StatusTag({ intent, label }: { intent: StatusIntent; label: string }) {
+export function StatusTag({
+  intent,
+  label,
+  muted = false,
+}: {
+  intent: StatusIntent;
+  label: string;
+  /**
+   * Draws the tag in the neutral tone while keeping the intent's spoken meaning,
+   * for a row whose icon and subtitle already carry the color.
+   */
+  muted?: boolean;
+}) {
   const { theme } = useUnistyles();
   if (intent === 'transient') return <StatusText intent="transient" label={label} />;
+  const tone: StatusIntent | 'neutral' = muted ? 'neutral' : intent;
   return (
     <View
       style={[
         styles.tag,
         styles.shrink,
-        intent === 'ready' ? styles.tagReady : intent === 'needsSetup' ? styles.tagAttention : null,
+        tone === 'action'
+          ? styles.tagAction
+          : tone === 'ready'
+            ? styles.tagReady
+            : tone === 'needsSetup'
+              ? styles.tagAttention
+              : null,
       ]}
       accessible
       accessibilityLabel={`${label}, ${describe(intent)}`}
@@ -31,11 +50,13 @@ export function StatusTag({ intent, label }: { intent: StatusIntent; label: stri
           styles.tagLabel,
           {
             color:
-              intent === 'ready'
-                ? theme.colors.success
-                : intent === 'needsSetup'
-                  ? theme.colors.attention
-                  : theme.colors.textMuted,
+              tone === 'action'
+                ? theme.colors.action
+                : tone === 'ready'
+                  ? theme.colors.success
+                  : tone === 'needsSetup'
+                    ? theme.colors.attention
+                    : theme.colors.textMuted,
           },
         ]}
       >
@@ -75,9 +96,43 @@ export function Dot({ intent }: { intent: StatusIntent }) {
       accessibilityElementsHidden
       style={[
         styles.dot,
-        intent === 'ready' ? styles.dotReady : intent === 'needsSetup' ? styles.dotAttention : null,
+        intent === 'action'
+          ? styles.dotAction
+          : intent === 'ready'
+            ? styles.dotReady
+            : intent === 'needsSetup'
+              ? styles.dotAttention
+              : null,
       ]}
     />
+  );
+}
+
+/**
+ * How many items wait for the person: a number on the attention tint, the same
+ * drawing as the Home tab's count. The label names what is counted, so the
+ * number is never read out bare.
+ */
+export function CountBadge({
+  count,
+  label,
+  testID,
+}: {
+  count: number;
+  label: string;
+  testID?: string;
+}) {
+  return (
+    <View
+      style={styles.count}
+      accessible
+      accessibilityLabel={`${String(count)} ${label}`}
+      testID={testID}
+    >
+      <Text numberOfLines={1} style={[styles.tagLabel, styles.countLabel]}>
+        {String(count)}
+      </Text>
+    </View>
   );
 }
 
@@ -102,15 +157,17 @@ function StatusText({ intent, label }: { intent: StatusIntent; label: string }) 
 }
 
 function describe(intent: StatusIntent): string {
-  return intent === 'ready'
-    ? 'ready'
-    : intent === 'needsSetup'
-      ? 'needs attention'
-      : intent === 'transient'
-        ? 'in progress'
-        : intent === 'unknown'
-          ? 'outcome unknown'
-          : 'optional';
+  return intent === 'action'
+    ? 'waiting for you'
+    : intent === 'ready'
+      ? 'ready'
+      : intent === 'needsSetup'
+        ? 'needs attention'
+        : intent === 'transient'
+          ? 'in progress'
+          : intent === 'unknown'
+            ? 'outcome unknown'
+            : 'optional';
 }
 
 const styles = StyleSheet.create((theme) => ({
@@ -120,13 +177,25 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.tag,
     backgroundColor: tint(theme.colors.text, 'neutral'),
   },
+  tagAction: { backgroundColor: tint(theme.colors.action, 'fill') },
   tagReady: { backgroundColor: tint(theme.colors.success, 'fill') },
   tagAttention: { backgroundColor: tint(theme.colors.attention, 'fill') },
   tagLabel: { ...theme.typography.label },
+  count: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tint(theme.colors.attention, 'fill'),
+  },
+  countLabel: { color: theme.colors.attention },
   dotRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   // A status word truncates instead of pushing the row's title aside.
   shrink: { flexShrink: 1, minWidth: 0 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: theme.colors.textFaint },
+  dotAction: { backgroundColor: theme.colors.action },
   dotReady: {
     backgroundColor: theme.colors.success,
     shadowColor: theme.colors.success,

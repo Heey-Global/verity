@@ -21,6 +21,7 @@ import type { Conductor } from '@verity/session';
 import {
   answerAppHelp,
   appHelpRequestSchema,
+  COMPLETE_MOCKUPS_TOOL,
   END_PLANNING_TOOL,
   planningDesignNote,
   PRESENT_MOCKUPS_TOOL,
@@ -76,6 +77,13 @@ import {
   importProjectSource,
   moveProjectSource,
 } from './knowledge-import.js';
+import {
+  knowledgeRef,
+  noteWikiOccasion,
+  occasionTitle,
+  wikiOccasionTool,
+} from './wiki-occasions.js';
+import { readWikiPage } from './wiki-page-reader.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
@@ -122,8 +130,11 @@ import { executeTasksTool } from './tasks-routes.js';
 import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
 import { createGitWorktreeProvisioner } from './worktree.js';
+import type { WikiProposals } from './wiki-proposals.js';
 interface ServerMcpRouteDeps {
   deps: ServerDeps;
+  /** Absent without a knowledge folder; proposing then fails like other knowledge writes. */
+  wikiProposals: WikiProposals | undefined;
   inquiryTool: (sessionId: string, userId: string | null, request: unknown) => Promise<unknown>;
   app: FastifyInstance;
   conductor: Conductor;
@@ -154,8 +165,34 @@ interface ServerMcpRouteDeps {
   SERVER_VERSION: string;
   VERITY_CONTROL_PROJECT_ID: string;
 }
+
+/** The knowledge operations a Wiki maintenance run may call from its isolated turn. */
+const WIKI_MAINTENANCE_OPERATIONS: ReadonlySet<string> = new Set([
+  'read_wiki_page',
+  'read_wiki_occasions',
+  'close_wiki_occasions',
+  'propose_wiki',
+]);
+
+/** Whether a gateway call is one of those operations, from the maintenance session. */
+async function isWikiMaintenanceCall(
+  store: Pick<EventStore, 'wikiMaintenance'>,
+  toolName: string,
+  request: unknown,
+  sessionId: string,
+): Promise<boolean> {
+  const operation = (request as { operation?: unknown } | null)?.operation;
+  return (
+    toolName === 'verity_knowledge' &&
+    typeof operation === 'string' &&
+    WIKI_MAINTENANCE_OPERATIONS.has(operation) &&
+    (await store.wikiMaintenance.isSession(sessionId))
+  );
+}
+
 export function registerServerMcpRoutes({
   deps,
+  wikiProposals,
   inquiryTool,
   app,
   conductor,
@@ -517,6 +554,9 @@ export function registerServerMcpRoutes({
         if (!caller) return undefined;
         const session = await deps.eventStore.getSession(caller.sessionId);
         if (session?.projectId !== input.projectId) return undefined;
+        // The Wiki maintenance run reads untrusted text unattended; the project's
+        // connected MCP servers are a way out it must not have.
+        if (await deps.eventStore.wikiMaintenance.isSession(caller.sessionId)) return undefined;
         if (deps.authRegistry?.isEnabled() === true) {
           const principal = await runningTurnInitiator(caller.sessionId, caller.turnId);
           if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))
@@ -1058,6 +1098,13 @@ export function registerServerMcpRoutes({
         await gatewayDeps.authorizeCall?.(input);
         const { projectId, sessionId, toolName } = input;
         if (
+          (await deps.eventStore.wikiMaintenance.isSession(sessionId)) &&
+          !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; Wiki maintenance allows only Wiki operations.',
+          );
+        if (
           (await deps.eventStore.repairs.qa()).session_id === sessionId &&
           toolName !== 'verity_qa_analysis'
         )
@@ -1128,6 +1175,7 @@ export function registerServerMcpRoutes({
         // and recording the agreed steps belongs to planning. App help only reads the
         // static catalog, and explaining Verity is as much a part of planning.
         if (
+          !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId)) &&
           !(
             toolName === 'verity_project_inquiry' &&
             (input.request as { operation?: string }).operation !== 'request'
@@ -1143,7 +1191,7 @@ export function registerServerMcpRoutes({
           );
         }
         if (toolName === 'verity_project_inquiry') return;
-        if (toolName === PRESENT_MOCKUPS_TOOL) {
+        if (toolName === PRESENT_MOCKUPS_TOOL || toolName === COMPLETE_MOCKUPS_TOOL) {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId !== projectId)
             throw new ControlPlaneSessionAuthorityError('session project changed');
@@ -1485,11 +1533,13 @@ export function registerServerMcpRoutes({
         }
 
         // Presenting mockups only stores images the session already has and asks the
-        // user to look at them; the review itself is the user's decision.
+        // user to look at them; the review itself is the user's decision. Completing
+        // it only follows what the user said in the chat and starts no work itself.
         if (
           toolName === START_PLANNING_TOOL ||
           toolName === PRESENT_PLAN_TOOL ||
-          toolName === PRESENT_MOCKUPS_TOOL
+          toolName === PRESENT_MOCKUPS_TOOL ||
+          toolName === COMPLETE_MOCKUPS_TOOL
         ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
@@ -1604,6 +1654,19 @@ export function registerServerMcpRoutes({
           ? schedulingTool.approvedEdits(request, updatedInput)
           : undefined,
       invokeTool: async (input) => {
+        // Recheck at execution too: a pending approval cannot widen a maintenance turn.
+        if (
+          (await deps.eventStore.wikiMaintenance.isSession(input.sessionId)) &&
+          !(await isWikiMaintenanceCall(
+            deps.eventStore,
+            input.toolName,
+            input.request,
+            input.sessionId,
+          ))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'Wiki maintenance allows only Wiki operations.',
+          );
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
@@ -1648,10 +1711,19 @@ export function registerServerMcpRoutes({
               height,
               verdict,
             })),
-            note:
-              review.state === 'approved'
-                ? 'Every screen is unchanged from an approved one. Continue implementing the accepted plan.'
-                : 'Verity shows the mockups in the chat and waits for the user to review each screen. End your turn now and do not implement the rest of the plan until Verity tells you they were approved.',
+            note: 'Verity shows the mockups in the chat; the user marks each screen and explains in the chat. End your turn now and do not implement the rest of the plan until the user tells you in the chat to implement.',
+          };
+        }
+        if (input.toolName === COMPLETE_MOCKUPS_TOOL) {
+          const result = await sessionMockups.complete(input.sessionId);
+          if (!result.ok)
+            return {
+              completed: false,
+              note: 'No mockup review is waiting. Continue as the user asked.',
+            };
+          return {
+            completed: true,
+            note: 'The mockup review has ended. Continue implementing as the user asked, keeping the approved screens and leaving out discarded ones.',
           };
         }
         if (input.toolName === PRESENT_PLAN_TOOL) {
@@ -1758,10 +1830,19 @@ export function registerServerMcpRoutes({
           const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
           return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
+        // A Wiki maintenance run is isolated like planning; of the external tools it
+        // keeps only its Wiki operations, which are handled below.
+        const wikiMaintenanceCall = await isWikiMaintenanceCall(
+          deps.eventStore,
+          input.toolName,
+          input.request,
+          input.sessionId,
+        );
         // Planning can begin while an external approval card is pending.
         if (
-          (await sessionPlanning.isPlanning(input.sessionId)) ||
-          conductor.isPlanningTurn?.(input.sessionId)
+          !wikiMaintenanceCall &&
+          ((await sessionPlanning.isPlanning(input.sessionId)) ||
+            conductor.isPlanningTurn?.(input.sessionId))
         ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
@@ -1809,8 +1890,64 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Knowledge access requires an active session in the calling project',
               );
-            if (request.operation === 'import_source')
-              return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
+            if (request.operation === 'read_wiki_page')
+              return readWikiPage(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'import_source') {
+              const imported = await importProjectSource(
+                deps.dataRoot,
+                input.projectId,
+                session.worktree,
+                request,
+              );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'source',
+                  ref: knowledgeRef(imported.path),
+                  title: occasionTitle(imported.path),
+                },
+                app.log,
+              );
+              return imported;
+            }
+            if (
+              request.operation === 'read_wiki_occasions' ||
+              request.operation === 'close_wiki_occasions'
+            ) {
+              // What happened in a project includes the conversations of deleted
+              // sessions; only the run the server started for it reads and closes them.
+              if (
+                (await deps.eventStore.wikiMaintenance.get(input.projectId))?.sessionId !==
+                input.sessionId
+              )
+                throw new ControlPlaneSessionAuthorityError(
+                  'Wiki occasions are read only in the Wiki maintenance run',
+                );
+              return wikiOccasionTool(deps.eventStore, input.projectId, request);
+            }
+            if (request.operation === 'propose_wiki') {
+              if (!wikiProposals) throw new Error('Knowledge storage is unavailable');
+              // A deleted project is only hidden; its Wiki takes no new proposals.
+              if ((await deps.eventStore.getProject(input.projectId))?.hiddenAt)
+                throw new ControlPlaneSessionAuthorityError('The project was deleted');
+              const result = await wikiProposals.propose({
+                mode: request.mode,
+                logKind: request.logKind,
+                title: request.title,
+                sources: request.sources,
+                changes: request.changes,
+                projectId: input.projectId,
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+              });
+              return {
+                proposalId: result.proposal?.id ?? null,
+                proposed: result.proposal?.changes.map((change) => change.path) ?? [],
+                skipped: result.skipped,
+                status: result.proposal ? 'awaiting_review' : 'nothing_new',
+              };
+            }
             if (request.operation === 'create_source_folder')
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
             if (request.operation === 'lookup_decisions')
@@ -1861,7 +1998,7 @@ export function registerServerMcpRoutes({
                 throw new Error(
                   'Decision confirmation must reference a user prompt in the calling session',
                 );
-              return recordProjectDecision(
+              const recorded = await recordProjectDecision(
                 deps.dataRoot,
                 input.projectId,
                 {
@@ -1870,6 +2007,17 @@ export function registerServerMcpRoutes({
                 },
                 request,
               );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'decision',
+                  ref: knowledgeRef(recorded.path),
+                  title: request.title,
+                },
+                app.log,
+              );
+              return recorded;
             }
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }

@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+let mockSource: { uri: string } | undefined;
 jest.mock('../../hooks/useAttachmentImageSource', () => ({
-  useAttachmentImageSource: () => undefined,
+  // A real source by default, so the full-size viewer (which needs one) renders.
+  useAttachmentImageSource: () => mockSource,
 }));
 
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
@@ -25,46 +27,54 @@ const props = {
   deciding: false,
   error: undefined,
   onDecide: jest.fn(async () => true),
-  onSend: jest.fn(async () => true),
+  onComplete: jest.fn(async () => undefined),
   onClose: jest.fn(),
 };
 
-beforeEach(() => jest.clearAllMocks());
-
-it('saves the current screen verdict and trims its comment', async () => {
-  render(<MockupReviewSheet {...props} />);
-  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Approve' })));
-  expect(props.onDecide).toHaveBeenCalledWith('Home', { verdict: 'approved' });
-  fireEvent.press(screen.getByRole('button', { name: 'Comment' }));
-  expect(screen.getByRole('button', { name: 'Save comment' })).toBeDisabled();
-  fireEvent.changeText(screen.getByLabelText('Comment'), '  Enlarge the title  ');
-  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Save comment' })));
-  expect(props.onDecide).toHaveBeenLastCalledWith('Home', {
-    verdict: 'comment',
-    comment: 'Enlarge the title',
-  });
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockSource = { uri: 'https://verity.test/attachments/a' };
 });
 
-it('offers sending only once every screen is decided and keeps failed sends open', async () => {
-  props.onSend.mockResolvedValueOnce(false);
+it('marks the current screen and takes the mark back on a second tap', async () => {
   const view = render(<MockupReviewSheet {...props} />);
-  expect(screen.queryByRole('button', { name: 'Send comments' })).toBeNull();
-  view.rerender(
-    <MockupReviewSheet {...props} screens={[{ ...home, verdict: 'comment', comment: 'Larger' }]} />,
-  );
-  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Send comments' })));
-  expect(props.onClose).not.toHaveBeenCalled();
-  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Send comments' })));
-  expect(props.onClose).toHaveBeenCalledTimes(1);
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Approve' })));
+  expect(props.onDecide).toHaveBeenLastCalledWith('Home', { verdict: 'approved' });
+  view.rerender(<MockupReviewSheet {...props} screens={[{ ...home, verdict: 'approved' }]} />);
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Approved' })));
+  expect(props.onDecide).toHaveBeenLastCalledWith('Home', { verdict: 'open' });
 });
 
-it('lets a reviewer replace the final comment with approval', async () => {
-  render(
-    <MockupReviewSheet {...props} screens={[{ ...home, verdict: 'comment', comment: 'Larger' }]} />,
-  );
-  expect(screen.getByRole('button', { name: 'Send comments' })).toBeTruthy();
-  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Approve' })));
-  expect(props.onDecide).toHaveBeenCalledWith('Home', { verdict: 'approved' });
+it('switches a screen from approved to discarded in one tap', async () => {
+  render(<MockupReviewSheet {...props} screens={[{ ...home, verdict: 'approved' }]} />);
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'Discard' })));
+  expect(props.onDecide).toHaveBeenLastCalledWith('Home', { verdict: 'discarded' });
+});
+
+it('shows the mark on the screen and offers nothing to send', () => {
+  render(<MockupReviewSheet {...props} screens={[{ ...home, verdict: 'discarded' }]} />);
+  expect(screen.getByRole('button', { name: 'Discarded' })).toBeTruthy();
+  expect(screen.getByLabelText('Discarded, needs attention')).toBeTruthy();
+  // Comments go into the chat; a field or send action here would split the conversation.
+  expect(screen.queryByRole('button', { name: /comment|send/i })).toBeNull();
+});
+
+it('locks both marks while one is being saved', () => {
+  render(<MockupReviewSheet {...props} deciding />);
+  fireEvent.press(screen.getByRole('button', { name: 'Approve' }));
+  fireEvent.press(screen.getByRole('button', { name: 'Discard' }));
+  fireEvent.press(screen.getByRole('button', { name: 'End review' }));
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onComplete).not.toHaveBeenCalled();
+});
+
+it('ends the review separately from marking screens or closing the viewer', async () => {
+  render(<MockupReviewSheet {...props} />);
+  expect(screen.getByText(/This does not start implementation/)).toBeTruthy();
+  await act(async () => fireEvent.press(screen.getByRole('button', { name: 'End review' })));
+  expect(props.onComplete).toHaveBeenCalledTimes(1);
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
 });
 
 const spec: MockupReviewScreen = { ...home, name: 'Spec', attachment: 'b'.repeat(64) };
@@ -122,7 +132,7 @@ it('realigns a retained pager with its verdict target after closing and reopenin
   }
 });
 
-it('drops the old draft when the host replaces a review by revision key', () => {
+it('opens a revised round at its first screen when the host keys it by revision', () => {
   // Rendering a keyed fixture alone stays green if the real host loses its key.
   const host = readFileSync(join(__dirname, '../../app/session/[id].tsx'), 'utf8');
   const keyedByRevision = /<MockupReviewSheet\s+key=\{mockupReview\?\.revision\}/.test(host);
@@ -131,15 +141,44 @@ it('drops the old draft when the host replaces a review by revision key', () => 
       <MockupReviewSheet key={keyedByRevision ? 1 : undefined} {...props} screens={[home, spec]} />
     </View>,
   );
-  fireEvent.press(screen.getByRole('button', { name: 'Comment' }));
-  fireEvent.changeText(screen.getByLabelText('Comment'), 'Feedback on the previous image');
+  setPageWidth();
+  swipeTo(1);
+  expect(screen.getByText('Review flow · 2 of 2')).toBeTruthy();
   view.rerender(
     <View>
-      <MockupReviewSheet key={keyedByRevision ? 2 : undefined} {...props} screens={[spec]} />
+      <MockupReviewSheet key={keyedByRevision ? 2 : undefined} {...props} screens={[spec, home]} />
     </View>,
   );
-  expect(screen.queryByDisplayValue('Feedback on the previous image')).toBeNull();
-  expect(screen.getByText('Review flow · 1 of 1')).toBeTruthy();
-  fireEvent.press(screen.getByRole('button', { name: 'Comment' }));
-  expect(screen.getByDisplayValue('')).toBeTruthy();
+  // A kept position would mark a screen of the new round the user has not seen.
+  expect(screen.getByText('Review flow · 1 of 2')).toBeTruthy();
+});
+
+it('enlarges the tapped screen in the full-screen viewer and closes it again', () => {
+  render(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  expect(screen.getByLabelText('Close image')).toBeTruthy();
+  // Enlarging is only for looking: it marks nothing and leaves the review open.
+  expect(props.onDecide).not.toHaveBeenCalled();
+  expect(props.onClose).not.toHaveBeenCalled();
+
+  fireEvent.press(screen.getByLabelText('Close image'));
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+});
+
+it('does not bring back an enlarged screen when the review is reopened', () => {
+  const view = render(<MockupReviewSheet {...props} />);
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  view.rerender(<MockupReviewSheet {...props} visible={false} />);
+  view.rerender(<MockupReviewSheet {...props} />);
+  expect(screen.queryByLabelText('Close image')).toBeNull();
+});
+
+it('does not enlarge a screen whose image has no source yet', () => {
+  // A tap that opened nothing would otherwise pop the viewer up once it loads.
+  mockSource = undefined;
+  render(<MockupReviewSheet {...props} />);
+  fireEvent.press(screen.getByLabelText('Enlarge Home'));
+  expect(screen.queryByLabelText('Close image')).toBeNull();
 });

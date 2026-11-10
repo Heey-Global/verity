@@ -9,6 +9,7 @@ import {
   validateEgressConnectorOptions,
   type EgressConnectorOptions,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-egress-connector.mjs';
+import { runnerEgressReadiness } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { CLAUDE_EGRESS_PLACEHOLDER } from './claude-egress-policy.js';
 
 const LOCAL_AUTHORITY = '127.0.0.1:43123';
@@ -154,7 +155,8 @@ describe('Sandbox-local Claude egress connector', () => {
     const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
     expect(codex.status).toBe(502);
     expect(codex.body).toContain('Codex egress unavailable');
-    expect(codex.body).toContain('has no Codex credentials configured yet');
+    expect(codex.body).toContain('nothing accepted the connection at the Codex egress');
+    expect(codex.body).not.toContain('credential');
     expect(codex.body).not.toContain('Claude');
 
     // The Claude leg keeps its own wording — the two failures are different repairs.
@@ -202,22 +204,26 @@ describe('Sandbox-local Claude egress connector', () => {
     }
   });
 
-  // A refused connection is the one Codex fault with a dominant cause. Anything
-  // else — timeout, DNS, TLS — must not send an operator to the credential page.
-  it('offers the credential repair only when the Codex gateway refused', async () => {
-    const connector = await runEgressConnector({
-      ...options(),
-      codexEgressUrl: 'https://relay.internal:8444',
-      codexEgressAuthority: 'codex-gateway.internal:9444',
-      forward: async () => {
-        throw Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' });
-      },
-    });
-    connectors.push(connector);
+  // No forward failure proves a missing credential: a refusal is what a relay
+  // that has not finished starting looks like, and that guess once sent an
+  // operator to the credential settings while the gateway was healthy. A
+  // rejected credential arrives as the gateway's own status, forwarded as-is.
+  it('never blames credentials for a Codex forward failure', async () => {
+    for (const code of ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET']) {
+      const connector = await runEgressConnector({
+        ...options(),
+        codexEgressUrl: 'https://relay.internal:8444',
+        codexEgressAuthority: 'codex-gateway.internal:9444',
+        forward: async () => {
+          throw Object.assign(new Error(`connect ${code}`), { code });
+        },
+      });
+      connectors.push(connector);
 
-    const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
-    expect(codex.body).toContain('Codex egress unavailable');
-    expect(codex.body).not.toContain('credentials');
+      const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
+      expect(codex.body).toContain('Codex egress unavailable');
+      expect(codex.body).not.toMatch(/credential/iu);
+    }
   });
 
   // The repair line may not depend on how the connection was attempted: node
@@ -249,7 +255,8 @@ describe('Sandbox-local Claude egress connector', () => {
       connectors.push(connector);
 
       const codex = await call(connector.port, '/codex/responses', { host: LOCAL_AUTHORITY });
-      expect(codex.body).toContain('has no Codex credentials configured yet');
+      expect(codex.body).toContain('nothing accepted the connection at the Codex egress');
+      expect(codex.body).toContain('the request was not sent');
     }
   });
 
@@ -642,3 +649,19 @@ function rawCall(port: number, raw: string): Promise<string> {
     socket.once('connect', () => socket.end(raw));
   });
 }
+
+// The turn-start gate requires this leg for every agent, so it is checked
+// against the connector itself: a renamed route or a reshaped reply would
+// otherwise stall every turn on a healthy Sandbox until the gate gives up.
+it('answers the Sandbox readiness probe the turn-start gate relies on', async () => {
+  const connector = await runEgressConnector({
+    ...options(),
+    localAuthority: `${CONNECTOR_HOST}:0`,
+    forward: vi.fn(),
+  });
+  connectors.push(connector);
+  const result = await runnerEgressReadiness({
+    env: { VERITY_CLAUDE_CONNECTOR_PORT: String(connector.port) },
+  });
+  expect(result.connector).toBe('ready');
+});

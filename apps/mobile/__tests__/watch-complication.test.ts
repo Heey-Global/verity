@@ -10,9 +10,9 @@ const store = read('VerityWatch/CaptureStore.swift');
 const widget = read('VerityWatchComplication/VerityWatchComplication.swift');
 const mark = read('_shared/VerityMarkShape.swift');
 
-describe('Watch complication capture entry', () => {
-  it('registers the actual complication URL and starts rather than toggles recording', () => {
-    const url = new URL(shared.match(/recordingURL = URL\(string: "([^"]+)"\)/)![1]);
+describe('Watch complication Home entry', () => {
+  it('registers the Home URL and never starts recording on launch', () => {
+    const url = new URL(shared.match(/homeURL = URL\(string: "([^"]+)"\)/)![1]);
     const manifest = plist.parse(read('VerityWatch/Info.plist')) as {
       CFBundleURLTypes: { CFBundleURLSchemes: string[] }[];
     };
@@ -20,10 +20,19 @@ describe('Watch complication capture entry', () => {
     expect(manifest.CFBundleURLTypes.flatMap((type) => type.CFBundleURLSchemes)).toContain(
       url.protocol.slice(0, -1),
     );
-    expect(widget).toContain('.widgetURL(WatchCaptureComplication.recordingURL)');
+    expect(widget).toContain('.widgetURL(WatchCaptureComplication.homeURL)');
     const handler = app.match(/\.onOpenURL \{ url in([\s\S]*?)\n        \}/)![1];
-    expect(handler).toContain('guard WatchCaptureComplication.isRecordingURL(url) else { return }');
-    expect(handler).toContain('CaptureStore.shared.start()');
+    expect(handler).toContain('guard WatchCaptureComplication.isHomeURL(url) else { return }');
+    expect(handler).toContain('CaptureStore.shared.showHome()');
+    expect(handler).not.toContain('.start()');
+    expect(shared).toContain('url.host == "capture"');
+    const home = store.slice(
+      store.indexOf('  func showHome()'),
+      store.indexOf('  func discardCapture('),
+    );
+    expect(home).toContain('homeGeneration = UUID()');
+    expect(home).toContain('confirmation = nil');
+    expect(home).not.toContain('start()');
     expect(handler).not.toContain('toggle');
     // Duplicate URL delivery during the permission prompt must not create two recorders.
     const start = store.slice(store.indexOf('  func start()'), store.indexOf('  func stop()'));
@@ -38,7 +47,7 @@ describe('Watch complication capture entry', () => {
     );
   });
 
-  it('packages all mockup families with the vector Verity mark', () => {
+  it('packages original full-color artwork and vector monochrome families', () => {
     const families = widget.match(/\.supportedFamilies\(\[([^\]]+)\]/)![1];
     for (const family of [
       'accessoryCircular',
@@ -48,16 +57,32 @@ describe('Watch complication capture entry', () => {
     ]) {
       expect(families).toContain(`.${family}`);
     }
-    // The bitmap asset rendered as a solid rectangle on device; every family draws the vector V.
-    expect(widget).not.toMatch(/Image\("[^"]+"\)|image: "/);
+    // Template rendering of the full-color PNG used to produce an opaque rectangle.
+    const assetName = 'VerityMarkOriginal';
     const config = require(resolve(targetRoot, 'VerityWatchComplication/expo-target.config.js'));
-    expect(config.images).toBeUndefined();
+    const asset = resolve(targetRoot, 'VerityWatchComplication', config.images[assetName]);
+    expect(readFileSync(asset)).toEqual(
+      readFileSync(resolve(__dirname, '../assets/brand/verity-v-mark.png')),
+    );
+    expect(widget).toContain('if renderingMode == .fullColor');
+    expect(widget).toContain('VerityMarkShape().fill(Color.white)');
+    expect(widget).not.toContain('AccessoryWidgetBackground()');
     // The Watch app draws the same mark, so it lives with the sources both targets link.
     expect(mark).toContain('#if os(watchOS)');
     expect(mark).toContain('struct VerityMarkShape: Shape');
     expect(mark).not.toContain('private struct VerityMarkShape');
     expect(widget).not.toContain('struct VerityMarkShape');
-    expect(app).toContain('VerityMarkShape()');
+    expect(app).toContain('VerityOriginalMark()');
+    expect(widget).toContain('VerityOriginalMark()');
+    expect(mark).toContain('Image("VerityLauncherArtwork")');
+    expect(mark).toContain('.mask(Image("VerityMarkOriginal").resizable())');
+    expect(mark).toContain('.renderingMode(.original)');
+    const watchConfig = require(resolve(targetRoot, 'VerityWatch/expo-target.config.js'));
+    expect(watchConfig.images[assetName]).toBe(config.images[assetName]);
+    expect(watchConfig.images.VerityLauncherArtwork).toBe(watchConfig.icon);
+    expect(config.images.VerityLauncherArtwork).toBe(watchConfig.icon);
+    expect(widget).toContain('.containerBackgroundRemovable(true)');
+    expect(widget).not.toContain('.widgetAccentable()');
     const marker = 'outline: [(CGFloat, CGFloat)] = [';
     const outline = mark.slice(mark.indexOf(marker) + marker.length);
     const points = [
@@ -68,7 +93,7 @@ describe('Watch complication capture entry', () => {
       expect(coordinate).toBeGreaterThanOrEqual(0);
       expect(coordinate).toBeLessThanOrEqual(1);
     }
-    expect(widget.match(/VerityMarkShape\(\)/g)!.length).toBeGreaterThanOrEqual(3);
+    expect(widget.match(/VerityMarkShape\(\)/g)!.length).toBeGreaterThanOrEqual(2);
     expect(widget).toContain('icon: { inlineMark }');
   });
 
@@ -82,6 +107,6 @@ describe('Watch complication capture entry', () => {
     expect(complication.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(watch.entitlements?.['com.apple.security.application-groups']).toBeUndefined();
     expect(shared).not.toContain('UserDefaults');
-    expect(widget).toContain('Text("Talk to Verity")');
+    expect(widget).toContain('Text("Open Verity")');
   });
 });
