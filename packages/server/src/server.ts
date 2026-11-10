@@ -753,11 +753,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       conductor.isMovingSession(id) || sessionsBeingReaped.has(id) || hasMeetingJob(id)
         ? Promise.resolve({ ran: false as const })
         : conductor.tryRunExclusive(id, run),
-    (projectId) =>
+    // A teardown or a spawn creating a worktree holds the whole project. A dev
+    // server or preview holds only the worktree of the session that runs it:
+    // blocking the project instead left every idle session's worktree in place
+    // for as long as any one session kept a server up. Orphaned registrations
+    // (`sessionId` null) belong to no session, so any server or preview there
+    // still defers that pass.
+    (projectId, sessionId) =>
       projectsBeingDeleted.has(projectId) ||
       (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
-      deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
-      (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0,
+      (sessionId === null
+        ? deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+          (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0
+        : deps.managedDevServerManager?.hasRunningSessionServers(sessionId) === true ||
+          (deps.localPreviewManager?.list(sessionId).length ?? 0) > 0),
   );
   /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {

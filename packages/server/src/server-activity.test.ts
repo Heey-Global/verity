@@ -922,6 +922,43 @@ describe('GET /sessions', () => {
     }
   });
 
+  // The server decides what holds back storage collection. A dev server or a
+  // preview must hold only its own session's worktree; holding the project kept
+  // every idle worktree on disk while any one session served something.
+  it('holds storage collection for the session that serves, not its whole project', async () => {
+    let blocked: ((projectId: string, sessionId: string | null) => boolean) | undefined;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sessionStorage: {
+        bind: (_claim: unknown, predicate: typeof blocked) => {
+          blocked = predicate;
+        },
+      } as unknown as import('./session-storage.js').SessionStorage,
+      managedDevServerManager: {
+        hasRunningServers: (projectId: string) => projectId === 'p1',
+        hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
+      } as unknown as import('./managed-dev-server-manager.js').ManagedDevServerManager,
+      localPreviewManager: {
+        list: (sessionId: string) => (sessionId === 'previewing' ? [{}] : []),
+        listProject: (projectId: string) => (projectId === 'p2' ? [{}] : []),
+      } as unknown as import('./local-preview-manager.js').LocalPreviewManager,
+    });
+    try {
+      expect(blocked!('p1', 'serving')).toBe(true);
+      expect(blocked!('p1', 'idle')).toBe(false);
+      expect(blocked!('p2', 'previewing')).toBe(true);
+      expect(blocked!('p2', 'idle')).toBe(false);
+      // Orphaned registrations belong to no session; any server still defers them.
+      expect(blocked!('p1', null)).toBe(true);
+      expect(blocked!('p2', null)).toBe(true);
+      expect(blocked!('p3', null)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('marks sessions that carry an automation and checks its model on confirm', async () => {
     await ctx.store.updateVeritySettings({
       claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
