@@ -1,4 +1,5 @@
 import { AcpClaudeBackend, nodeSpawner } from '@verity/session';
+import { claudeAgentAcpBin } from './claude-acp-test-bin.js';
 import { createTestDb } from '@verity/store/testing';
 import { unexpectedStderrLines } from './runner-claude-live-stderr.js';
 import { spawn } from 'node:child_process';
@@ -147,9 +148,7 @@ it('serves title requests through the pinned ACP adapter before and after transc
       cwd: worktree,
       model: 'smoke',
       command: process.execPath,
-      extraArgs: [
-        fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js')),
-      ],
+      extraArgs: [claudeAgentAcpBin()],
       spawner: nodeSpawner,
       env,
     };

@@ -1,8 +1,8 @@
 import { AcpClaudeBackend, nodeSpawner } from '@verity/session';
+import { claudeAgentAcpBin } from './claude-acp-test-bin.js';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createMcpGateway } from './mcp-gateway.js';
 
@@ -94,9 +94,7 @@ describe('installed claude-agent-acp MCP gateway integration', () => {
         cwd: process.cwd(),
         prompt: 'finish after opening the session',
         command: process.execPath,
-        extraArgs: [
-          fileURLToPath(import.meta.resolve('@agentclientprotocol/claude-agent-acp/dist/index.js')),
-        ],
+        extraArgs: [claudeAgentAcpBin()],
         spawner: nodeSpawner,
         env: {
           ...process.env,

@@ -61,7 +61,24 @@ function replaceOnce(source, from, to, label) {
 const resolvedPackageDir = await realpath(packageDir()).catch((error) =>
   fail(`cannot resolve package directory: ${error?.message ?? error}`),
 );
-const file = path.join(resolvedPackageDir, 'dist', 'acp-agent.js');
+// 0.104 moved the ACP v1 agent under dist/v1/ next to a draft-v2 core. Verity
+// negotiates the stable protocol, so the v1 agent is the one that serves it.
+const candidates = [
+  path.join(resolvedPackageDir, 'dist', 'acp-agent.js'),
+  path.join(resolvedPackageDir, 'dist', 'v1', 'acp-agent.js'),
+];
+const present = [];
+for (const candidate of candidates) {
+  try {
+    await lstat(candidate);
+    present.push(candidate);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') fail(`cannot read ${candidate}: ${error?.message ?? error}`);
+  }
+}
+// Both present would leave it unclear which agent serves the session.
+if (present.length > 1) fail(`ambiguous adapter layout: ${present.join(' and ')} both exist`);
+const file = present[0] ?? candidates[0];
 let source;
 try {
   const entry = await lstat(file);
