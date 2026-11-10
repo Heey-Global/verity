@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.90.4](https://github.com/Heey-Global/verity/compare/v4.90.3...v4.90.4) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2490](https://github.com/Heey-Global/verity/issues/2490)) ([ba95874](https://github.com/Heey-Global/verity/commit/ba9587466ea1f2a343ce919da1897e180f553000))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.5.0 ([#2491](https://github.com/Heey-Global/verity/issues/2491)) ([d20ee43](https://github.com/Heey-Global/verity/commit/d20ee43e7da2d346aaa78753d8e44539ac27d92a))
+* **server:** wait for the Runner supervisor's session-home deletion budget ([#2497](https://github.com/Heey-Global/verity/issues/2497)) ([4a8979a](https://github.com/Heey-Global/verity/commit/4a8979a077b29c940733ba542d822d1efc74629d))
+
 ## [4.90.3](https://github.com/Heey-Global/verity/compare/v4.90.2...v4.90.3) (2026-11-10)
 
 
