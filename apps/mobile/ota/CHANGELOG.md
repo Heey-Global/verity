@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.89.2](https://github.com/Heey-Global/verity/compare/mobile-v1.89.1...mobile-v1.89.2) (2026-11-09)
+
+
+### Bug Fixes
+
+* **mobile:** retain selected recording across reconnects ([#2474](https://github.com/Heey-Global/verity/issues/2474)) ([6962259](https://github.com/Heey-Global/verity/commit/6962259e7932c616dc98baf19d373d84a066e772))
+
 ## [1.89.1](https://github.com/Heey-Global/verity/compare/mobile-v1.89.0...mobile-v1.89.1) (2026-11-09)
 
 
