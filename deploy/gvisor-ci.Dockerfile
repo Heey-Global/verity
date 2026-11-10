@@ -4,7 +4,7 @@
 # and the two records deploy/host/verity-host-runtime writes beside them, so the managed
 # installer this image hosts in CI takes the directory as installed instead of fetching it again.
 # renovate: datasource=docker depName=docker
-FROM docker:29.9.2-dind@sha256:9e79b879b177fbd72c34376a3dd3d91747da5db49e1f560f76aea59561471977
+FROM docker:29.9.3-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
 
 COPY deploy/gvisor/versions.env /tmp/versions.env
 
