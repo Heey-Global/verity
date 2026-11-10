@@ -665,7 +665,7 @@ const printable = (value: string, limit: number) =>
 
 /** Reduce nft stderr to its located error messages. Lines nft echoes from the
  * script and its caret markers are dropped; unrecognised output is withheld. */
-export function projectFenceDiagnostics(
+function projectFenceDiagnostics(
   stderr: string,
   script: string,
 ): Pick<ProjectFenceTransactionEvidence, 'diagnostics' | 'statements'> {
