@@ -170,6 +170,19 @@ describe('managed dev servers', () => {
     expect((await instanceOf()).state).toBe('running');
   });
 
+  // Storage collection asks per session. Answering for the whole project would
+  // keep every idle session's worktree on disk while one session runs a server.
+  it('reports a running server for its own session only, until it stops', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    expect(manager.hasRunningSessionServers('s1')).toBe(true);
+    expect(manager.hasRunningSessionServers('s2')).toBe(false);
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    await manager.stop('s1', 'Demo');
+    await manager.tick();
+    expect(manager.hasRunningSessionServers('s1')).toBe(false);
+  });
+
   it('starts an entry with its own port and reports running only once the port answers', async () => {
     await manager.add('s1', {
       name: 'Curtis Demo',

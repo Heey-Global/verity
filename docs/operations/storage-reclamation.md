@@ -274,7 +274,12 @@ their normal approvals.
 ## Worktree lifecycle and recovery
 
 Collection claims the session turn lock and project mutation barrier, excludes
-meeting jobs, moves, managed dev servers and previews, and rechecks activity.
+meeting jobs, moves, and sessions running a managed dev server or preview, and
+rechecks activity. A server or preview holds only its own session's worktree;
+other idle sessions of the same project are still collected. A project
+deletion or a session being created holds the whole project, and the pass over
+orphaned worktree registrations waits while any server or preview runs in the
+project.
 Source and Git metadata stay intact while regenerable dependencies are slimmed.
 Storage collection waits for an existing project mutation within its one-minute
 pass budget, then rechecks active work. Timeout retains the existing owner and
