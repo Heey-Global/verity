@@ -89,7 +89,10 @@ export { LOCAL_PROJECT_SYSTEM_PROMPT, DOCUMENT_PROJECT_SYSTEM_PROMPT } from './l
 export { PROJECT_IMAGE_REBUILDING_WARNING } from './project-provision.js';
 export { MEMORY_SYSTEM_PROMPT } from './memory.js';
 export { PULL_REQUEST_SYSTEM_PROMPT, repoToolPullRequestSystemPrompt } from './pull-requests.js';
-export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
+export {
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
+  REPO_CONVENTIONS_SYSTEM_PROMPT,
+} from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export {
   SANDBOX_NOT_READY_ERROR_KIND,
