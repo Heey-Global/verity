@@ -5,7 +5,11 @@ import type {
   DockerClient,
   DockerContainerSummary,
 } from './docker.js';
-import { RunnerCacheMaintenance, reclaimSleepingRunnerCaches } from './runner-cache-maintenance.js';
+import {
+  CACHE_HELPER_RESOURCES,
+  RunnerCacheMaintenance,
+  reclaimSleepingRunnerCaches,
+} from './runner-cache-maintenance.js';
 import { cacheHelperCommand } from './runner-cache-helper.js';
 
 const report = {
@@ -260,8 +264,10 @@ describe('sleeping runner cache helpers', () => {
     expect(h.spec).toMatchObject({
       network: 'none',
       entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
-      memoryBytes: 256 * 1024 ** 2,
-      memorySwapBytes: 256 * 1024 ** 2,
+      // No swap beyond the memory bound; the pids bound covers gVisor host threads.
+      memoryBytes: CACHE_HELPER_RESOURCES.memoryBytes,
+      memorySwapBytes: CACHE_HELPER_RESOURCES.memoryBytes,
+      pidsLimit: CACHE_HELPER_RESOURCES.pidsLimit,
       readOnlyRootfs: true,
       capDrop: ['ALL'],
       runtime: 'runsc',

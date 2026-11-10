@@ -120,13 +120,27 @@ export function projectFenceRules(
   const table = tableName(binding.projectId + ':' + binding.generation);
   // Keep expiry tombstones in the kernel for the entire generation. A packet
   // already past TC can update them after a userspace snapshot has been read.
+  // Declaring each object first makes the flushes and the bridge deletion
+  // succeed when an object is already absent. Otherwise one missing table
+  // turns every later denial of this generation into a failed transaction.
   const commands = replace
     ? [
+        `add table inet ${table}`,
+        `add chain inet ${table} fence`,
+        `add chain inet ${table} reply`,
+        `add chain inet ${table} forward { type filter hook forward priority -200; policy accept; }`,
+        `add chain inet ${table} input { type filter hook input priority -200; policy accept; }`,
+        `add chain inet ${table} output { type filter hook output priority -200; policy accept; }`,
+        ...[4, 6].map(
+          (f) =>
+            `add set inet ${table} allow${f} { type ipv${f}_addr . inet_proto . inet_service; flags timeout; }`,
+        ),
         ...['fence', 'reply', 'forward', 'input', 'output'].map(
           (chain) => `flush chain inet ${table} ${chain}`,
         ),
         `flush set inet ${table} allow4`,
         `flush set inet ${table} allow6`,
+        `add table bridge ${table}`,
         `delete table bridge ${table}`,
       ]
     : [];
@@ -618,21 +632,140 @@ export class ProjectEgressFence {
   }
 }
 
+/** Bounded evidence for one failed nft transaction. It carries nft's own error
+ * messages and the line they name, never the rule text that nft echoes back:
+ * that echo can contain addresses, labels and deadlines of the project policy. */
+export interface ProjectFenceTransactionEvidence {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  durationMs: number;
+  /** The one-second budget elapsed and nft was killed; the kernel may or may
+   * not have committed, so the caller must treat the state as unknown. */
+  timedOut: boolean;
+  /** Error messages reported by nft, each as `line N: message` when located. */
+  diagnostics: string[];
+  /** Commands named by a located error, only when they are bare table, chain
+   * or set operations whose text cannot carry policy. */
+  statements: string[];
+  stderrBytes: number;
+  /** nft could not be started at all (ENOENT, EAGAIN, ENOMEM ...). */
+  spawnError?: string;
+  /** nft stopped reading its script before the end, e.g. after a parse error. */
+  stdinError?: string;
+}
+const STDERR_LIMIT = 8192;
+const MAX_DIAGNOSTICS = 4;
+const SAFE_STATEMENT =
+  /^(?:(?:add|delete|flush) (?:table|chain|set) (?:inet|bridge|ip|ip6) [a-z0-9_]{1,64}(?: [a-z0-9_]{1,64})?|table (?:inet|bridge) [a-z0-9_]{1,64}) ?\{?$/u;
+const printable = (value: string, limit: number) =>
+  value
+    .replace(/[^\x20-\x7e‘’]/gu, '?')
+    .trim()
+    .slice(0, limit);
+
+/** Reduce nft stderr to its located error messages. Lines nft echoes from the
+ * script and its caret markers are dropped; unrecognised output is withheld. */
+export function projectFenceDiagnostics(
+  stderr: string,
+  script: string,
+): Pick<ProjectFenceTransactionEvidence, 'diagnostics' | 'statements'> {
+  const lines = script.split('\n');
+  const diagnostics: string[] = [];
+  const statements: string[] = [];
+  for (const line of stderr.split('\n')) {
+    if (diagnostics.length >= MAX_DIAGNOSTICS) break;
+    const located = /^[^:\n]{0,256}:(\d{1,7}):[\d-]{1,32}: Error: (.+)$/u.exec(line);
+    if (located) {
+      const number = Number(located[1]);
+      diagnostics.push(`line ${number}: ${printable(located[2]!, 200)}`);
+      const statement = lines[number - 1]?.trim() ?? '';
+      if (SAFE_STATEMENT.test(statement) && !statements.includes(statement))
+        statements.push(statement.replace(/ ?\{$/u, ''));
+      continue;
+    }
+    const general = /^(?:[a-z]{1,16}: )?Error: (.+)$/u.exec(line);
+    if (general) diagnostics.push(printable(general[1]!, 200));
+  }
+  return { diagnostics, statements };
+}
+
+export class ProjectFenceTransactionError extends Error {
+  constructor(readonly evidence: ProjectFenceTransactionEvidence) {
+    const summary = [
+      evidence.timedOut
+        ? `timed out after ${Math.round(evidence.durationMs)} ms`
+        : evidence.spawnError
+          ? `nft could not start: ${evidence.spawnError}`
+          : `exit ${evidence.exitCode ?? 'none'}${evidence.signal ? ` signal ${evidence.signal}` : ''}`,
+      ...evidence.diagnostics.slice(0, 2),
+    ].join('; ');
+    super(`Project fence transaction failed (${summary})`);
+    this.name = 'ProjectFenceTransactionError';
+  }
+}
+
 /** Must execute in the trusted host network namespace, never inside a project. */
-export function applyProjectFenceRules(script: string): Promise<void> {
+export function applyProjectFenceRules(
+  script: string,
+  options: { executable?: string; budgetMs?: number } = {},
+): Promise<void> {
+  const budget = options.budgetMs ?? APPLY_BUDGET_MS;
   return new Promise((resolve, reject) => {
-    const child = spawn('/usr/sbin/nft', ['-f', '-'], {
+    const started = performance.now();
+    let timedOut = false;
+    let stdinError: string | undefined;
+    let stderrBytes = 0;
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const fail = (fields: Partial<ProjectFenceTransactionEvidence>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stderr = Buffer.concat(chunks).toString('utf8');
+      reject(
+        new ProjectFenceTransactionError({
+          exitCode: null,
+          signal: null,
+          durationMs: performance.now() - started,
+          timedOut,
+          stderrBytes,
+          ...projectFenceDiagnostics(stderr, script),
+          ...(stdinError ? { stdinError } : {}),
+          ...fields,
+        }),
+      );
+    };
+    const child = spawn(options.executable ?? '/usr/sbin/nft', ['-f', '-'], {
       stdio: ['pipe', 'ignore', 'pipe'],
-      timeout: APPLY_BUDGET_MS,
-      killSignal: 'SIGKILL',
       env: { PATH: '/usr/sbin:/usr/bin:/sbin:/bin', TZ: 'UTC' },
     });
-    child.stderr.resume();
-    child.once('error', reject);
-    child.stdin.on('error', reject);
-    child.once('close', (code) =>
-      code === 0 ? resolve() : reject(new Error('Project fence transaction failed')),
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, budget);
+    child.stderr.on('data', (chunk: Buffer) => {
+      const room = STDERR_LIMIT - Math.min(STDERR_LIMIT, stderrBytes);
+      stderrBytes += chunk.length;
+      if (room > 0) chunks.push(chunk.subarray(0, room));
+    });
+    child.once('error', (error: NodeJS.ErrnoException) =>
+      fail({ spawnError: error.code ?? 'unknown' }),
     );
+    // nft closes its input early after a parse error. That is not the failure
+    // itself; the exit status and nft's own message are reported on close.
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      stdinError = error.code ?? 'unknown';
+    });
+    child.once('close', (code, signal) => {
+      if (code === 0 && !timedOut) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+        return;
+      }
+      fail({ exitCode: code, signal });
+    });
     child.stdin.end(script);
   });
 }

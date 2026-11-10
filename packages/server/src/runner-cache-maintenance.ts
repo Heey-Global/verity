@@ -164,6 +164,15 @@ function volumeSubpathsOverlap(subpath: string | undefined, target: string): boo
   );
 }
 
+/** The helper runs under the project runtime (gVisor). Docker charges the
+ * runtime's own host threads to the pids limit and its memory to the cgroup.
+ * Helpers limited to 32 pids and 256 MiB were observed failing before Node
+ * started ("exec timeout failed: Cannot allocate memory"), which leaves the
+ * caches unreclaimed. These bounds match other long-lived helper containers and
+ * remain far below a project sandbox; `resource-unavailable` diagnostics report
+ * the bounds in force, so a recurrence remains distinguishable. */
+export const CACHE_HELPER_RESOURCES = { memoryBytes: 512 * 1024 ** 2, pidsLimit: 128 } as const;
+
 /** Called only inside the project lifecycle/storage barriers; it never starts a project. */
 export async function reclaimSleepingRunnerCaches(input: {
   docker: DockerClient;
@@ -270,7 +279,7 @@ export async function reclaimSleepingRunnerCaches(input: {
   const name = `verity-cache-maintenance-${randomUUID()}`;
   const request = JSON.stringify({ sessionIds: input.sessionIds, maxBytes: input.maxBytes });
   if (Buffer.byteLength(request) > 96 * 1024) throw cacheMaintenanceFailure('invalid-response');
-  const resources = { memoryBytes: 256 * 1024 ** 2, pidsLimit: 32 };
+  const resources = { ...CACHE_HELPER_RESOURCES };
   let phase: 'create' | 'start' | 'wait' | 'inspect' | 'logs' | 'response' = 'create';
   const created = await docker
     .createContainer({
@@ -310,7 +319,7 @@ export async function reclaimSleepingRunnerCaches(input: {
       capAdd: ['CHOWN', 'SETUID', 'SETGID'],
       securityOpt: ['no-new-privileges=true'],
       ...resources,
-      memorySwapBytes: 256 * 1024 ** 2,
+      memorySwapBytes: CACHE_HELPER_RESOURCES.memoryBytes,
       nanoCpus: 1_000_000_000,
       tmpfs: { '/tmp': 'rw,nosuid,nodev,size=16m' },
     })

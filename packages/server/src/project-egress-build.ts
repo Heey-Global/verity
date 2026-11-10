@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { ProtectedBuildFailure } from './project-egress-build-error.js';
+import {
+  describeProtectedBuildFailure,
+  ProtectedBuildFailure,
+  type ProtectedBuildFailureDescription,
+} from './project-egress-build-error.js';
 
 const identity = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/u);
 export const protectedBuildRequest = z.strictObject({
@@ -67,6 +71,23 @@ export const sameProtectedBuildRequest = (a: ProtectedBuildRequest, b: Protected
   requestKeys.every((key) => a[key] === b[key]);
 const same = sameProtectedBuildRequest;
 const terminal = (phase: ProtectedBuildPhase) => phase === 'failed' || phase === 'succeeded';
+/** Host journal entry for a failed lifecycle step, correlated to its attempt. */
+export interface ProtectedBuildEvent {
+  event: 'cleanup_failed' | 'cleanup_recovered' | 'begin_refused';
+  projectId: string;
+  attemptId: string;
+  /** The attempt whose cleanup blocks the slot, when it differs from the request. */
+  blockingAttemptId?: string;
+  operation: 'begin' | 'restore' | 'revalidate' | 'status' | 'cancel' | 'close';
+  reason?: string;
+  failures?: number;
+  retryInMs?: number;
+  failure?: ProtectedBuildFailureDescription;
+}
+const CLEANUP_RETRY_MIN_MS = 1000;
+const CLEANUP_RETRY_MAX_MS = 5 * 60_000;
+const defaultReport = (event: ProtectedBuildEvent) =>
+  console.warn('verity: protected build lifecycle', JSON.stringify(event));
 
 /** Host-owned build lifecycle, separate from the project's live sandbox generation.
  * There is one host build slot. Reads never renew it; only an authenticated Server
@@ -81,6 +102,11 @@ export class ProtectedBuildHost {
    * it has run any build, so missing state (fresh or wiped directory) cannot prove
    * that builds from before it ended; such a host never reports its slot idle. */
   private restoredFromState = false;
+  /** Consecutive cleanup failures of the current ended record; in memory only,
+   * so a restart retries at once. Never persisted as evidence of anything. */
+  private cleanupFailures = 0;
+  private cleanupRetryAt = 0;
+  private operation: ProtectedBuildEvent['operation'] = 'revalidate';
   constructor(
     private readonly runtime: ProtectedBuildRuntime,
     private readonly persist: (record: ProtectedBuildRecord | undefined) => Promise<void>,
@@ -89,9 +115,16 @@ export class ProtectedBuildHost {
       save(record: ProtectedBuildRecord): Promise<void>;
       load(projectId: string, attemptId: string): Promise<ProtectedBuildRecord | undefined>;
     },
+    private readonly report: (event: ProtectedBuildEvent) => void = defaultReport,
   ) {}
-  private serialize<T>(work: () => Promise<T>): Promise<T> {
-    const pending = this.queue.then(work);
+  private serialize<T>(
+    work: () => Promise<T>,
+    operation: ProtectedBuildEvent['operation'] = 'revalidate',
+  ): Promise<T> {
+    const pending = this.queue.then(() => {
+      this.operation = operation;
+      return work();
+    });
     this.queue = pending.catch(() => undefined);
     return pending;
   }
@@ -143,14 +176,67 @@ export class ProtectedBuildHost {
       await this.receipts?.save(structuredClone(record));
       await this.runtime.remove(record.request);
     } catch (cause) {
+      this.cleanupFailures++;
+      const retryInMs = Math.min(
+        CLEANUP_RETRY_MAX_MS,
+        CLEANUP_RETRY_MIN_MS * 2 ** Math.min(this.cleanupFailures - 1, 20),
+      );
+      this.cleanupRetryAt = this.now() + retryInMs;
+      this.report({
+        event: 'cleanup_failed',
+        projectId: record.request.projectId,
+        attemptId: record.request.attemptId,
+        operation: this.operation,
+        failures: this.cleanupFailures,
+        retryInMs,
+        failure: describeProtectedBuildFailure(cause),
+      });
       throw new ProtectedBuildFailure('cleanup_failed', { cause });
     }
     record.cleaned = true;
     await this.save();
+    if (this.cleanupFailures > 0)
+      this.report({
+        event: 'cleanup_recovered',
+        projectId: record.request.projectId,
+        attemptId: record.request.attemptId,
+        operation: this.operation,
+        failures: this.cleanupFailures,
+      });
+    this.cleanupFailures = 0;
+    this.cleanupRetryAt = 0;
+  }
+  /** A refused begin never started anything for its attempt: no state, anchor,
+   * unit or rule was created for it. Record that as a terminal receipt, so the
+   * Server's storage reservation for it can be released on host evidence instead
+   * of remaining held behind `unknown_attempt` forever. */
+  private async refuse(
+    request: ProtectedBuildRequest,
+    failure: ProtectedBuildFailure,
+  ): Promise<never> {
+    this.report({
+      event: 'begin_refused',
+      projectId: request.projectId,
+      attemptId: request.attemptId,
+      ...(this.record ? { blockingAttemptId: this.record.request.attemptId } : {}),
+      operation: 'begin',
+      reason: failure.reason,
+      ...(failure.cause === undefined
+        ? {}
+        : { failure: describeProtectedBuildFailure(failure.cause) }),
+    });
+    try {
+      await this.receipts?.save({ request, phase: 'failed', ended: true, cleaned: true });
+    } catch (cause) {
+      throw new ProtectedBuildFailure(failure.reason, {
+        cause: new AggregateError([failure, cause]),
+      });
+    }
+    throw failure;
   }
   private async contain(record: ProtectedBuildRecord): Promise<void> {
     if (record.ended) {
-      await this.cleanup(record);
+      await this.settle(record);
       return;
     }
     record.phase = 'stopping';
@@ -165,7 +251,9 @@ export class ProtectedBuildHost {
     record.ended = await this.runtime.ended(record.request).catch(() => false);
     if (record.ended) record.phase = 'failed';
     await this.save();
-    if (record.ended) await this.cleanup(record);
+    // Termination is proven; a failed removal is retried by the host sweep and
+    // must not replace the original failure or block a restart.
+    if (record.ended) await this.settle(record);
     const errors = saved.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
     if (stopped !== undefined) errors.push(stopped);
     if (errors.length)
@@ -185,28 +273,41 @@ export class ProtectedBuildHost {
       }
       this.record = parsed;
       this.restoredFromState = true;
-      if (parsed.ended) await this.cleanup(parsed);
+      this.cleanupFailures = 0;
+      this.cleanupRetryAt = 0;
+      // An ended record whose removal keeps failing must not stop the host from
+      // starting: every later begin and sweep retries it, with diagnostics.
+      if (parsed.ended) await this.settle(parsed);
       else await this.contain(parsed);
-    });
+    }, 'restore');
   }
   begin(input: unknown): Promise<ProtectedBuildRecord> {
     const request = protectedBuildRequest.parse(input);
     return this.serialize(async () => {
       if (this.closed) throw new Error('Protected build service is closed');
-      if (this.record) {
-        if (this.record.request.attemptId === request.attemptId) {
-          if (!same(this.record.request, request))
-            throw new ProtectedBuildFailure('attempt_changed');
-          return structuredClone(this.record);
-        }
-        if (!this.record.ended) throw new ProtectedBuildFailure('slot_busy');
-        await this.cleanup(this.record);
+      if (this.record?.request.attemptId === request.attemptId) {
+        if (!same(this.record.request, request)) throw new ProtectedBuildFailure('attempt_changed');
+        return structuredClone(this.record);
       }
+      // A terminal receipt, including a refusal, answers a retried begin.
       const previous = await this.receipts?.load(request.projectId, request.attemptId);
       if (previous) {
         const recorded = await this.receipt(request.projectId, request.attemptId);
         if (!same(recorded.request, request)) throw new ProtectedBuildFailure('attempt_changed');
         return structuredClone(recorded);
+      }
+      if (this.record) {
+        if (!this.record.ended) await this.refuse(request, new ProtectedBuildFailure('slot_busy'));
+        try {
+          await this.cleanup(this.record);
+        } catch (cause) {
+          await this.refuse(
+            request,
+            cause instanceof ProtectedBuildFailure
+              ? cause
+              : new ProtectedBuildFailure('cleanup_failed', { cause }),
+          );
+        }
       }
       const record: ProtectedBuildRecord = { request, phase: 'preparing', ended: false };
       this.record = record;
@@ -239,7 +340,7 @@ export class ProtectedBuildHost {
         }
         throw cause;
       }
-    });
+    }, 'begin');
   }
   heartbeat(projectId: string, attemptId: string): Promise<void> {
     return this.serialize(async () => {
@@ -269,7 +370,9 @@ export class ProtectedBuildHost {
       const record = this.record;
       if (!record) return;
       if (record.ended) {
-        await this.cleanup(record);
+        // Each failure is reported with its attempt and stage by cleanup().
+        if (!record.cleaned && this.now() < this.cleanupRetryAt) return;
+        await this.settle(record);
         return;
       }
       if (record.phase === 'running' && this.now() - this.lastHeartbeat > 5000) {
@@ -315,7 +418,7 @@ export class ProtectedBuildHost {
       const record = this.match(projectId, attemptId);
       await this.poll(record);
       return structuredClone(record);
-    });
+    }, 'status');
   }
   cancel(projectId: string, attemptId: string): Promise<ProtectedBuildRecord> {
     return this.serialize(async () => {
@@ -327,12 +430,12 @@ export class ProtectedBuildHost {
       const record = this.match(projectId, attemptId);
       if (!record.ended) await this.contain(record);
       return structuredClone(record);
-    });
+    }, 'cancel');
   }
   close(): Promise<void> {
     this.closed = true;
     return this.serialize(async () => {
       if (this.record) await this.contain(this.record);
-    });
+    }, 'close');
   }
 }

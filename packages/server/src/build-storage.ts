@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
 
 const GiB = 1024 ** 3;
@@ -1028,8 +1029,16 @@ export class BuildStorage {
           reply.data.record.request.projectId === reference.projectId &&
           reply.data.record.request.attemptId === reference.attemptId
         );
-      } catch {
-        return false;
+      } catch (error) {
+        // The host holds neither this attempt nor a receipt for it: its begin was
+        // refused or never arrived (hosts before refusal receipts), or its receipt
+        // aged out. The single slot is never replaced while its attempt may run,
+        // so an idle slot restored from persisted state, asked after this record
+        // began, proves the attempt is not running. Any other error proves nothing.
+        if (!(error instanceof ProtectedBuildFailure) || error.reason !== 'unknown_attempt')
+          return false;
+        const idle = await protectedSlotIdle();
+        return idle && Date.parse(record.startedAt) < slotAskedAt;
       }
     };
     this.sweepAdmissionMarkers(namespace);

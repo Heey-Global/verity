@@ -3359,11 +3359,17 @@ export class ProvisionerImpl implements Provisioner {
       ownerToken,
     });
     try {
+      // Name the check that refused: the probe also reports persistent preview
+      // shares and dev servers, which a stale share record can hold indefinitely.
       if ((this.projectSandboxActivities.get(projectId) ?? 0) > 0) {
-        throw new ProvisioningError(`project ${projectId} has a turn in flight`);
+        throw new ProvisioningError(
+          `project ${projectId} has a turn in flight (in-process sandbox activity)`,
+        );
       }
       if (this.projectBusyProbe && (await this.projectBusyProbe(projectId, exceptSessionIds))) {
-        throw new ProvisioningError(`project ${projectId} has a turn in flight`);
+        throw new ProvisioningError(
+          `project ${projectId} has a turn in flight (session turn, preview share or dev server)`,
+        );
       }
       const context = new Map(this.projectMutationContext.getStore());
       context.set(projectId, ownerToken);

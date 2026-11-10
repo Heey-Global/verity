@@ -140,6 +140,35 @@ same runtime and configured container/host limits; neither that message nor code
 publication establishes a fix or host OOM. Live pulls, restarts, reconciliation
 and cleanup require separate authorization.
 
+### Helper resource budget
+
+Maintenance helpers run under the project runtime (gVisor). Docker counts that
+runtime's own host threads against the container's pids limit and charges its
+memory to the container's cgroup. Helpers limited to 32 pids and 256 MiB failed
+before Node started, with `[FATAL tini (2)] exec timeout failed: Cannot allocate
+memory` (classified as `resource-unavailable`), and reclaimed nothing. Helpers
+now run with 128 pids and 512 MiB, which matches other long-lived helper
+containers and stays well below a project sandbox. Failure reports include the
+bounds in force. If `resource-unavailable` recurs under these bounds, gather
+evidence from the same runtime and host before raising them again.
+
+### Build storage estimates
+
+Build admission reserves an estimate per attempt: by default 24 GiB, or a value
+derived from the base image size. A free-space reserve is kept on top, so the
+estimate covers the build's working space, not what is on disk now. An attempt
+whose end is unconfirmed keeps its estimate reserved until the host confirms the
+end. Diagnostics list `reservedBytes` separately from measured allocation and
+from estimated reclaimable bytes. Never add these figures together, and never
+read a reservation as allocated bytes.
+
+The Server does not yet record peak usage per build. To check an estimate,
+sample the filesystem's used bytes and the BuildKit and Docker allocation before
+a representative protected build, every few seconds during it, and after it.
+Compare the peak increase with the reserved estimate. Change the estimate only
+from repeated measurements like this, not to make admission pass, and keep the
+free-space reserve.
+
 ### Offline cache policy and reporting
 
 Offline reclamation can clear a known home's regenerable cache despite ambiguous
