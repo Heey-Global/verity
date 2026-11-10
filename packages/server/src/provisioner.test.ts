@@ -9705,6 +9705,63 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
     }
   });
 
+  // A Repair whose pending session-home deletion does not finish in time must
+  // fail truthfully before the project's own lifecycle commands run, leave no
+  // half-admitted container behind, and succeed once the cleanup completes.
+  it('fails Repair on a pending session cleanup timeout and admits the Sandbox once cleanup completes', async () => {
+    const { root, clonePath } = makeCloneRoot(true);
+    try {
+      writeFileSync(
+        join(clonePath, '.devcontainer', 'devcontainer.json'),
+        '{ "image": "node:24-bookworm", "postCreateCommand": "true" }',
+      );
+      const id = await seedProject();
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const command = vi.fn<ContainerCommandRunner>(async () => ({ stdout: '', stderr: '' }));
+      const timeout = Object.assign(
+        new Error('runner supervisor request timed out: delete-session-home'),
+        { code: 'ETIMEDOUT' },
+      );
+      const beforeRunnerAdmission = vi
+        .fn<(project: ProjectRecord) => Promise<void>>()
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValue(undefined);
+      const { client: docker, calls: dockerCalls } = fakeDocker({ imageExists: async () => false });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        containerCommand: command,
+        beforeRunnerAdmission,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(
+        /pending session cleanup failed: runner supervisor request timed out: delete-session-home/,
+      );
+      expect((await ctx.store.getProject(id))?.state).toBe('failed');
+      // Cleanup gates admission: the project's lifecycle commands never ran.
+      expect(command).not.toHaveBeenCalled();
+      expect(dockerCalls.map((call) => call.method)).toEqual(
+        expect.arrayContaining(['startContainer', 'stopContainer', 'removeContainer']),
+      );
+
+      // The retry repeats the container phase; this fixture has no remote to clone.
+      await ctx.store.updateProjectState(id, 'container_starting');
+      const repaired = await provisioner.provision(id);
+      expect(repaired.state).toBe('active');
+      expect(beforeRunnerAdmission).toHaveBeenCalledTimes(2);
+      expect(command).toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('surfaces the failure tail + a no-new-privileges hint when postCreate uses sudo', async () => {
     const { root, clonePath } = makeCloneRoot(true);
     try {

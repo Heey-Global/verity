@@ -259,6 +259,7 @@ import {
   queueSessionCleanup,
   pendingSessionCleanups,
   createSessionCleanupProcessor,
+  deleteRunnerSessionHome,
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 
@@ -3707,14 +3708,12 @@ export async function buildEmbeddedServer(
             if (project?.state === 'sleeping') return 'sleeping';
             return 'unavailable';
           },
-          deleteHome: async (projectId, pending) => {
-            const response = await requestRunnerSupervisor(
+          deleteHome: (projectId, pending) =>
+            deleteRunnerSessionHome(
               join(dataVolumeRoot, 'runners', projectId, 'supervisor.sock'),
-              { kind: 'delete-session-home', sessionId: pending.sessionId },
-              10_000,
-            );
-            if (response.ok !== true) throw new Error('Pending session home cleanup failed');
-          },
+              pending.sessionId,
+              config.sessionHomeDeleteTimeoutMs,
+            ),
           purgeArtifacts: async (projectId, pending) => {
             const result = await purgeSessionArtifactFiles({
               runtimeDir: join(dataVolumeRoot, 'runners', projectId),

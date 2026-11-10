@@ -1,13 +1,16 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import {
   createSessionCleanupWorker,
   createSessionCleanupProcessor,
+  deleteRunnerSessionHome,
   finishSessionCleanup,
   pendingSessionCleanups,
   queueSessionCleanup,
+  SESSION_HOME_DELETE_TIMEOUT_MS,
 } from './pending-session-cleanup.js';
 
 it('retains ownership after the session row is gone and removes only a completed cleanup', async () => {
@@ -301,3 +304,158 @@ it.each([false, true])(
     }
   },
 );
+
+// Repair of a project without a Sandbox container recreates it, starts the
+// Runner and only then admits work once pending session homes are deleted.
+// These cases pin that sequence and the deadline the deletion relies on.
+it('keeps Repair admission blocked and truthful while an absent runner is restarted and its deletion times out', async () => {
+  const f = await cleanupFixture();
+  try {
+    const processor = createSessionCleanupProcessor(f.options);
+    // No Sandbox container: the runtime directory survives, so the runtime is
+    // unavailable rather than absent. Nothing may be sent to its stale socket.
+    f.state('unavailable');
+    await processor.run();
+    expect(f.deleteHome).not.toHaveBeenCalled();
+    // Repair started the runner; the supervisor did not answer in time.
+    const timeout = Object.assign(
+      new Error('runner supervisor request timed out: delete-session-home'),
+      { code: 'ETIMEDOUT' },
+    );
+    f.deleteHome.mockRejectedValueOnce(timeout);
+    await expect(processor.run('project')).rejects.toBe(timeout);
+    const [retained] = await pendingSessionCleanups(f.root);
+    expect(retained?.progress?.project?.homeDeleted).not.toBe(true);
+    // Artifacts are purged only after the broker fenced the home.
+    expect(f.purgeArtifacts).not.toHaveBeenCalled();
+    expect(f.report).toHaveBeenCalledExactlyOnceWith(
+      'project',
+      expect.anything(),
+      'retry',
+      timeout,
+    );
+    // The background scan honours backoff; the next Repair retries at once.
+    f.state('ready');
+    await processor.run();
+    expect(f.deleteHome).toHaveBeenCalledTimes(1);
+    await processor.run('project');
+    expect(f.deleteHome).toHaveBeenCalledTimes(2);
+    expect(await pendingSessionCleanups(f.root)).toEqual([]);
+  } finally {
+    await f.close();
+  }
+});
+
+/** A Runner supervisor on a real Unix socket that answers only when told to. */
+async function heldSupervisor() {
+  const directory = await mkdtemp(join(tmpdir(), 'vsc-'));
+  const socketPath = join(directory, 'supervisor.sock');
+  const requests: unknown[] = [];
+  let peer: Socket | undefined;
+  let received!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    received = resolve;
+  });
+  const server = createServer((socket) => {
+    peer = socket;
+    let buffered = '';
+    socket.on('data', (chunk) => {
+      buffered += chunk.toString('utf8');
+      if (!buffered.includes('\n')) return;
+      requests.push(JSON.parse(buffered.split('\n')[0]!));
+      received();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  return {
+    socketPath,
+    requests,
+    arrived,
+    answer: (response: unknown) => peer!.end(`${JSON.stringify(response)}\n`),
+    close: async () => {
+      peer?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+/** The supervisor's own budget for the broker deletion, read from its source. */
+async function supervisorBrokerBudgetMs(): Promise<number> {
+  const source = await readFile(
+    new URL(
+      '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const start = source.indexOf('async function brokerStorageRequest(');
+  expect(start).toBeGreaterThan(-1);
+  const body = source.slice(start, source.indexOf('\n}\n', start));
+  // Numeric separators are allowed, so `30_000` must not read as `30`.
+  const budgets = [...body.matchAll(/socket\.setTimeout\(\s*(\d[\d_]*)\s*,/gu)].map((match) =>
+    Number(match[1]!.replaceAll('_', '')),
+  );
+  expect(budgets).toHaveLength(1);
+  return budgets[0]!;
+}
+
+it('waits for a supervisor that is still deleting for its whole broker budget', async () => {
+  const budget = await supervisorBrokerBudgetMs();
+  const supervisor = await heldSupervisor();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const deletion = deleteRunnerSessionHome(supervisor.socketPath, 'session-a');
+    const settled = vi.fn();
+    deletion.then(settled, settled);
+    await supervisor.arrived;
+    expect(supervisor.requests).toEqual([
+      expect.objectContaining({ kind: 'delete-session-home', sessionId: 'session-a' }),
+    ]);
+    await vi.advanceTimersByTimeAsync(budget + 1_000);
+    expect(settled).not.toHaveBeenCalled();
+    supervisor.answer({ ok: true });
+    await expect(deletion).resolves.toBeUndefined();
+  } finally {
+    vi.useRealTimers();
+    await supervisor.close();
+  }
+});
+
+it('still fails, without claiming deletion, when the supervisor refuses or never answers', async () => {
+  const refusing = await heldSupervisor();
+  try {
+    const refused = deleteRunnerSessionHome(refusing.socketPath, 'session-b');
+    await refusing.arrived;
+    refusing.answer({ ok: false, error: 'session storage is still in use' });
+    await expect(refused).rejects.toThrow('session storage is still in use');
+  } finally {
+    await refusing.close();
+  }
+  const silent = await heldSupervisor();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const stalled = deleteRunnerSessionHome(silent.socketPath, 'session-c');
+    const outcome = stalled.catch((error: unknown) => error);
+    await silent.arrived;
+    await vi.advanceTimersByTimeAsync(SESSION_HOME_DELETE_TIMEOUT_MS);
+    expect(await outcome).toMatchObject({
+      code: 'ETIMEDOUT',
+      message: 'runner supervisor request timed out: delete-session-home',
+    });
+  } finally {
+    vi.useRealTimers();
+    await silent.close();
+  }
+});
+
+// The Server's deadline is only meaningful above the supervisor's own budget
+// for the broker deletion; below it, a deletion the supervisor would complete
+// is reported as a timeout and the failed Repair stops the container mid-way.
+it('gives the supervisor more time than its own broker storage budget', async () => {
+  // Turn cancellation precedes the broker step inside the same request. The
+  // supervisor publishes no bound for it; 10 s is this guard's assumption.
+  expect(SESSION_HOME_DELETE_TIMEOUT_MS).toBeGreaterThanOrEqual(
+    (await supervisorBrokerBudgetMs()) + 10_000,
+  );
+});
