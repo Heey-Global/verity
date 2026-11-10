@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ProtectedBuildStageError } from './project-egress-build-error.js';
+import { ProjectFenceTransactionError } from './project-egress-fence.js';
 import {
   ProtectedBuildHost,
   protectedBuildRequest,
+  type ProtectedBuildEvent,
   type ProtectedBuildRecord,
   type ProtectedBuildRuntime,
 } from './project-egress-build.js';
@@ -160,6 +163,18 @@ describe('protected build ownership', () => {
 
 describe('protected build terminal cleanup and receipts', () => {
   const next = { ...request, attemptId: '22222222-2222-4222-8222-222222222222' };
+  const later = { ...request, attemptId: '33333333-3333-4333-8333-333333333333' };
+  /** Cleanup retries back off; tests advance this clock past the retry delay. */
+  function clock() {
+    let value = 0;
+    return { now: () => value, advance: (ms: number) => void (value += ms) };
+  }
+  const refusal = (value: typeof request) => ({
+    request: value,
+    phase: 'failed',
+    ended: true,
+    cleaned: true,
+  });
   function journal() {
     const values = new Map<string, ProtectedBuildRecord>();
     return {
@@ -201,12 +216,14 @@ describe('protected build terminal cleanup and receipts', () => {
   it('retains an interrupted startup allocation until termination and cleanup are proven', async () => {
     const { runtime, persist } = fixture();
     const receipts = journal();
-    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    const time = clock();
+    const host = new ProtectedBuildHost(runtime, persist, time.now, receipts, () => undefined);
     vi.mocked(runtime.ended).mockResolvedValue(false);
     await host.restore({ request, phase: 'running', ended: true, cleaned: true });
     expect(await host.execute({ operation: 'slot' })).toMatchObject({ idle: false });
     await expect(host.begin(next)).rejects.toThrow('slot_busy');
-    expect(receipts.save).not.toHaveBeenCalled();
+    // The refused attempt never started; only it receives a terminal receipt.
+    expect(receipts.save).toHaveBeenCalledExactlyOnceWith(refusal(next));
     expect(runtime.remove).not.toHaveBeenCalled();
     vi.mocked(runtime.ended).mockResolvedValue(true);
     vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('cleanup unavailable'));
@@ -216,9 +233,10 @@ describe('protected build terminal cleanup and receipts', () => {
       ended: true,
       cleaned: false,
     });
+    time.advance(1000);
     await host.revalidate();
     expect(runtime.remove).toHaveBeenCalledTimes(2);
-    expect(await host.begin(next)).toMatchObject({ phase: 'running', ended: false });
+    expect(await host.begin(later)).toMatchObject({ phase: 'running', ended: false });
   });
   it.each(['succeeded', 'failed'] as const)(
     'preserves a proven %s outcome during startup cleanup',
@@ -256,15 +274,20 @@ describe('protected build terminal cleanup and receipts', () => {
   it('retries failed cleanup in the sweep while retaining termination proof', async () => {
     const { runtime, persist } = fixture();
     const receipts = journal();
-    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    const time = clock();
+    const host = new ProtectedBuildHost(runtime, persist, time.now, receipts, () => undefined);
     await host.begin(request);
     vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
-    await expect(host.cancel(request.projectId, request.attemptId)).rejects.toThrow(
-      'cleanup_failed',
-    );
+    // Termination is proven, so cancel confirms it; removal is the sweep's retry.
+    const cancelled = await host.cancel(request.projectId, request.attemptId);
+    expect(cancelled).toMatchObject({ phase: 'failed', ended: true });
+    expect(cancelled.cleaned).not.toBe(true);
     expect(await host.status(request.projectId, request.attemptId)).toMatchObject({ ended: true });
     expect(await host.cancel(request.projectId, request.attemptId)).toMatchObject({ ended: true });
     expect(receipts.save).toHaveBeenCalledTimes(1);
+    await host.revalidate();
+    expect(runtime.remove).toHaveBeenCalledTimes(1);
+    time.advance(1000);
     await host.revalidate();
     expect(runtime.remove).toHaveBeenCalledTimes(2);
     expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
@@ -273,16 +296,20 @@ describe('protected build terminal cleanup and receipts', () => {
   });
   it('blocks replacement until ended resources can be removed', async () => {
     const { runtime, persist } = fixture();
-    const host = new ProtectedBuildHost(runtime, persist);
+    const receipts = journal();
+    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts, () => undefined);
     await host.begin(request);
     vi.mocked(runtime.remove).mockRejectedValue(new Error('unavailable'));
-    await expect(host.cancel(request.projectId, request.attemptId)).rejects.toThrow(
-      'cleanup_failed',
-    );
+    await host.cancel(request.projectId, request.attemptId);
     await expect(host.begin(next)).rejects.toThrow('cleanup_failed');
     expect(runtime.start).toHaveBeenCalledTimes(1);
+    // The refused attempt is answered from its receipt; it can never start later.
+    for (const operation of ['status', 'cancel'] as const)
+      expect(await host[operation](next.projectId, next.attemptId)).toEqual(refusal(next));
     vi.mocked(runtime.remove).mockResolvedValue(undefined);
-    await host.begin(next);
+    expect(await host.begin(next)).toEqual(refusal(next));
+    expect(runtime.start).toHaveBeenCalledTimes(1);
+    await host.begin(later);
     expect(runtime.start).toHaveBeenCalledTimes(2);
   });
   it('restores and cleans an ended partially prepared previous attempt before begin', async () => {
@@ -331,7 +358,8 @@ describe('protected build terminal cleanup and receipts', () => {
     // A cleanup hiccup after proven termination must not turn a built image into a
     // failed build; the sweep owns the removal retry.
     const { runtime, persist } = fixture();
-    const host = new ProtectedBuildHost(runtime, persist, undefined, journal());
+    const time = clock();
+    const host = new ProtectedBuildHost(runtime, persist, time.now, journal(), () => undefined);
     await host.begin(request);
     vi.mocked(runtime.status).mockResolvedValueOnce('succeeded');
     vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
@@ -339,6 +367,7 @@ describe('protected build terminal cleanup and receipts', () => {
       phase: 'succeeded',
       ended: true,
     });
+    time.advance(1000);
     await host.revalidate();
     expect(runtime.remove).toHaveBeenCalledTimes(2);
     expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
@@ -356,7 +385,8 @@ describe('protected build terminal cleanup and receipts', () => {
     vi.mocked(runtime.remove).mockRejectedValueOnce(new Error('daemon unavailable'));
     await expect(host.begin(next)).rejects.toThrow('cleanup_failed');
     expect(runtime.start).toHaveBeenCalledTimes(1);
-    await host.begin(next);
+    await host.begin(later);
+    expect(runtime.start).toHaveBeenCalledTimes(2);
     expect(receipts.save).toHaveBeenCalled();
     expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
       phase: 'failed',
@@ -366,17 +396,134 @@ describe('protected build terminal cleanup and receipts', () => {
   it('maps receipt persistence failures to a retryable cleanup refusal', async () => {
     const { runtime, persist } = fixture();
     const receipts = journal();
-    const host = new ProtectedBuildHost(runtime, persist, undefined, receipts);
+    const time = clock();
+    const host = new ProtectedBuildHost(runtime, persist, time.now, receipts, () => undefined);
     await host.begin(request);
     receipts.save.mockRejectedValueOnce(new Error('ENOSPC /private/receipts/path'));
-    const refused = await host
-      .cancel(request.projectId, request.attemptId)
-      .catch((error: unknown) => error);
-    expect(refused).toMatchObject({ reason: 'cleanup_failed' });
+    // The live record still proves termination; the missing receipt only keeps
+    // cleanup pending, and removal never runs before the receipt is durable.
+    const cancelled = await host.cancel(request.projectId, request.attemptId);
+    expect(cancelled).toMatchObject({ ended: true });
+    expect(cancelled.cleaned).not.toBe(true);
     expect(runtime.remove).not.toHaveBeenCalled();
+    time.advance(1000);
     await host.revalidate();
     expect(runtime.remove).toHaveBeenCalledTimes(1);
     expect(await host.begin(next)).toMatchObject({ phase: 'running' });
+  });
+  describe('a previous attempt whose removal keeps failing', () => {
+    // Observed: begin failed with cleanup_failed because the previous attempt's
+    // removal failed in its fence denial; the following cancel answered
+    // unknown_attempt, so the Server kept the new attempt's storage reservation
+    // although nothing had started for it.
+    const fenceFailure = () =>
+      new ProtectedBuildStageError('authority.deny', {
+        cause: new ProjectFenceTransactionError({
+          exitCode: 1,
+          signal: null,
+          durationMs: 12,
+          timedOut: false,
+          diagnostics: ['line 1: No such file or directory'],
+          statements: ['delete table inet verity_egress_0123'],
+          stderrBytes: 120,
+        }),
+      });
+    function failing() {
+      const f = fixture();
+      const receipts = journal();
+      const events: ProtectedBuildEvent[] = [];
+      const time = clock();
+      const host = new ProtectedBuildHost(f.runtime, f.persist, time.now, receipts, (event) =>
+        events.push(event),
+      );
+      vi.mocked(f.runtime.remove).mockRejectedValue(fenceFailure());
+      return { ...f, receipts, events, time, host };
+    }
+    it('confirms that a refused begin never started, for cancel and status', async () => {
+      const { host, runtime, events } = failing();
+      await host.begin(request);
+      await host.cancel(request.projectId, request.attemptId);
+      await expect(host.begin(next)).rejects.toThrow('cleanup_failed');
+      expect(runtime.prepare).toHaveBeenCalledTimes(1);
+      expect(await host.cancel(next.projectId, next.attemptId)).toEqual(refusal(next));
+      expect(await host.status(next.projectId, next.attemptId)).toEqual(refusal(next));
+      // The previous attempt keeps its slot and its own termination proof.
+      expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+        phase: 'failed',
+        ended: true,
+      });
+      expect(await host.execute({ operation: 'slot' })).toEqual({ version: 1, idle: false });
+      expect(events.find((event) => event.event === 'begin_refused')).toMatchObject({
+        attemptId: next.attemptId,
+        blockingAttemptId: request.attemptId,
+        reason: 'cleanup_failed',
+        failure: {
+          stage: 'authority.deny',
+          evidence: [
+            expect.objectContaining({
+              exitCode: 1,
+              statements: ['delete table inet verity_egress_0123'],
+            }),
+          ],
+        },
+      });
+    });
+    it('correlates each failure to its attempt and stage and backs off sweep retries', async () => {
+      const { host, runtime, events, time } = failing();
+      await host.begin(request);
+      await host.cancel(request.projectId, request.attemptId);
+      for (let i = 0; i < 50; i++) await host.revalidate();
+      expect(runtime.remove).toHaveBeenCalledTimes(1);
+      const delays: number[] = [];
+      for (let i = 0; i < 12; i++) {
+        time.advance(10 * 60_000);
+        await host.revalidate();
+        delays.push(events.at(-1)!.retryInMs!);
+      }
+      expect(runtime.remove).toHaveBeenCalledTimes(13);
+      expect(delays.slice(0, 3)).toEqual([2000, 4000, 8000]);
+      expect(Math.max(...delays)).toBe(5 * 60_000);
+      expect(events.at(-1)).toMatchObject({
+        event: 'cleanup_failed',
+        attemptId: request.attemptId,
+        operation: 'revalidate',
+        failures: 13,
+        failure: { stage: 'authority.deny' },
+      });
+      vi.mocked(runtime.remove).mockResolvedValue(undefined);
+      time.advance(10 * 60_000);
+      await host.revalidate();
+      expect(events.at(-1)).toMatchObject({ event: 'cleanup_recovered', failures: 13 });
+      expect(await host.begin(later)).toMatchObject({ phase: 'running' });
+    });
+    it('starts after a restart and recovers once removal succeeds', async () => {
+      const { runtime, persist, receipts, events, time } = failing();
+      const restarted = new ProtectedBuildHost(runtime, persist, time.now, receipts, (event) =>
+        events.push(event),
+      );
+      await expect(
+        restarted.restore({ request, phase: 'failed', ended: true }),
+      ).resolves.toBeUndefined();
+      expect(events.at(-1)).toMatchObject({ event: 'cleanup_failed', operation: 'restore' });
+      // An ended previous record proves that every earlier attempt ended.
+      expect(await restarted.execute({ operation: 'slot' })).toEqual({ version: 1, idle: true });
+      vi.mocked(runtime.remove).mockResolvedValue(undefined);
+      expect(await restarted.begin(next)).toMatchObject({ phase: 'running' });
+      expect(await restarted.status(request.projectId, request.attemptId)).toMatchObject({
+        phase: 'failed',
+        ended: true,
+      });
+    });
+    it('keeps a restart fail-closed when an unended record cannot be contained', async () => {
+      const { runtime, persist } = fixture();
+      vi.mocked(runtime.stop).mockRejectedValue(new Error('systemd unavailable'));
+      vi.mocked(runtime.ended).mockResolvedValue(false);
+      const host = new ProtectedBuildHost(runtime, persist, undefined, journal(), () => undefined);
+      await expect(host.restore({ request, phase: 'running', ended: false })).rejects.toThrow(
+        'containment_failed',
+      );
+      expect(await host.execute({ operation: 'slot' })).toEqual({ version: 1, idle: false });
+    });
   });
   it('reports the slot idle only while no build with unproven termination holds it', async () => {
     const { runtime, persist } = fixture();

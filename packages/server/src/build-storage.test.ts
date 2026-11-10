@@ -1,3 +1,4 @@
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import {
   existsSync,
   mkdirSync,
@@ -1236,6 +1237,86 @@ describe('build storage reconciliation', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+  // Observed: a begin refused before the host adopted it left the Server with no
+  // way to prove the attempt ended (status answered unknown_attempt), holding
+  // 24 GiB until a reboot. Only the host's idle-slot proof may release it.
+  describe('an attempt the host does not know', () => {
+    const unknown = async () => {
+      throw new ProtectedBuildFailure('unknown_attempt');
+    };
+    const protectedAttempt = (f: ReturnType<typeof fixture>, startedAt?: number) =>
+      attempt(
+        f,
+        'attempt-refused',
+        {},
+        {
+          operation: 'protected-build',
+          protectedBuild: protectedReference,
+          ...(startedAt === undefined ? {} : { startedAt: new Date(startedAt).toISOString() }),
+        },
+      );
+    const old = () => Date.now() - 2 * 3600_000;
+    it('is released once the host reports an idle slot restored from its state', async () => {
+      const f = fixture();
+      const directory = protectedAttempt(f, old());
+      const slot = vi.fn(async () => ({ version: 1, idle: true }));
+      const warn = quiet();
+      try {
+        expect(
+          await f.manager().reconcile({ protectedBuildStatus: unknown, protectedBuildSlot: slot }),
+        ).toEqual([]);
+        expect(slot).toHaveBeenCalledOnce();
+        expect(existsSync(directory)).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+    it.each([
+      ['a busy slot', unknown, async () => ({ version: 1, idle: false })],
+      ['an unreachable slot query', unknown, async () => Promise.reject(new Error('down'))],
+      [
+        'any other refusal',
+        async () => Promise.reject(new ProtectedBuildFailure('operation_refused')),
+        async () => ({ version: 1, idle: true }),
+      ],
+      [
+        'a transport failure',
+        async () => Promise.reject(new Error('Protected build control reply was not confirmed')),
+        async () => ({ version: 1, idle: true }),
+      ],
+    ])('is retained for %s', async (_label, status, slot) => {
+      const f = fixture();
+      const directory = protectedAttempt(f, old());
+      expect(
+        await f.manager().reconcile({ protectedBuildStatus: status, protectedBuildSlot: slot }),
+      ).toHaveLength(1);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+    });
+    // A begin written by a client that has since died may still be unread by the
+    // host; an idle answer now would not cover the build it is about to start.
+    it('is retained within the client bound even with an idle slot', async () => {
+      const f = fixture();
+      const directory = protectedAttempt(f, Date.now() - 30 * 60_000);
+      expect(
+        await f.manager().reconcile({
+          protectedBuildStatus: unknown,
+          protectedBuildSlot: async () => ({ version: 1, idle: true }),
+        }),
+      ).toHaveLength(1);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+    });
+    it('is retained when it began after the slot was asked', async () => {
+      const f = fixture();
+      const directory = protectedAttempt(f, Date.now() + 60_000);
+      expect(
+        await f.manager().reconcile({
+          protectedBuildStatus: unknown,
+          protectedBuildSlot: async () => ({ version: 1, idle: true }),
+        }),
+      ).toHaveLength(1);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+    });
   });
   it.each([
     undefined,

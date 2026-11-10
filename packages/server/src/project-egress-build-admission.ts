@@ -30,10 +30,14 @@ const excluded = [
   '2002::/16',
   '3fff::/20',
 ];
+/** One atomic transaction that replaces both build tables whether or not they
+ * exist. `add table` is a no-op for a present table, so the following `delete`
+ * cannot fail on a table that a partial cleanup, an earlier host process or an
+ * operator already removed. Replacement must never depend on in-memory state:
+ * a denial that cannot be applied leaves the previous policy in force. */
 export function protectedBuildRules(
   binding: ProjectFenceBinding,
   blocked: readonly string[],
-  replace: boolean,
   lease?: ProjectDeadlineLease,
   flow = lease?.nonce,
   uplinks: readonly string[] = [],
@@ -82,7 +86,11 @@ set public${f} { type ipv${f}_addr; flags interval,timeout; ${lease ? `elements 
         return `${ip} ${field} @blocked${f} drop\nct direction ${reverse ? 'reply' : 'original'} ct label == ${label} meta l4proto { tcp, udp } ${ip} ${field} @public${f}${lease ? ` ${reverse ? 'iifname' : 'oifname'} { ${routes} }` : ''} accept`;
       })
       .join('\n');
-  return `${replace ? `delete table inet ${table}\ndelete table bridge ${table}\n` : ''}table inet ${table} {
+  return `add table inet ${table}
+delete table inet ${table}
+add table bridge ${table}
+delete table bridge ${table}
+table inet ${table} {
 ${sets}
 chain fence {
  ip saddr != ${binding.ipv4} drop
@@ -108,7 +116,9 @@ chain output { type filter hook output priority -200; policy accept;
  oifname "${binding.bridge}" jump reply
 }
 }
-table bridge ${table} { chain forward { type filter hook forward priority -200; policy accept; meta ibrname "${binding.bridge}" drop; } }
+table bridge ${table} {
+ chain forward { type filter hook forward priority -200; policy accept; meta ibrname "${binding.bridge}" drop; }
+}
 `;
 }
 
@@ -147,9 +157,7 @@ export function createProtectedBuildAdmission(options: {
     try {
       await deps.deadline.revoke(binding);
     } finally {
-      await deps.apply(
-        protectedBuildRules(binding, [], prepared || ((await deps.existing?.(binding)) ?? false)),
-      );
+      await deps.apply(protectedBuildRules(binding, []));
       prepared = true;
     }
   };
@@ -174,7 +182,7 @@ export function createProtectedBuildAdmission(options: {
             previous && previous.bootId === lease.bootId && deps.deadline.renew !== undefined;
           flow = same ? flow : lease.nonce;
           await deps.apply(
-            protectedBuildRules(binding, inventory.blocked, true, lease, flow, inventory.uplinks),
+            protectedBuildRules(binding, inventory.blocked, lease, flow, inventory.uplinks),
           );
           if (same) await deps.deadline.renew!(binding, lease, previous!.bootDeadlineNs);
           else await deps.deadline.arm(binding, lease);

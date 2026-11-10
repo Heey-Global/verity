@@ -237,7 +237,11 @@ it('retries resource removal when final file cleanup fails after network removal
     .mockRejectedValueOnce(new Error('cleanup reply lost'))
     .mockResolvedValue(undefined);
   io.cleanup = cleanup;
-  await expect(runtime.remove(request)).rejects.toThrow('cleanup reply lost');
+  // The retry must know where the previous one stopped, without losing the cause.
+  await expect(runtime.remove(request)).rejects.toMatchObject({
+    stage: 'files.cleanup',
+    cause: { message: 'cleanup reply lost' },
+  });
   await runtime.remove(request);
   expect(calls.filter((call) => call === 'remove-network')).toHaveLength(2);
   expect(cleanup).toHaveBeenCalledTimes(2);
