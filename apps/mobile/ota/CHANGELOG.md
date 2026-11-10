@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.89.3](https://github.com/Heey-Global/verity/compare/mobile-v1.89.2...mobile-v1.89.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **agents:** explain multi-repository session workflows ([#2481](https://github.com/Heey-Global/verity/issues/2481)) ([67a66e2](https://github.com/Heey-Global/verity/commit/67a66e2970831114dfe642fe95666a065e5a6db0))
+* **mobile:** keep session categories stable across Home and projects ([#2487](https://github.com/Heey-Global/verity/issues/2487)) ([792fbe3](https://github.com/Heey-Global/verity/commit/792fbe3ca0d6c9325e575d2d3c591f3b79992733))
+* **mobile:** prioritize working status over unread indicators ([#2486](https://github.com/Heey-Global/verity/issues/2486)) ([e112f8b](https://github.com/Heey-Global/verity/commit/e112f8b63b40da69140877a0d4a26c3f050b99a9))
+
 ## [1.89.2](https://github.com/Heey-Global/verity/compare/mobile-v1.89.1...mobile-v1.89.2) (2026-11-09)
 
 
