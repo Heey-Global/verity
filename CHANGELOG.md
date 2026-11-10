@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.90.1](https://github.com/Heey-Global/verity/compare/v4.90.0...v4.90.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @opencode/cli to v2.2.6 ([#2478](https://github.com/Heey-Global/verity/issues/2478)) ([59286bd](https://github.com/Heey-Global/verity/commit/59286bdb894673c24c381bb0578a00c29dc796b8))
+* **release:** bind native production approval to built source ([#2480](https://github.com/Heey-Global/verity/issues/2480)) ([ee8f2c3](https://github.com/Heey-Global/verity/commit/ee8f2c361279425400b654e991b129b4cad4ef0b))
+* **server:** retain protected build image authority across updates ([#2476](https://github.com/Heey-Global/verity/issues/2476)) ([981429b](https://github.com/Heey-Global/verity/commit/981429bf5fbe2085a61d34e0cbd7c33960ca120b))
+
 ## [4.90.0](https://github.com/Heey-Global/verity/compare/v4.89.1...v4.90.0) (2026-11-09)
 
 
