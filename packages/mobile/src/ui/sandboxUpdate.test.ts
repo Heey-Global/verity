@@ -5,6 +5,7 @@ import {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
+  sandboxUpdateLastFailure,
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
 } from './sandboxUpdate.js';
@@ -23,6 +24,7 @@ function update(overrides: Partial<SandboxUpdate> = {}): SandboxUpdate {
     targetRevision: null,
     selfRepair: 'converging',
     turnBlocked: false,
+    lastRepairFailure: null,
     ...overrides,
   };
 }
@@ -213,5 +215,35 @@ describe('sandboxUpdateAlertMessage', () => {
         sandboxUpdateAlertMessage(project, update({ category: 'security', ...overrides })),
       ).toContain('missing a security fix');
     }
+  });
+});
+
+describe('sandboxUpdateLastFailure', () => {
+  const failure = { at: '2026-11-10T14:41:24.000Z', message: 'Build storage admission rejected' };
+  // An earlier refusal shown without a time reads as the outcome of the attempt
+  // running now; while a retry waits for the build slot it is not.
+  it('dates the failure and calls it the previous attempt while a retry is running', () => {
+    expect(sandboxUpdateLastFailure(update({ lastRepairFailure: failure }), 'UTC')).toBe(
+      'Retrying — the previous automatic rebuild failed 10 Nov 2026, 14:41: Build storage admission rejected',
+    );
+  });
+
+  it('calls it the latest attempt once the Server reports the update stalled', () => {
+    expect(
+      sandboxUpdateLastFailure(
+        update({ selfRepair: 'stalled', lastRepairFailure: failure }),
+        'UTC',
+      ),
+    ).toBe('Last automatic rebuild failed 10 Nov 2026, 14:41: Build storage admission rejected');
+  });
+
+  it('says nothing without a failure, for a current sandbox, or for an unreadable time', () => {
+    expect(sandboxUpdateLastFailure(update(), 'UTC')).toBeNull();
+    expect(
+      sandboxUpdateLastFailure(update({ state: 'current', lastRepairFailure: failure }), 'UTC'),
+    ).toBeNull();
+    expect(
+      sandboxUpdateLastFailure(update({ lastRepairFailure: { ...failure, at: 'later' } }), 'UTC'),
+    ).toBeNull();
   });
 });

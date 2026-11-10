@@ -4010,6 +4010,7 @@ export async function buildEmbeddedServer(
       builderAdmissionDirectory: '/run/verity-buildkit',
       buildStorageReportPath: '/run/verity-host-diagnostics/storage.json',
       buildStorageReservations: () => buildStorage?.unresolvedAttempts() ?? [],
+      buildQueue: () => buildStorage?.queueState() ?? { waiting: 0 },
       storageReclamation: async () => {
         const report = sessionStorage?.lastReport;
         let databaseBytes: number | null = null;
@@ -5099,6 +5100,9 @@ export async function buildEmbeddedServer(
   // Ask at start and every five minutes whether earlier attempts provably ended.
   if (buildStorage !== undefined) {
     const storage = buildStorage;
+    // A recreate refused for build storage waits out its backoff otherwise; the
+    // space it waited for is free now, so let the next reconcile pass retry it.
+    storage.setReleaseListener(() => provisioner?.resetStorageRefusedRepairBackoff?.());
     const buildDockerHost =
       config.dockerBaseUrl === undefined ? undefined : dockerHostFor(config.dockerBaseUrl);
     let reconciling = false;

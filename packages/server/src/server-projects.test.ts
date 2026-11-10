@@ -336,6 +336,52 @@ describe('GET /projects (#174)', () => {
     await overview.close();
   });
 
+  it('reports the last failed recreate with its time, whether the retry is running or stalled', async () => {
+    // Without a time, an earlier refusal reads as the current attempt's while the
+    // retry waits for the build slot.
+    for (const [id, repo] of [
+      ['p-retrying', 'retrying'],
+      ['p-stuck', 'stuck'],
+      ['p-clean', 'clean'],
+    ] as const)
+      await ctx.store.upsertProject({
+        id,
+        owner: 'heey-global',
+        repo,
+        containerName: `dev-heey-global--${repo}`,
+        state: 'active',
+      });
+    const at = Date.UTC(2026, 10, 10, 14, 41, 24);
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sandboxUpdates: availableSandboxUpdates(),
+      provisioner: {
+        provision: vi.fn(),
+        unrepairedSandboxes: () => new Set(['p-stuck']),
+        sandboxRepairLastFailures: () =>
+          new Map([
+            ['p-retrying', { at, message: 'Build storage admission rejected' }],
+            ['p-stuck', { at, message: 'Build storage admission rejected' }],
+          ]),
+      },
+    });
+    const body: Array<{
+      id: string;
+      sandboxUpdate: { selfRepair: string; lastRepairFailure: unknown };
+    }> = (await server.inject({ method: 'GET', url: '/projects' })).json();
+    const byId = Object.fromEntries(body.map((project) => [project.id, project.sandboxUpdate]));
+    const failure = { at: '2026-11-10T14:41:24.000Z', message: 'Build storage admission rejected' };
+    expect(byId['p-retrying']).toMatchObject({
+      selfRepair: 'converging',
+      lastRepairFailure: failure,
+    });
+    expect(byId['p-stuck']).toMatchObject({ selfRepair: 'stalled', lastRepairFailure: failure });
+    expect(byId['p-clean']).toMatchObject({ selfRepair: 'converging', lastRepairFailure: null });
+    await server.close();
+  });
+
   it('reports a stalled failed rebuild even when the image status is unknown', async () => {
     const project = await ctx.store.upsertProject({
       id: 'p-failed-rebuild',

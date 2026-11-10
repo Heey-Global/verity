@@ -70,6 +70,7 @@ export {
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   type SandboxUpdateIndicator,
+  sandboxUpdateLastFailure,
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
 } from './ui/sandboxUpdate.js';

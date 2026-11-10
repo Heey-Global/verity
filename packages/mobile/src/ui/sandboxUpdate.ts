@@ -88,6 +88,34 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
 }
 
 /**
+ * The most recent failed automatic rebuild, as a dated sentence. A rebuild can
+ * be an image update or a relay repair, so it is not called an update.
+ *
+ * Dated because the failure outlives the attempt that produced it: a retry can
+ * wait for the Server's single build slot while the earlier refusal is still the
+ * last thing recorded. While the sandbox is `converging` the sentence says the
+ * failure was the previous attempt's; once the Server reports `stalled` it is the
+ * latest. `timeZone` is for tests; the device zone is used otherwise.
+ */
+export function sandboxUpdateLastFailure(
+  update: SandboxUpdate | undefined,
+  timeZone?: string,
+): string | null {
+  const failure = update?.lastRepairFailure;
+  if (!failure || update.state === 'current') return null;
+  const at = new Date(failure.at);
+  if (Number.isNaN(at.getTime())) return null;
+  const when = new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    ...(timeZone === undefined ? {} : { timeZone }),
+  }).format(at);
+  return update.selfRepair === 'stalled'
+    ? `Last automatic rebuild failed ${when}: ${failure.message}`
+    : `Retrying — the previous automatic rebuild failed ${when}: ${failure.message}`;
+}
+
+/**
  * The body of the overview's confirmation dialog for a sandbox that stopped
  * updating itself.
  *

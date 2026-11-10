@@ -410,6 +410,17 @@ export const IMAGE_UPDATE_RECREATE_LIMIT = 2;
  */
 export const SANDBOX_SELF_REPAIR_FAILURE_LIMIT = 2;
 
+/**
+ * Backoff between automatic retries of a failed sandbox recreate: the first
+ * retry still comes after one regular tick, so the report above appears no
+ * later than before; each further failure doubles the wait up to the maximum.
+ * A persistent refusal then stops taking the Server's single build slot every
+ * tick, and every two seconds in the handoff window after a restart. Released
+ * build storage and any successful rebuild reset it.
+ */
+export const SANDBOX_REPAIR_RETRY_MIN_MS = 60_000;
+export const SANDBOX_REPAIR_RETRY_MAX_MS = 30 * 60_000;
+
 export interface DecideMigrationActionInput {
   classification: ProjectContainerClass;
   /** True when a session bound to this project is running a turn right now. */

@@ -256,6 +256,7 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'converging',
           turnBlocked: false,
+          lastRepairFailure: null,
         },
       },
     };
@@ -277,6 +278,49 @@ describe('project settings — sandbox', () => {
     expect(
       screen.getByText('Update pending — Verity is rebuilding this sandbox'),
     ).toBeOnTheScreen();
+  });
+
+  it('dates an earlier failed update while a retry is running instead of reporting it stuck', async () => {
+    // An earlier refusal shown without a time reads as the outcome of the retry
+    // that is waiting for the build slot now.
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'available',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: '1.22.1',
+          currentRevision: null,
+          targetVersion: '2.9.2',
+          targetRevision: null,
+          selfRepair: 'converging',
+          turnBlocked: false,
+          lastRepairFailure: {
+            at: '2026-11-10T14:41:24.000Z',
+            message: 'Build storage admission rejected',
+          },
+        },
+      },
+    };
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
+    render(<ProjectSandboxScreen />);
+
+    expect(
+      await screen.findByText('Update pending — Verity is rebuilding this sandbox'),
+    ).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        /^Retrying — the previous automatic rebuild failed 10 Nov 2026, \d{2}:\d{2}: Build storage admission rejected$/,
+      ),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/stuck/)).toBeNull();
   });
 
   it('offers no Update button for an update a turn is holding off', async () => {
@@ -304,6 +348,7 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'stalled',
           turnBlocked: true,
+          lastRepairFailure: null,
         },
       },
     };
