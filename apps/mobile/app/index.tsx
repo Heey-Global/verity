@@ -1254,7 +1254,12 @@ function SessionList({ client }: { client: VerityClient }) {
           projects={projects}
           selectedSessionId={wide ? selectedId : null}
           refreshing={refreshingOverview}
+          layoutRevision={overviewLayoutRevision}
           onRefresh={() => void onRefreshOverview()}
+          onSessionChanged={(sessionId, deleted) => {
+            if (deleted && selectedId === sessionId) setSelectedId(null);
+            void refresh({ silent: true });
+          }}
           onOpenSession={openSessionFromHome}
           onOpenProject={wide ? openProject : undefined}
           onRepairProject={repairFromHome}
