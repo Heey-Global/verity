@@ -261,6 +261,11 @@ describe('sleeping runner cache helpers', () => {
     expect(h.assertIdle).toHaveBeenCalledTimes(2);
     expect(h.docker.startContainer).toHaveBeenCalledExactlyOnceWith('helper');
     expect(h.spec?.command).toEqual(['-e', cacheHelperCommand]);
+    // Helpers bounded to 32 pids and 256 MiB under gVisor failed before Node
+    // started (tini: exec timeout failed: Cannot allocate memory), so no cache
+    // was ever reclaimed. The runtime's own threads count against these limits.
+    expect(h.spec!.pidsLimit).toBeGreaterThanOrEqual(128);
+    expect(h.spec!.memoryBytes).toBeGreaterThanOrEqual(512 * 1024 ** 2);
     expect(h.spec).toMatchObject({
       network: 'none',
       entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],

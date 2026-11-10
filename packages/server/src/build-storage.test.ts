@@ -1256,9 +1256,10 @@ describe('build storage reconciliation', () => {
           ...(startedAt === undefined ? {} : { startedAt: new Date(startedAt).toISOString() }),
         },
       );
+    const old = () => Date.now() - 2 * 3600_000;
     it('is released once the host reports an idle slot restored from its state', async () => {
       const f = fixture();
-      const directory = protectedAttempt(f);
+      const directory = protectedAttempt(f, old());
       const slot = vi.fn(async () => ({ version: 1, idle: true }));
       const warn = quiet();
       try {
@@ -1286,9 +1287,22 @@ describe('build storage reconciliation', () => {
       ],
     ])('is retained for %s', async (_label, status, slot) => {
       const f = fixture();
-      const directory = protectedAttempt(f);
+      const directory = protectedAttempt(f, old());
       expect(
         await f.manager().reconcile({ protectedBuildStatus: status, protectedBuildSlot: slot }),
+      ).toHaveLength(1);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+    });
+    // A begin written by a client that has since died may still be unread by the
+    // host; an idle answer now would not cover the build it is about to start.
+    it('is retained within the client bound even with an idle slot', async () => {
+      const f = fixture();
+      const directory = protectedAttempt(f, Date.now() - 30 * 60_000);
+      expect(
+        await f.manager().reconcile({
+          protectedBuildStatus: unknown,
+          protectedBuildSlot: async () => ({ version: 1, idle: true }),
+        }),
       ).toHaveLength(1);
       expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
     });

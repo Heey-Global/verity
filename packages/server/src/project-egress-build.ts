@@ -78,7 +78,7 @@ export interface ProtectedBuildEvent {
   attemptId: string;
   /** The attempt whose cleanup blocks the slot, when it differs from the request. */
   blockingAttemptId?: string;
-  operation: 'begin' | 'restore' | 'revalidate' | 'status' | 'cancel' | 'close';
+  operation: 'begin' | 'restore' | 'revalidate' | 'heartbeat' | 'status' | 'cancel' | 'close';
   reason?: string;
   failures?: number;
   retryInMs?: number;
@@ -194,7 +194,6 @@ export class ProtectedBuildHost {
       throw new ProtectedBuildFailure('cleanup_failed', { cause });
     }
     record.cleaned = true;
-    await this.save();
     if (this.cleanupFailures > 0)
       this.report({
         event: 'cleanup_recovered',
@@ -205,6 +204,8 @@ export class ProtectedBuildHost {
       });
     this.cleanupFailures = 0;
     this.cleanupRetryAt = 0;
+    // Removal is idempotent; an unpersisted flag only repeats it after a restart.
+    await this.save();
   }
   /** A refused begin never started anything for its attempt: no state, anchor,
    * unit or rule was created for it. Record that as a terminal receipt, so the
@@ -360,7 +361,7 @@ export class ProtectedBuildHost {
         }
         throw new ProtectedBuildFailure('renew_failed', { cause });
       }
-    });
+    }, 'heartbeat');
   }
   /** Host supervisor sweep: abandoned clients cannot retain the build slot
    * forever. This does not refresh packet authority; only heartbeat does that.

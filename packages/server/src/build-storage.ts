@@ -1009,15 +1009,15 @@ export class BuildStorage {
           return false;
         }
       })());
+    /** The host has one slot and refuses a new build until the previous one is
+     * proven ended, so an idle slot proves every attempt it had admitted before
+     * the question ended. The answer covers only records that began earlier. */
+    const slotProvesEnded = async (record: z.infer<typeof remoteRecordSchema>) =>
+      (await protectedSlotIdle()) && Date.parse(record.startedAt) < slotAskedAt;
     const protectedEnded = async (record: z.infer<typeof remoteRecordSchema>): Promise<boolean> => {
       if (record.operation !== 'protected-build') return false;
-      if (record.protectedBuild === undefined) {
-        // Records from before attempt identities were stored cannot be matched to a
-        // receipt. The host has one slot and refuses a new build until the previous
-        // one is proven ended, so an idle slot proves every earlier attempt ended.
-        const idle = await protectedSlotIdle();
-        return idle && Date.parse(record.startedAt) < slotAskedAt;
-      }
+      // Records from before attempt identities were stored cannot be matched to a receipt.
+      if (record.protectedBuild === undefined) return slotProvesEnded(record);
       const reference = record.protectedBuild;
       try {
         const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));
@@ -1032,13 +1032,16 @@ export class BuildStorage {
       } catch (error) {
         // The host holds neither this attempt nor a receipt for it: its begin was
         // refused or never arrived (hosts before refusal receipts), or its receipt
-        // aged out. The single slot is never replaced while its attempt may run,
-        // so an idle slot restored from persisted state, asked after this record
-        // began, proves the attempt is not running. Any other error proves nothing.
-        if (!(error instanceof ProtectedBuildFailure) || error.reason !== 'unknown_attempt')
+        // aged out. A begin that a dead client wrote may still be unread by the
+        // host, so wait out the client bound; after it, an idle slot restored from
+        // persisted state proves the attempt is not running. Other errors prove nothing.
+        if (
+          !(error instanceof ProtectedBuildFailure) ||
+          error.reason !== 'unknown_attempt' ||
+          now - Date.parse(record.startedAt) <= CLIENT_MAX_AGE_MS
+        )
           return false;
-        const idle = await protectedSlotIdle();
-        return idle && Date.parse(record.startedAt) < slotAskedAt;
+        return slotProvesEnded(record);
       }
     };
     this.sweepAdmissionMarkers(namespace);

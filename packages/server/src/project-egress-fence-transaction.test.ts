@@ -232,6 +232,25 @@ exit 2`,
     );
     expect(missing.evidence.spawnError).toBe('ENOENT');
   });
+  it('fails a transaction whose script nft did not read, even on exit 0', async () => {
+    const nft = await executable('nft-unread', 'exec 0<&-; exit 0');
+    const error = await failure(
+      applyProjectFenceRules('x'.repeat(4 * 1024 * 1024), { executable: nft }),
+    );
+    expect(error.evidence).toMatchObject({ exitCode: 0, stdinError: expect.any(String) });
+  });
+  it('lists a statement once when nft reports several errors on it', async () => {
+    const nft = await executable(
+      'nft-twice',
+      `cat >/dev/null
+printf '%s\\n' '/dev/stdin:1:1-5: Error: first' '/dev/stdin:1:7-9: Error: second' >&2
+exit 1`,
+    );
+    const error = await failure(
+      applyProjectFenceRules('table bridge verity_egress_abc {\n}\n', { executable: nft }),
+    );
+    expect(error.evidence.statements).toEqual(['table bridge verity_egress_abc']);
+  });
   it('resolves when nft commits', async () => {
     const nft = await executable('nft-ok', 'cat >/dev/null; exit 0');
     await expect(applyProjectFenceRules('flush ruleset\n', { executable: nft })).resolves.toBe(

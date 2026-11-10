@@ -79,8 +79,8 @@ lifecycle` entries. Each entry carries:
   `network.remove` or `files.cleanup`;
 - the consecutive failure count and the next retry delay.
 
-The supervisor sweep retries a failed cleanup after a delay that doubles from
-two seconds up to five minutes. An explicit `begin` retries immediately, and a
+The supervisor sweep retries a failed cleanup after a delay that starts at one
+second and doubles up to five minutes. An explicit `begin` retries immediately, and a
 host restart clears the delay.
 
 ### Behavior across partial failure and restart
@@ -103,7 +103,8 @@ host restart clears the delay.
 - The Server releases a protected build reservation only on host evidence: a
   terminal record or receipt for the exact attempt, a host reboot, or both of
   the following together:
-  - an `unknown_attempt` answer for the attempt;
+  - an `unknown_attempt` answer for an attempt that began more than an hour
+    ago, so a `begin` from a client that died meanwhile has been read or lost;
   - an idle-slot answer, asked after the attempt began, from a host that
     restored its persisted state at startup.
 

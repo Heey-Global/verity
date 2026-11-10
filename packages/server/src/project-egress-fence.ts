@@ -679,8 +679,8 @@ export function projectFenceDiagnostics(
       const number = Number(located[1]);
       diagnostics.push(`line ${number}: ${printable(located[2]!, 200)}`);
       const statement = lines[number - 1]?.trim() ?? '';
-      if (SAFE_STATEMENT.test(statement) && !statements.includes(statement))
-        statements.push(statement.replace(/ ?\{$/u, ''));
+      const bare = statement.replace(/ ?\{$/u, '');
+      if (SAFE_STATEMENT.test(statement) && !statements.includes(bare)) statements.push(bare);
       continue;
     }
     const general = /^(?:[a-z]{1,16}: )?Error: (.+)$/u.exec(line);
@@ -757,7 +757,8 @@ export function applyProjectFenceRules(
       stdinError = error.code ?? 'unknown';
     });
     child.once('close', (code, signal) => {
-      if (code === 0 && !timedOut) {
+      // A script nft did not read completely was not committed as written.
+      if (code === 0 && !timedOut && stdinError === undefined) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
