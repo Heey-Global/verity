@@ -118,7 +118,13 @@ jobs:
           echo "::add-mask::$basic"
           git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $basic"
           version="${MOBILE_TAG#mobile-v}"
-          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=closed&per_page=100" --jq '.[] | select(.merged_at != null and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
-          [[ "$pr" =~ ^[0-9]+$ ]]
+          source="$(jq -er '.source' native-candidates/native-production.json)"
+          [[ "$source" =~ ^[a-f0-9]{40}$ ]]
+          # Duplicate release merges can share a title; only the built source owns approval.
+          pr="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/commits/${source}/pulls?per_page=100" --jq '.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == "'"$source"'" and (.title == "chore(main): release mobile '"$version"'" or .title == "chore(release): staging mobile native '"$version"'")) | .number')"
+          [[ "$pr" =~ ^[0-9]+$ ]] || {
+            echo '::error::Expected exactly one merged native release PR for the built source.' >&2
+            exit 1
+          }
           jq --argjson releasePr "$pr" '. + {releasePr:$releasePr}' native-candidates/native-production.json > "$RUNNER_TEMP/mobile-production.json"
           node scripts/production-promotion.ts propose "$RUNNER_TEMP/mobile-production.json"
