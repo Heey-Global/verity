@@ -311,6 +311,30 @@ describe('shared dependency reuse', () => {
     expect(existsSync(f.called)).toBe(false);
     expect(f.run('status').status).toBe(1);
   });
+  it.each([false, true])('recognizes pnpm 12 project locks (boot document: %s)', (boot) => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package.json'), '{"packageManager":"pnpm@12.3.4"}');
+    const project =
+      "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      dep:\n        specifier: ^1.0.0\n        version: 1.0.0\n";
+    const prefix = boot
+      ? "---\nlockfileVersion: '9.0'\nimporters:\n  .:\n    packageManagerDependencies:\n      pnpm:\n        specifier: 12.3.4\n        version: 12.3.4\n---\n"
+      : '';
+    writeFileSync(join(f.worktree, 'pnpm-lock.yaml'), prefix + project);
+    const store = join(f.worktree, 'node_modules', '.pnpm');
+    mkdirSync(store, { recursive: true });
+    writeFileSync(join(f.worktree, 'node_modules', '.modules.yaml'), 'layoutVersion: 5');
+    const current = join(store, 'lock.yaml');
+    writeFileSync(current, project);
+    expect(f.run('status').status).toBe(0);
+    expect(f.run('install').status).toBe(0);
+    expect(existsSync(f.called)).toBe(false);
+    writeFileSync(current, project.replace('version: 1.0.0', 'version: 0.9.0'));
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(1);
+    rmSync(current);
+    expect(f.run('status').status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+  });
   it.each(['yarn', 'pnpm'])(
     'recognizes an existing %s install without switching package managers',
     (manager) => {
