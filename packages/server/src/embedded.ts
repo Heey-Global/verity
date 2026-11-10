@@ -205,7 +205,11 @@ import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
-import { startDockerGcScheduler, runDockerGc } from './docker-gc.js';
+import {
+  describeBuildCapacityReclamation,
+  startDockerGcScheduler,
+  runDockerGc,
+} from './docker-gc.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -5316,9 +5320,12 @@ export async function buildEmbeddedServer(
       runnerCaches: () => runnerCacheStorage?.lastReport,
       dataRoot: config.dataVolumeRoot,
     });
-    buildStorage?.setReclaimer(async () => {
-      await dockerGc.runOnce();
-    });
+    // A waiting build runs only the capacity steps, never the full maintenance
+    // pass: that pass first works through runner caches and session worktrees,
+    // which alone outlasted the build's reclamation deadline.
+    buildStorage?.setReclaimer(async () =>
+      describeBuildCapacityReclamation(await dockerGc.reclaimBuildCapacity()),
+    );
     app.addHook('onClose', () => {
       dockerGc.stop();
     });

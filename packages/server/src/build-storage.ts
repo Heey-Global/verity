@@ -350,6 +350,13 @@ const activeDirectories = new Set<string>();
  */
 class BuildStorageCapacityError extends Error {}
 
+/** A capacity refusal that reclamation could not lift says what reclamation did,
+ *  so the operator sees why a retry alone will not help. Other errors pass through. */
+function afterReclamation(refusal: unknown, outcome: string | void): unknown {
+  if (!(refusal instanceof BuildStorageCapacityError) || !outcome) return refusal;
+  return new BuildStorageCapacityError(`${refusal.message} ${outcome}`, { cause: refusal });
+}
+
 /** Whether a failure, or anything in its cause chain, is a build-storage
  *  capacity refusal: the one failure that released storage can resolve. */
 export function isBuildStorageCapacityRefusal(error: unknown): boolean {
@@ -361,14 +368,16 @@ export function isBuildStorageCapacityRefusal(error: unknown): boolean {
 }
 
 export class BuildStorage {
-  private reclaimer?: () => Promise<void>;
+  private reclaimer?: () => Promise<string | void>;
   private releaseListener?: () => void;
   /** Told after an earlier attempt's reservation is released. */
   setReleaseListener(listener: () => void): void {
     this.releaseListener = listener;
   }
 
-  setReclaimer(reclaim: () => Promise<void>): void {
+  /** `reclaim` may return a one-line account of what it freed and what it had
+   *  to keep; a refusal that outlasts reclamation carries it to the caller. */
+  setReclaimer(reclaim: () => Promise<string | void>): void {
     this.reclaimer = reclaim;
   }
 
@@ -574,12 +583,17 @@ export class BuildStorage {
       } catch (error) {
         if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
         this.handingOver = true;
+        let outcome: string | void;
         try {
-          await this.reclaimCapacity();
+          outcome = await this.reclaimCapacity();
         } finally {
           this.handingOver = false;
         }
-        return held(this.admit());
+        try {
+          return held(this.admit());
+        } catch (refusal) {
+          throw afterReclamation(refusal, outcome);
+        }
       }
     } finally {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
@@ -587,10 +601,10 @@ export class BuildStorage {
     }
   }
 
-  private async reclaimCapacity(): Promise<void> {
+  private async reclaimCapacity(): Promise<string | void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
+      return await Promise.race([
         this.reclaimer?.(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
@@ -1317,8 +1331,12 @@ export class BuildStorage {
           reserveBuild(imageBytes);
         } catch (error) {
           if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
-          await this.reclaimCapacity();
-          reserveBuild(imageBytes);
+          const outcome = await this.reclaimCapacity();
+          try {
+            reserveBuild(imageBytes);
+          } catch (refusal) {
+            throw afterReclamation(refusal, outcome);
+          }
         }
       },
       run: async (command, args, options) => {
