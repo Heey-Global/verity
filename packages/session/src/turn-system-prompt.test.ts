@@ -6,6 +6,7 @@ import {
   DOCUMENT_PROJECT_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
   PROJECT_REPOSITORIES_SYSTEM_PROMPT,
+  REPO_CONVENTIONS_SYSTEM_PROMPT,
 } from '@verity/events';
 import {
   COMPACT_RESUME_SYSTEM_PROMPT,
@@ -110,7 +111,8 @@ describe('trusted Skills core', () => {
     expect(core).toContain('dev-server');
     expect(core).toContain('No remote publishing is configured');
     expect(core).not.toContain('verity-dev-server add');
-    expect(core).not.toContain(' (Verity)');
+    // Repository discovery is shared with compact contexts; legacy branch policy is not.
+    expect(core).not.toContain(REPO_CONVENTIONS_SYSTEM_PROMPT);
     expect(Buffer.byteLength(core)).toBeLessThan(9500);
     expect(turnSystemPrompt('local')).toContain('verity-dev-server');
   });
