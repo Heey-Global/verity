@@ -36,6 +36,15 @@
  *   2. Guard the known fields on top, so those titles stay correct rather than
  *      merely non-fatal.
  *
+ * Two upstream layouts carry the seam:
+ *
+ *   - through 0.103: `toolInfoFromToolUse` in dist/tools.js builds the title;
+ *   - from 0.104: `AcpToolCallRenderer#facts` in dist/tool-calls/renderer.js
+ *     dispatches every tool use to a per-tool reporter, and every report path
+ *     (tool call, refinement, permission request, replay) reads the title,
+ *     kind and locations from it. `ReportFindings` still maps `input.findings`
+ *     unchecked there, so the defect outlived the refactor.
+ *
  * Run after `npm install -g @agentclientprotocol/claude-agent-acp@<pin>`. The
  * wrapper goes on unconditionally while the seam exists — an upstream that fixes
  * today's three fields can still grow a fourth, and the probe set only ever
@@ -155,6 +164,54 @@ const WEBSEARCH_GUARDS = [
   },
 ];
 
+/** 0.104+ layout: the renderer method every tool-use report reads its facts
+ *  from. The method line is the wrapper seam, as the export line is above. */
+const RENDERER_FACTS_ANCHOR = '    facts(toolUse, cwd) {';
+
+const RENDERER_FACTS_REPLACEMENT = `    /* ${MARKER}: every tool-use report (tool call, refinement, permission
+     * request, session/load replay) reads its title, kind and locations from
+     * here, and the per-tool reporters read model-authored input on faith. A
+     * throw here ends the agent process and re-throws on every resume; a
+     * non-string title or location path is rejected by the ACP schema a layer
+     * later. Both are normalised here, so no title can cost a session. \`kind\`
+     * is a literal in every reporter and content is checked by the client. */
+    facts(toolUse, cwd) {
+        const fallbackTitle = typeof toolUse?.name === "string" && toolUse.name.length > 0
+            ? toolUse.name
+            : "Tool";
+        let facts;
+        try {
+            facts = this.factsUnguarded(toolUse, cwd);
+        }
+        catch {
+            return { title: fallbackTitle, kind: "other" };
+        }
+        if (!facts || typeof facts !== "object") {
+            return { title: fallbackTitle, kind: "other" };
+        }
+        facts = { ...facts };
+        if (typeof facts.title !== "string" || facts.title.length === 0) {
+            facts.title = fallbackTitle;
+        }
+        if (facts.locations !== undefined) {
+            facts.locations = Array.isArray(facts.locations)
+                ? facts.locations.filter((location) => typeof location?.path === "string")
+                : [];
+        }
+        return facts;
+    }
+    factsUnguarded(toolUse, cwd) {`;
+
+/** Field guards of the renderer layout, keyed by reporter file. */
+const RENDERER_GUARDS = [
+  {
+    what: 'ReportFindings findings',
+    file: path.join('dist', 'tool-calls', 'reporters', 'interaction.js'),
+    from: 'const findings = input?.findings ?? [];',
+    to: 'const findings = Array.isArray(input?.findings) ? input.findings : [];',
+  },
+];
+
 /** Build-log lines, in install.sh's `>>` / `!!` idiom. Written directly rather
  *  than through `console`, which these Feature scripts do not assume. */
 function note(message) {
@@ -175,24 +232,36 @@ function resolvePackageDir() {
 
 /**
  * Import the module under test and render each probe input. The query string
- * defeats the ESM module cache so the post-write import sees the new bytes.
+ * defeats the ESM module cache so the post-write import sees the new bytes;
+ * the renderer layout re-imports only renderer.js, so the post check of a
+ * reporter guard relies on the backstop, which is what the probe must verify.
  * Returns the first failure, or null when every probe renders a usable title.
  */
-async function probeFailure(file, stage) {
-  const url = `${pathToFileURL(file).href}?${LABEL}=${stage}`;
-  let toolInfoFromToolUse;
+async function probeFailure(layout, stage) {
+  const url = `${pathToFileURL(layout.file).href}?${LABEL}=${stage}`;
+  let module;
   try {
-    ({ toolInfoFromToolUse } = await import(url));
+    module = await import(url);
   } catch (error) {
-    fail(`cannot import ${file}: ${error?.message ?? error}`);
+    fail(`cannot import ${layout.file}: ${error?.message ?? error}`);
   }
-  if (typeof toolInfoFromToolUse !== 'function') {
-    fail(`${file} no longer exports toolInfoFromToolUse — re-derive this hardening.`);
+  let render;
+  if (layout.kind === 'tools') {
+    if (typeof module.toolInfoFromToolUse !== 'function')
+      fail(`${layout.file} no longer exports toolInfoFromToolUse — re-derive this hardening.`);
+    render = (toolUse) => module.toolInfoFromToolUse(toolUse);
+  } else {
+    if (typeof module.AcpToolCallRenderer !== 'function')
+      fail(`${layout.file} no longer exports AcpToolCallRenderer — re-derive this hardening.`);
+    const renderer = new module.AcpToolCallRenderer();
+    if (typeof renderer.facts !== 'function')
+      fail(`${layout.file} no longer defines AcpToolCallRenderer#facts — re-derive this hardening.`);
+    render = (toolUse) => renderer.facts(toolUse, '/');
   }
   for (const probe of PROBES) {
     let info;
     try {
-      info = toolInfoFromToolUse({ name: probe.name, id: `${LABEL}-probe`, input: probe.input });
+      info = render({ name: probe.name, id: `${LABEL}-probe`, input: probe.input });
     } catch (error) {
       return `${probe.what} title threw ${error?.constructor?.name ?? 'Error'}: ${error?.message ?? error}`;
     }
@@ -211,39 +280,64 @@ async function probeFailure(file, stage) {
   return null;
 }
 
-const packageDir = resolvePackageDir();
-const toolsFile = path.join(packageDir, 'dist', 'tools.js');
-
-let source;
-try {
-  source = await readFile(toolsFile, 'utf8');
-} catch (error) {
-  fail(`cannot read ${toolsFile}: ${error?.message ?? error}`);
+async function readOptional(file) {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    fail(`cannot read ${file}: ${error?.message ?? error}`);
+  }
 }
 
-if (source.includes(MARKER)) {
-  note(`${toolsFile} is already hardened — nothing to do.`);
+const packageDir = resolvePackageDir();
+const toolsFile = path.join(packageDir, 'dist', 'tools.js');
+const rendererFile = path.join(packageDir, 'dist', 'tool-calls', 'renderer.js');
+
+const toolsSource = await readOptional(toolsFile);
+const rendererSource = await readOptional(rendererFile);
+if (toolsSource === undefined && rendererSource === undefined)
+  fail(`cannot read ${toolsFile}: no claude-agent-acp tool renderer at ${packageDir}`);
+
+// The renderer layout replaced the dist/tools.js builder; pick the seam that
+// actually renders tool titles in this copy.
+const legacySignature = [SIGNATURE_ANCHOR, RENDERER_SIGNATURE_ANCHOR].find((anchor) =>
+  toolsSource?.includes(anchor),
+);
+const layout =
+  toolsSource?.includes('toolInfoFromToolUse') || rendererSource === undefined
+    ? { kind: 'tools', file: toolsFile, source: toolsSource ?? '', signature: legacySignature }
+    : {
+        kind: 'renderer',
+        file: rendererFile,
+        source: rendererSource,
+        signature: rendererSource.includes(RENDERER_FACTS_ANCHOR)
+          ? RENDERER_FACTS_ANCHOR
+          : undefined,
+      };
+if (layout.kind === 'tools' && toolsSource === undefined)
+  fail(`cannot read ${toolsFile}: no claude-agent-acp tool renderer at ${packageDir}`);
+
+if (layout.source.includes(MARKER)) {
+  note(`${layout.file} is already hardened — nothing to do.`);
   process.exit(0);
 }
 
-const defect = await probeFailure(toolsFile, 'pre');
+const defect = await probeFailure(layout, 'pre');
 note(
   defect
     ? `unhardened copy detected (${defect})`
     : 'this copy renders every known wrong-typed input safely; installing the backstop anyway.',
 );
 
-const signature = [SIGNATURE_ANCHOR, RENDERER_SIGNATURE_ANCHOR].find((anchor) =>
-  source.includes(anchor),
-);
-if (!signature) {
+if (!layout.signature) {
   // Deliberately fatal even when the probes came back clean. The probes only
   // know the fields that were broken yesterday; the backstop is what covers the
   // ones nobody has hit yet, so losing the seam means losing the protection —
   // and an unprotected build is indistinguishable from a protected one right up
   // until a session dies. Re-derive the seam, or retire this script on purpose.
   fail(
-    `upstream restructured dist/tools.js: the toolInfoFromToolUse seam is gone, so the ` +
+    `upstream restructured ${path.relative(packageDir, layout.file)}: the ` +
+      `${layout.kind === 'tools' ? 'toolInfoFromToolUse' : 'AcpToolCallRenderer#facts'} seam is gone, so the ` +
       `title backstop cannot be installed` +
       (defect ? ` and wrong-typed input still crashes (${defect})` : '') +
       `. Re-derive the hardening against the pinned version, or drop this script together ` +
@@ -251,22 +345,35 @@ if (!signature) {
   );
 }
 
-let hardened = source.replace(signature, SIGNATURE_REPLACEMENT);
-
-for (const guard of WEBSEARCH_GUARDS) {
-  if (hardened.includes(guard.from)) {
-    hardened = hardened.replace(guard.from, guard.to);
-    note(`guarded ${guard.what}`);
-  } else {
-    note(`${guard.what} guard not applicable — backstop still covers it.`);
+if (layout.kind === 'tools') {
+  let hardened = layout.source.replace(layout.signature, SIGNATURE_REPLACEMENT);
+  for (const guard of WEBSEARCH_GUARDS) {
+    if (hardened.includes(guard.from)) {
+      hardened = hardened.replace(guard.from, guard.to);
+      note(`guarded ${guard.what}`);
+    } else {
+      note(`${guard.what} guard not applicable — backstop still covers it.`);
+    }
   }
+  await writeFile(layout.file, hardened);
+} else {
+  // Field guards first: the backstop's marker is what makes a rerun a no-op.
+  for (const guard of RENDERER_GUARDS) {
+    const file = path.join(packageDir, guard.file);
+    const source = await readOptional(file);
+    if (source?.includes(guard.from)) {
+      await writeFile(file, source.replace(guard.from, guard.to));
+      note(`guarded ${guard.what}`);
+    } else {
+      note(`${guard.what} guard not applicable — backstop still covers it.`);
+    }
+  }
+  await writeFile(layout.file, layout.source.replace(layout.signature, RENDERER_FACTS_REPLACEMENT));
 }
 
-await writeFile(toolsFile, hardened);
-
-const stillBroken = await probeFailure(toolsFile, 'post');
+const stillBroken = await probeFailure(layout, 'post');
 if (stillBroken) {
-  fail(`hardening applied but ${toolsFile} still renders unsafely: ${stillBroken}`);
+  fail(`hardening applied but ${layout.file} still renders unsafely: ${stillBroken}`);
 }
 
-note(`hardened ${toolsFile}`);
+note(`hardened ${layout.file}`);

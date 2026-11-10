@@ -121,6 +121,34 @@ describe('Claude ACP structured lifecycle feature patch', () => {
     expect(branch.indexOf(boundary)).toBeLessThan(branch.indexOf('await sendUpdate('));
   });
 
+  // 0.104 moved the v1 agent to dist/v1/ beside a draft-v2 core. Looking only
+  // at dist/acp-agent.js failed the image build; looking in both, and picking
+  // one when both exist, could patch an agent that does not serve the session.
+  it('patches the v1 agent where 0.104 moved it', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-v1-'));
+    await mkdir(path.join(root, 'dist', 'v1'), { recursive: true });
+    await writeFile(path.join(root, 'dist', 'v1', 'acp-agent.js'), PINNED_ADAPTER);
+    await execFileAsync(process.execPath, [SCRIPT, root], {
+      env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
+    });
+    expect(await readFile(path.join(root, 'dist', 'v1', 'acp-agent.js'), 'utf8')).toContain(
+      'verity:structured-lifecycle',
+    );
+  });
+
+  it('refuses an adapter that ships both agent layouts', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-both-'));
+    await mkdir(path.join(root, 'dist', 'v1'), { recursive: true });
+    await writeFile(path.join(root, 'dist', 'acp-agent.js'), PINNED_ADAPTER);
+    await writeFile(path.join(root, 'dist', 'v1', 'acp-agent.js'), PINNED_ADAPTER);
+    await expect(
+      execFileAsync(process.execPath, [SCRIPT, root], {
+        env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
+    expect(await readFile(path.join(root, 'dist', 'acp-agent.js'), 'utf8')).toBe(PINNED_ADAPTER);
+  });
+
   it('fails closed when a pinned adapter seam moves', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-drift-'));
     await mkdir(path.join(root, 'dist'));

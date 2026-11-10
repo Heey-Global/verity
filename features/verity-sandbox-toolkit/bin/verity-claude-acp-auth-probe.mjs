@@ -11,16 +11,34 @@ const root =
     '@agentclientprotocol',
     'claude-agent-acp',
   );
-const file = path.join(root, 'dist', 'acp-agent.js');
-const source = await readFile(file, 'utf8');
+// The auth status probe lived in dist/acp-agent.js through 0.103 and moved to
+// dist/auth-status-reporter.js in 0.104 (the v1 agent moved to dist/v1/).
+const candidates = ['acp-agent.js', 'v1/acp-agent.js', 'auth-status-reporter.js'].map((name) =>
+  path.join(root, 'dist', name),
+);
 const original = 'args.push("--settings", JSON.stringify(context.override));';
 const fixed = 'args.unshift("--settings", JSON.stringify(context.override));';
-if (source.includes(original)) {
-  if (source.indexOf(original) !== source.lastIndexOf(original)) {
-    throw new Error('Ambiguous Claude auth probe settings seam');
+const sources = [];
+for (const file of candidates) {
+  try {
+    sources.push({ file, source: await readFile(file, 'utf8') });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
   }
-  await writeFile(file, source.replace(original, fixed));
-} else if (!source.includes(fixed)) {
+}
+const count = (text, needle) => text.split(needle).length - 1;
+const unordered = sources.filter(({ source }) => source.includes(original));
+const ordered = sources.filter(({ source }) => source.includes(fixed));
+if (unordered.length > 1 || unordered.some(({ source }) => count(source, original) > 1)) {
+  throw new Error('Ambiguous Claude auth probe settings seam');
+}
+let file;
+if (unordered.length === 1) {
+  file = unordered[0].file;
+  await writeFile(file, unordered[0].source.replace(original, fixed));
+} else if (ordered.length === 1) {
+  file = ordered[0].file;
+} else {
   throw new Error('Claude auth probe settings seam missing; re-derive against the pinned adapter');
 }
 execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' });
