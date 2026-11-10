@@ -36,7 +36,10 @@ UNITS = {
 ACCEPTED_NATIVE_PROFILES = ()
 # Assessment candidates are not production acceptance. The descriptor binds the
 # exact observed version and rejects subsequent drift before controller startup.
-STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2'))
+STAGING_DOCKER_VERSIONS = frozenset(('29.8.0', '29.9.2', '29.9.3'))
+# Docker releases the production preflight admits. A matching accepted native
+# profile is still required; this set alone accepts no host.
+PRODUCTION_DOCKER_VERSIONS = frozenset(('29.9.2', '29.9.3'))
 
 
 class PreflightError(ValueError):
@@ -580,7 +583,7 @@ def runtime_preflight(root, run=command, node_path='/usr/bin/node', *, assessmen
         raise ValueError('Requires Node 26.12.1 or newer in the 26.x release line')
     info = json.loads(run('/usr/bin/docker', '--host=unix:///var/run/docker.sock',
                           'info', '--format', '{{json .}}'))
-    if (info.get('OSType') != 'linux' or info.get('ServerVersion') not in (STAGING_DOCKER_VERSIONS if assessment is not None else ('29.9.2',))
+    if (info.get('OSType') != 'linux' or info.get('ServerVersion') not in (STAGING_DOCKER_VERSIONS if assessment is not None else PRODUCTION_DOCKER_VERSIONS)
             or info.get('LiveRestoreEnabled') is not False
             or any('rootless' in item for item in info.get('SecurityOptions', []))):
         raise PreflightError('docker_host_unsupported')
