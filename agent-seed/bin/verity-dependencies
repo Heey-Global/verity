@@ -56,15 +56,24 @@ function manager(root) {
   if (existsSync(join(root, 'yarn.lock'))) return 'yarn';
   return 'npm';
 }
+function pnpmProjectLock(source) {
+  if (source === undefined) return undefined;
+  // pnpm 12 may prepend a boot document for config/manager dependencies.
+  // The virtual store's lock.yaml contains only the final project document.
+  // Compare that document verbatim; do not discard dependency graph fields.
+  const documents = source.replace(/^---[ \t]*(?:#.*)?\r?\n/, '').split(/^---[ \t]*(?:#.*)?\r?$/m);
+  if (documents.length > 2 || documents.some((document) => !document.trim())) return undefined;
+  return documents.at(-1).trim();
+}
 function installed(root) {
   try {
     const selected = manager(root);
     if (selected === 'pnpm')
       return (
         existsSync(join(root, 'node_modules', '.modules.yaml')) &&
-        read(join(root, 'pnpm-lock.yaml')) !== undefined &&
-        read(join(root, 'node_modules', '.pnpm', 'lock.yaml')) ===
-          read(join(root, 'pnpm-lock.yaml'))
+        pnpmProjectLock(read(join(root, 'pnpm-lock.yaml'))) !== undefined &&
+        pnpmProjectLock(read(join(root, 'node_modules', '.pnpm', 'lock.yaml'))) ===
+          pnpmProjectLock(read(join(root, 'pnpm-lock.yaml')))
       );
     if (selected === 'yarn') {
       // Receipt presence alone cannot prove current manifests/lockfile were installed.
