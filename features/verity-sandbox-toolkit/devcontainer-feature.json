@@ -53,7 +53,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "2.2.5",
+      "default": "2.2.6",
       "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {
