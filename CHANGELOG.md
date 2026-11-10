@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.90.2](https://github.com/Heey-Global/verity/compare/v4.90.1...v4.90.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **agents:** explain multi-repository session workflows ([#2481](https://github.com/Heey-Global/verity/issues/2481)) ([67a66e2](https://github.com/Heey-Global/verity/commit/67a66e2970831114dfe642fe95666a065e5a6db0))
+* **sandbox:** recognize pnpm multi-document lockfiles ([#2482](https://github.com/Heey-Global/verity/issues/2482)) ([90f3969](https://github.com/Heey-Global/verity/commit/90f39690c4253e9fd2d92acd6ac16225fa5ee27e))
+
 ## [4.90.1](https://github.com/Heey-Global/verity/compare/v4.90.0...v4.90.1) (2026-11-10)
 
 
