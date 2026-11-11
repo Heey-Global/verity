@@ -86,7 +86,7 @@ const complete = () => {
   const collect = (dependencies,prefix='') => { for (const [name,value] of Object.entries(dependencies ?? {})) { const entry=prefix+'node_modules/'+name; packages[entry]=value; collect(value.dependencies,entry+'/'); } };
   if (!lock.packages) collect(lock.dependencies);
   for (const [file, value] of Object.entries(packages)) {
-    if (!file.startsWith('node_modules/')) continue;
+    if (!file.startsWith('node_modules/') && !file.includes('/node_modules/')) continue;
     if (value.link) {
       fs.mkdirSync(path.dirname(file), {recursive:true});
       fs.symlinkSync(path.relative(path.dirname(file), value.resolved), file);
@@ -473,6 +473,87 @@ describe('shared dependency reuse', () => {
     );
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('prepares and independently activates workspace-nested packages across sessions', () => {
+    const f = fixture();
+    const sibling = f.sibling();
+    const nested = 'packages/source/node_modules/private/package.json';
+    for (const directory of [f.worktree, sibling]) {
+      mkdirSync(join(directory, 'packages/source'), { recursive: true });
+      writeFileSync(join(directory, 'packages/source/package.json'), '{"name":"source"}');
+      mkdirSync(join(directory, 'packages/other'), { recursive: true });
+      writeFileSync(
+        join(directory, 'packages/other/package.json'),
+        JSON.stringify({ name: 'other', bin: { 'other-cli': 'cli.js' } }),
+      );
+      writeFileSync(
+        join(directory, 'packages/other/cli.js'),
+        '#!/usr/bin/env node\nconsole.log("other-cli");\n',
+      );
+      writeFileSync(
+        join(directory, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            'node_modules/hoisted': { version: '2.0.0' },
+            'packages/source': {},
+            'packages/other': {},
+            'packages/source/node_modules/private/node_modules/other': {
+              link: true,
+              resolved: 'packages/other',
+            },
+            'node_modules/source': { link: true, resolved: 'packages/source' },
+            'packages/source/node_modules/private': { version: '2.0.0' },
+            'packages/source/node_modules/private/node_modules/kept': { version: '3.0.0' },
+          },
+        }),
+      );
+    }
+    const first = f.run('install');
+    expect(first.status, first.stderr).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    for (const path of ['hoisted', 'private/node_modules/hoisted', '@scope/hoisted']) {
+      const shadow = join(f.worktree, 'packages/source/node_modules', path);
+      mkdirSync(shadow, { recursive: true });
+      writeFileSync(join(shadow, 'package.json'), '{"version":"1.0.0"}');
+      expect(f.run('status').status, path).toBe(1);
+      expect(f.run('install').status).toBe(0);
+      expect(existsSync(shadow)).toBe(false);
+      expect(f.run('status').status).toBe(0);
+    }
+    const second = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    expect(second.status, second.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(
+      realpathSync(join(sibling, 'packages/source/node_modules/private/node_modules/other')),
+    ).toBe(join(sibling, 'packages/other'));
+    const command = join(
+      sibling,
+      'packages/source/node_modules/private/node_modules/.bin/other-cli',
+    );
+    expect(realpathSync(command)).toBe(join(sibling, 'packages/other/cli.js'));
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('other-cli');
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    writeFileSync(join(f.worktree, nested), '{"version":"patched"}');
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    const patch = join(f.worktree, 'packages/source/node_modules/local-patch.txt');
+    writeFileSync(patch, 'keep local patch');
+    rmSync(join(f.worktree, nested));
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    const preserved = join(f.root, '.git/worktrees/test/verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'local-patch.txt')) &&
+          readFileSync(join(preserved, entry, 'local-patch.txt'), 'utf8') === 'keep local patch',
+      ),
+    ).toBe(true);
+  }, 60_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
     const workspace = join(f.worktree, 'packages', 'source');

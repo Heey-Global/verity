@@ -68,7 +68,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   shebangs. Non-regular or external executable targets are rejected; CRLF
   normalization is bounded to 1 MiB.
   New central preparations require an npm lockfile with a `packages` map,
-  project-local workspace links and no workspace-nested `node_modules` layout.
+  project-local workspace links and declared workspace dependency paths. Workspace-local
+  `node_modules` trees are copied independently into each receiving worktree, alongside
+  the root tree; previous local trees are preserved before activation.
   Unsupported layouts fail explicitly rather than installing privately. Compatible
   existing installations remain reusable. The two ready inventory slots are
   bounded; preparation and activation locks protect active inventories during
