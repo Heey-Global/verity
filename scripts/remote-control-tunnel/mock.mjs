@@ -113,19 +113,14 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
   relay.on('clientError', (_error, socket) => socket.destroy());
   const tunnels = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   const data = new WebSocketServer({ noServer: true, maxPayload: 96 * 1024 });
-  /** @type {Set<net.Socket>} */
-  const dataSockets = new Set();
+  // ws.pause() holds across its own backpressure handling, which resumes
+  // the raw socket on receiver drain.
   function muteUpstream() {
-    for (const socket of dataSockets) socket.pause();
+    for (const client of data.clients) client.pause();
   }
   relay.on('upgrade', (request, socket, head) => {
     const server = request.url === '/tunnel' ? tunnels : request.url === '/data' ? data : null;
     if (!server) return socket.destroy();
-    if (server === data) {
-      const raw = /** @type {net.Socket} */ (socket);
-      dataSockets.add(raw);
-      raw.once('close', () => dataSockets.delete(raw));
-    }
     server.handleUpgrade(request, socket, head, (ws) => server.emit('connection', ws));
   });
   // Test-only fixed routing: exercise the production app's JSON framing without admission credentials.
