@@ -46,6 +46,22 @@ links and a removed link deletes nothing it points to. Copies without a
 receipt, with any differing file, or whose central installation is gone stay in
 place and are reported as blockers.
 
+A session without a turn for three days gives up its private top-level
+`node_modules` and every preserved copy, whatever their contents: both are
+regenerated from the session's own lockfile with `verity-dependencies install`,
+and edits made directly inside them are not kept. Tracked files under
+`node_modules` still keep it. Workspace links are restored afterwards, so
+workspace imports keep resolving to the session's sources until it installs
+again. Source files stay; retiring a whole worktree still needs a week of
+idleness and a closed or merged pull request.
+
+Each session pass logs `session storage pass complete` with its duration,
+whether it reached every project, what it removed and its most frequent
+blocker reasons. A pass stopped by its budget continues after the session it
+was working on, so every session is reached over successive passes. A dev
+server or preview holds back only its own session's pass; a project-level
+public share and the orphan pass still hold the project.
+
 ## Runner package caches and retained execution data
 
 The managed spawn broker gives each project runtime one npm download cache at
