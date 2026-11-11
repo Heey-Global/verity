@@ -1207,12 +1207,16 @@ describe('preview tunnel', () => {
     const ping = new Promise<void>((resolve) => peer.once('ping', () => resolve()));
     await vi.advanceTimersByTimeAsync(15_000);
     await ping;
-    expect(diagnostics).not.toHaveBeenCalled();
+    expect(
+      diagnostics.mock.calls.filter(([entry]) => entry.event !== 'transport.snapshot'),
+    ).toEqual([]);
     await vi.advanceTimersByTimeAsync(15_000);
     expect((connector as unknown as { socket: WebSocket }).socket.readyState).toBe(WebSocket.OPEN);
     await vi.advanceTimersByTimeAsync(15_000);
     await connector.waitForDisconnect();
-    expect(diagnostics.mock.calls).toEqual([
+    expect(
+      diagnostics.mock.calls.filter(([entry]) => entry.event !== 'transport.snapshot'),
+    ).toEqual([
       [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 1 }],
       [{ event: 'heartbeat.timeout', phase: 'pong', lateMs: expect.any(Number), missedPongs: 2 }],
       [{ event: 'connection.closed', code: 1006, opened: true, elapsedMs: expect.any(Number) }],
@@ -1247,7 +1251,9 @@ describe('preview tunnel', () => {
       });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(socket.readyState).toBe(WebSocket.OPEN);
-      expect(diagnostics).toHaveBeenLastCalledWith({
+      expect(
+        diagnostics.mock.calls.filter(([entry]) => entry.event === 'heartbeat.timeout').at(-1)?.[0],
+      ).toEqual({
         event: 'heartbeat.timeout',
         phase: 'pong',
         lateMs: expect.any(Number),
@@ -1259,7 +1265,9 @@ describe('preview tunnel', () => {
     socket.emit('pong', ping.mock.calls.at(-1)![0]);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(socket.readyState).toBe(WebSocket.OPEN);
-    expect(diagnostics).toHaveBeenLastCalledWith({
+    expect(
+      diagnostics.mock.calls.filter(([entry]) => entry.event === 'heartbeat.timeout').at(-1)?.[0],
+    ).toEqual({
       event: 'heartbeat.timeout',
       phase: 'pong',
       lateMs: expect.any(Number),
@@ -1269,6 +1277,16 @@ describe('preview tunnel', () => {
     await connector.waitForDisconnect();
     await connector.connect();
     await supervise();
+    expect(diagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'transport.snapshot',
+        phase: 'ping.enqueue',
+        generation: 2,
+        responseBytes: 0,
+        encodedBytes: 0,
+        pendingFlushes: 0,
+      }),
+    );
   });
 
   it('does not let a stalled event loop turn a received pong into a heartbeat timeout', async () => {
@@ -1372,6 +1390,20 @@ describe('preview tunnel', () => {
     const receivedPing = new Promise<Buffer>((resolve) => peer.once('ping', resolve));
     await vi.advanceTimersByTimeAsync(15_000);
     expect(written).toBe(false);
+    expect(diagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'transport.snapshot',
+        phase: 'ping.enqueue',
+        generation: 1,
+        bufferedAmount: expect.any(Number),
+        writableLength: expect.any(Number),
+        bytesWritten: expect.any(Number),
+      }),
+    );
+    const queued = diagnostics.mock.calls
+      .map(([entry]) => entry)
+      .find((entry) => entry.event === 'transport.snapshot' && entry.phase === 'ping.enqueue');
+    expect(queued && 'bufferedAmount' in queued && queued.bufferedAmount).toBeGreaterThan(0);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(written).toBe(false);
     peer.resume();
@@ -1385,8 +1417,119 @@ describe('preview tunnel', () => {
     const receivedPong = new Promise<void>((resolve) => socket.once('pong', () => resolve()));
     peer.pong(payload);
     await receivedPong;
+    expect(diagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'transport.snapshot',
+        phase: 'ping.write',
+        generation: 1,
+        bufferedAmount: 0,
+        pendingFlushes: 0,
+      }),
+    );
+    expect(diagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'transport.snapshot',
+        phase: 'pong',
+        generation: 1,
+        drainCount: expect.any(Number),
+        lastDrainAgoMs: expect.any(Number),
+      }),
+    );
     await vi.advanceTimersByTimeAsync(9_999);
     expect(socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('counts a small response without retaining its path, body or credentials', async () => {
+    const body = 'private-response-body';
+    const target = createServer((_request, response) => response.end(body));
+    const targetPort = await listen(target);
+    const server = createServer();
+    const peers = new WebSocketServer({ server });
+    const connected = new Promise<WebSocket>((resolve) => peers.once('connection', resolve));
+    const port = await listen(server);
+    const diagnostics: PreviewConnectorDiagnostic[] = [];
+    const connector = new PreviewConnector({
+      edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+      connectorToken: 'private-credential',
+      targetOrigin: `http://127.0.0.1:${targetPort}`,
+      onDiagnostic: (entry) => {
+        diagnostics.push(entry);
+        if (entry.event === 'transport.snapshot') throw new Error('observer failed');
+      },
+    });
+    cleanups.push(async () => {
+      vi.useRealTimers();
+      connector.close();
+      for (const peer of peers.clients) peer.terminate();
+      peers.close();
+      await closeServer(server);
+      await closeServer(target);
+    });
+    await connector.connect();
+    const peer = await connected;
+    const frames: Array<{ kind: string; payload?: string }> = [];
+    peer.on('message', (data) =>
+      frames.push(
+        JSON.parse(
+          (Array.isArray(data)
+            ? Buffer.concat(data)
+            : data instanceof ArrayBuffer
+              ? Buffer.from(data)
+              : data
+          ).toString('utf8'),
+        ) as { kind: string; payload?: string },
+      ),
+    );
+    peer.send(
+      JSON.stringify({
+        kind: 'stream.open',
+        streamId: 'response-test',
+        channel: 'http',
+        meta: { method: 'GET', path: '/private-path', headers: {} },
+      }),
+    );
+    peer.send(JSON.stringify({ kind: 'stream.end', streamId: 'response-test' }));
+    await vi.waitFor(() => expect(frames.some((frame) => frame.kind === 'stream.end')).toBe(true));
+    expect(
+      frames
+        .filter((frame) => frame.kind === 'stream.data')
+        .map((frame) => Buffer.from(frame.payload!, 'base64').toString())
+        .join(''),
+    ).toBe(body);
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] });
+    // Replace only the timer so the completed real HTTP exchange is sampled without waiting 15 seconds.
+    const socket = connector as unknown as {
+      socket: WebSocket;
+      startHeartbeat(socket: WebSocket): void;
+      stopHeartbeat(): void;
+    };
+    socket.stopHeartbeat();
+    socket.startHeartbeat(socket.socket);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.waitFor(() =>
+      expect(
+        diagnostics.some((entry) => entry.event === 'transport.snapshot' && entry.phase === 'pong'),
+      ).toBe(true),
+    );
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        event: 'transport.snapshot',
+        phase: 'pong',
+        generation: 1,
+        responseBytes: Buffer.byteLength(body),
+        frames: frames.length,
+        encodedBytes: frames.reduce(
+          (total, frame) => total + Buffer.byteLength(JSON.stringify(frame)),
+          0,
+        ),
+        pendingEncodedBytes: 0,
+        pendingFlushes: 0,
+        bufferedAmount: 0,
+      }),
+    );
+    const text = JSON.stringify(diagnostics);
+    for (const secret of [body, '/private-path', 'private-credential'])
+      expect(text).not.toContain(secret);
   });
 
   it('the preview edge automatically answers native heartbeat pings', async () => {
