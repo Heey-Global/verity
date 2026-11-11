@@ -105,7 +105,12 @@ it.each([false, true])(
         deadline: {
           prepare: async () => {},
           revoke: async () => {},
-          clock: async () => 0,
+          clock: async () => ({
+            bootId: 'c5bc8433-b1ee-424e-94fe-fb91b0f77f69',
+            realNs: '1000000000',
+            bootBeforeNs: '1000000000',
+            bootAfterNs: '1000000000',
+          }),
           arm: async () => {},
           renew: async () => {},
         },
