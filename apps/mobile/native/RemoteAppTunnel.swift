@@ -163,8 +163,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var stallWatch: Task<Void, Never>?
     /// Identifies the installed watch, so a finished one never clears its successor.
     var stallWatchToken = 0
-    /// Uptime of the last completed upstream send.
+    /// Uptime of the last completed upstream send, and of the one that armed the watch.
     var lastSentUptime: TimeInterval = 0
+    var stallWatchArmedAt: TimeInterval = 0
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
@@ -284,10 +285,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
     private(set) var lastPingSent: TimeInterval = -1
     private(set) var lastAnsweredPingSent: TimeInterval = -1
     private(set) var inFlight: TimeInterval?
+    /// When the ping in flight is overdue: its window covers the bytes queued ahead of it.
+    private(set) var inFlightDeadline: TimeInterval = -1
 
-    mutating func pingSent(at uptime: TimeInterval) {
+    mutating func pingSent(at uptime: TimeInterval, deadline: TimeInterval) {
       lastPingSent = max(lastPingSent, uptime)
       inFlight = uptime
+      inFlightDeadline = deadline
     }
     mutating func pongReceived(sentAt uptime: TimeInterval) {
       lastAnsweredPingSent = max(lastAnsweredPingSent, uptime)
@@ -295,8 +299,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     /// A pong already covers bytes handed to the socket at `uptime`.
     func confirms(_ uptime: TimeInterval) -> Bool { lastAnsweredPingSent >= uptime }
-    /// No ping has left since those bytes, and none is in flight to wait for first.
-    func needsPing(_ uptime: TimeInterval) -> Bool { inFlight == nil && lastPingSent < uptime }
+    /// Free to send: nothing in flight, or a ping overdue whose handler may
+    /// never run. A lost handler must not block every later ping.
+    func canPing(at now: TimeInterval) -> Bool { inFlight == nil || now >= inFlightDeadline }
+    /// Bytes handed over at `uptime` need a ping of their own: none has left
+    /// since, or the one that did is overdue.
+    func needsPing(_ uptime: TimeInterval, at now: TimeInterval) -> Bool {
+      canPing(at: now) && (lastPingSent < uptime || inFlight != nil)
+    }
   }
 
   private let expectedHost: String
@@ -328,6 +338,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var pongsReceived = 0
   private var lastPongAt: Date?
   private var upstreamProof = UpstreamProof()
+  private var sentBytesAtLastPing = 0
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -635,7 +646,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
           guard let since = self.unansweredPingSince else {
             self.unansweredPingSince = now
             // A proof ping already in flight stands in for this one.
-            return (false, self.upstreamProof.inFlight == nil ? self.markPingLocked() : nil)
+            let free = self.upstreamProof.canPing(at: ProcessInfo.processInfo.systemUptime)
+            return (false, free ? self.markPingLocked() : nil)
           }
           return (now.timeIntervalSince(since) > 45, nil)
         }
@@ -658,10 +670,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   /// Claims the one ping in flight; the caller decides under the same lock
   /// acquisition, so two callers never both send.
+  /// The window grows with the bytes handed to the socket since the previous
+  /// ping, which may all still be queued ahead of this one.
   private func markPingLocked() -> TimeInterval {
     let sentAt = ProcessInfo.processInfo.systemUptime
+    let queued = Double(max(0, sentBytes - sentBytesAtLastPing))
+    sentBytesAtLastPing = sentBytes
+    let drain = min(queued / Self.upstreamDrainBytesPerSecond, Self.upstreamDrainCapSeconds)
     pingsSent += 1
-    upstreamProof.pingSent(at: sentAt)
+    upstreamProof.pingSent(at: sentAt, deadline: sentAt + Self.upstreamProofSeconds + drain)
     return sentAt
   }
 
@@ -728,6 +745,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let (sequence, data) = try Self.decodeDataFrame(frame)
       guard !stream.incomingEnded, sequence == stream.incomingSequence
       else { throw RemoteSmokeError.invalidFrame }
+      var rearm = false
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
         if first {
@@ -737,6 +755,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
           stream.firstRemoteAt = Date()
           stream.stallWatch?.cancel()
           stream.stallWatch = nil
+          rearm = stream.lastSentUptime > stream.stallWatchArmedAt
         }
         stream.noteRecord(data, incoming: true)
         stream.receivedBytes += data.count
@@ -745,6 +764,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
         if first { logStream(id, stream, event: "first_remote_data") }
         else { retainDiagnosticStream(stream) }
       }
+      // Bytes sent while the first-reply watch ran had no watch of their own.
+      if rearm { armStallWatch(stream, id: id) }
       let accepted = lock.withLock {
         guard !stream.closed,
           stream.pendingBytes + data.count <= 256 * 1024,
@@ -885,8 +906,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   // How long a ping sent behind a stream's unanswered bytes may wait for its
   // pong. A ping queues behind every byte already handed to the socket, so
-  // the window grows with the bytes sent while the watch ran, which may all
-  // still be queued: an upload on a slow link must drain, not be torn down.
+  // the window grows with the bytes sent since the previous ping, which may
+  // all still be queued: an upload on a slow link must drain, not be torn down.
   // Below the assumed floor rate such a backlog still reads as dead; the cap
   // keeps the verdict ahead of the 45-60 s heartbeat.
   static let upstreamProofSeconds: TimeInterval = 5
@@ -904,21 +925,21 @@ final class RemoteAppTunnel: @unchecked Sendable {
     lock.withLock {
       guard !stopped, !stream.closed, stream.stallWatch == nil else { return }
       stream.stallWatchToken += 1
+      stream.stallWatchArmedAt = stream.lastSentUptime
       let token = stream.stallWatchToken
       let firstReply = stream.receivedBytes == 0
       let receivedWhenArmed = receivedBytes
-      let sentWhenArmed = sentBytes
       stream.stallWatch = Task { [weak self] in
         try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
         guard !Task.isCancelled, let self else { return }
         await self.judgeStall(stream, id: id, token: token, firstReply: firstReply,
-          receivedWhenArmed: receivedWhenArmed, sentWhenArmed: sentWhenArmed)
+          receivedWhenArmed: receivedWhenArmed)
       }
     }
   }
 
   private func judgeStall(_ stream: Stream, id: String, token: Int, firstReply: Bool,
-    receivedWhenArmed: Int, sentWhenArmed: Int) async
+    receivedWhenArmed: Int) async
   {
     // Verdict and stop under one lock acquisition: a reply landing in
     // between must not have a live attachment torn down.
@@ -935,24 +956,25 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     let since = stream.lastSentUptime
     lock.unlock()
-    // A ping still in flight from before these bytes is waited for first; its
-    // own silence for the whole window is the same verdict.
-    var deadline = ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds
+    // A ping in flight from before these bytes, another stream's or the
+    // heartbeat's, is waited for with its own window first; once overdue it
+    // is replaced by this watch's own ping, whose window is final.
+    let started = ProcessInfo.processInfo.systemUptime
+    var ownDeadline: TimeInterval?
     while true {
-      let (settled, sentAt, queued) = lock.withLock { () -> (Bool, TimeInterval?, Int) in
+      let now = ProcessInfo.processInfo.systemUptime
+      let (settled, sentAt, deadline) = lock.withLock { () -> (Bool, TimeInterval?, TimeInterval) in
         let settled = Task.isCancelled || stopped || stream.closed
           || stream.stallWatchToken != token || upstreamProof.confirms(since)
-        let ping = !settled && upstreamProof.needsPing(since)
-        return (settled, ping ? markPingLocked() : nil, sentBytes - sentWhenArmed)
+        let ping = !settled && ownDeadline == nil && upstreamProof.needsPing(since, at: now)
+        let sentAt = ping ? markPingLocked() : nil
+        if sentAt != nil { ownDeadline = upstreamProof.inFlightDeadline }
+        return (settled, sentAt,
+          ownDeadline ?? max(started + Self.upstreamProofSeconds, upstreamProof.inFlightDeadline))
       }
       if settled { break }
-      if let sentAt {
-        sendPing(sentAt: sentAt, reason: "upstream ping")
-        let drain = min(Double(max(0, queued)) / Self.upstreamDrainBytesPerSecond,
-          Self.upstreamDrainCapSeconds)
-        deadline = max(deadline, ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds + drain)
-      }
-      if ProcessInfo.processInfo.systemUptime >= deadline { break }
+      if let sentAt { sendPing(sentAt: sentAt, reason: "upstream ping") }
+      else if now >= deadline { break }
       try? await Task.sleep(nanoseconds: 100_000_000)
     }
     lock.lock()
@@ -962,7 +984,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
     guard upstreamProof.confirms(since) else {
       logStream(id, stream, event: "stalled")
-      stopLocked(reason: "stall: upstream unconfirmed within \(Int(Self.upstreamProofSeconds)) s",
+      stopLocked(reason: "stall: upstream unconfirmed, ping unanswered",
         cause: .streamStall)
       return
     }
