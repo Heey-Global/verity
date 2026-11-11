@@ -330,6 +330,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var stopReasonText: String?
   private var heartbeat: Task<Void, Never>?
   private var unansweredPingSince: Date?
+  /// The same moment on the ping clock: only a ping sent since answers it.
+  private var unansweredPingSinceUptime: TimeInterval = 0
   // Liveness of the inbound half of the data socket, separately from data:
   // a pong that still arrives while stream frames do not says the relay is
   // not forwarding; a pong that stops too says the socket's inbound is dead.
@@ -643,13 +645,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
         guard !Task.isCancelled, let self else { return }
         let now = Date()
         let (expired, sentAt) = self.lock.withLock { () -> (Bool, TimeInterval?) in
-          guard let since = self.unansweredPingSince else {
+          let uptime = ProcessInfo.processInfo.systemUptime
+          var expired = false
+          if let since = self.unansweredPingSince {
+            expired = now.timeIntervalSince(since) > 45
+          } else {
             self.unansweredPingSince = now
-            // A proof ping already in flight stands in for this one.
-            let free = self.upstreamProof.canPing(at: ProcessInfo.processInfo.systemUptime)
-            return (false, free ? self.markPingLocked() : nil)
+            self.unansweredPingSinceUptime = uptime
           }
-          return (now.timeIntervalSince(since) > 45, nil)
+          // Only a ping sent since the clock started answers it. One already
+          // in flight from then stands in; an older or overdue one does not.
+          let ping = !expired && self.upstreamProof.needsPing(self.unansweredPingSinceUptime, at: uptime)
+          return (expired, ping ? self.markPingLocked() : nil)
         }
         if expired {
           self.stop(reason: "heartbeat timeout", cause: .heartbeatDeadline)
@@ -692,7 +699,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
         self.stop(reason: "\(reason) failed: \(error)", cause: .heartbeatFailure)
       } else {
         self.lock.withLock {
-          self.unansweredPingSince = nil
+          // A late pong for an older, overdue ping must not reset the clock.
+          if sentAt >= self.unansweredPingSinceUptime { self.unansweredPingSince = nil }
           self.pongsReceived += 1
           self.lastPongAt = Date()
           self.upstreamProof.pongReceived(sentAt: sentAt)
@@ -963,10 +971,19 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // A ping in flight from before these bytes, another stream's or the
     // heartbeat's, is waited for with its own window first; once overdue it
     // is replaced by this watch's own ping, whose window is final.
-    let started = ProcessInfo.processInfo.systemUptime
+    var started = ProcessInfo.processInfo.systemUptime
     var own: (sentAt: TimeInterval, deadline: TimeInterval, received: Int)?
+    var previous = started
     while true {
       let now = ProcessInfo.processInfo.systemUptime
+      // The uptime clock runs on while a suspended app cannot receive; a pong
+      // still on its way then would otherwise read as missing on resume.
+      let gap = now - previous - 0.1
+      previous = now
+      if gap > 1 {
+        started += gap
+        if let current = own { own = (current.sentAt + gap, current.deadline + gap, current.received) }
+      }
       let (settled, sentAt, deadline, received) = lock.withLock {
         () -> (Bool, TimeInterval?, TimeInterval, Int) in
         let settled = Task.isCancelled || stopped || stream.closed
