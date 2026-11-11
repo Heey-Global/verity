@@ -93,14 +93,24 @@ async function digest(path: string, signal: AbortSignal): Promise<string> {
   }
 }
 /** A file is disposable only if another compatible installation still holds the same bytes. */
+const PRESERVED_COPY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
 export async function compareDependencyTrees(
   privatePath: string,
   sharedPath: string,
   signal: AbortSignal,
   roots = { local: privatePath, shared: sharedPath },
+  links: 'exact' | 'content-free' = 'exact',
 ): Promise<number> {
   signal.throwIfAborted();
   const [local, shared] = await Promise.all([lstat(privatePath), lstat(sharedPath)]);
+  // A removed link takes nothing but its own text with it; its target stays.
+  // Callers that delete a tree which is no longer resolved from (preserved
+  // copies) may therefore accept any link where the shared tree has one.
+  if (links === 'content-free' && local.isSymbolicLink()) {
+    if (!shared.isSymbolicLink()) throw new Error('Dependency link differs');
+    return 0;
+  }
   if (local.isSymbolicLink()) {
     if (!shared.isSymbolicLink() || (await readlink(privatePath)) !== (await readlink(sharedPath)))
       throw new Error('Dependency link differs');
@@ -136,6 +146,7 @@ export async function compareDependencyTrees(
         join(sharedPath, entry),
         signal,
         roots,
+        links,
       );
     }
     return bytes;
@@ -550,6 +561,15 @@ export class SessionStorage {
     const root = await this.safeRoot(project, path);
     const firstRemoval = report.dependenciesRemoved.length;
     try {
+      await this.reclaimPreservedDependencies(root, path, git, report, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      report.blockers.push({
+        path,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
       await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
     } finally {
       // Restore wiring only for installations this pass verified and removed.
@@ -560,6 +580,67 @@ export class SessionStorage {
         (await exists(path))
       )
         linkWorkspacePackages(root, path);
+    }
+  }
+  /**
+   * `verity-dependencies` moves a session's previous installation into its
+   * worktree Git directory before activating a new one, as recovery for local
+   * package edits, and never removes it. A copy whose files are byte-identical
+   * to the central installation named by its own receipt holds no such edits
+   * and is removed; any other copy is kept and reported.
+   */
+  private async reclaimPreservedDependencies(
+    root: string,
+    path: string,
+    git: GitOutput,
+    report: SessionStorageReport,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!(await exists(path))) return;
+    const gitDir = this.hostGitPath(
+      root,
+      (await git(['-C', path, 'rev-parse', '--absolute-git-dir'])).trim(),
+    );
+    if (dirname(gitDir) !== join(root, '.git', 'worktrees') || (await realpath(gitDir)) !== gitDir)
+      throw new Error('Worktree Git directory is unknown or symlinked');
+    const preserved = join(gitDir, 'verity-dependencies-preserved');
+    if (!(await exists(preserved))) return;
+    if ((await realpath(preserved)) !== preserved)
+      throw new Error('Preserved dependency directory is symlinked');
+    for (const entry of await readdir(preserved, { withFileTypes: true })) {
+      signal.throwIfAborted();
+      if (!entry.isDirectory() || !PRESERVED_COPY.test(entry.name)) continue;
+      const copy = join(preserved, entry.name);
+      try {
+        const receipt = await optionalFile(join(copy, '.verity-install.json'));
+        const identity = (JSON.parse(receipt ?? 'null') as { identity?: unknown } | null)?.identity;
+        if (typeof identity !== 'string' || !/^[a-f0-9]{64}$/u.test(identity))
+          throw new Error('Preserved dependencies have no installation receipt');
+        const central = join(root, '.git', 'verity-dependencies', identity, 'node_modules');
+        if (!(await exists(central)) || (await realpath(central)) !== central)
+          throw new Error('Central installation for preserved dependencies is unavailable');
+        const before = await lstat(copy);
+        const bytes = await compareDependencyTrees(
+          copy,
+          central,
+          signal,
+          { local: copy, shared: central },
+          'content-free',
+        );
+        signal.throwIfAborted();
+        const latest = await lstat(copy);
+        if (latest.ino !== before.ino || latest.dev !== before.dev)
+          throw new Error('Dependency root changed');
+        report.comparedDependencyBytes += bytes;
+        if (!this.deps.dryRun) await rm(copy, { recursive: true });
+        report.dependenciesRemoved.push(copy);
+      } catch (error) {
+        signal.throwIfAborted();
+        report.blockers.push({
+          path: copy,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
   private async reclaimContents(

@@ -365,6 +365,39 @@ describe('safe session storage reclamation', () => {
     await f.service.runOnce();
     expect(existsSync(join(f.path, 'node_modules'))).toBe(true);
   });
+  // Every dependency activation moved the previous installation into the
+  // worktree's Git directory and nothing ever removed it: 2.5 GB per session in
+  // a monorepo. Activation also rewrites workspace links in the copy, so link
+  // targets cannot be what decides; file contents do.
+  it('removes preserved dependency copies identical to their central installation', async () => {
+    const f = fixture();
+    f.recent();
+    const identity = 'a'.repeat(64);
+    const central = join(f.root, '.git', 'verity-dependencies', identity, 'node_modules');
+    mkdirSync(join(central, 'dep'), { recursive: true });
+    writeFileSync(join(central, 'dep', 'index.js'), 'shared dependency');
+    writeFileSync(join(central, '.verity-install.json'), JSON.stringify({ identity }));
+    symlinkSync('../../cache/packages/ws', join(central, 'ws'));
+    const preserved = join(f.root, '.git', 'worktrees', 'session', 'verity-dependencies-preserved');
+    const copy = (id: string, contents: string, receipt = true) => {
+      const path = join(preserved, id);
+      mkdirSync(join(path, 'dep'), { recursive: true });
+      writeFileSync(join(path, 'dep', 'index.js'), contents);
+      if (receipt) writeFileSync(join(path, '.verity-install.json'), JSON.stringify({ identity }));
+      symlinkSync('../../../packages/ws', join(path, 'ws'));
+      return path;
+    };
+    const identical = copy('11111111-1111-4111-8111-111111111111', 'shared dependency');
+    const patched = copy('22222222-2222-4222-8222-222222222222', 'locally patched');
+    const unknown = copy('33333333-3333-4333-8333-333333333333', 'shared dependency', false);
+    await f.service.runOnce();
+    expect(existsSync(identical)).toBe(false);
+    expect(existsSync(patched)).toBe(true);
+    expect(existsSync(unknown)).toBe(true);
+    expect(f.service.lastReport?.blockers.map((blocker) => blocker.path)).toEqual(
+      expect.arrayContaining([patched, unknown]),
+    );
+  });
   // A server or preview in one session used to defer collection for the whole
   // project, so a project that always had one running never reclaimed anything.
   it('reclaims an idle session while another session of the project is busy', async () => {

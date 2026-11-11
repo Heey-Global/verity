@@ -36,6 +36,16 @@ Matching relative links to different source trees also protect an installation;
 matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
 copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
 
+Activating a new dependency version moves the session's previous installation
+to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as
+recovery for local package edits. Collection removes such a copy only when its
+installation receipt names a central installation that is still present and
+every file is byte-identical to it. Links in the copy count as matching wherever
+the central installation has a link, because activation rewrites workspace
+links and a removed link deletes nothing it points to. Copies without a
+receipt, with any differing file, or whose central installation is gone stay in
+place and are reported as blockers.
+
 ## Runner package caches and retained execution data
 
 The managed spawn broker gives each project runtime one npm download cache at
