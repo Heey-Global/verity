@@ -54,7 +54,7 @@ export const SHOWCASE_DEFAULT_MODEL = CLAUDE;
 
 /** Current models of every engine, so the model picker shows all three groups. */
 export const SHOWCASE_MODELS = [
-  'claude-fable-5-1',
+  'claude-fable-5-2',
   CLAUDE,
   'claude-sonnet-5-5',
   CODEX,

@@ -536,7 +536,7 @@ export function publicProjectSettings(
  */
 export const CLAUDE_MODELS = [
   'claude-opus-5-5',
-  'claude-fable-5-1',
+  'claude-fable-5-2',
   'claude-sonnet-5-5',
   'claude-haiku-5-5',
 ] as const;
