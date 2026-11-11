@@ -380,29 +380,32 @@ func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async 
   let trickleSession = try session()
   defer { trickleSession.invalidateAndCancel() }
   trickleSession.dataTask(with: origin.appendingPathComponent("trickle")).resume()
-  let muteSession = try session()
-  defer { muteSession.invalidateAndCancel() }
-  let (muted, _) = try await muteSession.data(from: origin.appendingPathComponent("mute-upstream"))
-  guard String(data: muted, encoding: .utf8) == "muted" else { throw TunnelError.protocolViolation }
-  try await Task.sleep(for: .milliseconds(300))
   func received() -> Int {
     let summary = tunnel.diagnosticSummary
     guard let field = summary.components(separatedBy: ", ").first(where: { $0.hasPrefix("receivedBytes=") })
     else { return -1 }
     return Int(field.dropFirst("receivedBytes=".count)) ?? -1
   }
-  let receivedAtLoss = received()
-  guard receivedAtLoss > 0 else {
-    throw ProductionProbeFailure.transport("upstream stall: no byte counter in \(tunnel.diagnosticSummary)")
+  // Replies flow before the mute; the stop reason then shows that the ping
+  // proof, not the first-reply rule, ended the attachment.
+  let flowStarted = ProcessInfo.processInfo.systemUptime
+  while received() < 4 * 1024 && ProcessInfo.processInfo.systemUptime - flowStarted < 5 {
+    try await Task.sleep(for: .milliseconds(100))
   }
+  guard received() >= 4 * 1024 else {
+    throw ProductionProbeFailure.transport("upstream stall: trickle did not flow: \(tunnel.diagnosticSummary)")
+  }
+  let muteSession = try session()
+  defer { muteSession.invalidateAndCancel() }
+  let (muted, _) = try await muteSession.data(from: origin.appendingPathComponent("mute-upstream"))
+  guard String(data: muted, encoding: .utf8) == "muted" else { throw TunnelError.protocolViolation }
+  try await Task.sleep(for: .milliseconds(300))
   // The trickle's own session: over HTTP/2 the lost request shares the
   // trickle's connection and tunnel stream, whose replies keep arriving; over
   // HTTP/1.1 it opens a fresh connection whose ClientHello never arrives.
   let started = ProcessInfo.processInfo.systemUptime
   trickleSession.dataTask(with: origin.appendingPathComponent("healthz")).resume()
-  var receivedWhileLost = receivedAtLoss
   while tunnel.isActive && ProcessInfo.processInfo.systemUptime - started < 42 {
-    receivedWhileLost = max(receivedWhileLost, received())
     try await Task.sleep(for: .milliseconds(100))
   }
   let elapsed = ProcessInfo.processInfo.systemUptime - started
@@ -415,12 +418,7 @@ func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async 
     throw ProductionProbeFailure.transport(
       "upstream stall not detected: active=\(tunnel.isActive) after \(Int(elapsed)) s, reason=\(tunnel.stopReason ?? "none")")
   }
-  // Replies kept arriving throughout, so the first-reply rule alone could not
-  // have ended this attachment.
-  guard receivedWhileLost > receivedAtLoss + 4 * 1024 else {
-    throw ProductionProbeFailure.transport("upstream stall: downstream stopped too (\(receivedAtLoss) -> \(receivedWhileLost))")
-  }
-  print("production app case passed: upstream stall after \(Int(elapsed)) s with downstream flowing")
+  print("production app case passed: upstream stall after \(Int(elapsed)) s")
 }
 
 // A rejected CONNECT is closed without a reply; a 200 or a hang is a failure.

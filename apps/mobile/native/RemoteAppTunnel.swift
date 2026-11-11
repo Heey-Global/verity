@@ -909,10 +909,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // the window grows with the bytes sent since the previous ping, which may
   // all still be queued: an upload on a slow link must drain, not be torn down.
   // Below the assumed floor rate such a backlog still reads as dead; the cap
-  // keeps the verdict ahead of the 45-60 s heartbeat.
-  static let upstreamProofSeconds: TimeInterval = 5
+  // keeps the verdict ahead of the 45-60 s heartbeat. The pong comes back
+  // behind whatever the relay already queued downstream, so the window also
+  // runs on while replies arrive fast enough to be a draining backlog. A
+  // trickle like the recorded one does not, so its verdict stays quick.
+  static let upstreamProofSeconds: TimeInterval = 10
   static let upstreamDrainBytesPerSecond: Double = 32 * 1024
   static let upstreamDrainCapSeconds: TimeInterval = 25
+  static let downstreamBacklogBytesPerSecond: Double = 64 * 1024
 
   // Armed after a stream's bytes have gone out, at most one per stream. A
   // stream's first reply is Core's TLS answer, due within milliseconds: with
@@ -960,21 +964,29 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // heartbeat's, is waited for with its own window first; once overdue it
     // is replaced by this watch's own ping, whose window is final.
     let started = ProcessInfo.processInfo.systemUptime
-    var ownDeadline: TimeInterval?
+    var own: (sentAt: TimeInterval, deadline: TimeInterval, received: Int)?
     while true {
       let now = ProcessInfo.processInfo.systemUptime
-      let (settled, sentAt, deadline) = lock.withLock { () -> (Bool, TimeInterval?, TimeInterval) in
+      let (settled, sentAt, deadline, received) = lock.withLock {
+        () -> (Bool, TimeInterval?, TimeInterval, Int) in
         let settled = Task.isCancelled || stopped || stream.closed
           || stream.stallWatchToken != token || upstreamProof.confirms(since)
-        let ping = !settled && ownDeadline == nil && upstreamProof.needsPing(since, at: now)
+        let ping = !settled && own == nil && upstreamProof.needsPing(since, at: now)
         let sentAt = ping ? markPingLocked() : nil
-        if sentAt != nil { ownDeadline = upstreamProof.inFlightDeadline }
+        if let sentAt { own = (sentAt, upstreamProof.inFlightDeadline, receivedBytes) }
         return (settled, sentAt,
-          ownDeadline ?? max(started + Self.upstreamProofSeconds, upstreamProof.inFlightDeadline))
+          own?.deadline ?? max(started + Self.upstreamProofSeconds, upstreamProof.inFlightDeadline),
+          receivedBytes)
       }
       if settled { break }
       if let sentAt { sendPing(sentAt: sentAt, reason: "upstream ping") }
-      else if now >= deadline { break }
+      else if now >= deadline {
+        // A busy downstream may still hold the pong behind its backlog.
+        guard let own, now < own.deadline + Self.upstreamDrainCapSeconds,
+          Double(received - own.received)
+            >= Self.downstreamBacklogBytesPerSecond * (now - own.sentAt)
+        else { break }
+      }
       try? await Task.sleep(nanoseconds: 100_000_000)
     }
     lock.lock()
