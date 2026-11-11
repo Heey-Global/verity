@@ -340,7 +340,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var pongsReceived = 0
   private var lastPongAt: Date?
   private var upstreamProof = UpstreamProof()
-  private var sentBytesAtLastPing = 0
+  // Bytes known to have left the socket: everything sent before the last
+  // answered ping. Later bytes may still be queued ahead of the next ping.
+  private var sentBytesDrained = 0
+  private var sentBytesAtInFlightPing = 0
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -651,7 +654,10 @@ final class RemoteAppTunnel: @unchecked Sendable {
             expired = now.timeIntervalSince(since) > 45
           } else {
             self.unansweredPingSince = now
-            self.unansweredPingSinceUptime = uptime
+            // A ping in flight and not yet overdue stands in: the clock starts
+            // at its send, so its pong answers the heartbeat too.
+            self.unansweredPingSinceUptime = self.upstreamProof.canPing(at: uptime)
+              ? uptime : (self.upstreamProof.inFlight ?? uptime)
           }
           // Only a ping sent since the clock started answers it. One already
           // in flight from then stands in; an older or overdue one does not.
@@ -677,12 +683,12 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   /// Claims the one ping in flight; the caller decides under the same lock
   /// acquisition, so two callers never both send.
-  /// The window grows with the bytes handed to the socket since the previous
-  /// ping, which may all still be queued ahead of this one.
+  /// The window grows with the bytes handed to the socket since the last
+  /// answered ping, which may all still be queued ahead of this one.
   private func markPingLocked() -> TimeInterval {
     let sentAt = ProcessInfo.processInfo.systemUptime
-    let queued = Double(max(0, sentBytes - sentBytesAtLastPing))
-    sentBytesAtLastPing = sentBytes
+    let queued = Double(max(0, sentBytes - sentBytesDrained))
+    sentBytesAtInFlightPing = sentBytes
     let drain = min(queued / Self.upstreamDrainBytesPerSecond, Self.upstreamDrainCapSeconds)
     pingsSent += 1
     upstreamProof.pingSent(at: sentAt, deadline: sentAt + Self.upstreamProofSeconds + drain)
@@ -701,6 +707,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
         self.lock.withLock {
           // A late pong for an older, overdue ping must not reset the clock.
           if sentAt >= self.unansweredPingSinceUptime { self.unansweredPingSince = nil }
+          if self.upstreamProof.inFlight == sentAt {
+            self.sentBytesDrained = max(self.sentBytesDrained, self.sentBytesAtInFlightPing)
+          }
           self.pongsReceived += 1
           self.lastPongAt = Date()
           self.upstreamProof.pongReceived(sentAt: sentAt)
