@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.89.5](https://github.com/Heey-Global/verity/compare/mobile-v1.89.4...mobile-v1.89.5) (2026-11-11)
+
+
+### Bug Fixes
+
+* **server:** report sandbox update attempts truthfully and back off failed recreates ([#2498](https://github.com/Heey-Global/verity/issues/2498)) ([c4c2f9c](https://github.com/Heey-Global/verity/commit/c4c2f9cd95cf45a5a903661ae576eb6fb0b9e4b0))
+
 ## [1.89.4](https://github.com/Heey-Global/verity/compare/mobile-v1.89.3...mobile-v1.89.4) (2026-11-10)
 
 
