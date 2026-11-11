@@ -111,8 +111,9 @@ not execute the Swift tunnel. These fixtures need no production credentials.
 
 The production-app smoke ends with its own attachment: `/trickle` keeps reply
 bytes flowing, then `/mute-upstream` makes the relay stop reading every app data
-socket while it keeps writing to them. A request on a fresh connection then never
-reaches the relay. The writer deadline cannot see this (local sends complete) and
+socket while it keeps writing to them. A request in the trickle's session then
+never reaches the relay: over HTTP/2 it shares the trickle's tunnel stream, over
+HTTP/1.1 it opens a fresh one. The writer deadline cannot see this (local sends complete) and
 the first-reply watch cannot either (other bytes keep arriving); the tunnel must
 stop with `stall: upstream unconfirmed` once the ping sent behind the lost bytes
 goes unanswered, between 10 and 20 seconds, and before the 45–60 second heartbeat

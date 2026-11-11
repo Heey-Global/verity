@@ -163,9 +163,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var stallWatch: Task<Void, Never>?
     /// Identifies the installed watch, so a finished one never clears its successor.
     var stallWatchToken = 0
-    /// Uptime of the last completed upstream send and the last downstream bytes.
+    /// Uptime of the last completed upstream send.
     var lastSentUptime: TimeInterval = 0
-    var lastReceivedUptime: TimeInterval = 0
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
@@ -278,18 +277,26 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // socket says the peer has read past them: frames leave the socket in order.
   // Downstream data says nothing about that direction, which is how a socket
   // can keep delivering replies while every request it carries is lost.
+  // At most one ping is in flight, shared by the heartbeat and the proof:
+  // URLSessionWebSocketTask is not known to answer every handler when several
+  // pings overlap, and a lost handler must not read as a dead socket.
   struct UpstreamProof {
     private(set) var lastPingSent: TimeInterval = -1
     private(set) var lastAnsweredPingSent: TimeInterval = -1
+    private(set) var inFlight: TimeInterval?
 
-    mutating func pingSent(at uptime: TimeInterval) { lastPingSent = max(lastPingSent, uptime) }
+    mutating func pingSent(at uptime: TimeInterval) {
+      lastPingSent = max(lastPingSent, uptime)
+      inFlight = uptime
+    }
     mutating func pongReceived(sentAt uptime: TimeInterval) {
       lastAnsweredPingSent = max(lastAnsweredPingSent, uptime)
+      if inFlight == uptime { inFlight = nil }
     }
     /// A pong already covers bytes handed to the socket at `uptime`.
     func confirms(_ uptime: TimeInterval) -> Bool { lastAnsweredPingSent >= uptime }
-    /// No ping has left since those bytes; one still in flight will do.
-    func needsPing(_ uptime: TimeInterval) -> Bool { lastPingSent < uptime }
+    /// No ping has left since those bytes, and none is in flight to wait for first.
+    func needsPing(_ uptime: TimeInterval) -> Bool { inFlight == nil && lastPingSent < uptime }
   }
 
   private let expectedHost: String
@@ -624,38 +631,20 @@ final class RemoteAppTunnel: @unchecked Sendable {
         try? await Task.sleep(nanoseconds: 15_000_000_000)
         guard !Task.isCancelled, let self else { return }
         let now = Date()
-        let (expired, due) = self.lock.withLock { () -> (Bool, Bool) in
+        let (expired, sentAt) = self.lock.withLock { () -> (Bool, TimeInterval?) in
           guard let since = self.unansweredPingSince else {
             self.unansweredPingSince = now
-            return (false, true)
+            // A proof ping already in flight stands in for this one.
+            return (false, self.upstreamProof.inFlight == nil ? self.markPingLocked() : nil)
           }
-          return (now.timeIntervalSince(since) > 45, false)
+          return (now.timeIntervalSince(since) > 45, nil)
         }
         if expired {
           self.stop(reason: "heartbeat timeout", cause: .heartbeatDeadline)
           return
         }
-        guard due else { continue }
-        let sentAt = ProcessInfo.processInfo.systemUptime
-        self.lock.withLock {
-          self.pingsSent += 1
-          self.upstreamProof.pingSent(at: sentAt)
-        }
-        self.socket.sendPing { [weak self] error in
-          guard let self else { return }
-          if let error {
-            self.dataDiagnostics.record(.failure, cause: .heartbeatFailure, error: error)
-            self.stop(reason: "heartbeat failed: \(error)", cause: .heartbeatFailure)
-          }
-          else {
-            self.lock.withLock {
-              self.unansweredPingSince = nil
-              self.pongsReceived += 1
-              self.lastPongAt = Date()
-              self.upstreamProof.pongReceived(sentAt: sentAt)
-            }
-          }
-        }
+        guard let sentAt else { continue }
+        self.sendPing(sentAt: sentAt, reason: "heartbeat")
       }
     }
     // The reader may already have stopped the tunnel; that stop could not see this task.
@@ -665,6 +654,34 @@ final class RemoteAppTunnel: @unchecked Sendable {
       return false
     }
     if alreadyStopped { task.cancel() }
+  }
+
+  /// Claims the one ping in flight; the caller decides under the same lock
+  /// acquisition, so two callers never both send.
+  private func markPingLocked() -> TimeInterval {
+    let sentAt = ProcessInfo.processInfo.systemUptime
+    pingsSent += 1
+    upstreamProof.pingSent(at: sentAt)
+    return sentAt
+  }
+
+  /// Any pong answers the heartbeat as well as the proof; a failed ping means
+  /// the socket is going down.
+  private func sendPing(sentAt: TimeInterval, reason: String) {
+    socket.sendPing { [weak self] error in
+      guard let self else { return }
+      if let error {
+        self.dataDiagnostics.record(.failure, cause: .heartbeatFailure, error: error)
+        self.stop(reason: "\(reason) failed: \(error)", cause: .heartbeatFailure)
+      } else {
+        self.lock.withLock {
+          self.unansweredPingSince = nil
+          self.pongsReceived += 1
+          self.lastPongAt = Date()
+          self.upstreamProof.pongReceived(sentAt: sentAt)
+        }
+      }
+    }
   }
 
   // JSONSerialization bridges booleans to NSNumber; `as? Int` alone accepts true as 1.
@@ -713,9 +730,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
-        if first { stream.firstRemoteAt = Date() }
-        if !data.isEmpty {
-          stream.lastReceivedUptime = ProcessInfo.processInfo.systemUptime
+        if first {
+          // Core's TLS answer settles the first-reply watch. Later bytes do
+          // not: on a stream several requests share (HTTP/2), a response
+          // still streaming says nothing about whether a new request arrived.
+          stream.firstRemoteAt = Date()
           stream.stallWatch?.cancel()
           stream.stallWatch = nil
         }
@@ -869,19 +888,16 @@ final class RemoteAppTunnel: @unchecked Sendable {
   // draining less than that backlog in this time is treated as dead too.
   static let upstreamProofSeconds: TimeInterval = 5
 
-  // Armed after a stream's bytes have gone out while it waits for a reply,
-  // at most one per stream. A stream's first reply is Core's TLS answer, due
-  // within milliseconds: with nothing at all received meanwhile, the
-  // attachment has gone dead without saying so. Otherwise, while other
-  // streams still receive or the stream is merely waiting on a slow Core, a
-  // ping decides whether the peer has read these bytes: downstream data alone
-  // cannot show that requests still arrive. Ending the attachment lets the
-  // app open a fresh one instead of waiting out every request's own timeout.
+  // Armed after a stream's bytes have gone out, at most one per stream. A
+  // stream's first reply is Core's TLS answer, due within milliseconds: with
+  // nothing at all received meanwhile, the attachment has gone dead without
+  // saying so. Every later judgement is a ping's: downstream data, on this
+  // stream or others, cannot show that requests still arrive. A busy stream
+  // costs at most one ping per deadline. Ending the attachment lets the app
+  // open a fresh one instead of waiting out every request's own timeout.
   private func armStallWatch(_ stream: Stream, id: String) {
     lock.withLock {
-      guard !stopped, !stream.closed, stream.stallWatch == nil,
-        stream.lastReceivedUptime < stream.lastSentUptime
-      else { return }
+      guard !stopped, !stream.closed, stream.stallWatch == nil else { return }
       stream.stallWatchToken += 1
       let token = stream.stallWatchToken
       let firstReply = stream.receivedBytes == 0
@@ -912,31 +928,22 @@ final class RemoteAppTunnel: @unchecked Sendable {
       return
     }
     let since = stream.lastSentUptime
-    let sendPing = upstreamProof.needsPing(since)
-    let sentAt = ProcessInfo.processInfo.systemUptime
-    if sendPing {
-      upstreamProof.pingSent(at: sentAt)
-      pingsSent += 1
-    }
     lock.unlock()
-    if sendPing {
-      socket.sendPing { [weak self] error in
-        // A failed ping means the socket is going down; the reader records why.
-        guard let self, error == nil else { return }
-        self.lock.withLock {
-          self.pongsReceived += 1
-          self.lastPongAt = Date()
-          self.upstreamProof.pongReceived(sentAt: sentAt)
-        }
-      }
-    }
-    let deadline = ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds
+    // A ping still in flight from before these bytes is waited for first; its
+    // own silence for the whole window is the same verdict.
+    var deadline = ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds
     while true {
-      let settled = lock.withLock {
-        Task.isCancelled || stopped || stream.closed || stream.stallWatchToken != token
-          || upstreamProof.confirms(since)
+      let (settled, sentAt) = lock.withLock { () -> (Bool, TimeInterval?) in
+        let settled = Task.isCancelled || stopped || stream.closed
+          || stream.stallWatchToken != token || upstreamProof.confirms(since)
+        return (settled, !settled && upstreamProof.needsPing(since) ? markPingLocked() : nil)
       }
-      if settled || ProcessInfo.processInfo.systemUptime >= deadline { break }
+      if settled { break }
+      if let sentAt {
+        sendPing(sentAt: sentAt, reason: "upstream ping")
+        deadline = max(deadline, ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds)
+      }
+      if ProcessInfo.processInfo.systemUptime >= deadline { break }
       try? await Task.sleep(nanoseconds: 100_000_000)
     }
     lock.lock()

@@ -394,11 +394,11 @@ func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async 
   guard receivedAtLoss > 0 else {
     throw ProductionProbeFailure.transport("upstream stall: no byte counter in \(tunnel.diagnosticSummary)")
   }
-  // A fresh connection: its ClientHello is the request that never arrives.
-  let lostSession = try session()
-  defer { lostSession.invalidateAndCancel() }
+  // The trickle's own session: over HTTP/2 the lost request shares the
+  // trickle's connection and tunnel stream, whose replies keep arriving; over
+  // HTTP/1.1 it opens a fresh connection whose ClientHello never arrives.
   let started = ProcessInfo.processInfo.systemUptime
-  lostSession.dataTask(with: origin.appendingPathComponent("healthz")).resume()
+  trickleSession.dataTask(with: origin.appendingPathComponent("healthz")).resume()
   var receivedWhileLost = receivedAtLoss
   while tunnel.isActive && ProcessInfo.processInfo.systemUptime - started < 30 {
     receivedWhileLost = max(receivedWhileLost, received())
