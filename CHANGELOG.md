@@ -6,6 +6,20 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.91.0](https://github.com/Heey-Global/verity/compare/v4.90.6...v4.91.0) (2026-11-11)
+
+
+### Features
+
+* **claude:** replace Fable 5.1 with Fable 5.2 ([#2514](https://github.com/Heey-Global/verity/issues/2514)) ([3a38c5c](https://github.com/Heey-Global/verity/commit/3a38c5c0b6b9287221095c50d2bf2de916c4a0eb))
+* **preview:** expose connector send-path diagnostics ([#2520](https://github.com/Heey-Global/verity/issues/2520)) ([21e83b1](https://github.com/Heey-Global/verity/commit/21e83b10ed20bd3a0f3d354e143c30c9d540dbfb))
+
+
+### Bug Fixes
+
+* **dependencies:** support workspace-nested packages in central inventory ([#2515](https://github.com/Heey-Global/verity/issues/2515)) ([beec577](https://github.com/Heey-Global/verity/commit/beec57796bcf55fd8a44fdcb9b732b8a7f9435f5))
+* **server:** retry protected build containment after fence failures ([#2519](https://github.com/Heey-Global/verity/issues/2519)) ([d4276c1](https://github.com/Heey-Global/verity/commit/d4276c14aff91c4dcc7ece9e8ad8298b4cb687d0))
+
 ## [4.90.6](https://github.com/Heey-Global/verity/compare/v4.90.5...v4.90.6) (2026-11-11)
 
 
