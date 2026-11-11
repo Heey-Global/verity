@@ -451,22 +451,30 @@ function staleWorkspaceModuleTrees(root) {
   return workspaceModuleTrees(root).filter((tree) => {
     const prefix = relative(root, tree) + '/';
     if (!Object.keys(lock?.packages ?? {}).some((path) => path.startsWith(prefix))) return true;
-    if (!lstatSync(tree).isDirectory()) return true;
-    const declared = (path) => Object.hasOwn(lock.packages, prefix + path);
-    for (const name of readdirSync(tree)) {
-      if (name.startsWith('.')) continue;
-      const entry = join(tree, name);
-      const stat = lstatSync(entry);
-      if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
-      if (!name.startsWith('@')) {
-        if (!declared(name)) return true;
-        continue;
+    const pending = [tree];
+    while (pending.length) {
+      const modules = pending.pop();
+      if (!lstatSync(modules).isDirectory()) return true;
+      const packages = [];
+      for (const name of readdirSync(modules)) {
+        if (name.startsWith('.')) continue;
+        const entry = join(modules, name);
+        const stat = lstatSync(entry);
+        if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        if (!name.startsWith('@')) packages.push(entry);
+        else {
+          if (stat.isSymbolicLink()) return true;
+          for (const scoped of readdirSync(entry)) packages.push(join(entry, scoped));
+        }
       }
-      if (stat.isSymbolicLink()) return true;
-      for (const scoped of readdirSync(entry)) {
-        const child = lstatSync(join(entry, scoped));
-        if ((child.isDirectory() || child.isSymbolicLink()) && !declared(name + '/' + scoped))
-          return true;
+      for (const path of packages) {
+        const stat = lstatSync(path);
+        if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+        if (!Object.hasOwn(lock.packages, relative(root, path))) return true;
+        // Linked workspaces are checked at their own project-local paths.
+        if (stat.isSymbolicLink()) continue;
+        const nested = join(path, 'node_modules');
+        if (readlinkExists(nested)) pending.push(nested);
       }
     }
     return false;

@@ -493,6 +493,7 @@ describe('shared dependency reuse', () => {
             'packages/source/node_modules/other': { link: true, resolved: 'packages/other' },
             'node_modules/source': { link: true, resolved: 'packages/source' },
             'packages/source/node_modules/private': { version: '2.0.0' },
+            'packages/source/node_modules/private/node_modules/kept': { version: '3.0.0' },
           },
         }),
       );
@@ -500,13 +501,15 @@ describe('shared dependency reuse', () => {
     const first = f.run('install');
     expect(first.status, first.stderr).toBe(0);
     expect(f.run('status').status).toBe(0);
-    const shadow = join(f.worktree, 'packages/source/node_modules/hoisted');
-    mkdirSync(shadow);
-    writeFileSync(join(shadow, 'package.json'), '{"version":"1.0.0"}');
-    expect(f.run('status').status).toBe(1);
-    expect(f.run('install').status).toBe(0);
-    expect(existsSync(shadow)).toBe(false);
-    expect(f.run('status').status).toBe(0);
+    for (const path of ['hoisted', 'private/node_modules/hoisted', '@scope/hoisted']) {
+      const shadow = join(f.worktree, 'packages/source/node_modules', path);
+      mkdirSync(shadow, { recursive: true });
+      writeFileSync(join(shadow, 'package.json'), '{"version":"1.0.0"}');
+      expect(f.run('status').status, path).toBe(1);
+      expect(f.run('install').status).toBe(0);
+      expect(existsSync(shadow)).toBe(false);
+      expect(f.run('status').status).toBe(0);
+    }
     const second = spawnSync(process.execPath, [helper, 'install'], {
       cwd: sibling,
       env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
@@ -534,7 +537,7 @@ describe('shared dependency reuse', () => {
           readFileSync(join(preserved, entry, 'local-patch.txt'), 'utf8') === 'keep local patch',
       ),
     ).toBe(true);
-  });
+  }, 60_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
     const workspace = join(f.worktree, 'packages', 'source');
