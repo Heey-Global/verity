@@ -844,6 +844,39 @@ describe('pinned native file transport', () => {
     }
   });
 
+  it('gives a remembered route the cold-start grace when its recheck is inconclusive', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
+      mockRecheckDirect.mockReturnValue(Promise.resolve('unknown'));
+      let failDirect!: (error: Error) => void;
+      mockRequest
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              failDirect = reject;
+            }),
+        )
+        .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      mockCancelRequest.mockImplementation(async () => {
+        failDirect(new Error('Pinned TLS transport failed [NSURLErrorDomain:-999]'));
+      });
+      const pending = createPinnedFetch(
+        `sha256-${'a'.repeat(43)}`,
+        true,
+      )('https://verity.example/projects/p');
+      // A probe timeout cannot tell a waking VPN from a vanished one: the
+      // read keeps its grace, as a cold read does, before Uplink takes over.
+      await jest.advanceTimersByTimeAsync(8_999);
+      expect(mockCancelRequest).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(mockRequest.mock.calls[1]?.[6]).toBe(4_321);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('never rechecks the route under a direct mutation it could not replay', async () => {
     jest.useFakeTimers();
     try {
