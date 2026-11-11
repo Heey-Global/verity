@@ -20,6 +20,7 @@ import {
   BuildStorage,
   buildStoragePolicy,
   estimateBuildStorageBytes,
+  isBuildStorageCapacityRefusal,
   remoteOperationEnded,
 } from './build-storage.js';
 
@@ -1710,6 +1711,45 @@ describe('admission reclamation', () => {
     expect(secondAdmitted).toBe(false);
     firstLease.dispose();
     (await second).dispose();
+  });
+  // The refusal used to end in "retry after capacity is available" even when
+  // reclamation had just run and found everything it could not remove pinned.
+  it('names what reclamation freed and kept when capacity stays short', async () => {
+    const f = fixture();
+    f.local.availableBytes = 0;
+    f.writeReport(0);
+    const manager = f.manager();
+    manager.setReclaimer(async () => 'Reclamation removed 0 image(s); 35.0 GiB of images stay.');
+    const refusal = await manager.admitInTurn().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(isBuildStorageCapacityRefusal(refusal)).toBe(true);
+    expect((refusal as Error).message).toMatch(/admission rejected.*35\.0 GiB of images stay\.$/su);
+  });
+  // A stalled reclaimer must cost the waiting build its deadline and nothing
+  // more: the lease is free again and the next build is admitted on its own.
+  it('releases the lease after a stalled reclamation and admits a later build', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = fixture();
+      f.local.availableBytes = 0;
+      f.writeReport(0);
+      const manager = f.manager();
+      manager.setReclaimer(() => new Promise<void>(() => {}));
+      const stalled = manager.admitInTurn().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(String(await stalled)).toMatch(/timed out/u);
+      f.local.availableBytes = 100 * GiB;
+      f.writeReport();
+      const lease = await manager.admitInTurn();
+      lease.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('does not loop or override reservation/capacity refusals', async () => {
     const f = fixture();

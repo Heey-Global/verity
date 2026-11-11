@@ -2,10 +2,17 @@
 
 Verity runs its existing Docker collector at startup, daily, and under disk
 pressure. Before image collection it now reconciles session storage and retired
-containers. Capacity admission requests one coalesced reclamation pass before
+containers. Capacity admission requests one coalesced build-capacity pass before
 retrying once; maintenance and unresolved build reservations still fail closed.
-An admission-triggered pass has a two-minute wait bound; timing out does not
-cancel a deletion already in progress or admit the waiting build.
+That pass runs only the steps that free build capacity, image removal and build
+cache pruning, and does not wait for a running maintenance pass: the
+maintenance steps talk to Sandboxes and helper containers and can take longer
+than a waiting build may wait. An admission-triggered pass has a two-minute
+wait bound; timing out does not cancel a deletion already in progress or admit
+the waiting build. A build still refused after the pass reports what it
+removed and how many bytes of images stopped containers keep, because a retry
+alone cannot free those. Each completed pass logs its scope, duration and
+per-phase durations (`docker gc pass complete`).
 
 ## Dependencies
 
