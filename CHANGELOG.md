@@ -6,6 +6,18 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.90.5](https://github.com/Heey-Global/verity/compare/v4.90.4...v4.90.5) (2026-11-11)
+
+
+### Bug Fixes
+
+* **sandbox:** stop session deletion from scaling with turn history ([#2499](https://github.com/Heey-Global/verity/issues/2499)) ([43a9253](https://github.com/Heey-Global/verity/commit/43a9253411429cd3abfa4f692b4139097f0bdd19))
+* **server:** collect idle session worktrees while another session serves ([#2500](https://github.com/Heey-Global/verity/issues/2500)) ([d029024](https://github.com/Heey-Global/verity/commit/d029024792cc685f15ac2a113ae6fe7bb943f167))
+* **server:** let a maintenance image download finish after its caller gives up ([#2506](https://github.com/Heey-Global/verity/issues/2506)) ([7d510bd](https://github.com/Heey-Global/verity/commit/7d510bdcce2c0e7fead8e05f48c13c20fa48b27f))
+* **server:** reclaim build capacity without the full maintenance pass ([#2504](https://github.com/Heey-Global/verity/issues/2504)) ([293a6a3](https://github.com/Heey-Global/verity/commit/293a6a3f10140278160a8d42951617ae61a70699))
+* **server:** remove preserved dependency copies that hold no local edits ([#2505](https://github.com/Heey-Global/verity/issues/2505)) ([663549b](https://github.com/Heey-Global/verity/commit/663549b30fd5fe93311c8419f8e752031baa7eb8))
+* **server:** report sandbox update attempts truthfully and back off failed recreates ([#2498](https://github.com/Heey-Global/verity/issues/2498)) ([c4c2f9c](https://github.com/Heey-Global/verity/commit/c4c2f9cd95cf45a5a903661ae576eb6fb0b9e4b0))
+
 ## [4.90.4](https://github.com/Heey-Global/verity/compare/v4.90.3...v4.90.4) (2026-11-10)
 
 
