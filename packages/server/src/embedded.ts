@@ -82,7 +82,7 @@ import {
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
-import { SessionStorage } from './session-storage.js';
+import { SessionStorage, storageHold } from './session-storage.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
   RunnerCacheMaintenance,
@@ -3437,6 +3437,7 @@ export async function buildEmbeddedServer(
     config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
       ? new SessionStorage({
           gitRoot: '/work',
+          log: (summary) => app.log.info(summary, 'session storage pass complete'),
           listProjects: () => eventStore.listProjects(),
           listSessions: () => eventStore.listSessions(),
           activity: async (id) =>
@@ -3450,15 +3451,14 @@ export async function buildEmbeddedServer(
                 projectId,
                 () =>
                   withStorageProjectMutation(projectId, async () => {
-                    if (managedDevServerManager?.hasRunningServers(projectId))
-                      throw new Error('Managed dev server is active');
-                    if (
-                      (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
-                      (await eventStore.listPublicPreviewShares(projectId)).some((s) =>
-                        ['creating', 'active', 'revoking'].includes(s.state),
-                      )
-                    )
-                      throw new Error('Public preview is active');
+                    const hold = storageHold({
+                      projectId,
+                      sessionId,
+                      devServers: managedDevServerManager,
+                      localPreviews: localPreviewManager,
+                      publicShares: await eventStore.listPublicPreviewShares(projectId),
+                    });
+                    if (hold) throw new Error(hold);
                     await recheck?.();
                     if (imageId) preparedWorktreeImages.set(projectId, imageId);
                     try {
