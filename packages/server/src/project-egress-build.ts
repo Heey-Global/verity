@@ -73,7 +73,7 @@ const same = sameProtectedBuildRequest;
 const terminal = (phase: ProtectedBuildPhase) => phase === 'failed' || phase === 'succeeded';
 /** Host journal entry for a failed lifecycle step, correlated to its attempt. */
 export interface ProtectedBuildEvent {
-  event: 'cleanup_failed' | 'cleanup_recovered' | 'begin_refused';
+  event: 'cleanup_failed' | 'cleanup_recovered' | 'begin_refused' | 'containment_failed';
   projectId: string;
   attemptId: string;
   /** The attempt whose cleanup blocks the slot, when it differs from the request. */
@@ -106,6 +106,8 @@ export class ProtectedBuildHost {
    * so a restart retries at once. Never persisted as evidence of anything. */
   private cleanupFailures = 0;
   private cleanupRetryAt = 0;
+  private containmentAttempts = 0;
+  private containmentRetryAt = 0;
   private operation: ProtectedBuildEvent['operation'] = 'revalidate';
   constructor(
     private readonly runtime: ProtectedBuildRuntime,
@@ -235,12 +237,22 @@ export class ProtectedBuildHost {
     }
     throw failure;
   }
-  private async contain(record: ProtectedBuildRecord): Promise<void> {
+  private async contain(
+    record: ProtectedBuildRecord,
+    outcome: 'failed' | 'succeeded' = 'failed',
+  ): Promise<void> {
     if (record.ended) {
       await this.settle(record);
       return;
     }
     record.phase = 'stopping';
+    this.containmentAttempts++;
+    const retryInMs = Math.min(
+      CLEANUP_RETRY_MAX_MS,
+      CLEANUP_RETRY_MIN_MS * 2 ** Math.min(this.containmentAttempts - 1, 20),
+    );
+    // Schedule even a stop that returned successfully: its cgroup may still live.
+    this.containmentRetryAt = this.now() + retryInMs;
     // Persistence failure does not skip packet revocation or process containment.
     const saved = await Promise.allSettled([this.save(), this.runtime.deny(record.request)]);
     let stopped: unknown;
@@ -250,15 +262,29 @@ export class ProtectedBuildHost {
       stopped = error;
     }
     record.ended = await this.runtime.ended(record.request).catch(() => false);
-    if (record.ended) record.phase = 'failed';
+    if (record.ended) {
+      record.phase = outcome;
+      this.containmentAttempts = 0;
+      this.containmentRetryAt = 0;
+    }
     await this.save();
     // Termination is proven; a failed removal is retried by the host sweep and
     // must not replace the original failure or block a restart.
     if (record.ended) await this.settle(record);
     const errors = saved.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : []));
     if (stopped !== undefined) errors.push(stopped);
-    if (errors.length)
-      throw new ProtectedBuildFailure('containment_failed', { cause: new AggregateError(errors) });
+    if (errors.length) {
+      const cause = new AggregateError(errors);
+      this.report({
+        event: 'containment_failed',
+        projectId: record.request.projectId,
+        attemptId: record.request.attemptId,
+        operation: this.operation,
+        retryInMs: record.ended ? 0 : retryInMs,
+        failure: describeProtectedBuildFailure(cause),
+      });
+      throw new ProtectedBuildFailure('containment_failed', { cause });
+    }
   }
   /** Restore before accepting requests; never resume old access or unknown processes. */
   restore(value: unknown): Promise<void> {
@@ -279,7 +305,10 @@ export class ProtectedBuildHost {
       // An ended record whose removal keeps failing must not stop the host from
       // starting: every later begin and sweep retries it, with diagnostics.
       if (parsed.ended) await this.settle(parsed);
-      else await this.contain(parsed);
+      else
+        await this.contain(parsed).catch((error: unknown) => {
+          if (!parsed.ended) throw error;
+        });
     }, 'restore');
   }
   begin(input: unknown): Promise<ProtectedBuildRecord> {
@@ -390,22 +419,29 @@ export class ProtectedBuildHost {
   }
   private async poll(record: ProtectedBuildRecord): Promise<void> {
     if (record.phase === 'stopping') {
-      record.ended = await this.runtime.ended(record.request);
+      // Proof can arrive between retries; reads do not need to wait for backoff.
+      record.ended = await this.runtime.ended(record.request).catch(() => false);
       if (record.ended) {
         record.phase = 'failed';
+        this.containmentAttempts = 0;
+        this.containmentRetryAt = 0;
         await this.save();
         await this.settle(record);
+      } else if (this.now() >= this.containmentRetryAt) {
+        await this.contain(record).catch((error: unknown) => {
+          if (!record.ended) throw error;
+        });
       }
+      return;
     }
-    if (!terminal(record.phase) && record.phase !== 'stopping') {
+    if (!terminal(record.phase)) {
       const phase = await this.runtime.status(record.request);
       if (phase !== 'running') {
-        await this.runtime.deny(record.request);
-        await this.runtime.stop(record.request);
-        record.ended = await this.runtime.ended(record.request);
-        record.phase = record.ended ? phase : 'stopping';
-        await this.save();
-        if (record.ended) await this.settle(record);
+        await this.contain(record, phase).catch((error: unknown) => {
+          // A failed fence remains pending cleanup; it cannot invalidate proven
+          // cgroup termination or hide that proof from reservation reconciliation.
+          if (!record.ended) throw error;
+        });
       }
     }
   }

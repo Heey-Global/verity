@@ -37,6 +37,7 @@ import {
 } from './project-egress-build-network.js';
 import {
   createProtectedBuildRuntime,
+  containProtectedBuildSteps,
   type ProtectedBuildRuntimeState,
 } from './project-egress-build-runtime.js';
 
@@ -629,8 +630,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     await chmod(path, 0o600);
     dns.set(key, server);
   };
-  const partial = async (request: ProtectedBuildRequest) => {
-    await ensureBootstrap();
+  const partial = async (request: ProtectedBuildRequest, fence = true) => {
+    if (fence) await ensureBootstrap();
     const value = await privateRead(checkpointPath(request));
     if (value === undefined) return undefined;
     const result = checkpointSchema.parse(value);
@@ -642,8 +643,8 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
       throw new Error('Changed protected build checkpoint');
     return result;
   };
-  const partialContainer = async (request: ProtectedBuildRequest) => {
-    const point = await partial(request);
+  const partialContainer = async (request: ProtectedBuildRequest, fence = true) => {
+    const point = await partial(request, fence);
     if (!point) return undefined;
     // Recover a crash between Docker create and the following durable checkpoint.
     // A name is discovery only; immutable identity and complete shape are checked below.
@@ -719,15 +720,21 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     return { point, value };
   };
   const stopPartial = async (request: ProtectedBuildRequest) => {
-    const point = await partial(request);
-    if (point) {
-      active.delete(point.binding.bridge);
-      await bootstrap();
-    }
-    await stopUnit(unit(request));
-    const container = await partialContainer(request);
-    if (container?.value.State.Running)
-      await docker(['container', 'stop', container.point.containerId!]);
+    // Validate checkpoint ownership independently of nft availability. Foreign
+    // checkpoints still prevent every stop; fence failure does not.
+    const point = await partial(request, false);
+    await containProtectedBuildSteps(
+      async () => {
+        if (point) active.delete(point.binding.bridge);
+        await ensureBootstrap();
+      },
+      () => stopUnit(unit(request)),
+      async () => {
+        const container = await partialContainer(request, false);
+        if (container?.value.State.Running)
+          await docker(['container', 'stop', container.point.containerId!]);
+      },
+    );
   };
   const removePartial = async (request: ProtectedBuildRequest) => {
     if (!(await ended(unit(request))))
@@ -1033,8 +1040,11 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     controller,
     async restore() {
       active.clear();
-      await ensureBootstrap();
-      await controller.restore(await privateRead(join(ROOT, 'controller.json')));
+      // A failed wildcard fence must not prevent containment of persisted work.
+      // Still report bootstrap failure, so startup cannot admit new work.
+      await containProtectedBuildSteps(ensureBootstrap, async () =>
+        controller.restore(await privateRead(join(ROOT, 'controller.json'))),
+      );
     },
     async close() {
       await controller.close();

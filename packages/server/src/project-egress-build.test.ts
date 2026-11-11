@@ -567,3 +567,101 @@ describe('protected build terminal cleanup and receipts', () => {
     expect(runtime.remove).not.toHaveBeenCalled();
   });
 });
+
+describe('bounded containment recovery', () => {
+  it('retries a failed stop on sweeps with bounded backoff and no new authority', async () => {
+    let time = 0;
+    const { host, runtime } = fixture(() => time);
+    await host.begin(request);
+    vi.mocked(runtime.ended).mockResolvedValue(false);
+    vi.mocked(runtime.stop).mockRejectedValueOnce(new Error('transient stop failure'));
+    await expect(host.cancel(request.projectId, request.attemptId)).rejects.toThrow(
+      'containment_failed',
+    );
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const count = vi.mocked(runtime.stop).mock.calls.length;
+      await host.revalidate();
+      expect(runtime.stop).toHaveBeenCalledTimes(count);
+      const delay = Math.min(300_000, 1000 * 2 ** attempt);
+      time += delay;
+      await host.revalidate();
+      expect(runtime.stop).toHaveBeenCalledTimes(count + 1);
+      expect((await host.status(request.projectId, request.attemptId)).ended).toBe(false);
+      expect(runtime.remove).not.toHaveBeenCalled();
+    }
+    vi.mocked(runtime.stop).mockImplementation(async () => {
+      vi.mocked(runtime.ended).mockResolvedValue(true);
+    });
+    time += 300_000;
+    await host.revalidate();
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      ended: true,
+      phase: 'failed',
+      cleaned: true,
+    });
+    expect(runtime.renew).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps admission and receipts protected while stop and termination proof keep failing', async () => {
+    let time = 0;
+    const { runtime, persist } = fixture(() => time);
+    const receipts = { save: vi.fn(async () => {}), load: vi.fn(async () => undefined) };
+    const host = new ProtectedBuildHost(
+      runtime,
+      persist,
+      () => time,
+      receipts,
+      () => {},
+    );
+    await host.begin(request);
+    vi.mocked(runtime.stop).mockRejectedValue(new Error('stop unavailable'));
+    vi.mocked(runtime.ended).mockRejectedValue(new Error('proof unavailable'));
+    await expect(host.cancel(request.projectId, request.attemptId)).rejects.toThrow(
+      'containment_failed',
+    );
+    time = 1000;
+    await expect(host.revalidate()).rejects.toThrow('containment_failed');
+    expect(receipts.save).not.toHaveBeenCalled();
+    expect(runtime.remove).not.toHaveBeenCalled();
+    expect(await host.execute({ operation: 'slot' })).toMatchObject({ idle: false });
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'stopping',
+      ended: false,
+    });
+  });
+
+  it('publishes terminal proof despite denial failure while keeping cleanup pending', async () => {
+    const { host, runtime } = fixture();
+    await host.begin(request);
+    vi.mocked(runtime.status).mockResolvedValue('succeeded');
+    vi.mocked(runtime.deny).mockRejectedValue(new Error('nft unavailable'));
+    vi.mocked(runtime.remove).mockRejectedValue(new Error('cleanup denied'));
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'succeeded',
+      ended: true,
+    });
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(runtime.ended).toHaveBeenCalledOnce();
+    expect(runtime.remove).toHaveBeenCalledOnce();
+  });
+
+  it('retries an interrupted stop immediately after restart without renewing authority', async () => {
+    const { runtime, persist } = fixture();
+    vi.mocked(runtime.deny).mockRejectedValue(new Error('nft unavailable'));
+    vi.mocked(runtime.remove).mockRejectedValue(new Error('cleanup pending'));
+    const host = new ProtectedBuildHost(
+      runtime,
+      persist,
+      () => 0,
+      undefined,
+      () => {},
+    );
+    await host.restore({ request, phase: 'stopping', ended: false });
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(runtime.renew).not.toHaveBeenCalled();
+    expect(await host.status(request.projectId, request.attemptId)).toMatchObject({
+      phase: 'failed',
+      ended: true,
+    });
+  });
+});
