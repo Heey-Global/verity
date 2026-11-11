@@ -89,8 +89,8 @@ function renderCard(
   onOpen?: () => void,
   expanded = false,
   unread: ReadonlySet<string> = new Set(),
-  sorting = false,
   onMove = jest.fn(),
+  { sortable = true, reordering = false } = {},
 ) {
   const onToggle = jest.fn();
   render(
@@ -101,10 +101,9 @@ function renderCard(
       unread={unread}
       reorder={{ reportCompactHeight: jest.fn() } as unknown as ProjectReorderController}
       renderedOrder={['before', item.id, 'after']}
-      sorting={sorting}
       onMove={onMove}
-      sortable
-      reordering={false}
+      sortable={sortable}
+      reordering={reordering}
       expanded={expanded}
       onOpen={onOpen}
       onToggle={onToggle}
@@ -190,34 +189,55 @@ describe('project card facts', () => {
 });
 
 describe('project card', () => {
-  it('offers a handle only in sort mode and moves through its accessibility actions', () => {
+  // A held press on the card is the only way in: no separate sort mode, so the
+  // drag target must stay registered while the card is at rest.
+  it('registers the card as a drag target and still opens on a tap', () => {
     const onOpen = jest.fn();
-    const onMove = jest.fn();
-    renderCard(group([]), onOpen, false, new Set(), true, onMove);
-    const handle = screen.getByRole('adjustable', { name: 'Move website' });
+    renderCard(group([]), onOpen);
     expect(jest.mocked(useProjectRowDrag)).toHaveBeenLastCalledWith(
       expect.objectContaining({ enabled: true }),
     );
-    fireEvent(handle, 'accessibilityAction', { nativeEvent: { actionName: 'increment' } });
-    expect(onMove).toHaveBeenLastCalledWith(['p1', 'before', 'after']);
-    fireEvent(handle, 'accessibilityAction', { nativeEvent: { actionName: 'decrement' } });
-    expect(onMove).toHaveBeenLastCalledWith(['before', 'after', 'p1']);
+    expect(screen.queryByTestId('project-card-handle-p1')).toBeNull();
     fireEvent.press(screen.getByLabelText(/^website,/));
-    expect(onOpen).not.toHaveBeenCalled();
+    expect(onOpen).toHaveBeenCalled();
   });
 
-  it('does not register a project drag target outside sort mode', () => {
-    renderCard(group([]), jest.fn());
-    expect(screen.queryByRole('adjustable')).toBeNull();
+  it('leaves a card that cannot move out of the drag', () => {
+    renderCard(group([]), jest.fn(), false, new Set(), jest.fn(), { sortable: false });
     expect(jest.mocked(useProjectRowDrag)).toHaveBeenLastCalledWith(
       expect.objectContaining({ enabled: false }),
     );
+    expect(screen.getByLabelText(/^website,/).props.accessibilityActions).toEqual([]);
   });
 
-  it('does not toggle an in-place group while sorting', () => {
-    const { onToggle } = renderCard(group([]), undefined, false, new Set(), true);
-    fireEvent.press(screen.getByLabelText(/^website,/));
+  it('swaps the chevron for a handle and ignores taps while a card moves', () => {
+    const onOpen = jest.fn();
+    renderCard(group([]), onOpen, false, new Set(), jest.fn(), { reordering: true });
+    expect(screen.getByTestId('project-card-handle-p1')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Move website'));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('neither toggles an in-place group nor moves it while a card moves', () => {
+    const onMove = jest.fn();
+    const { onToggle } = renderCard(group([]), undefined, false, new Set(), onMove, {
+      reordering: true,
+    });
+    const card = screen.getByLabelText('Move website');
+    fireEvent.press(card);
+    fireEvent(card, 'accessibilityAction', { nativeEvent: { actionName: 'moveUp' } });
     expect(onToggle).not.toHaveBeenCalled();
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it('moves one slot at a time through accessibility actions', () => {
+    const onMove = jest.fn();
+    renderCard(group([]), jest.fn(), false, new Set(), onMove);
+    const card = screen.getByLabelText(/^website,/);
+    fireEvent(card, 'accessibilityAction', { nativeEvent: { actionName: 'moveUp' } });
+    expect(onMove).toHaveBeenLastCalledWith(['p1', 'before', 'after']);
+    fireEvent(card, 'accessibilityAction', { nativeEvent: { actionName: 'moveDown' } });
+    expect(onMove).toHaveBeenLastCalledWith(['before', 'after', 'p1']);
   });
 
   it('opens the project page instead of listing sessions', () => {

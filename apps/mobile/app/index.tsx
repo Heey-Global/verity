@@ -146,7 +146,7 @@ import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
-import { Button, useConfirm } from '../components/ui';
+import { useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
 import { deleteSessionRequest } from '../lib/deleteSessionRequest';
 
@@ -394,7 +394,6 @@ function SessionList({ client }: { client: VerityClient }) {
     sessions,
   ]);
   const newDesign = useNewDesign();
-  const [sortingProjects, setSortingProjects] = useState(false);
   // Retain a dropped order until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
@@ -463,7 +462,7 @@ function SessionList({ client }: { client: VerityClient }) {
   );
   const reorder = useProjectReorder({
     order: liveActiveGroupIds,
-    sortable: newDesign && !sortingProjects ? [] : sortableGroupIds,
+    sortable: sortableGroupIds,
     onDrop: onDropProject,
     sessionOrders,
     onDropSession,
@@ -704,10 +703,7 @@ function SessionList({ client }: { client: VerityClient }) {
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const [homeTab, setHomeTab] = useState<HomeTab>('home');
   useEffect(() => {
-    if (!newDesign || homeTab !== 'projects') {
-      reorder.cancel();
-      setSortingProjects(false);
-    }
+    if (!newDesign || homeTab !== 'projects') reorder.cancel();
   }, [newDesign, homeTab, reorder.cancel]);
   // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
   const homeShowsVerity = newDesign && !wide && homeTab === 'home';
@@ -880,9 +876,8 @@ function SessionList({ client }: { client: VerityClient }) {
             layoutRevision={overviewLayoutRevision}
             reorder={reorder}
             renderedOrder={activeGroupIds}
-            sortable={sortingProjects && isReorderableGroup(item)}
+            sortable={isReorderableGroup(item)}
             sortableIds={sortableGroupIds}
-            sorting={sortingProjects}
             onMove={onDropProject}
             floating={floating}
             reordering={draggingAnything}
@@ -932,7 +927,6 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [
       activeGroupIds,
-      sortingProjects,
       sortableGroupIds,
       onDropProject,
       overviewLayoutRevision,
@@ -1061,20 +1055,6 @@ function SessionList({ client }: { client: VerityClient }) {
       {error && sessions.length > 0 ? <StaleBanner message={error} onRetry={refresh} /> : null}
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
-      ) : null}
-      {newDesign && (sortingProjects || sortableGroupIds.length > 1) ? (
-        <View style={styles.projectSortToolbar}>
-          <Button
-            label={sortingProjects ? 'Done' : 'Sort'}
-            accessibilityLabel={sortingProjects ? 'Finish sorting projects' : 'Sort projects'}
-            variant="text"
-            size="small"
-            onPress={() => {
-              reorder.cancel();
-              setSortingProjects((current) => !current);
-            }}
-          />
-        </View>
       ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
@@ -2367,7 +2347,6 @@ function CenteredMessage({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  projectSortToolbar: { alignItems: 'flex-end', paddingHorizontal: theme.spacing.lg },
   flex: {
     flex: 1,
     backgroundColor: theme.colors.background,
