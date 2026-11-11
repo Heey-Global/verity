@@ -1,4 +1,11 @@
 import { DockerError } from './docker.js';
+import { EventEmitter } from 'node:events';
+import WebSocket from 'ws';
+import {
+  UplinkControlClient,
+  DEMAND_CHECK_TIMEOUT_MS,
+  RECONNECT_CAPACITY_MS,
+} from './uplink-control-client.js';
 import {
   STANDARD_MOUNTS,
   standardMountBind,
@@ -11,7 +18,7 @@ import type { EventStore, PublicPreviewShareRecord } from '@verity/store';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ContainerInspect, DockerClient } from './docker.js';
 import { sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
 import {
@@ -124,7 +131,7 @@ function fixture(
       sessionSecret: 's'.repeat(32),
       expiresAt: new Date(Date.UTC(2030, 0, 1) + input.durationSeconds * 1000),
     })),
-    remove: vi.fn(async () => undefined),
+    remove: vi.fn<(shareId: string) => Promise<void>>(async () => undefined),
   };
   const resolveConnectorImage = vi.fn<() => Promise<string | undefined>>(async () => digest);
   const isDevServerRunning = vi.fn(async () => true);
@@ -3036,5 +3043,281 @@ describe('protected preview ingress availability', () => {
     expect(f.edge.remove).toHaveBeenCalledWith(f.record.id);
     expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
     expect(f.docker.createContainer).not.toHaveBeenCalled();
+  });
+});
+
+// Exercise the callback used by embedded.ts with the real client and manager:
+// isolated reconnect mocks cannot detect an irreversible remote removal.
+class ShareControlSocket extends EventEmitter {
+  readyState: number = WebSocket.CONNECTING;
+  sent: { type: string; shareId?: string; requestId?: string }[] = [];
+  ping = vi.fn();
+  close = vi.fn((code: number, reason = '') => {
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close', code, Buffer.from(reason));
+  });
+  terminate = vi.fn(() => this.close(1006));
+  send(raw: string): void {
+    const frame = JSON.parse(raw) as (typeof this.sent)[number];
+    this.sent.push(frame);
+    if (frame.type === 'share.remove') {
+      queueMicrotask(() => this.message({ ...frame, type: 'share.removed' }));
+    }
+  }
+  message(frame: unknown): void {
+    this.emit('message', Buffer.from(JSON.stringify(frame)));
+  }
+  admit(leaseMs = 600_000, features = ['sharing']): void {
+    this.readyState = WebSocket.OPEN;
+    this.emit('open');
+    this.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features,
+      capabilities: ['remote-control-v1'],
+      channels: ['http', 'ws', 'remote'],
+      handle: Buffer.alloc(16, 7).toString('base64url'),
+      leaseUntil: new Date(Date.now() + leaseMs).toISOString(),
+    });
+  }
+}
+
+function sharingRecoveryFixture(remote = false) {
+  const f = fixture();
+  const current = retainShare(f, { connectorContainerId: 'connector-id' });
+  const sockets: ShareControlSocket[] = [];
+  const settings = {
+    uplinkSubscriptionKey: 'subscription-fixture',
+    uplinkInstallationId: 'installation-1',
+    premiumRemoteAccessEnabled: remote,
+  };
+  const store = {
+    ...f.store,
+    getVeritySettings: vi.fn(async () => settings),
+    updateVeritySettings: vi.fn(async () => settings),
+    addPendingUplinkShareRemoval: vi.fn(async () => undefined),
+    listPendingUplinkShareRemovals: vi.fn(async () => [] as string[]),
+    deletePendingUplinkShareRemoval: vi.fn(async () => undefined),
+  };
+  const disabled = vi.fn((reason: string) => f.manager.disableAll(reason));
+  const client = new UplinkControlClient({
+    url: 'wss://uplink.example/control',
+    store: store as unknown as EventStore & typeof store,
+    serverVersion: 'test',
+    offerRemoteControl: remote,
+    reserveRemoteConnector: async () => 'unavailable',
+    restoreShareIds: async () =>
+      (await store.listPublicPreviewShares())
+        .filter((share) => share.state === 'active' && share.expiresAt.getTime() > Date.now())
+        .map((share) => share.id),
+    onFeaturesDisabled: disabled,
+    onShareExpired: (id) => f.manager.finishExpiredByUplink(id),
+    webSocketFactory: () => {
+      const socket = new ShareControlSocket();
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+  });
+  f.edge.remove.mockImplementation((id) => client.remove(id));
+  f.edge.isAvailable.mockImplementation(() => client.isAvailable());
+  return { ...f, current, sockets, client, store, disabled };
+}
+
+async function settleControl(): Promise<void> {
+  for (let index = 0; index < 100; index += 1) await Promise.resolve();
+}
+
+describe('public share recovery through Uplink control interruptions', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00Z'));
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    'disconnect',
+    'heartbeat',
+    'lease',
+    'offline lease',
+    'capacity',
+    'lease_expired',
+    'internal',
+    'displaced',
+    'settings read',
+    'welcome persistence',
+    'rights check',
+    'restart',
+    'initial handshake',
+  ] as const)(
+    'retains the same live share after %s and recovers a missing connector',
+    async (interruption) => {
+      const f = sharingRecoveryFixture(interruption === 'offline lease');
+      const original = { ...f.current() };
+      try {
+        f.client.start();
+        await settleControl();
+        if (interruption !== 'initial handshake') {
+          f.sockets[0]!.admit(
+            interruption === 'lease' || interruption === 'offline lease' ? 10_000 : 600_000,
+            interruption === 'offline lease' ? ['sharing', 'remote-control'] : ['sharing'],
+          );
+          await settleControl();
+          expect(f.client.isAvailable()).toBe(true);
+        }
+        if (interruption === 'heartbeat') await vi.advanceTimersByTimeAsync(60_000);
+        else if (interruption === 'lease') await vi.advanceTimersByTimeAsync(10_000);
+        else if (interruption === 'restart') {
+          await f.client.stop();
+          f.client.start();
+        } else if (interruption === 'capacity')
+          f.sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
+        else if (
+          interruption === 'lease_expired' ||
+          interruption === 'internal' ||
+          interruption === 'displaced'
+        )
+          f.sockets[0]!.message({ type: 'revoke', reason: interruption });
+        else if (interruption === 'initial handshake')
+          await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
+        else {
+          if (interruption === 'settings read')
+            f.store.getVeritySettings.mockRejectedValueOnce(
+              new Error('storage temporarily unavailable'),
+            );
+          f.sockets[0]!.close(1006);
+        }
+        await settleControl();
+        expect(f.client.isAvailable()).toBe(false);
+        expect(f.disabled).not.toHaveBeenCalled();
+        expect(f.current()).toEqual(original);
+        expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+        if (interruption === 'rights check') {
+          const checking = f.client.checkEntitlements();
+          const checked = expect(checking).resolves.toMatchObject({ sharing: 'ready' });
+          await vi.advanceTimersByTimeAsync(0);
+          f.sockets.at(-1)!.admit();
+          await checked;
+        } else {
+          await vi.advanceTimersByTimeAsync(
+            interruption === 'capacity'
+              ? RECONNECT_CAPACITY_MS
+              : interruption === 'offline lease'
+                ? 25_000
+                : 10_000,
+          );
+          if (interruption === 'welcome persistence') {
+            f.store.getVeritySettings.mockRejectedValueOnce(
+              new Error('storage temporarily unavailable'),
+            );
+            f.sockets.at(-1)!.admit();
+            await settleControl();
+            await vi.advanceTimersByTimeAsync(5000);
+          }
+          f.sockets.at(-1)!.admit();
+          await settleControl();
+        }
+        expect(f.sockets.length).toBeGreaterThan(1);
+        expect(f.client.isAvailable()).toBe(true);
+        expect(f.disabled).not.toHaveBeenCalled();
+        expect(f.current()).toEqual(original);
+        expect(f.docker.removeContainer).not.toHaveBeenCalled();
+        expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+        expect(
+          f.sockets
+            .flatMap((socket) => socket.sent)
+            .filter((frame) => frame.type === 'share.remove'),
+        ).toEqual([]);
+
+        // A replacement must use the existing binding, never mint a new URL/PIN.
+        f.docker.inspectContainer.mockImplementation(async (id) => {
+          if (id === 'connector-id') throw new Error('connector missing');
+          return id === project.containerName ? f.inspect : { ...f.inspect, running: true };
+        });
+        f.docker.createContainer.mockResolvedValue({ id: 'replacement-id', warnings: [] });
+        f.inspect.running = false;
+        await f.manager.reconcile();
+        expect(f.current()).toMatchObject({
+          ...original,
+          state: 'active',
+          connectorContainerId: 'replacement-id',
+        });
+        expect(f.docker.createContainer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            env: expect.arrayContaining([
+              `VERITY_PREVIEW_SHARE_ID=${original.id}`,
+              `VERITY_PREVIEW_EDGE_URL=${original.edgeUrl}`,
+              `VERITY_PREVIEW_CONNECTOR_TOKEN=${original.connectorToken}`,
+              'VERITY_PREVIEW_OFFLINE=1',
+            ]),
+          }),
+        );
+        f.inspect.running = true;
+        await f.manager.reconcile();
+        expect(f.docker.createContainer).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            env: expect.arrayContaining([
+              `VERITY_PREVIEW_SHARE_ID=${original.id}`,
+              `VERITY_PREVIEW_TARGET_ORIGIN=http://${project.containerName}:${original.targetPort}`,
+            ]),
+          }),
+        );
+        expect(f.current()).toMatchObject({ ...original, connectorContainerId: 'replacement-id' });
+        expect(f.edge.create).not.toHaveBeenCalled();
+        expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+      } finally {
+        await f.client.stop();
+      }
+    },
+  );
+
+  it.each([
+    'user deletion',
+    'share expiry',
+    'entitlement withdrawal',
+    'subscription revocation',
+    'protected network',
+  ] as const)('still removes a share after %s', async (reason) => {
+    const f = sharingRecoveryFixture();
+    try {
+      f.client.start();
+      await settleControl();
+      f.sockets[0]!.admit();
+      await settleControl();
+      if (reason === 'user deletion') await f.manager.stop(f.record.id);
+      else if (reason === 'share expiry') {
+        f.sockets[0]!.message({ type: 'share.expired', shareId: f.record.id });
+        await settleControl();
+      } else if (reason === 'protected network') {
+        f.inspect.networks = { 'verity-egress-protected': {} };
+        await f.manager.reconcile();
+      } else {
+        f.sockets[0]!.message(
+          reason === 'subscription revocation'
+            ? { type: 'revoke', reason: 'revoked' }
+            : {
+                type: 'renewed',
+                features: [],
+                leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+              },
+        );
+        await settleControl();
+      }
+      expect(f.current().state).toBe(
+        reason === 'share expiry'
+          ? 'expired'
+          : reason === 'subscription revocation'
+            ? 'revoking'
+            : 'revoked',
+      );
+      expect(f.docker.removeContainer).toHaveBeenCalledWith('connector-id');
+      if (reason !== 'share expiry')
+        expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith(f.record.id);
+    } finally {
+      await f.client.stop();
+    }
   });
 });

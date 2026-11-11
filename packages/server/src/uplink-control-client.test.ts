@@ -312,6 +312,7 @@ describe('UplinkControlClient', () => {
       fixture.client.refreshCredentials();
       await vi.advanceTimersByTimeAsync(1250);
       replacement.open();
+      replacement.close.mockClear();
       replacement.message(welcome);
       await flush();
       expect(fixture.client.isAvailable()).toBe(false);
@@ -1096,7 +1097,7 @@ describe('UplinkControlClient', () => {
       decisionExpiresAt: Date.now() + 15_000,
     });
     await flush();
-    expect(sockets[1]!.terminate).toHaveBeenCalledOnce();
+    expect(sockets[1]!.close).toHaveBeenCalledWith(1002, 'invalid control message');
     expect(client.remoteControlDescriptor().enabled).toBe(false);
     await client.stop();
   });
@@ -1216,17 +1217,18 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('terminates an expired lease without waiting for a close handshake or redialling', async () => {
+  it('bounds a stalled close handshake while recovering an expired control lease', async () => {
     vi.useFakeTimers();
     const { client, socket, socketFactory } = await welcomed(setup(), 10000);
     socket.close.mockImplementation(() => {
       socket.readyState = WebSocket.CLOSING;
     });
     await vi.advanceTimersByTimeAsync(10000);
-    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledWith(4000, 'lease expired');
     expect(client.isAvailable()).toBe(false);
-    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
-    expect(socketFactory).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
     await client.stop();
   });
 
@@ -1302,9 +1304,8 @@ describe('UplinkControlClient', () => {
 
   /**
    * The two reject classes differ only in whether the installation may try
-   * again, and the difference is invisible in a single connection: both close
-   * the socket and both disable sharing. What separates them is what happens
-   * on the timer afterwards, which is what these two guards watch.
+   * again: both close the socket, but only identity refusal revokes shares.
+   * The timer afterwards distinguishes recovery from a terminal refusal.
    *
    * Getting this wrong is silent in both directions. Treating a capacity
    * refusal as terminal strands the installation until someone restarts it,
@@ -1313,7 +1314,7 @@ describe('UplinkControlClient', () => {
    * against an Uplink that allocates per connection, each of those dials costs
    * something.
    */
-  it('bounds a startup capacity refusal without keeping a background connection', async () => {
+  it('retries a startup capacity refusal while persisted shares need recovery', async () => {
     vi.useFakeTimers();
     const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
@@ -1322,8 +1323,8 @@ describe('UplinkControlClient', () => {
     sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
     await flush();
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2);
-    expect(socketFactory).toHaveBeenCalledOnce();
-    expect(client.diagnostics().control).toBe('idle');
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
+    expect(client.diagnostics().control).toBe('reconnecting');
     await client.stop();
   });
 
@@ -1558,7 +1559,7 @@ describe('UplinkControlClient', () => {
     await flush();
 
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-    expect(socketFactory).toHaveBeenCalledOnce();
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
     await client.stop();
   });
 
@@ -1767,7 +1768,7 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(socket.close).toHaveBeenCalledWith(1011, 'local welcome processing failed');
     expect(client.isAvailable()).toBe(false);
-    expect(disabled).toHaveBeenCalledWith('failed to accept Uplink welcome');
+    expect(disabled).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledWith(
       expect.objectContaining({ error: expect.any(Error), frameType: 'welcome' }),
       'failed to accept Uplink welcome',
@@ -2298,7 +2299,7 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(store.getVeritySettings).toHaveBeenCalledOnce();
     expect(socket.sent).toEqual([]);
-    expect(disabled).toHaveBeenCalledWith('encrypted Uplink credentials are unavailable');
+    expect(disabled).not.toHaveBeenCalled();
     await client.stop();
   });
 
@@ -2715,8 +2716,8 @@ describe('UplinkControlClient', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await flush();
 
-    expect(socket.terminate).toHaveBeenCalledOnce();
-    expect(disabled).toHaveBeenCalledWith('Uplink lease expired');
+    expect(socket.close).toHaveBeenCalledWith(4000, 'lease expired');
+    expect(disabled).not.toHaveBeenCalled();
     expect(client.isAvailable()).toBe(false);
     await client.stop();
   });
@@ -2906,7 +2907,7 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
-  it('stops restored sharing and queues revocation after a stalled initial handshake', async () => {
+  it('retains restored sharing without queuing revocation after a stalled initial handshake', async () => {
     const f = setup({
       restoreShareIds: async () => ['restored'],
       premiumRemoteAccessEnabled: false,
@@ -2919,12 +2920,12 @@ describe('Uplink connection demand', () => {
     f.client.start();
     await flush();
     await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
-    expect(shutdown).toHaveBeenCalled();
-    expect(f.disabled).toHaveBeenCalled();
-    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('restored');
-    expect(f.client.diagnostics().control).toBe('idle');
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
-    expect(f.socketFactory).toHaveBeenCalledOnce();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+    expect(f.client.diagnostics().control).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS);
+    expect(f.socketFactory.mock.calls.length).toBeGreaterThan(1);
     await f.client.stop();
   });
 
@@ -2941,30 +2942,66 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
-  it('fails closed when restoring sharing demand fails', async () => {
-    const f = setup({
-      restoreShareIds: async () => {
-        throw new Error('storage unavailable');
-      },
-    });
+  it('retries restoring sharing demand without deleting shares when storage fails', async () => {
+    const restoreShareIds = vi
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValue(['restored']);
+    const f = setup({ restoreShareIds });
     const shutdown = vi.fn();
     f.client.onSharingDisabled(shutdown);
     f.client.start();
     await flush();
-    expect(f.disabled).toHaveBeenCalled();
-    expect(shutdown).toHaveBeenCalled();
-    expect(f.client.diagnostics().control).toBe('idle');
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(f.client.isAvailable()).toBe(false);
     expect(f.socketFactory).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(restoreShareIds).toHaveBeenCalledTimes(2);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    admit(f.socket);
+    await flush();
+    expect(f.client.isAvailable()).toBe(true);
     await f.client.stop();
   });
 
-  it('reports idle after transport loss clears the last sharing demand', async () => {
-    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
-    f.socket.close(1006, 'lost');
+  it('restores unfinished sharing demand during an explicit rights check', async () => {
+    const restoreShareIds = vi
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValue(['restored']);
+    const f = setup({ restoreShareIds, premiumRemoteAccessEnabled: false });
+    f.client.start();
     await flush();
-    expect(f.client.diagnostics().control).toBe('idle');
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
-    expect(f.socketFactory).toHaveBeenCalledOnce();
+    const checking = f.client.checkEntitlements();
+    const assertion = expect(checking).resolves.toMatchObject({
+      control: 'connected',
+      sharing: 'ready',
+    });
+    await flush();
+    admit(f.socket);
+    await assertion;
+    expect(restoreShareIds).toHaveBeenCalledTimes(2);
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+    await f.client.stop();
+  });
+
+  it('keeps sharing demand after transport loss', async () => {
+    const f = setupReconnecting({ offerRemoteControl: false });
+    f.client.start();
+    await flush();
+    admit(f.sockets[0]!);
+    await flush();
+    f.sockets[0]!.close(1006, 'lost');
+    await flush();
+    expect(f.client.diagnostics().control).toBe('reconnecting');
+    expect(f.disabled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(f.socketFactory).toHaveBeenCalledTimes(2);
+    admit(f.sockets[1]!);
+    await flush();
+    expect(f.client.isAvailable()).toBe(true);
     await f.client.stop();
   });
 

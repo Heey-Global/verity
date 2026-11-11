@@ -957,7 +957,7 @@ export class PreviewShareManager {
     );
   }
 
-  /** Lease/revocation fail-closed path. The Uplink independently removes public
+  /** Confirmed entitlement or policy revocation. The Uplink independently removes public
    * edges; locally, stop every connector immediately even when the control socket
    * is already gone. */
   async disableAll(reason: string): Promise<void> {
