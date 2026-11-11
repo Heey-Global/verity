@@ -1,23 +1,21 @@
 {
   "schema": 1,
-  "version": "1.83.3",
-  "runtime": "1.83.0",
+  "version": "1.89.6",
+  "runtime": "1.89.0",
   "channel": "production",
-  "commit": "12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "tag": "mobile-v1.83.3",
-  "branch": "staging-mobile-v1.83.3-12c1cc5022ca154e1ac3be74fd90738c7db37d1b",
-  "baseline": "mobile-v1.83.0",
-  "group": "f9496f48-e225-438d-a665-5f967ffd45ee",
+  "commit": "479cc2fc38efd8e3b7f023669e5e0ac60d7aa342",
+  "tag": "mobile-v1.89.6",
+  "branch": "staging-mobile-v1.89.6-479cc2fc38efd8e3b7f023669e5e0ac60d7aa342",
+  "baseline": "mobile-v1.89.0",
+  "group": "94f75e69-25a9-49bf-aeae-512774e7ad9a",
   "notes": [
-    "show ongoing recordings on other devices (#2185)",
-    "join online meetings from watched Google calendars (#2167)",
-    "remember confirmed project decisions across chats (#2165)",
-    "restore session repairs and analyze recurring failures (#2168)",
-    "delegate and supervise project assignments (#2171)",
-    "isolate project group selection updates (#2169)",
-    "discover OAuth and complete native/web sign-ins (#2160)",
-    "renew host runtime services independently of builder admission (#2159)",
-    "preserve safe stop and export failure reasons (#2147)",
-    "add elastic memory limits and resilient OOM handling (#2142)"
+    "restore explicit project sorting mode (#2518)",
+    "replace Fable 5.1 with Fable 5.2 (#2514)",
+    "report sandbox update attempts truthfully and back off failed recreates (#2498)",
+    "keep session categories stable across Home and projects (#2487)",
+    "prioritize working status over unread indicators (#2486)",
+    "explain multi-repository session workflows (#2481)",
+    "retain selected recording across reconnects (#2474)",
+    "add independent names and inline profile editing (#2462)"
   ]
 }
