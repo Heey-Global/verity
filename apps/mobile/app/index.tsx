@@ -14,6 +14,7 @@ import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@ve
 import { projectTitle } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
+import { createProjectOrderSaver } from '../lib/projectOrderSaver';
 import { SessionDragSlot } from '../components/SessionDragSlot';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
@@ -145,7 +146,7 @@ import { setHomeShowsVerity } from '../lib/homeVerity';
 import { ProjectCard } from '../components/project/ProjectCard';
 import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
-import { useConfirm } from '../components/ui';
+import { Button, useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
 import { deleteSessionRequest } from '../lib/deleteSessionRequest';
 
@@ -392,7 +393,9 @@ function SessionList({ client }: { client: VerityClient }) {
     projectListState,
     sessions,
   ]);
-  // The order a drop chose, applied until a poll confirms the server has it.
+  const newDesign = useNewDesign();
+  const [sortingProjects, setSortingProjects] = useState(false);
+  // Retain a dropped order until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
   const liveActiveGroups = useMemo(
@@ -411,33 +414,29 @@ function SessionList({ client }: { client: VerityClient }) {
     () => liveActiveGroups.flatMap((group) => (isReorderableGroup(group) ? [group.id] : [])),
     [liveActiveGroups],
   );
-  // Saves run one after another: a second drag may start while the first is
-  // still saving, and two requests in flight could land in either order.
-  const reorderSave = useRef(Promise.resolve());
-  const onDropProject = useCallback(
-    (order: readonly string[]) => {
-      // The drag saw the rows as they were at pickup; a poll since then may have
-      // added or removed a project. Save the live set, in the dropped order, with
-      // anything the drag never saw appended where a new project lands anyway.
-      const dropped = new Set(order);
-      const ids = [
-        ...order.filter((id) => sortableGroupIds.includes(id)),
-        ...sortableGroupIds.filter((id) => !dropped.has(id)),
-      ];
-      if (ids.every((id, i) => id === sortableGroupIds[i])) return;
-      setDragOrder(ids);
-      reorderSave.current = reorderSave.current
-        .then(() => client.reorderProjects(ids))
-        .then(() => refreshProjects())
-        .catch((caught) => {
+  const liveSortableIds = useRef(sortableGroupIds);
+  liveSortableIds.current = sortableGroupIds;
+  const saveProjectOrder = useMemo(
+    () =>
+      createProjectOrderSaver({
+        getOrder: () => liveSortableIds.current,
+        save: (ids) => client.reorderProjects(ids),
+        refresh: refreshProjects,
+        onChange: setDragOrder,
+        onError: (caught) => {
           Alert.alert(
             'Reorder failed',
             caught instanceof VerityApiError ? caught.message : 'Could not save project order.',
           );
-          setDragOrder((current) => (current === ids ? null : current));
-        });
+        },
+      }),
+    [client, refreshProjects],
+  );
+  const onDropProject = useCallback(
+    (order: readonly string[]) => {
+      void saveProjectOrder(order);
     },
-    [client, refreshProjects, sortableGroupIds],
+    [saveProjectOrder],
   );
   const sessionOrders = useMemo(
     () =>
@@ -464,7 +463,7 @@ function SessionList({ client }: { client: VerityClient }) {
   );
   const reorder = useProjectReorder({
     order: liveActiveGroupIds,
-    sortable: sortableGroupIds,
+    sortable: newDesign && !sortingProjects ? [] : sortableGroupIds,
     onDrop: onDropProject,
     sessionOrders,
     onDropSession,
@@ -700,11 +699,16 @@ function SessionList({ client }: { client: VerityClient }) {
   );
   // The new design preview (Settings › This app): Home beside the project list.
   // Off, the overview below renders exactly as it always has.
-  const newDesign = useNewDesign();
   // The project page shown in the wide layout's left column (new design only).
   // On a phone the page is its own route.
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
   const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  useEffect(() => {
+    if (!newDesign || homeTab !== 'projects') {
+      reorder.cancel();
+      setSortingProjects(false);
+    }
+  }, [newDesign, homeTab, reorder.cancel]);
   // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
   const homeShowsVerity = newDesign && !wide && homeTab === 'home';
   useEffect(() => {
@@ -876,10 +880,13 @@ function SessionList({ client }: { client: VerityClient }) {
             layoutRevision={overviewLayoutRevision}
             reorder={reorder}
             renderedOrder={activeGroupIds}
-            sortable={isReorderableGroup(item)}
+            sortable={sortingProjects && isReorderableGroup(item)}
+            sortableIds={sortableGroupIds}
+            sorting={sortingProjects}
+            onMove={onDropProject}
             floating={floating}
             reordering={draggingAnything}
-            expanded={draggingProjectId === null && !collapsed}
+            expanded={!collapsed}
             onOpen={pageId !== undefined ? () => openProject(pageId) : undefined}
             onToggle={() => toggleProjectGroup(item, collapsed)}
             onOpenSession={openSessionFromHome}
@@ -925,6 +932,9 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [
       activeGroupIds,
+      sortingProjects,
+      sortableGroupIds,
+      onDropProject,
       overviewLayoutRevision,
       collapsedOverride,
       toggleProjectGroup,
@@ -1052,6 +1062,20 @@ function SessionList({ client }: { client: VerityClient }) {
       {projectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
+      {newDesign && (sortingProjects || sortableGroupIds.length > 1) ? (
+        <View style={styles.projectSortToolbar}>
+          <Button
+            label={sortingProjects ? 'Done' : 'Sort'}
+            accessibilityLabel={sortingProjects ? 'Finish sorting projects' : 'Sort projects'}
+            variant="text"
+            size="small"
+            onPress={() => {
+              reorder.cancel();
+              setSortingProjects((current) => !current);
+            }}
+          />
+        </View>
+      ) : null}
       <GestureDetector gesture={reorder.gesture}>
         <Reanimated.View
           ref={reorder.hostRef}
@@ -1060,6 +1084,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onLayout={(event) => reorder.onViewportLayout(event.nativeEvent.layout.height)}
         >
           <ProjectOverviewList
+            settleAfterDrag={!newDesign}
             listRef={reorder.listRef}
             onContentSizeChange={reorder.onContentSizeChange}
             onScroll={reorder.onScroll}
@@ -2342,6 +2367,7 @@ function CenteredMessage({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  projectSortToolbar: { alignItems: 'flex-end', paddingHorizontal: theme.spacing.lg },
   flex: {
     flex: 1,
     backgroundColor: theme.colors.background,

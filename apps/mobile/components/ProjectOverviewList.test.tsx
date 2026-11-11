@@ -73,3 +73,11 @@ it('cancels an old unlock when another drag starts during unfolding', () => {
   act(() => jest.advanceTimersByTime(1));
   expect(view.UNSAFE_getByType(FlatList).props.scrollEnabled).toBe(true);
 });
+
+it('unlocks project cards immediately after drop without waiting for an unfold', () => {
+  const view = render(<ProjectOverviewList {...content('a').props} settleAfterDrag={false} />);
+  expect(view.UNSAFE_getByType(FlatList).props.scrollEnabled).toBe(false);
+  view.rerender(<ProjectOverviewList {...content(null).props} settleAfterDrag={false} />);
+  expect(view.UNSAFE_getByType(FlatList).props.scrollEnabled).toBe(true);
+  expect(view.UNSAFE_getByType(RefreshControl).props.enabled).toBe(true);
+});

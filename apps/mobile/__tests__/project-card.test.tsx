@@ -7,12 +7,12 @@
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('../components/useProjectReorder', () => ({
   // Dragging is the classic list's machinery and has its own suite.
-  useProjectRowDrag: () => ({
+  useProjectRowDrag: jest.fn(() => ({
     slotRef: undefined,
     rowRef: undefined,
     handleCallbackRef: undefined,
     style: {},
-  }),
+  })),
 }));
 
 import {
@@ -27,6 +27,7 @@ import { ProjectCard, projectCardFacts, projectCardLine } from '../components/pr
 import { projectGroups } from '../lib/projectGroups';
 import type { ProjectReorderController } from '../components/useProjectReorder';
 import type { SessionProjectGroup } from '../lib/projectGroups';
+import { useProjectRowDrag } from '../components/useProjectReorder';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -88,6 +89,8 @@ function renderCard(
   onOpen?: () => void,
   expanded = false,
   unread: ReadonlySet<string> = new Set(),
+  sorting = false,
+  onMove = jest.fn(),
 ) {
   const onToggle = jest.fn();
   render(
@@ -97,7 +100,9 @@ function renderCard(
       now={Date.now()}
       unread={unread}
       reorder={{ reportCompactHeight: jest.fn() } as unknown as ProjectReorderController}
-      renderedOrder={[item.id]}
+      renderedOrder={['before', item.id, 'after']}
+      sorting={sorting}
+      onMove={onMove}
       sortable
       reordering={false}
       expanded={expanded}
@@ -185,6 +190,36 @@ describe('project card facts', () => {
 });
 
 describe('project card', () => {
+  it('offers a handle only in sort mode and moves through its accessibility actions', () => {
+    const onOpen = jest.fn();
+    const onMove = jest.fn();
+    renderCard(group([]), onOpen, false, new Set(), true, onMove);
+    const handle = screen.getByRole('adjustable', { name: 'Move website' });
+    expect(jest.mocked(useProjectRowDrag)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
+    fireEvent(handle, 'accessibilityAction', { nativeEvent: { actionName: 'increment' } });
+    expect(onMove).toHaveBeenLastCalledWith(['p1', 'before', 'after']);
+    fireEvent(handle, 'accessibilityAction', { nativeEvent: { actionName: 'decrement' } });
+    expect(onMove).toHaveBeenLastCalledWith(['before', 'after', 'p1']);
+    fireEvent.press(screen.getByLabelText(/^website,/));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('does not register a project drag target outside sort mode', () => {
+    renderCard(group([]), jest.fn());
+    expect(screen.queryByRole('adjustable')).toBeNull();
+    expect(jest.mocked(useProjectRowDrag)).toHaveBeenLastCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+  });
+
+  it('does not toggle an in-place group while sorting', () => {
+    const { onToggle } = renderCard(group([]), undefined, false, new Set(), true);
+    fireEvent.press(screen.getByLabelText(/^website,/));
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
   it('opens the project page instead of listing sessions', () => {
     const onOpen = jest.fn();
     renderCard(group([ask('a'), session('b', { status: 'running' })]), onOpen);
