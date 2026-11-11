@@ -86,3 +86,17 @@ export type ProjectDrag = {
   order: readonly string[];
   range: SortableRange;
 };
+
+/** Reconcile a drop or queued save with projects added or removed since pickup. */
+export function reconcileProjectOrder(order: readonly string[], live: readonly string[]): string[] {
+  const allowed = new Set(live);
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const id of [...order, ...live]) {
+    if (allowed.has(id) && !seen.has(id)) {
+      seen.add(id);
+      next.push(id);
+    }
+  }
+  return next;
+}

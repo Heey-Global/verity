@@ -8,9 +8,11 @@ import { Icon } from '../Icon';
 import { CountBadge, StatusTag, Text, TileMark } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
+import { ReorderHandle } from '../ui/ReorderHandle';
 import { useProjectRowDrag, type ProjectReorderController } from '../useProjectReorder';
 import { WorkingDot } from '../WorkingDot';
 import type { SessionProjectGroup } from '../../lib/projectGroups';
+import { moveProjectIdToIndex, projectSortableRange } from '../../lib/projectReorder';
 import { projectInboxItems } from './ProjectPage';
 import { isActive, ProjectWork } from './ProjectWork';
 
@@ -91,8 +93,7 @@ function cardMark(facts: ProjectCardFacts): 'working' | 'unread' | undefined {
 /**
  * A project in the new design's project list (Settings › This app): its name,
  * what waits and what runs, and its health — never its sessions, which live on
- * the project page a tap opens. A held press picks the card up to reorder, the
- * same gesture as the classic list.
+ * the project page a tap opens. Sorting exposes a dedicated drag handle.
  *
  * Groups without a project page (sessions outside any project, Verity Control)
  * open in place instead and list their sessions as the page's work list does.
@@ -105,6 +106,9 @@ export function ProjectCard({
   reorder,
   renderedOrder,
   sortable,
+  sortableIds = renderedOrder,
+  sorting = false,
+  onMove,
   floating = false,
   reordering,
   expanded,
@@ -122,6 +126,9 @@ export function ProjectCard({
   reorder: ProjectReorderController;
   renderedOrder: readonly string[];
   sortable: boolean;
+  sortableIds?: readonly string[];
+  sorting?: boolean;
+  onMove?: (order: readonly string[]) => void;
   floating?: boolean;
   reordering: boolean;
   /** For a group that opens in place: whether its sessions show. */
@@ -138,15 +145,16 @@ export function ProjectCard({
     id: group.id,
     reorder,
     renderedOrder,
-    enabled: sortable,
+    enabled: sortable && sorting,
     floating,
   });
+  const index = renderedOrder.indexOf(group.id);
+  const range = projectSortableRange(renderedOrder, sortableIds, group.id);
   const facts = projectCardFacts(group, now, unread);
   const mark = cardMark(facts);
   const inPlace = onOpen === undefined;
   const onLayout = (event: LayoutChangeEvent) => {
-    // The pitch the drag moves rows by: the folded card (its head plus the
-    // card's top and bottom border) and the list's separator below it.
+    // Include the card borders and list separator in the distance between slots.
     if (!floating)
       reorder.reportCompactHeight(
         group.id,
@@ -162,16 +170,20 @@ export function ProjectCard({
         testID={`project-card-${group.id}`}
       >
         <Pressable
-          ref={handleCallbackRef}
           collapsable={false}
           onLayout={onLayout}
-          onPress={reordering ? undefined : (onOpen ?? onToggle)}
+          onPress={reordering || sorting ? undefined : (onOpen ?? onToggle)}
+          accessible={!sorting}
           accessibilityRole="button"
           accessibilityLabel={
             reordering ? `Move ${group.title}` : `${group.title}, ${projectCardLine(group, facts)}`
           }
           accessibilityHint={
-            inPlace ? 'Shows its sessions. Hold to reorder.' : 'Opens the project. Hold to reorder.'
+            sorting
+              ? 'Use the handle to reorder.'
+              : inPlace
+                ? 'Shows its sessions.'
+                : 'Opens the project.'
           }
           accessibilityState={inPlace ? { expanded } : {}}
           style={({ pressed }) => [styles.head, pressed ? styles.pressed : null]}
@@ -226,11 +238,26 @@ export function ProjectCard({
               testID={`project-card-waiting-${group.id}`}
             />
           ) : null}
-          <Icon
-            name={inPlace ? (expanded ? 'chevron-down' : 'chevron-right') : 'chevron-right'}
-            size={18}
-            color={theme.colors.textMuted}
-          />
+          {sorting ? (
+            sortable ? (
+              <ReorderHandle
+                ref={handleCallbackRef}
+                label={`Move ${group.title}`}
+                canMoveUp={index > range.min}
+                canMoveDown={index < range.max}
+                disabled={reordering}
+                onMove={(direction) =>
+                  onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction))
+                }
+              />
+            ) : null
+          ) : (
+            <Icon
+              name={inPlace ? (expanded ? 'chevron-down' : 'chevron-right') : 'chevron-right'}
+              size={18}
+              color={theme.colors.textMuted}
+            />
+          )}
         </Pressable>
         {inPlace && expanded && !floating ? (
           <View style={styles.sessions}>

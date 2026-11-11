@@ -440,6 +440,7 @@ export function useProjectReorder({
   );
   return useMemo(
     () => ({
+      cancel,
       drag,
       hostRef,
       listRef,
@@ -460,6 +461,7 @@ export function useProjectReorder({
     }),
     [
       active,
+      cancel,
       drag,
       hostRef,
       listRef,
