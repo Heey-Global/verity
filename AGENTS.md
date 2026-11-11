@@ -16,7 +16,11 @@ use the scoped local checks below when the impact is localized:
 
 ## Dependencies
 
-Install dependencies with `npm install`. The root `.npmrc` refuses to resolve
+Install dependencies with `npm install`. Inside a Verity session worktree, run
+`verity dependencies install` instead: it prepares each dependency version once
+per project and reuses it across sessions, where `npm install` gives every
+session its own full installation. Use `npm install <pkg>` there only to change
+dependencies, then run `verity dependencies install`. The root `.npmrc` refuses to resolve
 any npm release younger than three days, which is the same window Renovate
 applies through the org preset `renovate.json` extends. `npm ci` is unaffected —
 it installs what the lockfile already pins — so CI and image builds do not see
