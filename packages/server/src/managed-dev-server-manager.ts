@@ -190,6 +190,8 @@ export class ManagedDevServerManager {
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
   private activeProjects = new Set<string>();
+  /** Sessions with such an instance; storage collection leaves their worktrees alone. */
+  private activeSessions = new Set<string>();
   private readonly deletingSessions = new Set<string>();
   private readonly pendingLinkEnds = new Map<string, string | undefined>();
   private readonly pendingUnpublish = new Map<string, ManagedDevServerInstanceRecord>();
@@ -205,6 +207,16 @@ export class ManagedDevServerManager {
   /** Running entries keep the sandbox awake, as an active share does (ADR 0020). */
   hasRunningServers(projectId: string): boolean {
     return this.activeProjects.has(projectId);
+  }
+
+  /** Whether a server this session started should be running in its worktree. */
+  hasRunningSessionServers(sessionId: string): boolean {
+    return this.activeSessions.has(sessionId);
+  }
+
+  private markActive(projectId: string, sessionId: string): void {
+    this.activeProjects.add(projectId);
+    this.activeSessions.add(sessionId);
   }
 
   /** Network ports reserved for instances; the ad hoc share allocator skips them. */
@@ -820,7 +832,7 @@ export class ManagedDevServerManager {
             : new Date(this.now()),
       });
       await this.assertStartAllowed(sessionId);
-      this.activeProjects.add(project.id);
+      this.markActive(project.id, sessionId);
       void this.options
         .wakeSandbox(project.id, sessionId)
         .catch((error: unknown) =>
@@ -868,7 +880,7 @@ export class ManagedDevServerManager {
       // Already up after a wake: drop the marker so supervision stops relaunching.
       if (instance.detail === WAKING_DETAIL)
         await this.servers.updateInstance(instance.id, { detail: null });
-      this.activeProjects.add(project.id);
+      this.markActive(project.id, sessionId);
       return;
     }
     if (
@@ -960,7 +972,7 @@ export class ManagedDevServerManager {
       });
       return;
     }
-    this.activeProjects.add(project.id);
+    this.markActive(project.id, sessionId);
     await this.servers.updateInstance(instance.id, {
       desired: 'running',
       state: 'starting',
@@ -1182,6 +1194,7 @@ export class ManagedDevServerManager {
     for (const instance of instances)
       byProject.set(instance.projectId, [...(byProject.get(instance.projectId) ?? []), instance]);
     this.activeProjects = new Set(byProject.keys());
+    this.activeSessions = new Set(instances.map((instance) => instance.sessionId));
     for (const [projectId, group] of byProject) {
       try {
         await this.locked(projectId, () => this.superviseProject(projectId, group));

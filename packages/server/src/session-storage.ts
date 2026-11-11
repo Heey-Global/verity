@@ -168,7 +168,9 @@ export class SessionStorage {
     id: string,
     run: () => Promise<T>,
   ) => Promise<{ ran: true; value: T } | { ran: false }>;
-  private blocked: (projectId: string) => boolean = () => true;
+  /** `sessionId` names the session whose worktree a pass would touch; `null`
+   *  asks for the project-wide pass over orphaned registrations. */
+  private blocked: (projectId: string, sessionId: string | null) => boolean = () => true;
   private flight: Promise<void> | undefined;
   private readonly shutdown = new AbortController();
   lastReport?: SessionStorageReport;
@@ -192,7 +194,10 @@ export class SessionStorage {
       gitRoot?: string;
     },
   ) {}
-  bind(claim: NonNullable<SessionStorage['claim']>, blocked: (projectId: string) => boolean): void {
+  bind(
+    claim: NonNullable<SessionStorage['claim']>,
+    blocked: (projectId: string, sessionId: string | null) => boolean,
+  ): void {
     this.claim = claim;
     this.blocked = blocked;
   }
@@ -413,10 +418,11 @@ export class SessionStorage {
     const sessions = await this.deps.listSessions();
     for (const project of projects) {
       if (signal.aborted) return;
-      if (project.kind === 'control_plane' || this.blocked(project.id)) continue;
+      if (project.kind === 'control_plane') continue;
       const owned = sessions.filter((s) => s.projectId === project.id);
       for (const session of owned) {
         if (signal.aborted) return;
+        if (this.blocked(project.id, session.sessionId)) continue;
         const activity = await this.deps.activity(session.sessionId);
         if (activity === null) continue;
         await this.claim(session.sessionId, async () => {
@@ -425,7 +431,7 @@ export class SessionStorage {
               project.id,
               session.sessionId,
               async () => {
-                if (this.blocked(project.id)) return;
+                if (this.blocked(project.id, session.sessionId)) return;
                 const fresh = (await this.deps.listSessions()).find(
                   (s) => s.sessionId === session.sessionId,
                 );
@@ -454,13 +460,13 @@ export class SessionStorage {
         });
       }
       // Orphans are registered Git worktrees, never directory-name guesses.
-      if (!signal.aborted)
+      if (!signal.aborted && !this.blocked(project.id, null))
         try {
           await this.deps.mutate(
             project.id,
             undefined,
             async () => {
-              if (this.blocked(project.id)) return;
+              if (this.blocked(project.id, null)) return;
               await this.deps.withGit(project, async (git) => {
                 const root = resolve(this.deps.root(project));
                 const journal = join(root, '.git', 'verity-storage', 'orphans.json');

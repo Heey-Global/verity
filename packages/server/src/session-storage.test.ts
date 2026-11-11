@@ -398,6 +398,41 @@ describe('safe session storage reclamation', () => {
       expect.arrayContaining([patched, unknown]),
     );
   });
+  // A server or preview in one session used to defer collection for the whole
+  // project, so a project that always had one running never reclaimed anything.
+  it('reclaims an idle session while another session of the project is busy', async () => {
+    const f = fixture();
+    const busy = {
+      ...f.session,
+      sessionId: 'busy',
+      worktree: join(f.root, '.verity-sessions', 'busy'),
+    };
+    const service = new SessionStorage({ ...f.deps, listSessions: async () => [f.session, busy] });
+    const asked: Array<string | null> = [];
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      (_, sessionId) => {
+        asked.push(sessionId);
+        return sessionId === 'busy';
+      },
+    );
+    await service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules'))).toBe(false);
+    expect(asked).toContain('busy');
+    expect(asked).toContain(null);
+  });
+  it('defers the orphan pass while the project holds it', async () => {
+    const f = fixture();
+    f.orphan();
+    f.service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      (_, sessionId) => sessionId === null,
+    );
+    await f.service.runOnce();
+    f.advance();
+    await f.service.runOnce();
+    expect(existsSync(f.path)).toBe(true);
+  });
   it('requires a persistent orphan grace period', async () => {
     const f = fixture();
     f.orphan();

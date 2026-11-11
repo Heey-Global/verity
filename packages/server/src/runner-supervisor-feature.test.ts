@@ -4114,6 +4114,21 @@ describe('verity-runner supervisor runtime', () => {
     ]);
   });
 
+  // The scan reads states concurrently; each entry must still land under its own
+  // turn, or a corrupt or stateless directory would borrow a neighbour's state.
+  it('lists a large turn history in order with every unreadable entry kept', async () => {
+    const ids = Array.from({ length: 40 }, (_, index) => `turn-${String(index).padStart(2, '0')}`);
+    for (const turnId of ids)
+      await claimTurn(runtimeDir, { turnId, startCommandId: `start-${turnId}` }, 'runner-1');
+    await writeFile(join(runtimeDir, 'turns', 'turn-07', 'state.json'), 'not json');
+    await rm(join(runtimeDir, 'turns', 'turn-23', 'state.json'));
+    const turns = await listTurns(runtimeDir);
+    expect(turns.map((turn) => turn.turnId)).toEqual(ids);
+    expect(turns[7]).toMatchObject({ status: 'ambiguous', reason: 'invalid-state' });
+    expect(turns[23]).toMatchObject({ status: 'ambiguous', reason: 'missing-state' });
+    expect(turns.filter((turn) => turn.status === 'claimed')).toHaveLength(38);
+  });
+
   it('refuses a second live singleton claim', async () => {
     const first = await acquireSingleton(runtimeDir, 'runner-1');
     await expect(acquireSingleton(runtimeDir, 'runner-2')).rejects.toThrow(/already claimed/);

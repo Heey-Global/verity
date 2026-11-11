@@ -2,10 +2,17 @@
 
 Verity runs its existing Docker collector at startup, daily, and under disk
 pressure. Before image collection it now reconciles session storage and retired
-containers. Capacity admission requests one coalesced reclamation pass before
+containers. Capacity admission requests one coalesced build-capacity pass before
 retrying once; maintenance and unresolved build reservations still fail closed.
-An admission-triggered pass has a two-minute wait bound; timing out does not
-cancel a deletion already in progress or admit the waiting build.
+That pass runs only the steps that free build capacity, image removal and build
+cache pruning, and does not wait for a running maintenance pass: the
+maintenance steps talk to Sandboxes and helper containers and can take longer
+than a waiting build may wait. An admission-triggered pass has a two-minute
+wait bound; timing out does not cancel a deletion already in progress or admit
+the waiting build. A build still refused after the pass reports what it
+removed and how many bytes of images stopped containers keep, because a retry
+alone cannot free those. Each completed pass logs its scope, duration and
+per-phase durations (`docker gc pass complete`).
 
 ## Dependencies
 
@@ -284,7 +291,12 @@ their normal approvals.
 ## Worktree lifecycle and recovery
 
 Collection claims the session turn lock and project mutation barrier, excludes
-meeting jobs, moves, managed dev servers and previews, and rechecks activity.
+meeting jobs, moves, and sessions running a managed dev server or preview, and
+rechecks activity. A server or preview holds only its own session's worktree;
+other idle sessions of the same project are still collected. A project
+deletion or a session being created holds the whole project, and the pass over
+orphaned worktree registrations waits while any server or preview runs in the
+project.
 Source and Git metadata stay intact while regenerable dependencies are slimmed.
 Storage collection waits for an existing project mutation within its one-minute
 pass budget, then rechecks active work. Timeout retains the existing owner and
