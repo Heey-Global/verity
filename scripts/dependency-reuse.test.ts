@@ -487,6 +487,7 @@ describe('shared dependency reuse', () => {
         JSON.stringify({
           lockfileVersion: 3,
           packages: {
+            'node_modules/hoisted': { version: '2.0.0' },
             'packages/source': {},
             'packages/other': {},
             'packages/source/node_modules/other': { link: true, resolved: 'packages/other' },
@@ -498,6 +499,13 @@ describe('shared dependency reuse', () => {
     }
     const first = f.run('install');
     expect(first.status, first.stderr).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    const shadow = join(f.worktree, 'packages/source/node_modules/hoisted');
+    mkdirSync(shadow);
+    writeFileSync(join(shadow, 'package.json'), '{"version":"1.0.0"}');
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(existsSync(shadow)).toBe(false);
     expect(f.run('status').status).toBe(0);
     const second = spawnSync(process.execPath, [helper, 'install'], {
       cwd: sibling,

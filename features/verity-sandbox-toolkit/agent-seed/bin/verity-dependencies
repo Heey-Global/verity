@@ -443,14 +443,33 @@ function workspaceModuleTrees(root) {
   }
   return trees;
 }
-// Only undeclared workspace trees shadow the intended hoisted installation.
+// Undeclared packages inside an otherwise valid local tree can shadow hoisted versions.
 function staleWorkspaceModuleTrees(root) {
   const lock = JSON.parse(
     read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')) ?? 'null',
   );
   return workspaceModuleTrees(root).filter((tree) => {
     const prefix = relative(root, tree) + '/';
-    return !Object.keys(lock?.packages ?? {}).some((path) => path.startsWith(prefix));
+    if (!Object.keys(lock?.packages ?? {}).some((path) => path.startsWith(prefix))) return true;
+    if (!lstatSync(tree).isDirectory()) return true;
+    const declared = (path) => Object.hasOwn(lock.packages, prefix + path);
+    for (const name of readdirSync(tree)) {
+      if (name.startsWith('.')) continue;
+      const entry = join(tree, name);
+      const stat = lstatSync(entry);
+      if (!stat.isDirectory() && !stat.isSymbolicLink()) continue;
+      if (!name.startsWith('@')) {
+        if (!declared(name)) return true;
+        continue;
+      }
+      if (stat.isSymbolicLink()) return true;
+      for (const scoped of readdirSync(entry)) {
+        const child = lstatSync(join(entry, scoped));
+        if ((child.isDirectory() || child.isSymbolicLink()) && !declared(name + '/' + scoped))
+          return true;
+      }
+    }
+    return false;
   });
 }
 function stagedInputIdentity(root) {
