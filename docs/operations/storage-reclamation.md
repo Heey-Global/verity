@@ -123,7 +123,8 @@ collection. Removal never forces a running container to stop.
 
 The helper imports and calls the broker's offline operation in one Node process;
 it does not keep a second Node runtime alive just to launch maintenance. Its
-256 MiB memory/swap ceiling and external 25-second timeout remain unchanged.
+512 MiB memory/swap ceiling and 128-pid limit bound resource use; the external
+25-second timeout remains unchanged.
 Failures back off independently per project, from five minutes up to one hour;
 success resets that delay. Pre-helper runtime-state refusals remain immediately
 retryable. Retry state is in memory and resets when the Server restarts.

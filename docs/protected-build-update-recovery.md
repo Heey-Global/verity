@@ -156,3 +156,26 @@ safe failure mode.
 Publishing these changes does not resolve the stuck attempt by itself. The
 attempt counts as recovered only after steps 3 to 5 have been observed on the
 affected host.
+
+### Retrying process containment
+
+A failed nft denial does not skip stopping the exact owned build unit. Partial
+preparation recovery also attempts the verified anchor stop independently of
+fence and unit-stop failures. Ownership checks still reject changed checkpoints
+and containers; errors remain in the host journal.
+
+An attempt whose process termination is unconfirmed stays `stopping` and keeps
+its slot and storage reservation. Regular sweeps retry containment with backoff
+from one second to five minutes, without renewing packet authority. A restart or
+explicit cancellation retries immediately. Neither elapsed time nor retry count
+proves termination. Once the cgroup is proven empty, terminal evidence can be
+returned even if fence cleanup remains pending; normal cleanup retries continue.
+
+These changes ship in the managed host egress bundle. Install and activate the
+matching host release through the supported update procedure; a Server-only
+update does not replace the running host service. After separately authorized
+activation, verify a held attempt through supported status/cancel recovery and
+complete a new protected build. Confirm reservation release independently of
+resource cleanup, then measure actual filesystem changes and helper/cache
+behavior over subsequent regular collection passes. A merged change alone does
+not establish live recovery or sustained storage convergence.

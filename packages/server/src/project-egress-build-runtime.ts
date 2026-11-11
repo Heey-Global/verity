@@ -10,6 +10,21 @@ import type {
   ProtectedBuildNetworks,
 } from './project-egress-build-network.js';
 
+/** Revocation failure must not prevent terminating an already owned workload.
+ * Run in order and preserve every failure; callers still require independent
+ * termination proof before releasing admission or removing resources. */
+export async function containProtectedBuildSteps(...steps: (() => Promise<void>)[]): Promise<void> {
+  const errors: unknown[] = [];
+  for (const step of steps) {
+    try {
+      await step();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length) throw new AggregateError(errors, 'Protected build containment steps failed');
+}
+
 export interface ProtectedBuildLaunch {
   unit: string;
   descriptorId: string;
@@ -180,8 +195,11 @@ export function createProtectedBuildRuntime(io: ProtectedBuildRuntimeIO): Protec
         return;
       }
       if (!sameRequest(saved.request, request)) throw new Error('Changed protected build runtime');
-      await io.authority.deny(saved.anchor);
-      await io.stop(protectedBuildLaunch(request, saved.anchor).unit);
+      const launch = protectedBuildLaunch(request, saved.anchor);
+      await containProtectedBuildSteps(
+        () => io.authority.deny(saved.anchor),
+        () => io.stop(launch.unit),
+      );
     },
     async ended(request) {
       const saved = await io.load(request);

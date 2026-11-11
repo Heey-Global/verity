@@ -246,3 +246,47 @@ it('retries resource removal when final file cleanup fails after network removal
   expect(calls.filter((call) => call === 'remove-network')).toHaveLength(2);
   expect(cleanup).toHaveBeenCalledTimes(2);
 });
+
+it('stops the exact owned unit even when denial fails and preserves both errors', async () => {
+  const { io } = fixture();
+  const runtime = createProtectedBuildRuntime(io);
+  await runtime.prepare(request);
+  const denyFailure = new Error('nft failed');
+  const stopFailure = new Error('systemd failed');
+  const order: string[] = [];
+  io.authority.deny = async () => {
+    order.push('deny');
+    throw denyFailure;
+  };
+  const stop = vi.fn(async () => {
+    order.push('stop');
+    throw stopFailure;
+  });
+  io.stop = stop;
+  await expect(runtime.stop(request)).rejects.toMatchObject({
+    errors: [denyFailure, stopFailure],
+  });
+  expect(order).toEqual(['deny', 'stop']);
+  expect(stop).toHaveBeenCalledExactlyOnceWith(protectedBuildLaunch(request, anchor).unit);
+  stop.mockClear();
+  await expect(runtime.stop({ ...request, noCache: true })).rejects.toThrow('Changed');
+  expect(stop).not.toHaveBeenCalled();
+});
+
+it('attempts each partial containment step after bootstrap and unit stop failure', async () => {
+  const { containProtectedBuildSteps } = await import('./project-egress-build-runtime.js');
+  const bootstrap = vi.fn(async () => {
+    throw new Error('nft failed');
+  });
+  const stopUnit = vi.fn(async () => {
+    throw new Error('stop failed');
+  });
+  const stopAnchor = vi.fn(async () => {});
+  await expect(containProtectedBuildSteps(bootstrap, stopUnit, stopAnchor)).rejects.toMatchObject({
+    errors: [
+      expect.objectContaining({ message: 'nft failed' }),
+      expect.objectContaining({ message: 'stop failed' }),
+    ],
+  });
+  expect(stopAnchor).toHaveBeenCalledOnce();
+});
