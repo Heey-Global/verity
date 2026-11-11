@@ -10,6 +10,7 @@ import http2 from 'node:http2';
 import { Duplex } from 'node:stream';
 import { X509Certificate } from 'node:crypto';
 import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket, createWebSocketStream } from 'ws';
 import { startFixture } from './mock.mjs';
 
@@ -262,3 +263,109 @@ for (const protocol of ['h1', 'h2']) {
     },
   );
 }
+
+await test(
+  'a muted relay keeps delivering replies while it stops reading requests and pings',
+  { timeout: 20000 },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), 'verity-tunnel-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    execFileSync(
+      'openssl',
+      [
+        'req',
+        '-x509',
+        '-newkey',
+        'rsa:2048',
+        '-nodes',
+        '-days',
+        '1',
+        '-subj',
+        '/CN=core.test',
+        '-addext',
+        'subjectAltName=DNS:core.test,IP:127.0.0.1',
+        '-keyout',
+        join(dir, 'key'),
+        '-out',
+        join(dir, 'cert'),
+      ],
+      { stdio: 'ignore' },
+    );
+    const cert = await readFile(join(dir, 'cert'));
+    const fixture = await startFixture({ key: await readFile(join(dir, 'key')), cert });
+    t.after(() => fixture.close());
+    const framed = new WebSocket(`wss://127.0.0.1:${fixture.relayPort}/data`, { ca: cert });
+    t.after(() => framed.terminate());
+    await once(framed, 'open');
+    const attached = once(framed, 'message');
+    framed.send(JSON.stringify({ type: 'attach', ticket: 'fixture-ticket' }));
+    await attached;
+    /** @type {Map<string, Duplex>} */
+    const pipes = new Map();
+    framed.on('message', (raw) => {
+      assert.ok(Buffer.isBuffer(raw));
+      /** @type {unknown} */
+      const parsed = JSON.parse(raw.toString());
+      assert.ok(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+      const frame = /** @type {Record<string, unknown>} */ (parsed);
+      const pipe = typeof frame.streamId === 'string' ? pipes.get(frame.streamId) : undefined;
+      if (!pipe) return;
+      if (frame.type === 'stream.data' && typeof frame.payload === 'string')
+        pipe.push(Buffer.from(frame.payload, 'base64'));
+      else if (frame.type === 'stream.end') pipe.push(null);
+    });
+    /** @param {string} streamId */
+    function open(streamId) {
+      let sequence = 0;
+      const pipe = new Duplex({
+        read() {},
+        write(chunk, _encoding, callback) {
+          framed.send(
+            JSON.stringify({
+              type: 'stream.data',
+              streamId,
+              seq: sequence++,
+              payload: Buffer.from(chunk).toString('base64'),
+            }),
+            callback,
+          );
+        },
+      });
+      pipes.set(streamId, pipe);
+      framed.send(JSON.stringify({ type: 'stream.open', streamId, channel: 'remote', meta: {} }));
+      const socket = tls.connect({ socket: pipe, ca: cert, servername: 'core.test' });
+      socket.on('error', () => {});
+      return socket;
+    }
+    const trickle = open('trickle');
+    await once(trickle, 'secureConnect');
+    let trickled = 0;
+    trickle.on('data', (chunk) => {
+      trickled += chunk.length;
+    });
+    trickle.write('GET /trickle HTTP/1.1\r\nHost: core.test\r\n\r\n');
+    // Before muting, the relay answers a ping.
+    const answered = once(framed, 'pong');
+    framed.ping();
+    await answered;
+    const mute = open('mute');
+    await once(mute, 'secureConnect');
+    let muteBody = '';
+    mute.on('data', (chunk) => {
+      muteBody += String(chunk);
+    });
+    mute.write('GET /mute-upstream HTTP/1.1\r\nHost: core.test\r\nConnection: close\r\n\r\n');
+    await once(mute, 'end');
+    assert.match(muteBody, /muted$/);
+    await delay(200);
+    let pongs = 0;
+    framed.on('pong', () => pongs++);
+    const before = trickled;
+    framed.ping();
+    await delay(1500);
+    // The native upstream proof relies on exactly this: replies keep coming,
+    // the peer's pong does not.
+    assert.equal(pongs, 0);
+    assert.ok(trickled - before >= 4 * 1024, `trickle delivered ${trickled - before} bytes`);
+  },
+);

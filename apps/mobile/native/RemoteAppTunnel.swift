@@ -159,12 +159,13 @@ final class RemoteAppTunnel: @unchecked Sendable {
     var opened = false
     var pendingReset: String?
     var worker: Task<Void, Never>?
-    // Armed when the first local bytes have gone out; Core's TLS reply to a
-    // ClientHello arrives within milliseconds, so a stream still without any
-    // reply after the deadline is on an attachment that has gone dead without
-    // saying so. Ending the attachment lets the app open a fresh one instead
-    // of waiting out every request's own timeout.
+    // Armed while sent bytes wait for a reply; see armStallWatch.
     var stallWatch: Task<Void, Never>?
+    /// Identifies the installed watch, so a finished one never clears its successor.
+    var stallWatchToken = 0
+    /// Uptime of the last completed upstream send and the last downstream bytes.
+    var lastSentUptime: TimeInterval = 0
+    var lastReceivedUptime: TimeInterval = 0
     var sentBytes = 0
     var receivedBytes = 0
     var deliveredBytes = 0
@@ -272,6 +273,25 @@ final class RemoteAppTunnel: @unchecked Sendable {
     }
   }
 
+  // Which pings the immediate WebSocket peer has answered, by when each was
+  // sent. A pong for a ping sent after a stream's bytes had been handed to the
+  // socket says the peer has read past them: frames leave the socket in order.
+  // Downstream data says nothing about that direction, which is how a socket
+  // can keep delivering replies while every request it carries is lost.
+  struct UpstreamProof {
+    private(set) var lastPingSent: TimeInterval = -1
+    private(set) var lastAnsweredPingSent: TimeInterval = -1
+
+    mutating func pingSent(at uptime: TimeInterval) { lastPingSent = max(lastPingSent, uptime) }
+    mutating func pongReceived(sentAt uptime: TimeInterval) {
+      lastAnsweredPingSent = max(lastAnsweredPingSent, uptime)
+    }
+    /// A pong already covers bytes handed to the socket at `uptime`.
+    func confirms(_ uptime: TimeInterval) -> Bool { lastAnsweredPingSent >= uptime }
+    /// No ping has left since those bytes; one still in flight will do.
+    func needsPing(_ uptime: TimeInterval) -> Bool { lastPingSent < uptime }
+  }
+
   private let expectedHost: String
   private let expectedPort: Int
   private let outer: URLSession
@@ -300,6 +320,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
   private var pingsSent = 0
   private var pongsReceived = 0
   private var lastPongAt: Date?
+  private var upstreamProof = UpstreamProof()
   private var localConnections = 0
   private var openedStreams = 0
   private var receivedStreamFrames = 0
@@ -615,7 +636,11 @@ final class RemoteAppTunnel: @unchecked Sendable {
           return
         }
         guard due else { continue }
-        self.lock.withLock { self.pingsSent += 1 }
+        let sentAt = ProcessInfo.processInfo.systemUptime
+        self.lock.withLock {
+          self.pingsSent += 1
+          self.upstreamProof.pingSent(at: sentAt)
+        }
         self.socket.sendPing { [weak self] error in
           guard let self else { return }
           if let error {
@@ -627,6 +652,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
               self.unansweredPingSince = nil
               self.pongsReceived += 1
               self.lastPongAt = Date()
+              self.upstreamProof.pongReceived(sentAt: sentAt)
             }
           }
         }
@@ -687,8 +713,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
       else { throw RemoteSmokeError.invalidFrame }
       lock.withLock {
         let first = stream.receivedBytes == 0 && !data.isEmpty
-        if first {
-          stream.firstRemoteAt = Date()
+        if first { stream.firstRemoteAt = Date() }
+        if !data.isEmpty {
+          stream.lastReceivedUptime = ProcessInfo.processInfo.systemUptime
           stream.stallWatch?.cancel()
           stream.stallWatch = nil
         }
@@ -837,28 +864,97 @@ final class RemoteAppTunnel: @unchecked Sendable {
 
   static let stallDeadlineSeconds: UInt64 = 10
 
+  // How long a ping sent behind a stream's unanswered bytes may wait for its
+  // pong. Pings queue behind data already handed to the socket, so a link
+  // draining less than that backlog in this time is treated as dead too.
+  static let upstreamProofSeconds: TimeInterval = 5
+
+  // Armed after a stream's bytes have gone out while it waits for a reply,
+  // at most one per stream. A stream's first reply is Core's TLS answer, due
+  // within milliseconds: with nothing at all received meanwhile, the
+  // attachment has gone dead without saying so. Otherwise, while other
+  // streams still receive or the stream is merely waiting on a slow Core, a
+  // ping decides whether the peer has read these bytes: downstream data alone
+  // cannot show that requests still arrive. Ending the attachment lets the
+  // app open a fresh one instead of waiting out every request's own timeout.
   private func armStallWatch(_ stream: Stream, id: String) {
-    // The attachment is judged, not the stream: a slow Core on one stream
-    // while others keep receiving is not a dead socket.
-    let receivedWhenArmed = lock.withLock { receivedBytes }
-    let task = Task { [weak self] in
-      try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
-      guard !Task.isCancelled, let self else { return }
-      // Verdict and stop under one lock acquisition: a first reply landing in
-      // between must not have a live attachment torn down.
-      self.lock.lock()
-      let stalled = !self.stopped && !stream.closed && stream.receivedBytes == 0
-        && self.receivedBytes == receivedWhenArmed
-      guard stalled else { self.lock.unlock(); return }
-      self.logStream(id, stream, event: "stalled")
-      self.stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s", cause: .streamStall)
+    lock.withLock {
+      guard !stopped, !stream.closed, stream.stallWatch == nil,
+        stream.lastReceivedUptime < stream.lastSentUptime
+      else { return }
+      stream.stallWatchToken += 1
+      let token = stream.stallWatchToken
+      let firstReply = stream.receivedBytes == 0
+      let receivedWhenArmed = receivedBytes
+      stream.stallWatch = Task { [weak self] in
+        try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
+        guard !Task.isCancelled, let self else { return }
+        await self.judgeStall(stream, id: id, token: token, firstReply: firstReply,
+          receivedWhenArmed: receivedWhenArmed)
+      }
     }
-    let alreadyDone = lock.withLock { () -> Bool in
-      if stream.closed || stream.receivedBytes > 0 { return true }
-      stream.stallWatch = task
-      return false
+  }
+
+  private func judgeStall(_ stream: Stream, id: String, token: Int, firstReply: Bool,
+    receivedWhenArmed: Int) async
+  {
+    // Verdict and stop under one lock acquisition: a reply landing in
+    // between must not have a live attachment torn down.
+    lock.lock()
+    guard !Task.isCancelled, stream.stallWatchToken == token, !stopped, !stream.closed else {
+      lock.unlock()
+      return
     }
-    if alreadyDone { task.cancel() }
+    if firstReply && stream.receivedBytes == 0 && receivedBytes == receivedWhenArmed {
+      logStream(id, stream, event: "stalled")
+      stopLocked(reason: "stall: no reply on a stream within \(Self.stallDeadlineSeconds) s",
+        cause: .streamStall)
+      return
+    }
+    let since = stream.lastSentUptime
+    let sendPing = upstreamProof.needsPing(since)
+    let sentAt = ProcessInfo.processInfo.systemUptime
+    if sendPing {
+      upstreamProof.pingSent(at: sentAt)
+      pingsSent += 1
+    }
+    lock.unlock()
+    if sendPing {
+      socket.sendPing { [weak self] error in
+        // A failed ping means the socket is going down; the reader records why.
+        guard let self, error == nil else { return }
+        self.lock.withLock {
+          self.pongsReceived += 1
+          self.lastPongAt = Date()
+          self.upstreamProof.pongReceived(sentAt: sentAt)
+        }
+      }
+    }
+    let deadline = ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds
+    while true {
+      let settled = lock.withLock {
+        Task.isCancelled || stopped || stream.closed || stream.stallWatchToken != token
+          || upstreamProof.confirms(since)
+      }
+      if settled || ProcessInfo.processInfo.systemUptime >= deadline { break }
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    lock.lock()
+    guard !Task.isCancelled, stream.stallWatchToken == token, !stopped, !stream.closed else {
+      lock.unlock()
+      return
+    }
+    guard upstreamProof.confirms(since) else {
+      logStream(id, stream, event: "stalled")
+      stopLocked(reason: "stall: upstream unconfirmed within \(Int(Self.upstreamProofSeconds)) s",
+        cause: .streamStall)
+      return
+    }
+    // The peer has these bytes; Core is slow. Bytes sent since are judged anew.
+    stream.stallWatch = nil
+    let resent = stream.lastSentUptime > since
+    lock.unlock()
+    if resent { armStallWatch(stream, id: id) }
   }
 
   // Retirement is immediate, but reset must follow successful open completion.
@@ -1081,15 +1177,15 @@ final class RemoteAppTunnel: @unchecked Sendable {
       // this watch's: armed after the send, the watch measures Core's reply.
       try await writer.send(["type": "stream.data", "streamId": id,
         "seq": stream.outgoingSequence, "payload": bytes.base64EncodedString()])
-      let first = lock.withLock { () -> Bool in
+      lock.withLock {
         let first = stream.sentBytes == 0
         stream.noteRecord(bytes, incoming: false)
         stream.sentBytes += bytes.count
         sentBytes += bytes.count
+        stream.lastSentUptime = ProcessInfo.processInfo.systemUptime
         if first { logStream(id, stream, event: "first_local_data_sent") }
-        return first
       }
-      if first { armStallWatch(stream, id: id) }
+      armStallWatch(stream, id: id)
       lock.withLock {
         stream.outgoingSequence += 1
         retainDiagnosticStream(stream)

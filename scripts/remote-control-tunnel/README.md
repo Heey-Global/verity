@@ -106,3 +106,17 @@ same tunnel. The held response must end with its own request timeout. This
 separates a post-first-byte stream stall from a failed attachment. Node fixture
 tests verify the partial response and sibling behavior independently; they do
 not execute the Swift tunnel. These fixtures need no production credentials.
+
+### One-way upstream loss
+
+The production-app smoke ends with its own attachment: `/trickle` keeps reply
+bytes flowing, then `/mute-upstream` makes the relay stop reading every app data
+socket while it keeps writing to them. A request on a fresh connection then never
+reaches the relay. The writer deadline cannot see this (local sends complete) and
+the first-reply watch cannot either (other bytes keep arriving); the tunnel must
+stop with `stall: upstream unconfirmed` once the ping sent behind the lost bytes
+goes unanswered, between 10 and 20 seconds, and before the 45–60 second heartbeat
+deadline. The Node fixture test checks that a muted relay answers no ping while
+it keeps delivering replies. Muting at the relay models the state a device
+recording showed after leaving a VPN; it is not a simulation of the network path
+beneath it and does not establish that path's cause.

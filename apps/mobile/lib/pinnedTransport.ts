@@ -4,6 +4,7 @@ import {
   directRouteKnownReachable,
   lastDirectRefusal,
   pendingDirectVerdict,
+  recheckDirectRoute,
   recoverRemoteControlRead,
   remoteControlAvailableForUrl,
   remoteControlFailureForUrl,
@@ -251,6 +252,11 @@ async function encodeBody(body: BodyInit | null | undefined): Promise<string | n
 // tried, where it used to cost 3 s; on the VPN, which is where the app is
 // used most, the same 7 s let a slow wake-up succeed directly.
 const DIRECT_GRACE_MS = 4_000;
+// A read sent on a remembered direct route gets this long before the route is
+// probed again. Remembered means a direct success within the last 30 s, which
+// a VPN switched off since then does not undo; without the recheck such a read
+// waits out the native request timeout (60 s) on an address that is gone.
+const DIRECT_RECHECK_MS = 5_000;
 
 export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
   return (async (input: RequestInfo | URL, init: TransportRequestInit = {}) => {
@@ -338,9 +344,10 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       let settled = false;
       let cancelledBy: 'verdict' | 'grace' | null = null;
       let grace: ReturnType<typeof setTimeout> | undefined;
+      let recheck: ReturnType<typeof setTimeout> | undefined;
 
-      if (verdict !== null) {
-        void verdict.then(
+      const watchVerdict = (pending: Promise<string>): void => {
+        void pending.then(
           (outcome) => {
             if (settled || outcome === 'reachable' || directRouteKnownReachable(url)) return;
             if (outcome === 'dead') {
@@ -357,6 +364,17 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
           },
           () => undefined,
         );
+      };
+      if (verdict !== null) watchVerdict(verdict);
+      else if (remoteEnabled && replayable && port === 0) {
+        recheck = setTimeout(() => {
+          if (settled || init.signal?.aborted) return;
+          const rechecked = recheckDirectRoute(url);
+          if (rechecked === null) return;
+          // Also what admits the read to the Uplink recovery below.
+          verdict = rechecked;
+          watchVerdict(rechecked);
+        }, DIRECT_RECHECK_MS);
       }
       let recovered = false;
       try {
@@ -547,6 +565,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
         }
       } finally {
         if (grace !== undefined) clearTimeout(grace);
+        if (recheck !== undefined) clearTimeout(recheck);
       }
     } catch (error) {
       if (init.signal?.aborted) {

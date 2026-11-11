@@ -31,6 +31,7 @@ const mockRemoteFailure = jest.fn();
 const mockReportDirectFailure = jest.fn();
 const mockReportDirectSuccess = jest.fn();
 const mockDirectVerdict = jest.fn();
+const mockRecheckDirect = jest.fn();
 const mockDirectRefusal = jest.fn();
 const mockDirectKnownReachable = jest.fn();
 const mockRecoverRemoteRead = jest.fn();
@@ -42,6 +43,7 @@ jest.mock('./remoteControlTransport', () => ({
   reportDirectRouteSuccess: (...args: unknown[]) => mockReportDirectSuccess(...args),
   reportDirectRouteFailure: (...args: unknown[]) => mockReportDirectFailure(...args),
   pendingDirectVerdict: (...args: unknown[]) => mockDirectVerdict(...args),
+  recheckDirectRoute: (...args: unknown[]) => mockRecheckDirect(...args),
   lastDirectRefusal: (...args: unknown[]) => mockDirectRefusal(...args),
   directRouteKnownReachable: (...args: unknown[]) => mockDirectKnownReachable(...args),
   recoverRemoteControlRead: (...args: unknown[]) => mockRecoverRemoteRead(...args),
@@ -237,6 +239,7 @@ describe('pinned native file transport', () => {
     mockRemoteFailure.mockReset().mockReturnValue(null);
     mockReportDirectFailure.mockReset();
     mockDirectVerdict.mockReset().mockReturnValue(null);
+    mockRecheckDirect.mockReset().mockReturnValue(null);
     mockDirectRefusal.mockReset().mockReturnValue(null);
     mockDirectKnownReachable.mockReset().mockReturnValue(false);
     mockRecoverRemoteRead.mockReset().mockResolvedValue(0);
@@ -776,6 +779,93 @@ describe('pinned native file transport', () => {
     });
     expect(mockRemotePort).toHaveBeenCalledTimes(1);
     expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/sessions');
+  });
+
+  it('rechecks a remembered direct route that stops answering and recovers the read through Uplink', async () => {
+    jest.useFakeTimers();
+    try {
+      const pin = `sha256-${'a'.repeat(43)}`;
+      // Route remembered as reachable: no pending cold-start verdict.
+      mockRemotePort.mockResolvedValueOnce(0).mockResolvedValueOnce(4_321);
+      mockRecheckDirect.mockReturnValue(Promise.resolve('dead'));
+      let failDirect!: (error: Error) => void;
+      mockRequest
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              failDirect = reject;
+            }),
+        )
+        .mockResolvedValueOnce({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      mockCancelRequest.mockImplementation(async () => {
+        failDirect(new Error('Pinned TLS transport failed [NSURLErrorDomain:-999]'));
+      });
+      const pending = createPinnedFetch(pin, true)('https://verity.example/projects/p');
+      await jest.advanceTimersByTimeAsync(4_999);
+      // Before the recheck the remembered route is trusted as before.
+      expect(mockRecheckDirect).not.toHaveBeenCalled();
+      expect(mockCancelRequest).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      // Without the recheck this read waits out the 60 s native timeout after
+      // the VPN went away, and the screen behind it shows only a spinner.
+      await expect(pending).resolves.toMatchObject({ status: 200 });
+      expect(mockRecheckDirect).toHaveBeenCalledWith('https://verity.example/projects/p');
+      expect(mockReportDirectFailure).toHaveBeenCalledWith('https://verity.example/projects/p');
+      expect(mockRequest.mock.calls[1]?.[6]).toBe(4_321);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a slow read on a remembered direct route that the recheck finds reachable', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRemotePort.mockResolvedValue(0);
+      mockRecheckDirect.mockReturnValue(Promise.resolve('reachable'));
+      let finishSlow!: (response: { status: number; headers: {}; bodyBase64: string }) => void;
+      mockRequest.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishSlow = resolve;
+          }),
+      );
+      const slow = createPinnedFetch(
+        `sha256-${'a'.repeat(43)}`,
+        true,
+      )('https://verity.example/slow');
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(mockRecheckDirect).toHaveBeenCalledTimes(1);
+      expect(mockCancelRequest).not.toHaveBeenCalled();
+      finishSlow({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      await expect(slow).resolves.toMatchObject({ status: 200 });
+      expect(mockRemotePort).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('never rechecks the route under a direct mutation it could not replay', async () => {
+    jest.useFakeTimers();
+    try {
+      mockRemotePort.mockResolvedValue(0);
+      let finish!: (response: { status: number; headers: {}; bodyBase64: string }) => void;
+      mockRequest.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const write = createPinnedFetch(`sha256-${'a'.repeat(43)}`, true)(
+        'https://verity.example/projects/p',
+        { method: 'POST', body: '{}' },
+      );
+      await jest.advanceTimersByTimeAsync(20_000);
+      expect(mockRecheckDirect).not.toHaveBeenCalled();
+      finish({ status: 200, headers: {}, bodyBase64: 'e30=' });
+      await expect(write).resolves.toMatchObject({ status: 200 });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('names the unanswered address when the grace period ends without recovery', async () => {

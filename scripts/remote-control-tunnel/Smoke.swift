@@ -349,6 +349,77 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, 
   }
 }
 
+// The relay stops reading the app's data socket while replies keep arriving on
+// it, the one-way state recorded on a device after leaving a VPN. Neither the
+// writer deadline (local sends still complete) nor the first-reply watch
+// (other bytes still arrive) can see it; only the upstream ping proof can,
+// well before the 45-60 s heartbeat. Runs last: muting affects every data
+// socket the fixture holds.
+func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async throws {
+  let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
+  let origin = URL(string: "https://core.test")!
+  var outerOrigin = URLComponents(url: dataURL, resolvingAgainstBaseURL: false)!
+  outerOrigin.scheme = "https"
+  let outerDelegate = try CertificatePinDelegate(pin: outerPin, origin: outerOrigin.url!)
+  let outer = URLSession(configuration: .ephemeral, delegate: outerDelegate, delegateQueue: nil)
+  defer { outer.invalidateAndCancel() }
+  let tunnel = try RemoteAppTunnel(dataURL: dataURL, coreURL: origin, outerSession: outer)
+  defer { tunnel.stop() }
+  let port = try await tunnel.start(ticket: "fixture-ticket", sessionId: "fixture-session")
+  let proxy = ProxyConfiguration(socksv5Proxy: .hostPort(host: "127.0.0.1",
+    port: NWEndpoint.Port(rawValue: UInt16(port))!))
+  func session() throws -> URLSession {
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = 40
+    config.timeoutIntervalForResource = 60
+    config.proxyConfigurations = [proxy]
+    let delegate = try CertificatePinDelegate(pin: corePin, origin: origin)
+    return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+  }
+  let trickleSession = try session()
+  defer { trickleSession.invalidateAndCancel() }
+  trickleSession.dataTask(with: origin.appendingPathComponent("trickle")).resume()
+  let muteSession = try session()
+  defer { muteSession.invalidateAndCancel() }
+  let (muted, _) = try await muteSession.data(from: origin.appendingPathComponent("mute-upstream"))
+  guard String(data: muted, encoding: .utf8) == "muted" else { throw TunnelError.protocolViolation }
+  try await Task.sleep(for: .milliseconds(300))
+  func received() -> Int {
+    let summary = tunnel.diagnosticSummary
+    guard let field = summary.components(separatedBy: ", ").first(where: { $0.hasPrefix("receivedBytes=") })
+    else { return -1 }
+    return Int(field.dropFirst("receivedBytes=".count)) ?? -1
+  }
+  let receivedAtLoss = received()
+  guard receivedAtLoss > 0 else {
+    throw ProductionProbeFailure.transport("upstream stall: no byte counter in \(tunnel.diagnosticSummary)")
+  }
+  // A fresh connection: its ClientHello is the request that never arrives.
+  let lostSession = try session()
+  defer { lostSession.invalidateAndCancel() }
+  let started = ProcessInfo.processInfo.systemUptime
+  lostSession.dataTask(with: origin.appendingPathComponent("healthz")).resume()
+  var receivedWhileLost = receivedAtLoss
+  while tunnel.isActive && ProcessInfo.processInfo.systemUptime - started < 30 {
+    receivedWhileLost = max(receivedWhileLost, received())
+    try await Task.sleep(for: .milliseconds(100))
+  }
+  let elapsed = ProcessInfo.processInfo.systemUptime - started
+  guard !tunnel.isActive, tunnel.stopReason?.hasPrefix("stall: upstream unconfirmed") == true,
+    elapsed >= Double(RemoteAppTunnel.stallDeadlineSeconds),
+    elapsed < Double(RemoteAppTunnel.stallDeadlineSeconds) + RemoteAppTunnel.upstreamProofSeconds + 5
+  else {
+    throw ProductionProbeFailure.transport(
+      "upstream stall not detected: active=\(tunnel.isActive) after \(Int(elapsed)) s, reason=\(tunnel.stopReason ?? "none")")
+  }
+  // Replies kept arriving throughout, so the first-reply rule alone could not
+  // have ended this attachment.
+  guard receivedWhileLost > receivedAtLoss + 4 * 1024 else {
+    throw ProductionProbeFailure.transport("upstream stall: downstream stopped too (\(receivedAtLoss) -> \(receivedWhileLost))")
+  }
+  print("production app case passed: upstream stall after \(Int(elapsed)) s with downstream flowing")
+}
+
 // A rejected CONNECT is closed without a reply; a 200 or a hang is a failure.
 @available(macOS 14.0, iOS 17.0, *)
 func expectConnectRejected(port: Int, head: String) async throws {
@@ -493,7 +564,7 @@ func runTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async thro
 func smokeResult() async -> String {
   let environment = ProcessInfo.processInfo.environment
   let watchdog = Task {
-    try? await Task.sleep(nanoseconds: 90_000_000_000)
+    try? await Task.sleep(nanoseconds: 120_000_000_000)
     guard !Task.isCancelled else { return }
     let failure = "FAIL: native tunnel watchdog expired"
     if let path = environment["VERITY_TUNNEL_RESULT"] {
@@ -518,6 +589,7 @@ func smokeResult() async -> String {
     try await runDirectProtocolSmoke(origin: direct, pin: corePin, expectedProtocol: expectedProtocol)
     try await runProductionTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin, expectedProtocol: expectedProtocol)
     try await runTunnelSmoke(endpoint: url, outerPin: outerPin, corePin: corePin)
+    try await checkUpstreamStall(endpoint: url, outerPin: outerPin, corePin: corePin)
     return "success"
   } catch { return "FAIL: \(error)" }
 }
