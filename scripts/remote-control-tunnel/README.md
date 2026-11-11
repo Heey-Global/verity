@@ -116,10 +116,15 @@ never reaches the relay: over HTTP/2 it shares the trickle's tunnel stream, over
 HTTP/1.1 it opens a fresh one. The writer deadline cannot see this (local sends complete) and
 the first-reply watch cannot either (other bytes keep arriving); the tunnel must
 stop with `stall: upstream unconfirmed` once the ping sent behind the lost bytes
-goes unanswered, well before the heartbeat could end it (60 seconds after the
-mute at the earliest). The ping window grows with the bytes sent just before it,
-so a slow but live upload is given time to drain; that slow-link case has no
-native test here. The Node fixture test checks that a muted relay answers no ping while
+goes unanswered, before the heartbeat could end it (about 45 seconds after the
+mute at the earliest).
+
+The verdict trades speed against slow links, and neither slow-link case has a
+native test here. A ping's window grows with the bytes sent since the last
+answered ping, assuming the upload drains at 32 KiB/s or more. It also runs on
+while replies arrive at 64 KiB/s or more, since the pong queues behind them. An
+attachment below both rates, with more than about ten seconds of data queued
+in either direction, is torn down and replaced as if it were dead. The Node fixture test checks that a muted relay answers no ping while
 it keeps delivering replies. Muting at the relay models the state a device
 recording showed after leaving a VPN; it is not a simulation of the network path
 beneath it and does not establish that path's cause.

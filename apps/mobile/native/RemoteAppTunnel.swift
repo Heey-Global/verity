@@ -687,7 +687,8 @@ final class RemoteAppTunnel: @unchecked Sendable {
   /// answered ping, which may all still be queued ahead of this one.
   private func markPingLocked() -> TimeInterval {
     let sentAt = ProcessInfo.processInfo.systemUptime
-    let queued = Double(max(0, sentBytes - sentBytesDrained))
+    // Counters hold payload bytes; the socket carries them base64 in JSON frames.
+    let queued = Double(max(0, sentBytes - sentBytesDrained)) * 1.4
     sentBytesAtInFlightPing = sentBytes
     let drain = min(queued / Self.upstreamDrainBytesPerSecond, Self.upstreamDrainCapSeconds)
     pingsSent += 1
