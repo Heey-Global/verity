@@ -86,7 +86,7 @@ const complete = () => {
   const collect = (dependencies,prefix='') => { for (const [name,value] of Object.entries(dependencies ?? {})) { const entry=prefix+'node_modules/'+name; packages[entry]=value; collect(value.dependencies,entry+'/'); } };
   if (!lock.packages) collect(lock.dependencies);
   for (const [file, value] of Object.entries(packages)) {
-    if (!file.startsWith('node_modules/')) continue;
+    if (!file.startsWith('node_modules/') && !file.includes('/node_modules/')) continue;
     if (value.link) {
       fs.mkdirSync(path.dirname(file), {recursive:true});
       fs.symlinkSync(path.relative(path.dirname(file), value.resolved), file);
@@ -472,6 +472,60 @@ describe('shared dependency reuse', () => {
       join(sibling, 'packages', 'source'),
     );
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('prepares and independently activates workspace-nested packages across sessions', () => {
+    const f = fixture();
+    const sibling = f.sibling();
+    const nested = 'packages/source/node_modules/private/package.json';
+    for (const directory of [f.worktree, sibling]) {
+      mkdirSync(join(directory, 'packages/source'), { recursive: true });
+      writeFileSync(join(directory, 'packages/source/package.json'), '{"name":"source"}');
+      mkdirSync(join(directory, 'packages/other'), { recursive: true });
+      writeFileSync(join(directory, 'packages/other/package.json'), '{"name":"other"}');
+      writeFileSync(
+        join(directory, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            'packages/source': {},
+            'packages/other': {},
+            'packages/source/node_modules/other': { link: true, resolved: 'packages/other' },
+            'node_modules/source': { link: true, resolved: 'packages/source' },
+            'packages/source/node_modules/private': { version: '2.0.0' },
+          },
+        }),
+      );
+    }
+    const first = f.run('install');
+    expect(first.status, first.stderr).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    const second = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    expect(second.status, second.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(realpathSync(join(sibling, 'packages/source/node_modules/other'))).toBe(
+      join(sibling, 'packages/other'),
+    );
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    writeFileSync(join(f.worktree, nested), '{"version":"patched"}');
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    const patch = join(f.worktree, 'packages/source/node_modules/local-patch.txt');
+    writeFileSync(patch, 'keep local patch');
+    rmSync(join(f.worktree, nested));
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    const preserved = join(f.root, '.git/worktrees/test/verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'local-patch.txt')) &&
+          readFileSync(join(preserved, entry, 'local-patch.txt'), 'utf8') === 'keep local patch',
+      ),
+    ).toBe(true);
   });
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();

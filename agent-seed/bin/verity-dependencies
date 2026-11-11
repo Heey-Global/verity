@@ -408,7 +408,10 @@ function cacheable(root) {
   if (!lock?.packages) return false;
   return Object.entries(lock.packages).every(([path, value]) => {
     if (isAbsolute(path) || path.split('/').includes('..')) return false;
-    if (path.includes('/node_modules/') && !path.startsWith('node_modules/')) return false;
+    if (path.includes('/node_modules/') && !path.startsWith('node_modules/')) {
+      const project = path.slice(0, path.indexOf('/node_modules/'));
+      if (!lock.packages[project]) return false;
+    }
     if (!value.link) return true;
     if (typeof value.resolved !== 'string' || isAbsolute(value.resolved)) return false;
     const target = relative(root, resolve(root, value.resolved));
@@ -439,6 +442,16 @@ function workspaceModuleTrees(root) {
     trees.push(modules);
   }
   return trees;
+}
+// Only undeclared workspace trees shadow the intended hoisted installation.
+function staleWorkspaceModuleTrees(root) {
+  const lock = JSON.parse(
+    read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')) ?? 'null',
+  );
+  return workspaceModuleTrees(root).filter((tree) => {
+    const prefix = relative(root, tree) + '/';
+    return !Object.keys(lock?.packages ?? {}).some((path) => path.startsWith(prefix));
+  });
 }
 function stagedInputIdentity(root) {
   const hash = createHash('sha256');
@@ -473,7 +486,7 @@ function cachedReady(root, cache, expected) {
       read(join(cache, 'receipt.json')) === expected &&
       receiptMatches(cache, expected) &&
       installed(cache) &&
-      workspaceModuleTrees(cache).length === 0 &&
+      staleWorkspaceModuleTrees(cache).length === 0 &&
       read(join(cache, '.verity-inputs.sha256')) === stagedInputIdentity(cache) &&
       identity(root, cache) === expected
     );
@@ -519,7 +532,7 @@ function readinessReason(root, expected) {
   if (!receiptMatches(root, expected))
     return 'dependency inputs, configuration or runtime differ from the installation receipt';
   if (!workspaceLinksReady(root)) return 'workspace links do not target this worktree';
-  if (workspaceModuleTrees(root).length)
+  if (staleWorkspaceModuleTrees(root).length)
     return 'stale workspace dependency directories shadow hoisted packages';
   return 'missing packages or package versions/integrities differ from the lockfile';
 }
@@ -561,13 +574,13 @@ function fixWorkspaceBin(root, source) {
     chmodSync(source, mode);
   }
 }
-function rewire(root, modules) {
+function rewire(root, modules, prefix = 'node_modules/') {
   const lock = JSON.parse(
     read(join(root, 'npm-shrinkwrap.json')) ?? read(join(root, 'package-lock.json')),
   );
   for (const [path, value] of Object.entries(lock.packages)) {
-    if (!value.link || !path.startsWith('node_modules/')) continue;
-    const target = join(modules, path.slice('node_modules/'.length));
+    if (!value.link || !path.startsWith(prefix)) continue;
+    const target = join(modules, path.slice(prefix.length));
     // Only a declared workspace symlink is replaced, never package contents.
     if (!contained(modules, realpathSync(dirname(target))))
       throw new Error('Cached workspace parent escapes the activation directory.');
@@ -605,7 +618,7 @@ function rewire(root, modules) {
       // npm skips workspace bins whose sources are absent in central staging.
       // Keep native collision choices; add only missing links to current sources.
       if (!readlinkExists(executable))
-        symlinkSync(relative(join(root, 'node_modules', '.bin'), source), executable);
+        symlinkSync(relative(join(root, prefix, '.bin'), source), executable);
     }
   }
 }
@@ -809,7 +822,7 @@ async function main() {
   const ready = () =>
     installed(root) &&
     receiptMatches(root, identity(root)) &&
-    workspaceModuleTrees(root).length === 0;
+    staleWorkspaceModuleTrees(root).length === 0;
   if (ready()) {
     await verify();
     if (action === 'install')
@@ -924,7 +937,18 @@ async function main() {
         'verity-dependencies-copy-' + randomUUID(),
       );
       let recovery;
+      const workspaceCopies = [];
       try {
+        for (const tree of workspaceModuleTrees(cache)) {
+          const path = relative(cache, tree);
+          const destination = join(root, path);
+          if (!contained(realpathSync(root), realpathSync(dirname(destination))))
+            throw new Error('Workspace dependency parent must stay inside the project.');
+          const copy = candidate + '-workspace-' + workspaceCopies.length;
+          workspaceCopies.push({ copy, destination });
+          cpSync(tree, copy, { recursive: true, dereference: false, verbatimSymlinks: true });
+          rewire(root, copy, path + '/');
+        }
         cpSync(join(cache, 'node_modules'), candidate, {
           recursive: true,
           dereference: false,
@@ -938,6 +962,7 @@ async function main() {
         // Validate at the final path; keep recovery files if activation ever fails.
         preserve();
         recovery = true;
+        for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
         console.log(
@@ -947,13 +972,14 @@ async function main() {
         if (recovery && readlinkExists(modules)) preserve();
         throw error;
       } finally {
+        for (const { copy } of workspaceCopies) rmSync(copy, { recursive: true, force: true });
         rmSync(candidate, { recursive: true, force: true });
       }
     };
     if (!cachedReady(root, cache, currentIdentity)) {
       if (!cacheable(root))
         throw new Error(
-          'Central preparation requires a supported npm lockfile with project-local workspace links and no workspace-nested node_modules; no private installation was attempted.',
+          'Central preparation requires a supported npm lockfile with project-local workspace links and declared workspace dependency paths; no private installation was attempted.',
         );
       // Bound expensive preparation to one process per project, even across identities.
       console.log('Waiting for the central preparation slot (up to 90 seconds)…');
