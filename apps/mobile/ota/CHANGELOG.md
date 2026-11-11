@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.89.6](https://github.com/Heey-Global/verity/compare/mobile-v1.89.5...mobile-v1.89.6) (2026-11-11)
+
+
+### Features
+
+* **claude:** replace Fable 5.1 with Fable 5.2 ([#2514](https://github.com/Heey-Global/verity/issues/2514)) ([3a38c5c](https://github.com/Heey-Global/verity/commit/3a38c5c0b6b9287221095c50d2bf2de916c4a0eb))
+
+
+### Bug Fixes
+
+* **mobile:** restore explicit project sorting mode ([#2518](https://github.com/Heey-Global/verity/issues/2518)) ([150f154](https://github.com/Heey-Global/verity/commit/150f15470a831c70a7883079846c61b9bda3a134))
+
 ## [1.89.5](https://github.com/Heey-Global/verity/compare/mobile-v1.89.4...mobile-v1.89.5) (2026-11-11)
 
 
