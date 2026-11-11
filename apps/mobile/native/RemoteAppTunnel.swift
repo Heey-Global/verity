@@ -884,9 +884,14 @@ final class RemoteAppTunnel: @unchecked Sendable {
   static let stallDeadlineSeconds: UInt64 = 10
 
   // How long a ping sent behind a stream's unanswered bytes may wait for its
-  // pong. Pings queue behind data already handed to the socket, so a link
-  // draining less than that backlog in this time is treated as dead too.
+  // pong. A ping queues behind every byte already handed to the socket, so
+  // the window grows with the bytes sent while the watch ran, which may all
+  // still be queued: an upload on a slow link must drain, not be torn down.
+  // Below the assumed floor rate such a backlog still reads as dead; the cap
+  // keeps the verdict ahead of the 45-60 s heartbeat.
   static let upstreamProofSeconds: TimeInterval = 5
+  static let upstreamDrainBytesPerSecond: Double = 32 * 1024
+  static let upstreamDrainCapSeconds: TimeInterval = 25
 
   // Armed after a stream's bytes have gone out, at most one per stream. A
   // stream's first reply is Core's TLS answer, due within milliseconds: with
@@ -902,17 +907,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let token = stream.stallWatchToken
       let firstReply = stream.receivedBytes == 0
       let receivedWhenArmed = receivedBytes
+      let sentWhenArmed = sentBytes
       stream.stallWatch = Task { [weak self] in
         try? await Task.sleep(nanoseconds: Self.stallDeadlineSeconds * 1_000_000_000)
         guard !Task.isCancelled, let self else { return }
         await self.judgeStall(stream, id: id, token: token, firstReply: firstReply,
-          receivedWhenArmed: receivedWhenArmed)
+          receivedWhenArmed: receivedWhenArmed, sentWhenArmed: sentWhenArmed)
       }
     }
   }
 
   private func judgeStall(_ stream: Stream, id: String, token: Int, firstReply: Bool,
-    receivedWhenArmed: Int) async
+    receivedWhenArmed: Int, sentWhenArmed: Int) async
   {
     // Verdict and stop under one lock acquisition: a reply landing in
     // between must not have a live attachment torn down.
@@ -933,15 +939,18 @@ final class RemoteAppTunnel: @unchecked Sendable {
     // own silence for the whole window is the same verdict.
     var deadline = ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds
     while true {
-      let (settled, sentAt) = lock.withLock { () -> (Bool, TimeInterval?) in
+      let (settled, sentAt, queued) = lock.withLock { () -> (Bool, TimeInterval?, Int) in
         let settled = Task.isCancelled || stopped || stream.closed
           || stream.stallWatchToken != token || upstreamProof.confirms(since)
-        return (settled, !settled && upstreamProof.needsPing(since) ? markPingLocked() : nil)
+        let ping = !settled && upstreamProof.needsPing(since)
+        return (settled, ping ? markPingLocked() : nil, sentBytes - sentWhenArmed)
       }
       if settled { break }
       if let sentAt {
         sendPing(sentAt: sentAt, reason: "upstream ping")
-        deadline = max(deadline, ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds)
+        let drain = min(Double(max(0, queued)) / Self.upstreamDrainBytesPerSecond,
+          Self.upstreamDrainCapSeconds)
+        deadline = max(deadline, ProcessInfo.processInfo.systemUptime + Self.upstreamProofSeconds + drain)
       }
       if ProcessInfo.processInfo.systemUptime >= deadline { break }
       try? await Task.sleep(nanoseconds: 100_000_000)

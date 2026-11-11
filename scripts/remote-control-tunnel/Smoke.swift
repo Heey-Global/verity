@@ -400,14 +400,16 @@ func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async 
   let started = ProcessInfo.processInfo.systemUptime
   trickleSession.dataTask(with: origin.appendingPathComponent("healthz")).resume()
   var receivedWhileLost = receivedAtLoss
-  while tunnel.isActive && ProcessInfo.processInfo.systemUptime - started < 30 {
+  while tunnel.isActive && ProcessInfo.processInfo.systemUptime - started < 42 {
     receivedWhileLost = max(receivedWhileLost, received())
     try await Task.sleep(for: .milliseconds(100))
   }
   let elapsed = ProcessInfo.processInfo.systemUptime - started
+  // No lower bound: over HTTP/2 a watch armed on the shared stream before the
+  // mute may judge the lost bytes early. The heartbeat cannot end the
+  // attachment within 60 s of the mute, and names itself differently.
   guard !tunnel.isActive, tunnel.stopReason?.hasPrefix("stall: upstream unconfirmed") == true,
-    elapsed >= Double(RemoteAppTunnel.stallDeadlineSeconds),
-    elapsed < Double(RemoteAppTunnel.stallDeadlineSeconds) + RemoteAppTunnel.upstreamProofSeconds + 5
+    elapsed < 40
   else {
     throw ProductionProbeFailure.transport(
       "upstream stall not detected: active=\(tunnel.isActive) after \(Int(elapsed)) s, reason=\(tunnel.stopReason ?? "none")")
@@ -564,7 +566,7 @@ func runTunnelSmoke(endpoint: URL, outerPin: String, corePin: String) async thro
 func smokeResult() async -> String {
   let environment = ProcessInfo.processInfo.environment
   let watchdog = Task {
-    try? await Task.sleep(nanoseconds: 120_000_000_000)
+    try? await Task.sleep(nanoseconds: 150_000_000_000)
     guard !Task.isCancelled else { return }
     let failure = "FAIL: native tunnel watchdog expired"
     if let path = environment["VERITY_TUNNEL_RESULT"] {
