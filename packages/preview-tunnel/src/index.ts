@@ -14,6 +14,11 @@ import { isIP } from 'node:net';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
+import {
+  ConnectorWrites,
+  connectorWrites,
+  type ConnectorWriteSnapshot,
+} from './connector-diagnostics.js';
 import { connectorBackpressure } from './connector-backpressure.js';
 
 import {
@@ -162,6 +167,11 @@ export type PreviewEdgeDiagnostic =
     };
 
 export type PreviewConnectorDiagnostic =
+  | ({
+      event: 'transport.snapshot';
+      phase: 'ping.enqueue' | 'ping.write' | 'pong' | 'timeout.write' | 'timeout.pong';
+      elapsedMs: number;
+    } & ConnectorWriteSnapshot)
   | { event: 'connect.started' }
   | { event: 'connect.established'; elapsedMs: number }
   | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
@@ -1713,12 +1723,19 @@ export class PreviewConnector {
       this.stopHeartbeat();
       const startedAt = Date.now();
       this.options.onDiagnostic({ event: 'connect.started' });
+      const writes = new ConnectorWrites(this.connectionGeneration + 1);
       const socket = new WebSocket(this.options.edgeUrl, {
+        // Observe the public upgrade request rather than ws private socket fields.
+        finishRequest: (request) => {
+          request.once('socket', (transport) => writes.attach(transport));
+          request.end();
+        },
         headers: { authorization: `Bearer ${this.options.connectorToken}` },
         // A stalled upgrade happens before the heartbeat can supervise the socket.
         handshakeTimeout: this.options.connectTimeoutMs,
         maxPayload: encodedPayloadLimit(this.options.maxBodyBytes),
       });
+      connectorWrites.set(socket, writes);
       this.socket = socket;
       let opened = false;
       this.disconnected = new Promise((disconnected) => socket.once('close', () => disconnected()));
@@ -1776,6 +1793,23 @@ export class PreviewConnector {
   private startHeartbeat(socket: WebSocket): void {
     let pending: Buffer | undefined;
     let missedPongs = 0;
+    let probeStarted = 0;
+    const snapshot = (
+      phase: 'ping.enqueue' | 'ping.write' | 'pong' | 'timeout.write' | 'timeout.pong',
+    ): void => {
+      const writes = connectorWrites.get(socket);
+      if (!writes) return;
+      try {
+        this.options.onDiagnostic({
+          event: 'transport.snapshot',
+          phase,
+          elapsedMs: Math.max(0, Math.floor(performance.now() - probeStarted)),
+          ...writes.sample(socket),
+        });
+      } catch {
+        // Observers must not interrupt heartbeat supervision.
+      }
+    };
     const active = (): boolean =>
       this.socket === socket &&
       this.heartbeat !== undefined &&
@@ -1798,6 +1832,7 @@ export class PreviewConnector {
         );
         setImmediate(() => {
           if (!active() || !pending || this.heartbeatDeadline !== timer) return;
+          snapshot(phase === 'pong' ? 'timeout.pong' : 'timeout.write');
           if (phase === 'pong') missedPongs += 1;
           this.options.onDiagnostic({ event: 'heartbeat.timeout', phase, lateMs, missedPongs });
           if (phase === 'write' || missedPongs >= 2) socket.terminate();
@@ -1813,6 +1848,7 @@ export class PreviewConnector {
     };
     socket.on('pong', (payload: Buffer) => {
       if (!active() || !pending || !payload.equals(pending)) return;
+      snapshot('pong');
       pending = undefined;
       missedPongs = 0;
       clearDeadline();
@@ -1821,12 +1857,15 @@ export class PreviewConnector {
       if (socket.readyState !== WebSocket.OPEN || pending) return;
       const probe = randomBytes(8);
       pending = probe;
+      probeStarted = performance.now();
+      snapshot('ping.enqueue');
       // Socket writes can queue behind application frames. Bound that wait,
       // then give the peer a separate reply window once the write completes.
       deadline('write');
       try {
         socket.ping(probe, undefined, (error?: Error) => {
           if (!active() || pending !== probe) return;
+          snapshot('ping.write');
           clearDeadline();
           if (error) {
             socket.terminate();
@@ -2296,6 +2335,7 @@ export class PreviewConnector {
       while (reader) {
         const { done, value } = await reader.read();
         if (done) break;
+        connectorWrites.get(socket)?.body(value.byteLength);
         if (socket.readyState !== WebSocket.OPEN) {
           failed = true;
           break;
@@ -2412,12 +2452,19 @@ function rawDataText(data: WebSocket.RawData): string {
 
 function sendStreamFrame(socket: WebSocket, frame: StreamFrame, onFlush?: () => void): void {
   if (socket.readyState !== WebSocket.OPEN) return;
+  const writes = connectorWrites.get(socket);
+  let flushed: (() => void) | undefined;
   try {
-    socket.send(JSON.stringify(frame), () => {
-      // Disconnects are handled by the connector reconnect loop.
+    const encoded = JSON.stringify(frame);
+    flushed = writes?.enqueue(Buffer.byteLength(encoded));
+    socket.send(encoded, () => {
+      flushed?.();
+      // A write callback is not an acknowledgement from the peer.
       onFlush?.();
     });
+    writes?.observe(socket);
   } catch {
+    flushed?.();
     // The socket can close between the ready-state check and send.
   }
 }
