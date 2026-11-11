@@ -633,7 +633,9 @@ function rewire(root, modules, prefix = 'node_modules/') {
       const source = resolve(root, value.resolved, entry);
       if (!contained(root, source))
         throw new Error('Workspace executable must stay inside the project.');
-      const binDirectory = join(modules, '.bin');
+      const binPath =
+        path.slice(0, path.lastIndexOf('node_modules/') + 'node_modules/'.length) + '.bin';
+      const binDirectory = join(modules, binPath.slice(prefix.length));
       if (
         readlinkExists(binDirectory) &&
         (!lstatSync(binDirectory).isDirectory() || lstatSync(binDirectory).isSymbolicLink())
@@ -645,7 +647,7 @@ function rewire(root, modules, prefix = 'node_modules/') {
       // npm skips workspace bins whose sources are absent in central staging.
       // Keep native collision choices; add only missing links to current sources.
       if (!readlinkExists(executable))
-        symlinkSync(relative(join(root, prefix, '.bin'), source), executable);
+        symlinkSync(relative(join(root, binPath), source), executable);
     }
   }
 }

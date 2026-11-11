@@ -481,7 +481,14 @@ describe('shared dependency reuse', () => {
       mkdirSync(join(directory, 'packages/source'), { recursive: true });
       writeFileSync(join(directory, 'packages/source/package.json'), '{"name":"source"}');
       mkdirSync(join(directory, 'packages/other'), { recursive: true });
-      writeFileSync(join(directory, 'packages/other/package.json'), '{"name":"other"}');
+      writeFileSync(
+        join(directory, 'packages/other/package.json'),
+        JSON.stringify({ name: 'other', bin: { 'other-cli': 'cli.js' } }),
+      );
+      writeFileSync(
+        join(directory, 'packages/other/cli.js'),
+        '#!/usr/bin/env node\nconsole.log("other-cli");\n',
+      );
       writeFileSync(
         join(directory, 'package-lock.json'),
         JSON.stringify({
@@ -490,7 +497,10 @@ describe('shared dependency reuse', () => {
             'node_modules/hoisted': { version: '2.0.0' },
             'packages/source': {},
             'packages/other': {},
-            'packages/source/node_modules/other': { link: true, resolved: 'packages/other' },
+            'packages/source/node_modules/private/node_modules/other': {
+              link: true,
+              resolved: 'packages/other',
+            },
             'node_modules/source': { link: true, resolved: 'packages/source' },
             'packages/source/node_modules/private': { version: '2.0.0' },
             'packages/source/node_modules/private/node_modules/kept': { version: '3.0.0' },
@@ -517,9 +527,15 @@ describe('shared dependency reuse', () => {
     });
     expect(second.status, second.stderr).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
-    expect(realpathSync(join(sibling, 'packages/source/node_modules/other'))).toBe(
-      join(sibling, 'packages/other'),
+    expect(
+      realpathSync(join(sibling, 'packages/source/node_modules/private/node_modules/other')),
+    ).toBe(join(sibling, 'packages/other'));
+    const command = join(
+      sibling,
+      'packages/source/node_modules/private/node_modules/.bin/other-cli',
     );
+    expect(realpathSync(command)).toBe(join(sibling, 'packages/other/cli.js'));
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('other-cli');
     expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
     writeFileSync(join(f.worktree, nested), '{"version":"patched"}');
     expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
