@@ -355,6 +355,7 @@ func runProductionTunnelSmoke(endpoint: URL, outerPin: String, corePin: String, 
 // (other bytes still arrive) can see it; only the upstream ping proof can,
 // well before the 45-60 s heartbeat. Runs last: muting affects every data
 // socket the fixture holds.
+@available(macOS 14.0, iOS 17.0, *)
 func checkUpstreamStall(endpoint: URL, outerPin: String, corePin: String) async throws {
   let dataURL = endpoint.deletingLastPathComponent().appendingPathComponent("data")
   let origin = URL(string: "https://core.test")!

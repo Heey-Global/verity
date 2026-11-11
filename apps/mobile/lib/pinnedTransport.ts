@@ -1,6 +1,7 @@
 import { type TransportRequestInit, markSwitchTransportRequest } from '@verity/mobile';
 import { requireNativeModule } from 'expo-modules-core';
 import {
+  type DirectVerdict,
   directRouteKnownReachable,
   lastDirectRefusal,
   pendingDirectVerdict,
@@ -346,7 +347,7 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       let grace: ReturnType<typeof setTimeout> | undefined;
       let recheck: ReturnType<typeof setTimeout> | undefined;
 
-      const watchVerdict = (pending: Promise<string>): void => {
+      const watchVerdict = (pending: Promise<DirectVerdict>): void => {
         void pending.then(
           (outcome) => {
             if (settled || outcome === 'reachable' || directRouteKnownReachable(url)) return;
