@@ -809,6 +809,14 @@ interface UserGitIdentitiesTable {
 }
 
 /** A person's own authorization of the instance's GitHub App (ADR 0023 §3). */
+interface UserDopplerConnectionsTable {
+  user_id: string;
+  project_id: string;
+  /** Encrypted at rest. */
+  token: string;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 interface UserGithubAuthorizationsTable {
   user_id: string;
   github_user_id: string;
@@ -1609,6 +1617,9 @@ interface SecretProviderPermissionsTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
   remaining_uses: number | null;
   granted_by: string;
+  /** The person whose consent this is (ADR 0023 §3). A brokered-prompt grant
+   *  applies only in that person's turns; null on catalog rows. */
+  user_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Which subsystem issued this row. The table has two independent writers, and a
    *  `tool_id` prefix does not tell them apart (a catalog profile id may contain `:`),
    *  so the brokered-prompt grant store keys its list/revoke/auto-approve on this.
@@ -1904,6 +1915,7 @@ export interface Database {
   users: UsersTable;
   user_git_identities: UserGitIdentitiesTable;
   user_github_authorizations: UserGithubAuthorizationsTable;
+  user_doppler_connections: UserDopplerConnectionsTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;

@@ -5706,3 +5706,31 @@ migrations['0208_user_github_authorizations'] = {
     await sql`alter table verity_settings drop column github_app_client_id`.execute(db);
   },
 };
+
+migrations['0209_user_doppler_connections'] = {
+  // Doppler access goes through the turn's person, per project (ADR 0023 §3):
+  // each member connects their own token, the instance token stays the
+  // administrator's. Standing grants become a person's own consent; the existing
+  // brokered-prompt grants were approved by the administrator and stay theirs.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table user_doppler_connections (
+      user_id text not null references users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      token text not null,
+      updated_at timestamptz not null default now(),
+      primary key (user_id, project_id)
+    )`.execute(db);
+    await sql`alter table secret_provider_permissions
+      add column user_id text references users(id) on delete cascade`.execute(db);
+    await sql`update secret_provider_permissions
+      set user_id = '00000000-0000-4000-8000-000000000001'
+      where issuer = 'brokered-prompt-v2'
+        and exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table secret_provider_permissions drop column user_id`.execute(db);
+    await sql`drop table user_doppler_connections`.execute(db);
+  },
+};
