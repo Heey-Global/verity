@@ -194,15 +194,15 @@ export function ProjectCard({
           delayLongPress={PROJECT_PICKUP_DELAY_MS}
           accessibilityRole="button"
           accessibilityLabel={
-            movingProjects
+            movingProjects && sortable
               ? `Move ${group.title}`
               : `${group.title}, ${projectCardLine(group, facts)}`
           }
           accessibilityHint={
-            movingProjects
+            movingProjects && sortable
               ? undefined
               : (inPlace ? 'Shows its sessions.' : 'Opens the project.') +
-                (sortable ? ' Hold to reorder, or use the move actions.' : '')
+                (moveActions.length > 0 ? ' Hold to reorder, or use the move actions.' : '')
           }
           accessibilityActions={moveActions}
           onAccessibilityAction={({ nativeEvent }) => {

@@ -81,11 +81,11 @@ type Pickup = {
 };
 const SLOT_SPRING = { damping: 30, stiffness: 320, overshootClamping: true };
 
-/** One recognizer on the fixed viewport owns the entire touch sequence. Neither
- * recycling a cell nor changing the content size can detach that recognizer. */
 /** How long a row is held before the drag picks it up. */
 export const PROJECT_PICKUP_DELAY_MS = 260;
 
+/** One recognizer on the fixed viewport owns the entire touch sequence. Neither
+ * recycling a cell nor changing the content size can detach that recognizer. */
 export function useProjectReorder({
   order,
   sortable,
