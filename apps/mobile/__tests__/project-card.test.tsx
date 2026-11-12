@@ -16,6 +16,7 @@ jest.mock('../components/useProjectReorder', () => ({
 }));
 
 import {
+  PROJECT_IMAGE_REBUILDING_WARNING,
   inboxItems,
   type ProjectRecord,
   type SessionSummary,
@@ -23,6 +24,7 @@ import {
 } from '@verity/mobile';
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
 
+import { AGENT_MARK } from '../components/AgentMark';
 import { ProjectCard, projectCardFacts, projectCardLine } from '../components/project/ProjectCard';
 import { projectGroups } from '../lib/projectGroups';
 import type { ProjectReorderController } from '../components/useProjectReorder';
@@ -149,28 +151,37 @@ describe('project card facts', () => {
     ];
     const facts = projectCardFacts(group(sessions), Date.now(), new Set(['a', 'b', 'd']));
     expect(facts.fresh).toBe(1);
-    expect(facts.working).toBe(true);
+    expect(facts.mark).toBe('working');
     const idle = projectCardFacts(group([session('b')]), Date.now(), new Set(['b']));
-    expect(idle.working).toBe(false);
+    expect(idle.mark).toBe('unread');
     const item = group([session('b'), session('c')]);
     expect(projectCardLine(item, projectCardFacts(item, Date.now(), new Set(['b'])))).toBe('1 new');
   });
 
-  it('names the project’s own problem as its health', () => {
-    const facts = projectCardFacts(
-      group([], { health: { label: 'Needs repair', tone: 'danger' } }),
-      Date.now(),
-    );
-    expect(facts.health).toEqual({ label: 'Needs repair', intent: 'needsSetup' });
+  // A broken sandbox is the state's to say. Counted as waiting as well, it put
+  // "1 waiting for you" and a "?" beside "Needs repair" for the same problem.
+  it('says a failed project needs repair once, with the short reason', () => {
+    const failed = {
+      ...project,
+      state: 'failed',
+      provisionError: 'Sandbox container stopped — Repair to restart it.',
+    } as ProjectRecord;
+    expect(inboxItems({ sessions: [], projects: [failed], now: Date.now() })).not.toEqual([]);
+    const item = group([], { project: failed });
+    const facts = projectCardFacts(item, Date.now());
+    expect(facts.state.state).toBe('error');
+    expect(facts.waiting).toBe(0);
+    expect(facts.mark).toBeUndefined();
+    expect(projectCardLine(item, facts)).toBe('Needs repair · Sandbox container stopped');
   });
 
-  // The project page's Security row shows findings; a red tag on every card
+  // The project page's Security row shows findings; a red note on every card
   // repeated them. The project's own problems still show.
   it('leaves vulnerabilities to the project page but keeps a broken sandbox', () => {
     const vulnerable = { ...project, vulnerabilitySummary: { count: 3, critical: 1, high: 2 } };
     const [quiet] = projectGroups([vulnerable], [], new Map(), new Map(), null);
     expect(quiet!.status?.label).toBe('3 vulnerable packages');
-    expect(projectCardFacts(quiet!, Date.now()).health).toBeUndefined();
+    expect(projectCardFacts(quiet!, Date.now()).state).toEqual({ state: 'running' });
     const [broken] = projectGroups(
       [{ ...vulnerable, state: 'failed', provisionError: 'Sandbox container stopped' }],
       [],
@@ -178,7 +189,7 @@ describe('project card facts', () => {
       new Map(),
       null,
     );
-    expect(projectCardFacts(broken!, Date.now()).health?.intent).toBe('needsSetup');
+    expect(projectCardFacts(broken!, Date.now()).state.state).toBe('error');
   });
 
   it('falls back to the session count and then the metadata', () => {
@@ -231,38 +242,80 @@ describe('project card', () => {
     expect(onOpen).toHaveBeenCalled();
   });
 
-  // The marks are the card's only cue at a glance; one in the wrong tone says
-  // "new" for running work or hides the work entirely.
-  it('marks working before new, and leaves new to the waiting count', () => {
+  // The corner is the card's only cue at a glance and must say what the most
+  // urgent session row says: one in the wrong tone says "new" for running work,
+  // or hides that someone is waiting.
+  it('marks waiting before working before new, as the session rows do', () => {
     renderCard(
       group([session('a', { status: 'running' }), session('b')]),
       jest.fn(),
       false,
       new Set(['b']),
     );
-    expect(screen.getByLabelText('Agent is working')).toBeTruthy();
-    expect(screen.queryByLabelText('Unread messages')).toBeNull();
+    expect(screen.getByTestId('project-card-mark-p1')).toHaveProp(
+      'accessibilityLabel',
+      AGENT_MARK.working.label,
+    );
     screen.unmount();
 
     renderCard(group([session('b')]), jest.fn(), false, new Set(['b']));
-    expect(screen.getByLabelText('Unread messages')).toBeTruthy();
-    expect(screen.queryByTestId('project-card-waiting-p1')).toBeNull();
+    expect(screen.getByTestId('project-card-mark-p1')).toHaveProp(
+      'accessibilityLabel',
+      AGENT_MARK.unread.label,
+    );
     screen.unmount();
 
-    renderCard(group([ask('a'), session('b')]), jest.fn(), false, new Set(['b']));
-    expect(screen.queryByTestId('project-card-mark-p1')).toBeNull();
-    expect(screen.getByLabelText('1 waiting for you')).toBeTruthy();
+    renderCard(
+      group([ask('a'), session('b', { status: 'running' })]),
+      jest.fn(),
+      false,
+      new Set(['b']),
+    );
+    expect(screen.getByTestId('project-card-mark-p1')).toHaveProp(
+      'accessibilityLabel',
+      AGENT_MARK.question.label,
+    );
+    // Said in words in the line, not as a count badge beside the chevron.
+    expect(screen.queryByLabelText('1 waiting for you')).toBeNull();
+    expect(screen.getByTestId('project-card-line-p1')).toHaveTextContent(/^1 waiting for you/);
     screen.unmount();
 
     renderCard(group([session('c')]), jest.fn());
     expect(screen.queryByTestId('project-card-mark-p1')).toBeNull();
-    expect(screen.queryByTestId('project-card-waiting-p1')).toBeNull();
   });
 
-  it('shows the project’s own work as working, not as a spinner', () => {
-    renderCard(group([], { health: { label: 'Updating security', tone: 'working' } }), jest.fn());
-    expect(screen.getByLabelText('Updating security')).toBeTruthy();
-    expect(screen.queryByLabelText('Updating security, in progress')).toBeNull();
+  // Right after a Server deploy every project updates at once; a card that
+  // changes for it lights up the whole list for something nobody has to do.
+  it('keeps a running card unchanged while Verity works on its sandbox', () => {
+    const busy = {
+      ...project,
+      provisionWarning: PROJECT_IMAGE_REBUILDING_WARNING,
+      sandboxUpdate: { state: 'available', selfRepair: 'converging', turnBlocked: false },
+    } as ProjectRecord;
+    renderCard(group([session('a')], { project: busy }), jest.fn());
+    expect(screen.getByLabelText(/^website, Running, /)).toBeTruthy();
+    expect(screen.getByTestId('project-card-line-p1')).toHaveTextContent('1 session');
+    expect(screen.queryByLabelText(/in progress$/)).toBeNull();
+  });
+
+  it('names the state in the spoken label and the line, without a tag', () => {
+    const failed = {
+      ...project,
+      state: 'failed',
+      provisionError: 'Sandbox container stopped',
+    } as ProjectRecord;
+    renderCard(group([], { project: failed }), jest.fn());
+    expect(screen.getByLabelText(/^website, Error, /)).toBeTruthy();
+    expect(screen.getByTestId('project-card-line-p1')).toHaveTextContent(
+      'Needs repair · Sandbox container stopped',
+    );
+    expect(screen.queryByLabelText(/, needs setup$/)).toBeNull();
+    screen.unmount();
+
+    const sleeping = { ...project, lifecycleState: 'sleeping' } as ProjectRecord;
+    renderCard(group([session('a')], { project: sleeping }), jest.fn());
+    expect(screen.getByLabelText(/^website, Not running, /)).toBeTruthy();
+    expect(screen.getByTestId('project-card-line-p1')).toHaveTextContent('1 session · asleep');
   });
 
   it('shows the sessions of a group without a page in place', () => {

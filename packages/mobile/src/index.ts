@@ -64,6 +64,15 @@ export {
   type ProjectBadge,
   type ProjectTone,
 } from './ui/projectBadge.js';
+export {
+  hasActionableToolkitDrift,
+  projectAgentMark,
+  projectCardState,
+  shortProvisionReason,
+  type ProjectCardNote,
+  type ProjectCardState,
+  type ProjectCardStateKind,
+} from './ui/projectCardState.js';
 export { projectDisplayName, projectRepoRef, projectTitle } from './ui/projectName.js';
 export {
   isSecuritySandboxUpdate,

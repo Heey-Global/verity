@@ -279,13 +279,18 @@ title; a log list keeps them dense and scannable.
   what is counted.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
-- **Project cards** reuse the session rows' marks (§ 5.2): the initial's top corner
-  carries a pulsing `signature` mark while any session works, else an `action` mark when
-  an idle session has something unread; a project waiting for the person shows its count
-  before the chevron instead of that `action` mark. A project's own work in progress
-  (updating, rebuilding) is the pulsing `signature` dot and its word rather than the
-  `transient` spinner, so all work in progress reads the same. The subtitle repeats every
-  signal in words.
+- **Project cards** follow the session rows (§ 5.2): the initial's tile is the project
+  itself and its top corner is the agents. The tile has three states only — `action`
+  tint while the project runs, the neutral tile with a `textFaint` initial while it does
+  not (paused, asleep, starting) and `attention` tint on an error. Work Verity does on a
+  running sandbox in the background (an update, a rebuild) leaves the tile alone. The
+  corner carries the most urgent mark of the project's sessions with the rows' priority
+  and drawing: `attention` "?" while something waits for the person, the pulsing
+  `signature` mark while a session works, `action` when an idle session has something
+  unread. Everything else is said in the subtitle: "N waiting for you" first in
+  `attention`, then what runs and what is new, then a short state note ("Starting…",
+  "asleep", "Runs as root", "Needs repair · Container stopped"; `attention` when there
+  is something to do). Nothing sits before the chevron — no count, no tag.
 - Mapping from the status intents in [§ 8](#8-status-intents):
 
   | Intent       | Tag                                                      | Dot and word         |

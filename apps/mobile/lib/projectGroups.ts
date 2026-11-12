@@ -21,9 +21,6 @@ export type SessionProjectGroup = {
    *  transition in flight, a failure, or an attention line. Shown INSTEAD of
    *  `subtitle`, which is metadata and can wait. */
   status?: ProjectOverviewStatus | undefined;
-  /** `status` without vulnerability findings: the project cards of the new
-   *  design, whose page shows the findings on its own Security card. */
-  health?: ProjectOverviewStatus | undefined;
   portLinks: ProjectPortLink[];
   project?: ProjectRecord | undefined;
   /** Issue links must not invalidate session rows when project status changes. */
@@ -69,7 +66,6 @@ export function projectGroups(
       title: project.kind === 'control_plane' ? 'Verity Control' : projectTitle(project),
       subtitle: project.latestReleaseTag ?? '',
       status: projectOverviewStatus(project, detection),
-      health: projectOverviewStatus(project, detection, { vulnerabilities: false }),
       portLinks,
       project,
       repo: repoIdentity(project, connections),
