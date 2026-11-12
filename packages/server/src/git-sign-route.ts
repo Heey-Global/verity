@@ -103,7 +103,27 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         const settings = await gitSignRouteStore(deps.eventStore).getVeritySettings();
         // DB contents OR the file at gitSshPrivateKeyPath — the SAME resolution the
         // provisioner uses to derive the sandbox token, so the two agree on the key.
-        const privateKey = resolveSigningPrivateKey(settings);
+        const instanceKey = resolveSigningPrivateKey(settings);
+        // A turn's badge names the person the commit is for: sign with their own
+        // key. The instance key was the administrator's and stays their fallback
+        // (ADR 0023 §3); a member without a key gets a refusal, never someone
+        // else's signature. The container capability names no person and keeps
+        // the project default, which is the instance key.
+        let privateKey = instanceKey;
+        if (turn !== undefined && turn.userId !== null) {
+          const personal = (await deps.eventStore.userGitIdentities.get(turn.userId))
+            ?.sshPrivateKey;
+          privateKey =
+            personal !== undefined && personal !== null && personal.trim().length > 0
+              ? personal
+              : (await deps.eventStore.isActiveAdministrator(turn.userId))
+                ? instanceKey
+                : null;
+          if (privateKey === null) {
+            reply.code(409);
+            return { error: 'no personal signing key; connect GitHub to sign commits' };
+          }
+        }
         if (privateKey === null || privateKey.trim().length === 0) {
           reply.code(409);
           return { error: 'no signing key configured' };

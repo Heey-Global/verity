@@ -2,7 +2,7 @@ import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from 'node:http';
@@ -32,11 +32,16 @@ const SIGNING_KEY = [
 
 // Fake `ssh-keygen -Y sign`: writes a recognizable armored signature so the route
 // returns it. (The real ssh-keygen round-trip is validated separately.)
-const fakeSign: SshSignSpawner = ({ payloadPath, namespace }) => {
+// Which private key each signature was made with, so a test can tell a
+// personal signature from the instance one.
+const signedWith: string[] = [];
+const fakeSign: SshSignSpawner = ({ keyPath, payloadPath, namespace }) => {
+  signedWith.push(readFileSync(keyPath, 'utf8'));
   writeFileSync(`${payloadPath}.sig`, `-----BEGIN SSH SIGNATURE-----\nfake:${namespace}\n`);
   return Promise.resolve();
 };
 
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -174,7 +179,7 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
         projectId: 'p1',
         sessionId: 's1',
         turnId: 't1',
-        userId: 'lena',
+        userId: ADMIN,
       });
       expect((await postUnix(listener.socketPath, badge)).status).toBe(200);
 
@@ -195,6 +200,48 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, container)).status).toBe(200);
+    } finally {
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The person whose turn commits signs it. A member without a key of their own
+  // must be refused rather than handed the administrator's (instance) key, and
+  // the administrator keeps the instance key as their fallback.
+  it("signs a turn's commit with its person's own key, never another person's", async () => {
+    const cipher = createSealableSecretCipher();
+    const turns = createTurnCredentials();
+    const { app, store } = build(cipher, undefined, createSigningCapabilityRegistry(ctx.db), turns);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-person-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    const badgeFor = (userId: string) =>
+      turns.issue({ projectId: 'p1', sessionId: 's1', turnId: `t-${userId}`, userId });
+    try {
+      signedWith.length = 0;
+      const refused = await postUnix(listener.socketPath, badgeFor('lena'));
+      expect(refused.status).toBe(409);
+      expect(refused.body).toContain('connect GitHub');
+      expect(signedWith).toEqual([]);
+
+      const LENA_KEY = SIGNING_KEY.replace('BEGIN OPENSSH', 'BEGIN OPENSSH lena');
+      await store.userGitIdentities.set('lena', { sshPrivateKey: LENA_KEY });
+      expect((await postUnix(listener.socketPath, badgeFor('lena'))).status).toBe(200);
+      expect((await postUnix(listener.socketPath, badgeFor(ADMIN))).status).toBe(200);
+      expect(signedWith.map((key) => key.trim())).toEqual([LENA_KEY, SIGNING_KEY]);
     } finally {
       await listener.close();
       await app.close();

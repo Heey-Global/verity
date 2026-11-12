@@ -5648,3 +5648,36 @@ migrations['0206_google_account_owners'] = {
     await sql`alter table google_accounts drop column owner_user_id`.execute(db);
   },
 };
+
+migrations['0207_user_git_identities'] = {
+  // Author, committer and commit signature belong to the person whose turn makes
+  // the commit (ADR 0023 §3). The installation's existing git identity and
+  // signing key were the administrator's, so they become the administrator's
+  // personal identity; the encrypted key envelope is copied verbatim so this
+  // also runs while the store is sealed. A key configured only by path stays in
+  // the instance settings and remains the administrator's fallback.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table user_git_identities (
+      user_id text primary key references users(id) on delete cascade,
+      author_name text check (author_name is null or char_length(btrim(author_name)) between 1 and 200),
+      author_email text check (author_email is null or char_length(btrim(author_email)) between 3 and 320),
+      ssh_private_key text,
+      ssh_public_key text,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+    await sql`insert into user_git_identities
+        (user_id, author_name, author_email, ssh_private_key, ssh_public_key)
+      select '00000000-0000-4000-8000-000000000001',
+        nullif(btrim(git_user_name), ''), nullif(btrim(git_user_email), ''),
+        nullif(git_ssh_private_key, ''), nullif(git_ssh_public_key, '')
+      from verity_settings
+      where id = 'global'
+        and exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')
+        and (nullif(btrim(git_user_name), '') is not null
+          or nullif(btrim(git_user_email), '') is not null
+          or nullif(git_ssh_private_key, '') is not null)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_git_identities`.execute(db);
+  },
+};

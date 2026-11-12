@@ -795,6 +795,17 @@ export interface AuthTokenTable {
 }
 
 /** Local identity is separate from a paired device and from project access. */
+/** A person's git author identity and commit signing key (ADR 0023 §3). */
+interface UserGitIdentitiesTable {
+  user_id: string;
+  author_name: string | null;
+  author_email: string | null;
+  /** Encrypted at rest like the instance signing key. */
+  ssh_private_key: string | null;
+  ssh_public_key: string | null;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 interface UsersTable {
   id: string;
   role: 'administrator' | 'member';
@@ -1875,6 +1886,7 @@ export interface Database {
   project_repositories: ProjectRepositoriesTable;
   session_repository_workspaces: SessionRepositoryWorkspacesTable;
   users: UsersTable;
+  user_git_identities: UserGitIdentitiesTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;

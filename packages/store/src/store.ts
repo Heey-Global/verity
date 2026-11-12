@@ -8,6 +8,7 @@ import {
 } from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
 import { UserProfileStore } from './user-profile.js';
+import { UserGitIdentityStore } from './user-git-identity.js';
 import {
   ProjectRepositoryStore,
   type AddProjectRepositoryInput,
@@ -2448,6 +2449,10 @@ export class EventStore implements EventSink {
     return new ForgeConnectionStore(this.db, this.cipher, (action) =>
       this.egressDestinationMutation(action),
     );
+  }
+
+  get userGitIdentities(): UserGitIdentityStore {
+    return new UserGitIdentityStore(this.db, this.cipher);
   }
 
   get googleAccounts(): GoogleAccountStore {
