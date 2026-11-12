@@ -34,6 +34,18 @@ export class UserGitIdentityStore {
     };
   }
 
+  /** The author name and email alone, without decrypting the signing key. */
+  async author(
+    userId: string,
+  ): Promise<{ authorName: string | null; authorEmail: string | null } | undefined> {
+    const row = await this.db
+      .selectFrom('user_git_identities')
+      .select(['author_name', 'author_email'])
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return row ? { authorName: row.author_name, authorEmail: row.author_email } : undefined;
+  }
+
   /** Set a person's identity; only the given fields change. */
   async set(userId: string, input: Partial<Omit<UserGitIdentity, 'userId'>>): Promise<void> {
     const values = {

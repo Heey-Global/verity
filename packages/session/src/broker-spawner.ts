@@ -1,3 +1,4 @@
+import { gitAuthorFromEnv } from './git-author.js';
 import { StderrTail } from './stderr-tail.js';
 import { createConnection, type Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
@@ -224,6 +225,7 @@ export function createBrokerSpawner(
         if (settled) return;
         const sessionEnv = sessionRuntimeEnv(options.env);
         const turnCapability = options.env?.[TURN_CAPABILITY_ENV];
+        const gitAuthor = gitAuthorFromEnv(options.env);
         send(socket, {
           protocolVersion: PROTOCOL_VERSION,
           kind: 'spawn-agent',
@@ -243,6 +245,8 @@ export function createBrokerSpawner(
           ...(typeof turnCapability === 'string' && TURN_CAPABILITY_PATTERN.test(turnCapability)
             ? { turnCapability }
             : {}),
+          // The turn's author, as its own field for the same reason as the badge.
+          ...(gitAuthor === undefined ? {} : { gitAuthor }),
         });
       })();
     });

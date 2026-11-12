@@ -12,6 +12,7 @@ import {
   type RunnerSupervisorBackend,
 } from './backend.js';
 import { stageImageAttachments } from './file-attachments.js';
+import { isGitAuthor, type GitAuthor } from './git-author.js';
 import type { RunTurnOptions } from './backend-contract.js';
 import type { EventBus } from './bus.js';
 import { FileTailRunnerClient, type RunnerFrameStore } from './file-tail-runner-client.js';
@@ -201,6 +202,14 @@ export interface SupervisorRunnerClientOptions {
         release: (token: string) => void;
       }
     | undefined;
+  /**
+   * The person this turn's commits are authored by, resolved when it launches. The
+   * shared container's git config names only one identity; this one becomes the
+   * agent's `GIT_AUTHOR_*` / `GIT_COMMITTER_*`. Undefined keeps the container's
+   * project default — only for a turn without a person. An older Sandbox drops
+   * the unknown field and keeps the container default.
+   */
+  gitAuthor?: (() => Promise<GitAuthor | undefined>) | undefined;
   /** Mint and retire the bearer used by configured MCP proxy bindings. */
   mcpProxyTokens?:
     | {
@@ -1254,6 +1263,13 @@ export class SupervisorRunnerClient implements RunnerClient {
     if (needsMcpProxy === true && this.options.mcpProxyTokens === undefined) {
       throw new Error('supervisor runner requires MCP proxy token issuance');
     }
+    // Resolved before any bearer is minted, so a failed lookup leaves nothing to retire.
+    // A person's turn must never fall back to the container's identity, which is
+    // another person's: an unusable author fails the turn instead.
+    const gitAuthor = await this.options.gitAuthor?.();
+    if (gitAuthor !== undefined && !isGitAuthor(gitAuthor)) {
+      throw new Error('supervisor runner received an invalid git author');
+    }
     const bearer = (opts as { [GATEWAY_BEARER]?: GatewayBearerBox })[GATEWAY_BEARER];
     const mcpGatewayToken = this.acpBackend
       ? this.options.mcpGatewayTokens?.issue(opts.turnId)
@@ -1308,6 +1324,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       ...(mcpGatewayToken === undefined ? {} : { mcpGatewayToken }),
       ...(mcpProxyToken === undefined ? {} : { mcpProxyToken }),
       ...(turnCapability === undefined ? {} : { turnCapability }),
+      ...(gitAuthor === undefined ? {} : { gitAuthor }),
       ...(mcpServers === undefined
         ? {}
         : {

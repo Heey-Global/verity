@@ -6,6 +6,7 @@ import {
   SupervisorRunnerClient,
   SupervisorRunnerRecovery,
   type ConductorDeps,
+  type GitAuthor,
   type EventBus,
   type RunnerClient,
   type SupervisorRunnerClientOptions,
@@ -69,6 +70,8 @@ export function buildRunnerConductorWiring(deps: {
   mcpGatewayTokens?: McpGatewayTokens | undefined;
   /** Per-turn sandbox credentials naming the person a turn runs for. */
   turnCredentials?: TurnCredentials | undefined;
+  /** Who a person's turn commits as; see turn-git-author.ts. */
+  turnGitAuthor?: ((userId: string) => Promise<GitAuthor>) | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
   /** The project's enabled HTTP MCP servers usable in a turn run for `initiatedBy`. */
@@ -358,6 +361,18 @@ export function buildRunnerConductorWiring(deps: {
                     }),
                   release: (token: string) => deps.turnCredentials!.release(token),
                 },
+              }),
+          // The shared container's git config names one person; a person's turn
+          // commits as itself. A turn without a person keeps the project default.
+          ...(deps.turnGitAuthor === undefined ||
+          ephemeral ||
+          context.initiatedBy?.userId === undefined
+            ? {}
+            : {
+                gitAuthor: (
+                  (userId: string) => () =>
+                    deps.turnGitAuthor!(userId)
+                )(context.initiatedBy.userId),
               }),
           ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
             ? {}

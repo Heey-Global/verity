@@ -4059,6 +4059,34 @@ describe('verity-runner supervisor runtime', () => {
     ).toThrow(/invalid sessionEnv/u);
   });
 
+  it('forwards a well-formed git author and refuses one that could forge a commit header', () => {
+    const base = {
+      protocolVersion: 1,
+      kind: 'start-turn',
+      turnId: 'turn-1',
+      startCommandId: 'start-1',
+      sessionId: 'session-1',
+      backend: 'claude-acp',
+      worktree: runtimeDir,
+      cwd: runtimeDir,
+      prompt: 'look',
+    };
+    const author = { name: 'Lena Berg', email: 'lena@example.com' };
+    expect(validateStartTurnRequest({ ...base, gitAuthor: author }).gitAuthor).toEqual(author);
+    expect(validateStartTurnRequest(base).gitAuthor).toBeUndefined();
+    for (const malformed of [
+      { name: 'Lena\nAuthor: x', email: 'lena@example.com' },
+      { name: 'Lena', email: 'lena@example.com> x <y@z' },
+      { name: ' ', email: 'lena@example.com' },
+      { name: 'Lena', email: 'not-an-address' },
+      { ...author, extra: 'x' },
+      'Lena <lena@example.com>',
+    ])
+      expect(() => validateStartTurnRequest({ ...base, gitAuthor: malformed })).toThrow(
+        /invalid gitAuthor/u,
+      );
+  });
+
   it('forwards a well-formed turn badge for any backend and refuses anything else', () => {
     const base = {
       protocolVersion: 1,

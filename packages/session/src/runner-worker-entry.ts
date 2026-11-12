@@ -13,6 +13,7 @@ import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
 import { createBrokerSpawner, TURN_CAPABILITY_ENV } from './broker-spawner.js';
+import { gitAuthorEnv, isGitAuthor } from './git-author.js';
 import { RunnerServer } from './runner-server.js';
 import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
@@ -69,6 +70,8 @@ const startTurnRequestSchema = z
       .string()
       .regex(/^[A-Za-z0-9_-]{43}$/u)
       .optional(),
+    /** The person this turn's commits are authored by; see git-author.ts. */
+    gitAuthor: z.unknown().refine(isGitAuthor, 'invalid git author').optional(),
     mcpServers: z.array(httpMcpServerSchema).max(16).optional(),
     sessionEnv: z
       .strictObject({
@@ -244,6 +247,8 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
     ...(request.turnCapability !== undefined
       ? { [TURN_CAPABILITY_ENV]: request.turnCapability }
       : { [TURN_CAPABILITY_ENV]: undefined }),
+    // Likewise: only this turn's own author, never one ambient in the container.
+    ...gitAuthorEnv(request.gitAuthor),
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

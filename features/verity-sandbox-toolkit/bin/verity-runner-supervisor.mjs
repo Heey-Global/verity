@@ -165,6 +165,29 @@ const MAX_CONTROL_LINE_BYTES = MAX_START_REQUEST_BYTES + 1;
 const OVERSIZE_DRAIN_GRACE_MS = 2_000;
 /** 32 random bytes as unpadded base64url, as minted by the Server's turn credentials. */
 const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+
+/**
+ * The person a turn's commits are authored by (see packages/session/src/git-author.ts,
+ * which this mirrors). It travels as its own request field: older peers enforce
+ * the `sessionEnv` key list but ignore unknown fields. Angle brackets and control
+ * characters could forge a second identity line in a commit header.
+ */
+function isGitAuthor(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { name, email } = value;
+  return (
+    Object.keys(value).length === 2 &&
+    typeof name === 'string' &&
+    typeof email === 'string' &&
+    name.trim().length > 0 &&
+    Buffer.byteLength(name) <= 200 &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+    /^[^\u0000-\u001f\u007f<>]+$/u.test(name) &&
+    Buffer.byteLength(email) <= 320 &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+    /^[^\s\u0000-\u001f\u007f<>@]+@[^\s\u0000-\u001f\u007f<>@]+$/u.test(email)
+  );
+}
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 // What the start-turn request validator will parse at all — the outermost gate, wider
@@ -1811,6 +1834,13 @@ export function validateStartTurnRequest(request) {
   if (turnCapability !== undefined && !TURN_CAPABILITY_PATTERN.test(turnCapability)) {
     throw new Error('invalid turnCapability');
   }
+  if (request.gitAuthor !== undefined && !isGitAuthor(request.gitAuthor)) {
+    throw new Error('invalid gitAuthor');
+  }
+  const gitAuthor =
+    request.gitAuthor === undefined
+      ? undefined
+      : { name: request.gitAuthor.name, email: request.gitAuthor.email };
   let mcpServers;
   if (request.mcpServers !== undefined) {
     if (!Array.isArray(request.mcpServers) || request.mcpServers.length > 16) {
@@ -1914,6 +1944,7 @@ export function validateStartTurnRequest(request) {
     ...(mcpGatewayToken !== undefined ? { mcpGatewayToken } : {}),
     ...(mcpProxyToken !== undefined ? { mcpProxyToken } : {}),
     ...(turnCapability !== undefined ? { turnCapability } : {}),
+    ...(gitAuthor !== undefined ? { gitAuthor } : {}),
     ...(mcpServers !== undefined ? { mcpServers } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),

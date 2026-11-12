@@ -269,6 +269,29 @@ const SPAWNABLE_AGENT_COMMANDS = new Set(['claude-agent-acp', 'codex-acp', 'open
  * request field rather than in `sessionEnv`, whose key list older brokers enforce.
  */
 const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+
+/**
+ * The person a turn's commits are authored by (see packages/session/src/git-author.ts,
+ * which this mirrors). It travels as its own request field: older peers enforce
+ * the `sessionEnv` key list but ignore unknown fields. Angle brackets and control
+ * characters could forge a second identity line in a commit header.
+ */
+function isGitAuthor(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const { name, email } = value;
+  return (
+    Object.keys(value).length === 2 &&
+    typeof name === 'string' &&
+    typeof email === 'string' &&
+    name.trim().length > 0 &&
+    Buffer.byteLength(name) <= 200 &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+    /^[^\u0000-\u001f\u007f<>]+$/u.test(name) &&
+    Buffer.byteLength(email) <= 320 &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+    /^[^\s\u0000-\u001f\u007f<>@]+@[^\s\u0000-\u001f\u007f<>@]+$/u.test(email)
+  );
+}
 /**
  * Verity's own per-turn runtime context — the only environment a spawn request
  * may contribute. Everything else in the child's environment is derived from THIS
@@ -851,6 +874,8 @@ async function validateSpawnRequest(raw, options) {
     (typeof raw.turnCapability !== 'string' || !TURN_CAPABILITY_PATTERN.test(raw.turnCapability))
   )
     throw new Error('invalid agent turn capability');
+  if (raw.gitAuthor !== undefined && !isGitAuthor(raw.gitAuthor))
+    throw new Error('invalid agent git author');
   if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
     throw new Error('Invalid planning isolation policy');
   if (raw.gatewayToolsOnly === true && raw.knowledgeIsolation === true)
@@ -872,6 +897,9 @@ async function validateSpawnRequest(raw, options) {
     cwd,
     sessionEnv: raw.sessionEnv,
     ...(raw.turnCapability !== undefined ? { turnCapability: raw.turnCapability } : {}),
+    ...(raw.gitAuthor !== undefined
+      ? { gitAuthor: { name: raw.gitAuthor.name, email: raw.gitAuthor.email } }
+      : {}),
     knowledgeIsolation: raw.knowledgeIsolation === true,
     planning: raw.planning === true,
     gatewayToolsOnly: raw.gatewayToolsOnly === true,
@@ -886,6 +914,7 @@ function childEnvironment(
   source = process.env,
   sessionEnv = undefined,
   turnCapability = undefined,
+  gitAuthor = undefined,
 ) {
   const copy = (name) => (source[name] === undefined ? {} : { [name]: source[name] });
   // Re-filtered here even though `parseRequest` already rejected anything else:
@@ -1016,6 +1045,16 @@ function childEnvironment(
     // ambient value would let one turn present another turn's badge.
     ...(typeof turnCapability === 'string' && TURN_CAPABILITY_PATTERN.test(turnCapability)
       ? { VERITY_TURN_CAPABILITY: turnCapability }
+      : {}),
+    // The turn's own author, also only from this turn's request. git prefers these
+    // over the shared container's `user.name` / `user.email`, which name one person.
+    ...(isGitAuthor(gitAuthor)
+      ? {
+          GIT_AUTHOR_NAME: gitAuthor.name,
+          GIT_AUTHOR_EMAIL: gitAuthor.email,
+          GIT_COMMITTER_NAME: gitAuthor.name,
+          GIT_COMMITTER_EMAIL: gitAuthor.email,
+        }
       : {}),
   };
 }
@@ -2534,6 +2573,7 @@ export function agentLaunchSpec(request, options) {
           },
           request.sessionEnv,
           request.turnCapability,
+          request.gitAuthor,
         ),
         VERITY_SESSION_WORKTREE: request.cwd,
         // Disabling project config also disables automatic AGENTS.md discovery.

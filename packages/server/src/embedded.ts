@@ -1,4 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { resolveTurnGitAuthor } from './turn-git-author.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
@@ -4579,6 +4580,15 @@ export async function buildEmbeddedServer(
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         turnCredentials,
+        turnGitAuthor: (userId) =>
+          resolveTurnGitAuthor(
+            {
+              gitIdentity: (id) => eventStore.userGitIdentities.author(id),
+              githubAccount: (id) => eventStore.userGithubAuthorizations.account(id),
+              displayName: async (id) => (await eventStore.userProfiles.read(id))?.displayName,
+            },
+            userId,
+          ),
         mcpProxyTokens,
         listProjectHttpMcpServers: async (projectId, initiatedBy) => {
           const [bindings, connections] = await Promise.all([

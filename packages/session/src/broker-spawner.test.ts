@@ -536,6 +536,54 @@ describe('agent spawn broker', () => {
   // The badge tells a Server route which turn, and whose, is calling. A value
   // copied from the shared container environment would let one turn present
   // another's, so only the frame of this spawn may set it.
+  // git prefers GIT_AUTHOR_* / GIT_COMMITTER_* over the shared container's config.
+  // A value copied from the container or a forged one would commit as someone
+  // else, so only a well-formed author from this spawn's own frame may set them.
+  it("carries only this turn's git author into the agent environment", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      env: { GIT_AUTHOR_NAME: 'Container Admin', GIT_AUTHOR_EMAIL: 'admin@example.com' },
+      spawnChild: (_command, _args, options) => {
+        environments.push(options.env as NodeJS.ProcessEnv);
+        return spawn(process.execPath, ['-e', ''], options);
+      },
+    });
+    const identity = (env: NodeJS.ProcessEnv | undefined) => [
+      env?.GIT_AUTHOR_NAME,
+      env?.GIT_AUTHOR_EMAIL,
+      env?.GIT_COMMITTER_NAME,
+      env?.GIT_COMMITTER_EMAIL,
+    ];
+    try {
+      const spawnWith = async (env: NodeJS.ProcessEnv) => {
+        const handle = createBrokerSpawner(broker.socketPath)('claude-agent-acp', [], {
+          cwd: runtimeDir,
+          env,
+        });
+        await expect(handle.exited).resolves.toBe(0);
+        return environments.at(-1);
+      };
+      expect(
+        identity(
+          await spawnWith({ GIT_AUTHOR_NAME: 'Lena Berg', GIT_AUTHOR_EMAIL: 'lena@example.com' }),
+        ),
+      ).toEqual(['Lena Berg', 'lena@example.com', 'Lena Berg', 'lena@example.com']);
+      expect(identity(await spawnWith({}))).toEqual([undefined, undefined, undefined, undefined]);
+      expect(
+        identity(
+          await spawnWith({ GIT_AUTHOR_NAME: 'Lena <x@y>', GIT_AUTHOR_EMAIL: 'lena@example.com' }),
+        ),
+      ).toEqual([undefined, undefined, undefined, undefined]);
+    } finally {
+      await broker.close();
+    }
+  });
+
   it("carries only this turn's badge into the agent environment", async () => {
     const environments: NodeJS.ProcessEnv[] = [];
     const ambient = 'a'.repeat(43);

@@ -38,6 +38,16 @@ export class UserGithubAuthorizationStore {
     };
   }
 
+  /** The connected GitHub account alone, without decrypting any token. */
+  async account(userId: string): Promise<{ githubUserId: string; login: string } | undefined> {
+    const row = await this.db
+      .selectFrom('user_github_authorizations')
+      .select(['github_user_id', 'login'])
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return row ? { githubUserId: row.github_user_id, login: row.login } : undefined;
+  }
+
   async save(input: UserGithubAuthorization): Promise<void> {
     const values = {
       github_user_id: input.githubUserId,

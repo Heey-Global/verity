@@ -545,6 +545,54 @@ describe('SupervisorRunnerClient', () => {
   // Every turn, ACP or not, needs its badge: the sandbox helpers that sign
   // commits or push run under any backend, and without the badge a Server route
   // can only see the project, never whose turn is calling.
+  // The shared container's git config names one person. A turn that silently fell
+  // back to it would commit as that person, so the turn's own author must reach
+  // the start frame, and an unusable one must stop the turn instead.
+  it("carries the turn's own git author and refuses an unusable one", async () => {
+    const author = { name: 'Lena Berg', email: 'lena@example.com' };
+    const request = await captureStartRequest(
+      'author-runtime',
+      { prompt: 'hello' },
+      { clientOptions: { gitAuthor: () => Promise.resolve(author) } },
+    );
+    expect(request).toMatchObject({ gitAuthor: author });
+
+    const runtime = join(dir, 'author-invalid-runtime');
+    await mkdir(runtime, { recursive: true });
+    let sent = false;
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', () => {
+        sent = true;
+        peer.end(`${JSON.stringify({ ok: true, outcome: 'ambiguous' })}\n`);
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
+      runtimeDir: runtime,
+      store,
+      bus: new InMemoryEventBus(),
+      gitAuthor: () => Promise.resolve({ name: 'Lena\nauthor x', email: 'lena@example.com' }),
+    });
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    await expect(turn.result).rejects.toThrow(/invalid git author/u);
+    expect(sent).toBe(false);
+  });
+
   it("carries the turn's badge for every backend", async () => {
     for (const backend of [undefined, { runnerSupervisorBackend: 'codex-acp' } as Backend]) {
       const issued: string[] = [];

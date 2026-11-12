@@ -31991,6 +31991,30 @@ var AcpOpenCodeBackend = class {
   }
 };
 
+// packages/session/dist/git-author.js
+var MAX_NAME_BYTES = 200;
+var MAX_EMAIL_BYTES = 320;
+var NAME_PATTERN = /^[^\u0000-\u001f\u007f<>]+$/u;
+var EMAIL_PATTERN = /^[^\s\u0000-\u001f\u007f<>@]+@[^\s\u0000-\u001f\u007f<>@]+$/u;
+function isGitAuthor(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const { name: name2, email } = value;
+  return Object.keys(value).length === 2 && typeof name2 === "string" && typeof email === "string" && name2.trim().length > 0 && Buffer.byteLength(name2) <= MAX_NAME_BYTES && NAME_PATTERN.test(name2) && Buffer.byteLength(email) <= MAX_EMAIL_BYTES && EMAIL_PATTERN.test(email);
+}
+function gitAuthorEnv(author) {
+  return {
+    GIT_AUTHOR_NAME: author?.name,
+    GIT_AUTHOR_EMAIL: author?.email,
+    GIT_COMMITTER_NAME: author?.name,
+    GIT_COMMITTER_EMAIL: author?.email
+  };
+}
+function gitAuthorFromEnv(env) {
+  const author = { name: env?.GIT_AUTHOR_NAME, email: env?.GIT_AUTHOR_EMAIL };
+  return isGitAuthor(author) ? author : void 0;
+}
+
 // packages/session/dist/broker-spawner.js
 import { createConnection } from "node:net";
 import { constants as osConstants2 } from "node:os";
@@ -32165,6 +32189,7 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
           return;
         const sessionEnv = sessionRuntimeEnv(options.env);
         const turnCapability = options.env?.[TURN_CAPABILITY_ENV];
+        const gitAuthor = gitAuthorFromEnv(options.env);
         send(socket, {
           protocolVersion: PROTOCOL_VERSION2,
           kind: "spawn-agent",
@@ -32177,7 +32202,9 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
             ...options.gatewayToolsModel !== void 0 ? { gatewayToolsModel: options.gatewayToolsModel } : {}
           } : {},
           ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {},
-          ...typeof turnCapability === "string" && TURN_CAPABILITY_PATTERN.test(turnCapability) ? { turnCapability } : {}
+          ...typeof turnCapability === "string" && TURN_CAPABILITY_PATTERN.test(turnCapability) ? { turnCapability } : {},
+          // The turn's author, as its own field for the same reason as the badge.
+          ...gitAuthor === void 0 ? {} : { gitAuthor }
         });
       })();
     });
@@ -33217,6 +33244,8 @@ var startTurnRequestSchema = import_zod20.z.strictObject({
   mcpProxyToken: boundedString(512).min(1).optional(),
   /** The turn's badge (32 random bytes, base64url); see broker-spawner.ts. */
   turnCapability: import_zod20.z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional(),
+  /** The person this turn's commits are authored by; see git-author.ts. */
+  gitAuthor: import_zod20.z.unknown().refine(isGitAuthor, "invalid git author").optional(),
   mcpServers: import_zod20.z.array(httpMcpServerSchema).max(16).optional(),
   sessionEnv: import_zod20.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
@@ -33329,7 +33358,9 @@ var turn = await server.run(join4(turnDir, "events.jsonl"), {
     ...request.sessionEnv,
     ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {},
     // Set last so the container's ambient environment can never supply another one.
-    ...request.turnCapability !== void 0 ? { [TURN_CAPABILITY_ENV]: request.turnCapability } : { [TURN_CAPABILITY_ENV]: void 0 }
+    ...request.turnCapability !== void 0 ? { [TURN_CAPABILITY_ENV]: request.turnCapability } : { [TURN_CAPABILITY_ENV]: void 0 },
+    // Likewise: only this turn's own author, never one ambient in the container.
+    ...gitAuthorEnv(request.gitAuthor)
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a
