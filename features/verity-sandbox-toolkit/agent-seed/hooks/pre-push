@@ -133,6 +133,38 @@ if [ "${#TIPS[@]}" -eq 0 ] && [ -z "$STDIN_REFS" ]; then
   REVIEW_TIPS=("HEAD")
 fi
 
+# A turn that signs must not publish anyone's unsigned commits. The git wrapper
+# re-signs the checked-out branch before pushing it (ADR 0023 §3); this catches
+# every other ref the push names, and a wrapper that could not run. Only for a
+# turn with a person and with signing enabled, like the wrapper.
+if [ -n "${VERITY_TURN_CAPABILITY:-}" ] && [ -n "${GIT_COMMITTER_EMAIL:-}" ] &&
+  [ "$(git config --bool commit.gpgsign 2>/dev/null || true)" = "true" ]; then
+  UNSIGNED=""
+  for tip in "${TIPS[@]}"; do
+    while read -r sha; do
+      [ -n "$sha" ] || continue
+      if ! git cat-file commit "$sha" | sed '/^$/q' | grep -q '^gpgsig'; then
+        UNSIGNED="${UNSIGNED} $(git log -1 --format='%h (%an)' "$sha")"
+      fi
+    done < <(git rev-list "$tip" --not --remotes 2>/dev/null || true)
+  done
+  if [ -n "$UNSIGNED" ]; then
+    cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - unsigned commits
+
+Unsigned:${UNSIGNED}
+
+Pushing the checked-out branch re-signs these with your key. Push it from
+that branch, or re-sign the commits on the ref you push:
+
+    git rebase --rebase-merges --force-rebase --gpg-sign <base>
+============================================================
+EOF
+    exit 2
+  fi
+fi
+
 # Recover ancestry before scanning: fetched ancestors must be covered by the
 # secret gate too. No lint or review gate runs before the secret scan.
 REVIEW_BASE_HELPER="${0%/*}/../bin/verity-review-base.sh"

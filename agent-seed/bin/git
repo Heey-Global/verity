@@ -129,6 +129,97 @@ while [ "$i" -lt "$n" ]; do
   esac
 done
 
+# --- push: re-sign members' commits as the pushing person --------------------
+# A member without a signing key commits unsigned in a shared session; their
+# commits never leave the sandbox, because the forge refuses their pushes. When
+# a person who signs pushes the checked-out branch, the unpublished commits from
+# the oldest unsigned one onward are replayed with that person as committer and
+# signer, while each author stays who wrote the change (ADR 0023 §3: deliberate
+# vouching). Commits before it keep their hashes. A rewrite that cannot complete
+# is undone and refuses the push; the pre-push hook refuses any unsigned commit
+# on other refs. Only for a turn with a person (its badge and committer) and with
+# signing enabled; anything else passes untouched.
+commit_is_signed() {
+  "$REAL_GIT" -C "$effective_cwd" cat-file commit "$1" 2>/dev/null |
+    sed '/^$/q' | grep -q '^gpgsig'
+}
+
+resign_unpublished() {
+  [ -n "${VERITY_TURN_CAPABILITY:-}" ] && [ -n "${GIT_COMMITTER_EMAIL:-}" ] || return 0
+  local g=("$REAL_GIT" -C "$effective_cwd")
+  [ "$("${g[@]}" config --bool commit.gpgsign 2>/dev/null || true)" = "true" ] || return 0
+  "${g[@]}" symbolic-ref -q HEAD >/dev/null 2>&1 || return 0
+  local head git_dir
+  head="$("${g[@]}" rev-parse --verify -q HEAD)" || return 0
+  git_dir="$("${g[@]}" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  # A rebase, merge or cherry-pick in progress belongs to the agent; the
+  # pre-push hook still refuses whatever unsigned commits it would publish.
+  if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] ||
+    [ -f "$git_dir/MERGE_HEAD" ] || [ -f "$git_dir/CHERRY_PICK_HEAD" ]; then
+    return 0
+  fi
+
+  local first="" commit
+  while read -r commit; do
+    if ! commit_is_signed "$commit"; then
+      first="$commit"
+      break
+    fi
+  done < <("${g[@]}" rev-list --reverse --topo-order HEAD --not --remotes 2>/dev/null)
+  [ -n "$first" ] || return 0
+
+  # The range replayed: everything on HEAD after the first unsigned commit's
+  # (first) parent, or the whole history when it is a root commit.
+  local onto range authors count base_short
+  if "${g[@]}" rev-parse --verify -q "${first}^1" >/dev/null; then
+    onto="$("${g[@]}" rev-parse "${first}^1")"
+    range="${onto}..HEAD"
+    base_short="$("${g[@]}" rev-parse --short "$onto")"
+  else
+    onto="--root"
+    range="HEAD"
+    base_short="--root"
+  fi
+  count="$("${g[@]}" rev-list --count "$range")"
+  authors="$("${g[@]}" log --format='%an' "$range" | sort -u | paste -sd, - | sed 's/,/, /g')"
+
+  local tree_before
+  tree_before="$("${g[@]}" rev-parse "HEAD^{tree}")"
+  if ! "${g[@]}" rebase --quiet --rebase-merges --force-rebase \
+    --reapply-cherry-picks --autostash --gpg-sign "$onto" >/dev/null 2>&1; then
+    # Abort restores the branch, index and any autostashed changes exactly.
+    # Never reset --hard here: it would discard the changes autostash restored.
+    "${g[@]}" rebase --abort >/dev/null 2>&1 || true
+    {
+      echo "verity git guard: refusing to push unsigned commits by: $authors"
+      echo
+      echo "Pushing re-signs them with your key, but replaying them onto"
+      echo "$base_short failed, for example on a merge whose conflicts must be resolved"
+      echo "again. Nothing was changed or pushed. Re-sign them yourself, then push again:"
+      echo "  git rebase --rebase-merges --force-rebase --gpg-sign $base_short"
+    } >&2
+    return 1
+  fi
+  if [ "$("${g[@]}" rev-parse "HEAD^{tree}")" != "$tree_before" ]; then
+    # --keep moves the branch back and keeps uncommitted changes.
+    "${g[@]}" reset --quiet --keep "$head" >/dev/null 2>&1 || true
+    echo "verity git guard: re-signing changed the content; nothing was pushed" >&2
+    return 1
+  fi
+
+  # The commits are the same change; a review recorded for the old tip covers
+  # the new one, whose tree was just checked to be identical.
+  local marker top
+  top="$("${g[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
+  marker="${VERITY_CODE_REVIEW_MARKER:-${top}/.agents/.last-code-review-sha}"
+  if [ -n "$top" ] && [ -f "$marker" ] &&
+    [ "$(head -n1 "$marker" | tr -d '[:space:]')" = "$head" ]; then
+    "${g[@]}" rev-parse HEAD >"$marker"
+  fi
+  echo "verity git guard: re-signed $count commit(s) by $authors with your key" >&2
+  return 0
+}
+
 # --- push: the pre-push gate is not optional ---------------------------------
 # A push without the flag passes untouched, dry run or not. git accepts any
 # unambiguous abbreviation of a long option, and `--no-veri` is the shortest
@@ -162,6 +253,7 @@ if [ "$subcmd" = "push" ]; then
     } >&2
     exit 1
   fi
+  resign_unpublished || exit 1
   exec "$REAL_GIT" "$@"
 fi
 

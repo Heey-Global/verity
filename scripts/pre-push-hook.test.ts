@@ -662,3 +662,38 @@ describe('agent-seed hook packaging', () => {
     expect(readFileSync(cli, 'utf8')).toContain('verity-code-review run [base-ref]');
   });
 });
+
+describe('pre-push unsigned commits', () => {
+  // A member's unsigned commit may only leave the sandbox re-signed by the person
+  // pushing it. The git wrapper re-signs the checked-out branch; any other ref
+  // the push names reaches this hook still unsigned and must be refused here.
+  it("refuses a signing person's push of an unsigned commit, and only theirs", () => {
+    const repo = repoWithPendingReview();
+    git(['-C', repo, 'config', 'commit.gpgsign', 'true']);
+    const tip = git(['-C', repo, 'rev-parse', 'HEAD']).trim();
+    const input = `refs/heads/other ${tip} refs/heads/other ${'0'.repeat(40)}\n`;
+    const turn = { VERITY_TURN_CAPABILITY: 'a'.repeat(43), GIT_COMMITTER_EMAIL: 'dev@example.com' };
+
+    const refused = runHook(repo, { input, env: { ...reviewEnv(), ...turn } });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toContain('PUSH BLOCKED - unsigned commits');
+    expect(refused.stderr).toContain('(Test)');
+
+    // Without a person, or with signing off, the gate does not apply; the push
+    // then stops at a later gate (the pending review), not at this one.
+    for (const env of [
+      reviewEnv(),
+      {
+        ...reviewEnv(),
+        ...turn,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_0: 'false',
+      },
+    ]) {
+      const passed = runHook(repo, { input, env });
+      expect(passed.stderr).not.toContain('unsigned commits');
+      expect(passed.stderr).toContain('code review required');
+    }
+  });
+});
