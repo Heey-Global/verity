@@ -1,3 +1,4 @@
+import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { PreviewEdge } from '@verity/preview-tunnel';
 import { LocalPreviewManager, type LocalPreviewManagerOptions } from './local-preview-manager.js';
@@ -789,3 +790,67 @@ it('releases a dormant share port after its database row has cascaded away', asy
   const successor = await restored.create('s2', { targetPort: 4000 });
   expect(new URL(successor.url).port).toBe(new URL(share.url).port);
 });
+
+it.each(['local creation', 'public lifecycle'] as const)(
+  'capacity storage fences skip occupied %s without waiting or leaking a fence',
+  async (occupied) => {
+    const { manager, options } = fixture();
+    Object.assign(options.store, { listPublicPreviewShares: async () => [] });
+    const publicManager = new PreviewShareManager({
+      ...options,
+      edge: {
+        create: async () => {
+          throw new Error('no edge needed');
+        },
+        remove: async () => {},
+      },
+    });
+    let release!: () => void;
+    let creationDone: Promise<unknown> = Promise.resolve();
+    if (occupied === 'local creation') {
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            release = () => reject(new Error('fixture creation ended'));
+            entered();
+          }),
+      );
+      creationDone = manager.create('s1', { targetPort: 3000 }).catch(() => undefined);
+      await started;
+    } else release = await publicManager.beginSessionMove('p1');
+    const mutation = vi.fn(async () => {});
+    let outcome: 'ran' | 'skipped' | undefined;
+    const attempt = withPreviewStorageMutation('p1', mutation, {
+      local: manager,
+      public: publicManager,
+      waitForIdle: false,
+    }).then(
+      () => {
+        outcome = 'ran';
+      },
+      () => {
+        outcome = 'skipped';
+      },
+    );
+    try {
+      // Waiting until the fixture releases its gate would stall image GC and
+      // every caller sharing the capacity flight, despite no visible share.
+      await vi.waitFor(() => expect(outcome).toBe('skipped'), { timeout: 1000 });
+      expect(mutation).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await creationDone;
+      await attempt;
+    }
+    await withPreviewStorageMutation('p1', mutation, {
+      local: manager,
+      public: publicManager,
+      waitForIdle: false,
+    });
+    expect(mutation).toHaveBeenCalledOnce();
+  },
+);

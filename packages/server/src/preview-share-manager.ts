@@ -831,7 +831,13 @@ export class PreviewShareManager {
   }
 
   /** Fence preview lifecycle changes while retaining every active share during GC. */
-  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+  async withProjectStorageMutation<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    options: { waitForIdle?: boolean } = {},
+  ): Promise<T> {
+    if (options.waitForIdle === false && this.lifecycleTails.has(`project:${projectId}`))
+      throw new PreviewShareConflictError('Project preview lifecycle is in progress');
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
       if (
         (await this.options.store.listPublicPreviewShares(projectId)).some((share) =>

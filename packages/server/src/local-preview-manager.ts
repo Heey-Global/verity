@@ -480,7 +480,13 @@ export class LocalPreviewManager {
     }
   }
   /** Fence preview creation without interrupting an existing preview for GC. */
-  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+  async withProjectStorageMutation<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    options: { waitForIdle?: boolean } = {},
+  ): Promise<T> {
+    if (options.waitForIdle === false && this.pendingCreations({ projectId }).length > 0)
+      throw new PreviewShareConflictError('Project preview creation is in progress');
     const release = await this.beginSessionMove(projectId);
     try {
       if (this.listProject(projectId).length > 0)
