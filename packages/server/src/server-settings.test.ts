@@ -108,6 +108,7 @@ describe('GET/PATCH /settings', () => {
     const secrets = {
       gitSshPrivateKey: 'planted-ssh-key',
       githubAppPrivateKey: 'planted-github-key',
+      githubAppClientSecret: 'planted-github-client-secret',
       dopplerServiceToken: 'planted-doppler',
       transcribeApiKey: 'planted-transcribe',
       claudeCodeOauthCredentialsJson: claudeCredentials,

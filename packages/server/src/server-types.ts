@@ -36,6 +36,7 @@ export type PublicVeritySettingsRecord = Omit<
   | 'gitKnownHosts'
   | 'gitAllowedSigners'
   | 'githubAppPrivateKey'
+  | 'githubAppClientSecret'
   | 'dopplerServiceToken'
   | 'transcribeApiKey'
   | 'claudeCodeOauthCredentialsJson'
@@ -49,6 +50,8 @@ export type PublicVeritySettingsRecord = Omit<
   gitKnownHostsConfigured: boolean;
   gitAllowedSignersConfigured: boolean;
   githubAppPrivateKeyConfigured: boolean;
+  /** Whether people can authorize the GitHub App for themselves. */
+  githubAppClientSecretConfigured: boolean;
   dopplerServiceTokenConfigured: boolean;
   transcribeApiKeyConfigured: boolean;
   /** Always false: Verity no longer bundles a local transcription backend, so

@@ -58,6 +58,7 @@ import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { ServerUpdateController } from './server-update-routes.js';
 import type { TurnCredentials } from './turn-credentials.js';
+import type { GitHubUserAuthorization } from './github-user-authorization.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
@@ -499,6 +500,9 @@ export interface ServerDeps {
   sshSign?: SshSignSpawner | undefined;
   /** Project-bound signing authority accepted only on a matching project Unix socket. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  /** Each person's own GitHub App authorization; shared with the forge proxy so
+   *  one renewal serves both. Defaults to a store-backed instance. */
+  githubUserAuthorization?: GitHubUserAuthorization | undefined;
   /** Per-turn sandbox credentials; resolve a calling turn and its person. */
   turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   /** Network-origin guard for `/internal/*` routes (audit H1 follow-up). When set,

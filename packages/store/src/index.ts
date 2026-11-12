@@ -302,6 +302,10 @@ export {
   type UserProfile,
 } from './user-profile.js';
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
+export {
+  UserGithubAuthorizationStore,
+  type UserGithubAuthorization,
+} from './user-github-authorization.js';
 
 export {
   ViewStateStore,

@@ -5681,3 +5681,28 @@ migrations['0207_user_git_identities'] = {
     await sql`drop table user_git_identities`.execute(db);
   },
 };
+
+migrations['0208_user_github_authorizations'] = {
+  // Each person authorizes the instance's GitHub App for themselves; GitHub then
+  // limits their token to their own repository permissions (ADR 0023 §3). The
+  // App's OAuth client is kept beside its private key, the secret encrypted.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table verity_settings add column github_app_client_id text`.execute(db);
+    await sql`alter table verity_settings add column github_app_client_secret text`.execute(db);
+    await sql`create table user_github_authorizations (
+      user_id text primary key references users(id) on delete cascade,
+      github_user_id text not null,
+      login text not null,
+      access_token text not null,
+      access_expires_at timestamptz,
+      refresh_token text,
+      refresh_expires_at timestamptz,
+      updated_at timestamptz not null default now()
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_github_authorizations`.execute(db);
+    await sql`alter table verity_settings drop column github_app_client_secret`.execute(db);
+    await sql`alter table verity_settings drop column github_app_client_id`.execute(db);
+  },
+};

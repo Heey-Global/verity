@@ -9,6 +9,7 @@ import {
 import { UserContextStore } from './user-context.js';
 import { UserProfileStore } from './user-profile.js';
 import { UserGitIdentityStore } from './user-git-identity.js';
+import { UserGithubAuthorizationStore } from './user-github-authorization.js';
 import {
   ProjectRepositoryStore,
   type AddProjectRepositoryInput,
@@ -856,6 +857,10 @@ export interface VeritySettingsRecord {
   githubAppId: string | null;
   githubAppInstallationId: string | null;
   githubAppPrivateKey: string | null;
+  /** The App's OAuth client, used only for each person's own GitHub
+   *  authorization (ADR 0023 §3). The secret is encrypted at rest. */
+  githubAppClientId: string | null;
+  githubAppClientSecret: string | null;
   /** Account-level Doppler Service Account token (#320). A secret, encrypted at
    *  rest; decrypted on read via {@link EventStore.getVeritySettings}. */
   dopplerServiceToken: string | null;
@@ -930,6 +935,8 @@ type VeritySettingsKey =
   | 'githubAppId'
   | 'githubAppInstallationId'
   | 'githubAppPrivateKey'
+  | 'githubAppClientId'
+  | 'githubAppClientSecret'
   | 'dopplerServiceToken'
   | 'transcribeBaseUrl'
   | 'transcribeApiKey'
@@ -2449,6 +2456,10 @@ export class EventStore implements EventSink {
     return new ForgeConnectionStore(this.db, this.cipher, (action) =>
       this.egressDestinationMutation(action),
     );
+  }
+
+  get userGithubAuthorizations(): UserGithubAuthorizationStore {
+    return new UserGithubAuthorizationStore(this.db, this.cipher);
   }
 
   get userGitIdentities(): UserGitIdentityStore {
@@ -8315,6 +8326,8 @@ export class EventStore implements EventSink {
       github_app_id: string | null;
       github_app_installation_id: string | null;
       github_app_private_key: string | null;
+      github_app_client_id: string | null;
+      github_app_client_secret: string | null;
       doppler_service_token: string | null;
       transcribe_base_url: string | null;
       transcribe_api_key: string | null;
@@ -8368,6 +8381,10 @@ export class EventStore implements EventSink {
       githubAppPrivateKey: decrypt
         ? this.decryptSecret(row.github_app_private_key)
         : row.github_app_private_key,
+      githubAppClientId: row.github_app_client_id,
+      githubAppClientSecret: decrypt
+        ? this.decryptSecret(row.github_app_client_secret)
+        : row.github_app_client_secret,
       dopplerServiceToken: decrypt
         ? this.decryptSecret(row.doppler_service_token)
         : row.doppler_service_token,
@@ -8424,6 +8441,8 @@ export class EventStore implements EventSink {
     'github_app_id',
     'github_app_installation_id',
     'github_app_private_key',
+    'github_app_client_id',
+    'github_app_client_secret',
     'doppler_service_token',
     'transcribe_base_url',
     'transcribe_api_key',
@@ -8506,6 +8525,8 @@ export class EventStore implements EventSink {
       github_app_id: normalizeSetting(patch.githubAppId),
       github_app_installation_id: normalizeSetting(patch.githubAppInstallationId),
       github_app_private_key: this.encryptSecret(normalizeSetting(patch.githubAppPrivateKey)),
+      github_app_client_id: normalizeSetting(patch.githubAppClientId),
+      github_app_client_secret: this.encryptSecret(normalizeSetting(patch.githubAppClientSecret)),
       doppler_service_token: this.encryptSecret(normalizeSetting(patch.dopplerServiceToken)),
       transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl),
       transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
@@ -8582,6 +8603,16 @@ export class EventStore implements EventSink {
             ? {
                 github_app_private_key: this.encryptSecret(
                   normalizeSetting(patch.githubAppPrivateKey),
+                ),
+              }
+            : {}),
+          ...(patch.githubAppClientId !== undefined
+            ? { github_app_client_id: normalizeSetting(patch.githubAppClientId) }
+            : {}),
+          ...(patch.githubAppClientSecret !== undefined
+            ? {
+                github_app_client_secret: this.encryptSecret(
+                  normalizeSetting(patch.githubAppClientSecret),
                 ),
               }
             : {}),

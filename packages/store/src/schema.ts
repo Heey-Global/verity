@@ -673,6 +673,8 @@ export interface VeritySettingsTable {
   github_app_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_installation_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_private_key: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_id: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_secret: ColumnType<string | null, string | null | undefined, string | null>;
   /** Account-level Doppler Service Account token (#320). A secret, encrypted at
    *  rest via the store's SecretCipher. Stored globally (like the GitHub App key);
    *  later used to auto-mint scoped per-project tokens. The pre-existing
@@ -803,6 +805,20 @@ interface UserGitIdentitiesTable {
   /** Encrypted at rest like the instance signing key. */
   ssh_private_key: string | null;
   ssh_public_key: string | null;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+/** A person's own authorization of the instance's GitHub App (ADR 0023 §3). */
+interface UserGithubAuthorizationsTable {
+  user_id: string;
+  github_user_id: string;
+  login: string;
+  /** Encrypted at rest. */
+  access_token: string;
+  access_expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
+  /** Encrypted at rest. */
+  refresh_token: string | null;
+  refresh_expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
@@ -1887,6 +1903,7 @@ export interface Database {
   session_repository_workspaces: SessionRepositoryWorkspacesTable;
   users: UsersTable;
   user_git_identities: UserGitIdentitiesTable;
+  user_github_authorizations: UserGithubAuthorizationsTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
