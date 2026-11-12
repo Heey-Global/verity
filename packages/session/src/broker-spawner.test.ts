@@ -533,6 +533,44 @@ describe('agent spawn broker', () => {
     }
   });
 
+  // The badge tells a Server route which turn, and whose, is calling. A value
+  // copied from the shared container environment would let one turn present
+  // another's, so only the frame of this spawn may set it.
+  it("carries only this turn's badge into the agent environment", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const ambient = 'a'.repeat(43);
+    const own = 'B'.repeat(43);
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      env: { VERITY_TURN_CAPABILITY: ambient },
+      spawnChild: (_command, _args, options) => {
+        environments.push(options.env as NodeJS.ProcessEnv);
+        return spawn(process.execPath, ['-e', ''], options);
+      },
+    });
+    try {
+      const spawnWith = async (env: NodeJS.ProcessEnv) => {
+        const handle = createBrokerSpawner(broker.socketPath)('claude-agent-acp', [], {
+          cwd: runtimeDir,
+          env,
+        });
+        await expect(handle.exited).resolves.toBe(0);
+        return environments.at(-1);
+      };
+      expect((await spawnWith({ VERITY_TURN_CAPABILITY: own }))?.VERITY_TURN_CAPABILITY).toBe(own);
+      expect((await spawnWith({}))?.VERITY_TURN_CAPABILITY).toBeUndefined();
+      expect(
+        (await spawnWith({ VERITY_TURN_CAPABILITY: 'not-a-badge' }))?.VERITY_TURN_CAPABILITY,
+      ).toBeUndefined();
+    } finally {
+      await broker.close();
+    }
+  });
+
   it('rejects every session environment the runtime-context allowlist does not describe', async () => {
     const spawnChild = vi.fn();
     const broker = await runAgentSpawnBroker({

@@ -12,7 +12,7 @@ import {
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
-import { createBrokerSpawner } from './broker-spawner.js';
+import { createBrokerSpawner, TURN_CAPABILITY_ENV } from './broker-spawner.js';
 import { RunnerServer } from './runner-server.js';
 import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
@@ -64,6 +64,11 @@ const startTurnRequestSchema = z
     trustedCliExecution: z.boolean().optional(),
     mcpGatewayToken: boundedString(512).min(1).optional(),
     mcpProxyToken: boundedString(512).min(1).optional(),
+    /** The turn's badge (32 random bytes, base64url); see broker-spawner.ts. */
+    turnCapability: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]{43}$/u)
+      .optional(),
     mcpServers: z.array(httpMcpServerSchema).max(16).optional(),
     sessionEnv: z
       .strictObject({
@@ -235,6 +240,10 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
     ...(process.env.VERITY_CONTROL_MEMORY_URL !== undefined && request.mcpGatewayToken !== undefined
       ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken }
       : {}),
+    // Set last so the container's ambient environment can never supply another one.
+    ...(request.turnCapability !== undefined
+      ? { [TURN_CAPABILITY_ENV]: request.turnCapability }
+      : { [TURN_CAPABILITY_ENV]: undefined }),
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

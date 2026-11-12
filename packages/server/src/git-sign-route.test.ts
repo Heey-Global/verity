@@ -9,6 +9,7 @@ import { request } from 'node:http';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildServer } from './server.js';
+import { createTurnCredentials, type TurnCredentials } from './turn-credentials.js';
 import type { SshSignSpawner } from './git-signer.js';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import {
@@ -67,6 +68,7 @@ function build(
   cipher: SealableSecretCipher,
   internalPathGuard?: InternalPathGuard,
   signingCapabilities?: SigningCapabilityRegistry,
+  turnCredentials?: TurnCredentials,
 ): { app: FastifyInstance; store: EventStore } {
   const store = new EventStore(ctx.db, cipher);
   const app = buildServer({
@@ -76,6 +78,7 @@ function build(
     secretCipher: cipher,
     sshSign: fakeSign,
     ...(signingCapabilities !== undefined ? { signingCapabilities } : {}),
+    ...(turnCredentials !== undefined ? { turnCredentials } : {}),
     ...(internalPathGuard ? { internalPathGuard } : {}),
   });
   return { app, store };
@@ -142,6 +145,56 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
       // The fleet-derived compatibility bearer is accepted only on the legacy
       // TCP listener, never on a project-bound socket.
       expect((await postUnix(listener.socketPath, 'retired-fleet-bearer')).status).toBe(401);
+    } finally {
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The badge is what will let the key become the signing person's own. It must
+  // only ever work inside its own project's container and stop with its turn.
+  it("signs for a turn's badge only from its own project and only while it lives", async () => {
+    const cipher = createSealableSecretCipher();
+    const capabilities = createSigningCapabilityRegistry(ctx.db);
+    const turns = createTurnCredentials();
+    const { app, store } = build(cipher, undefined, capabilities, turns);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-turn-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    try {
+      const badge = turns.issue({
+        projectId: 'p1',
+        sessionId: 's1',
+        turnId: 't1',
+        userId: 'lena',
+      });
+      expect((await postUnix(listener.socketPath, badge)).status).toBe(200);
+
+      const foreign = turns.issue({
+        projectId: 'p2',
+        sessionId: 's2',
+        turnId: 't2',
+        userId: 'lena',
+      });
+      expect((await postUnix(listener.socketPath, foreign)).status).toBe(401);
+
+      turns.release(badge);
+      expect((await postUnix(listener.socketPath, badge)).status).toBe(401);
+
+      // The container-wide capability keeps working beside the badges.
+      const container = await capabilities.issue({
+        projectId: 'p1',
+        containerGeneration: 'generation-1',
+      });
+      expect((await postUnix(listener.socketPath, container)).status).toBe(200);
     } finally {
       await listener.close();
       await app.close();

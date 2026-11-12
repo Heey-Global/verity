@@ -3647,6 +3647,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.signingCapabilities !== undefined
       ? { signingCapabilities: deps.signingCapabilities }
       : {}),
+    ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
     ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
   });
   registerGitHubTokenRoute(app);

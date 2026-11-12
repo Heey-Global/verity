@@ -263,6 +263,13 @@ const SAFE_CORRELATION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
  */
 const SPAWNABLE_AGENT_COMMANDS = new Set(['claude-agent-acp', 'codex-acp', 'opencode-acp']);
 /**
+ * The turn's badge: 32 random bytes as unpadded base64url, minted per turn by the
+ * Server. In-Sandbox helpers present it as VERITY_TURN_CAPABILITY so a Server
+ * route can tell which turn, and so whose turn, is calling. It travels as its own
+ * request field rather than in `sessionEnv`, whose key list older brokers enforce.
+ */
+const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+/**
  * Verity's own per-turn runtime context — the only environment a spawn request
  * may contribute. Everything else in the child's environment is derived from THIS
  * process (see {@link childEnvironment}), so the caller cannot reach past this
@@ -837,6 +844,13 @@ async function validateSpawnRequest(raw, options) {
   }
   if (raw.knowledgeIsolation !== undefined && typeof raw.knowledgeIsolation !== 'boolean')
     throw new Error('Invalid knowledge isolation policy');
+  // The turn's badge (see TURN_CAPABILITY_PATTERN). Shape-checked only: the Server
+  // minted it and alone resolves it.
+  if (
+    raw.turnCapability !== undefined &&
+    (typeof raw.turnCapability !== 'string' || !TURN_CAPABILITY_PATTERN.test(raw.turnCapability))
+  )
+    throw new Error('invalid agent turn capability');
   if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
     throw new Error('Invalid planning isolation policy');
   if (raw.gatewayToolsOnly === true && raw.knowledgeIsolation === true)
@@ -857,6 +871,7 @@ async function validateSpawnRequest(raw, options) {
     args: raw.args,
     cwd,
     sessionEnv: raw.sessionEnv,
+    ...(raw.turnCapability !== undefined ? { turnCapability: raw.turnCapability } : {}),
     knowledgeIsolation: raw.knowledgeIsolation === true,
     planning: raw.planning === true,
     gatewayToolsOnly: raw.gatewayToolsOnly === true,
@@ -866,7 +881,12 @@ async function validateSpawnRequest(raw, options) {
   };
 }
 
-function childEnvironment(command, source = process.env, sessionEnv = undefined) {
+function childEnvironment(
+  command,
+  source = process.env,
+  sessionEnv = undefined,
+  turnCapability = undefined,
+) {
   const copy = (name) => (source[name] === undefined ? {} : { [name]: source[name] });
   // Re-filtered here even though `parseRequest` already rejected anything else:
   // this function is the single place the child's environment is built, so the
@@ -992,6 +1012,11 @@ function childEnvironment(command, source = process.env, sessionEnv = undefined)
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
     ...copy('VERITY_PROJECT_MEMORY_URL'),
     ...copy('VERITY_PROJECT_REPO_URL'),
+    // Only ever from this turn's request, never copied from the container: an
+    // ambient value would let one turn present another turn's badge.
+    ...(typeof turnCapability === 'string' && TURN_CAPABILITY_PATTERN.test(turnCapability)
+      ? { VERITY_TURN_CAPABILITY: turnCapability }
+      : {}),
   };
 }
 
@@ -2508,6 +2533,7 @@ export function agentLaunchSpec(request, options) {
             VERITY_CLAUDE_CONNECTOR_URL: options.connectorUrl,
           },
           request.sessionEnv,
+          request.turnCapability,
         ),
         VERITY_SESSION_WORKTREE: request.cwd,
         // Disabling project config also disables automatic AGENTS.md discovery.

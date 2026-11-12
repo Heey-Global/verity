@@ -163,6 +163,8 @@ const MAX_CONTROL_LINE_BYTES = MAX_START_REQUEST_BYTES + 1;
 // the connection is dropped anyway. Long enough for a multi-megabyte write to drain
 // over a Unix socket, short enough that a stalled peer cannot hold the slot.
 const OVERSIZE_DRAIN_GRACE_MS = 2_000;
+/** 32 random bytes as unpadded base64url, as minted by the Server's turn credentials. */
+const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
 // What the start-turn request validator will parse at all — the outermost gate, wider
@@ -1802,6 +1804,13 @@ export function validateStartTurnRequest(request) {
   }
   const mcpProxyToken = optionalString(request.mcpProxyToken, 'mcpProxyToken', 512);
   if (mcpProxyToken === '') throw new Error('invalid mcpProxyToken');
+  // The turn's badge: names this turn (and the person it runs for) to Server routes
+  // the in-Sandbox helpers call. Only its shape is checked here; the Server minted
+  // it and alone can resolve it. Any backend may carry one.
+  const turnCapability = optionalString(request.turnCapability, 'turnCapability', 43);
+  if (turnCapability !== undefined && !TURN_CAPABILITY_PATTERN.test(turnCapability)) {
+    throw new Error('invalid turnCapability');
+  }
   let mcpServers;
   if (request.mcpServers !== undefined) {
     if (!Array.isArray(request.mcpServers) || request.mcpServers.length > 16) {
@@ -1904,6 +1913,7 @@ export function validateStartTurnRequest(request) {
     ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
     ...(mcpGatewayToken !== undefined ? { mcpGatewayToken } : {}),
     ...(mcpProxyToken !== undefined ? { mcpProxyToken } : {}),
+    ...(turnCapability !== undefined ? { turnCapability } : {}),
     ...(mcpServers !== undefined ? { mcpServers } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),

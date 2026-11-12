@@ -9,6 +9,7 @@ import {
   type SshSignSpawner,
 } from './git-signer.js';
 import { internalConnectionIdentity } from './internal-listener.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 interface GitSignRouteStore extends EventStore {
@@ -29,6 +30,8 @@ function gitSignRouteStore(store: EventStore): GitSignRouteStore {
 export interface GitSignRouteDeps {
   eventStore: EventStore;
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  /** A turn's own badge, accepted alongside the container-wide signing capability. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   sshSign?: SshSignSpawner | undefined;
 }
 
@@ -64,14 +67,25 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
           return { error: 'unauthorized' };
         }
         const socketIdentity = internalConnectionIdentity(request);
-        const capabilityBinding =
+        // A turn's badge names the turn and the person it runs for; the
+        // container-wide capability only names the project. Both sign with the
+        // same key today — the badge is what lets the key become personal.
+        const turn =
           socketIdentity === undefined
+            ? undefined
+            : deps.turnCredentials?.resolve({
+                projectId: socketIdentity.projectId,
+                token: presented,
+              });
+        const capabilityBinding =
+          socketIdentity === undefined || turn !== undefined
             ? undefined
             : await deps.signingCapabilities?.resolve(presented);
         const capabilityAuthorized =
           socketIdentity !== undefined &&
-          capabilityBinding?.projectId === socketIdentity.projectId &&
-          capabilityBinding.containerGeneration === socketIdentity.containerGeneration;
+          (turn !== undefined ||
+            (capabilityBinding?.projectId === socketIdentity.projectId &&
+              capabilityBinding.containerGeneration === socketIdentity.containerGeneration));
 
         // A project socket accepts only its own generation-bound capability. Reject
         // before decrypting settings so an invalid UDS caller cannot distinguish a
@@ -113,6 +127,14 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
                     containerGeneration: socketIdentity.containerGeneration,
                   }
                 : {}),
+              ...(turn !== undefined
+                ? {
+                    via: 'turn',
+                    sessionId: turn.sessionId,
+                    turnId: turn.turnId,
+                    userId: turn.userId,
+                  }
+                : { via: 'container' }),
             },
             'verity: brokered a git commit signature',
           );

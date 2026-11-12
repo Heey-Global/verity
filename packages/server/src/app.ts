@@ -145,6 +145,7 @@ export interface ControlPlaneDeps {
   wsAllowedOrigins?: readonly string[] | undefined;
   /** Project- and generation-bound signing authority for the relay UDS listener. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  turnCredentials?: ServerDeps['turnCredentials'];
   /** Network-origin guard for `/internal/*` (audit H1 follow-up) — when set, those
    *  routes 404 unless the request arrived on the internal listener. Forwarded to
    *  {@link buildServer}. */
@@ -478,6 +479,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.pushSender !== undefined ? { pushSender: deps.pushSender } : {}),
     ...(deps.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: deps.wsAllowedOrigins } : {}),
+    ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
     ...(deps.signingCapabilities !== undefined
       ? { signingCapabilities: deps.signingCapabilities }
       : {}),

@@ -24,6 +24,18 @@ const MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
  * `runner-worker-entry.ts` (guarding the request file) and in the broker; the
  * drift test in `broker-spawner.test.ts` keeps the three lists in step.
  */
+/**
+ * The turn's badge: a per-turn credential the Server minted (32 random bytes,
+ * base64url) that in-Sandbox helpers present instead of the container-wide
+ * capability, so a Server route learns which turn — and whose — is calling from
+ * the shared project container. It crosses to the broker as its own frame field,
+ * never inside `sessionEnv`, because an older broker rejects unknown
+ * `sessionEnv` keys but ignores unknown fields. The name avoids TOKEN/KEY/SECRET,
+ * which some agent CLIs strip from the environment of the commands they run.
+ */
+export const TURN_CAPABILITY_ENV = 'VERITY_TURN_CAPABILITY';
+const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+
 export const SESSION_RUNTIME_ENV_KEYS = [
   'VERITY_SESSION_BACKEND',
   'VERITY_SESSION_MODEL',
@@ -211,6 +223,7 @@ export function createBrokerSpawner(
         }
         if (settled) return;
         const sessionEnv = sessionRuntimeEnv(options.env);
+        const turnCapability = options.env?.[TURN_CAPABILITY_ENV];
         send(socket, {
           protocolVersion: PROTOCOL_VERSION,
           kind: 'spawn-agent',
@@ -227,6 +240,9 @@ export function createBrokerSpawner(
               }
             : {}),
           ...(Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}),
+          ...(typeof turnCapability === 'string' && TURN_CAPABILITY_PATTERN.test(turnCapability)
+            ? { turnCapability }
+            : {}),
         });
       })();
     });

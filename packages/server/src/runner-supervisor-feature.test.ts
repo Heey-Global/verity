@@ -4059,6 +4059,27 @@ describe('verity-runner supervisor runtime', () => {
     ).toThrow(/invalid sessionEnv/u);
   });
 
+  it('forwards a well-formed turn badge for any backend and refuses anything else', () => {
+    const base = {
+      protocolVersion: 1,
+      kind: 'start-turn',
+      turnId: 'turn-1',
+      startCommandId: 'start-1',
+      sessionId: 'session-1',
+      backend: 'claude-acp',
+      worktree: runtimeDir,
+      cwd: runtimeDir,
+      prompt: 'look',
+    };
+    const badge = 'Ab_-'.repeat(10) + 'xyz';
+    expect(validateStartTurnRequest({ ...base, turnCapability: badge }).turnCapability).toBe(badge);
+    expect(validateStartTurnRequest(base).turnCapability).toBeUndefined();
+    for (const malformed of ['', 'short', `${badge}=`, `${badge.slice(0, 42)}/`, 42])
+      expect(() => validateStartTurnRequest({ ...base, turnCapability: malformed })).toThrow(
+        /invalid turnCapability/u,
+      );
+  });
+
   // ADR 0014 D1: only an ACP turn is handed a gateway bearer, and the supervisor
   // re-derives that from the backend it was asked to start rather than trusting
   // the Server to have paired the two correctly.

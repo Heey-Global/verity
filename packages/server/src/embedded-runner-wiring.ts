@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { type McpGatewayTokens } from './mcp-gateway-tokens.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 
@@ -66,6 +67,8 @@ export function buildRunnerConductorWiring(deps: {
   /** ADR 0014 D1: per-turn bearer registry for the loopback MCP gateway. Only ACP
    *  turns are issued one; the supervisor client decides that from its own backend. */
   mcpGatewayTokens?: McpGatewayTokens | undefined;
+  /** Per-turn sandbox credentials naming the person a turn runs for. */
+  turnCredentials?: TurnCredentials | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
   /** The project's enabled HTTP MCP servers usable in a turn run for `initiatedBy`. */
@@ -338,6 +341,22 @@ export function buildRunnerConductorWiring(deps: {
                       projectId: gatewayToolContext.projectId,
                       token,
                     }),
+                },
+              }),
+          // Bound to the container's own project: that is the project a sandbox
+          // route sees on the calling socket, including the control-plane runner.
+          ...(deps.turnCredentials === undefined || ephemeral || context.sessionId === null
+            ? {}
+            : {
+                turnCapabilities: {
+                  issue: (turnId: string) =>
+                    deps.turnCredentials!.issue({
+                      projectId: runnerProjectId,
+                      sessionId: context.sessionId!,
+                      turnId,
+                      userId: context.initiatedBy?.userId ?? null,
+                    }),
+                  release: (token: string) => deps.turnCredentials!.release(token),
                 },
               }),
           ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined

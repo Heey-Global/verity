@@ -187,6 +187,20 @@ export interface SupervisorRunnerClientOptions {
         release: (token: string) => void;
       }
     | undefined;
+  /**
+   * Mint and retire the turn's sandbox credential (its "badge"): presented by
+   * in-Sandbox helpers as `VERITY_TURN_CAPABILITY`, it tells a Server route which
+   * turn — and so which person — is calling from the shared project container.
+   * Issued for every supervised turn regardless of backend. An older Sandbox
+   * drops the unknown start-turn field and its helpers keep presenting the
+   * container-wide capability, which never selects a personal credential.
+   */
+  turnCapabilities?:
+    | {
+        issue: (turnId: string) => string;
+        release: (token: string) => void;
+      }
+    | undefined;
   /** Mint and retire the bearer used by configured MCP proxy bindings. */
   mcpProxyTokens?:
     | {
@@ -863,6 +877,7 @@ const GATEWAY_BEARER = Symbol('verity.mcpGatewayBearer');
 interface GatewayBearerBox {
   token?: string;
   proxyToken?: string;
+  turnCapability?: string;
 }
 
 function validatedMcpServers(servers: RunTurnOptions['mcpServers']): RunTurnOptions['mcpServers'] {
@@ -1045,8 +1060,21 @@ export class SupervisorRunnerClient implements RunnerClient {
   private releaseGatewayTokenOnSettle(turn: RunnerTurn, bearer: GatewayBearerBox): RunnerTurn {
     const tokens = this.options.mcpGatewayTokens;
     const proxyTokens = this.options.mcpProxyTokens;
-    if ((!this.acpBackend || tokens === undefined) && proxyTokens === undefined) return turn;
+    const turnCapabilities = this.options.turnCapabilities;
+    if (
+      (!this.acpBackend || tokens === undefined) &&
+      proxyTokens === undefined &&
+      turnCapabilities === undefined
+    )
+      return turn;
     const release = (): void => {
+      if (bearer.turnCapability !== undefined && turnCapabilities !== undefined) {
+        try {
+          turnCapabilities.release(bearer.turnCapability);
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
       const token = bearer.token;
       if (token !== undefined && tokens !== undefined) {
         try {
@@ -1237,6 +1265,9 @@ export class SupervisorRunnerClient implements RunnerClient {
     if (needsMcpProxy === true && mcpProxyToken === undefined) {
       throw new Error('supervisor runner requires MCP proxy token issuance');
     }
+    const turnCapability = this.options.turnCapabilities?.issue(opts.turnId);
+    if (turnCapability !== undefined && bearer !== undefined)
+      bearer.turnCapability = turnCapability;
     // Hand it back to the start attempt that asked for this launch, which is the only
     // one entitled to retire it.
     // Built ONCE and re-sent byte-identical on retry. Idempotence here is not a
@@ -1276,6 +1307,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       // the endpoint itself comes from the Sandbox's own broker environment.
       ...(mcpGatewayToken === undefined ? {} : { mcpGatewayToken }),
       ...(mcpProxyToken === undefined ? {} : { mcpProxyToken }),
+      ...(turnCapability === undefined ? {} : { turnCapability }),
       ...(mcpServers === undefined
         ? {}
         : {

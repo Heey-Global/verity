@@ -542,6 +542,36 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
+  // Every turn, ACP or not, needs its badge: the sandbox helpers that sign
+  // commits or push run under any backend, and without the badge a Server route
+  // can only see the project, never whose turn is calling.
+  it("carries the turn's badge for every backend", async () => {
+    for (const backend of [undefined, { runnerSupervisorBackend: 'codex-acp' } as Backend]) {
+      const issued: string[] = [];
+      const request = await captureStartRequest(
+        `badge-runtime-${backend === undefined ? 'native' : 'acp'}`,
+        { prompt: 'hello' },
+        {
+          ...(backend === undefined ? {} : { backend }),
+          clientOptions: {
+            turnCapabilities: {
+              issue: (turnId: string) => {
+                issued.push(turnId);
+                return 'badge-1';
+              },
+              release: () => undefined,
+            },
+            ...(backend === undefined
+              ? {}
+              : { mcpGatewayTokens: { issue: () => 'gateway-token-1', release: () => undefined } }),
+          },
+        },
+      );
+      expect(issued).toEqual(['turn-1']);
+      expect(request).toMatchObject({ turnCapability: 'badge-1' });
+    }
+  });
+
   it('mints a bearer for an OpenCode ACP turn', async () => {
     const issued: string[] = [];
     const request = await captureStartRequest(
@@ -1154,6 +1184,25 @@ describe('SupervisorRunnerClient', () => {
     // captureStartRequest settles the turn by rejecting the launch — a failed turn has
     // to retire its bearer just as a successful one does.
     expect(released).toEqual(['gateway-token-1']);
+  });
+
+  // A badge that outlived its turn would keep naming that person to every
+  // sandbox route for up to a day; it must end with the turn, failed or not.
+  it("retires the turn's badge once the turn settles, for a non-ACP turn too", async () => {
+    const released: string[] = [];
+    await captureStartRequest(
+      'badge-release-runtime',
+      { prompt: 'hello' },
+      {
+        clientOptions: {
+          turnCapabilities: {
+            issue: () => 'badge-1',
+            release: (token: string) => released.push(token),
+          },
+        },
+      },
+    );
+    expect(released).toEqual(['badge-1']);
   });
 
   it('restores Codex rollout state before routing resume through start-turn', async () => {

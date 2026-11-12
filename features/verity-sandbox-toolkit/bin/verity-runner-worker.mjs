@@ -31998,6 +31998,8 @@ import { StringDecoder } from "node:string_decoder";
 var PROTOCOL_VERSION2 = 1;
 var STDOUT_HIGH_WATER_BYTES = 1024 * 1024;
 var MAX_BROKER_FRAME_BYTES = 8 * 1024 * 1024;
+var TURN_CAPABILITY_ENV = "VERITY_TURN_CAPABILITY";
+var TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 var SESSION_RUNTIME_ENV_KEYS = [
   "VERITY_SESSION_BACKEND",
   "VERITY_SESSION_MODEL",
@@ -32162,6 +32164,7 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
         if (settled2)
           return;
         const sessionEnv = sessionRuntimeEnv(options.env);
+        const turnCapability = options.env?.[TURN_CAPABILITY_ENV];
         send(socket, {
           protocolVersion: PROTOCOL_VERSION2,
           kind: "spawn-agent",
@@ -32173,7 +32176,8 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
             gatewayToolsOnly: true,
             ...options.gatewayToolsModel !== void 0 ? { gatewayToolsModel: options.gatewayToolsModel } : {}
           } : {},
-          ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {}
+          ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {},
+          ...typeof turnCapability === "string" && TURN_CAPABILITY_PATTERN.test(turnCapability) ? { turnCapability } : {}
         });
       })();
     });
@@ -33211,6 +33215,8 @@ var startTurnRequestSchema = import_zod20.z.strictObject({
   trustedCliExecution: import_zod20.z.boolean().optional(),
   mcpGatewayToken: boundedString(512).min(1).optional(),
   mcpProxyToken: boundedString(512).min(1).optional(),
+  /** The turn's badge (32 random bytes, base64url); see broker-spawner.ts. */
+  turnCapability: import_zod20.z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional(),
   mcpServers: import_zod20.z.array(httpMcpServerSchema).max(16).optional(),
   sessionEnv: import_zod20.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
@@ -33321,7 +33327,9 @@ var turn = await server.run(join4(turnDir, "events.jsonl"), {
   env: {
     ...process.env,
     ...request.sessionEnv,
-    ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {}
+    ...process.env.VERITY_CONTROL_MEMORY_URL !== void 0 && request.mcpGatewayToken !== void 0 ? { VERITY_CONTROL_MEMORY_TOKEN: request.mcpGatewayToken } : {},
+    // Set last so the container's ambient environment can never supply another one.
+    ...request.turnCapability !== void 0 ? { [TURN_CAPABILITY_ENV]: request.turnCapability } : { [TURN_CAPABILITY_ENV]: void 0 }
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

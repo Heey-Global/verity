@@ -57,6 +57,7 @@ import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { ServerUpdateController } from './server-update-routes.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
@@ -498,6 +499,8 @@ export interface ServerDeps {
   sshSign?: SshSignSpawner | undefined;
   /** Project-bound signing authority accepted only on a matching project Unix socket. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  /** Per-turn sandbox credentials; resolve a calling turn and its person. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   /** Network-origin guard for `/internal/*` routes (audit H1 follow-up). When set,
    *  a request to any `/internal/*` path is 404'd unless this predicate returns
    *  true — wired to {@link requestArrivedInternally} so the commit-signing broker
