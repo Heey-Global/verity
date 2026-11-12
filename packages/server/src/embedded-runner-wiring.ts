@@ -68,8 +68,13 @@ export function buildRunnerConductorWiring(deps: {
   mcpGatewayTokens?: McpGatewayTokens | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
+  /** The project's enabled HTTP MCP servers usable in a turn run for `initiatedBy`. */
   listProjectHttpMcpServers?:
-    ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
+    | ((
+        projectId: string,
+        initiatedBy: { readonly userId: string } | undefined,
+      ) => Promise<readonly { id: string; name: string }[]>)
+    | undefined;
   /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
    *  `channel` is supplied by the runner client from its own backend (ADR 0014 D3). */
   autoApprovePermission?:
@@ -189,7 +194,7 @@ export function buildRunnerConductorWiring(deps: {
         const projectHttpMcpServers =
           ephemeral || context.projectId === null || deps.listProjectHttpMcpServers === undefined
             ? []
-            : await deps.listProjectHttpMcpServers(context.projectId);
+            : await deps.listProjectHttpMcpServers(context.projectId, context.initiatedBy);
         const gatewayToolContext =
           !ephemeral && context.sessionId !== null
             ? {

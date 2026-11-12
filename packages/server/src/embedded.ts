@@ -167,6 +167,7 @@ import {
   TranscriptStore,
   type Database,
   type ProjectRecord,
+  httpMcpConnectionUsableBy,
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
@@ -4567,7 +4568,7 @@ export async function buildEmbeddedServer(
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         mcpProxyTokens,
-        listProjectHttpMcpServers: async (projectId) => {
+        listProjectHttpMcpServers: async (projectId, initiatedBy) => {
           const [bindings, connections] = await Promise.all([
             eventStore.listProjectMcpBindings(projectId),
             eventStore.listHttpMcpConnections(),
@@ -4576,7 +4577,12 @@ export async function buildEmbeddedServer(
             bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId),
           );
           return connections
-            .filter((connection) => connection.enabled && enabled.has(connection.id))
+            .filter(
+              (connection) =>
+                connection.enabled &&
+                enabled.has(connection.id) &&
+                httpMcpConnectionUsableBy(connection, initiatedBy?.userId),
+            )
             .map((connection) => ({ id: connection.id, name: connection.name }));
         },
         // ADR 0011 D2: a standing grant answers the prompt inside the tail, before

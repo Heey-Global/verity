@@ -36,7 +36,7 @@ import {
 import { PermissionDecisionInProgressError } from '@verity/session';
 import { presentMockupsRequestSchema, type SessionMockupActions } from './mockups.js';
 import type { EventStore, SessionRecord } from '@verity/store';
-import { isLocalProject, type ProjectRecord } from '@verity/store';
+import { httpMcpConnectionUsableBy, isLocalProject, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -527,6 +527,7 @@ export function registerServerMcpRoutes({
     const resolveMcpAppConnection: HttpMcpProxyDeps['resolveConnection'] = async ({
       projectId,
       connectionId,
+      principal,
     }) => {
       const [bindings, connections] = await Promise.all([
         deps.eventStore.listProjectMcpBindings(projectId),
@@ -539,6 +540,14 @@ export function registerServerMcpRoutes({
         (candidate) => candidate.id === connectionId && candidate.enabled,
       );
       if (binding === undefined || connection === undefined) return undefined;
+      // The turn that listed this server ran for one person; another member's
+      // credentialed connection must not answer for it, even by its id.
+      const userId =
+        'caller' in principal
+          ? (await runningTurnInitiator(principal.caller.sessionId, principal.caller.turnId))
+              ?.userId
+          : principal.userId;
+      if (!httpMcpConnectionUsableBy(connection, userId)) return undefined;
       const authorization = await httpMcpAuthorization(deps.eventStore, connection);
       return {
         id: connection.id,

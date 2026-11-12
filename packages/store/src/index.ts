@@ -107,6 +107,7 @@ export {
   ProjectDefaultModelNotAllowedError,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
+  httpMcpConnectionUsableBy,
   type ProjectMcpBindingRecord,
   type DevServerRecord,
   type DevServerCreateInput,

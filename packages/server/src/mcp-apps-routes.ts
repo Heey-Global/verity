@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import './fastify-augmentation.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
@@ -66,7 +67,9 @@ export interface McpAppsRouteDeps {
 export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDeps): void {
   const rpc = deps.rpc ?? mcpRpc;
   const pending = new Set<string>();
-  const resolve = async (sessionId: string, appId: string) => {
+  // An app runs on the connection of the person using it, not of whoever's turn
+  // rendered it: another member opening it must not act with that turn's account.
+  const resolve = async (sessionId: string, appId: string, userId: string | undefined) => {
     const projectId = await deps.getProjectId(sessionId);
     if (projectId === undefined) return undefined;
     const event = await deps.getApp(sessionId, appId);
@@ -75,6 +78,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
     const connection = await deps.resolveConnection({
       projectId,
       connectionId: event.connectionId,
+      principal: { userId },
     });
     if (
       connection === undefined ||
@@ -122,7 +126,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
   };
   app.get('/sessions/:id/mcp-apps/:appId', async (request, reply) => {
     const { id, appId } = paramsSchema.parse(request.params);
-    const resolved = await resolve(id, appId);
+    const resolved = await resolve(id, appId, request.localUserId ?? undefined);
     if (resolved === undefined) return reply.code(404).send({ error: 'MCP app unavailable' });
     try {
       return await withSession(resolved.connection, async (sessionId, version) => {
@@ -144,7 +148,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
           : undefined;
         if (resource === undefined || typeof resource.text !== 'string')
           throw new Error('Missing MCP app HTML');
-        if ((await resolve(id, appId)) === undefined)
+        if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
           return reply.code(404).send({ error: 'MCP app unavailable' });
         return { document: appDocument(resource.text, resource._meta) };
       });
@@ -158,7 +162,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
     async (request, reply) => {
       const { id, appId } = paramsSchema.parse(request.params);
       const call = callSchema.parse(request.body);
-      const resolved = await resolve(id, appId);
+      const resolved = await resolve(id, appId, request.localUserId ?? undefined);
       if (resolved === undefined) return reply.code(404).send({ error: 'MCP app unavailable' });
       if (pending.has(id) || pending.size >= 64)
         return reply.code(409).send({ error: 'An app action is already pending' });
@@ -186,7 +190,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
           });
           if (!allowed || signal.aborted)
             return reply.code(403).send({ error: 'MCP app action denied' });
-          if ((await resolve(id, appId)) === undefined)
+          if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
           const currentTools = await listAppTools(rpc, resolved.connection, sessionId, version);
           const currentTool = currentTools.find((candidate) => candidate.name === call.name);
@@ -203,7 +207,7 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
           if (!(await deps.authorizeRequest(request)))
             return reply.code(403).send({ error: 'MCP app access changed' });
           const { result } = await rpc(resolved.connection, 'tools/call', call, sessionId, version);
-          if ((await resolve(id, appId)) === undefined)
+          if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
             return reply.code(404).send({ error: 'MCP app access changed' });
           if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024)
             throw new Error('MCP app result too large');

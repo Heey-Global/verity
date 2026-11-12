@@ -618,6 +618,23 @@ export interface HttpMcpConnectionRecord {
   enabled: boolean;
 }
 
+/**
+ * Whether a turn run for `userId` may use this HTTP MCP connection (ADR 0023 §3).
+ * A connection that carries a credential belongs to its owner and is usable only
+ * in the owner's turns; a credential-free server is project configuration and
+ * usable by everyone. A turn without an initiator gets no credentialed
+ * connection at all — never the administrator's as a fallback.
+ */
+export function httpMcpConnectionUsableBy(
+  connection: Pick<HttpMcpConnectionRecord, 'ownerUserId' | 'authType' | 'authorization'>,
+  userId: string | undefined,
+): boolean {
+  const credentialFree =
+    connection.authorization === null && (connection.authType ?? 'none') === 'none';
+  if (credentialFree) return true;
+  return userId !== undefined && connection.ownerUserId === userId;
+}
+
 export interface ProjectMcpBindingRecord {
   projectId: string;
   connectionId: string;
