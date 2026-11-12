@@ -99,7 +99,7 @@ import { cpus, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
-import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+import { DEVCONTAINER_ROOT_USER_WARNING, PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 import { SealedError, isLocalProject } from '@verity/store';
 import {
   resolveSigningPrivateKey,
@@ -1377,7 +1377,7 @@ function devcontainerRuntimeSettings(devcontainerDir: string): DevcontainerRunti
 
 function devcontainerProvisionWarning(settings: DevcontainerRuntimeSettings): string | null {
   if (settings.remoteUser?.toLowerCase() === 'root') {
-    return 'Devcontainer requests remoteUser=root. The project is running, but root containers have a larger blast radius; prefer a non-root remoteUser when possible.';
+    return DEVCONTAINER_ROOT_USER_WARNING;
   }
   return null;
 }
