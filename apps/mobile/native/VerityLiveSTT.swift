@@ -1,5 +1,6 @@
 internal import ExpoModulesCore
 import AVFoundation
+import CoreML
 import FluidAudio
 import Foundation
 import Speech
@@ -157,13 +158,134 @@ private struct SpeakerUpdate: Sendable {
   let through: Double
 }
 
-private actor LiveSpeakerProcessor {
-  private enum Model {
-    case sortformer(SortformerDiarizer)
-    case lsEend(LSEENDDiarizer)
+// CoreML compilation is not cooperatively cancelled. Keep one permit until the
+// underlying load actually returns, even when the recording that requested it ends.
+private actor LiveModelLoadGate {
+  static let shared = LiveModelLoadGate()
+  private var busy = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func acquire() async {
+    if busy {
+      await withCheckedContinuation { waiters.append($0) }
+    } else {
+      busy = true
+    }
   }
 
-  private let model: Model
+  func release() {
+    if waiters.isEmpty { busy = false }
+    else { waiters.removeFirst().resume() }
+  }
+}
+
+// Each key fixes the variant, step size, cache location and compute-unit policy.
+// Add a distinct key before exposing another configuration to a caller.
+private enum SpeakerModelVariant: Hashable, Sendable {
+  case sortformerDefault
+  case lsEendDihard3Step100ms
+}
+
+private enum SpeakerDiarizer {
+  case sortformer(SortformerDiarizer)
+  case lsEend(LSEENDDiarizer)
+}
+
+// The loaded weights are immutable. Predictions use the lock; every recording gets
+// its own diarizer, recurrent state and Sortformer MLMultiArray scratch buffers.
+private final class LoadedSpeakerModel: @unchecked Sendable {
+  private enum Weights {
+    case sortformer(MLModel)
+    case lsEend(LSEENDModel)
+  }
+  private let weights: Weights
+  private let predictionLock = NSLock()
+
+  init(sortformer: SortformerModels) { weights = .sortformer(sortformer.mainModel) }
+  init(lsEend: LSEENDModel) { weights = .lsEend(lsEend) }
+
+  func withPredictionLock<T>(_ work: () throws -> T) rethrows -> T {
+    predictionLock.lock()
+    defer { predictionLock.unlock() }
+    return try work()
+  }
+
+  func makeDiarizer(timeline: (Float) -> DiarizerTimelineConfig) throws -> SpeakerDiarizer {
+    try withPredictionLock {
+      switch weights {
+      case .sortformer(let main):
+        let config = SortformerConfig.default
+        let models = try SortformerModels(config: config, main: main)
+        let diarizer = SortformerDiarizer(
+          config: config,
+          timelineConfig: timeline(DiarizerTimelineConfig.sortformerDefault.frameDurationSeconds))
+        diarizer.initialize(models: models)
+        return .sortformer(diarizer)
+      case .lsEend(let model):
+        return .lsEend(try LSEENDDiarizer(
+          model: model, timelineConfig: timeline(model.metadata.frameDurationSeconds)))
+      }
+    }
+  }
+}
+
+private actor LiveSpeakerModels {
+  static let shared = LiveSpeakerModels()
+  private struct Pending {
+    let id = UUID()
+    let task: Task<LoadedSpeakerModel, Error>
+    let cacheGeneration: Int
+  }
+  private var loading: [SpeakerModelVariant: Pending] = [:]
+  private var cached: [SpeakerModelVariant: LoadedSpeakerModel] = [:]
+  private var cacheGeneration = 0
+
+  func load(_ variant: SpeakerModelVariant) async throws -> LoadedSpeakerModel {
+    if let model = cached[variant] { return model }
+    let pending: Pending
+    if let existing = loading[variant] {
+      pending = existing
+    } else {
+      let task = Task.detached(priority: .utility) {
+        await LiveModelLoadGate.shared.acquire()
+        defer { Task { await LiveModelLoadGate.shared.release() } }
+        switch variant {
+        case .sortformerDefault:
+          // FluidAudio's ModelHub validates revision and compiled-model layout
+          // before CoreML loading, and owns its targeted cache recovery.
+          return LoadedSpeakerModel(sortformer: try await SortformerModels.loadFromHuggingFace(
+            config: .default))
+        case .lsEendDihard3Step100ms:
+          return LoadedSpeakerModel(lsEend: try await LSEENDModel.loadFromHuggingFace(
+            variant: .dihard3, stepSize: .step100ms))
+        }
+      }
+      pending = Pending(task: task, cacheGeneration: cacheGeneration)
+      loading[variant] = pending
+    }
+    do {
+      let model = try await pending.task.value
+      if loading[variant]?.id == pending.id {
+        loading[variant] = nil
+        if cacheGeneration == pending.cacheGeneration { cached[variant] = model }
+      }
+      return model
+    } catch {
+      if loading[variant]?.id == pending.id { loading[variant] = nil }
+      throw error
+    }
+  }
+
+  func releaseCachedModels() {
+    cacheGeneration += 1
+    cached.removeAll()
+    // Do not drop or cancel in-flight loads: another start must join them.
+  }
+}
+
+private actor LiveSpeakerProcessor {
+  private let model: SpeakerDiarizer
+  private let loadedModel: LoadedSpeakerModel
 
   // FluidAudio's default timeline turns raw frame decisions into segments with no
   // smoothing, so every breath split a turn and words in the gaps lost their speaker.
@@ -182,54 +304,43 @@ private actor LiveSpeakerProcessor {
   }
 
   init(participants: Int) async throws {
-    // Frame durations come from the model and library defaults, so the smoothing
-    // values in seconds map to the right number of frames for each variant.
-    if participants > 4 {
-      let lsEend = try await LSEENDModel.loadFromHuggingFace(
-        variant: .dihard3, stepSize: .step100ms)
-      model = .lsEend(
-        try LSEENDDiarizer(
-          model: lsEend,
-          timelineConfig: Self.timelineConfig(
-            frameDuration: lsEend.metadata.frameDurationSeconds)))
-    } else {
-      let config = SortformerConfig.default
-      let models = try await SortformerModels.loadFromHuggingFace(config: config)
-      let diarizer = SortformerDiarizer(
-        config: config,
-        timelineConfig: Self.timelineConfig(
-          frameDuration: DiarizerTimelineConfig.sortformerDefault.frameDurationSeconds))
-      diarizer.initialize(models: models)
-      model = .sortformer(diarizer)
-    }
+    let variant: SpeakerModelVariant = participants > 4 ? .lsEendDihard3Step100ms : .sortformerDefault
+    let loaded = try await LiveSpeakerModels.shared.load(variant)
+    try Task.checkCancellation()
+    loadedModel = loaded
+    model = try loaded.makeDiarizer(timeline: Self.timelineConfig)
   }
 
   func process(_ audio: SpeakerAudio) throws -> SpeakerUpdate? {
-    let update: DiarizerTimelineUpdate?
-    let frameDuration: Float
-    switch model {
-    case .sortformer(let diarizer):
-      update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
-      frameDuration = diarizer.timeline.config.frameDurationSeconds
-    case .lsEend(let diarizer):
-      update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
-      frameDuration = diarizer.timeline.config.frameDurationSeconds
+    try loadedModel.withPredictionLock {
+      let update: DiarizerTimelineUpdate?
+      let frameDuration: Float
+      switch model {
+      case .sortformer(let diarizer):
+        update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+        frameDuration = diarizer.timeline.config.frameDurationSeconds
+      case .lsEend(let diarizer):
+        update = try diarizer.process(samples: audio.samples, sourceSampleRate: audio.sampleRate)
+        frameDuration = diarizer.timeline.config.frameDurationSeconds
+      }
+      guard let update else { return nil }
+      let chunk = update.chunkResult
+      let frames = chunk.startFrame + chunk.finalizedFrameCount + chunk.tentativeFrameCount
+      return SpeakerUpdate(
+        finalized: update.finalizedSegments, tentative: update.tentativeSegments,
+        through: Double(Float(frames) * frameDuration))
     }
-    guard let update else { return nil }
-    let chunk = update.chunkResult
-    let frames = chunk.startFrame + chunk.finalizedFrameCount + chunk.tentativeFrameCount
-    return SpeakerUpdate(
-      finalized: update.finalizedSegments, tentative: update.tentativeSegments,
-      through: Double(Float(frames) * frameDuration))
   }
 
   func finish() throws -> [DiarizerSegment] {
-    let update: DiarizerTimelineUpdate?
-    switch model {
-    case .sortformer(let diarizer): update = try diarizer.finalizeSession()
-    case .lsEend(let diarizer): update = try diarizer.finalizeSession()
+    try loadedModel.withPredictionLock {
+      let update: DiarizerTimelineUpdate?
+      switch model {
+      case .sortformer(let diarizer): update = try diarizer.finalizeSession()
+      case .lsEend(let diarizer): update = try diarizer.finalizeSession()
+      }
+      return update?.finalizedSegments ?? []
     }
-    return update?.finalizedSegments ?? []
   }
 }
 
@@ -450,6 +561,7 @@ private final class LiveSTTService {
   private func disableSpeakers(message: String) {
     guard dictationOwner == nil, activeEngine != nil, speakerModelTask != nil, !speakerUnavailable else { return }
     speakerUnavailable = true
+    Task { await LiveSpeakerModels.shared.releaseCachedModels() }
     speakerInput?.finish()
     speakerModelTask?.cancel()
     speakerTask?.cancel()
@@ -607,7 +719,7 @@ private final class LiveSTTService {
         speakerModelTask = Task { [weak self] in
           do {
             let processor = try await LiveSpeakerProcessor(participants: participants)
-            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+            guard !Task.isCancelled, let self, self.generation == startGeneration, self.activeEngine != nil,
               !self.speakerUnavailable else {
               return nil
             }
@@ -615,7 +727,7 @@ private final class LiveSTTService {
             self.emit?(["kind": "speaker-status", "state": "ready"])
             return processor
           } catch {
-            guard let self, self.generation == startGeneration, self.activeEngine != nil,
+            guard !Task.isCancelled, let self, self.generation == startGeneration, self.activeEngine != nil,
               !self.speakerUnavailable else {
               return nil
             }
@@ -1005,8 +1117,17 @@ private final class LiveSTTService {
     locale: String, vocabulary: [String], generation: Int
   ) async throws {
     emit?(["kind": "status", "state": "downloading"])
-    let models = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
-      languageCode: locale, chunkMs: 2240)
+    await LiveModelLoadGate.shared.acquire()
+    let models: SharedNemotronMultilingualModels
+    do {
+      try ensureActive(generation)
+      models = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
+        languageCode: locale, chunkMs: 2240)
+      await LiveModelLoadGate.shared.release()
+    } catch {
+      await LiveModelLoadGate.shared.release()
+      throw error
+    }
     try ensureActive(generation)
     let manager = StreamingNemotronMultilingualAsrManager()
     try await manager.loadFromShared(models)
@@ -1038,7 +1159,16 @@ private final class LiveSTTService {
 
   private func startParakeet(generation: Int) async throws {
     emit?(["kind": "status", "state": "downloading"])
-    let models = try await AsrModels.downloadAndLoad(version: .ultra)
+    await LiveModelLoadGate.shared.acquire()
+    let models: AsrModels
+    do {
+      try ensureActive(generation)
+      models = try await AsrModels.downloadAndLoad(version: .ultra)
+      await LiveModelLoadGate.shared.release()
+    } catch {
+      await LiveModelLoadGate.shared.release()
+      throw error
+    }
     try ensureActive(generation)
     // The default 11 s chunk plus 2 s lookahead leaves short test recordings blank.
     let manager = SlidingWindowAsrManager(config: SlidingWindowAsrConfig(

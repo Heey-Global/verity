@@ -42,6 +42,10 @@ jest.mock('../lib/liveMeetingStore', () => ({
   finalizeNote: jest.fn().mockResolvedValue(true),
 }));
 jest.mock('../lib/liveMeetingSync', () => ({
+  subscribeMeetingSyncFailure: jest.fn().mockReturnValue(() => {}),
+  getMeetingSyncFailure: jest.fn().mockReturnValue(null),
+  retryMeetingSync: jest.fn().mockResolvedValue(undefined),
+  finalizeMeetingOnServer: jest.fn().mockResolvedValue(undefined),
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   followRemoteMeeting: jest.fn(),
 }));

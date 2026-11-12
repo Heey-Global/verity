@@ -32,7 +32,7 @@ describe('native Apple dictation preparation', () => {
 });
 
 function nativeMethod(source: string, name: string) {
-  const start = source.indexOf('func ' + name + '(');
+  const start = source.search(new RegExp('func ' + name + '(?:<[^>]+>)?\\('));
   expect(start, name).toBeGreaterThanOrEqual(0);
   const opening = source.indexOf('{', start);
   let depth = 1;
@@ -103,5 +103,87 @@ describe('native prepared dictation lifecycle guards', () => {
     expect(source).toContain('UIApplication.didReceiveMemoryWarningNotification');
     expect(nativeMethod(source, 'startAppleMicrophone')).toContain('.bufferingOldest(128)');
     expect(nativeMethod(source, 'startAppleMicrophone')).toContain('case .dropped');
+  });
+});
+
+describe('native shared CoreML loading guards', () => {
+  const read = () => readFileSync('apps/mobile/native/VerityLiveSTT.swift', 'utf8');
+
+  it('retains an uncancelled shared speaker load when a recording waiter ends', () => {
+    const source = read();
+    const coordinator = source.slice(
+      source.indexOf('private actor LiveSpeakerModels {'),
+      source.indexOf('private actor LiveSpeakerProcessor {'),
+    );
+    const publish = coordinator.indexOf('loading[variant] = pending');
+    const wait = coordinator.indexOf('await pending.task.value');
+    expect(coordinator).toContain('Task.detached(');
+    expect(coordinator).toContain('if let existing = loading[variant]');
+    expect(publish).toBeGreaterThanOrEqual(0);
+    expect(wait).toBeGreaterThan(publish);
+    // Cancelling or forgetting this load lets a later recording compile the same model concurrently.
+    expect(coordinator).not.toMatch(/\.cancel\(/);
+    const trim = nativeMethod(source, 'releaseCachedModels');
+    expect(trim).toContain('cacheGeneration += 1');
+    expect(trim).toContain('cached.removeAll()');
+    expect(trim).not.toMatch(/loading\s*=|loading\.remove|\.cancel\(/);
+  });
+
+  it('gates speaker and explicit ASR CoreML loads through one process-wide permit', () => {
+    const source = read();
+    const coordinator = source.slice(
+      source.indexOf('private actor LiveSpeakerModels {'),
+      source.indexOf('private actor LiveSpeakerProcessor {'),
+    );
+    expect(coordinator).toMatch(
+      /await LiveModelLoadGate.shared.acquire\(\)[\s\S]*defer \{ Task \{ await LiveModelLoadGate.shared.release\(\)/,
+    );
+    for (const [method, loader] of [
+      ['startNemotron', 'downloadAndPreloadShared('],
+      ['startParakeet', 'downloadAndLoad('],
+    ]) {
+      const body = nativeMethod(source, method!);
+      const permit = body.indexOf('await LiveModelLoadGate.shared.acquire()');
+      const load = body.indexOf(loader!);
+      expect(permit).toBeGreaterThanOrEqual(0);
+      expect(load).toBeGreaterThan(permit);
+      // A failed load must release the permit rather than blocking every later model.
+      expect(body.slice(load)).toMatch(
+        /await LiveModelLoadGate.shared.release\(\)[\s\S]*catch[\s\S]*await LiveModelLoadGate.shared.release\(\)/,
+      );
+    }
+  });
+
+  it('creates private recurrent buffers and serializes predictions on shared weights', () => {
+    const source = read();
+    const factory = nativeMethod(source, 'makeDiarizer');
+    expect(factory).toContain('SortformerModels(config: config, main: main)');
+    expect(factory).toContain('SortformerDiarizer(');
+    expect(factory).toContain('LSEENDDiarizer(');
+    // SortformerModels includes mutable MLMultiArray buffers, so caching its whole value is unsafe.
+    const weights = source.slice(
+      source.indexOf('private final class LoadedSpeakerModel:'),
+      source.indexOf('private actor LiveSpeakerModels {'),
+    );
+    expect(weights).toContain('case sortformer(MLModel)');
+    expect(weights).not.toContain('case sortformer(SortformerModels)');
+    expect(nativeMethod(source, 'withPredictionLock')).toContain(
+      'defer { predictionLock.unlock() }',
+    );
+    const processor = source.slice(source.indexOf('private actor LiveSpeakerProcessor {'));
+    expect(nativeMethod(processor, 'process')).toContain('loadedModel.withPredictionLock');
+    expect(nativeMethod(processor, 'finish')).toContain('loadedModel.withPredictionLock');
+  });
+
+  it('rejects a stopped recording before publishing a late speaker processor', () => {
+    const source = read();
+    const start = nativeMethod(source, 'start');
+    const waiting = start.indexOf('try await LiveSpeakerProcessor(');
+    const publish = start.indexOf('self.speakerProcessor = processor', waiting);
+    expect(waiting).toBeGreaterThanOrEqual(0);
+    expect(publish).toBeGreaterThan(waiting);
+    expect(start.slice(waiting, publish)).toContain('!Task.isCancelled');
+    expect(start.slice(waiting, publish)).toContain('self.generation == startGeneration');
+    expect(start.slice(waiting, publish)).toContain('!self.speakerUnavailable');
   });
 });

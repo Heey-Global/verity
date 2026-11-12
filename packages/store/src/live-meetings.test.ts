@@ -94,6 +94,98 @@ describe('running meetings', () => {
 });
 
 describe('live meeting sync', () => {
+  it('finalizes without losing data or consuming the recorder revision and cannot be reopened', async () => {
+    await ctx.store.liveMeetings.putMeeting(meeting);
+    await ctx.store.liveMeetings.putNote('session-1', {
+      id: 'note-1',
+      meetingId: meeting.id,
+      atSeconds: 1,
+      text: 'Keep this note',
+      revision: 1,
+    });
+    await ctx.store.liveMeetings.requestCommand('session-1', meeting.id, 'stop-1', 'stop');
+    const before = await ctx.store.liveMeetings.changes('session-1', 0);
+    expect(await ctx.store.liveMeetings.finalizeMeeting('session-2', meeting.id)).toBe('not_found');
+    expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id)).toBe('finalized');
+    const finalized = await ctx.store.liveMeetings.changes('session-1', before.cursor);
+    expect(finalized.meetings).toEqual([
+      expect.objectContaining({ state: 'ended', transcript: meeting.transcript, revision: 1 }),
+    ]);
+    expect((await ctx.store.liveMeetings.changes('session-1', 0)).notes).toEqual([
+      expect.objectContaining({ text: 'Keep this note' }),
+    ]);
+    expect(await ctx.store.liveMeetings.running()).toEqual([]);
+    expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id)).toBe('finalized');
+    expect((await ctx.store.liveMeetings.changes('session-1', 0)).meetings[0]!.endedAt).toBe(
+      finalized.meetings[0]!.endedAt,
+    );
+    expect(
+      await ctx.store.liveMeetings.putMeeting({
+        ...meeting,
+        revision: 2,
+        transcript: 'Delayed active words',
+      }),
+    ).toBe(false);
+    expect(
+      await ctx.store.liveMeetings.putMeeting({
+        ...meeting,
+        revision: 3,
+        state: 'interrupted',
+        endedAt: 500,
+        transcript: 'Final locally saved words',
+      }),
+    ).toBe(true);
+    expect((await ctx.store.liveMeetings.changes('session-1', 0)).meetings[0]).toMatchObject({
+      state: 'ended',
+      revision: 3,
+      transcript: 'Final locally saved words',
+    });
+    expect(await ctx.store.liveMeetings.putMeeting({ ...meeting, revision: 4 })).toBe(false);
+    expect(
+      await ctx.store.liveMeetings.acknowledgeCommand(
+        'session-1',
+        meeting.id,
+        'stop-1',
+        meeting.ownerTokenHash,
+        'completed',
+        null,
+      ),
+    ).toBe(true);
+    expect(
+      await ctx.store.liveMeetings.acknowledgeCommand(
+        'session-1',
+        meeting.id,
+        'stop-1',
+        'other-owner',
+        'completed',
+        null,
+      ),
+    ).toBe(false);
+    expect(
+      await ctx.store.liveMeetings.acknowledgeCommand(
+        'session-1',
+        meeting.id,
+        'stop-1',
+        meeting.ownerTokenHash,
+        'failed',
+        'failure',
+      ),
+    ).toBe(false);
+    expect(await ctx.store.liveMeetings.result('session-1', meeting.id)).toMatchObject({
+      revision: 3,
+      status: 'working',
+    });
+  });
+
+  it('does not finalize provider-managed or missing meetings', async () => {
+    expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', 'missing')).toBe('not_found');
+    await ctx.store.liveMeetings.putMeeting({ ...meeting, engine: 'attendee' });
+    expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id)).toBe(
+      'provider_managed',
+    );
+    expect(await ctx.store.liveMeetings.running()).toHaveLength(1);
+  });
+
   it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
     'does not advance the cursor past an uncommitted earlier update',
     async () => {

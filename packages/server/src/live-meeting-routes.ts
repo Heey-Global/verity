@@ -633,6 +633,26 @@ export function registerLiveMeetingRoutes(
     return { discarded: true };
   });
 
+  // Uses the default paired-device authentication; finalization never discards content.
+  app.post('/sessions/:id/live-meetings/:meetingId/finalize', async (request, reply) => {
+    const { id: sessionId, meetingId } = meetingParams.parse(request.params);
+    const outcome = await store.liveMeetings.finalizeMeeting(sessionId, meetingId);
+    if (outcome === 'not_found') {
+      reply.code(404);
+      return { error: 'meeting not found', code: 'meeting_not_found' };
+    }
+    if (outcome === 'provider_managed') {
+      reply.code(409);
+      return {
+        error: 'End online meetings through their provider.',
+        code: 'meeting_provider_managed',
+      };
+    }
+    await fileFinished(sessionId, meetingId);
+    opts.onResultChanged?.(sessionId, meetingId);
+    return { finalized: true, recordingStopped: false };
+  });
+
   app.put('/sessions/:id/live-meetings/:meetingId', async (request, reply) => {
     const { id: sessionId, meetingId } = meetingParams.parse(request.params);
     if (!(await store.getSession(sessionId))) {
@@ -641,8 +661,23 @@ export function registerLiveMeetingRoutes(
     }
     const parsed = meetingBody.safeParse(request.body);
     if (!parsed.success) {
+      const fields = new Set([
+        ...Object.keys(meetingBody.shape),
+        'speaker',
+        'start',
+        'end',
+        'text',
+      ]);
+      const issues = parsed.error.issues.slice(0, 20).map((issue) => ({
+        code: issue.code,
+        // Record keys are user input too: never log arbitrary keys or validation messages.
+        path: issue.path.map((part) =>
+          typeof part === 'number' ? part : fields.has(String(part)) ? String(part) : '*',
+        ),
+      }));
+      app.log.warn({ issues }, 'invalid meeting update');
       reply.code(400);
-      return { error: 'invalid meeting update' };
+      return { error: 'invalid meeting update', code: 'invalid_meeting_update', issues };
     }
     const body = parsed.data;
     const { ownerToken, ...meeting } = body;
@@ -654,9 +689,13 @@ export function registerLiveMeetingRoutes(
     });
     if (!accepted) {
       reply.code(409);
-      return (await store.liveMeetings.isDeleted(sessionId, meetingId))
-        ? deletedMeeting
-        : { error: 'meeting owner or session mismatch' };
+      if (await store.liveMeetings.isDeleted(sessionId, meetingId)) return deletedMeeting;
+      if (
+        body.state === 'active' &&
+        (await store.liveMeetings.meetingHead(sessionId, meetingId))?.state === 'ended'
+      )
+        return { error: 'This meeting was ended on the server.', code: 'meeting_finalized' };
+      return { error: 'meeting owner or session mismatch' };
     }
     if ((await store.liveMeetings.currentRevision(sessionId, meetingId)) === body.revision) {
       questionChecks.ingest({
