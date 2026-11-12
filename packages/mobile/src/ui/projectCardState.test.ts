@@ -37,6 +37,7 @@ const update = (over: Partial<SandboxUpdate>): SandboxUpdate => ({
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  blockedBy: [],
   lastRepairFailure: null,
   ...over,
 });
