@@ -89,12 +89,15 @@ export const PROJECT_PICKUP_DELAY_MS = 260;
 export function useProjectReorder({
   order,
   sortable,
+  enabled = true,
   onDrop,
   sessionOrders = {},
   onDropSession,
 }: {
   order: readonly string[];
   sortable: readonly string[];
+  /** The detector stays mounted while its list is hidden. */
+  enabled?: boolean;
   onDrop: (order: readonly string[]) => void;
   sessionOrders?: Readonly<Record<string, readonly string[]>>;
   onDropSession?: (scope: string, order: readonly string[]) => void;
@@ -278,6 +281,7 @@ export function useProjectReorder({
   const gesture = useMemo(
     () =>
       Gesture.Pan()
+        .enabled(enabled)
         .withTestId('project-reorder')
         .activateAfterLongPress(PROJECT_PICKUP_DELAY_MS)
         .failOffsetX([-12, 12])
@@ -398,6 +402,7 @@ export function useProjectReorder({
           );
         }),
     [
+      enabled,
       registeredHeaders,
       sessionOverlayReady,
       hostRef,
