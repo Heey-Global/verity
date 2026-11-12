@@ -12298,9 +12298,13 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       expect(after.sandboxRepairLastFailures().has(p.id)).toBe(false);
     });
 
-    it.each([false, true])(
-      'retries its own replacement after start failure (restart=%s)',
-      async (restart) => {
+    it.each(
+      [false, true].flatMap((restart) =>
+        [false, true, undefined].map((relayHealthy) => ({ restart, relayHealthy })),
+      ),
+    )(
+      'retries its own replacement after start failure (restart=$restart relay=$relayHealthy)',
+      async ({ restart, relayHealthy }) => {
         // A real create stamps a new generation before start fails. Treating that
         // generation as manual supersession silently drops the automatic retry.
         const p = await seedActive('owned-start-failure', 'dev-owned-start-failure');
@@ -12329,9 +12333,14 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
             throw new Error('injected start failure');
           }),
         });
-        const before = makeProvisioner(client, { isHealthy: async () => false });
+        const before = makeProvisioner(
+          client,
+          relayHealthy === undefined ? {} : { isHealthy: async () => relayHealthy },
+        );
         before.attachProjectBusyProbe(async () => false);
-        await expect(before.reconcileRelays([p])).rejects.toThrow('Relay migration failed');
+        await expect(
+          before.reconcileRelays([p], { updateAvailable: new Set([p.id]) }),
+        ).rejects.toThrow('Relay migration failed');
         expect((await ctx.store.getProject(p.id))?.provisionError).toContain(
           'injected start failure',
         );
@@ -12341,7 +12350,12 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
         expect(current.labels?.['verity.container-generation']).not.toBe(intent!.sourceGeneration);
         const failed = (await ctx.store.getProject(p.id))!;
         expect(failed.state).toBe('failed');
-        const after = restart ? makeProvisioner(client, { isHealthy: async () => false }) : before;
+        const after = restart
+          ? makeProvisioner(
+              client,
+              relayHealthy === undefined ? {} : { isHealthy: async () => relayHealthy },
+            )
+          : before;
         after.attachProjectBusyProbe(async () => false);
         const retry = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
         await after.reconcileRelays([failed]);

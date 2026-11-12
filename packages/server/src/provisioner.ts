@@ -4769,6 +4769,10 @@ export class ProvisionerImpl implements Provisioner {
           // nothing for relay migration to do, but for a repair we explicitly owe it
           // means "resume provisioning" — and creating a missing container cannot
           // interrupt a live turn, so no busy deferral is needed.
+          // Structural migration and relay health do not prove the sandbox
+          // started. An owned failed repair still owes runtime recovery even
+          // when its replacement already carries all migration metadata.
+          const owedRuntimeRepair = previousIntent !== undefined && project.state === 'failed';
           const action = imageUpdate
             ? decideMigrationAction({
                 // Image updates use legacy's unbounded busy deferral: unlike an
@@ -4780,7 +4784,10 @@ export class ProvisionerImpl implements Provisioner {
             : classification === 'absent' && this.pendingSandboxRepairRetries.has(project.id)
               ? 'migrate'
               : decideMigrationAction({
-                  classification,
+                  classification:
+                    owedRuntimeRepair && classification === 'migrated'
+                      ? 'orphaned'
+                      : classification,
                   busy,
                   busyConfirmed: confirmed,
                   orphanDeferrals: this.orphanDeferrals.get(project.id),
