@@ -7,6 +7,7 @@ import {
   unguardedEgressDestinationMutation,
 } from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
+import { UserProfileStore } from './user-profile.js';
 import {
   ProjectRepositoryStore,
   type AddProjectRepositoryInput,
@@ -1744,6 +1745,7 @@ export class EventStore implements EventSink {
   ) {
     const db = rootDb;
     this.userContext = new UserContextStore(db);
+    this.userProfiles = new UserProfileStore(db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
@@ -1764,6 +1766,7 @@ export class EventStore implements EventSink {
   }
 
   readonly userContext: UserContextStore;
+  readonly userProfiles: UserProfileStore;
   /** Per-person overview state: folded projects, read sessions, dismissed Home items. */
   readonly viewState: ViewStateStore;
   readonly projectEgress: ProjectEgressStore;

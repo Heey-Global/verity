@@ -795,6 +795,8 @@ interface UsersTable {
   id: string;
   role: 'administrator' | 'member';
   status: 'active' | 'disabled';
+  /** Shown to other people in shared projects; never used for authorization. */
+  display_name: string | null;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

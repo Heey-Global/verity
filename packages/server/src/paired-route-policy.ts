@@ -327,6 +327,9 @@ const activeUserRoutes = new Set([
   // Personal context is bound to the authenticated identity inside the handlers.
   routeScopeKey('GET', '/me/context'),
   routeScopeKey('PUT', '/me/context'),
+  // The display name is bound to the authenticated identity inside the handlers.
+  routeScopeKey('GET', '/me/profile'),
+  routeScopeKey('PUT', '/me/profile'),
   // Any active user may open the live connection; every session it subscribes
   // to is authorized individually, like `GET /sessions/:id`. The WebSocket
   // handshake consumes the ticket, not a paired-device bearer.

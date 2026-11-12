@@ -294,6 +294,12 @@ export {
   validateContext,
   type UserContext,
 } from './user-context.js';
+export {
+  UserProfileStore,
+  DISPLAY_NAME_MAX_CHARS,
+  normalizeDisplayName,
+  type UserProfile,
+} from './user-profile.js';
 
 export {
   ViewStateStore,

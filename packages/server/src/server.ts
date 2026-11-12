@@ -9,6 +9,7 @@ import { registerVulnerabilityFixRoute, buildVulnerabilityFixPrompt } from './vu
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
+import { registerUserProfileRoutes } from './user-profile-routes.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
 import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
@@ -3682,6 +3683,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   }
   registerUserContextRoutes(app, deps.eventStore.userContext);
+  registerUserProfileRoutes(app, deps.eventStore.userProfiles);
   if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined

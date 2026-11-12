@@ -5581,3 +5581,16 @@ migrations['0204_project_name'] = {
     await sql`alter table projects drop column name`.execute(db);
   },
 };
+
+migrations['0205_user_display_name'] = {
+  // The name other people see for a person in shared projects: turn authors,
+  // the Team page and invitations. Optional, because the administrator is asked
+  // for it only when first inviting someone; a member sets it when joining.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table users add column display_name text
+      check (char_length(btrim(display_name)) between 1 and 80)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table users drop column display_name`.execute(db);
+  },
+};
