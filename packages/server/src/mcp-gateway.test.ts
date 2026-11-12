@@ -422,6 +422,57 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
     );
   });
 
+  it.each([
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "print('probe')"],
+      secrets: [],
+      expected: 'secrets must contain at least one entry',
+    },
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "import os\nprint('private-marker')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+      expected: 'command tokens must not contain control characters, including newlines and tabs',
+    },
+  ])(
+    'explains trusted CLI validation without exposing arguments ($expected)',
+    async ({ expected, ...args }) => {
+      const { gateway, requestApproval, invokeTool, records } = harness();
+      const response = await gateway.handle({
+        projectId: 'p1',
+        token: 'session-token',
+        body: call({ ...args, 'private-marker': 'private-value' }, 'verity_secret_run'),
+      });
+      expect(response.body).toMatchObject({
+        error: { code: -32602, message: expect.stringContaining(expected) },
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(/private-marker|private-value|EXPO_TOKEN/);
+      expect(requestApproval).not.toHaveBeenCalled();
+      expect(invokeTool).not.toHaveBeenCalled();
+      expect(records.at(-1)).toMatchObject({
+        kind: 'gateway_call_rejected',
+        rejection: 'malformed_request',
+      });
+    },
+  );
+
+  it('passes single-line inline code with a secret through validation and approval', async () => {
+    const { gateway, requestApproval, invokeTool } = harness();
+    const args = {
+      command: ['/usr/bin/python3', '-c', "print('probe')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+    };
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(args, 'verity_secret_run'),
+    });
+    expect(resultOf(response.body).isError).toBeUndefined();
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ request: args, approvedByCard: true }),
+    );
+  });
+
   it('hands the complete approved trusted CLI request to the turn-bound executor', async () => {
     const cli = {
       command: ['/usr/bin/kubectl', 'get', 'pods'],

@@ -852,13 +852,43 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
     }
     const request = TOOL_SCHEMAS[toolName].safeParse(rawArguments);
     if (!request.success) {
+      // Never echo Zod issues: unknown keys and supplied values can contain secrets.
+      // These fixed hints explain common failures without exposing request content.
+      const hints: string[] = [];
+      if (toolName === 'verity_secret_run') {
+        for (const issue of request.error.issues) {
+          if (
+            issue.code === 'too_small' &&
+            issue.path.length === 1 &&
+            issue.path[0] === 'secrets'
+          ) {
+            hints.push(
+              'secrets must contain at least one entry; use the normal command tool for commands without secrets.',
+            );
+          }
+          if (
+            issue.code === 'custom' &&
+            issue.path[0] === 'command' &&
+            issue.path.length === 2 &&
+            issue.message === 'command tokens must not contain control characters'
+          ) {
+            hints.push(
+              'command tokens must not contain control characters, including newlines and tabs; use single-line inline code or an approved entryScript.',
+            );
+          }
+        }
+      }
       return reject(
         projectId,
         callId,
         'malformed_request',
         undefined,
         undefined,
-        jsonRpcError(id, INVALID_PARAMS, `${toolName} rejected the arguments`),
+        jsonRpcError(
+          id,
+          INVALID_PARAMS,
+          `${toolName} rejected the arguments${hints.length ? `: ${[...new Set(hints)].join(' ')}` : ''}`,
+        ),
       );
     }
     const keyed = await key(projectId, request.data);
