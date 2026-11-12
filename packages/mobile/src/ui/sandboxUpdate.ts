@@ -54,6 +54,65 @@ export function isSecuritySandboxUpdate(update: SandboxUpdate | undefined): bool
 }
 
 /**
+ * What holds a blocked update off. `activity` is the honest answer when the
+ * Server did not say — an older Server, or a probe that only answered "busy" —
+ * and it names no remedy rather than guessing one. A turn wins over the others
+ * because it is the one a recreate would kill outright.
+ */
+export type SandboxUpdateBlocker = 'turn' | 'dev_server' | 'preview' | 'activity';
+
+export function sandboxUpdateBlocker(update: SandboxUpdate): SandboxUpdateBlocker {
+  const by = update.blockedBy;
+  if (by.includes('turn')) return 'turn';
+  if (by.includes('dev_server')) return 'dev_server';
+  if (by.includes('preview')) return 'preview';
+  return 'activity';
+}
+
+const WAITING_FOR: Record<SandboxUpdateBlocker, string> = {
+  turn: ' for a turn',
+  dev_server: ' for a dev server',
+  preview: ' for a preview',
+  activity: '',
+};
+
+/** The short name of a blocked update: the overview glyph's label and the
+ *  title of the dialogs it opens. */
+export function sandboxUpdateWaitingLabel(update: SandboxUpdate): string {
+  const subject = isSecuritySandboxUpdate(update) ? 'Security update' : 'Update';
+  return `${subject} waiting${WAITING_FOR[sandboxUpdateBlocker(update)]}`;
+}
+
+/** Why a blocked update cannot be applied now, and what would let it — for the
+ *  dialog behind the project's Update button. */
+export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
+  switch (sandboxUpdateBlocker(update)) {
+    case 'turn':
+      return 'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.';
+    case 'dev_server':
+      return 'A dev server is running in this project. Recreating the sandbox now would stop it — stop the dev server first, then update.';
+    case 'preview':
+      return 'This project is shared as a preview. Recreating the sandbox now would interrupt it — stop sharing first, then update.';
+    case 'activity':
+      return 'This project is in use. Verity updates the sandbox once the activity ends.';
+  }
+}
+
+/** One line for the inbox item of a blocked update. */
+export function sandboxUpdateBlockedInboxMessage(update: SandboxUpdate): string {
+  switch (sandboxUpdateBlocker(update)) {
+    case 'turn':
+      return 'A sandbox update waits for the running turn to finish.';
+    case 'dev_server':
+      return 'A sandbox update waits for a running dev server to stop.';
+    case 'preview':
+      return 'A sandbox update waits for a shared preview to stop.';
+    case 'activity':
+      return 'A sandbox update waits for project activity to finish.';
+  }
+}
+
+/**
  * What a project's sandbox update state means for the operator, as words.
  *
  * Four cases, because the honest answer differs by more than wording:
@@ -74,9 +133,17 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
   // Ahead of `stalled`: the Server raises both flags for a blocked update, and of
   // the two sentences only this one says what would actually move it.
   if (update.turnBlocked) {
-    return security
-      ? 'Security update waiting for a turn to finish — cancel it to update now'
-      : 'Update waiting for a turn to finish — cancel it to update now';
+    const subject = security ? 'Security update' : 'Update';
+    switch (sandboxUpdateBlocker(update)) {
+      case 'turn':
+        return `${subject} waiting for a turn to finish — cancel it to update now`;
+      case 'dev_server':
+        return `${subject} waiting for a running dev server — stop it to update now`;
+      case 'preview':
+        return `${subject} waiting for a shared preview — stop sharing to update now`;
+      case 'activity':
+        return `${subject} waiting for project activity to finish`;
+    }
   }
   return update.selfRepair === 'stalled'
     ? security
@@ -138,10 +205,29 @@ export function sandboxUpdateAlertMessage(
   // Server refuses this request while the turn runs, so an operator told "retry"
   // would just collect a 409 without learning why.
   if (update.turnBlocked) {
-    return (
-      `${project.owner}/${project.repo} has a turn in flight, so Verity is not replacing its ` +
-      `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
-    );
+    const name = `${project.owner}/${project.repo}`;
+    switch (sandboxUpdateBlocker(update)) {
+      case 'turn':
+        return (
+          `${name} has a turn in flight, so Verity is not replacing its ` +
+          `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
+        );
+      case 'dev_server':
+        return (
+          `${name} has a running dev server, so Verity is not replacing its sandbox — ${image}. ` +
+          'Stop the dev server first; recreating the container now would end it.'
+        );
+      case 'preview':
+        return (
+          `${name} is shared as a preview, so Verity is not replacing its sandbox — ${image}. ` +
+          'Stop sharing it first; recreating the container now would interrupt it.'
+        );
+      case 'activity':
+        return (
+          `${name} is in use, so Verity is not replacing its sandbox — ${image}. ` +
+          'It updates once the activity ends.'
+        );
+    }
   }
   return (
     `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
@@ -180,9 +266,10 @@ export function sandboxUpdateIndicator(
   if (!sandboxUpdateNeedsAttention(update)) return undefined;
   const security = isSecuritySandboxUpdate(update);
   if (update.turnBlocked) {
+    const label = sandboxUpdateWaitingLabel(update);
     return security
-      ? { label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' }
-      : { label: 'Update waiting for a turn', icon: 'clock', tone: 'attention' };
+      ? { label, icon: 'shield', tone: 'danger' }
+      : { label, icon: 'clock', tone: 'attention' };
   }
   return security
     ? { label: 'Security update stuck', icon: 'shield', tone: 'danger' }

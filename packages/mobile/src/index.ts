@@ -77,11 +77,16 @@ export { projectDisplayName, projectRepoRef, projectTitle } from './ui/projectNa
 export {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
+  sandboxUpdateBlockedDetail,
+  sandboxUpdateBlockedInboxMessage,
+  sandboxUpdateBlocker,
+  type SandboxUpdateBlocker,
   sandboxUpdateIndicator,
   type SandboxUpdateIndicator,
   sandboxUpdateLastFailure,
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
+  sandboxUpdateWaitingLabel,
 } from './ui/sandboxUpdate.js';
 export {
   agentEventDescriptor,

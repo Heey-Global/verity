@@ -21,6 +21,7 @@ import './fastify-augmentation.js';
 import type { PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import { hasGoogleDriveScopes } from './google-oauth-scopes.js';
 import { runtimeServerVersion } from './runtime-version.js';
+import type { ProjectBusyProbe } from './provisioner.js';
 import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import type { ServerDeps } from './server-deps.js';
 import type {
@@ -71,6 +72,7 @@ export const UNKNOWN_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  blockedBy: [],
   lastRepairFailure: null,
 };
 
@@ -126,7 +128,7 @@ export const SERVER_VERSION = runtimeServerVersion();
 export function startProjectRelayMigrationScheduler(
   deps: ServerDeps,
   log: FastifyBaseLogger,
-  isProjectBusy: (projectId: string) => Promise<boolean>,
+  isProjectBusy: ProjectBusyProbe,
 ): () => void {
   const provisioner = deps.provisioner;
   if (!provisioner || (!provisioner.reconcileRelays && !provisioner.reconcileProjectNetworks))
@@ -172,12 +174,20 @@ export function startProjectRelayMigrationScheduler(
       );
       await reconcileRelays?.(projects, {
         updateAvailable,
+        // `activity` names what holds the sandbox — a turn, a dev server or a
+        // shared preview — because each one ends differently, and a log that
+        // always said "turn" sent readers looking for turns that did not exist.
         onDeferred: (projectId, info) =>
           log.info(
-            { projectId, imageUpdate: info.imageUpdate },
+            {
+              projectId,
+              imageUpdate: info.imageUpdate,
+              activity: info.reasons,
+              observations: info.observations,
+            },
             info.imageUpdate
-              ? 'sandbox image update waiting for the project turn to finish'
-              : 'relay migration deferred: project has a turn in flight',
+              ? 'sandbox image update waiting for project activity to finish'
+              : 'relay migration deferred: project sandbox is in use',
           ),
         // `envDrift`: the sandbox was healthy and current-generation but carried only
         // part of an env block the provisioner writes whole (SANDBOX_ENV_COHORTS) —

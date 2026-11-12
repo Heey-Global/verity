@@ -1264,6 +1264,14 @@ describe('build storage reconciliation', () => {
     manager.setReleaseListener(released);
     const warn = quiet();
     try {
+      const left = await manager.reconcile({
+        protectedBuildStatus: async () => {
+          throw new Error('secret-canary-in-probe-error');
+        },
+      });
+      expect(left[0]?.reason).toBe('remote status check failed; termination is not confirmed');
+      expect(JSON.stringify(left)).not.toContain('secret-canary');
+      expect(released).not.toHaveBeenCalled();
       const status = vi.fn(async () => protectedReceipt);
       await manager.reconcile({ protectedBuildStatus: status });
       const signalled = released.mock.calls.length;
@@ -1411,6 +1419,48 @@ describe('build storage reconciliation', () => {
     ).toHaveLength(1);
     expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
   });
+  it.each([
+    ['invalid proof', undefined, 'remote status check did not return a valid receipt'],
+    [
+      'running work',
+      {
+        ...protectedReceipt,
+        record: { ...protectedReceipt.record, ended: false, phase: 'running' },
+      },
+      'remote builder has not confirmed the attempt ended',
+    ],
+    [
+      'identity conflict',
+      {
+        ...protectedReceipt,
+        record: {
+          ...protectedReceipt.record,
+          request: { ...protectedRequest, projectId: 'other' },
+        },
+      },
+      'remote receipt identity does not match the reserved attempt',
+    ],
+  ] as const)(
+    'explains retained storage for %s without releasing it',
+    async (_label, reply, reason) => {
+      const f = fixture();
+      const directory = attempt(
+        f,
+        'attempt-diagnostic',
+        {},
+        { operation: 'protected-build', protectedBuild: protectedReference },
+      );
+      const manager = f.manager();
+      const released = vi.fn();
+      manager.setReleaseListener(released);
+      const left = await manager.reconcile({ protectedBuildStatus: async () => reply });
+      expect(left).toHaveLength(1);
+      expect(left[0]?.reason).toBe(reason);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+      expect(released).not.toHaveBeenCalled();
+    },
+  );
+
   it('retains legacy protected records and unreachable host outcomes even after client age bounds', async () => {
     const f = fixture();
     attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
@@ -1471,8 +1521,12 @@ describe('build storage reconciliation', () => {
     const warn = quiet();
     try {
       // An unanswered question keeps the reservation.
-      expect(await storage.reconcile({ buildkitIdle: async () => undefined })).toHaveLength(1);
-      expect(await storage.reconcile({ buildkitIdle: async () => false })).toHaveLength(1);
+      expect((await storage.reconcile({ buildkitIdle: async () => undefined }))[0]?.reason).toBe(
+        'builder status is unavailable; termination is not confirmed',
+      );
+      expect((await storage.reconcile({ buildkitIdle: async () => false }))[0]?.reason).toBe(
+        'builder reports remote work is still running',
+      );
       expect(existsSync(directory)).toBe(true);
       expect(await storage.reconcile({ buildkitIdle: async () => true })).toEqual([]);
     } finally {

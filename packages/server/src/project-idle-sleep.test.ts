@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
-  projectHasPersistentSandboxActivity,
+  persistentSandboxActivityReasons,
+  observeProjectActivity,
+  activityReasons,
+  activityObservations,
+  recreateRefusalMessage,
   startProjectIdleSleepScheduler,
 } from './project-idle-sleep.js';
 
@@ -184,42 +188,111 @@ describe('project idle sleep scheduler', () => {
 describe('persistent Sandbox activity', () => {
   it('keeps a project awake for an active public preview', async () => {
     await expect(
-      projectHasPersistentSandboxActivity({
-        project: project('p1'),
-        listShares: async () => [{ state: 'active' } as never],
-      }),
-    ).resolves.toBe(true);
+      persistentSandboxActivityReasons({ listShares: async () => [{ state: 'active' } as never] }),
+    ).resolves.toEqual(['preview']);
   });
 
   it('keeps a project awake for an active local share without consulting public storage', async () => {
     const listShares = vi.fn(async () => []);
     await expect(
-      projectHasPersistentSandboxActivity({
-        project: project('p1'),
-        listShares,
-        hasLocalShares: () => true,
-      }),
-    ).resolves.toBe(true);
+      persistentSandboxActivityReasons({ listShares, hasLocalPreviewShares: () => true }),
+    ).resolves.toEqual(['preview']);
     expect(listShares).not.toHaveBeenCalled();
+  });
+
+  it('names a running dev server apart from a preview', async () => {
+    // The remedy differs — stop the server versus stop sharing — so the two must
+    // stay distinguishable all the way to the person reading the status.
+    await expect(
+      persistentSandboxActivityReasons({
+        listShares: async () => [],
+        hasRunningDevServers: () => true,
+      }),
+    ).resolves.toEqual(['dev_server']);
   });
 
   it('releases the activity lease after all shares are inactive', async () => {
     await expect(
-      projectHasPersistentSandboxActivity({
-        project: project('p1'),
+      persistentSandboxActivityReasons({
         listShares: async () => [{ state: 'expired' } as never, { state: 'revoked' } as never],
-        hasLocalShares: () => false,
+        hasLocalPreviewShares: () => false,
+        hasRunningDevServers: () => false,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toEqual([]);
   });
 });
 
 it('lets a stopped managed server sleep while its public link stays valid', async () => {
   await expect(
-    projectHasPersistentSandboxActivity({
-      project: project('p1'),
+    persistentSandboxActivityReasons({
       listShares: async () => [{ state: 'active', managedInstanceId: 'instance-1' } as never],
-      hasLocalShares: () => false,
+      hasLocalPreviewShares: () => false,
     }),
-  ).resolves.toBe(false);
+  ).resolves.toEqual([]);
+});
+
+describe('recreateRefusalMessage', () => {
+  it('names the activity that holds the sandbox, a turn first', () => {
+    expect(recreateRefusalMessage('p1', ['preview', 'turn'])).toContain('has a turn in flight');
+    expect(recreateRefusalMessage('p1', ['dev_server', 'preview'])).toContain('running dev server');
+    expect(recreateRefusalMessage('p1', ['preview'])).toContain('shared as a preview');
+  });
+});
+
+describe('structured project activity', () => {
+  const input = () => ({
+    projectId: 'p1',
+    listSessions: async () => [
+      { projectId: 'p1', sessionId: 'running' },
+      { projectId: 'p1', sessionId: 'excepted' },
+      { projectId: 'other', sessionId: 'foreign' },
+    ],
+    exceptSessionIds: new Set(['excepted']),
+    isTurnBusy: () => true,
+    hasRunningDevServers: () => true,
+    hasLocalPreviewShares: () => true,
+    listShares: async () => [
+      { id: 'share-active', state: 'active' } as never,
+      { id: 'share-managed', state: 'active', managedInstanceId: 'offline-server' } as never,
+      { id: 'share-expired', state: 'expired' } as never,
+    ],
+  });
+
+  it('retains reliable owner IDs and filters excepted sessions and offline links', async () => {
+    const snapshot = await observeProjectActivity(input());
+    expect(snapshot.observations).toEqual([
+      { reason: 'turn', source: 'sessions', sessionId: 'running' },
+      { reason: 'dev_server', source: 'dev_server' },
+      { reason: 'preview', source: 'local_preview' },
+      { reason: 'preview', source: 'public_preview', shareId: 'share-active' },
+    ]);
+    expect(activityReasons(snapshot)).toEqual(['turn', 'dev_server', 'preview']);
+  });
+
+  it.each(['sessions', 'dev_server', 'local_preview', 'public_preview'] as const)(
+    'preserves other observations when %s cannot answer',
+    async (source) => {
+      const probes = input();
+      const fail = () => {
+        throw new Error('secret-canary-in-probe');
+      };
+      if (source === 'sessions') probes.listSessions = fail;
+      if (source === 'dev_server') probes.hasRunningDevServers = fail;
+      if (source === 'local_preview') probes.hasLocalPreviewShares = fail;
+      if (source === 'public_preview') probes.listShares = fail;
+      const snapshot = await observeProjectActivity(probes);
+      expect(snapshot.observations).toContainEqual({ reason: 'unknown', source });
+      expect(snapshot.observations.length).toBe(4);
+      expect(activityReasons(snapshot)).toContain('unknown');
+      expect(JSON.stringify(snapshot)).not.toContain('secret-canary');
+    },
+  );
+
+  it('keeps legacy boolean answers compatible without inventing owners or turns', () => {
+    expect(activityObservations(false)).toEqual([]);
+    expect(activityObservations([])).toEqual([]);
+    expect(activityObservations(true)).toEqual([{ reason: 'unknown', source: 'busy_probe' }]);
+    expect(recreateRefusalMessage('p1', ['unknown'])).toContain('could not be confirmed idle');
+    expect(recreateRefusalMessage('p1', ['unknown'])).not.toContain('preview');
+  });
 });

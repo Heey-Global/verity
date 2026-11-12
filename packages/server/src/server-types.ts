@@ -11,6 +11,7 @@ import type { AttentionSignal } from './attention.js';
 import type { ClaudeCredentialStatus } from './claudeUsage.js';
 import type { PullRequestStatus } from './forge-provider.js';
 import type { ProjectAgent } from './project-agent-policy.js';
+import type { ProjectActivityReason } from './project-idle-sleep.js';
 import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import type { SessionGoogleStatus } from './session-google-status.js';
 import type { OpenChoices, PendingPermissionRequest } from './session-inbox-facts.js';
@@ -25,6 +26,8 @@ import type { VulnerabilitySummary } from './vulnerability-session.js';
 export interface SandboxRepairVerdicts {
   unrepaired: ReadonlySet<string>;
   turnBlocked: ReadonlySet<string>;
+  /** What holds each blocked project, see `SandboxUpdateStatus.blockedBy`. */
+  blockers?: ReadonlyMap<string, readonly ProjectActivityReason[]>;
   /** The most recent failed automatic recreate per project, with its time. */
   lastFailures?: ReadonlyMap<string, { at: number; message: string }>;
 }

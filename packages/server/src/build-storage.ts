@@ -1052,6 +1052,9 @@ export class BuildStorage {
   ): Promise<UnresolvedBuildAttempt[]> {
     const namespace = readlinkSync('/proc/self/ns/pid');
     const identity = this.hostIdentity();
+    // Fixed diagnostic text only: probe errors can contain credentials or paths.
+    const retainedReasons = new Map<string, string>();
+    const protectedReasons = new Map<string, string>();
     let idle: boolean | undefined;
     let asked = false;
     // The worker's answer covers only operations that began before it was asked.
@@ -1088,6 +1091,25 @@ export class BuildStorage {
       const reference = record.protectedBuild;
       try {
         const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));
+        if (!reply.success || !('record' in reply.data)) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote status check did not return a valid receipt',
+          );
+        } else if (
+          reply.data.record.request.projectId !== reference.projectId ||
+          reply.data.record.request.attemptId !== reference.attemptId
+        ) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote receipt identity does not match the reserved attempt',
+          );
+        } else {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote builder has not confirmed the attempt ended',
+          );
+        }
         return (
           reply.success &&
           'record' in reply.data &&
@@ -1097,6 +1119,10 @@ export class BuildStorage {
           reply.data.record.request.attemptId === reference.attemptId
         );
       } catch (error) {
+        protectedReasons.set(
+          reference.attemptId,
+          'remote status check failed; termination is not confirmed',
+        );
         // The host holds neither this attempt nor a receipt for it: its begin was
         // refused or never arrived (hosts before refusal receipts), or its receipt
         // aged out. A begin that a dead client wrote may still be unread by the
@@ -1179,7 +1205,10 @@ export class BuildStorage {
       }
       const sameNamespace = owner?.namespace === namespace;
       const record = this.readRemoteRecord(directory);
-      if (record === 'invalid') continue;
+      if (record === 'invalid') {
+        retainedReasons.set(entry.name, 'remote operation identity record could not be verified');
+        continue;
+      }
       if (record !== undefined) {
         const rebooted =
           identity !== undefined &&
@@ -1209,18 +1238,42 @@ export class BuildStorage {
           reason = 'the protected builder confirmed the attempt ended';
         else if (record.operation === 'image-import' && clientGone())
           reason = 'the image import client has exited';
-        if (reason === undefined) continue;
+        if (reason === undefined) {
+          retainedReasons.set(
+            entry.name,
+            !clientGone()
+              ? 'build client may still submit or own remote work'
+              : record.operation === 'protected-build'
+                ? (record.protectedBuild &&
+                    protectedReasons.get(record.protectedBuild.attemptId)) ||
+                  'remote termination is not confirmed'
+                : idle === false
+                  ? 'builder reports remote work is still running'
+                  : idle === undefined
+                    ? 'builder status is unavailable; termination is not confirmed'
+                    : 'operation began after the builder status observation',
+          );
+          continue;
+        }
         // A lease may have been taken, a client started, or this record rewritten,
         // while the worker was asked.
-        if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
-        if (!rebooted && !clientGone()) continue;
+        if (directory === this.currentDirectory || activeDirectories.has(directory)) {
+          retainedReasons.set(entry.name, 'a live owner acquired the attempt during verification');
+          continue;
+        }
+        if (!rebooted && !clientGone()) {
+          retainedReasons.set(entry.name, 'build client may still submit or own remote work');
+          continue;
+        }
         const current = this.readRemoteRecord(directory);
         if (
           current === undefined ||
           current === 'invalid' ||
           JSON.stringify(current) !== JSON.stringify(record)
-        )
+        ) {
+          retainedReasons.set(entry.name, 'remote operation identity changed during verification');
           continue;
+        }
         this.releaseRemoteRecord(directory, reason);
       }
       if (owner === undefined) continue;
@@ -1252,6 +1305,10 @@ export class BuildStorage {
           return attempt.operation === 'local' || this.readRemoteRecord(directory) !== undefined;
         })
       : this.survey(namespace);
+    this.unresolved = this.unresolved.map((attempt) => ({
+      ...attempt,
+      reason: retainedReasons.get(attempt.attempt) ?? attempt.reason,
+    }));
     return this.unresolvedAttempts();
   }
 
