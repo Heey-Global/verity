@@ -190,7 +190,7 @@ export function ProjectCard({
           onPress={reordering ? undefined : (onOpen ?? onToggle)}
           // A hold belongs to the drag: releasing it, moved or not, must not
           // also open the card, which Pressable does without a long-press handler.
-          onLongPress={sortable ? () => {} : undefined}
+          onLongPress={moveActions.length > 0 ? () => {} : undefined}
           delayLongPress={PROJECT_PICKUP_DELAY_MS}
           accessibilityRole="button"
           accessibilityLabel={
@@ -211,7 +211,7 @@ export function ProjectCard({
             const direction = nativeEvent.actionName === 'moveUp' ? -1 : 1;
             onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction));
           }}
-          accessibilityState={inPlace ? { expanded } : {}}
+          accessibilityState={{ disabled: reordering, ...(inPlace ? { expanded } : {}) }}
           style={({ pressed }) => [styles.head, pressed ? styles.pressed : null]}
         >
           <View style={styles.initial}>

@@ -210,7 +210,7 @@ describe('project card', () => {
 
   // Pressable fires onPress when a hold is released unless a long-press handler
   // claims it: a pickup released in place would open the project.
-  it('does not open the card when a hold is released', () => {
+  it('claims a hold for the drag so its release does not open the card', () => {
     const onOpen = jest.fn();
     renderCard(group([]), onOpen);
     // The press claims the hold no later than the drag picks the card up.
