@@ -1,5 +1,9 @@
 # Remote Control v1: transport, enrollment and upgrade contract
 
+Status note: Core now implements personal Remote Control admission, tickets, the
+outbound connector and the app's pinned tunnel; see the
+[team contract v1](uplink-team-contract-v1.md) for current status.
+
 Status: revision 7 staging candidate, proposed for joint Core/Uplink review,
 not frozen or implemented. It adds staging choices and RC-A fixtures to revision 6.
 The personal Remote Control RC-A staging candidate uses the wire and lifecycle

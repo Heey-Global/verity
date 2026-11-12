@@ -1,0 +1,712 @@
+{
+  "helloTeam": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "teamVersions": {
+        "type": "array",
+        "items": [
+          {
+            "type": "number",
+            "const": 1
+          }
+        ],
+        "additionalItems": false,
+        "minItems": 1,
+        "maxItems": 1
+      }
+    },
+    "required": ["teamVersions"],
+    "additionalProperties": false
+  },
+  "welcomeTeam": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      }
+    },
+    "required": ["teamVersion"],
+    "additionalProperties": false
+  },
+  "grantGet": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.grant.get"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      }
+    },
+    "required": ["type", "requestId", "teamVersion"],
+    "additionalProperties": false
+  },
+  "grant": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.grant"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "assertion": {
+        "type": "string",
+        "maxLength": 16384,
+        "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "assertion"],
+    "additionalProperties": false
+  },
+  "inviteCreate": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.invite.create"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "localInviteId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "projectId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "permissions": {
+        "anyOf": [
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 1,
+            "maxItems": 1
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "execute"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "manage"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 2,
+            "maxItems": 2
+          },
+          {
+            "type": "array",
+            "items": [
+              {
+                "type": "string",
+                "const": "read"
+              },
+              {
+                "type": "string",
+                "const": "execute"
+              },
+              {
+                "type": "string",
+                "const": "manage"
+              }
+            ],
+            "additionalItems": false,
+            "minItems": 3,
+            "maxItems": 3
+          }
+        ]
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "bootstrapCommitment": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "installationKeyFingerprint": {
+        "type": "string",
+        "pattern": "^sha256-[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "teamVersion",
+      "operationId",
+      "localInviteId",
+      "projectId",
+      "permissions",
+      "expiresAt",
+      "bootstrapCommitment",
+      "installationKeyFingerprint"
+    ],
+    "additionalProperties": false
+  },
+  "inviteCreated": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.invite.created"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "invitationId", "expiresAt"],
+    "additionalProperties": false
+  },
+  "inviteCancel": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.invite.cancel"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "operationId", "invitationId"],
+    "additionalProperties": false
+  },
+  "inviteCancelled": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.invite.cancelled"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "alreadyCommitted": {
+        "type": "boolean"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "invitationId", "alreadyCommitted"],
+    "additionalProperties": false
+  },
+  "joinCommit": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.commit"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      },
+      "membershipRef": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": [
+      "type",
+      "requestId",
+      "teamVersion",
+      "operationId",
+      "invitationId",
+      "redemptionId",
+      "membershipRef"
+    ],
+    "additionalProperties": false
+  },
+  "joinCommitted": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.join.committed"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "redemptionId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "redemptionId"],
+    "additionalProperties": false
+  },
+  "membershipRemove": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.membership.remove"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "operationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "membershipRef": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "reason": {
+        "type": "string",
+        "const": "membership_removed"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "operationId", "membershipRef", "reason"],
+    "additionalProperties": false
+  },
+  "membershipRemoved": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.membership.removed"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "membershipRef": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "membershipRef"],
+    "additionalProperties": false
+  },
+  "stateGet": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.state.get"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "knownGeneration": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "knownGeneration"],
+    "additionalProperties": false
+  },
+  "state": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "team.state"
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+          },
+          "teamVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "assertion": {
+            "type": "string",
+            "maxLength": 16384,
+            "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+(?![\\s\\S])"
+          }
+        },
+        "required": ["type", "requestId", "teamVersion", "generation", "assertion"],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "team.state"
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+          },
+          "teamVersion": {
+            "type": "number",
+            "const": 1
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "suspendedReason": {
+            "type": "string",
+            "enum": ["not_entitled", "revoked", "authorization_expired"]
+          }
+        },
+        "required": ["type", "requestId", "teamVersion", "generation", "suspendedReason"],
+        "additionalProperties": false
+      }
+    ]
+  },
+  "grantChanged": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.grant.changed"
+      },
+      "eventId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "generation": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "assertion": {
+        "type": "string",
+        "maxLength": 16384,
+        "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+(?![\\s\\S])"
+      }
+    },
+    "required": ["type", "eventId", "teamVersion", "generation", "assertion"],
+    "additionalProperties": false
+  },
+  "grantRevoked": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.grant.revoked"
+      },
+      "eventId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "generation": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "reason": {
+        "type": "string",
+        "enum": ["not_entitled", "revoked"]
+      }
+    },
+    "required": ["type", "eventId", "teamVersion", "generation", "reason"],
+    "additionalProperties": false
+  },
+  "eventAck": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.event.ack"
+      },
+      "eventId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      }
+    },
+    "required": ["type", "eventId", "teamVersion"],
+    "additionalProperties": false
+  },
+  "teamError": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "type": {
+        "type": "string",
+        "const": "team.error"
+      },
+      "requestId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "teamVersion": {
+        "type": "number",
+        "const": 1
+      },
+      "code": {
+        "type": "string",
+        "enum": [
+          "unsupported_version",
+          "not_entitled",
+          "authorization_expired",
+          "revoked",
+          "forbidden",
+          "invitation_unavailable",
+          "idempotency_conflict",
+          "member_limit_reached",
+          "invalid_request",
+          "temporarily_unavailable",
+          "internal"
+        ]
+      },
+      "retryable": {
+        "type": "boolean"
+      },
+      "retryAfterSeconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3600
+      }
+    },
+    "required": ["type", "requestId", "teamVersion", "code", "retryable"],
+    "additionalProperties": false,
+    "x-semanticChecks": ["retryAfterSecondsOnlyWhenRetryable"]
+  },
+  "invitationLink": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "version": {
+        "type": "number",
+        "const": 1
+      },
+      "purpose": {
+        "type": "string",
+        "const": "team-member"
+      },
+      "invitationId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "secret": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "expiresAt": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "serverId": {
+        "type": "string",
+        "pattern": "^srv_[A-Za-z0-9_-]{21}[AQgw](?![\\s\\S])"
+      },
+      "identityKey": {
+        "type": "string",
+        "pattern": "^MCowBQYDK2VwAyEA[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "tlsPin": {
+        "type": "string",
+        "pattern": "^sha256-[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
+      },
+      "coreOrigin": {
+        "type": "string",
+        "pattern": "^https:\\/\\/[a-z0-9.-]{1,253}(?::[0-9]{1,5})?(?![\\s\\S])"
+      },
+      "uplinkOrigin": {
+        "type": "string",
+        "pattern": "^https:\\/\\/[a-z0-9.-]{1,253}(?::[0-9]{1,5})?(?![\\s\\S])"
+      },
+      "installationId": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?![\\s\\S])"
+      },
+      "installationHandle": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{21}[AQgw](?![\\s\\S])"
+      },
+      "display": {
+        "type": "object",
+        "properties": {
+          "inviterName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[^\\p{Cc}\\u2028\\u2029]+(?![\\s\\S])"
+          },
+          "projectName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[^\\p{Cc}\\u2028\\u2029]+(?![\\s\\S])"
+          }
+        },
+        "required": ["inviterName", "projectName"],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "version",
+      "purpose",
+      "invitationId",
+      "secret",
+      "expiresAt",
+      "serverId",
+      "identityKey",
+      "tlsPin",
+      "coreOrigin",
+      "uplinkOrigin",
+      "installationId",
+      "installationHandle"
+    ],
+    "additionalProperties": false,
+    "x-semanticChecks": ["serverIdDerivedFromIdentityKey"]
+  }
+}

@@ -2,6 +2,8 @@
 
 **Status:** Proposed for one Core/Uplink review. This document fixes the candidate wire shape for the first member join over an opaque TLS tunnel. It is not an implemented endpoint or a T0 freeze. The [team contract](uplink-team-sharing-v1.md) owns invitation creation, commit, removal, grants and recovery; the [remote transport contract](uplink-remote-control-v1.md) owns `/data` attachment and the version-2 Core connector preface. This document takes precedence over their earlier two-request team join sketch. Changes after joint approval require a versioned contract revision and shared vectors.
 
+**Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status — invitation ids are 32 random bytes (D4) and the join tunnel is routed by the accepted admission decision instead of a connector preface (D7); it takes precedence where the two differ.
+
 ## Boundaries
 
 The app connects to Uplink's admission WSS `/remote-control`. Uplink routes an opaque TLS stream through `/data` to Core and never terminates inner TLS. Uplink sees `installationHandle`, `invitationId` and opaque session/redemption IDs, but never the invitation secret, device key/proof, Core credential or project content. Core accepts only the `team-member` enrollment endpoint on this pending tunnel; ordinary project and administrator APIs remain unavailable. A ticket or redemption ID alone grants no Core authority. Team eligibility and Remote Control entitlement are independent.
@@ -13,7 +15,7 @@ Only a negotiated `team-bootstrap-v1` capability permits these messages. Other a
 The app sends exactly one request on its admission socket:
 
 ```json
-{"type":"team.join.reserve","requestId":"request_example","installationHandle":"AQEBAQEBAQEBAQEBAQEBAQ","invitationId":"invite_example","capabilities":["team-bootstrap-v1"]}
+{"type":"team.join.reserve","requestId":"request_example","installationHandle":"AQEBAQEBAQEBAQEBAQEBAQ","invitationId":"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM","capabilities":["team-bootstrap-v1"]}
 ```
 
 Uplink rate-limits the request, checks the installation's live authenticated control connection, the invitation's public state and team entitlement, then atomically creates a fresh `redemptionId` and `sessionId`. The durable redemption is bound to this admission socket, current `controlAdmissionId` and session before Core is notified. A repeated request on the same socket cannot allocate another reservation. The app cannot supply a redemption ID or select a Core destination. A new attempt after pre-commit transport failure uses a new reservation and redemption ID; the old binding never reopens or moves to another socket. The invitation remains usable only while its own validity and attempt limits allow it.
@@ -21,7 +23,7 @@ Uplink rate-limits the request, checks the installation's live authenticated con
 Uplink sends Core, on the installation's authenticated control connection:
 
 ```json
-{"type":"team.join.pending","requestId":"request_example","sessionId":"session_example","invitationId":"invite_example","redemptionId":"redemption_example","projectId":"project_example","permissions":["read"],"bootstrapSessionId":"session_example","decisionExpiresAt":1800000015000,"capability":"team-bootstrap-v1"}
+{"type":"team.join.pending","requestId":"request_example","sessionId":"session_example","invitationId":"MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM","redemptionId":"redemption_example","projectId":"project_example","permissions":["read"],"bootstrapSessionId":"session_example","decisionExpiresAt":1800000015000,"capability":"team-bootstrap-v1"}
 ```
 
 `bootstrapSessionId` is the bound transport `sessionId`; no second, independently selectable session exists. Uplink derives `projectId` and `permissions` from its durable invitation record, never from app input. Core verifies the invitation, inviter authority, project and permissions against its local record, then durably stores the pending tuple before replying once on that same control connection:
@@ -56,7 +58,7 @@ The Core-side outbound connector uses the existing version-2 local preface with 
 
 ## Completion, failure and retry
 
-The admission socket stays open until attachment succeeds or fails. App cancellation or socket loss before activation ends the reservation/session binding. Uplink sends `session.cancelled` with the bound session ID on termination. Core closes the pending channel and releases its connector claim. Core refuses a later message for the old binding. Uplink closes both `/data` peers on cancellation, control loss, entitlement loss, invitation invalidation, expiry or the five-minute absolute duration measured from attachment. It checks durable reservation validity on admission and activation, schedules deadlines, and revalidates external state at least every 30 seconds; forwarding each frame does not require a database query. A committed service state does **not** close an already active tunnel: Core may have committed its outbox before the credential response reaches the app. Connection shutdown must deliver Core's final bytes before closing the peer.
+The admission socket stays open until attachment succeeds or fails. App cancellation or socket loss before activation ends the reservation/session binding. Uplink sends `session.cancelled` with the bound session ID and a `code` (`cancelled`, `timeout` or `unavailable`) on termination. Core closes the pending channel and releases its connector claim. Core refuses a later message for the old binding. Uplink closes both `/data` peers on cancellation, control loss, entitlement loss, invitation invalidation, expiry or the five-minute absolute duration measured from attachment. It checks durable reservation validity on admission and activation, schedules deadlines, and revalidates external state at least every 30 seconds; forwarding each frame does not require a database query. A committed service state does **not** close an already active tunnel: Core may have committed its outbox before the credential response reaches the app. Connection shutdown must deliver Core's final bytes before closing the peer.
 
 If Uplink cannot admit the request, it replies on the app socket with `team.join.error` carrying `requestId` and one of `unavailable`, `rate_limited`, `limit_reached`, `protocol_unsupported`, `timeout`, `cancelled` or `internal`. Unknown handles, expired/cancelled invitations and absent entitlement all map to `unavailable` for unauthenticated callers. `rate_limited` may include `retryAfterMs` (1,000–60,000). No error text or timing reveals whether a particular invitation exists.
 

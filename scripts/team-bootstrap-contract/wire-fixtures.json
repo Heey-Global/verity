@@ -7,7 +7,7 @@
       "type": "team.join.reserve",
       "requestId": "request_1",
       "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "capabilities": ["team-bootstrap-v1"]
     }
   },
@@ -19,7 +19,7 @@
       "type": "team.join.reserve",
       "requestId": "request_1",
       "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "capabilities": ["remote-control-v1"]
     }
   },
@@ -31,7 +31,7 @@
       "type": "team.join.pending",
       "requestId": "request_1",
       "sessionId": "session_1",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "redemptionId": "redemption_1",
       "projectId": "project_1",
       "permissions": ["read"],
@@ -48,7 +48,7 @@
       "type": "team.join.pending",
       "requestId": "request_1",
       "sessionId": "session_1",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "redemptionId": "redemption_1",
       "projectId": "project_1",
       "permissions": ["read"],
@@ -217,7 +217,7 @@
       "type": "team.join.reserve",
       "requestId": "request_1",
       "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ!",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "capabilities": ["team-bootstrap-v1"]
     }
   },
@@ -251,7 +251,7 @@
       "type": "team.join.reserve",
       "requestId": "request_1",
       "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ\n",
-      "invitationId": "invite_1",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
       "capabilities": ["team-bootstrap-v1"]
     }
   },
