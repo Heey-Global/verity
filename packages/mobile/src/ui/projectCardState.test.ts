@@ -100,6 +100,17 @@ describe('projectCardState', () => {
     expect(projectCardState({ ...running, provisionWarning: 'x' }).state).toBe('running');
   });
 
+  // The server can report both flags while waiting for a live turn; calling
+  // that a failed repair hides the action that would let the update proceed.
+  it('prioritizes a turn-blocked update over its stalled repair flag', () => {
+    expect(
+      projectCardState({
+        ...running,
+        sandboxUpdate: update({ selfRepair: 'stalled', turnBlocked: true }),
+      }).note?.label,
+    ).toBe('Update waiting');
+  });
+
   // A failed project that still carried a rebuild warning once read as busy
   // rather than broken; the error must win over every background signal.
   it('reports a failure with its short reason over any background work', () => {

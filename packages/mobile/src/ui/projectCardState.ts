@@ -92,7 +92,7 @@ export function projectCardState(project: CardProject): ProjectCardState {
 function runningWarning(project: CardProject): string | undefined {
   const update = project.sandboxUpdate;
   if (sandboxUpdateNeedsAttention(update))
-    return update.selfRepair === 'stalled' ? 'Update stuck' : 'Update waiting';
+    return update.turnBlocked ? 'Update waiting' : 'Update stuck';
   const warning = project.provisionWarning;
   // A rebuild in progress is background work, not a finding.
   if (warning && warning !== PROJECT_IMAGE_REBUILDING_WARNING)
