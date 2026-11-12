@@ -7,6 +7,9 @@ import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
 import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 const app = Fastify();
 beforeAll(async () => {
@@ -17,12 +20,12 @@ beforeAll(async () => {
   registerGoogleContactsRoutes(app, { eventStore: ctx.store });
   registerSessionReadRoutes(app, {
     listModels: async () => ({}),
-    getSession: async (id) =>
+    getSession: async (id, viewer) =>
       (await ctx.store.getSession(id))
-        ? { googleStatus: await sessionGoogleStatus(ctx.store, id) }
+        ? { googleStatus: await sessionGoogleStatus(ctx.store, id, viewer) }
         : undefined,
-    getGoogleStatus: async (id) =>
-      (await ctx.store.getSession(id)) ? sessionGoogleStatus(ctx.store, id) : undefined,
+    getGoogleStatus: async (id, viewer) =>
+      (await ctx.store.getSession(id)) ? sessionGoogleStatus(ctx.store, id, viewer) : undefined,
   });
   await app.ready();
 });
@@ -33,6 +36,7 @@ afterAll(async () => {
 
 it('matches effective service routes and preserves documents without tokens or Google requests', async () => {
   const account = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'status@example.test',
     clientId: 'client',
     refreshToken: 'never-export-this',
@@ -88,7 +92,7 @@ it('matches effective service routes and preserves documents without tokens or G
 it('rejects missing sessions and leaves legacy stores on the compatibility path', async () => {
   expect((await app.inject('/sessions/missing/google-status')).statusCode).toBe(404);
   expect(
-    await sessionGoogleStatus({ googleAccounts: undefined } as never, 'status'),
+    await sessionGoogleStatus({ googleAccounts: undefined } as never, 'status', ADMIN),
   ).toBeUndefined();
 });
 
@@ -109,21 +113,26 @@ it('resolves project inheritance, session overrides and account removal from loc
     model: 'test',
   });
   const account = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'inherited@example.test',
     clientId: 'client',
     refreshToken: 'local-only',
     scopes: ['https://www.googleapis.com/auth/contacts.readonly'],
   });
-  await ctx.store.googleAccounts.setProjectAccess('status-project', 'contacts', account.id);
-  expect((await sessionGoogleStatus(ctx.store, 'inherited'))?.contacts).toMatchObject({
+  await ctx.store.googleAccounts.setProjectAccess('status-project', 'contacts', ADMIN, account.id);
+  expect((await sessionGoogleStatus(ctx.store, 'inherited', ADMIN))?.contacts).toMatchObject({
     enabled: true,
     source: 'project',
     mode: 'inherit',
     accountId: account.id,
   });
+  // The administrator's project choice must not show as enabled to another member.
+  expect(
+    (await sessionGoogleStatus(ctx.store, 'inherited', 'another-member'))?.contacts,
+  ).toMatchObject({ enabled: false, accountId: null });
   await ctx.store.googleAccounts.setSessionAccess('inherited', 'contacts', { mode: 'disabled' });
-  expect((await sessionGoogleStatus(ctx.store, 'inherited'))?.contacts.enabled).toBe(false);
+  expect((await sessionGoogleStatus(ctx.store, 'inherited', ADMIN))?.contacts.enabled).toBe(false);
   await ctx.store.googleAccounts.setSessionAccess('inherited', 'contacts', { mode: 'inherit' });
   await ctx.store.googleAccounts.remove(account.id);
-  expect((await sessionGoogleStatus(ctx.store, 'inherited'))?.contacts.enabled).toBe(false);
+  expect((await sessionGoogleStatus(ctx.store, 'inherited', ADMIN))?.contacts.enabled).toBe(false);
 });

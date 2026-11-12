@@ -51,6 +51,7 @@ export const SCHEDULING_LINK_PLACEHOLDER = '{link}';
 
 type SchedulingStoreDeps = Pick<EventStore, 'getSession' | 'getGoogleServiceCredentials'> & {
   scheduling: SchedulingStore;
+  googleAccounts?: Pick<EventStore['googleAccounts'], 'get'>;
 };
 
 export interface SchedulingConnector {
@@ -89,6 +90,8 @@ interface SchedulingWindowInput {
 
 export interface PrepareSchedulingInput {
   sessionId: string;
+  /** The person the preparing turn runs for; the request acts with their accounts. */
+  userId: string | undefined;
   projectId: string | null;
   title: string;
   durationMinutes: number;
@@ -372,6 +375,19 @@ export class SchedulingService {
 
   // ---------------------------------------------------------------- prepare and approve
 
+  /**
+   * The person a request acts for after preparation: whoever owns the calendar
+   * account it was prepared with. Approval, sending and background provisioning
+   * keep using that person's accounts, never whoever runs the session later.
+   */
+  private async requestOwner(request: {
+    googleAccountId: string | null;
+  }): Promise<string | undefined> {
+    if (request.googleAccountId === null || this.deps.store.googleAccounts === undefined)
+      return undefined;
+    return (await this.deps.store.googleAccounts.get(request.googleAccountId))?.ownerUserId;
+  }
+
   async prepare(
     input: PrepareSchedulingInput,
   ): Promise<SchedulingSummary & { digest: string; conflicts: string[] }> {
@@ -380,6 +396,7 @@ export class SchedulingService {
       this.deps.store,
       input.sessionId,
       'calendar',
+      input.userId,
     );
     const now = this.now();
     const windows = input.windows
@@ -493,7 +510,12 @@ export class SchedulingService {
     const request = await this.store.get(requestId);
     if (!request || request.sessionId !== sessionId) return undefined;
     const holds = await this.store.holds(requestId);
-    const sender = await resolveGoogleServiceCredential(this.deps.store, sessionId, 'gmail').then(
+    const sender = await resolveGoogleServiceCredential(
+      this.deps.store,
+      sessionId,
+      'gmail',
+      await this.requestOwner(request),
+    ).then(
       (credential) => credential.accountEmail,
       () => undefined,
     );
@@ -587,7 +609,12 @@ export class SchedulingService {
       throw new Error('The scheduling request differs from the prepared one; prepare it again');
     // The sending account the card showed is bound to the approval; a later resume must not
     // send from whatever account the session uses by then.
-    const sender = await resolveGoogleServiceCredential(this.deps.store, sessionId, 'gmail');
+    const sender = await resolveGoogleServiceCredential(
+      this.deps.store,
+      sessionId,
+      'gmail',
+      await this.requestOwner(request),
+    );
     const content = edits ? editedContent(request, edits) : undefined;
     const approved = content
       ? await this.store.approve(
@@ -657,6 +684,7 @@ export class SchedulingService {
           this.deps.store,
           request.sessionId,
           'gmail',
+          await this.requestOwner(request),
         );
         if (request.senderAccountId !== null && gmail.accountId !== request.senderAccountId)
           throw new Error('The Gmail account changed since approval; prepare the request again');
@@ -727,6 +755,7 @@ export class SchedulingService {
           this.deps.store,
           request.sessionId,
           'gmail',
+          await this.requestOwner(request),
         );
         if (request.senderAccountId !== null && gmail.accountId !== request.senderAccountId)
           throw new Error('The Gmail account changed since approval; prepare the request again');

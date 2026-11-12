@@ -15,6 +15,9 @@ import { createGoogleContactsTool } from './google-contacts-tool.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { sql } from 'kysely';
 
+/** The person the harness turn runs for; the Google account is theirs. */
+const OWNER = 'baseline';
+
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -25,6 +28,21 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(ctx.db);
 });
+
+/** Give `userId` an account like the harness one and pin the chat's Calendar to it. */
+async function useOwnCalendarAccount(store: EventStore, userId: string) {
+  const own = await store.googleAccounts.save({
+    ownerUserId: userId,
+    email: `${userId}@example.test`,
+    clientId: 'client',
+    refreshToken: `${userId}-refresh`,
+    scopes: (await store.googleAccounts.list(OWNER))[0]!.scopes,
+  });
+  await store.googleAccounts.setSessionAccess('s1', 'calendar', {
+    mode: 'account',
+    accountId: own.id,
+  });
+}
 
 const deletion = {
   action: 'delete_event',
@@ -92,13 +110,14 @@ async function harness(
   });
   const settings = await store.getVeritySettings();
   await store.googleAccounts.save({
+    ownerUserId: OWNER,
     email: settings!.googleDriveAccountEmail!,
     clientId: 'client',
     refreshToken: settings!.googleDriveRefreshToken!,
     scopes: settings!.googleGrantedScopes,
   });
-  await store.enableSessionCalendar('s1', 'me@example.test');
-  await store.enableSessionContacts('s1', 'me@example.test');
+  await store.enableSessionCalendar('s1', 'me@example.test', OWNER);
+  await store.enableSessionContacts('s1', 'me@example.test', OWNER);
   const calendar = vi.fn().mockResolvedValue({ id: 'event' });
   const tool = createGoogleCalendarTool({
     eventStore: store,
@@ -253,9 +272,10 @@ it.each(['replacement', 'away-and-back', 'credential-rotation'] as const)(
       async (store) => {
         if (changed) return;
         changed = true;
-        const original = (await store.googleAccounts.list())[0]!;
+        const original = (await store.googleAccounts.list(OWNER))[0]!;
         if (change === 'credential-rotation') {
           await store.googleAccounts.save({
+            ownerUserId: OWNER,
             email: original.email,
             clientId: 'client',
             refreshToken: 'synthetic-rotated',
@@ -264,6 +284,7 @@ it.each(['replacement', 'away-and-back', 'credential-rotation'] as const)(
           return;
         }
         const other = await store.googleAccounts.save({
+          ownerUserId: OWNER,
           email: 'other@example.test',
           clientId: 'client',
           refreshToken: 'synthetic-other',
@@ -300,6 +321,8 @@ for (const change of [
         );
         await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
         values ('p1', 'member', true, true, false)`.execute(ctx.db);
+        // The member's turn may use only the member's own Calendar account.
+        await useOwnCalendarAccount(store, 'member');
         const prompt = await store.appendEvent('s1', {
           t: 'prompt',
           text: 'Change the event',
@@ -358,7 +381,7 @@ it('rejects project and Google account mismatches before raising a Calendar card
     const wrongProject = await call(deletion);
     expect(wrongProject.error !== undefined || wrongProject.result?.isError === true).toBe(true);
     await store.setSessionProject('s1', 'p1');
-    await store.googleAccounts.remove((await store.googleAccounts.list())[0]!.id);
+    await store.googleAccounts.remove((await store.googleAccounts.list(OWNER))[0]!.id);
     const wrongAccount = await call(deletion);
     expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
     expect(approvals).not.toHaveBeenCalled();
@@ -389,7 +412,7 @@ it('blocks Contacts account and project mismatches before approval or Google acc
     const wrongProject = await call(search, 'p1', 'verity_google_contacts');
     expect(wrongProject.error !== undefined || wrongProject.result?.isError === true).toBe(true);
     await store.setSessionProject('s1', 'p1');
-    await store.googleAccounts.remove((await store.googleAccounts.list())[0]!.id);
+    await store.googleAccounts.remove((await store.googleAccounts.list(OWNER))[0]!.id);
     const wrongAccount = await call(search, 'p1', 'verity_google_contacts');
     expect(wrongAccount.error !== undefined || wrongAccount.result?.isError === true).toBe(true);
     expect(approvals).not.toHaveBeenCalled();
@@ -411,5 +434,32 @@ it('rejects Contacts write actions and malformed searches before any card', asyn
     }
     expect(contacts).not.toHaveBeenCalled();
     expect(approvals).not.toHaveBeenCalled();
+  });
+});
+
+it("does not run a member's turn with the chat's Calendar account of another person", async () => {
+  await harness(async ({ call, store, approvals, calendar }) => {
+    await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
+      ctx.db,
+    );
+    await sql`insert into project_memberships (project_id, user_id, can_read, can_execute, can_manage)
+    values ('p1', 'member', true, true, false)`.execute(ctx.db);
+    // The chat stays pinned to the harness owner's account (enableSessionCalendar).
+    expect(await store.googleAccounts.sessionAccess('s1', 'calendar')).toMatchObject({
+      mode: 'account',
+    });
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Read my calendar',
+      initiatedBy: { userId: 'member' },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'member-start' });
+    const read = await call({ action: 'list_calendars' });
+    expect(read.error !== undefined || read.result?.isError === true).toBe(true);
+    const change = await call(deletion);
+    expect(change.error !== undefined || change.result?.isError === true).toBe(true);
+    expect(approvals).not.toHaveBeenCalled();
+    expect(calendar).not.toHaveBeenCalled();
   });
 });

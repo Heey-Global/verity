@@ -192,6 +192,8 @@ interface SessionSlideDecksTable {
 
 export interface GoogleAccountsTable {
   id: string;
+  /** The person who connected the account; only their turns and routes use it. */
+  owner_user_id: ColumnType<string, string | undefined, string>;
   email: string;
   subject: string | null;
   display_name: string | null;
@@ -262,6 +264,8 @@ interface ProjectGoogleConnectionsTable {
   account_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   service: 'gmail' | 'calendar' | 'contacts';
+  /** The member this choice belongs to; each member picks their own account. */
+  user_id: ColumnType<string, string | undefined, string>;
   account_email: string;
   enabled_at: ColumnType<Date, string | undefined, never>;
 }

@@ -6,6 +6,8 @@ import {
   type SealableSecretCipher,
   type VeritySettingsRecord,
 } from '@verity/store';
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -53,10 +55,10 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       }
     };
 
-    instance.get('/calendar/connection', async () => {
+    instance.get('/calendar/connection', async (request) => {
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleCalendarScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleCalendarScopes(account.scopes),
         );
         return {
           connected: accounts.length > 0,
@@ -79,10 +81,14 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleCalendarScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleCalendarScopes(account.scopes),
         );
-        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'calendar');
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(
+          id,
+          'calendar',
+          viewerId(request),
+        );
         const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'calendar');
         return {
           enabled: effective !== undefined && hasGoogleCalendarScopes(effective.account.scopes),
@@ -98,7 +104,7 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
           mode: access.mode,
         };
       }
-      const connection = await deps.eventStore.getSessionCalendarConnection(id);
+      const connection = await deps.eventStore.getSessionCalendarConnection(id, viewerId(request));
       const current = await settings();
       const connected =
         current?.calendarAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -122,8 +128,8 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleCalendarScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleCalendarScopes(account.scopes),
         );
         if (accounts.length !== 1)
           return reply.code(409).send({ error: 'Choose an authorized Google account' });
@@ -154,7 +160,7 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
         reply.code(409);
         return { error: 'Calendar account identity is unavailable' };
       }
-      await deps.eventStore.enableSessionCalendar(id, accountEmail);
+      await deps.eventStore.enableSessionCalendar(id, accountEmail, viewerId(request));
       return {
         enabled: true as const,
         connected: true as const,
@@ -175,7 +181,9 @@ export function registerGoogleCalendarRoutes(app: FastifyInstance, deps: Calenda
       }
       await deps.eventStore.disableSessionCalendar(id);
       // Older clients must not report a successful logout while project access remains.
-      if ((await deps.eventStore.getSessionCalendarConnection(id)) !== undefined) {
+      if (
+        (await deps.eventStore.getSessionCalendarConnection(id, viewerId(request))) !== undefined
+      ) {
         return reply.code(409).send({
           error:
             'Google access is enabled for this project. Manage it in project settings with an updated app.',

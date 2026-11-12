@@ -1,5 +1,5 @@
 import {
-  resolveGoogleServiceCredential,
+  resolveGoogleServiceCredentialForTurn,
   type GoogleServiceCredentialStore,
 } from './google-service-credentials.js';
 import { basename } from 'node:path';
@@ -39,6 +39,7 @@ export interface GmailToolStore extends GoogleServiceCredentialStore {
   ): Promise<{ projectId: string | null; worktree?: string } | undefined>;
   getSessionGmailConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<{ accountEmail: string; enabledAt: Date } | undefined>;
   getVeritySettings(): Promise<
     | {
@@ -198,9 +199,10 @@ export function createGmailTool(deps: {
     if (deps.eventStore.getGoogleServiceCredentials) {
       if (session?.projectId !== input.projectId)
         throw new Error('Google access is restricted to the calling session');
-      const credential = await resolveGoogleServiceCredential(
+      const credential = await resolveGoogleServiceCredentialForTurn(
         deps.eventStore,
         input.sessionId,
+        input.turnId,
         'gmail',
       );
       return {
@@ -210,7 +212,10 @@ export function createGmailTool(deps: {
         refreshToken: credential.refreshToken,
       };
     }
-    const connection = await deps.eventStore.getSessionGmailConnection(input.sessionId);
+    const connection = await deps.eventStore.getSessionGmailConnection(
+      input.sessionId,
+      (await deps.eventStore.runningTurnInitiator?.(input.sessionId, input.turnId))?.userId,
+    );
     const settings = await deps.eventStore.getVeritySettings();
     if (
       session === undefined ||

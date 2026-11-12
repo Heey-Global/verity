@@ -5,8 +5,13 @@ export async function resolveGoogleDriveAuthority(
   store: Pick<EventStore, 'googleAccounts'>,
   projectId: string,
   request: { action: string; accountId?: string | undefined; folderLinkId?: string | undefined },
+  /** The person the turn runs for. Only their own accounts and the folder links
+   *  made with them count; "the only one" means the only one of theirs. */
+  userId: string | undefined,
 ) {
-  const links = await store.googleAccounts.folders(projectId);
+  const links = (await store.googleAccounts.folders(projectId)).filter(
+    (candidate) => userId !== undefined && candidate.accountOwnerUserId === userId,
+  );
   let link = request.folderLinkId
     ? links.find((candidate) => candidate.id === request.folderLinkId)
     : links.length === 1
@@ -23,8 +28,8 @@ export async function resolveGoogleDriveAuthority(
     throw new Error('The selected Drive folder is not connected to this project');
   if (!link && request.action !== 'read_document_url')
     throw new Error('Choose folderLinkId from the project Drive folders');
-  const accounts = (await store.googleAccounts.list()).filter((account) =>
-    hasGoogleDriveScopes(account.scopes),
+  const accounts = (userId === undefined ? [] : await store.googleAccounts.list(userId)).filter(
+    (account) => hasGoogleDriveScopes(account.scopes),
   );
   const id = link?.accountId ?? request.accountId;
   const account = id

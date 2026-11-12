@@ -517,6 +517,8 @@ export interface ServerDeps {
   googleDriveDocumentIsWithinProject?: (input: {
     projectId: string;
     sessionId: string;
+    /** The calling turn; only its initiator's Drive accounts and folders count. */
+    turnId: string;
     url: string;
     accountId?: string | undefined;
     folderLinkId?: string | undefined;

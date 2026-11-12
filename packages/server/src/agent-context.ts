@@ -56,6 +56,7 @@ export async function resolveAgentContext(
           projectId: session.projectId,
           sessionId: session.sessionId,
           toolName,
+          userId,
         }),
       );
   const body = sections.length ? `\n\n${sections.join('\n\n')}` : '';

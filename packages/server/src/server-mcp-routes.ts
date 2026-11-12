@@ -68,7 +68,7 @@ import {
   googleDriveRequestSchema,
 } from './google-drive-request.js';
 import { hasGoogleWorkspaceScope } from './google-oauth-scopes.js';
-import { resolveGoogleServiceCredential } from './google-service-credentials.js';
+import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
@@ -1075,7 +1075,7 @@ export function registerServerMcpRoutes({
           )
         )
           return false;
-        return connectorToolAvailable(deps.eventStore, input);
+        return connectorToolAvailable(deps.eventStore, { ...input, userId: user?.userId });
       },
       // Approval cannot restore rights revoked from the initiating user while waiting.
       authorizeExecution: async (input) => {
@@ -1105,7 +1105,7 @@ export function registerServerMcpRoutes({
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
-        const { projectId, sessionId, toolName } = input;
+        const { projectId, sessionId, turnId, toolName } = input;
         if (
           (await deps.eventStore.wikiMaintenance.isSession(sessionId)) &&
           !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId))
@@ -1207,7 +1207,12 @@ export function registerServerMcpRoutes({
           return;
         }
         if (toolName === 'verity_scheduling') {
-          await schedulingTool.authorize({ projectId, sessionId, request: input.request });
+          await schedulingTool.authorize({
+            projectId,
+            sessionId,
+            turnId,
+            request: input.request,
+          });
           return;
         }
         if (toolName === 'verity_matrix') {
@@ -1250,6 +1255,7 @@ export function registerServerMcpRoutes({
             deps.eventStore,
             projectId,
             driveRequest,
+            (await runningTurnInitiator(sessionId, turnId))?.userId,
           );
           if (
             googleDriveIsMutation(driveRequest) &&
@@ -1274,7 +1280,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return;
           }
           if (toolName === 'verity_google_calendar') {
@@ -1282,7 +1293,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return;
           }
           if (toolName === 'verity_gmail') {
@@ -1298,7 +1314,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return;
           }
           const action = (input.request as { action?: string }).action;
@@ -1433,15 +1454,27 @@ export function registerServerMcpRoutes({
               : toolName === 'verity_google_contacts'
                 ? 'contacts'
                 : undefined;
+        // Google access is snapshotted for the person the turn runs for; another
+        // member's account must not be what the approval card binds.
+        const googleUser =
+          service !== undefined ||
+          toolName === 'verity_google_drive' ||
+          ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(toolName)
+            ? (await runningTurnInitiator(sessionId, turnId))?.userId
+            : undefined;
         if (service)
           return JSON.stringify(
-            await deps.eventStore.googleAccounts.authorizationSnapshot(sessionId, service),
+            await deps.eventStore.googleAccounts.authorizationSnapshot(
+              sessionId,
+              service,
+              googleUser,
+            ),
           );
         if (toolName === 'verity_google_drive') {
           const parsed = googleDriveRequestSchema.parse(request);
           if (parsed.action === 'capabilities') return undefined;
           return JSON.stringify(
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed),
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed, googleUser),
           );
         }
         if (
@@ -1449,7 +1482,8 @@ export function registerServerMcpRoutes({
         ) {
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           if (!file?.accountId) throw new Error('No Google account is assigned');
-          const account = await deps.eventStore.googleAccounts.get(file.accountId);
+          const account = await deps.eventStore.googleAccounts.getOwned(file.accountId, googleUser);
+          if (!account) throw new Error('Connect your own Google account to use this file');
           const link = file.folderLinkId
             ? (await deps.eventStore.googleAccounts.folders(projectId)).find(
                 (candidate) => candidate.id === file.folderLinkId,
@@ -1502,7 +1536,7 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_scheduling') {
           if (!schedulingHasStandingAuthorization(request)) return false;
           // A refused read must fail as such, not turn into a card showing raw arguments.
-          await schedulingTool.authorize({ projectId, sessionId, request });
+          await schedulingTool.authorize({ projectId, sessionId, turnId, request });
           return true;
         }
         if (toolName === 'verity_matrix') {
@@ -1592,7 +1626,12 @@ export function registerServerMcpRoutes({
           const driveRequest = googleDriveRequestSchema.parse(request);
           if (driveRequest.action === 'capabilities') return true;
           try {
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, driveRequest);
+            await resolveGoogleDriveAuthority(
+              deps.eventStore,
+              projectId,
+              driveRequest,
+              (await runningTurnInitiator(sessionId, turnId))?.userId,
+            );
           } catch {
             return false;
           }
@@ -1601,6 +1640,7 @@ export function registerServerMcpRoutes({
               (await deps.googleDriveDocumentIsWithinProject?.({
                 projectId,
                 sessionId,
+                turnId,
                 url: driveRequest.url,
                 accountId: driveRequest.accountId,
                 folderLinkId: driveRequest.folderLinkId,
@@ -1622,7 +1662,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_contacts') {
           if (!googleContactsHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return true;
           } catch {
             return false;
@@ -1631,7 +1676,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_calendar') {
           if (!googleCalendarHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return true;
           } catch {
             return false;
@@ -1640,7 +1690,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return true;
           } catch {
             return false;
@@ -2188,6 +2243,7 @@ export function registerServerMcpRoutes({
       requestApproval: async ({
         projectId,
         sessionId,
+        turnId,
         callId,
         invocationId,
         authorizationSnapshot,
@@ -2220,6 +2276,7 @@ export function registerServerMcpRoutes({
           sessionId,
           toolName,
           request: input,
+          userId: (await runningTurnInitiator(sessionId, turnId))?.userId,
         });
         // The card shows the stored draft itself, never the agent's description of it.
         const scheduling =

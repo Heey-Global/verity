@@ -3,6 +3,9 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, expect, it, vi } from 'vitest';
 import { registerCalendarWatchRoutes } from './calendar-watch-routes.js';
 
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 const CALENDAR_SCOPES = ['calendar.calendarlist.readonly', 'calendar.events'].map(
   (scope) => `https://www.googleapis.com/auth/${scope}`,
 );
@@ -16,8 +19,27 @@ afterEach(async () => {
 function fixture(options: { googleStatus?: number; watched?: WatchedCalendar[] } = {}) {
   let watched = [...(options.watched ?? [])];
   const accounts = [
-    { id: 'work', email: 'me@work.example', displayName: 'Work', scopes: CALENDAR_SCOPES },
-    { id: 'drive-only', email: 'me@home.example', displayName: null, scopes: [] },
+    {
+      id: 'work',
+      ownerUserId: ADMIN,
+      email: 'me@work.example',
+      displayName: 'Work',
+      scopes: CALENDAR_SCOPES,
+    },
+    {
+      id: 'drive-only',
+      ownerUserId: ADMIN,
+      email: 'me@home.example',
+      displayName: null,
+      scopes: [],
+    },
+    {
+      id: 'bobs',
+      ownerUserId: 'bob',
+      email: 'bob@example.test',
+      displayName: null,
+      scopes: CALENDAR_SCOPES,
+    },
   ];
   const calendarWatch = {
     list: vi.fn(async () => watched),
@@ -55,11 +77,20 @@ function fixture(options: { googleStatus?: number; watched?: WatchedCalendar[] }
   }));
   const googleAccessToken = vi.fn(async (accountId?: string) => `token-${accountId ?? ''}`);
   app = Fastify();
+  // `x-test-user` stands in for the paired-device bearer that sets `localUserId`.
+  app.decorateRequest('localUserId', null);
+  app.addHook('onRequest', async (request) => {
+    const user = request.headers['x-test-user'];
+    if (typeof user === 'string') request.localUserId = user;
+  });
   registerCalendarWatchRoutes(app, {
     store: {
       googleAccounts: {
-        list: async () => accounts,
+        list: async (userId: string) =>
+          accounts.filter((account) => account.ownerUserId === userId),
         get: async (id: string) => accounts.find((account) => account.id === id),
+        getOwned: async (id: string, userId: string | undefined) =>
+          accounts.find((account) => account.id === id && account.ownerUserId === userId),
       },
       calendarWatch,
       getVeritySettingsRaw: async () => ({ unassignedMeetingRetentionDays: 14 }),
@@ -173,4 +204,35 @@ it('answers 502 when Google fails while choosing a calendar', async () => {
     payload: { accountId: 'work', calendarId: 'team@group', watched: true },
   });
   expect(response.statusCode).toBe(502);
+});
+
+it("neither stops nor starts watches of another person's account", async () => {
+  const { app, calendarWatch, googleAccessToken } = fixture({
+    watched: [{ accountId: 'bobs', calendarId: 'team@group', summary: 'Team', autoJoin: true }],
+  });
+  for (const watched of [false, true]) {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/settings/calendar-watch',
+      payload: { accountId: 'bobs', calendarId: 'team@group', watched },
+    });
+    expect(response.statusCode).toBe(404);
+  }
+  // Unwatching needs no Google call, so only the ownership check stands in its way.
+  expect(calendarWatch.unwatch).not.toHaveBeenCalled();
+  expect(calendarWatch.watch).not.toHaveBeenCalled();
+  expect(googleAccessToken).not.toHaveBeenCalled();
+  const listed = (await app.inject({ method: 'GET', url: '/settings/calendar-watch' })).json<{
+    accounts: { id: string }[];
+  }>();
+  expect(listed.accounts.map((account) => account.id)).not.toContain('bobs');
+
+  const own = await app.inject({
+    method: 'PUT',
+    url: '/settings/calendar-watch',
+    headers: { 'x-test-user': 'bob' },
+    payload: { accountId: 'bobs', calendarId: 'team@group', watched: false },
+  });
+  expect(own.json()).toEqual({ watched: false, autoJoin: false });
+  expect(calendarWatch.unwatch).toHaveBeenCalledWith('bobs', 'team@group');
 });

@@ -264,6 +264,7 @@ describe('assistant live meetings', () => {
   beforeEach(async () => {
     accountId = (
       await ctx.store.googleAccounts.save({
+        ownerUserId: ADMIN,
         email: 'me@example.com',
         clientId: 'client',
         refreshToken: 'secret',

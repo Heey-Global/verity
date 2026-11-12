@@ -11,7 +11,13 @@ import {
 /** Metadata-only discovery; listing tools must never decrypt connector credentials. */
 export async function connectorToolAvailable(
   store: EventStore,
-  input: { projectId: string; sessionId: string; toolName: GatewayToolName },
+  input: {
+    projectId: string;
+    sessionId: string;
+    toolName: GatewayToolName;
+    /** The person the turn runs for; only their Google accounts make a tool available. */
+    userId: string | undefined;
+  },
 ): Promise<boolean> {
   const service =
     input.toolName === 'verity_gmail'
@@ -22,7 +28,11 @@ export async function connectorToolAvailable(
           ? 'calendar'
           : undefined;
   if (service) {
-    const access = await store.googleAccounts.effectiveAccess(input.sessionId, service);
+    const access = await store.googleAccounts.effectiveAccess(
+      input.sessionId,
+      service,
+      input.userId,
+    );
     return (
       !!access &&
       {
@@ -35,13 +45,10 @@ export async function connectorToolAvailable(
   if (input.toolName === 'verity_google_drive') {
     // URL reads can use an authorized account without a project folder. Folder
     // operations still validate their binding in resolveGoogleDriveAuthority.
-    if ((await store.googleAccounts.list()).some((account) => hasGoogleDriveScopes(account.scopes)))
-      return true;
-    const folders = await store.googleAccounts.folders(input.projectId);
-    for (const folder of folders)
-      if (hasGoogleDriveScopes((await store.googleAccounts.get(folder.accountId))?.scopes))
-        return true;
-    return false;
+    if (input.userId === undefined) return false;
+    return (await store.googleAccounts.list(input.userId)).some((account) =>
+      hasGoogleDriveScopes(account.scopes),
+    );
   }
   if (
     ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(input.toolName)
@@ -50,7 +57,7 @@ export async function connectorToolAvailable(
     const kind = input.toolName.slice('verity_google_'.length);
     if (!file?.accountId || file.kind !== kind) return false;
     return hasGoogleWorkspaceScope(
-      (await store.googleAccounts.get(file.accountId))?.scopes,
+      (await store.googleAccounts.getOwned(file.accountId, input.userId))?.scopes,
       file.kind,
     );
   }

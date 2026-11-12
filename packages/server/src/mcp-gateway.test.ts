@@ -1370,13 +1370,17 @@ it('uses availability for listing, calls and revocation during approval', async 
 it('advertises and approves account-only Drive URL reads without linked folders', async () => {
   const store = {
     googleAccounts: {
-      list: async () => [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }],
+      list: async (userId: string) =>
+        userId === 'turn-user'
+          ? [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }]
+          : [],
       folders: async () => [],
     },
   } as unknown as EventStore;
   const { gateway, invokeTool, requestApproval } = harness({
     servedTools: ['verity_google_drive'],
-    toolAvailable: (input) => connectorToolAvailable(store, input),
+    // The composition passes the running turn's initiator; this stands in for it.
+    toolAvailable: (input) => connectorToolAvailable(store, { ...input, userId: 'turn-user' }),
   });
   const listed = await gateway.handle({
     projectId: 'p1',

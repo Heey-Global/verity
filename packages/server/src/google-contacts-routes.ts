@@ -6,6 +6,8 @@ import {
   type SealableSecretCipher,
   type VeritySettingsRecord,
 } from '@verity/store';
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -53,10 +55,10 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
       }
     };
 
-    instance.get('/contacts/connection', async () => {
+    instance.get('/contacts/connection', async (request) => {
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleContactsScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleContactsScopes(account.scopes),
         );
         return {
           connected: accounts.length > 0,
@@ -79,10 +81,14 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleContactsScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleContactsScopes(account.scopes),
         );
-        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'contacts');
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(
+          id,
+          'contacts',
+          viewerId(request),
+        );
         const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'contacts');
         return {
           enabled: effective !== undefined && hasGoogleContactsScopes(effective.account.scopes),
@@ -98,7 +104,7 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
           mode: access.mode,
         };
       }
-      const connection = await deps.eventStore.getSessionContactsConnection(id);
+      const connection = await deps.eventStore.getSessionContactsConnection(id, viewerId(request));
       const current = await settings();
       const connected =
         current?.contactsAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -122,8 +128,8 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleContactsScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleContactsScopes(account.scopes),
         );
         if (accounts.length !== 1)
           return reply.code(409).send({ error: 'Choose an authorized Google account' });
@@ -154,7 +160,7 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
         reply.code(409);
         return { error: 'Contacts account identity is unavailable' };
       }
-      await deps.eventStore.enableSessionContacts(id, accountEmail);
+      await deps.eventStore.enableSessionContacts(id, accountEmail, viewerId(request));
       return {
         enabled: true as const,
         connected: true as const,
@@ -175,7 +181,9 @@ export function registerGoogleContactsRoutes(app: FastifyInstance, deps: Contact
       }
       await deps.eventStore.disableSessionContacts(id);
       // Older clients must not report a successful logout while project access remains.
-      if ((await deps.eventStore.getSessionContactsConnection(id)) !== undefined) {
+      if (
+        (await deps.eventStore.getSessionContactsConnection(id, viewerId(request))) !== undefined
+      ) {
         return reply.code(409).send({
           error:
             'Google access is enabled for this project. Manage it in project settings with an updated app.',

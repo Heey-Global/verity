@@ -6,6 +6,8 @@ import type { Database } from './schema.js';
 export type GoogleService = 'gmail' | 'calendar' | 'contacts';
 export interface GoogleAccount {
   id: string;
+  /** The person who connected it; it acts only for them (ADR 0023 §3). */
+  ownerUserId: string;
   email: string;
   subject: string | null;
   displayName: string | null;
@@ -31,11 +33,19 @@ export class GoogleAccountStore {
     private readonly cipher: SecretCipher,
   ) {}
 
-  async list(): Promise<GoogleAccount[]> {
+  /** One person's accounts — what their routes show and their turns may use. */
+  async list(ownerUserId: string): Promise<GoogleAccount[]> {
+    return (await this.listAll()).filter((account) => account.ownerUserId === ownerUserId);
+  }
+
+  /** Every person's accounts, for maintenance that acts on behalf of each owner
+   *  (cleanup, calendar watches). Never for a choice made for one person. */
+  async listAll(): Promise<GoogleAccount[]> {
     const rows = await this.db
       .selectFrom('google_accounts')
       .select([
         'id',
+        'owner_user_id',
         'email',
         'subject',
         'display_name',
@@ -48,6 +58,7 @@ export class GoogleAccountStore {
       .execute();
     return rows.map((row) => ({
       id: row.id,
+      ownerUserId: row.owner_user_id,
       email: row.email,
       subject: row.subject,
       displayName: row.display_name,
@@ -57,8 +68,16 @@ export class GoogleAccountStore {
     }));
   }
 
+  /** Any person's account by id; callers acting for someone use {@link getOwned}. */
   async get(id: string): Promise<GoogleAccount | undefined> {
-    return (await this.list()).find((account) => account.id === id);
+    return (await this.listAll()).find((account) => account.id === id);
+  }
+
+  /** The account only if `ownerUserId` connected it; another person's id reads as absent. */
+  async getOwned(id: string, ownerUserId: string | undefined): Promise<GoogleAccount | undefined> {
+    if (ownerUserId === undefined) return undefined;
+    const account = await this.get(id);
+    return account?.ownerUserId === ownerUserId ? account : undefined;
   }
 
   async credentials(id: string) {
@@ -77,6 +96,7 @@ export class GoogleAccountStore {
   }
 
   async save(input: {
+    ownerUserId: string;
     email: string;
     subject?: string;
     clientId: string;
@@ -92,6 +112,7 @@ export class GoogleAccountStore {
       const existing = await tx
         .selectFrom('google_accounts')
         .selectAll()
+        .where('owner_user_id', '=', input.ownerUserId)
         .where(sql<boolean>`lower(email) = ${email}`)
         .executeTakeFirst();
       if (input.expectedAccountId !== undefined && existing?.id !== input.expectedAccountId)
@@ -103,6 +124,7 @@ export class GoogleAccountStore {
         .insertInto('google_accounts')
         .values({
           id,
+          owner_user_id: input.ownerUserId,
           email,
           subject: input.subject ?? null,
           display_name: null,
@@ -123,6 +145,7 @@ export class GoogleAccountStore {
         .execute();
       return {
         id,
+        ownerUserId: input.ownerUserId,
         email,
         subject: input.subject ?? existing?.subject ?? null,
         displayName: existing?.display_name ?? null,
@@ -239,26 +262,35 @@ export class GoogleAccountStore {
       .execute();
   }
 
-  async projectAccess(projectId: string, service: GoogleService) {
+  /** The account `userId` chose for a project service; never another member's choice. */
+  async projectAccess(projectId: string, service: GoogleService, userId: string | undefined) {
+    if (userId === undefined) return undefined;
     const grant = await this.db
       .selectFrom('project_google_connections')
       .select('account_id')
       .where('project_id', '=', projectId)
       .where('service', '=', service)
+      .where('user_id', '=', userId)
       .executeTakeFirst();
-    return grant?.account_id ? await this.get(grant.account_id) : undefined;
+    return grant?.account_id ? await this.getOwned(grant.account_id, userId) : undefined;
   }
 
-  async setProjectAccess(projectId: string, service: GoogleService, accountId: string | null) {
+  async setProjectAccess(
+    projectId: string,
+    service: GoogleService,
+    userId: string,
+    accountId: string | null,
+  ) {
     if (accountId === null) {
       await this.db
         .deleteFrom('project_google_connections')
         .where('project_id', '=', projectId)
         .where('service', '=', service)
+        .where('user_id', '=', userId)
         .execute();
       return;
     }
-    const account = await this.get(accountId);
+    const account = await this.getOwned(accountId, userId);
     if (!account) throw new Error('Google account not found');
     await this.db
       .insertInto('project_google_connections')
@@ -266,11 +298,12 @@ export class GoogleAccountStore {
         revision: randomUUID(),
         project_id: projectId,
         service,
+        user_id: userId,
         account_email: account.email,
         account_id: account.id,
       })
       .onConflict((conflict) =>
-        conflict.columns(['project_id', 'service']).doUpdateSet({
+        conflict.columns(['project_id', 'service', 'user_id']).doUpdateSet({
           revision: randomUUID(),
           account_email: account.email,
           account_id: account.id,
@@ -279,11 +312,17 @@ export class GoogleAccountStore {
       .execute();
   }
 
-  async effectiveAccess(sessionId: string, service: GoogleService) {
+  /**
+   * The account a turn run for `userId` uses in this session: the session's
+   * explicit account when that person owns it, otherwise their own project
+   * choice. Another member's account never applies, and no person means none.
+   */
+  async effectiveAccess(sessionId: string, service: GoogleService, userId: string | undefined) {
+    if (userId === undefined) return undefined;
     const access = await this.sessionAccess(sessionId, service);
     if (access.mode === 'disabled') return undefined;
     if (access.mode === 'account') {
-      const account = await this.get(access.accountId);
+      const account = await this.getOwned(access.accountId, userId);
       return account ? { account, source: 'session' as const } : undefined;
     }
     const session = await this.db
@@ -292,12 +331,16 @@ export class GoogleAccountStore {
       .where('session_id', '=', sessionId)
       .executeTakeFirst();
     const account = session?.project_id
-      ? await this.projectAccess(session.project_id, service)
+      ? await this.projectAccess(session.project_id, service, userId)
       : undefined;
     return account ? { account, source: 'project' as const } : undefined;
   }
 
-  async authorizationSnapshot(sessionId: string, service: GoogleService) {
+  async authorizationSnapshot(
+    sessionId: string,
+    service: GoogleService,
+    userId: string | undefined,
+  ) {
     const session = await this.db
       .selectFrom('sessions')
       .select('project_id')
@@ -315,9 +358,10 @@ export class GoogleAccountStore {
           .select(['revision', 'enabled_at'])
           .where('project_id', '=', session.project_id)
           .where('service', '=', service)
+          .where('user_id', '=', userId ?? '')
           .executeTakeFirst()
       : undefined;
-    const effective = await this.effectiveAccess(sessionId, service);
+    const effective = await this.effectiveAccess(sessionId, service, userId);
     return {
       projectId: session?.project_id,
       sessionRevision: override?.revision ?? null,
@@ -341,6 +385,7 @@ export class GoogleAccountStore {
         'f.id',
         'f.project_id as projectId',
         'f.account_id as accountId',
+        'a.owner_user_id as accountOwnerUserId',
         'f.folder_id as folderId',
         'f.name',
         'f.access_mode as accessMode',

@@ -2952,7 +2952,12 @@ describe('GET /sessions/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({
-      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
+      // Without a signed-in person the request reads as the administrator.
+      googleStatus: await sessionGoogleStatus(
+        ctx.store,
+        's1',
+        '00000000-0000-4000-8000-000000000001',
+      ),
       sessionId: 's1',
       worktree: '/wt/s1',
       model: 'm',

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from './testing.js';
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -34,19 +35,20 @@ it('keeps legacy authorization session-only and grants project access only expli
         : service === 'calendar'
           ? ctx.store.getSessionCalendarConnection.bind(ctx.store)
           : ctx.store.getSessionContactsConnection.bind(ctx.store);
-    if (service === 'gmail') await ctx.store.enableSessionGmail('google-s1', 'me@example.test');
+    if (service === 'gmail')
+      await ctx.store.enableSessionGmail('google-s1', 'me@example.test', ADMIN);
     if (service === 'calendar')
-      await ctx.store.enableSessionCalendar('google-s1', 'me@example.test');
+      await ctx.store.enableSessionCalendar('google-s1', 'me@example.test', ADMIN);
     if (service === 'contacts')
-      await ctx.store.enableSessionContacts('google-s1', 'me@example.test');
-    expect(await get('google-s1')).toBeDefined();
-    expect(await get('google-s2')).toBeUndefined();
+      await ctx.store.enableSessionContacts('google-s1', 'me@example.test', ADMIN);
+    expect(await get('google-s1', ADMIN)).toBeDefined();
+    expect(await get('google-s2', ADMIN)).toBeUndefined();
     expect(await ctx.store.getProjectGoogleConnection('google-p1', service)).toBeUndefined();
-    await ctx.store.enableProjectGoogleConnection('google-p1', service, 'me@example.test');
-    expect(await get('google-s2')).toMatchObject({ accountEmail: 'me@example.test' });
-    expect(await get('google-s3')).toBeUndefined();
-    await ctx.store.disableProjectGoogleConnection('google-p1', service);
-    expect(await get('google-s1')).toBeUndefined();
-    expect(await get('google-s2')).toBeUndefined();
+    await ctx.store.enableProjectGoogleConnection('google-p1', service, 'me@example.test', ADMIN);
+    expect(await get('google-s2', ADMIN)).toMatchObject({ accountEmail: 'me@example.test' });
+    expect(await get('google-s3', ADMIN)).toBeUndefined();
+    await ctx.store.disableProjectGoogleConnection('google-p1', service, ADMIN);
+    expect(await get('google-s1', ADMIN)).toBeUndefined();
+    expect(await get('google-s2', ADMIN)).toBeUndefined();
   }
 });

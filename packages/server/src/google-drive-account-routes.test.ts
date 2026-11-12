@@ -1,11 +1,23 @@
-import Fastify from 'fastify';
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { registerGoogleDriveRoutes } from './google-drive-routes.js';
+
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+const BOB = 'drive-bob';
+const CAROL = 'drive-carol';
 
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
+  await ctx.db
+    .insertInto('users')
+    .values([
+      { id: BOB, role: 'member', status: 'active' },
+      { id: CAROL, role: 'member', status: 'active' },
+    ])
+    .execute();
   await ctx.store.upsertProject({
     id: 'p',
     owner: 'local',
@@ -24,10 +36,54 @@ afterAll(async () => {
   await ctx.close();
 });
 
+/** Make `turnId` the running turn of `sessionId`, sent by `userId`. */
+async function runTurnFor(userId: string, sessionId: string, turnId: string) {
+  const prompt = await ctx.store.appendEvent(sessionId, {
+    t: 'prompt',
+    text: 'Drive',
+    initiatedBy: { userId },
+  });
+  await ctx.store.markTurnRunning({ sessionId, promptSeq: prompt.seq });
+  await ctx.store.bindTurnIdentity(sessionId, { turnId, startCommandId: turnId });
+}
+
+/** Drive routes acting for whoever `x-test-user` names; the administrator otherwise. */
+async function driveApp(): Promise<FastifyInstance> {
+  const app = Fastify();
+  app.decorateRequest('localUserId', null);
+  app.addHook('onRequest', async (request) => {
+    const user = request.headers['x-test-user'];
+    if (typeof user === 'string') request.localUserId = user;
+  });
+  registerGoogleDriveRoutes(app, { eventStore: ctx.store });
+  await app.ready();
+  return app;
+}
+
+function googleFetch() {
+  return vi.fn(async (input: string | URL | Request) => {
+    const target =
+      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(target);
+    if (url.origin === 'https://oauth2.googleapis.com')
+      return new Response(JSON.stringify({ access_token: 'access', expires_in: 3600 }));
+    if (url.pathname.startsWith('/drive/v3/files/'))
+      return new Response(
+        JSON.stringify({
+          id: url.pathname.split('/').pop(),
+          name: 'Folder',
+          mimeType: 'application/vnd.google-apps.folder',
+        }),
+      );
+    return new Response(JSON.stringify({ files: [] }));
+  });
+}
+
 it.each(['/sessions/s/google-workspace/file', '/sessions/s/google-slides/deck'])(
   'keeps %s bound to its selected account and linked folder during network requests',
   async (url) => {
     const account = await ctx.store.googleAccounts.save({
+      ownerUserId: ADMIN,
       email: 'assignment@example.test',
       clientId: 'client',
       refreshToken: 'refresh',
@@ -116,12 +172,14 @@ it.each(['/sessions/s/google-workspace/file', '/sessions/s/google-slides/deck'])
 it('keeps mixed-account folder operations on the chosen credentials and permission', async () => {
   const { createGoogleDriveAgentTool } = await import('./google-drive-agent-tool.js');
   const personal = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'personal-folders@example.test',
     clientId: 'client',
     refreshToken: 'personal',
     scopes: ['https://www.googleapis.com/auth/drive'],
   });
   const work = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'work-folders@example.test',
     clientId: 'client',
     refreshToken: 'work',
@@ -170,6 +228,7 @@ it('keeps mixed-account folder operations on the chosen credentials and permissi
   };
   const tool = createGoogleDriveAgentTool({ eventStore: ctx.store, googleAccessToken, drive });
   const input = { sessionId: 's', projectId: 'p', turnId: 'turn', invocationId: 'mixed-folders' };
+  await runTurnFor(ADMIN, 's', 'turn');
   await expect(tool.invoke({ ...input, request: { action: 'list' } })).rejects.toThrow(
     'folderLinkId',
   );
@@ -196,11 +255,13 @@ it('keeps mixed-account folder operations on the chosen credentials and permissi
       request: { action: 'list', folderLinkId: two.id, accountId: personal.id },
     }),
   ).rejects.toThrow('authorized Google account');
+  await ctx.store.clearRunningTurn('s');
 });
 
 it('refuses to edit an assigned document that moved outside its linked folder', async () => {
   const { createGoogleDocsTool } = await import('./google-docs-tool.js');
   const account = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'moved@example.test',
     clientId: 'client',
     refreshToken: 'refresh',
@@ -279,4 +340,115 @@ it('refuses to edit an assigned document that moved outside its linked folder', 
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+describe("another person's Google Drive account (ADR 0023 §3)", () => {
+  it("never mints a token for someone else's account id", async () => {
+    const bobs = await ctx.store.googleAccounts.save({
+      ownerUserId: BOB,
+      email: 'bob-files@example.test',
+      clientId: 'client',
+      refreshToken: 'bob-refresh',
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    const fetch = googleFetch();
+    vi.stubGlobal('fetch', fetch);
+    const app = await driveApp();
+    try {
+      const url = `/google-drive/files?accountId=${bobs.id}`;
+      expect((await app.inject({ method: 'GET', url })).statusCode).toBe(409);
+      expect(fetch).not.toHaveBeenCalled();
+      const own = await app.inject({ method: 'GET', url, headers: { 'x-test-user': BOB } });
+      expect(own.statusCode, own.body).toBe(200);
+    } finally {
+      await app.close();
+      vi.unstubAllGlobals();
+      await ctx.store.googleAccounts.remove(bobs.id);
+    }
+  });
+
+  it("keeps a folder linked with Bob's account out of another person's browsing", async () => {
+    const bobs = await ctx.store.googleAccounts.save({
+      ownerUserId: BOB,
+      email: 'bob-folder@example.test',
+      clientId: 'client',
+      refreshToken: 'bob-refresh',
+      scopes: ['https://www.googleapis.com/auth/drive'],
+    });
+    const link = await ctx.store.googleAccounts.linkFolder({
+      projectId: 'p',
+      accountId: bobs.id,
+      folderId: 'bob-root',
+      name: 'Bob',
+      accessMode: 'read-write',
+    });
+    const fetch = googleFetch();
+    vi.stubGlobal('fetch', fetch);
+    const app = await driveApp();
+    try {
+      // Both the link id and the bare folder id must miss for the administrator.
+      for (const folder of [link.id, 'bob-root']) {
+        const url = `/projects/p/google-drive/folders/${folder}/files`;
+        expect((await app.inject({ method: 'GET', url })).statusCode).toBe(404);
+      }
+      expect(fetch).not.toHaveBeenCalled();
+      const own = await app.inject({
+        method: 'GET',
+        url: `/projects/p/google-drive/folders/${link.id}/files`,
+        headers: { 'x-test-user': BOB },
+      });
+      expect(own.statusCode, own.body).toBe(200);
+    } finally {
+      await app.close();
+      vi.unstubAllGlobals();
+      await ctx.store.googleAccounts.unlinkFolder('p', link.id);
+      await ctx.store.googleAccounts.remove(bobs.id);
+    }
+  });
+
+  it("disconnecting one person's account leaves other people's Google choices in place", async () => {
+    const scopes = ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic', 'drive'].map(
+      (scope) => `https://www.googleapis.com/auth/${scope}`,
+    );
+    const bobs = await ctx.store.googleAccounts.save({
+      ownerUserId: BOB,
+      email: 'bob-disconnect@example.test',
+      clientId: 'client',
+      refreshToken: 'bob-refresh',
+      scopes,
+    });
+    const carols = await ctx.store.googleAccounts.save({
+      ownerUserId: CAROL,
+      email: 'carol@example.test',
+      clientId: 'client',
+      refreshToken: 'carol-refresh',
+      scopes,
+    });
+    await ctx.store.googleAccounts.setProjectAccess('p', 'gmail', BOB, bobs.id);
+    await ctx.store.googleAccounts.setSessionAccess('s', 'gmail', {
+      mode: 'account',
+      accountId: bobs.id,
+    });
+    const app = await driveApp();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/google-drive/disconnect',
+        headers: { 'x-test-user': CAROL },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await ctx.store.googleAccounts.get(carols.id)).toBeUndefined();
+      // The instance-wide legacy cleanup would silently drop Bob's project choice.
+      expect((await ctx.store.googleAccounts.projectAccess('p', 'gmail', BOB))?.id).toBe(bobs.id);
+      expect(await ctx.store.googleAccounts.sessionAccess('s', 'gmail')).toEqual({
+        mode: 'account',
+        accountId: bobs.id,
+      });
+      expect(await ctx.store.googleAccounts.get(bobs.id)).toBeDefined();
+    } finally {
+      await app.close();
+      await ctx.store.googleAccounts.setSessionAccess('s', 'gmail', { mode: 'inherit' });
+      await ctx.store.googleAccounts.remove(bobs.id);
+    }
+  });
 });

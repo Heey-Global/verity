@@ -12,6 +12,9 @@ import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createGoogleDriveAgentTool, type GoogleDriveAgentApi } from './google-drive-agent-tool.js';
 
+/** The person the harness turn runs for; the Google account is theirs. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -53,6 +56,14 @@ async function harness(
     worktree: '/tmp/drive-gateway-s1',
     model: 'claude-opus-5',
   });
+  // Drive resolves the account owner from the running turn, so 't1' must be one.
+  const prompt = await store.appendEvent('s1', {
+    t: 'prompt',
+    text: 'Drive operation',
+    initiatedBy: { userId: ADMIN },
+  });
+  await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+  await store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'drive' });
   await store.updateProjectSettings('p1', {
     googleDriveFolderId: 'root',
     googleDriveFolderName: 'Root',
@@ -64,6 +75,7 @@ async function harness(
     googleDriveAccountEmail: 'me@example.test',
   });
   const account = await store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'me@example.test',
     clientId: 'client',
     refreshToken: 'refresh',
@@ -277,7 +289,7 @@ it('requires approval for a document URL read without a project folder', async (
       expect.objectContaining({
         input: expect.objectContaining({
           googleAccount: {
-            id: (await store.googleAccounts.list())[0]!.id,
+            id: (await store.googleAccounts.list(ADMIN))[0]!.id,
             email: 'me@example.test',
           },
         }),

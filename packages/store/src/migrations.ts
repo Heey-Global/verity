@@ -5594,3 +5594,57 @@ migrations['0205_user_display_name'] = {
     await sql`alter table users drop column display_name`.execute(db);
   },
 };
+
+migrations['0206_google_account_owners'] = {
+  // A Google account belongs to the person who connected it (ADR 0023 §3). The
+  // existing accounts were connected by the installation's administrator. Email
+  // and Google subject become unique per person, so a second member connecting
+  // the same address gets their own row instead of replacing the first one's
+  // credentials. Project service connections become per member: each member
+  // chooses their own account for a project.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table google_accounts add column owner_user_id text
+      not null default '00000000-0000-4000-8000-000000000001'
+      references users(id) on delete cascade`.execute(db);
+    await sql`drop index google_accounts_email`.execute(db);
+    await sql`create unique index google_accounts_owner_email
+      on google_accounts(owner_user_id, lower(email))`.execute(db);
+    await sql`alter table google_accounts drop constraint google_accounts_subject_key`.execute(db);
+    await sql`create unique index google_accounts_owner_subject
+      on google_accounts(owner_user_id, subject) where subject is not null`.execute(db);
+
+    await sql`alter table project_google_connections add column user_id text
+      not null default '00000000-0000-4000-8000-000000000001'
+      references users(id) on delete cascade`.execute(db);
+    await sql`update project_google_connections c set user_id = a.owner_user_id
+      from google_accounts a where a.id = c.account_id`.execute(db);
+    await sql`alter table project_google_connections
+      drop constraint project_google_connections_pkey`.execute(db);
+    await sql`alter table project_google_connections
+      add primary key (project_id, service, user_id)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    // Only the administrator's choices fit the former one-per-project shape.
+    await sql`delete from project_google_connections c using google_accounts a
+      where a.id = c.account_id and a.owner_user_id <> '00000000-0000-4000-8000-000000000001'`.execute(
+      db,
+    );
+    await sql`delete from project_google_connections
+      where user_id <> '00000000-0000-4000-8000-000000000001'`.execute(db);
+    await sql`alter table project_google_connections
+      drop constraint project_google_connections_pkey`.execute(db);
+    await sql`alter table project_google_connections drop column user_id`.execute(db);
+    await sql`alter table project_google_connections
+      add primary key (project_id, service)`.execute(db);
+    await sql`delete from google_accounts
+      where owner_user_id <> '00000000-0000-4000-8000-000000000001'`.execute(db);
+    await sql`drop index google_accounts_owner_subject`.execute(db);
+    await sql`alter table google_accounts add constraint google_accounts_subject_key
+      unique (subject)`.execute(db);
+    await sql`drop index google_accounts_owner_email`.execute(db);
+    await sql`create unique index google_accounts_email on google_accounts(lower(email))`.execute(
+      db,
+    );
+    await sql`alter table google_accounts drop column owner_user_id`.execute(db);
+  },
+};

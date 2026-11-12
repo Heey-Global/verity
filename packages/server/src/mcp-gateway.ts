@@ -191,6 +191,8 @@ export interface McpGatewayDeps {
   requestApproval(input: {
     projectId: string;
     sessionId: string;
+    /** The calling turn; the card names accounts of the person it runs for. */
+    turnId: string;
     callId: string;
     invocationId: string;
     authorizationSnapshot?: string;
@@ -1030,6 +1032,7 @@ export function createMcpGateway(deps: McpGatewayDeps): McpGateway {
         answer = await deps.requestApproval({
           projectId,
           sessionId,
+          turnId,
           callId,
           invocationId,
           ...(authorizationSnapshot === undefined ? {} : { authorizationSnapshot }),

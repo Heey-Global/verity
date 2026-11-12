@@ -2458,8 +2458,14 @@ export class EventStore implements EventSink {
     return new CalendarWatchStore(this.db, this.cipher);
   }
 
-  async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
-    const effective = await this.googleAccounts.effectiveAccess(sessionId, service);
+  /** Credentials for the Google account `userId` uses in this session; none for
+   *  anyone else's account and none without a person (ADR 0023 §3). */
+  async getGoogleServiceCredentials(
+    sessionId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+    userId: string | undefined,
+  ) {
+    const effective = await this.googleAccounts.effectiveAccess(sessionId, service, userId);
     if (!effective) return undefined;
     const credentials = await this.googleAccounts.credentials(effective.account.id);
     if (!credentials) return undefined;
@@ -2507,21 +2513,24 @@ export class EventStore implements EventSink {
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
     accountEmail: string,
+    userId: string,
   ): Promise<void> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account) {
-      await this.googleAccounts.setProjectAccess(projectId, service, account.id);
+      await this.googleAccounts.setProjectAccess(projectId, service, userId, account.id);
       return;
     }
     await this.db
       .insertInto('project_google_connections')
-      .values({ project_id: projectId, service, account_email: accountEmail })
+      .values({ project_id: projectId, service, user_id: userId, account_email: accountEmail })
       .onConflict((conflict) =>
-        conflict.columns(['project_id', 'service']).doUpdateSet({ account_email: accountEmail }),
+        conflict
+          .columns(['project_id', 'service', 'user_id'])
+          .doUpdateSet({ account_email: accountEmail }),
       )
       .execute();
   }
@@ -2529,9 +2538,10 @@ export class EventStore implements EventSink {
   async disableProjectGoogleConnection(
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
+    userId: string,
   ): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0) {
-      await this.googleAccounts.setProjectAccess(projectId, service, null);
+    if ((await this.googleAccounts.listAll()).length > 0) {
+      await this.googleAccounts.setProjectAccess(projectId, service, userId, null);
       return;
     }
     await this.db.transaction().execute(async (transaction) => {
@@ -2539,6 +2549,7 @@ export class EventStore implements EventSink {
         .deleteFrom('project_google_connections')
         .where('project_id', '=', projectId)
         .where('service', '=', service)
+        .where('user_id', '=', userId)
         .execute();
       // Disabling the project also revokes legacy grants in its sessions.
       const sessionIds = transaction
@@ -2565,10 +2576,13 @@ export class EventStore implements EventSink {
     return grant === undefined ? undefined : { sessionId, ...grant };
   }
 
-  async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
+  async getSessionGmailConnection(
+    sessionId: string,
+    userId: string | undefined,
+  ): Promise<SessionGmailConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'gmail');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail', userId);
       return effective
         ? {
             sessionId,
@@ -2596,12 +2610,13 @@ export class EventStore implements EventSink {
   async enableSessionGmail(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionGmailConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'gmail', {
         mode: 'account',
@@ -2616,7 +2631,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionGmailConnection(sessionId)) ?? {
+      (await this.getSessionGmailConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2625,7 +2640,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionGmail(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'gmail', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_gmail_connections')
@@ -2640,10 +2655,11 @@ export class EventStore implements EventSink {
 
   async getSessionCalendarConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<SessionCalendarConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'calendar');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar', userId);
       return effective
         ? {
             sessionId,
@@ -2671,12 +2687,13 @@ export class EventStore implements EventSink {
   async enableSessionCalendar(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionCalendarConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'calendar', {
         mode: 'account',
@@ -2691,7 +2708,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionCalendarConnection(sessionId)) ?? {
+      (await this.getSessionCalendarConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2700,7 +2717,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionCalendar(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'calendar', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_calendar_connections')
@@ -2718,10 +2735,11 @@ export class EventStore implements EventSink {
 
   async getSessionContactsConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<SessionContactsConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'contacts');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts', userId);
       return effective
         ? {
             sessionId,
@@ -2749,12 +2767,13 @@ export class EventStore implements EventSink {
   async enableSessionContacts(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionContactsConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'contacts', {
         mode: 'account',
@@ -2769,7 +2788,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionContactsConnection(sessionId)) ?? {
+      (await this.getSessionContactsConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2778,7 +2797,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionContacts(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'contacts', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_contacts_connections')
@@ -5543,6 +5562,18 @@ export class EventStore implements EventSink {
       .limit(1)
       .executeTakeFirst();
     return row?.userId ? { userId: row.userId } : undefined;
+  }
+
+  /** The user a turn runs for while it is the session's running turn, or
+   *  `undefined` when `turnId` is not running there or names no initiator. Tools
+   *  resolve personal credentials through this, never through the session alone. */
+  async runningTurnInitiator(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> {
+    const running = (await this.listRunningTurns()).find((turn) => turn.sessionId === sessionId);
+    if (running === undefined || running.turnId !== turnId) return undefined;
+    return this.promptInitiatorAt(sessionId, running.promptSeq);
   }
 
   /** The user a specific prompt event was sent by, or `undefined` when that

@@ -1,6 +1,8 @@
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import { registerGoogleAccountRoutes } from './google-account-routes.js';
 import type { EventStore } from '@verity/store';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   hasGoogleGmailScopes,
@@ -20,15 +22,20 @@ const checks = {
 
 export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: EventStore): void {
   registerGoogleAccountRoutes(app, eventStore);
-  app.get('/google/connection', async () => {
-    const accounts = await eventStore.googleAccounts.list();
-    if (accounts.length > 0) {
+  // Whether the account registry is in use is an instance fact; which accounts a
+  // person may see, choose or is reported as connected with is always their own.
+  const registryInUse = async () => (await eventStore.googleAccounts.listAll()).length > 0;
+  const ownAccounts = async (request: FastifyRequest) =>
+    eventStore.googleAccounts.list(viewerId(request));
+  app.get('/google/connection', async (request) => {
+    const accounts = await ownAccounts(request);
+    if (await registryInUse()) {
       const used = new Map<string, { id: string; name: string }>();
       for (const account of accounts)
         for (const project of (await eventStore.googleAccounts.usage(account.id)).projects)
           used.set(project.id, project);
       return {
-        connected: true,
+        connected: accounts.length > 0,
         accountEmail: accounts.length === 1 ? accounts[0]!.email : null,
         scopes: [...new Set(accounts.flatMap((account) => account.scopes))],
         projects: [...used.values()],
@@ -51,9 +58,9 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
         sessions
           .filter((session) => session.projectId === project.id)
           .flatMap((session) => [
-            eventStore.getSessionGmailConnection(session.sessionId),
-            eventStore.getSessionCalendarConnection(session.sessionId),
-            eventStore.getSessionContactsConnection(session.sessionId),
+            eventStore.getSessionGmailConnection(session.sessionId, viewerId(request)),
+            eventStore.getSessionCalendarConnection(session.sessionId, viewerId(request)),
+            eventStore.getSessionContactsConnection(session.sessionId, viewerId(request)),
           ]),
       );
       if (
@@ -76,9 +83,9 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
-    const accounts = await eventStore.googleAccounts.list();
-    if (accounts.length > 0) {
-      const account = await eventStore.googleAccounts.projectAccess(id, service);
+    const accounts = await ownAccounts(request);
+    if (await registryInUse()) {
+      const account = await eventStore.googleAccounts.projectAccess(id, service, viewerId(request));
       return {
         enabled: account !== undefined && checks[service](account.scopes),
         connected: accounts.some((candidate) => checks[service](candidate.scopes)),
@@ -112,10 +119,12 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
-    const allAccounts = await eventStore.googleAccounts.list();
-    const accounts = allAccounts.filter((account) => checks[service](account.scopes));
+    const userId = viewerId(request);
+    const accounts = (await ownAccounts(request)).filter((account) =>
+      checks[service](account.scopes),
+    );
     const body = z.object({ accountId: z.string().min(1).optional() }).parse(request.body ?? {});
-    if (body.accountId !== undefined || allAccounts.length > 0) {
+    if (body.accountId !== undefined || (await registryInUse())) {
       const account =
         body.accountId === undefined
           ? accounts.length === 1
@@ -123,7 +132,7 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
             : undefined
           : accounts.find((candidate) => candidate.id === body.accountId);
       if (!account) return reply.code(409).send({ error: 'Select an authorized Google account' });
-      await eventStore.googleAccounts.setProjectAccess(id, service, account.id);
+      await eventStore.googleAccounts.setProjectAccess(id, service, userId, account.id);
       return {
         enabled: true,
         connected: true,
@@ -140,7 +149,12 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
       !checks[service](settings.googleGrantedScopes)
     )
       return reply.code(409).send({ error: 'Connect this Google service first' });
-    await eventStore.enableProjectGoogleConnection(id, service, settings.googleDriveAccountEmail);
+    await eventStore.enableProjectGoogleConnection(
+      id,
+      service,
+      settings.googleDriveAccountEmail,
+      userId,
+    );
     return {
       enabled: true,
       connected: true,
@@ -155,9 +169,10 @@ export function registerProjectGoogleRoutes(app: FastifyInstance, eventStore: Ev
     const { id, service } = parsed.data;
     if (!(await eventStore.getProject(id)))
       return reply.code(404).send({ error: 'Project not found' });
-    if ((await eventStore.googleAccounts.list()).length > 0) {
-      await eventStore.googleAccounts.setProjectAccess(id, service, null);
-    } else await eventStore.disableProjectGoogleConnection(id, service);
+    const userId = viewerId(request);
+    if (await registryInUse()) {
+      await eventStore.googleAccounts.setProjectAccess(id, service, userId, null);
+    } else await eventStore.disableProjectGoogleConnection(id, service, userId);
     return { enabled: false };
   });
 }

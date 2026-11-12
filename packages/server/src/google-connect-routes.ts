@@ -1,3 +1,4 @@
+import { viewerId } from './view-state-routes.js';
 import rateLimitPlugin from '@fastify/rate-limit';
 import { SealedError, type EventStore, type SealableSecretCipher } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -21,7 +22,7 @@ const connectBody = z.object({
 });
 
 interface GoogleConnectRouteDeps {
-  eventStore: Pick<EventStore, 'googleAccounts' | 'updateVeritySettings'>;
+  eventStore: Pick<EventStore, 'googleAccounts' | 'updateVeritySettings' | 'isActiveAdministrator'>;
   googleClientId?: string;
   stagingGoogleClientId?: string;
   secretCipher?: SealableSecretCipher;
@@ -110,6 +111,8 @@ export function registerGoogleConnectRoutes(
         let account;
         try {
           account = await deps.eventStore.googleAccounts.save({
+            // The account belongs to whoever connects it, never to the instance.
+            ownerUserId: viewerId(request),
             email: identity.email,
             ...(identity.subject === undefined ? {} : { subject: identity.subject }),
             clientId,
@@ -124,7 +127,12 @@ export function registerGoogleConnectRoutes(
             .send({ error: 'The selected Google account does not match the signed-in account' });
         }
         // The legacy settings fields still describe a lone account for older readers.
-        if ((await deps.eventStore.googleAccounts.list()).length === 1) {
+        // Those readers treat it as the instance's account, so only the
+        // administrator's own sole account may be mirrored there, never a member's.
+        if (
+          (await deps.eventStore.googleAccounts.listAll()).length === 1 &&
+          (await deps.eventStore.isActiveAdministrator(account.ownerUserId))
+        ) {
           await deps.eventStore.updateVeritySettings({
             googleDriveClientId: clientId,
             googleDriveRefreshToken: tokens.refreshToken,

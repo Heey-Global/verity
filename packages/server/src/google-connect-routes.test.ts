@@ -10,6 +10,9 @@ import {
   hasGoogleGmailScopes,
 } from './google-oauth-scopes.js';
 
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v2/userinfo';
 const scope = (name: string) => `https://www.googleapis.com/auth/${name}`;
@@ -67,7 +70,7 @@ beforeAll(async () => {
   ctx = await createTestDb();
 });
 beforeEach(async () => {
-  for (const account of await ctx.store.googleAccounts.list())
+  for (const account of await ctx.store.googleAccounts.listAll())
     await ctx.store.googleAccounts.remove(account.id);
 });
 afterEach(async () => {
@@ -103,7 +106,7 @@ describe('POST /google/connect', () => {
     const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
     expect(response.statusCode, response.body).toBe(200);
-    const [account] = await ctx.store.googleAccounts.list();
+    const [account] = await ctx.store.googleAccounts.list(ADMIN);
     expect(response.json()).toEqual({
       connected: true,
       accountEmail: 'you@example.test',
@@ -130,7 +133,7 @@ describe('POST /google/connect', () => {
     const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
     expect(response.statusCode, response.body).toBe(200);
-    const [account] = await ctx.store.googleAccounts.list();
+    const [account] = await ctx.store.googleAccounts.list(ADMIN);
     expect(response.json().scopes).toEqual(account!.scopes);
     expect(hasGoogleGmailScopes(account!.scopes)).toBe(true);
     expect(hasGoogleDriveScopes(account!.scopes)).toBe(false);
@@ -156,7 +159,7 @@ describe('POST /google/connect', () => {
       const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
       expect(response.statusCode).toBe(400);
-      expect(await ctx.store.googleAccounts.list()).toEqual([]);
+      expect(await ctx.store.googleAccounts.list(ADMIN)).toEqual([]);
       expect(onCredentialsChanged).not.toHaveBeenCalled();
     },
   );
@@ -167,11 +170,12 @@ describe('POST /google/connect', () => {
     const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
     expect(response.statusCode).toBe(400);
-    expect(await ctx.store.googleAccounts.list()).toEqual([]);
+    expect(await ctx.store.googleAccounts.list(ADMIN)).toEqual([]);
   });
 
   it('refuses to reconnect a selected account as a different signed-in account', async () => {
     const selected = await ctx.store.googleAccounts.save({
+      ownerUserId: ADMIN,
       email: 'selected@example.test',
       clientId: 'production-client',
       refreshToken: 'original',
@@ -186,7 +190,7 @@ describe('POST /google/connect', () => {
     });
 
     expect(response.statusCode).toBe(409);
-    expect((await ctx.store.googleAccounts.list()).map((account) => account.id)).toEqual([
+    expect((await ctx.store.googleAccounts.list(ADMIN)).map((account) => account.id)).toEqual([
       selected.id,
     ]);
     expect((await ctx.store.googleAccounts.credentials(selected.id))?.refreshToken).toBe(
@@ -212,7 +216,7 @@ describe('POST /google/connect', () => {
     expect(response.statusCode, response.body).toBe(200);
     const exchange = fetch.mock.calls.find(([url]) => url === TOKEN_URL);
     expect(new URLSearchParams(String(exchange?.[1]?.body)).get('client_id')).toBe(clientId);
-    expect((await ctx.store.googleAccounts.list())[0]?.clientId).toBe(clientId);
+    expect((await ctx.store.googleAccounts.list(ADMIN))[0]?.clientId).toBe(clientId);
   });
 
   it('never exchanges a code for an unknown app variant', async () => {
@@ -238,7 +242,7 @@ describe('POST /google/connect', () => {
 
     expect(response.statusCode).toBeGreaterThanOrEqual(500);
     expect(fetch).not.toHaveBeenCalled();
-    expect(await ctx.store.googleAccounts.list()).toEqual([]);
+    expect(await ctx.store.googleAccounts.list(ADMIN)).toEqual([]);
   });
 
   it('stores nothing when the signed-in identity cannot be verified', async () => {
@@ -250,7 +254,7 @@ describe('POST /google/connect', () => {
     const response = await server.inject({ method: 'POST', url: '/google/connect', payload });
 
     expect(response.statusCode).toBe(502);
-    expect(await ctx.store.googleAccounts.list()).toEqual([]);
+    expect(await ctx.store.googleAccounts.list(ADMIN)).toEqual([]);
     expect(onCredentialsChanged).not.toHaveBeenCalled();
   });
 });

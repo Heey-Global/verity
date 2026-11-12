@@ -16,7 +16,7 @@ export interface SessionReadRouteDeps {
   listModels: (projectId?: string) => Promise<unknown>;
   /** The session as `viewer` sees it: read mark and dismissed Home items are theirs. */
   getSession: (sessionId: string, viewer: string) => Promise<unknown>;
-  getGoogleStatus?: (sessionId: string) => Promise<unknown>;
+  getGoogleStatus?: (sessionId: string, viewer: string | undefined) => Promise<unknown>;
 }
 
 /** Registers model discovery and the lightweight session-detail read. */
@@ -29,7 +29,7 @@ export function registerSessionReadRoutes(app: FastifyInstance, deps: SessionRea
   if (deps.getGoogleStatus)
     app.get('/sessions/:id/google-status', async (request, reply) => {
       const { id } = sessionParams.parse(request.params);
-      const status = await deps.getGoogleStatus!(id);
+      const status = await deps.getGoogleStatus!(id, viewerId(request));
       if (status === undefined)
         return reply.code(404).send({ error: 'Session status unavailable' });
       return status;

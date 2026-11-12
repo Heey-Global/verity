@@ -127,7 +127,8 @@ async function welcomeSetupStatus(
     github: status.githubAppConfigured,
     doppler: status.dopplerConfigured,
     google:
-      (await store.googleAccounts.list()).length > 0 || present(settings?.googleDriveRefreshToken),
+      (await store.googleAccounts.listAll()).length > 0 ||
+      present(settings?.googleDriveRefreshToken),
   };
 }
 

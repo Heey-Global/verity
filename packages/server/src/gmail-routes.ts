@@ -6,6 +6,8 @@ import {
   type SealableSecretCipher,
   type VeritySettingsRecord,
 } from '@verity/store';
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
@@ -53,10 +55,10 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       }
     };
 
-    instance.get('/gmail/connection', async () => {
+    instance.get('/gmail/connection', async (request) => {
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleGmailScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleGmailScopes(account.scopes),
         );
         return {
           connected: accounts.length > 0,
@@ -79,10 +81,14 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleGmailScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleGmailScopes(account.scopes),
         );
-        const effective = await deps.eventStore.googleAccounts.effectiveAccess(id, 'gmail');
+        const effective = await deps.eventStore.googleAccounts.effectiveAccess(
+          id,
+          'gmail',
+          viewerId(request),
+        );
         const access = await deps.eventStore.googleAccounts.sessionAccess(id, 'gmail');
         return {
           enabled: effective !== undefined && hasGoogleGmailScopes(effective.account.scopes),
@@ -98,7 +104,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
           mode: access.mode,
         };
       }
-      const connection = await deps.eventStore.getSessionGmailConnection(id);
+      const connection = await deps.eventStore.getSessionGmailConnection(id, viewerId(request));
       const current = await settings();
       const connected =
         current?.gmailAuthorized === true && Boolean(current.googleDriveRefreshToken?.trim());
@@ -122,8 +128,8 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         return { error: `session ${id} not found` };
       }
       if (deps.eventStore.googleAccounts) {
-        const accounts = (await deps.eventStore.googleAccounts.list()).filter((account) =>
-          hasGoogleGmailScopes(account.scopes),
+        const accounts = (await deps.eventStore.googleAccounts.list(viewerId(request))).filter(
+          (account) => hasGoogleGmailScopes(account.scopes),
         );
         if (accounts.length !== 1)
           return reply.code(409).send({ error: 'Choose an authorized Google account' });
@@ -154,7 +160,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
         reply.code(409);
         return { error: 'Gmail account identity is unavailable' };
       }
-      await deps.eventStore.enableSessionGmail(id, accountEmail);
+      await deps.eventStore.enableSessionGmail(id, accountEmail, viewerId(request));
       return {
         enabled: true as const,
         connected: true as const,
@@ -175,7 +181,7 @@ export function registerGmailRoutes(app: FastifyInstance, deps: GmailRouteDeps):
       }
       await deps.eventStore.disableSessionGmail(id);
       // Older clients must not report a successful logout while project access remains.
-      if ((await deps.eventStore.getSessionGmailConnection(id)) !== undefined) {
+      if ((await deps.eventStore.getSessionGmailConnection(id, viewerId(request))) !== undefined) {
         return reply.code(409).send({
           error:
             'Google access is enabled for this project. Manage it in project settings with an updated app.',

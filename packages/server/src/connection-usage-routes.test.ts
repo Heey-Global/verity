@@ -31,7 +31,12 @@ it('counts project bindings and explicit agent choices without exposing secrets 
     dopplerConfig: 'dev',
     googleDriveFolderId: 'folder',
   });
-  await ctx.store.enableProjectGoogleConnection('usage-p', 'gmail', 'test@example.test');
+  await ctx.store.enableProjectGoogleConnection(
+    'usage-p',
+    'gmail',
+    'test@example.test',
+    '00000000-0000-4000-8000-000000000001',
+  );
   expect((await app.inject('/connections/usage')).json()).toEqual({
     github: 0,
     claude: 0,

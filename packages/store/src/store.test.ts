@@ -39,6 +39,7 @@ beforeEach(async () => {
   await truncateAll(ctx.db);
 });
 
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 const session = { sessionId: 's1', worktree: '/wt/agent-s1', model: 'claude-opus-4-8' };
 
 const sampleEvents: AgentEvent[] = [
@@ -325,52 +326,52 @@ describe('EventStore — linked session allowance', () => {
 describe('EventStore — session Google Slides assignment', () => {
   it('enables Gmail per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionGmail('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionGmail('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionGmail('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
     await ctx.store.disableSessionGmail('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('enables Calendar per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.disableSessionCalendar('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('clears every Calendar grant while preserving Gmail access', async () => {
     await ctx.store.createSession(session);
     await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
-    await ctx.store.enableSessionCalendar('s2', 'me@example.test');
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionCalendar('s2', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.clearSessionCalendarConnections();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionCalendarConnection('s2')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s2', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
   });
 
   it('persists Calendar authorization independently of Gmail and preserves omitted settings', async () => {
@@ -394,36 +395,36 @@ describe('EventStore — session Google Slides assignment', () => {
 
   it('enables Contacts per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionContacts('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionContacts('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionContacts('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
     await ctx.store.disableSessionContacts('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeDefined();
-    await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeDefined();
+    await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('clears every Contacts grant while preserving Gmail access', async () => {
     await ctx.store.createSession(session);
     await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
-    await ctx.store.enableSessionContacts('s1', 'me@example.test');
-    await ctx.store.enableSessionContacts('s2', 'me@example.test');
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionContacts('s2', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.clearSessionContactsConnections();
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionContactsConnection('s2')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionContactsConnection('s2', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
   });
 
   it('persists Contacts authorization independently of Gmail and preserves omitted settings', async () => {

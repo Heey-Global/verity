@@ -1,6 +1,8 @@
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import { GoogleAccountCleanupPendingError } from '@verity/store';
 import type { EventStore, GoogleService } from '@verity/store';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   hasGoogleGmailScopes,
@@ -25,9 +27,12 @@ const checks = {
 };
 
 export function registerGoogleAccountRoutes(app: FastifyInstance, store: EventStore): void {
-  app.get('/google/accounts', async () => ({
+  // Every route acts for the signed-in person: they see, rename, remove and
+  // choose only Google accounts they connected themselves (ADR 0023 §3).
+  const userOf = (request: FastifyRequest): string | undefined => viewerId(request);
+  app.get('/google/accounts', async (request) => ({
     accounts: await Promise.all(
-      (await store.googleAccounts.list()).map(async (account) => ({
+      (await store.googleAccounts.list(userOf(request) ?? '')).map(async (account) => ({
         ...account,
         ...(await store.googleAccounts.usage(account.id)),
       })),
@@ -38,13 +43,15 @@ export function registerGoogleAccountRoutes(app: FastifyInstance, store: EventSt
     const { displayName } = z
       .object({ displayName: z.string().trim().max(100).nullable() })
       .parse(request.body);
-    if (!(await store.googleAccounts.get(accountId)))
+    if (!(await store.googleAccounts.getOwned(accountId, userOf(request))))
       return reply.code(404).send({ error: 'Google account not found' });
     await store.googleAccounts.rename(accountId, displayName);
-    return { account: await store.googleAccounts.get(accountId) };
+    return { account: await store.googleAccounts.getOwned(accountId, userOf(request)) };
   });
   app.delete('/google/accounts/:accountId', async (request, reply) => {
     const { accountId } = accountParams.parse(request.params);
+    if (!(await store.googleAccounts.getOwned(accountId, userOf(request))))
+      return reply.code(404).send({ error: 'Google account not found' });
     try {
       await store.googleAccounts.remove(accountId);
     } catch (error) {
@@ -55,11 +62,11 @@ export function registerGoogleAccountRoutes(app: FastifyInstance, store: EventSt
     return reply.code(204).send();
   });
 
-  async function sessionStatus(id: string, service: GoogleService) {
+  async function sessionStatus(id: string, service: GoogleService, userId: string | undefined) {
     const access = await store.googleAccounts.sessionAccess(id, service);
-    const effective = await store.googleAccounts.effectiveAccess(id, service);
+    const effective = await store.googleAccounts.effectiveAccess(id, service, userId);
     const account = effective?.account;
-    const accounts = await store.googleAccounts.list();
+    const accounts = userId === undefined ? [] : await store.googleAccounts.list(userId);
     return {
       connected: accounts.some((candidate) => checks[service](candidate.scopes)),
       clientId: account?.clientId ?? accounts[0]?.clientId ?? null,
@@ -74,20 +81,20 @@ export function registerGoogleAccountRoutes(app: FastifyInstance, store: EventSt
   app.get('/sessions/:id/google/:service', async (request, reply) => {
     const { id, service } = serviceParams.parse(request.params);
     if (!(await store.getSession(id))) return reply.code(404).send({ error: 'Session not found' });
-    return sessionStatus(id, service);
+    return sessionStatus(id, service, userOf(request));
   });
   app.put('/sessions/:id/google/:service', async (request, reply) => {
     const { id, service } = serviceParams.parse(request.params);
     const access = accessBody.parse(request.body);
     if (!(await store.getSession(id))) return reply.code(404).send({ error: 'Session not found' });
     if (access.mode === 'account') {
-      const account = await store.googleAccounts.get(access.accountId);
+      const account = await store.googleAccounts.getOwned(access.accountId, userOf(request));
       if (!account || !checks[service](account.scopes))
         return reply
           .code(409)
           .send({ error: 'Connect this Google service for the selected account first' });
     }
     await store.googleAccounts.setSessionAccess(id, service, access);
-    return sessionStatus(id, service);
+    return sessionStatus(id, service, userOf(request));
   });
 }

@@ -1476,7 +1476,12 @@ describe('EventStore — projects', () => {
         containerName: 'verity-google-placeholder',
         state: 'absent',
       });
-      await ctx.store.enableProjectGoogleConnection(configured, 'gmail', 'me@example.test');
+      await ctx.store.enableProjectGoogleConnection(
+        configured,
+        'gmail',
+        'me@example.test',
+        '00000000-0000-4000-8000-000000000001',
+      );
 
       // Adoption would cascade the placeholder away with its access configuration.
       await linkAsSecondProject(configured, 'heey-global', 'google-placeholder');

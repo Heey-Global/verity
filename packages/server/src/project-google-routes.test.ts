@@ -2,6 +2,9 @@ import Fastify from 'fastify';
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
+
+/** Routes without a signed-in person act for the installation's administrator. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 const app = Fastify();
 beforeAll(async () => {
@@ -59,17 +62,17 @@ it('reports legacy session access without promoting it and revokes it explicitly
     worktree: '/wt/legacy',
     model: 'default',
   });
-  await ctx.store.enableSessionGmail('google-route-legacy', 'me@example.test');
+  await ctx.store.enableSessionGmail('google-route-legacy', 'me@example.test', ADMIN);
   const url = '/projects/google-route-p/google/gmail';
   expect((await app.inject({ method: 'GET', url })).json()).toMatchObject({
     enabled: false,
     legacySessionCount: 1,
   });
-  expect(await ctx.store.getSessionGmailConnection('google-route-legacy')).toBeDefined();
+  expect(await ctx.store.getSessionGmailConnection('google-route-legacy', ADMIN)).toBeDefined();
   await app.inject({ method: 'DELETE', url });
   expect((await app.inject({ method: 'GET', url })).json()).toMatchObject({
     enabled: false,
     legacySessionCount: 0,
   });
-  expect(await ctx.store.getSessionGmailConnection('google-route-legacy')).toBeUndefined();
+  expect(await ctx.store.getSessionGmailConnection('google-route-legacy', ADMIN)).toBeUndefined();
 });

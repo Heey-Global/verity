@@ -297,7 +297,7 @@ import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
-import { registerViewStateRoutes } from './view-state-routes.js';
+import { registerViewStateRoutes, viewerId } from './view-state-routes.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
@@ -3494,7 +3494,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
           (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
       ),
-      ...(await googleAccountSettingsStatus(deps.eventStore)),
+      ...(await googleAccountSettingsStatus(deps.eventStore, viewerId(request))),
       projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
       ...(deps.projectEgressStatus
         ? { projectEgressStatus: await deps.projectEgressStatus() }
@@ -5123,8 +5123,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   };
 
   registerSessionReadRoutes(app, {
-    getGoogleStatus: async (id) =>
-      (await deps.eventStore.getSession(id)) ? sessionGoogleStatus(deps.eventStore, id) : undefined,
+    getGoogleStatus: async (id, viewer) =>
+      (await deps.eventStore.getSession(id))
+        ? sessionGoogleStatus(deps.eventStore, id, viewer)
+        : undefined,
     listModels: async (projectId) => {
       const available = await availableModels();
       if (projectId === undefined) return available;
@@ -5169,7 +5171,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return {
         ...session,
         ...(await deps.eventStore.viewState.sessionView(viewer, id)),
-        googleStatus: await sessionGoogleStatus(deps.eventStore, id),
+        googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
         status,
         pendingPermissions,
         ...(status === 'awaiting_input' && pendingPermissions.length > 0

@@ -1,10 +1,12 @@
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import { createGoogleAccountAccessToken } from './google-account-token.js';
 import { googleAppClient } from './google-app-client.js';
 import type { EventStore, SealableSecretCipher, VeritySettingsRecord } from '@verity/store';
 import { chmod } from 'node:fs/promises';
 import { SealedError } from '@verity/store';
 import rateLimitPlugin from '@fastify/rate-limit';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import {
@@ -144,10 +146,24 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         invalidate: () => legacyAccessToken.invalidate(),
       });
   const legacyAccessToken = createCachedGoogleAccessToken(resolveCredentials);
+  /** A token only for an account of the requesting person; with no id, their
+   *  only account. Another person's account id yields nothing (ADR 0023 §3). */
+  const tokenFor = async (request: FastifyRequest, accountId?: string) => {
+    const registry = deps.eventStore.googleAccounts;
+    if (!registry) return accessToken(accountId);
+    const own = await registry.list(viewerId(request));
+    const id = accountId ?? (own.length === 1 ? own[0]!.id : undefined);
+    if (id === undefined || !own.some((account) => account.id === id)) return undefined;
+    return accessToken(id);
+  };
+  const ownAccounts = async (request: FastifyRequest) =>
+    deps.eventStore.googleAccounts?.list(viewerId(request));
   registerProjectGoogleDriveRoutes(app, {
-    getLinkedFolder: async (projectId, folderId) => {
+    getLinkedFolder: async (projectId, folderId, userId) => {
       if (deps.eventStore.googleAccounts) {
-        const links = await deps.eventStore.googleAccounts.folders(projectId);
+        const links = (await deps.eventStore.googleAccounts.folders(projectId)).filter(
+          (candidate) => userId !== undefined && candidate.accountOwnerUserId === userId,
+        );
         const link =
           links.find((candidate) => candidate.id === folderId) ??
           (links.length === 1 && links[0]?.folderId === folderId ? links[0] : undefined);
@@ -179,7 +195,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       deps.secretCipher?.isSealed() === true
         ? undefined
         : await deps.eventStore.getVeritySettings();
-    const accounts = await deps.eventStore.googleAccounts?.list();
+    const accounts = await ownAccounts(request);
     const eligible = accounts?.filter((account) => hasGoogleDriveScopes(account.scopes));
     const connected = eligible
       ? eligible.length > 0
@@ -205,13 +221,21 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
         : (settings?.googleGrantedScopes ?? []),
     };
   });
-  app.post('/google-drive/disconnect', async (_request, reply) => {
+  app.post('/google-drive/disconnect', async (request, reply) => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
     if (deps.eventStore.googleAccounts) {
-      const accounts = await deps.eventStore.googleAccounts.list();
+      const accounts = (await ownAccounts(request)) ?? [];
       if (accounts.length > 1)
         return reply.code(409).send({ error: 'Choose the Google account to disconnect' });
       if (accounts[0]) await deps.eventStore.googleAccounts.remove(accounts[0].id);
+      // The legacy cleanup below is instance-wide: it would drop every other
+      // member's session and project Google choices. Only once nobody has an
+      // account left is there nothing of anyone else's to keep.
+      if ((await deps.eventStore.googleAccounts.listAll()).length > 0) {
+        accessToken.invalidate();
+        deps.onCredentialsChanged?.();
+        return { connected: false as const };
+      }
     }
     await deps.eventStore.clearSessionGmailConnections();
     await deps.eventStore.clearSessionCalendarConnections();
@@ -234,7 +258,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
     '/google-drive/files',
     async (request, reply): Promise<DriveFileList | { error: string }> => {
       const query = filesQuery.parse(request.query);
-      const token = await accessToken(query.accountId);
+      const token = await tokenFor(request, query.accountId);
       if (token === undefined) {
         reply.code(409);
         return { error: 'Google Drive is not connected' };
@@ -274,11 +298,11 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           query.purpose === 'workspace'
             ? await deps.eventStore.listRecentGoogleWorkspaceFileIds(
                 8,
-                query.accountId ?? (await deps.eventStore.googleAccounts?.list())?.[0]?.id,
+                query.accountId ?? (await ownAccounts(request))?.[0]?.id,
               )
             : await deps.eventStore.listRecentGoogleSlideDeckFileIds(
                 8,
-                query.accountId ?? (await deps.eventStore.googleAccounts?.list())?.[0]?.id,
+                query.accountId ?? (await ownAccounts(request))?.[0]?.id,
               );
         const pickerMimeTypes: readonly string[] =
           query.purpose === 'workspace' ? WORKSPACE_PICKER_MIME_TYPES : SLIDES_PICKER_MIME_TYPES;
@@ -313,7 +337,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           accountId: z.string().min(1).optional(),
         })
         .parse(request.query);
-      const token = await accessToken(query.accountId);
+      const token = await tokenFor(request, query.accountId);
       if (token === undefined) {
         reply.code(409);
         return { error: 'Google Drive is not connected' };
@@ -356,7 +380,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(404);
       return { error: `project ${id} not found` };
     }
-    const accounts = await deps.eventStore.googleAccounts?.list();
+    const accounts = await ownAccounts(request);
     const selected = accountId
       ? accounts?.find((candidate) => candidate.id === accountId)
       : accounts?.length === 1
@@ -370,7 +394,7 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
           .code(409)
           .send({ error: 'Select an account explicitly to add or update a folder' });
     }
-    const token = await accessToken(selected?.id ?? accountId);
+    const token = await tokenFor(request, selected?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -444,12 +468,13 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
   });
 
   const assignmentBinding = async (
+    userId: string | undefined,
     sessionId: string,
     accountId?: string,
     folderLinkId?: string,
   ) => {
     if (!deps.eventStore.googleAccounts) return undefined;
-    const accounts = await deps.eventStore.googleAccounts.list();
+    const accounts = userId === undefined ? [] : await deps.eventStore.googleAccounts.list(userId);
     const account = accountId
       ? accounts.find((item) => item.id === accountId)
       : accounts.length === 1
@@ -477,7 +502,12 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
   ) => {
     if (!binding) return;
     if (binding.link) await assertDriveFileInLinkedFolder(token, binding.link.folderId, fileId);
-    const current = await assignmentBinding(sessionId, binding.account.id, binding.link?.id);
+    const current = await assignmentBinding(
+      binding.account.ownerUserId,
+      sessionId,
+      binding.account.id,
+      binding.link?.id,
+    );
     if (
       !current ||
       current.account.credentialVersion !== binding.account.credentialVersion ||
@@ -494,11 +524,11 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(404);
       return { error: `session ${id} not found` };
     }
-    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    const binding = await assignmentBinding(viewerId(request), id, accountId, folderLinkId);
     if (deps.eventStore.googleAccounts && !binding)
       return reply.code(409).send({ error: 'Choose an available Google account and folder' });
     const selectedAccount = binding?.account;
-    const token = await accessToken(selectedAccount?.id ?? accountId);
+    const token = await tokenFor(request, selectedAccount?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -606,11 +636,11 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(404);
       return { error: `session ${id} not found` };
     }
-    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    const binding = await assignmentBinding(viewerId(request), id, accountId, folderLinkId);
     if (deps.eventStore.googleAccounts && !binding)
       return reply.code(409).send({ error: 'Choose an available Google account and folder' });
     const selectedAccount = binding?.account;
-    const token = await accessToken(selectedAccount?.id ?? accountId);
+    const token = await tokenFor(request, selectedAccount?.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
@@ -678,10 +708,10 @@ function registerGoogleDriveRouteHandlers(app: FastifyInstance, deps: GoogleDriv
       reply.code(409);
       return { error: 'Google Drive knowledge import requires a project session' };
     }
-    const binding = await assignmentBinding(id, accountId, folderLinkId);
+    const binding = await assignmentBinding(viewerId(request), id, accountId, folderLinkId);
     if (deps.eventStore.googleAccounts && !binding)
       return reply.code(409).send({ error: 'Choose an available Google account and folder' });
-    const token = await accessToken(binding?.account.id ?? accountId);
+    const token = await tokenFor(request, binding?.account.id ?? accountId);
     if (token === undefined) {
       reply.code(409);
       return { error: 'Google Drive is not connected' };
