@@ -17,7 +17,6 @@ import {
   type InboxAction,
   type InboxItem,
   type ProjectRecord,
-  type SessionAgentMark,
   type SessionStatus,
   type SessionSummary,
   type SessionTile,
@@ -29,6 +28,7 @@ import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
+import { AgentTileMark } from '../AgentMark';
 import type { InboxFeed } from '../home/HomeInbox';
 import { isActive } from '../../lib/sessionActivity';
 import { AnswerButtons, AnswerSheet } from './AnswerSheet';
@@ -127,16 +127,6 @@ const RESULT_MARK: Record<
   failed: { tone: 'attention', glyph: 'x' },
   conflict: { tone: 'attention', glyph: '!' },
   checking: { tone: 'muted', glyph: 'more-horizontal' },
-};
-
-// The labels the row's old leading dots carried, kept so VoiceOver says the same.
-const AGENT_MARK: Record<
-  SessionAgentMark,
-  { tone: TileMarkTone; glyph?: TileMarkGlyph; pulsing?: boolean; label: string }
-> = {
-  question: { tone: 'attention', glyph: '?', label: 'Waiting for you' },
-  working: { tone: 'signature', pulsing: true, label: 'Agent is working' },
-  unread: { tone: 'action', label: 'Unread messages' },
 };
 
 /** The line under a session's name: its pull request and what it wants, else its model. */
@@ -542,17 +532,7 @@ export function ProjectWork({
                   marks: {
                     top:
                       agent !== undefined ? (
-                        <View
-                          testID={`work-agent-${session.sessionId}`}
-                          accessibilityRole="image"
-                          accessibilityLabel={AGENT_MARK[agent].label}
-                        >
-                          <TileMark
-                            tone={AGENT_MARK[agent].tone}
-                            glyph={AGENT_MARK[agent].glyph}
-                            pulsing={AGENT_MARK[agent].pulsing === true}
-                          />
-                        </View>
+                        <AgentTileMark mark={agent} testID={`work-agent-${session.sessionId}`} />
                       ) : undefined,
                     bottom:
                       result !== undefined ? (

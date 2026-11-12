@@ -3075,6 +3075,14 @@ export class VerityClient {
     );
   }
 
+  /** End server discovery, retaining received content; does not stop a remote microphone. */
+  async finalizeLiveMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/finalize`,
+      { method: 'POST' },
+    );
+  }
+
   async putLiveMeetingNote(sessionId: string, note: LiveMeetingNote): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(note.meetingId)}/notes/${encodeURIComponent(note.id)}`,

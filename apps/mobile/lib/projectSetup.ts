@@ -1,5 +1,6 @@
 import {
   PROJECT_IMAGE_REBUILDING_WARNING,
+  hasActionableToolkitDrift,
   projectBadge,
   projectLifecycleBadge,
   type DevServerDetection,
@@ -102,11 +103,8 @@ export interface ProjectOverviewStatus {
 export function projectOverviewStatus(
   project: ProjectRecord,
   detection?: DevServerDetection | null,
-  /** Leave findings out where the project page's Security card shows them. */
-  options: { vulnerabilities?: boolean } = {},
 ): ProjectOverviewStatus | undefined {
-  const vulnerabilities =
-    options.vulnerabilities === false ? undefined : project.vulnerabilitySummary;
+  const vulnerabilities = project.vulnerabilitySummary;
   if (vulnerabilities?.unclassified && !vulnerabilities.count)
     return {
       label:
@@ -148,31 +146,8 @@ export function projectOverviewStatus(
   return undefined;
 }
 
-/**
- * Whether a drift verdict is worth putting in front of someone on the overview.
- *
- * Only a `drifted` verdict on a `devcontainer` image qualifies, and both halves
- * are load-bearing.
- *
- * `unknown` is excluded because it has no remedy to offer: it covers images that
- * are never attested by design as well as ones that failed the comparison, and
- * the client cannot tell those apart (see the note on the unknown line in
- * `packages/server/src/toolkit-drift.ts`). A chip that cannot terminate is a
- * chip people learn to ignore.
- *
- * `base-image` is excluded for the opposite reason: the verdict is real, but no
- * action available in Verity changes what that image contains — only a rebuilt
- * base image does. It stays visible in the project's own runtime panel, where
- * there is room to say so, rather than in a row-level chip that would read as a
- * to-do.
- *
- * A fleet-wide drift is the normal state right after a Server deploy, so this
- * deliberately narrows to the population a re-provision actually repairs.
- */
-export function hasActionableToolkitDrift(project: ProjectRecord): boolean {
-  const drift = project.toolkitDrift;
-  return drift?.verdict === 'drifted' && drift.carrier === 'devcontainer';
-}
+// Moved to @verity/mobile so the project card's state reads the same rule.
+export { hasActionableToolkitDrift };
 
 /**
  * The attention line for a project that is otherwise running fine.

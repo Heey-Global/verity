@@ -1,16 +1,26 @@
-import { inboxDismissedKeys, inboxItems, type VerityClient } from '@verity/mobile';
+import {
+  inboxDismissedKeys,
+  inboxItems,
+  projectAgentMark,
+  projectCardState,
+  type ProjectCardState,
+  type SessionAgentMark,
+  type VerityClient,
+} from '@verity/mobile';
 import type { LayoutChangeEvent } from 'react-native';
 import { Pressable, View } from 'react-native';
 import Reanimated from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon } from '../Icon';
-import { CountBadge, StatusTag, Text, TileMark } from '../ui';
-import type { StatusIntent } from '../ui/Status';
+import { AGENT_MARK, AgentTileMark } from '../AgentMark';
+import { Text } from '../ui';
 import { tint } from '../ui/tint';
-import { ReorderHandle } from '../ui/ReorderHandle';
-import { useProjectRowDrag, type ProjectReorderController } from '../useProjectReorder';
-import { WorkingDot } from '../WorkingDot';
+import {
+  PROJECT_PICKUP_DELAY_MS,
+  useProjectRowDrag,
+  type ProjectReorderController,
+} from '../useProjectReorder';
 import type { SessionProjectGroup } from '../../lib/projectGroups';
 import { moveProjectIdToIndex, projectSortableRange } from '../../lib/projectReorder';
 import { projectInboxItems } from './ProjectPage';
@@ -18,17 +28,23 @@ import { isActive, ProjectWork } from './ProjectWork';
 
 /** What a project card says instead of listing its sessions. */
 export type ProjectCardFacts = {
-  /** Inbox items in this project the person has not dismissed. */
+  /** Things in this project waiting for the person, not dismissed. The
+   *  project's own problems are left to its state note. */
   waiting: number;
   /** Sessions working or waiting on someone. */
   running: number;
-  /** Whether any session is working right now: the card's pulsing mark. */
-  working: boolean;
   /** Idle sessions with activity the person has not opened yet. */
   fresh: number;
-  /** The project's own problem, if it reports one. */
-  health?: { label: string; intent: StatusIntent } | undefined;
+  /** The tile's colour and the note at the end of the subtitle. */
+  state: ProjectCardState;
+  /** The agents' mark on the tile's corner, as on a session row. */
+  mark: SessionAgentMark | undefined;
 };
+
+/** Groups whose project the list cannot show: neither running nor broken. */
+const UNKNOWN_PROJECT: ProjectCardState = { state: 'paused' };
+/** Sessions outside any project run on the Server itself. */
+const NO_PROJECT: ProjectCardState = { state: 'running' };
 
 export function projectCardFacts(
   group: SessionProjectGroup,
@@ -42,58 +58,70 @@ export function projectCardFacts(
     ? projectInboxItems(project, sessions, now)
     : inboxItems({ sessions, projects: [], now });
   const dismissed = inboxDismissedKeys({ sessions, projects: project ? [project] : [] });
-  // Findings are the page's Security row; the card keeps the project's own problems.
-  const status = group.project ? group.health : group.status;
+  // A broken sandbox or a stuck update is the state note's to say; counting it
+  // here as well put "1 waiting for you" and "Needs repair" on the same line.
+  const waiting = all.filter(
+    (item) => item.kind !== 'project_health' && !dismissed.has(item.key),
+  ).length;
   return {
-    waiting: all.filter((item) => !dismissed.has(item.key)).length,
+    waiting,
     running: sessions.filter((session) => isActive(session) || session.status === 'awaiting_input')
       .length,
-    working: sessions.some(isActive),
     // A working session's unread mark gives way to its working one, as in the
     // session rows, so only idle sessions count as new.
     fresh: sessions.filter((session) => !isActive(session) && unread.has(session.sessionId)).length,
-    health:
-      status === undefined
-        ? undefined
-        : {
-            label: status.label,
-            intent:
-              status.tone === 'working'
-                ? 'transient'
-                : status.tone === 'attention' || status.tone === 'danger'
-                  ? 'needsSetup'
-                  : 'optional',
-          },
+    state: project
+      ? projectCardState(project)
+      : group.id.startsWith('orphan:')
+        ? UNKNOWN_PROJECT
+        : NO_PROJECT,
+    mark: projectAgentMark({ sessions, unread, waiting: waiting > 0 }),
   };
 }
 
-/** The line under the project's name: what waits and what runs, or its metadata. */
-export function projectCardLine(group: SessionProjectGroup, facts: ProjectCardFacts): string {
+/** The subtitle in its parts: what waits (in the attention colour), what runs,
+ *  and the project's state note. */
+function projectCardLineParts(
+  group: SessionProjectGroup,
+  facts: ProjectCardFacts,
+): { waiting?: string; rest: string; note?: ProjectCardState['note'] } {
+  const waiting = facts.waiting > 0 ? `${String(facts.waiting)} waiting for you` : undefined;
   const parts: string[] = [];
-  if (facts.waiting > 0) parts.push(`${String(facts.waiting)} waiting for you`);
   if (facts.running > 0) parts.push(`${String(facts.running)} running`);
   if (facts.fresh > 0) parts.push(`${String(facts.fresh)} new`);
-  if (parts.length > 0) return parts.join(' · ');
   const count = group.sessions.length;
-  if (count > 0) return count === 1 ? '1 session' : `${String(count)} sessions`;
-  return group.subtitle || 'No sessions yet';
+  const note = facts.state.note;
+  const rest =
+    parts.length > 0 || waiting !== undefined
+      ? parts.join(' · ')
+      : count > 0
+        ? count === 1
+          ? '1 session'
+          : `${String(count)} sessions`
+        : // A state note says more than release metadata or "No sessions yet".
+          note
+          ? ''
+          : group.subtitle || 'No sessions yet';
+  return { ...(waiting ? { waiting } : {}), rest, ...(note ? { note } : {}) };
 }
 
-/**
- * The mark on the initial's corner, in the session rows' vocabulary: pulsing
- * signature while a session works, action for something new. A project waiting
- * for the person carries its count instead, which already says there is news.
- */
-function cardMark(facts: ProjectCardFacts): 'working' | 'unread' | undefined {
-  if (facts.working) return 'working';
-  if (facts.fresh > 0 && facts.waiting === 0) return 'unread';
-  return undefined;
+/** The line under the project's name: what waits and what runs, then its state. */
+export function projectCardLine(group: SessionProjectGroup, facts: ProjectCardFacts): string {
+  const { waiting, rest, note } = projectCardLineParts(group, facts);
+  return [waiting, rest, note?.label].filter(Boolean).join(' · ');
 }
+
+const STATE_WORD: Record<ProjectCardState['state'], string> = {
+  running: 'Running',
+  paused: 'Not running',
+  error: 'Error',
+};
 
 /**
  * A project in the new design's project list (Settings › This app): its name,
  * what waits and what runs, and its health — never its sessions, which live on
- * the project page a tap opens. Sorting exposes a dedicated drag handle.
+ * the project page a tap opens. A held press picks the card up to reorder; while
+ * a card moves, drag handles replace the chevrons of every card that can move.
  *
  * Groups without a project page (sessions outside any project, Verity Control)
  * open in place instead and list their sessions as the page's work list does.
@@ -107,10 +135,10 @@ export function ProjectCard({
   renderedOrder,
   sortable,
   sortableIds = renderedOrder,
-  sorting = false,
   onMove,
   floating = false,
   reordering,
+  movingProjects = false,
   expanded,
   onOpen,
   onToggle,
@@ -127,10 +155,12 @@ export function ProjectCard({
   renderedOrder: readonly string[];
   sortable: boolean;
   sortableIds?: readonly string[];
-  sorting?: boolean;
   onMove?: (order: readonly string[]) => void;
   floating?: boolean;
+  /** Any drag in the list, project or session: taps and move actions pause. */
   reordering: boolean;
+  /** A project card is being dragged: the cards show handles and read as movable. */
+  movingProjects?: boolean;
   /** For a group that opens in place: whether its sessions show. */
   expanded: boolean;
   layoutRevision?: number;
@@ -145,13 +175,21 @@ export function ProjectCard({
     id: group.id,
     reorder,
     renderedOrder,
-    enabled: sortable && sorting,
+    enabled: sortable,
     floating,
   });
   const index = renderedOrder.indexOf(group.id);
   const range = projectSortableRange(renderedOrder, sortableIds, group.id);
+  // Screen readers cannot hold and drag; they move a card one slot at a time.
+  const moveActions =
+    sortable && !reordering
+      ? [
+          ...(index > range.min ? [{ name: 'moveUp', label: 'Move up' }] : []),
+          ...(index < range.max ? [{ name: 'moveDown', label: 'Move down' }] : []),
+        ]
+      : [];
   const facts = projectCardFacts(group, now, unread);
-  const mark = cardMark(facts);
+  const line = projectCardLineParts(group, facts);
   const inPlace = onOpen === undefined;
   const onLayout = (event: LayoutChangeEvent) => {
     // Include the card borders and list separator in the distance between slots.
@@ -170,87 +208,90 @@ export function ProjectCard({
         testID={`project-card-${group.id}`}
       >
         <Pressable
+          ref={handleCallbackRef}
           collapsable={false}
           onLayout={onLayout}
-          onPress={reordering || sorting ? undefined : (onOpen ?? onToggle)}
-          accessible={!sorting}
+          onPress={reordering ? undefined : (onOpen ?? onToggle)}
+          // A hold belongs to the drag: releasing it, moved or not, must not
+          // also open the card, which Pressable does without a long-press handler.
+          onLongPress={moveActions.length > 0 ? () => {} : undefined}
+          delayLongPress={PROJECT_PICKUP_DELAY_MS}
           accessibilityRole="button"
           accessibilityLabel={
-            reordering ? `Move ${group.title}` : `${group.title}, ${projectCardLine(group, facts)}`
+            movingProjects && sortable
+              ? `Move ${group.title}`
+              : [
+                  group.title,
+                  STATE_WORD[facts.state.state],
+                  facts.mark !== undefined ? AGENT_MARK[facts.mark].label : undefined,
+                  projectCardLine(group, facts),
+                ]
+                  .filter(Boolean)
+                  .join(', ')
           }
           accessibilityHint={
-            sorting
-              ? 'Use the handle to reorder.'
-              : inPlace
-                ? 'Shows its sessions.'
-                : 'Opens the project.'
+            movingProjects && sortable
+              ? undefined
+              : (inPlace ? 'Shows its sessions.' : 'Opens the project.') +
+                (moveActions.length > 0 ? ' Hold to reorder, or use the move actions.' : '')
           }
-          accessibilityState={inPlace ? { expanded } : {}}
+          accessibilityActions={moveActions}
+          onAccessibilityAction={({ nativeEvent }) => {
+            if (reordering || !moveActions.some((action) => action.name === nativeEvent.actionName))
+              return;
+            const direction = nativeEvent.actionName === 'moveUp' ? -1 : 1;
+            onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction));
+          }}
+          accessibilityState={{ disabled: reordering, ...(inPlace ? { expanded } : {}) }}
           style={({ pressed }) => [styles.head, pressed ? styles.pressed : null]}
         >
-          <View style={styles.initial}>
-            <Text variant="row" tone="action">
+          <View
+            style={[styles.initial, styles[facts.state.state]]}
+            testID={`project-card-tile-${group.id}`}
+          >
+            <Text variant="row" tone={INITIAL_TONE[facts.state.state]}>
               {(Array.from(group.title.trim())[0] ?? '?').toUpperCase()}
             </Text>
-            {mark !== undefined ? (
-              <View
-                style={styles.mark}
-                testID={`project-card-mark-${group.id}`}
-                accessibilityRole="image"
-                accessibilityLabel={mark === 'working' ? 'Agent is working' : 'Unread messages'}
-              >
-                {mark === 'working' ? (
-                  <TileMark tone="signature" pulsing />
-                ) : (
-                  <TileMark tone="action" />
-                )}
+            {facts.mark !== undefined ? (
+              <View style={styles.mark}>
+                <AgentTileMark mark={facts.mark} testID={`project-card-mark-${group.id}`} />
               </View>
             ) : null}
           </View>
           <View style={styles.body}>
-            <Text variant="row" numberOfLines={1}>
+            <Text
+              variant="row"
+              numberOfLines={1}
+              tone={facts.state.state === 'paused' ? 'muted' : undefined}
+            >
               {group.title}
             </Text>
             <Text variant="subtitle" numberOfLines={1} testID={`project-card-line-${group.id}`}>
-              {projectCardLine(group, facts)}
+              {line.waiting !== undefined ? (
+                <Text variant="subtitle" tone="attention">
+                  {line.waiting}
+                </Text>
+              ) : null}
+              {line.waiting !== undefined && line.rest ? ' · ' : ''}
+              {line.rest}
+              {line.note ? (
+                <>
+                  {line.waiting !== undefined || line.rest ? ' · ' : ''}
+                  <Text
+                    variant="subtitle"
+                    tone={line.note.tone === 'attention' ? 'attention' : 'muted'}
+                  >
+                    {line.note.label}
+                  </Text>
+                </>
+              ) : null}
             </Text>
           </View>
-          {facts.health ? (
-            <View style={styles.health}>
-              {facts.health.intent === 'transient' ? (
-                // The project's own work in progress (updating, rebuilding) in
-                // the same pulsing signature as a working session.
-                <View style={styles.working}>
-                  <WorkingDot size={8} label={facts.health.label} />
-                  <Text variant="bodySmall" tone="muted" numberOfLines={1} style={styles.shrink}>
-                    {facts.health.label}
-                  </Text>
-                </View>
-              ) : (
-                <StatusTag intent={facts.health.intent} label={facts.health.label} />
-              )}
+          {sortable && (movingProjects || floating) ? (
+            // Same size as the chevron it replaces, so the head keeps its layout.
+            <View testID={`project-card-handle-${group.id}`}>
+              <Icon name="menu" size={18} color={theme.colors.textMuted} />
             </View>
-          ) : null}
-          {facts.waiting > 0 ? (
-            <CountBadge
-              count={facts.waiting}
-              label="waiting for you"
-              testID={`project-card-waiting-${group.id}`}
-            />
-          ) : null}
-          {sorting ? (
-            sortable ? (
-              <ReorderHandle
-                ref={handleCallbackRef}
-                label={`Move ${group.title}`}
-                canMoveUp={index > range.min}
-                canMoveDown={index < range.max}
-                disabled={reordering}
-                onMove={(direction) =>
-                  onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction))
-                }
-              />
-            ) : null
           ) : (
             <Icon
               name={inPlace ? (expanded ? 'chevron-down' : 'chevron-right') : 'chevron-right'}
@@ -281,6 +322,9 @@ export function ProjectCard({
 
 const CARD_BORDER = 1;
 
+/** The initial's colour role per state: the tile carries the project itself. */
+const INITIAL_TONE = { running: 'action', paused: 'faint', error: 'attention' } as const;
+
 const styles = StyleSheet.create((theme) => ({
   card: {
     borderRadius: theme.radius.card,
@@ -304,12 +348,11 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.radius.control,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: tint(theme.colors.action, 'fill'),
   },
   mark: { position: 'absolute', top: -3, right: -3 },
   body: { flex: 1, minWidth: 0 },
-  health: { maxWidth: '45%' },
-  working: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  shrink: { flexShrink: 1, minWidth: 0 },
+  running: { backgroundColor: tint(theme.colors.action, 'fill') },
+  paused: { backgroundColor: tint(theme.colors.text, 'neutral') },
+  error: { backgroundColor: tint(theme.colors.attention, 'fill') },
   sessions: { padding: theme.spacing.md, paddingTop: 0 },
 }));

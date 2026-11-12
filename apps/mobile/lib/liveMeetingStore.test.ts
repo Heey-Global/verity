@@ -89,6 +89,7 @@ it('deletes a discarded meeting with its notes and drafts', async () => {
   expect(deletes()).toEqual([
     ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'meeting-1'],
     ['DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', 'meeting-1'],
+    ['DELETE FROM meeting_upload_failures WHERE meeting_id = ?', 'meeting-1'],
     ['DELETE FROM meetings WHERE id = ?', 'meeting-1'],
   ]);
 });
@@ -108,6 +109,7 @@ it('applies a remote discard only to the copy from that server', async () => {
   expect(deletes()).toEqual([
     ['DELETE FROM meeting_notes WHERE meeting_id = ?', 'shared'],
     ['DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', 'shared'],
+    ['DELETE FROM meeting_upload_failures WHERE meeting_id = ?', 'shared'],
     ['DELETE FROM meetings WHERE id = ?', 'shared'],
     [expect.stringContaining('NOT EXISTS (SELECT 1 FROM meetings WHERE id = ?)'), 'other-server'],
   ]);
