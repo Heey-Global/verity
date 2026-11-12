@@ -2658,6 +2658,60 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('resolves each turn for the person who sent it, also behind another turn', async () => {
+    // Credentials are selected from the backend resolution's initiator. If a
+    // queued turn inherited the running turn's identity, Bob's turn would run on
+    // Alice's AI, GitHub and Google accounts.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { backend } = gatedBackend(gate);
+    const prepared: (string | undefined)[] = [];
+    const contexts: (string | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy?.userId);
+        return selected;
+      },
+      agentContext: async (_session, initiatedBy) => {
+        contexts.push(initiatedBy?.userId);
+        return { fingerprint: initiatedBy?.userId ?? 'none', prompt: '' };
+      },
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first', undefined, { initiatedBy: { userId: 'alice' } });
+    await conductor.dispatchTurn('s1', 'second', undefined, {
+      queueBehindActiveTurn: true,
+      initiatedBy: { userId: 'bob' },
+    });
+    await vi.waitFor(() => expect(prepared).toEqual(['alice']));
+    release();
+    await vi.waitFor(() => expect(prepared).toEqual(['alice', 'bob']));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(contexts).toEqual(['alice', 'bob']);
+  });
+
+  it('resolves a turn without an initiator for nobody rather than for a previous sender', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const prepared: ({ userId: string } | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(Promise.resolve()).backend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy);
+        return selected;
+      },
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'one', {}, 'one', { initiatedBy: { userId: 'alice' } });
+    await conductor.sendTurn('s1', 'two');
+    expect(prepared).toEqual([{ userId: 'alice' }, undefined]);
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
@@ -3716,6 +3770,51 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     releaseBackend();
     await recovering;
     expect(runner.attachTargets).toHaveLength(1);
+    settle({ sessionId: 's1', exitCode: 0, stderr: '', aborted: false });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+  });
+
+  it('reattaches a recovered turn under the identity its prompt was sent with', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const { seq } = await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'go',
+      initiatedBy: { userId: 'alice' },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
+    await ctx.store.bindTurnIdentity('s1', {
+      turnId: 'turn-alice',
+      startCommandId: 'turn-alice-start',
+    });
+    let settle!: (result: RunResult) => void;
+    const runner = fakeAttachRunner(
+      new Promise<RunResult>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { recovery } = fakeRecovery({
+      status: 'live',
+      target: {
+        turnId: 'turn-alice',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      },
+    });
+    const prepared: ({ userId: string } | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy);
+        return selected;
+      },
+      worktreeExists: async () => true,
+      runner: runner.factory,
+      runnerRecovery: recovery,
+    });
+    await conductor.recover();
+    expect(prepared).toEqual([{ userId: 'alice' }]);
     settle({ sessionId: 's1', exitCode: 0, stderr: '', aborted: false });
     await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
   });

@@ -287,6 +287,11 @@ class SessionTurnHandle implements RunnerTurn {
    * backend has been resolved, which is fail-closed at both readers: no
    * auto-approval, and no grant persisted. */
   grantChannel: BrokeredGrantChannel | undefined;
+  /** The local user this turn runs for (ADR 0023 §2), fixed when the turn is
+   * accepted and never changed by a later prompt, steer or queue drain. Every
+   * credential the turn uses is selected for this user; undefined means the turn
+   * has no personal identity and must not receive personal credentials. */
+  initiatedBy: { readonly userId: string } | undefined;
   /** Which settle path owns this turn's terminal writes + release: the turn's own
    * run loop (`'run'`) or the stop watchdog's force-settle (`'force'`). Claimed
    * SYNCHRONOUSLY before any terminal side effect, so exactly one owner ever
@@ -471,6 +476,11 @@ export interface TurnPreparationContext {
    * and otherwise fail as fast as it always did.
    */
   readonly canWait: boolean;
+  /** The local user the turn runs for, from the durable prompt provenance. A
+   * resolver selects personal credentials (AI provider, MCP, Google, GitHub)
+   * for this user only; when it is undefined it selects none of them rather
+   * than falling back to anyone else's. */
+  readonly initiatedBy: { readonly userId: string } | undefined;
   /** Report — once per resolution; later calls are ignored — that the turn is
    *  blocked on a dependency being made ready. Writes the message to the transcript
    *  and parks the session on `awaiting_dependency` until preparation settles.
@@ -1330,6 +1340,7 @@ export class Conductor {
     /** Session to report a preparation wait against — set only on the operator-turn
      *  path. Absent makes the resolution a non-waiting background one. */
     reportTo?: string,
+    initiatedBy?: { readonly userId: string },
   ): Promise<Backend> {
     const selected = this.modelBackend(model);
     if (this.deps.sessionBackend === undefined) return selected;
@@ -1340,6 +1351,7 @@ export class Conductor {
     const preparation: TurnPreparationContext = {
       sessionId: session.sessionId,
       canWait: sessionId !== undefined,
+      initiatedBy,
       waitingOn: (message: string) => {
         if (sessionId === undefined || parked !== undefined) return;
         parked = this.parkOnDependency(sessionId, message);
@@ -1571,7 +1583,12 @@ export class Conductor {
     this.turns.set(sessionId, handle);
     const selectedModel = opts.model ?? session.model;
     const backendKey = this.backendKey(selectedModel);
-    const backend = await this.backendForSession(session, selectedModel, sessionId);
+    const backend = await this.backendForSession(
+      session,
+      selectedModel,
+      sessionId,
+      handle.initiatedBy,
+    );
     // Bind the brokered-grant channel before the run can surface a permission prompt
     // (ADR 0014 D3). A codex resume-retry re-enters here with the same handle and
     // rewrites it, which is correct: the retry may have fallen back to another
@@ -1703,6 +1720,7 @@ export class Conductor {
           sessionId: session.sessionId,
           projectId: session.projectId,
           worktree: session.worktree,
+          initiatedBy: handle.initiatedBy,
         }),
       session.worktree,
     );
@@ -1839,7 +1857,10 @@ export class Conductor {
       // current. Resuming it without a cursor silently loses the work done away.
       (await this.deps.store.getSessionBackendStates(sessionId)).length === 0 &&
       (await this.isClaudeOriginSession(session));
-    const agentContext = await this.deps.agentContext?.(session);
+    const agentContext = await this.deps.agentContext?.(
+      session,
+      this.turns.get(sessionId)?.initiatedBy,
+    );
     if (agentContext) this.agentContexts.set(sessionId, agentContext);
     const contextChanged =
       agentContext !== undefined && backendState?.contextFingerprint !== agentContext.fingerprint;
@@ -3496,6 +3517,7 @@ export class Conductor {
     // Register the in-flight handle synchronously (before the async run) so a cancel
     // racing the spawn lands (#79).
     const sendHandle = new SessionTurnHandle();
+    sendHandle.initiatedBy = origin.initiatedBy;
     this.turns.set(sessionId, sendHandle);
     // The marker's prompt_seq anchor, captured for the `finally`'s scoped clear.
     let markerSeq: number | undefined;
@@ -3862,6 +3884,7 @@ export class Conductor {
     // from now, even before the async run spawns (#79/#101). Held so an auto-resume
     // can tell a cancel that lands while it waits from a turn that simply died.
     const handle = new SessionTurnHandle();
+    handle.initiatedBy = launchOpts.initiatedBy;
     this.turns.set(sessionId, handle);
     // Fire-and-forget: persist the operator's prompt event FIRST (so it precedes
     // claude's output in the transcript), then run; release the lock when the run
@@ -4941,10 +4964,17 @@ export class Conductor {
       handle = new SessionTurnHandle();
       handle.workerMayExist = true;
       handle.markerSeq = marker.promptSeq;
+      // Resume under the identity the turn started with: the marker anchors the
+      // durable prompt event, whose provenance no later prompt can rewrite.
+      handle.initiatedBy = await this.deps.store.promptInitiatorAt(
+        marker.sessionId,
+        marker.promptSeq,
+      );
       this.turns.set(marker.sessionId, handle);
       // `attach` never runs the backend, but the factory needs one; the session's
       // backend composes the same Docker/model wrapper the original turn used.
-      const backend = await this.backendForSession(session, session.model);
+      const initiatedBy = handle.initiatedBy;
+      const backend = await this.backendForSession(session, session.model, undefined, initiatedBy);
       // A reattached turn re-surfaces its still-open prompts, so it needs the same
       // channel binding a fresh turn gets (ADR 0014 D3).
       handle.grantChannel = brokeredGrantChannel(backend);
@@ -4955,6 +4985,7 @@ export class Conductor {
             sessionId: session.sessionId,
             projectId: session.projectId,
             worktree: session.worktree,
+            initiatedBy,
           }),
         session.worktree,
       );
@@ -5123,6 +5154,9 @@ export class Conductor {
             ),
             displayPrompt: prompt.text,
             promptAlreadyPersisted: true,
+            // The persisted prompt names who sent it; the recovered turn runs for
+            // that person, never for whoever happens to be active after a restart.
+            ...(prompt.initiatedBy !== undefined ? { initiatedBy: prompt.initiatedBy } : {}),
           });
         }
         this.queues.set(session.sessionId, queue);
@@ -5299,6 +5333,7 @@ export class Conductor {
     // the start opts; it's REGISTERED under the session id the moment the id binds
     // (below), matching the old aborter/injector registration timing.
     const handle = new SessionTurnHandle();
+    handle.initiatedBy = opts.initiatedBy;
     // A spawn under a preallocated id runs against a session row the caller has
     // already written (with its project), so the same lookup the turn path uses
     // classifies this fresh context too. A spawn whose id the backend still has
@@ -5461,6 +5496,7 @@ export class Conductor {
               sessionId: opts.sessionId ?? null,
               projectId: contextProjectId,
               worktree: opts.worktree,
+              initiatedBy: handle.initiatedBy,
             }),
           opts.worktree,
         );
@@ -6118,7 +6154,14 @@ export class Conductor {
         // model (Claude / Codex / OpenCode, plus any per-session Docker wrapper), so
         // the title is generated by the operator's selected LLM. A backend without a
         // one-shot `query` simply yields no title (we still settle below).
-        const backend = await this.backendForSession(session, session.model);
+        // Generated with the credentials of whoever sent the latest prompt — the
+        // turn that triggered the title — never with another member's.
+        const backend = await this.backendForSession(
+          session,
+          session.model,
+          undefined,
+          await this.deps.store.latestPromptInitiator(sessionId),
+        );
         const digest = buildConversationDigest(events, autoTitle.afterTurns);
         const prompt = buildTitlePrompt(digest);
         // Settle regardless of outcome: an empty/failed generation must not re-run on

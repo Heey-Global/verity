@@ -205,6 +205,12 @@ export interface RunnerClientContext {
    * privileged tool wiring: the query is deliberately not a Verity session.
    */
   ephemeralEventSink?: ((event: AgentEvent) => void) | undefined;
+  /**
+   * The local user the turn runs for (ADR 0023 §2). A factory that wires
+   * personal tools or credentials (HTTP MCP connections) selects them for this
+   * user only; absent selects none rather than anyone else's.
+   */
+  initiatedBy?: { readonly userId: string } | undefined;
 }
 
 /**

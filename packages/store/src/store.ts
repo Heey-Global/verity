@@ -5528,6 +5528,20 @@ export class EventStore implements EventSink {
     return row?.userId ? { userId: row.userId } : undefined;
   }
 
+  /** The user a specific prompt event was sent by, or `undefined` when that
+   *  event is not a prompt or names no initiator. Recovery uses it to resume a
+   *  turn under the identity it started with rather than the latest one. */
+  async promptInitiatorAt(sessionId: string, seq: number): Promise<{ userId: string } | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where('id', '=', seq)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
+  }
+
   /**
    * Read events with `seq > afterSeq` (the bigserial id) in order, each tagged
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
