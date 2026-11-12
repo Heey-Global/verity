@@ -42,6 +42,30 @@ it("keeps each person's git identity separate and changes only the given fields"
   expect((await identities.get('lena'))?.authorName).toBe('Lena');
 });
 
+// The app shows a person their own key status; reading it must not need, or
+// return, the decrypted private key.
+it('reports the public identity without the private key', async () => {
+  const identities = ctx.store.userGitIdentities;
+  await expect(identities.publicIdentity('lena')).resolves.toEqual({
+    authorName: null,
+    authorEmail: null,
+    sshPublicKey: null,
+    hasSigningKey: false,
+  });
+  await identities.set('lena', {
+    sshPrivateKey: 'lena-key',
+    sshPublicKey: 'ssh-ed25519 AAAA lena',
+  });
+  const identity = await identities.publicIdentity('lena');
+  expect(identity).toEqual({
+    authorName: null,
+    authorEmail: null,
+    sshPublicKey: 'ssh-ed25519 AAAA lena',
+    hasSigningKey: true,
+  });
+  expect(JSON.stringify(identity)).not.toContain('lena-key');
+});
+
 // The installation's git identity was the administrator's; losing it on upgrade
 // would leave their commits unsigned, giving it to anyone else would let them
 // sign as the administrator.

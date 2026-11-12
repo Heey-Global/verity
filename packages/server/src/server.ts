@@ -11,6 +11,7 @@ import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import { registerUserProfileRoutes } from './user-profile-routes.js';
 import { registerGitHubUserRoutes } from './github-user-routes.js';
+import { mintPersonalSigningKey, registerGitIdentityRoutes } from './git-identity-routes.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
 import { SchedulingPageListeners } from './scheduling-page.js';
@@ -3687,10 +3688,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   }
   registerUserContextRoutes(app, deps.eventStore.userContext);
   registerUserProfileRoutes(app, deps.eventStore.userProfiles);
+  const gitIdentityDeps = {
+    store: deps.eventStore,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
+  };
+  registerGitIdentityRoutes(app, gitIdentityDeps);
   registerGitHubUserRoutes(app, {
     authorization:
       deps.githubUserAuthorization ?? createGitHubUserAuthorization({ store: deps.eventStore }),
     store: deps.eventStore,
+    // Connecting GitHub is when a person's commits can first become verified:
+    // give them a signing key of their own unless they already have one.
+    onConnected: async (userId) => {
+      if ((await deps.eventStore.userGitIdentities.publicIdentity(userId)).hasSigningKey) return;
+      await mintPersonalSigningKey(gitIdentityDeps, userId);
+    },
   });
   if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {

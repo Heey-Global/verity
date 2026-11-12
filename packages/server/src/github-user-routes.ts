@@ -42,6 +42,9 @@ export function registerGitHubUserRoutes(
   deps: {
     authorization: GitHubUserAuthorization;
     store: Pick<EventStore, 'updateVeritySettings'>;
+    /** Runs after a person connected GitHub. Best effort: a failure here must not
+     *  undo or misreport the connection itself. */
+    onConnected?: ((userId: string) => Promise<void>) | undefined;
   },
 ): void {
   app.get('/me/github', async (request, reply) => {
@@ -61,7 +64,12 @@ export function registerGitHubUserRoutes(
     const input = completion.safeParse(request.body);
     if (!input.success) return reply.code(400).send({ error: 'Invalid GitHub sign-in response' });
     try {
-      return await deps.authorization.complete(viewerId(request), input.data);
+      const userId = viewerId(request);
+      const connected = await deps.authorization.complete(userId, input.data);
+      await deps.onConnected?.(userId).catch((error: unknown) => {
+        request.log.warn({ err: error }, 'post-connection setup for GitHub failed');
+      });
+      return connected;
     } catch (error) {
       return refused(reply, error);
     }

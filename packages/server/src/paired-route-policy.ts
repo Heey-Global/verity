@@ -335,6 +335,10 @@ const activeUserRoutes = new Set([
   routeScopeKey('POST', '/me/github/authorize'),
   routeScopeKey('POST', '/me/github/authorize/complete'),
   routeScopeKey('DELETE', '/me/github'),
+  // A person's own commit identity and signing key, bound to the authenticated identity inside the handlers.
+  routeScopeKey('GET', '/me/git-identity'),
+  routeScopeKey('PUT', '/me/git-identity'),
+  routeScopeKey('POST', '/me/git-identity/signing-key'),
   // Any active user may open the live connection; every session it subscribes
   // to is authorized individually, like `GET /sessions/:id`. The WebSocket
   // handshake consumes the ticket, not a paired-device bearer.

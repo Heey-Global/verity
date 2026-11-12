@@ -46,6 +46,32 @@ export class UserGitIdentityStore {
     return row ? { authorName: row.author_name, authorEmail: row.author_email } : undefined;
   }
 
+  /** Everything a person may see of their own identity: never the private key,
+   *  which is not decrypted here, only whether one is stored. */
+  async publicIdentity(userId: string): Promise<{
+    authorName: string | null;
+    authorEmail: string | null;
+    sshPublicKey: string | null;
+    hasSigningKey: boolean;
+  }> {
+    const row = await this.db
+      .selectFrom('user_git_identities')
+      .select([
+        'author_name',
+        'author_email',
+        'ssh_public_key',
+        sql<boolean>`ssh_private_key is not null`.as('has_signing_key'),
+      ])
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return {
+      authorName: row?.author_name ?? null,
+      authorEmail: row?.author_email ?? null,
+      sshPublicKey: row?.ssh_public_key ?? null,
+      hasSigningKey: row?.has_signing_key === true,
+    };
+  }
+
   /** Set a person's identity; only the given fields change. */
   async set(userId: string, input: Partial<Omit<UserGitIdentity, 'userId'>>): Promise<void> {
     const values = {

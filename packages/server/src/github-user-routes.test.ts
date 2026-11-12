@@ -96,3 +96,37 @@ describe('GitHub user routes', () => {
     });
   });
 });
+
+describe('GitHub user routes after connecting', () => {
+  // The signing key is set up after the connection; a failure there must neither
+  // undo nor misreport a connection GitHub has already granted.
+  it("runs the person's post-connection setup without letting it fail the connection", async () => {
+    const app = Fastify();
+    app.decorateRequest('localUserId', null);
+    app.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    const onConnected = vi.fn(async () => {
+      throw new Error('ssh-keygen unavailable');
+    });
+    registerGitHubUserRoutes(app, {
+      authorization: {
+        start: vi.fn(),
+        complete: vi.fn(async () => ({ login: 'lena-dev' })),
+        status: vi.fn(),
+        disconnect: vi.fn(),
+        accessToken: vi.fn(),
+      },
+      store: {} as never,
+      onConnected,
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/me/github/authorize/complete',
+      payload: { code: 'c', state: 'Ab_-'.repeat(10) + 'xyz' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ login: 'lena-dev' });
+    expect(onConnected).toHaveBeenCalledWith('lena');
+  });
+});
