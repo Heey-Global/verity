@@ -12364,6 +12364,30 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       },
     );
 
+    it('recovers a proven missing sandbox despite a retained preview through the real replacement path', async () => {
+      const p = await seedActive('missing-with-preview', 'dev-missing-with-preview');
+      const failed = await failRecreateLeavingFailed(p.id);
+      let current: ContainerInspect | null = null;
+      const create = vi.fn(async (spec: ContainerSpec) => {
+        current = { ...migratedInspect(p.id), labels: spec.labels };
+        return { id: 'replacement', warnings: [] };
+      });
+      const { client } = fakeDocker({
+        inspectContainer: vi.fn(async () => {
+          if (current === null)
+            throw new DockerError({ kind: 'container_not_found', id: p.containerName });
+          return current;
+        }),
+        createContainer: create,
+      });
+      const after = makeProvisioner(client);
+      after.attachProjectBusyProbe(async () => ['preview']);
+      await after.reconcileRelays([failed]);
+      expect(create).toHaveBeenCalledOnce();
+      expect((await ctx.store.getProject(p.id))?.state).toBe('active');
+      expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+    });
+
     it('ends an owed repair once the project is put to sleep', async () => {
       // Sleeping was chosen after the failure; an automatic recreate must not
       // wake the project against it, in this process or the next.

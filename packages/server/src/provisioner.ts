@@ -5431,7 +5431,16 @@ export class ProvisionerImpl implements Provisioner {
         opts.initiator.trigger === 'sandbox_reconcile' &&
         (await this.probeProjectBusy(project.id)).busy
       ) {
-        throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
+        const current = await this.opts.docker
+          .inspectContainer(project.containerName)
+          .catch((error: unknown) => {
+            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+            throw error;
+          });
+        // An offline preview can retain its activity lease after the sandbox
+        // disappeared. Recreating a proven missing container interrupts nothing.
+        if (current !== null)
+          throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
       }
       if (automaticIntent) {
         const latestProject = await this.opts.store.getProject(project.id);
