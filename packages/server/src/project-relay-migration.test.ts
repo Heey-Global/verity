@@ -447,11 +447,8 @@ describe('decideMigrationAction', () => {
     expect(decideMigrationAction({ classification: 'orphaned', busy: true })).toBe('defer');
   });
 
-  it('stops deferring a busy orphan once the tick limit is reached', () => {
-    // The livelock this bounds: the turn keeping the project busy is running in a
-    // sandbox with no broker, so every brokered step it retries fails, and each
-    // retry renews the busy flag that postpones the repair. Waiting for idle never
-    // ends. Up to the limit we still wait; past it the repair takes the turn.
+  it('protects a busy orphan beyond the former tick limit', () => {
+    // Time passing proves nothing about whether the sandbox's work has ended.
     for (let deferrals = 0; deferrals < ORPHAN_DEFER_TICK_LIMIT; deferrals += 1) {
       expect(
         decideMigrationAction({
@@ -469,7 +466,7 @@ describe('decideMigrationAction', () => {
         busyConfirmed: true,
         orphanDeferrals: ORPHAN_DEFER_TICK_LIMIT,
       }),
-    ).toBe('migrate');
+    ).toBe('defer');
   });
 
   it('never spends the window on a busy state that was not confirmed', () => {

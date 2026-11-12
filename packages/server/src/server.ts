@@ -204,8 +204,11 @@ import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
-  projectHasPersistentSandboxActivity,
+  observeProjectActivity,
+  activityReasons,
+  recreateRefusalMessage,
   startProjectIdleSleepScheduler,
+  type ProjectActivitySnapshot,
 } from './project-idle-sleep.js';
 import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
@@ -1459,39 +1462,34 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await vulnerabilityService.stop();
   });
 
-  // SBX-1 helper: is any session bound to this project running a turn right now?
-  // Used to refuse tearing a sandbox out from under an in-flight turn.
+  // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
+  // any bound session, a running dev server, or a shared preview? Used to refuse
+  // tearing a sandbox out from under them, and to name which one is waiting.
+  const projectActivity = async (
+    projectId: string,
+    exceptSessionIds?: ReadonlySet<string>,
+  ): Promise<ProjectActivitySnapshot> =>
+    observeProjectActivity({
+      projectId,
+      exceptSessionIds,
+      listSessions: () => deps.eventStore.listSessions(),
+      isTurnBusy: (sessionId) => conductor.isBusy(sessionId),
+      listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
+      hasLocalPreviewShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
+      hasRunningDevServers: () =>
+        deps.managedDevServerManager?.hasRunningServers(projectId) ?? false,
+    });
   const isProjectBusy = async (
     projectId: string,
     exceptSessionIds?: ReadonlySet<string>,
-  ): Promise<boolean> => {
-    const sessions = await deps.eventStore.listSessions();
-    if (
-      sessions.some(
-        (s) =>
-          s.projectId === projectId &&
-          !exceptSessionIds?.has(s.sessionId) &&
-          conductor.isBusy(s.sessionId),
-      )
-    )
-      return true;
-
-    const project = await deps.eventStore.getProject(projectId);
-    if (project === undefined) return false;
-    return projectHasPersistentSandboxActivity({
-      project,
-      listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
-      hasLocalShares: () =>
-        (deps.localPreviewManager?.hasProjectShares(projectId) ?? false) ||
-        (deps.managedDevServerManager?.hasRunningServers(projectId) ?? false),
-    });
-  };
+  ): Promise<boolean> =>
+    (await projectActivity(projectId, exceptSessionIds)).observations.length > 0;
   // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
   // project network, deferring around in-flight turns via the same busy probe.
   const stopProjectRelayMigrationScheduler = startProjectRelayMigrationScheduler(
     deps,
     app.log,
-    isProjectBusy,
+    projectActivity,
   );
   app.addHook('onClose', () => {
     stopProjectRelayMigrationScheduler();
@@ -3977,11 +3975,19 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             lastRepairFailure: { at: new Date(failure.at).toISOString(), message: failure.message },
           };
     if (!unrepaired && !blocked) return withFailure;
-    return { ...withFailure, selfRepair: 'stalled', turnBlocked: blocked };
+    return {
+      ...withFailure,
+      selfRepair: 'stalled',
+      turnBlocked: blocked,
+      blockedBy: blocked ? [...(verdicts.blockers?.get(project.id) ?? [])] : [],
+    };
   };
   const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
     unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
     turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
+    ...(deps.provisioner?.sandboxUpdateBlockers
+      ? { blockers: deps.provisioner.sandboxUpdateBlockers() }
+      : {}),
     ...(deps.provisioner?.sandboxRepairLastFailures
       ? { lastFailures: deps.provisioner.sandboxRepairLastFailures() }
       : {}),
@@ -4749,9 +4755,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       // SBX-1: refuse to recreate a sandbox with a turn in flight — recreate
       // stops+removes the container and would kill the running docker-exec agent
       // mid-turn. Operator cancels or waits, then retries.
-      if (await isProjectBusy(id)) {
+      const activity = activityReasons(await projectActivity(id));
+      if (activity.length > 0) {
         reply.code(409);
-        return { error: `project ${id} has a turn in flight — cancel it or wait, then recreate` };
+        return { error: recreateRefusalMessage(id, activity) };
       }
       const body = parseRecreateContainerBody(request.body);
       let updated: ProjectRecord;

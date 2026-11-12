@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.91.0](https://github.com/Heey-Global/verity/compare/mobile-v1.90.0...mobile-v1.91.0) (2026-11-12)
+
+
+### Features
+
+* **mobile:** unify project card states and agent marks ([#2534](https://github.com/Heey-Global/verity/issues/2534)) ([1e9ee51](https://github.com/Heey-Global/verity/commit/1e9ee51c65d48ea344b5d351bd98e112e77cfebf))
+
+
+### Bug Fixes
+
+* **meetings:** recover stalled finalization and serialize model loading ([#2535](https://github.com/Heey-Global/verity/issues/2535)) ([e657b61](https://github.com/Heey-Global/verity/commit/e657b61a4ec4c4a53df84673c86b06604e43460a))
+* **mobile:** reorder project cards with a long press ([#2531](https://github.com/Heey-Global/verity/issues/2531)) ([f9977c9](https://github.com/Heey-Global/verity/commit/f9977c903fdab07f975d0082fd6395ff93d18a7a))
+* **sandbox:** resume automatic repairs without interrupting active work ([#2536](https://github.com/Heey-Global/verity/issues/2536)) ([1711810](https://github.com/Heey-Global/verity/commit/171181013a97c4b3d410906e698bc33f5fa6c90e))
+
 ## [1.90.0](https://github.com/Heey-Global/verity/compare/mobile-v1.89.0...mobile-v1.90.0) (2026-11-11)
 
 

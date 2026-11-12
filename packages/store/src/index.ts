@@ -315,6 +315,12 @@ export {
 } from './project-repositories.js';
 
 export {
+  SANDBOX_REPAIR_MESSAGE_LIMIT,
+  SandboxRepairIntentStore,
+  type SandboxRepairIntent,
+} from './sandbox-repair-intents.js';
+
+export {
   WIKI_OCCASION_BODY_LIMIT,
   WikiMaintenanceStore,
   WikiOccasionStore,

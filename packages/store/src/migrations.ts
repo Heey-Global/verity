@@ -5581,3 +5581,27 @@ migrations['0204_project_name'] = {
     await sql`alter table projects drop column name`.execute(db);
   },
 };
+
+migrations['0205_sandbox_repair_intents'] = {
+  // An automatic Sandbox repair the Server still owes a project after one of its
+  // own recreates failed. Process memory alone forgot it on restart, leaving a
+  // `failed` project waiting for a manual Repair.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table sandbox_repair_intents (
+      project_id text primary key references projects(id) on delete cascade,
+      version integer not null check (version = 1),
+      attempt_id text not null,
+      status text not null check (status in ('running','waiting')),
+      source_generation text,
+      target_image_ref text,
+      failures integer not null check (failures >= 0),
+      retry_at timestamptz not null,
+      storage_refused boolean not null,
+      last_failure_at timestamptz not null,
+      last_failure_message text not null check (char_length(last_failure_message) <= 500)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table sandbox_repair_intents`.execute(db);
+  },
+};

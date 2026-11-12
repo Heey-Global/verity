@@ -1,3 +1,4 @@
+import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
@@ -1429,15 +1430,13 @@ export async function buildEmbeddedServer(
   const withStorageProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
-  ): Promise<T> => {
-    const runPublic = () =>
-      previewShareManager
-        ? previewShareManager.withProjectStorageMutation(projectId, mutation)
-        : mutation();
-    return localPreviewManager
-      ? localPreviewManager.withProjectStorageMutation(projectId, runPublic)
-      : runPublic();
-  };
+    options: { waitForIdle?: boolean } = {},
+  ): Promise<T> =>
+    withPreviewStorageMutation(projectId, mutation, {
+      local: localPreviewManager,
+      public: previewShareManager,
+      waitForIdle: options.waitForIdle ?? true,
+    });
   // Every line the Uplink client writes is conditional on this option being
   // present. Without it the handshake record, the close code and the refusal
   // reason are all no-ops, and a control channel that is being refused is
@@ -5253,6 +5252,49 @@ export async function buildEmbeddedServer(
   // are tagged, not dangling, and prune skips volumes entirely).
   if (projectDocker !== undefined && config.dockerGc !== false) {
     let nativeMaintenanceRequested: string | null = null;
+    let cacheHelperProjectOffset = 0;
+    const retireProjectContainers = async (cacheHelpersOnly: boolean) => {
+      const removed = cacheHelpersOnly ? [] : await retireCompletedUpdateContainers(projectDocker);
+      if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
+      const result = await retireStoppedContainers({
+        docker: projectDocker,
+        ...(cacheHelpersOnly
+          ? {
+              cacheHelpersOnly: true,
+              maxHelperProjects: 8,
+              helperProjectOffset: cacheHelperProjectOffset,
+            }
+          : {}),
+        listProjects: () => eventStore.listProjects(),
+        // Match helper execution: acquire lifecycle ownership before preview/storage
+        // barriers, and hold both until result collection/retention finishes.
+        withProjectMutation: (id, run) =>
+          provisioner.withProjectExclusiveMutation(id, () =>
+            withStorageProjectMutation(
+              id,
+              async () => {
+                if (managedDevServerManager?.hasRunningServers(id))
+                  throw new Error('Managed dev server is active');
+                if (
+                  (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
+                  (await eventStore.listPublicPreviewShares(id)).some((s) =>
+                    ['creating', 'active', 'revoking'].includes(s.state),
+                  )
+                )
+                  throw new Error('Preview is active');
+                await run();
+              },
+              { waitForIdle: !cacheHelpersOnly },
+            ),
+          ),
+      });
+      if (cacheHelpersOnly) cacheHelperProjectOffset += 8;
+      return {
+        removed: [...removed, ...result.removed],
+        errors: result.errors,
+        retained: result.retained,
+      };
+    };
     const dockerGc = startDockerGcScheduler({
       docker: projectDocker,
       log: app.log,
@@ -5280,36 +5322,8 @@ export async function buildEmbeddedServer(
         report.nativeRequestedAt = nativeMaintenanceRequested;
         lastDockerGcReport = report;
       },
-      retireContainers: async () => {
-        const removed = await retireCompletedUpdateContainers(projectDocker);
-        if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
-        const result = await retireStoppedContainers({
-          docker: projectDocker,
-          listProjects: () => eventStore.listProjects(),
-          // Match helper execution: acquire lifecycle ownership before preview/storage
-          // barriers, and hold both until result collection/retention finishes.
-          withProjectMutation: (id, run) =>
-            provisioner.withProjectExclusiveMutation(id, () =>
-              withStorageProjectMutation(id, async () => {
-                if (managedDevServerManager?.hasRunningServers(id))
-                  throw new Error('Managed dev server is active');
-                if (
-                  (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
-                  (await eventStore.listPublicPreviewShares(id)).some((s) =>
-                    ['creating', 'active', 'revoking'].includes(s.state),
-                  )
-                )
-                  throw new Error('Preview is active');
-                await run();
-              }),
-            ),
-        });
-        return {
-          removed: [...removed, ...result.removed],
-          errors: result.errors,
-          retained: result.retained,
-        };
-      },
+      retireContainers: () => retireProjectContainers(false),
+      retireCacheHelpers: () => retireProjectContainers(true),
       imageReferences,
       onProjectImageRemoved: (image) =>
         auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),

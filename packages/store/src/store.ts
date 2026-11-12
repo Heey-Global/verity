@@ -1,4 +1,5 @@
 import { ProjectInquiryStore } from './project-inquiries.js';
+import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
 import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
   egressDestinationDb,
@@ -1760,6 +1761,7 @@ export class EventStore implements EventSink {
     this.projectInquiries = new ProjectInquiryStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
     this.wikiMaintenance = new WikiMaintenanceStore(db);
+    this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
@@ -1778,6 +1780,8 @@ export class EventStore implements EventSink {
   /** What a project's Wiki may need to reflect, until a maintenance run read it. */
   readonly wikiOccasions: WikiOccasionStore;
   readonly wikiMaintenance: WikiMaintenanceStore;
+  /** Automatic Sandbox repairs still owed after a failed recreate. */
+  readonly sandboxRepairIntents: SandboxRepairIntentStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
@@ -7793,24 +7797,29 @@ export class EventStore implements EventSink {
   ): Promise<ProjectRecord | undefined> {
     const leavesSleepLifecycle =
       state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
-    await this.db
-      .updateTable('projects')
-      .set({
-        state,
-        ...(leavesSleepLifecycle
-          ? {
-              sleep_compatibility_fingerprint: null,
-              sleeping_since: null,
-              wake_started_at: null,
-            }
-          : {}),
-        provision_error: provisionError,
-        provision_warning: provisionWarning,
-        state_changed_at: sql`now()`,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          ...(leavesSleepLifecycle
+            ? {
+                sleep_compatibility_fingerprint: null,
+                sleeping_since: null,
+                wake_started_at: null,
+              }
+            : {}),
+          provision_error: provisionError,
+          provision_warning: provisionWarning,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
     return this.getProject(id);
   }
 
@@ -7827,20 +7836,25 @@ export class EventStore implements EventSink {
       wakeStartedAt: Date | null;
     },
   ): Promise<ProjectRecord | undefined> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        state,
-        sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
-        sleeping_since: metadata.sleepingSince,
-        wake_started_at: metadata.wakeStartedAt,
-        provision_error: null,
-        provision_warning: null,
-        state_changed_at: sql`now()`,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
+          sleeping_since: metadata.sleepingSince,
+          wake_started_at: metadata.wakeStartedAt,
+          provision_error: null,
+          provision_warning: null,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
     return this.getProject(id);
   }
 

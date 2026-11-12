@@ -405,6 +405,96 @@ describe('scheduled cache-helper retention', () => {
     expect(f.docker.removeStoppedContainer.mock.calls).toEqual([['a']]);
     expect(f.docker.removeContainer).not.toHaveBeenCalled();
   });
+  it('limits capacity retirement to helpers and retains the latest evidence', async () => {
+    const f = cacheGcFixture();
+    const older = f.add('a', 2000);
+    const latest = f.add('b');
+    f.containers.set('sandbox', {
+      id: 'sandbox',
+      names: ['unrelated'],
+      imageId: 'old',
+      state: 'exited',
+      labels: { 'verity.project-id': 'p' },
+    });
+    const result = await retireStoppedContainers({
+      ...f.input,
+      cacheHelpersOnly: true,
+      maxHelperProjects: 1,
+    });
+    expect(result.removed).toEqual(older.summary.names);
+    expect(f.containers.has('sandbox')).toBe(true);
+    expect(f.containers.has(latest.summary.id)).toBe(true);
+    expect(f.docker.inspectContainer).not.toHaveBeenCalledWith('sandbox');
+  });
+
+  it('bounds and rotates the helper project selection', async () => {
+    const f = cacheGcFixture();
+    f.add('a');
+    const extra = f.add('b');
+    extra.summary.labels = { ...extra.summary.labels, 'verity.project-id': 'q' };
+    f.containers.set('b', extra.summary);
+    const selected: string[] = [];
+    const withProjectMutation = async (id: string) => {
+      selected.push(id);
+      throw new Error('locked');
+    };
+    await retireStoppedContainers({
+      ...f.input,
+      cacheHelpersOnly: true,
+      maxHelperProjects: 1,
+      withProjectMutation,
+    });
+    expect(selected).toEqual(['p']);
+    await retireStoppedContainers({
+      ...f.input,
+      cacheHelpersOnly: true,
+      maxHelperProjects: 1,
+      helperProjectOffset: 1,
+      withProjectMutation,
+    });
+    expect(selected).toEqual(['p', 'q']);
+    expect(f.docker.inspectContainer).not.toHaveBeenCalled();
+  });
+
+  it('skips locked helper projects without inspecting or removing their containers', async () => {
+    const f = cacheGcFixture();
+    f.add('a', 2000);
+    f.add('b');
+    const result = await retireStoppedContainers({
+      ...f.input,
+      cacheHelpersOnly: true,
+      maxHelperProjects: 1,
+      withProjectMutation: async () => {
+        throw new Error('lifecycle owned by build');
+      },
+    });
+    expect(result.errors).toHaveLength(1);
+    expect(
+      result.retained.every(
+        (item) =>
+          item.reason === 'Project lifecycle or storage barrier unavailable; helpers retained',
+      ),
+    ).toBe(true);
+    expect(result.retained).toHaveLength(2);
+    expect(f.docker.inspectContainer).not.toHaveBeenCalled();
+    expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a removed helper was retained after partial cleanup failed', async () => {
+    const f = cacheGcFixture();
+    f.add('a', 2000);
+    f.add('b');
+    f.docker.removeStoppedContainer.mockImplementationOnce(async (id) => {
+      f.containers.delete(id);
+      throw new Error('secret-canary-in-engine-error');
+    });
+    const result = await retireStoppedContainers({ ...f.input, cacheHelpersOnly: true });
+    expect(f.containers.has('a')).toBe(false);
+    expect(result.retained).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('secret-canary');
+  });
+
   it('reports an inventory-limit blocker even without per-helper inspection results', async () => {
     const f = cacheGcFixture();
     f.add('a');
@@ -447,7 +537,9 @@ describe('scheduled cache-helper retention', () => {
       const result = await retireStoppedContainers(f.input);
       expect(result.removed).toEqual([]);
       expect(result.retained).toHaveLength(2);
-      expect(result.retained.every((item) => item.reason.includes('blocked'))).toBe(true);
+      expect(result.retained.every((item) => item.reason.includes('could not be verified'))).toBe(
+        true,
+      );
       expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
     },
   );
@@ -458,7 +550,7 @@ describe('scheduled cache-helper retention', () => {
     const result = await retireStoppedContainers(f.input);
     expect(result.removed).toEqual([]);
     expect(result.retained).toHaveLength(2);
-    expect(result.retained.every((item) => item.reason.includes('blocked'))).toBe(true);
+    expect(result.retained.every((item) => item.reason.includes('reports running'))).toBe(true);
     expect(f.docker.removeStoppedContainer).not.toHaveBeenCalled();
   });
   it('sanitizes cleanup errors and leaves evidence rather than falling through to generic GC', async () => {

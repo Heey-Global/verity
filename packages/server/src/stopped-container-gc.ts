@@ -41,6 +41,10 @@ export async function retireStoppedContainers(input: {
   withProjectMutation: (projectId: string, run: () => Promise<void>) => Promise<void>;
   now?: number;
   dryRun?: boolean;
+  /** Capacity passes only retire cache helpers, with a bounded project inventory. */
+  cacheHelpersOnly?: boolean;
+  maxHelperProjects?: number;
+  helperProjectOffset?: number;
 }): Promise<{
   removed: string[];
   errors: string[];
@@ -67,9 +71,19 @@ export async function retireStoppedContainers(input: {
       .map((c) => c.labels?.[projectLabel])
       .filter((id): id is string => !!id),
   );
-  for (const projectId of cacheProjects) {
+  const helperProjects = [...cacheProjects].sort();
+  const offset = helperProjects.length
+    ? (input.helperProjectOffset ?? 0) % helperProjects.length
+    : 0;
+  const selected = [...helperProjects.slice(offset), ...helperProjects.slice(0, offset)].slice(
+    0,
+    input.maxHelperProjects,
+  );
+  for (const projectId of selected) {
+    let barrierEntered = false;
     try {
       await input.withProjectMutation(projectId, async () => {
+        barrierEntered = true;
         const freshProjects = await input.listProjects();
         if (heldProjects.has(projectId) && !freshProjects.some((p) => p.id === projectId)) return;
         const retention = await retainLatestCacheHelper({
@@ -89,16 +103,31 @@ export async function retireStoppedContainers(input: {
           result.retained.push({
             name: containers.find((c) => c.id === id)?.names?.[0] ?? id,
             reason: retention.blocked
-              ? 'Cache helper retention blocked by unverified state or identity'
+              ? (retention.blockedReason ??
+                'Cache helper retention blocked by unverified state or identity')
               : 'Latest cache helper evidence retained (7 days)',
           });
       });
     } catch {
+      // Before the barrier was entered this pass removed nothing. An exception
+      // inside verification may follow partial cleanup, so its old inventory
+      // cannot truthfully identify every container that remains.
+      if (!barrierEntered) {
+        for (const candidate of containers.filter(
+          (item) => item.labels?.[projectLabel] === projectId && hasCacheHelperIdentity(item),
+        )) {
+          result.retained.push({
+            name: candidate.names?.[0] ?? candidate.id,
+            reason: 'Project lifecycle or storage barrier unavailable; helpers retained',
+          });
+        }
+      }
       result.errors.push(
         `${projectId}: Cache helper retention failed; unverified containers retained`,
       );
     }
   }
+  if (input.cacheHelpersOnly) return result;
   for (const candidate of containers) {
     if (!stopped(candidate)) continue;
     const projectId = candidate.labels?.[projectLabel];

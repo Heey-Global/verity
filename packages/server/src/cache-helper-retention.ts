@@ -23,6 +23,7 @@ export interface CacheHelperRetention {
   removed: string[];
   retained: string[];
   blocked: boolean;
+  blockedReason?: string;
 }
 
 /** Caller holds the project's lifecycle AND storage barriers, including result collection. */
@@ -38,11 +39,17 @@ export async function retainLatestCacheHelper(input: {
   const result: CacheHelperRetention = { removed: [], retained: [], blocked: false };
   if (!docker.listContainers || !docker.removeStoppedContainer) {
     result.blocked = true;
+    result.blockedReason = 'Cache helper inventory is unavailable';
     return result;
   }
   const now = input.now ?? Date.now();
   const inventory = await docker.listContainers();
-  if (inventory.length > 1000) return { ...result, blocked: true };
+  if (inventory.length > 1000)
+    return {
+      ...result,
+      blocked: true,
+      blockedReason: 'Cache helper inventory exceeds the verification limit',
+    };
   const candidates = inventory.filter(
     (candidate) =>
       candidate.labels?.['verity.project-id'] === projectId && hasCacheHelperIdentity(candidate),
@@ -51,6 +58,7 @@ export async function retainLatestCacheHelper(input: {
   for (const candidate of candidates) {
     result.retained.push(candidate.id);
     if (!isCacheHelper(candidate, projectId)) {
+      result.blockedReason ??= 'Cache helper ownership or identity could not be verified';
       result.blocked = true;
       continue;
     }
@@ -72,6 +80,9 @@ export async function retainLatestCacheHelper(input: {
       since <= 0 ||
       since > now
     ) {
+      result.blockedReason ??= inspect.running
+        ? 'Cache helper reports running; evidence retained'
+        : 'Cache helper identity or stopped state could not be verified';
       result.blocked = true;
       continue;
     }
@@ -108,6 +119,7 @@ export async function retainLatestCacheHelper(input: {
       inspect.labels?.['verity.project-id'] !== projectId ||
       inspect.labels?.['verity.component'] !== component
     ) {
+      result.blockedReason = 'Cache helper identity or state changed during verification';
       result.blocked = true;
       break;
     }

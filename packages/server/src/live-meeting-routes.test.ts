@@ -58,6 +58,77 @@ it('publishes transcript and notes without exposing the recorder token', async (
   expect(body.meetings[0]).not.toHaveProperty('ownerTokenHash');
 });
 
+it('finalizes independently of a rejected payload and accepts later terminal recorder data', async () => {
+  await app.inject({ method: 'PUT', url, payload: meeting });
+  await app.inject({ method: 'POST', url: `${url}/commands`, payload: { action: 'stop' } });
+  expect(
+    (
+      await app.inject({
+        method: 'PUT',
+        url,
+        payload: { ...meeting, revision: 2, speakerTurns: [{ speaker: 0, start: 3, end: 2 }] },
+      })
+    ).statusCode,
+  ).toBe(400);
+  const response = await app.inject({ method: 'POST', url: `${url}/finalize` });
+  expect(response.statusCode).toBe(200);
+  expect(response.json()).toEqual({ finalized: true, recordingStopped: false });
+  expect((await app.inject({ method: 'POST', url: `${url}/finalize` })).statusCode).toBe(200);
+  const late = await app.inject({ method: 'PUT', url, payload: { ...meeting, revision: 2 } });
+  expect(late.statusCode).toBe(409);
+  expect(late.json().code).toBe('meeting_finalized');
+  expect(
+    (
+      await app.inject({
+        method: 'PUT',
+        url,
+        payload: {
+          ...meeting,
+          state: 'ended',
+          endedAt: 500,
+          revision: 3,
+          transcript: 'Final words from recorder',
+        },
+      })
+    ).statusCode,
+  ).toBe(200);
+  const saved = (
+    await app.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' })
+  ).json();
+  expect(saved.meetings[0]).toMatchObject({
+    state: 'ended',
+    transcript: 'Final words from recorder',
+  });
+  expect(
+    (
+      await app.inject({
+        method: 'POST',
+        url: '/sessions/session-1/live-meetings/missing/finalize',
+      })
+    ).statusCode,
+  ).toBe(404);
+});
+
+it('reports bounded validation codes and paths without supplied keys or values', async () => {
+  const response = await app.inject({
+    method: 'PUT',
+    url,
+    payload: {
+      ...meeting,
+      ownerToken: 'private-token',
+      speakerNames: { 'private-name': 'private-transcript' },
+    },
+  });
+  expect(response.statusCode).toBe(400);
+  expect(response.json()).toMatchObject({
+    code: 'invalid_meeting_update',
+    issues: expect.arrayContaining([expect.objectContaining({ path: ['ownerToken'] })]),
+  });
+  expect(response.body).not.toContain('private-token');
+  expect(response.body).not.toContain('private-name');
+  expect(response.body).not.toContain('private-transcript');
+});
+
 it('syncs bounded speaker turns and the expected group size', async () => {
   const speakerTurns = [
     { speaker: 0, start: 0.5, end: 1.25 },

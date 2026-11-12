@@ -1,4 +1,12 @@
 import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import {
+  activityObservations,
+  activityReasons,
+  recreateRefusalMessage,
+  type ProjectActivityObservation,
+  type ProjectActivityAnswer,
+  type ProjectActivityReason,
+} from './project-idle-sleep.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
@@ -99,7 +107,7 @@ import { cpus, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { type Kysely } from 'kysely';
-import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
+import { DEVCONTAINER_ROOT_USER_WARNING, PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 import { SealedError, isLocalProject } from '@verity/store';
 import {
   resolveSigningPrivateKey,
@@ -133,7 +141,14 @@ import {
   recordAgentGatewayProjection,
 } from './agent-gateway-projection.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
-import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '@verity/store';
+import type {
+  VeritySettingsRecord,
+  Database,
+  EventStore,
+  ProjectRecord,
+  SandboxRepairIntentStore,
+  SandboxRepairIntent,
+} from '@verity/store';
 import {
   DockerError,
   type DockerClient,
@@ -1377,7 +1392,7 @@ function devcontainerRuntimeSettings(devcontainerDir: string): DevcontainerRunti
 
 function devcontainerProvisionWarning(settings: DevcontainerRuntimeSettings): string | null {
   if (settings.remoteUser?.toLowerCase() === 'root') {
-    return 'Devcontainer requests remoteUser=root. The project is running, but root containers have a larger blast radius; prefer a non-root remoteUser when possible.';
+    return DEVCONTAINER_ROOT_USER_WARNING;
   }
   return null;
 }
@@ -1813,6 +1828,18 @@ async function readSupervisorStackHealth(runtimePath: string): Promise<boolean |
 
 const SUPERVISOR_REACHABLE_TIMEOUT_MS = 10_000;
 
+/** The probe the Server attaches: a legacy boolean, or the activity reasons. */
+export type ProjectBusyProbe = (
+  projectId: string,
+  exceptSessionIds?: ReadonlySet<string>,
+) => Promise<ProjectActivityAnswer>;
+
+/** Busy when the probe said so, or named anything. An empty reason list is idle —
+ *  read as a truthy value it would hold every sandbox off forever. */
+export function activityIsBusy(answer: ProjectActivityAnswer): boolean {
+  return activityObservations(answer).length > 0;
+}
+
 /** Default {@link ProvisionerOptions.supervisorReachable}: the Server's own `status` request. */
 async function serverCanReachSupervisor(runtimePath: string): Promise<void> {
   const socketPath = join(runtimePath, 'supervisor.sock');
@@ -1992,7 +2019,14 @@ export interface Provisioner {
   reconcileRelays?(
     projects: readonly ProjectRecord[],
     callbacks?: {
-      onDeferred?: (projectId: string, info: { imageUpdate: boolean }) => void;
+      onDeferred?: (
+        projectId: string,
+        info: {
+          imageUpdate: boolean;
+          reasons: readonly ProjectActivityReason[];
+          observations?: readonly ProjectActivityObservation[];
+        },
+      ) => void;
       onMigrated?: (projectId: string, info: { envDrift: boolean; imageUpdate: boolean }) => void;
       /** Projects whose running sandbox differs from the current target image.
        * They join the same busy-safe reconcile queue as relay migrations, but are
@@ -2042,11 +2076,12 @@ export interface Provisioner {
    * going to fix this" but "nothing except the end of that turn will". Absent on
    * provisioners that do not implement relay migration. */
   turnBlockedSandboxes?(): ReadonlySet<string>;
-  /** Late-bind the per-project "turn in flight?" probe so relay migration never
+  /** For each project in {@link turnBlockedSandboxes}, what holds it: a turn, a
+   * dev server or a shared preview. Empty when the probe only answered busy. */
+  sandboxUpdateBlockers?(): ReadonlyMap<string, readonly ProjectActivityReason[]>;
+  /** Late-bind the per-project "in use?" probe so relay migration never
    * recreates a sandbox out from under a live session (server.ts owns it). */
-  attachProjectBusyProbe?(
-    probe: (projectId: string, exceptSessionIds?: ReadonlySet<string>) => Promise<boolean>,
-  ): void;
+  attachProjectBusyProbe?(probe: ProjectBusyProbe): void;
   /** On-demand counterpart to {@link reconcileRelays} for a turn that is BLOCKED by
    * an unusable sandbox: recreate it now (coalesced per project) and report whether
    * the sandbox is relay-ready afterwards. */
@@ -3084,20 +3119,14 @@ export class ProvisionerImpl implements Provisioner {
    *  it ever throws — migration treats the project as BUSY, so an automated
    *  recreate can never stop a sandbox out from under a session it cannot prove
    *  idle (SBX-1). */
-  private projectBusyProbe?: (
-    projectId: string,
-    exceptSessionIds?: ReadonlySet<string>,
-  ) => Promise<boolean>;
+  private projectBusyProbe?: ProjectBusyProbe;
 
-  /** Per project, how many consecutive reconcile ticks have deferred an ORPHAN
-   *  repair because the project was busy. Bounds that deferral (see
-   *  `ORPHAN_DEFER_TICK_LIMIT`). Each pass rewrites the map to exactly the
-   *  projects that deferred on it against a CONFIRMED turn, so a tick the project
-   *  sat out for any other reason — repaired, healthy, inactive, provisioning,
-   *  errored, gone from the project list, or busy only because the probe could not
-   *  answer — breaks the streak and can never leave a stale entry behind.
-   *  In-memory on purpose: the incoming process re-probes and resumes each relay,
-   *  so a stale deferral count would carry no useful evidence across a restart. */
+  /** What held each project in {@link imageUpdateDeferralsSince} on its latest
+   *  deferral, so the report can name the remedy. Maintained with that map. */
+  private readonly imageUpdateDeferralReasons = new Map<string, readonly ProjectActivityReason[]>();
+
+  /** Consecutive orphan deferrals for diagnostics only. Elapsed ticks never
+   * authorize replacing a sandbox while activity remains or is unknown. */
   private readonly orphanDeferrals = new Map<string, number>();
 
   /** Per project, when the current unbroken run of sandbox IMAGE update deferrals
@@ -3217,6 +3246,18 @@ export class ProvisionerImpl implements Provisioner {
    * break the CONSECUTIVE failure streak without making the failed project
    * ineligible for the next automatic retry. */
   private readonly pendingSandboxRepairRetries = new Set<string>();
+  private readonly automaticRepairAttemptContext = new AsyncLocalStorage<SandboxRepairIntent>();
+  private readonly restoredInterruptedRepairs = new Set<string>();
+  private readonly sandboxRepairIntentDetails = new Map<string, SandboxRepairIntent>();
+
+  /** Restores {@link pendingSandboxRepairRetries} and its backoff from the store
+   *  once per process, before the first reconcile pass reads them. */
+  private sandboxRepairIntentsRestored: Promise<void> | undefined;
+
+  /** Durable writes of repair intents, in the order the reconciler made them, so
+   *  a clear after a success never lands before the failure it supersedes. */
+  private sandboxRepairIntentWrites: Promise<void> = Promise.resolve();
+  private sandboxRepairIntentWriteError: unknown;
 
   /** Projects whose sandbox the last completed reconcile pass looked at and left
    *  alone — classified `migrated`, `absent` or `foreign`, so `decideMigrationAction`
@@ -3245,9 +3286,7 @@ export class ProvisionerImpl implements Provisioner {
   private readonly projectSandboxLastActivities = new Map<string, number>();
   private readonly projectWakeAttempts = new Map<string, Promise<ProjectRecord>>();
 
-  attachProjectBusyProbe(
-    probe: (projectId: string, exceptSessionIds?: ReadonlySet<string>) => Promise<boolean>,
-  ): void {
+  attachProjectBusyProbe(probe: ProjectBusyProbe): void {
     this.projectBusyProbe = probe;
   }
 
@@ -3391,13 +3430,13 @@ export class ProvisionerImpl implements Provisioner {
       // shares and dev servers, which a stale share record can hold indefinitely.
       if ((this.projectSandboxActivities.get(projectId) ?? 0) > 0) {
         throw new ProvisioningError(
-          `project ${projectId} has a turn in flight (in-process sandbox activity)`,
+          `project ${projectId} has active sandbox work (in-process sandbox activity)`,
         );
       }
-      if (this.projectBusyProbe && (await this.projectBusyProbe(projectId, exceptSessionIds))) {
-        throw new ProvisioningError(
-          `project ${projectId} has a turn in flight (session turn, preview share or dev server)`,
-        );
+      if (this.projectBusyProbe) {
+        const answer = await this.projectBusyProbe(projectId, exceptSessionIds);
+        if (activityIsBusy(answer))
+          throw new ProvisioningError(recreateRefusalMessage(projectId, activityReasons(answer)));
       }
       const context = new Map(this.projectMutationContext.getStore());
       context.set(projectId, ownerToken);
@@ -4113,18 +4152,39 @@ export class ProvisionerImpl implements Provisioner {
     return after.classification === 'migrated' || after.envDriftOnly;
   }
 
-  /** Ask the busy probe, keeping "busy" and "could not find out" apart. Both read
-   *  as busy — that is the SBX-1 fail-safe — but only a `confirmed` answer proves
-   *  a turn exists, and only a proven turn may spend an orphan's grace window. */
+  /** Preserve known observations and unknown verification separately; both
+   * protect the sandbox until every source can establish it is idle. */
   private async probeProjectBusy(
     projectId: string,
     exceptSessionIds?: ReadonlySet<string>,
-  ): Promise<{ busy: boolean; confirmed: boolean }> {
-    if (this.projectBusyProbe === undefined) return { busy: true, confirmed: false };
+  ): Promise<{
+    busy: boolean;
+    confirmed: boolean;
+    reasons: readonly ProjectActivityReason[];
+    observations: readonly ProjectActivityObservation[];
+  }> {
+    if (this.projectBusyProbe === undefined)
+      return {
+        busy: true,
+        confirmed: false,
+        reasons: ['unknown'],
+        observations: [{ reason: 'unknown', source: 'busy_probe' }],
+      };
     try {
-      return { busy: await this.projectBusyProbe(projectId, exceptSessionIds), confirmed: true };
+      const answer = await this.projectBusyProbe(projectId, exceptSessionIds);
+      return {
+        busy: activityIsBusy(answer),
+        confirmed: !activityReasons(answer).includes('unknown'),
+        reasons: activityReasons(answer),
+        observations: activityObservations(answer),
+      };
     } catch {
-      return { busy: true, confirmed: false };
+      return {
+        busy: true,
+        confirmed: false,
+        reasons: ['unknown'],
+        observations: [{ reason: 'unknown', source: 'busy_probe' }],
+      };
     }
   }
 
@@ -4235,6 +4295,12 @@ export class ProvisionerImpl implements Provisioner {
     for (const [projectId, retry] of [...this.sandboxRepairRetryAt]) {
       if (retry.storage) this.sandboxRepairRetryAt.delete(projectId);
     }
+    const now = new Date((this.opts.now ?? Date.now)());
+    void this.writeSandboxRepairIntent((intents) => intents.releaseStorageBackoff(now)).catch(
+      (error: unknown) => {
+        this.sandboxRepairIntentWriteError = error;
+      },
+    );
   }
 
   /** A rebuild succeeded, whoever started it: a manual Update or Repair ends the
@@ -4244,6 +4310,111 @@ export class ProvisionerImpl implements Provisioner {
     this.sandboxRepairFailures.delete(projectId);
     this.sandboxRepairRetryAt.delete(projectId);
     this.sandboxRepairLastFailure.delete(projectId);
+    this.forgetSandboxRepairIntent(projectId);
+  }
+
+  /** The automatic repair is no longer owed: rebuilt, nothing left to recreate,
+   *  or the project left the states automatic repair may act on. */
+  private forgetSandboxRepairIntent(projectId: string): void {
+    this.pendingSandboxRepairRetries.delete(projectId);
+    this.sandboxRepairIntentDetails.delete(projectId);
+    void this.writeSandboxRepairIntent((intents) => intents.clear(projectId)).catch(
+      (error: unknown) => {
+        this.sandboxRepairIntentWriteError = error;
+      },
+    );
+  }
+
+  /** Queue one durable write. Absent on stores without the table (test doubles).
+   *  A failed write is returned to the caller that awaits it and never breaks
+   *  the queue for the writes behind it. */
+  private writeSandboxRepairIntent(
+    write: (intents: SandboxRepairIntentStore) => Promise<void>,
+  ): Promise<void> {
+    const intents = (this.opts.store as Partial<EventStore>).sandboxRepairIntents;
+    if (intents === undefined) return Promise.resolve();
+    const done = this.sandboxRepairIntentWrites.then(() => write(intents));
+    this.sandboxRepairIntentWrites = done.catch(() => undefined);
+    return done;
+  }
+
+  /** Bring back repairs a previous Server process still owed. Only the
+   *  bookkeeping is restored: whether a recreate happens is decided afresh by
+   *  the reconcile pass from Docker state, project state and activity, exactly
+   *  as it is for a failure this process observed itself. A retry time further
+   *  out than the longest backoff (a clock that moved) is brought back in. */
+  private restoreSandboxRepairIntents(): Promise<void> {
+    this.sandboxRepairIntentsRestored ??= (async () => {
+      const intents = (this.opts.store as Partial<EventStore>).sandboxRepairIntents;
+      if (intents === undefined) return;
+      // A successful repair may still be clearing its durable intent. Reading
+      // before that write settles would resurrect the obsolete failure/backoff.
+      await this.sandboxRepairIntentWrites;
+      const now = (this.opts.now ?? Date.now)();
+      for (const intent of await intents.list()) {
+        const project = await this.opts.store.getProject(intent.projectId);
+        if (
+          this.pendingSandboxRepairRetries.has(intent.projectId) &&
+          project?.state !== 'container_starting'
+        )
+          continue;
+        if (!project || !['active', 'failed', 'container_starting'].includes(project.state)) {
+          await intents.clear(intent.projectId);
+          continue;
+        }
+        // A changed target or a replacement generation ends the old mandate.
+        const target = project.imageOverrideRef ?? (await this.defaultImageRef());
+        if (intent.version !== 1 || intent.targetImageRef !== target) {
+          await intents.clear(intent.projectId);
+          continue;
+        }
+        let inspect: ContainerInspect | null;
+        try {
+          inspect = await this.opts.docker.inspectContainer(project.containerName);
+        } catch (error) {
+          if (!(error instanceof DockerError) || error.kind !== 'container_not_found') throw error;
+          inspect = null;
+        }
+        if (
+          inspect &&
+          (inspect.labels?.[PROJECT_ID_LABEL] !== project.id ||
+            ((containerGenerationOf(inspect) ?? null) !== intent.sourceGeneration &&
+              inspect.labels?.['verity.sandbox-repair-attempt'] !== intent.attemptId))
+        ) {
+          await intents.clear(intent.projectId);
+          continue;
+        }
+        if (project.state === 'container_starting') {
+          if (this.inFlightProvisions.has(project.id)) continue;
+          await this.opts.store.updateProjectState(
+            project.id,
+            'failed',
+            'Automatic repair interrupted',
+          );
+          project.state = 'failed';
+          this.restoredInterruptedRepairs.add(project.id);
+        }
+        this.sandboxRepairIntentDetails.set(intent.projectId, intent);
+        this.pendingSandboxRepairRetries.add(intent.projectId);
+        if (intent.failures > 0) this.sandboxRepairFailures.set(intent.projectId, intent.failures);
+        this.sandboxRepairRetryAt.set(intent.projectId, {
+          at: Math.min(intent.retryAt.getTime(), now + SANDBOX_REPAIR_RETRY_MAX_MS),
+          storage: intent.storageRefused,
+        });
+        if (intent.lastFailureMessage) {
+          this.sandboxRepairLastFailure.set(intent.projectId, {
+            at: intent.lastFailureAt.getTime(),
+            message: intent.lastFailureMessage,
+          });
+        }
+      }
+    })().catch((error: unknown) => {
+      // Retried on the next pass rather than leaving the owed repairs forgotten
+      // for the life of this process.
+      this.sandboxRepairIntentsRestored = undefined;
+      throw error;
+    });
+    return this.sandboxRepairIntentsRestored;
   }
 
   /**
@@ -4267,6 +4438,14 @@ export class ProvisionerImpl implements Provisioner {
       if (now - since >= IMAGE_UPDATE_DEFER_REPORT_AFTER_MS) blocked.add(projectId);
     }
     return blocked;
+  }
+
+  sandboxUpdateBlockers(): ReadonlyMap<string, readonly ProjectActivityReason[]> {
+    const blockers = new Map<string, readonly ProjectActivityReason[]>();
+    for (const projectId of this.turnBlockedSandboxes()) {
+      blockers.set(projectId, this.imageUpdateDeferralReasons.get(projectId) ?? []);
+    }
+    return blockers;
   }
 
   /** Is the relay behind a sandbox of this generation still live? Reported only
@@ -4449,11 +4628,8 @@ export class ProvisionerImpl implements Provisioner {
    *     broker. Nothing else recovers those — a sandbox is wired to its relay at
    *     creation (hostname in its env, capabilities on its disk), so re-running the
    *     container phase is the only path back;
-   *   - defers either with a turn in flight (recreating would kill the live
-   *     docker-exec agent) and reports it so the deferral is visible — for an
-   *     ORPHAN only until `ORPHAN_DEFER_TICK_LIMIT` consecutive ticks have passed,
-   *     after which the repair wins: the turn holding the project busy is itself
-   *     unable to reach the broker, so waiting it out never ends;
+   *   - defers while a turn, dev server, preview or unknown activity protects
+   *     the sandbox, regardless of how long the relay has been unavailable;
    *   - leaves healthy migrated, absent, and FOREIGN containers untouched.
    * A failed recreate leaves that project `failed` (fail-closed, non-public) via
    * the recreate path's own state write; failures are aggregated so the caller can
@@ -4462,7 +4638,14 @@ export class ProvisionerImpl implements Provisioner {
   async reconcileRelays(
     projects: readonly ProjectRecord[],
     callbacks: {
-      onDeferred?: (projectId: string, info: { imageUpdate: boolean }) => void;
+      onDeferred?: (
+        projectId: string,
+        info: {
+          imageUpdate: boolean;
+          reasons: readonly ProjectActivityReason[];
+          observations?: readonly ProjectActivityObservation[];
+        },
+      ) => void;
       onMigrated?: (projectId: string, info: { envDrift: boolean; imageUpdate: boolean }) => void;
       updateAvailable?: ReadonlySet<string>;
       /** A sandbox whose ONLY fault is env drift has exhausted
@@ -4500,14 +4683,29 @@ export class ProvisionerImpl implements Provisioner {
      *  remembered, so a project skipped here is simply reconsidered next tick. */
     let driftRecreatesThisPass = 0;
     const driftThrottledThisPass: string[] = [];
+    // Repairs a previous process owed must be known before deciding who takes
+    // part. A store that cannot answer leaves this pass to the active projects
+    // and is asked again on the next one.
+    await this.restoreSandboxRepairIntents().catch((error: unknown) => failures.push(error));
     // Each project owns its own relay, network and container, so the migrations are
     // independent — only the shared bookkeeping below is touched, and that is
     // per-project keys. Bounded concurrency keeps a real legacy/broken fleet repair
     // to roughly its slowest batches while capping container creates on the host.
-    const pending = projects.filter(
+    // A repair is resumed only for a project its own failure left `failed`. Any
+    // other state was chosen since — slept, deprovisioned, or being provisioned
+    // by someone else — and an automatic recreate must not overrule it.
+    const currentProjects = await Promise.all(
+      projects.map(async (project) =>
+        this.restoredInterruptedRepairs.has(project.id) && project.state === 'container_starting'
+          ? ((await this.opts.store.getProject(project.id)) ?? project)
+          : project,
+      ),
+    );
+    const pending = currentProjects.filter(
       (project) =>
         project.kind !== 'control_plane' &&
-        (project.state === 'active' || this.pendingSandboxRepairRetries.has(project.id)),
+        (project.state === 'active' ||
+          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
     );
     let cursor = 0;
     const migrateNext = async (): Promise<void> => {
@@ -4527,9 +4725,30 @@ export class ProvisionerImpl implements Provisioner {
           continue;
         }
         let attemptedRecreate = false;
+        let repairIntent: SandboxRepairIntent | undefined;
         try {
+          const previousIntent = this.sandboxRepairIntentDetails.get(project.id);
+          const intentStore = (this.opts.store as Partial<EventStore>).sandboxRepairIntents;
+          if (previousIntent && intentStore) {
+            const durable = (await intentStore.list()).find(
+              (intent) => intent.projectId === project.id,
+            );
+            if (!durable || durable.attemptId !== previousIntent.attemptId) {
+              // Explicit cancellation may have happened through another lifecycle
+              // path since this process restored its in-memory retry bookkeeping.
+              this.pendingSandboxRepairRetries.delete(project.id);
+              this.sandboxRepairIntentDetails.delete(project.id);
+              this.sandboxRepairFailures.delete(project.id);
+              this.sandboxRepairRetryAt.delete(project.id);
+              this.sandboxRepairLastFailure.delete(project.id);
+              this.sandboxRepairIntentsRestored = undefined;
+              continue;
+            }
+          }
           const { classification, envDriftOnly } = await this.classifyProjectSandbox(project);
-          const { busy, confirmed } = await this.probeProjectBusy(project.id);
+          const { busy, confirmed, reasons, observations } = await this.probeProjectBusy(
+            project.id,
+          );
           const updateOffered =
             classification === 'migrated' && callbacks.updateAvailable?.has(project.id) === true;
           // Only an answer from the checker refunds the budget: a pass whose update
@@ -4557,6 +4776,10 @@ export class ProvisionerImpl implements Provisioner {
           // nothing for relay migration to do, but for a repair we explicitly owe it
           // means "resume provisioning" — and creating a missing container cannot
           // interrupt a live turn, so no busy deferral is needed.
+          // Structural migration and relay health do not prove the sandbox
+          // started. An owned failed repair still owes runtime recovery even
+          // when its replacement already carries all migration metadata.
+          const owedRuntimeRepair = previousIntent !== undefined && project.state === 'failed';
           const action = imageUpdate
             ? decideMigrationAction({
                 // Image updates use legacy's unbounded busy deferral: unlike an
@@ -4568,7 +4791,10 @@ export class ProvisionerImpl implements Provisioner {
             : classification === 'absent' && this.pendingSandboxRepairRetries.has(project.id)
               ? 'migrate'
               : decideMigrationAction({
-                  classification,
+                  classification:
+                    owedRuntimeRepair && classification === 'migrated'
+                      ? 'orphaned'
+                      : classification,
                   busy,
                   busyConfirmed: confirmed,
                   orphanDeferrals: this.orphanDeferrals.get(project.id),
@@ -4593,6 +4819,7 @@ export class ProvisionerImpl implements Provisioner {
               if (!this.imageUpdateDeferralsSince.has(project.id)) {
                 this.imageUpdateDeferralsSince.set(project.id, Date.now());
               }
+              this.imageUpdateDeferralReasons.set(project.id, reasons);
               imageDeferredThisPass.add(project.id);
             }
             // A deferral is the repair working as designed — it is waiting for the
@@ -4602,7 +4829,7 @@ export class ProvisionerImpl implements Provisioner {
             // up for the whole life of the turn.
             this.sandboxRepairFailures.delete(project.id);
             this.settledSandboxes.delete(project.id);
-            callbacks.onDeferred?.(project.id, { imageUpdate });
+            callbacks.onDeferred?.(project.id, { imageUpdate, reasons, observations });
             continue;
           }
           if (action !== 'migrate') {
@@ -4614,7 +4841,7 @@ export class ProvisionerImpl implements Provisioner {
             // checker separately reports this sandbox as behind, nothing is going to
             // close that gap. See {@link settledSandboxes}.
             this.sandboxRepairFailures.delete(project.id);
-            this.pendingSandboxRepairRetries.delete(project.id);
+            this.forgetSandboxRepairIntent(project.id);
             // A foreign container is deliberately outside Verity's repair authority.
             // Never turn it into an Update action: recreateContainer replaces by
             // name, so offering that action would risk deleting somebody else's
@@ -4663,11 +4890,54 @@ export class ProvisionerImpl implements Provisioner {
             }
             driftRecreatesThisPass++;
           }
+          // Persist before the first destructive step. If the process dies in
+          // recreate, the next reconciler still knows this was its own work.
+          const intentTime = new Date((this.opts.now ?? Date.now)());
+          const priorFailure = this.sandboxRepairLastFailure.get(project.id);
+          const sourceInspect = await this.opts.docker
+            .inspectContainer(project.containerName)
+            .catch((error: unknown) => {
+              if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+              throw error;
+            });
+          if (
+            previousIntent &&
+            ((sourceInspect && sourceInspect.labels?.[PROJECT_ID_LABEL] !== project.id) ||
+              (sourceInspect !== null &&
+                (containerGenerationOf(sourceInspect) ?? null) !==
+                  previousIntent.sourceGeneration &&
+                sourceInspect.labels?.['verity.sandbox-repair-attempt'] !==
+                  previousIntent.attemptId) ||
+              (project.imageOverrideRef ?? (await this.defaultImageRef())) !==
+                previousIntent.targetImageRef)
+          ) {
+            this.forgetSandboxRepairIntent(project.id);
+            continue;
+          }
+          repairIntent = {
+            projectId: project.id,
+            version: 1,
+            attemptId: randomUUID(),
+            status: 'running',
+            sourceGeneration: containerGenerationOf(sourceInspect) ?? null,
+            targetImageRef: project.imageOverrideRef ?? (await this.defaultImageRef()),
+            failures: this.sandboxRepairFailures.get(project.id) ?? 0,
+            retryAt: intentTime,
+            storageRefused: false,
+            lastFailureAt: new Date(priorFailure?.at ?? intentTime.getTime()),
+            lastFailureMessage: priorFailure?.message ?? '',
+          };
+          const startedIntent = repairIntent;
+          await this.writeSandboxRepairIntent((intents) => intents.record(startedIntent));
+          this.sandboxRepairIntentDetails.set(project.id, repairIntent);
+          this.pendingSandboxRepairRetries.add(project.id);
           attemptedRecreate = true;
-          await this.recreateContainer(project.id, {
-            confirmWarnings: true,
-            initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
-          });
+          await this.automaticRepairAttemptContext.run(repairIntent, () =>
+            this.recreateContainer(project.id, {
+              confirmWarnings: true,
+              initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+            }),
+          );
           // Counted only once the recreate actually happened. A recreate that THREW
           // — daemon down, image pull failed — proves nothing about the drift, and
           // charging it would let three unrelated outages disqualify a project from
@@ -4683,7 +4953,6 @@ export class ProvisionerImpl implements Provisioner {
           // so retract the report now rather than leaving it up for a tick.
           this.disconnectedSandboxes.delete(project.id);
           this.noteSandboxRebuilt(project.id);
-          this.pendingSandboxRepairRetries.delete(project.id);
           if (classification === 'orphaned')
             callbacks.onRepaired?.(project.id, {
               interruptedTurn: busy,
@@ -4693,7 +4962,11 @@ export class ProvisionerImpl implements Provisioner {
           // Only a failed RECREATE counts against the streak. A classify or probe
           // that threw leaves the verdict unknown — the pass never decided the
           // sandbox needed repairing, so it cannot report that repairing it fails.
-          if (attemptedRecreate) {
+          if (
+            attemptedRecreate &&
+            repairIntent &&
+            this.sandboxRepairIntentDetails.get(project.id)?.attemptId === repairIntent.attemptId
+          ) {
             this.pendingSandboxRepairRetries.add(project.id);
             this.sandboxRepairFailures.set(
               project.id,
@@ -4701,7 +4974,7 @@ export class ProvisionerImpl implements Provisioner {
             );
             const streak = this.sandboxRepairFailures.get(project.id) ?? 1;
             const now = (this.opts.now ?? Date.now)();
-            this.sandboxRepairRetryAt.set(project.id, {
+            const retry = {
               at:
                 now +
                 Math.min(
@@ -4709,16 +4982,35 @@ export class ProvisionerImpl implements Provisioner {
                   SANDBOX_REPAIR_RETRY_MIN_MS * 2 ** Math.min(streak - 1, 10),
                 ),
               storage: isBuildStorageCapacityRefusal(error),
-            });
+            };
+            this.sandboxRepairRetryAt.set(project.id, retry);
             // First line only and bounded: this is shown to project members
             // beside the update status, and recreate failures are already
             // redacted where they carry credentials.
-            this.sandboxRepairLastFailure.set(project.id, {
+            const lastFailure = {
               at: now,
               message: (error instanceof Error ? error.message : 'Sandbox recreate failed')
                 .split('\n')[0]!
                 .slice(0, 500),
-            });
+            };
+            this.sandboxRepairLastFailure.set(project.id, lastFailure);
+            // Durable, because the failure may have left the project `failed`,
+            // and only this record lets the next Server process know that the
+            // repair is Verity's to retry rather than waiting for a manual one.
+            await this.writeSandboxRepairIntent((intents) =>
+              intents.recordFailure({
+                ...repairIntent!,
+                failures: streak,
+                retryAt: new Date(retry.at),
+                storageRefused: retry.storage,
+                lastFailureAt: new Date(lastFailure.at),
+                lastFailureMessage: lastFailure.message,
+              }),
+            ).catch((persistError: unknown) => failures.push(persistError));
+            // Some early container-phase failures leave container_starting.
+            // Revisit the durable intent next tick, as a new Server would, once
+            // the provision promise has released its in-flight ownership.
+            this.sandboxRepairIntentsRestored = undefined;
           } else {
             // Consecutive means consecutive completed recreate attempts. A tick
             // that cannot even classify or probe the sandbox breaks the streak;
@@ -4760,20 +5052,38 @@ export class ProvisionerImpl implements Provisioner {
     for (const projectId of this.imageUpdateDeferralsSince.keys()) {
       if (!imageDeferredThisPass.has(projectId)) this.imageUpdateDeferralsSince.delete(projectId);
     }
+    for (const projectId of this.imageUpdateDeferralReasons.keys()) {
+      if (!imageDeferredThisPass.has(projectId)) this.imageUpdateDeferralReasons.delete(projectId);
+    }
     // Drop reports for projects this pass no longer reconciles at all — deleted,
     // deprovisioned, or no longer `active`. Unlike `orphanDeferrals` the entries
     // are NOT rewritten from scratch each pass: they persist across ticks until a
     // pass has a reason to change them, so a verdict survives a tick that merely
     // could not reach a decision.
     const reconciled = new Set(pending.map((project) => project.id));
+    // An owed repair outlives a pass it sat out while being provisioned, or while
+    // the project is hidden from this list. Only a state chosen since — slept,
+    // waking, deprovisioned — ends it, durably. A deleted project's record goes
+    // with its row.
+    const listed = new Map(projects.map((project) => [project.id, project]));
+    const owed = new Set<string>();
+    for (const projectId of [...this.pendingSandboxRepairRetries]) {
+      const state = listed.get(projectId)?.state;
+      if (
+        state === 'absent' ||
+        state === 'sleeping' ||
+        state === 'sleeping_starting' ||
+        state === 'waking'
+      ) {
+        this.forgetSandboxRepairIntent(projectId);
+      } else owed.add(projectId);
+    }
+    const kept = (projectId: string) => reconciled.has(projectId) || owed.has(projectId);
     for (const projectId of [...this.disconnectedSandboxes]) {
       if (!reconciled.has(projectId)) this.disconnectedSandboxes.delete(projectId);
     }
     for (const projectId of [...this.sandboxRepairFailures.keys()]) {
-      if (!reconciled.has(projectId)) this.sandboxRepairFailures.delete(projectId);
-    }
-    for (const projectId of [...this.pendingSandboxRepairRetries]) {
-      if (!reconciled.has(projectId)) this.pendingSandboxRepairRetries.delete(projectId);
+      if (!kept(projectId)) this.sandboxRepairFailures.delete(projectId);
     }
     for (const projectId of [...this.settledSandboxes]) {
       if (!reconciled.has(projectId)) this.settledSandboxes.delete(projectId);
@@ -4781,10 +5091,10 @@ export class ProvisionerImpl implements Provisioner {
     // Unlike the drift budget below, dropping a retry backoff only lets a project
     // that left and re-entered reconciliation retry at once; it cannot start a loop.
     for (const projectId of [...this.sandboxRepairRetryAt.keys()]) {
-      if (!reconciled.has(projectId)) this.sandboxRepairRetryAt.delete(projectId);
+      if (!kept(projectId)) this.sandboxRepairRetryAt.delete(projectId);
     }
     for (const projectId of [...this.sandboxRepairLastFailure.keys()]) {
-      if (!reconciled.has(projectId)) this.sandboxRepairLastFailure.delete(projectId);
+      if (!kept(projectId)) this.sandboxRepairLastFailure.delete(projectId);
     }
     // `envDriftRecreates` is deliberately NOT pruned here. The two maps look alike
     // and their safety runs opposite ways: dropping a `disconnectedSandboxes` entry
@@ -4801,6 +5111,13 @@ export class ProvisionerImpl implements Provisioner {
     // pass" — but deprovisioning lives on `DeprovisionerImpl`, which holds none of
     // this instance's state, and coupling the two to reclaim an integer per deleted
     // project is not worth it. Ids are uuids, so a stale entry is never read again.
+    // Synchronous lifecycle notices queue their durable changes. Finish them
+    // before reporting the pass, and surface persistence failures to its caller.
+    await this.sandboxRepairIntentWrites;
+    if (this.sandboxRepairIntentWriteError !== undefined) {
+      failures.push(this.sandboxRepairIntentWriteError);
+      this.sandboxRepairIntentWriteError = undefined;
+    }
     if (failures.length > 0) {
       throw new AggregateError(
         failures,
@@ -4907,6 +5224,8 @@ export class ProvisionerImpl implements Provisioner {
   }
 
   private async provisionOnce(projectId: string, opts: ProvisionOptions): Promise<ProjectRecord> {
+    this.forgetSandboxRepairIntent(projectId);
+    await this.sandboxRepairIntentWrites;
     await this.assertNoRunnerCacheMaintenance(projectId);
     // Phase 1: acquire lock, check state, transition to `cloning` (or
     // short-circuit if already `active`/mid-transition).
@@ -5010,6 +5329,19 @@ export class ProvisionerImpl implements Provisioner {
     if (project === undefined) {
       throw new ProvisioningError('project gone mid-recreate');
     }
+    const automatic =
+      opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
+    const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
+    if (automatic && !['active', 'failed'].includes(project.state)) {
+      this.forgetSandboxRepairIntent(projectId);
+      await this.sandboxRepairIntentWrites;
+      throw new ProvisioningError('Automatic repair no longer authorized by project state');
+    }
+
+    if (!(opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile')) {
+      this.forgetSandboxRepairIntent(projectId);
+      await this.sandboxRepairIntentWrites;
+    }
     await this.assertNoRunnerCacheMaintenance(projectId);
     if (project.state === 'cloning' || project.state === 'container_starting') {
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
@@ -5103,6 +5435,59 @@ export class ProvisionerImpl implements Provisioner {
         project,
         this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME),
       );
+      // Image preparation can take minutes. Recheck under the provision barrier
+      // immediately before retiring the generation, including unknown activity.
+      if (
+        opts.initiator?.kind === 'system' &&
+        opts.initiator.trigger === 'sandbox_reconcile' &&
+        (await this.probeProjectBusy(project.id)).busy
+      ) {
+        const current = await this.opts.docker
+          .inspectContainer(project.containerName)
+          .catch((error: unknown) => {
+            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+            throw error;
+          });
+        // An offline preview can retain its activity lease after the sandbox
+        // disappeared. Recreating a proven missing container interrupts nothing.
+        if (current !== null)
+          throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
+      }
+      if (automaticIntent) {
+        const latestProject = await this.opts.store.getProject(project.id);
+        if (
+          !latestProject ||
+          !['active', 'failed'].includes(latestProject.state) ||
+          (latestProject.imageOverrideRef ?? (await this.defaultImageRef())) !==
+            automaticIntent.targetImageRef
+        ) {
+          throw new ProvisioningError('Automatic repair project state or target changed');
+        }
+        const durable = await (this.opts.store as Partial<EventStore>).sandboxRepairIntents?.list();
+        if (
+          durable &&
+          !durable.some(
+            (intent) =>
+              intent.projectId === projectId && intent.attemptId === automaticIntent.attemptId,
+          )
+        ) {
+          throw new ProvisioningError('Automatic repair cancelled or superseded');
+        }
+        const current = await this.opts.docker
+          .inspectContainer(project.containerName)
+          .catch((error: unknown) => {
+            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+            throw error;
+          });
+        if (
+          (current && current.labels?.[PROJECT_ID_LABEL] !== project.id) ||
+          (containerGenerationOf(current) ?? null) !== automaticIntent.sourceGeneration ||
+          (project.imageOverrideRef ?? (await this.defaultImageRef())) !==
+            automaticIntent.targetImageRef
+        ) {
+          throw new ProvisioningError('Automatic repair generation or target changed');
+        }
+      }
       await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
@@ -6713,6 +7098,15 @@ export class ProvisionerImpl implements Provisioner {
         : {}),
       labels: {
         [PROJECT_ID_LABEL]: project.id,
+        // Persist the already-durable attempt identity on its replacement before
+        // create/start. A failed start must remain ours to retry after restart,
+        // while an unrelated generation still cancels the old mandate.
+        ...(this.automaticRepairAttemptContext.getStore() === undefined
+          ? {}
+          : {
+              'verity.sandbox-repair-attempt':
+                this.automaticRepairAttemptContext.getStore()!.attemptId,
+            }),
         ...(effectiveClaudeGatewayUrl === undefined
           ? {}
           : { [CLAUDE_EGRESS_GATEWAY_URL_LABEL]: effectiveClaudeGatewayUrl }),

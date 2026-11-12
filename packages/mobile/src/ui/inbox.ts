@@ -4,7 +4,11 @@ import { mockupProgress } from './mockups.js';
 import { projectNeedsRepair } from './projectBadge.js';
 import { projectDisplayName } from './projectName.js';
 import { pullRequestMergeButton } from './pullRequest.js';
-import { sandboxUpdateNeedsAttention, isSecuritySandboxUpdate } from './sandboxUpdate.js';
+import {
+  isSecuritySandboxUpdate,
+  sandboxUpdateBlockedInboxMessage,
+  sandboxUpdateNeedsAttention,
+} from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
 import { permissionInputText } from './permissionInput.js';
 import { permissionSummary, type PermissionLine } from './permissionSummary.js';
@@ -486,7 +490,7 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
       message: update.turnBlocked
-        ? 'A sandbox update waits for the running turn to finish.'
+        ? sandboxUpdateBlockedInboxMessage(update)
         : 'The sandbox could not update itself.',
       actions: [openProject],
     };

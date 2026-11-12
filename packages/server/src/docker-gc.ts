@@ -220,6 +220,8 @@ export interface DockerGcDeps {
     errors: string[];
     retained?: Array<{ name: string; reason: string }>;
   }>;
+  /** Bounded, non-waiting helper retention under lifecycle/storage barriers. */
+  retireCacheHelpers?: DockerGcDeps['retireContainers'];
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 
@@ -581,6 +583,19 @@ export async function runDockerGc(
       errors.push({ resource: 'stopped containers', message: errorMessage(error) });
     }
     phaseDone('maintenance');
+  }
+
+  if (capacityOnly && !deps.imagesOnly) {
+    try {
+      const retired = await deps.retireCacheHelpers?.();
+      if (retired) {
+        report.containersRemoved.push(...retired.removed);
+        if (retired.retained) report.retainedContainers = retired.retained;
+        errors.push(...retired.errors.map((message) => ({ resource: 'cache helper', message })));
+      }
+    } catch (error) {
+      errors.push({ resource: 'cache helpers', message: errorMessage(error) });
+    }
   }
 
   // --- Devcontainer images -------------------------------------------------

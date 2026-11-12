@@ -495,6 +495,7 @@ describe('GET /projects (#174)', () => {
         provision: vi.fn(),
         unrepairedSandboxes: () => new Set<string>(),
         turnBlockedSandboxes: () => new Set(['p-blocked']),
+        sandboxUpdateBlockers: () => new Map([['p-blocked', ['preview'] as const]]),
       },
     });
 
@@ -507,11 +508,20 @@ describe('GET /projects (#174)', () => {
           (project) =>
             [
               project.id,
-              [project.sandboxUpdate.selfRepair, project.sandboxUpdate.turnBlocked],
+              [
+                project.sandboxUpdate.selfRepair,
+                project.sandboxUpdate.turnBlocked,
+                project.sandboxUpdate.blockedBy,
+              ],
             ] as const,
         ),
       ),
-    ).toEqual({ 'p-blocked': ['stalled', true], 'p-fine': ['converging', false] });
+      // `blockedBy` names the preview holding the update, so the app can ask for
+      // the preview to stop rather than for a turn that is not running.
+    ).toEqual({
+      'p-blocked': ['stalled', true, ['preview']],
+      'p-fine': ['converging', false, []],
+    });
 
     for (const [id, blocked] of [
       ['p-blocked', true],

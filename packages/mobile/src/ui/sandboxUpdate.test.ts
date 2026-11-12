@@ -4,6 +4,8 @@ import type { SandboxUpdate } from '../api.js';
 import {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
+  sandboxUpdateBlockedDetail,
+  sandboxUpdateBlockedInboxMessage,
   sandboxUpdateIndicator,
   sandboxUpdateLastFailure,
   sandboxUpdateNeedsAttention,
@@ -24,6 +26,7 @@ function update(overrides: Partial<SandboxUpdate> = {}): SandboxUpdate {
     targetRevision: null,
     selfRepair: 'converging',
     turnBlocked: false,
+    blockedBy: [],
     lastRepairFailure: null,
     ...overrides,
   };
@@ -122,12 +125,19 @@ describe('sandboxUpdateSummary', () => {
     // installed apps. Falling through to the `stalled` wording would therefore
     // describe a rebuild that has failed, which is the opposite of what happened:
     // nothing failed, and the operator holds the only thing that would move it.
-    const blocked = sandboxUpdateSummary(update({ turnBlocked: true, selfRepair: 'stalled' }));
+    const blocked = sandboxUpdateSummary(
+      update({ turnBlocked: true, blockedBy: ['turn'], selfRepair: 'stalled' }),
+    );
     expect(blocked).toBe('Update waiting for a turn to finish — cancel it to update now');
     expect(blocked).not.toContain('stuck');
     expect(
       sandboxUpdateSummary(
-        update({ turnBlocked: true, selfRepair: 'stalled', category: 'security' }),
+        update({
+          turnBlocked: true,
+          blockedBy: ['turn'],
+          selfRepair: 'stalled',
+          category: 'security',
+        }),
       ),
     ).toBe('Security update waiting for a turn to finish — cancel it to update now');
   });
@@ -165,7 +175,11 @@ describe('sandboxUpdateIndicator', () => {
     // A triangle here sends the operator looking for a broken sandbox. Nothing is
     // broken: the recreate is ready and is declining to end a turn it has no
     // business ending.
-    expect(sandboxUpdateIndicator(update({ turnBlocked: true, selfRepair: 'stalled' }))).toEqual({
+    expect(
+      sandboxUpdateIndicator(
+        update({ turnBlocked: true, blockedBy: ['turn'], selfRepair: 'stalled' }),
+      ),
+    ).toEqual({
       label: 'Update waiting for a turn',
       icon: 'clock',
       tone: 'attention',
@@ -177,7 +191,12 @@ describe('sandboxUpdateIndicator', () => {
     // one deliberately does NOT soften to the clock.
     expect(
       sandboxUpdateIndicator(
-        update({ turnBlocked: true, selfRepair: 'stalled', category: 'security' }),
+        update({
+          turnBlocked: true,
+          blockedBy: ['turn'],
+          selfRepair: 'stalled',
+          category: 'security',
+        }),
       ),
     ).toEqual({ label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' });
   });
@@ -200,7 +219,7 @@ describe('sandboxUpdateAlertMessage', () => {
     // error anywhere.
     const message = sandboxUpdateAlertMessage(
       project,
-      update({ turnBlocked: true, selfRepair: 'stalled' }),
+      update({ turnBlocked: true, blockedBy: ['turn'], selfRepair: 'stalled' }),
     );
     expect(message).toContain('has a turn in flight');
     expect(message).toContain('Cancel the turn first');
@@ -245,5 +264,63 @@ describe('sandboxUpdateLastFailure', () => {
     expect(
       sandboxUpdateLastFailure(update({ lastRepairFailure: { ...failure, at: 'later' } }), 'UTC'),
     ).toBeNull();
+  });
+});
+
+describe('what holds a blocked update', () => {
+  // The Server's `turnBlocked` also covers a running dev server and a shared
+  // preview. Every sentence used to ask for a turn to be cancelled, which sent
+  // people looking for a turn that was not running while the update stayed put.
+  const blocked = (blockedBy: string[], overrides: Partial<SandboxUpdate> = {}) =>
+    update({ turnBlocked: true, selfRepair: 'stalled', blockedBy, ...overrides });
+  const project = { owner: 'heey-global', repo: 'verity' };
+
+  it('names a dev server and asks for it to stop', () => {
+    const update = blocked(['dev_server']);
+    expect(sandboxUpdateIndicator(update)?.label).toBe('Update waiting for a dev server');
+    expect(sandboxUpdateSummary(update)).toContain('stop it to update now');
+    expect(sandboxUpdateBlockedDetail(update)).toContain('stop the dev server first');
+    expect(sandboxUpdateAlertMessage(project, update)).toContain('has a running dev server');
+    expect(sandboxUpdateBlockedInboxMessage(update)).toContain('dev server');
+    for (const text of [
+      sandboxUpdateSummary(update),
+      sandboxUpdateBlockedDetail(update),
+      sandboxUpdateAlertMessage(project, update),
+      sandboxUpdateBlockedInboxMessage(update),
+    ])
+      expect(text).not.toMatch(/turn/i);
+  });
+
+  it('names a shared preview and asks for sharing to stop', () => {
+    const update = blocked(['preview']);
+    expect(sandboxUpdateIndicator(update)?.label).toBe('Update waiting for a preview');
+    expect(sandboxUpdateSummary(update)).toContain('stop sharing');
+    expect(sandboxUpdateAlertMessage(project, update)).toContain('shared as a preview');
+    expect(sandboxUpdateBlockedDetail(update)).not.toMatch(/turn/i);
+  });
+
+  it('puts a turn first when several things hold the sandbox', () => {
+    // The turn is what a recreate would kill outright.
+    expect(sandboxUpdateIndicator(blocked(['preview', 'turn']))?.label).toBe(
+      'Update waiting for a turn',
+    );
+  });
+
+  it('names no remedy when the Server did not say, or said something new', () => {
+    // An older Server sends no reasons, a newer one may send members this app
+    // does not know. Guessing "turn" for either repeats the original mistake.
+    for (const update of [blocked([]), blocked(['backup'])]) {
+      expect(sandboxUpdateIndicator(update)?.label).toBe('Update waiting');
+      expect(sandboxUpdateSummary(update)).toBe('Update waiting for project activity to finish');
+      expect(sandboxUpdateAlertMessage(project, update)).not.toMatch(/turn/i);
+    }
+  });
+
+  it('keeps the shield for a security update whatever holds it', () => {
+    expect(sandboxUpdateIndicator(blocked(['preview'], { category: 'security' }))).toEqual({
+      label: 'Security update waiting for a preview',
+      icon: 'shield',
+      tone: 'danger',
+    });
   });
 });
