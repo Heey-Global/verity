@@ -274,9 +274,8 @@ title; a log list keeps them dense and scannable.
   the Repositories row) is drawn neutral; its spoken label keeps the intent.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
-- **Count** (`CountBadge`) — how many items wait for the person: the number in `Label` on
-  a 14 % `attention` tint, the same drawing as the Home tab's count. Its spoken label names
-  what is counted.
+- **Home tab count** — how many items wait for the person: the number in `Label` on
+  a 14 % `attention` tint. Its spoken label names what is counted.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
 - **Project cards** follow the session rows (§ 5.2): the initial's tile is the project

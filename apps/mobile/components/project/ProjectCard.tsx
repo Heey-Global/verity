@@ -81,7 +81,7 @@ export function projectCardFacts(
 
 /** The subtitle in its parts: what waits (in the attention colour), what runs,
  *  and the project's state note. */
-export function projectCardLineParts(
+function projectCardLineParts(
   group: SessionProjectGroup,
   facts: ProjectCardFacts,
 ): { waiting?: string; rest: string; note?: ProjectCardState['note'] } {
