@@ -81,6 +81,9 @@ type Pickup = {
 };
 const SLOT_SPRING = { damping: 30, stiffness: 320, overshootClamping: true };
 
+/** How long a row is held before the drag picks it up. */
+export const PROJECT_PICKUP_DELAY_MS = 260;
+
 /** One recognizer on the fixed viewport owns the entire touch sequence. Neither
  * recycling a cell nor changing the content size can detach that recognizer. */
 export function useProjectReorder({
@@ -276,7 +279,7 @@ export function useProjectReorder({
     () =>
       Gesture.Pan()
         .withTestId('project-reorder')
-        .activateAfterLongPress(260)
+        .activateAfterLongPress(PROJECT_PICKUP_DELAY_MS)
         .failOffsetX([-12, 12])
         .failOffsetY([-12, 12])
         .maxPointers(1)
