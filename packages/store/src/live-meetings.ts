@@ -2,6 +2,7 @@ import { TaskStore } from './tasks.js';
 import { createPassthroughCipher, type SecretCipher } from './crypto.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
+import { randomUUID } from 'node:crypto';
 
 export interface LiveMeetingSyncRecord {
   title?: string | null | undefined;
@@ -775,12 +776,28 @@ export class LiveMeetingStore {
       await trx
         .updateTable('live_meeting_commands')
         .set({
-          state: sql`case when action = 'stop' then 'completed' else 'failed' end`,
-          error: sql`case when action = 'stop' then null else 'Meeting finalized on server.' end`,
+          state: 'failed',
+          error: 'Meeting finalized on server.',
           acknowledged_at: now,
         })
         .where('meeting_id', '=', meetingId)
         .where('state', '=', 'pending')
+        .where('action', '!=', 'stop')
+        .execute();
+      // Server finalization cannot confirm a microphone stopped. A recorder with blocked
+      // uploads still receives this command and acknowledges it after stopping locally.
+      await trx
+        .insertInto('live_meeting_commands')
+        .values({
+          id: randomUUID(),
+          meeting_id: meetingId,
+          action: 'stop',
+          state: 'pending',
+          error: null,
+          requested_at: now,
+          acknowledged_at: null,
+        })
+        .onConflict((conflict) => conflict.doNothing())
         .execute();
       return 'finalized';
     });

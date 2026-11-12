@@ -107,6 +107,9 @@ describe('live meeting sync', () => {
     const before = await ctx.store.liveMeetings.changes('session-1', 0);
     expect(await ctx.store.liveMeetings.finalizeMeeting('session-2', meeting.id)).toBe('not_found');
     expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id)).toBe('finalized');
+    expect(
+      await ctx.store.liveMeetings.ownerCommands('session-1', meeting.id, meeting.ownerTokenHash),
+    ).toEqual([expect.objectContaining({ id: 'stop-1', action: 'stop', state: 'pending' })]);
     const finalized = await ctx.store.liveMeetings.changes('session-1', before.cursor);
     expect(finalized.meetings).toEqual([
       expect.objectContaining({ state: 'ended', transcript: meeting.transcript, revision: 1 }),
@@ -116,6 +119,9 @@ describe('live meeting sync', () => {
     ]);
     expect(await ctx.store.liveMeetings.running()).toEqual([]);
     expect(await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id)).toBe('finalized');
+    expect(
+      await ctx.store.liveMeetings.ownerCommands('session-1', meeting.id, meeting.ownerTokenHash),
+    ).toHaveLength(1);
     expect((await ctx.store.liveMeetings.changes('session-1', 0)).meetings[0]!.endedAt).toBe(
       finalized.meetings[0]!.endedAt,
     );
@@ -175,6 +181,45 @@ describe('live meeting sync', () => {
       revision: 3,
       status: 'working',
     });
+  });
+
+  it('queues a recorder stop on finalization even when its uploads can no longer succeed', async () => {
+    await ctx.store.liveMeetings.putMeeting(meeting);
+    await ctx.store.liveMeetings.requestCommand(
+      'session-1',
+      meeting.id,
+      'pause-before-finalize',
+      'pause',
+    );
+    await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id);
+    const commands = await ctx.store.liveMeetings.ownerCommands(
+      'session-1',
+      meeting.id,
+      meeting.ownerTokenHash,
+    );
+    expect(commands).toEqual([expect.objectContaining({ action: 'stop', state: 'pending' })]);
+    expect(
+      (await ctx.store.liveMeetings.commands('session-1', meeting.id))?.find(
+        (item) => item.id === 'pause-before-finalize',
+      )?.state,
+    ).toBe('failed');
+    await ctx.store.liveMeetings.finalizeMeeting('session-1', meeting.id);
+    expect(
+      await ctx.store.liveMeetings.ownerCommands('session-1', meeting.id, meeting.ownerTokenHash),
+    ).toEqual(commands);
+    expect(
+      await ctx.store.liveMeetings.acknowledgeCommand(
+        'session-1',
+        meeting.id,
+        commands![0]!.id,
+        meeting.ownerTokenHash,
+        'completed',
+        null,
+      ),
+    ).toBe(true);
+    expect(
+      await ctx.store.liveMeetings.ownerCommands('session-1', meeting.id, meeting.ownerTokenHash),
+    ).toEqual([]);
   });
 
   it('does not finalize provider-managed or missing meetings', async () => {
