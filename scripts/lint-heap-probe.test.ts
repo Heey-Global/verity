@@ -12,6 +12,7 @@ vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 const temporary: string[] = [];
 afterEach(() => {
   for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true });
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
