@@ -559,9 +559,10 @@ private final class LiveSTTService {
   }
 
   private func disableSpeakers(message: String) {
+    // Idle recordings and dictation can still retain previously loaded weights.
+    Task { await LiveSpeakerModels.shared.releaseCachedModels() }
     guard dictationOwner == nil, activeEngine != nil, speakerModelTask != nil, !speakerUnavailable else { return }
     speakerUnavailable = true
-    Task { await LiveSpeakerModels.shared.releaseCachedModels() }
     speakerInput?.finish()
     speakerModelTask?.cancel()
     speakerTask?.cancel()

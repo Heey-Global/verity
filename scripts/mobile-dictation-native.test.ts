@@ -129,6 +129,13 @@ describe('native shared CoreML loading guards', () => {
     expect(trim).not.toMatch(/loading\s*=|loading\.remove|\.cancel\(/);
   });
 
+  it('releases cached weights under memory pressure even without an active speaker task', () => {
+    const body = nativeMethod(read(), 'disableSpeakers');
+    const trim = body.indexOf('LiveSpeakerModels.shared.releaseCachedModels()');
+    expect(trim).toBeGreaterThanOrEqual(0);
+    expect(trim).toBeLessThan(body.indexOf('guard dictationOwner'));
+  });
+
   it('gates speaker and explicit ASR CoreML loads through one process-wide permit', () => {
     const source = read();
     const coordinator = source.slice(
