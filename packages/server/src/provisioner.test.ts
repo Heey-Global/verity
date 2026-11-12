@@ -1547,7 +1547,7 @@ describe('ProvisionerImpl (#174)', () => {
     });
     expect(provisioner.tryBeginProjectSandboxActivity(id)).toBe(true);
 
-    await expect(provisioner.sleepProject(id)).rejects.toThrow('turn in flight');
+    await expect(provisioner.sleepProject(id)).rejects.toThrow('active sandbox work');
     expect(calls.find((call) => call.method === 'stopContainer')).toBeUndefined();
 
     provisioner.endProjectSandboxActivity(id);
@@ -7072,6 +7072,51 @@ describe('ProvisionerImpl (#174)', () => {
     expect(row?.imageRef).toBe('ghcr.io/heey-global/dev-base:previous');
   });
 
+  it.each(['turn', 'dev_server', 'preview', 'unknown'] as const)(
+    'rechecks %s activity after preparing the automatic replacement image',
+    async (reason) => {
+      const id = await seedProject('active');
+      await ctx.store.recordProjectImageRef(id, 'ghcr.io/heey-global/dev-base:previous', null);
+      const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
+      let busy = false;
+      const pullImage = vi.fn(async () => {
+        busy = true;
+      });
+      const stopContainer = vi.fn(async () => {});
+      const removeContainer = vi.fn(async () => {});
+      const { client: docker } = fakeDocker({
+        pullImage,
+        stopContainer,
+        removeContainer,
+        createdContainerId: 'cid-recreated',
+      });
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        projectTokenMint: async () => 'tok',
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:2026.06',
+        hostCloneRoot: '/var/lib/verity-dev',
+        claudeConfigVolume: 'claude-config-verity',
+        codexConfigVolume: 'codex-config-verity',
+        git,
+        isDirectory: (path) => !path.endsWith('/.devcontainer'),
+      });
+
+      provisioner.attachProjectBusyProbe(async () => ({
+        observations: busy ? [{ reason, source: 'busy_probe' as const }] : [],
+      }));
+      await expect(
+        provisioner.recreateContainer(id, {
+          initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+        }),
+      ).rejects.toThrow('automatic repair deferred');
+      expect(pullImage).toHaveBeenCalledOnce();
+      expect(stopContainer).not.toHaveBeenCalled();
+      expect(removeContainer).not.toHaveBeenCalled();
+    },
+  );
+
   it('resolves a name-taken conflict from create AFTER a force-pull on recreate (inspect + start, ADR 0004)', async () => {
     const id = await seedProject('active');
     const git = vi.fn(async () => ({ stdout: '', stderr: '' }));
@@ -8264,7 +8309,7 @@ process.stdout.write(JSON.stringify({ secret: process.env.VERITY_BUILD_TEST_SECR
       writeFileSync(
         join(directory, 'devcontainer'),
         `#!/usr/bin/env node
-const { appendFileSync, writeFileSync } = require('node:fs');
+import { appendFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(calls)}, 'devcontainer ' + args.join(' ') + '\\n');
 const spec = args.includes('--output') ? args[args.indexOf('--output') + 1] : '';
@@ -11015,7 +11060,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       inspectContainer: vi.fn(async (name: string) => {
         const entry = byName[name];
         if (entry === undefined || entry === 'absent') {
-          throw new Error(`no such container ${name}`);
+          throw new DockerError({ kind: 'container_not_found', id: name });
         }
         return entry;
       }),
@@ -11807,7 +11852,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const p = await seedActive('blocked-image-update', 'dev-blocked-image-update');
     const { client } = dockerInspecting({ 'dev-blocked-image-update': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);
-    provisioner.attachProjectBusyProbe(async () => true);
+    provisioner.attachProjectBusyProbe(async () => ['turn']);
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     const tick = async (): Promise<void> => {
       await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
@@ -11844,7 +11889,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const { client } = dockerInspecting({ 'dev-unblocked-update': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);
     let busy = true;
-    provisioner.attachProjectBusyProbe(async () => busy);
+    provisioner.attachProjectBusyProbe(async () => (busy ? ['turn'] : []));
     const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
     const tick = async (): Promise<void> => {
       await provisioner.reconcileRelays([p], { updateAvailable: new Set([p.id]) });
@@ -11873,7 +11918,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     const { client } = dockerInspecting({ 'dev-restreaked-update': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);
     let busy = true;
-    provisioner.attachProjectBusyProbe(async () => busy);
+    provisioner.attachProjectBusyProbe(async () => (busy ? ['turn'] : []));
     // The recreate between the two turns must not resolve the drift for this test —
     // the point is the second turn starting a fresh wait for the SAME update.
     vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
@@ -12193,6 +12238,286 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     },
   );
 
+  describe('owed repairs across a Server restart', () => {
+    /** A recreate that fails the way a real one can after retiring the old
+     *  sandbox: the project is left `failed`, which is what took it out of
+     *  automatic repair once process memory was gone. */
+    async function failRecreateLeavingFailed(projectId: string) {
+      const project = (await ctx.store.getProject(projectId))!;
+      const before = makeProvisioner(
+        dockerInspecting({ [project.containerName]: migratedInspect(projectId) }).client,
+        { isHealthy: async () => false },
+      );
+      before.attachProjectBusyProbe(async () => false);
+      vi.spyOn(before, 'recreateContainer').mockImplementation(async () => {
+        await ctx.store.updateProjectState(projectId, 'failed', 'pull failed');
+        throw new Error('pull failed');
+      });
+      await expect(before.reconcileRelays([project])).rejects.toThrow();
+      return (await ctx.store.getProject(projectId))!;
+    }
+
+    it('persists ownership before entering a destructive recreate', async () => {
+      // A crash before the catch block must not lose the automatic repair.
+      const p = await seedActive('intent-first', 'dev-intent-first');
+      const before = makeProvisioner(
+        dockerInspecting({ [p.containerName]: migratedInspect(p.id) }).client,
+        { isHealthy: async () => false },
+      );
+      before.attachProjectBusyProbe(async () => false);
+      vi.spyOn(before, 'recreateContainer').mockImplementation(async () => {
+        expect(await ctx.store.sandboxRepairIntents.list()).toEqual([
+          expect.objectContaining({ projectId: p.id, failures: 0 }),
+        ]);
+        return p;
+      });
+      await before.reconcileRelays([p]);
+      await vi.waitFor(async () => expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]));
+    });
+
+    it('resumes a failed automatic repair in the next Server process', async () => {
+      // The reported outage: after an update the recreate failed (no build
+      // capacity), the project read `failed`, and only Pause/Start or Repair
+      // brought it back, because nothing outside memory said the repair was
+      // Verity's to retry.
+      const p = await seedActive('owed-restart', 'dev-owed-restart');
+      const failed = await failRecreateLeavingFailed(p.id);
+      expect(failed.state).toBe('failed');
+      expect((await ctx.store.sandboxRepairIntents.list()).map((i) => i.projectId)).toEqual([p.id]);
+
+      const after = makeProvisioner(dockerInspecting({ 'dev-owed-restart': 'absent' }).client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+      // The failure is still reported, with its time, before the retry runs.
+      await after.reconcileRelays([]);
+      expect(after.sandboxRepairLastFailures().get(p.id)?.message).toBe('pull failed');
+
+      await after.reconcileRelays([failed]);
+      expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
+      expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      expect(after.sandboxRepairLastFailures().has(p.id)).toBe(false);
+    });
+
+    it('ends an owed repair once the project is put to sleep', async () => {
+      // Sleeping was chosen after the failure; an automatic recreate must not
+      // wake the project against it, in this process or the next.
+      const p = await seedActive('owed-slept', 'dev-owed-slept');
+      const failed = await failRecreateLeavingFailed(p.id);
+      const after = makeProvisioner(dockerInspecting({ 'dev-owed-slept': 'absent' }).client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+
+      await after.reconcileRelays([{ ...failed, state: 'sleeping' }]);
+      expect(recreate).not.toHaveBeenCalled();
+      await vi.waitFor(async () => expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]));
+    });
+
+    it('keeps an owed repair through a pass the project sat out', async () => {
+      // Hidden from the list or provisioned by someone else for one tick is not
+      // a decision against the repair; only a state chosen since is.
+      const p = await seedActive('owed-skipped', 'dev-owed-skipped');
+      const failed = await failRecreateLeavingFailed(p.id);
+      const after = makeProvisioner(dockerInspecting({ 'dev-owed-skipped': 'absent' }).client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+
+      await after.reconcileRelays([{ ...failed, state: 'container_starting' }]);
+      await after.reconcileRelays([]);
+      expect(recreate).not.toHaveBeenCalled();
+      await after.reconcileRelays([failed]);
+      expect(recreate).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes an interrupted automatic container phase after restart', async () => {
+      const p = await seedActive('interrupted-auto', 'dev-interrupted-auto');
+      await failRecreateLeavingFailed(p.id);
+      const [intent] = await ctx.store.sandboxRepairIntents.list();
+      await ctx.store.sandboxRepairIntents.record({ ...intent!, status: 'running' });
+      const interrupted = (await ctx.store.updateProjectState(p.id, 'container_starting'))!;
+      const after = makeProvisioner(dockerInspecting({ [p.containerName]: 'absent' }).client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+      await after.reconcileRelays([interrupted]);
+      expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
+      expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+    });
+
+    it.each(['replacement generation', 'foreign container', 'changed target'] as const)(
+      'does not resume an old repair after a %s',
+      async (change) => {
+        const p = await seedActive('superseded-auto', 'dev-superseded-auto');
+        const failed = await failRecreateLeavingFailed(p.id);
+        const inspect = migratedInspect(p.id);
+        if (change === 'replacement generation')
+          inspect.labels = { ...inspect.labels, 'verity.container-generation': 'replacement' };
+        if (change === 'foreign container')
+          inspect.labels = { ...inspect.labels, 'verity.project-id': 'someone-else' };
+        if (change === 'changed target') {
+          const [intent] = await ctx.store.sandboxRepairIntents.list();
+          await ctx.store.sandboxRepairIntents.record({ ...intent!, targetImageRef: 'old-target' });
+        }
+        const after = makeProvisioner(dockerInspecting({ [p.containerName]: inspect }).client, {
+          isHealthy: async () => false,
+        });
+        after.attachProjectBusyProbe(async () => false);
+        const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+        await after.reconcileRelays([failed]);
+        expect(recreate).not.toHaveBeenCalled();
+        expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      },
+    );
+
+    it.each(['cancel', 'generation', 'sleep'] as const)(
+      'protects a project changed immediately before replacement: %s',
+      async (change) => {
+        const p = await seedActive('last-check', 'dev-last-check');
+        const inspect = migratedInspect(p.id);
+        const { client } = dockerInspecting({ [p.containerName]: inspect });
+        const stop = vi.spyOn(client, 'stopContainer');
+        const remove = vi.spyOn(client, 'removeContainer');
+        const before = makeProvisioner(client, {
+          isHealthy: async () => false,
+          withContainerReplace: async (_project, replace) => {
+            if (change === 'cancel') await ctx.store.sandboxRepairIntents.clear(p.id);
+            if (change === 'generation')
+              inspect.labels = {
+                ...inspect.labels,
+                'verity.container-generation': 'new-generation',
+              };
+            if (change === 'sleep') await ctx.store.updateProjectState(p.id, 'sleeping');
+            return replace();
+          },
+        });
+        before.attachProjectBusyProbe(async () => false);
+        await expect(before.reconcileRelays([p])).rejects.toThrow();
+        expect(stop).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        if (change !== 'generation')
+          expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      },
+    );
+
+    it('observes a durable cancellation after restoring retries in the same process', async () => {
+      const p = await seedActive('cancel-restored', 'dev-cancel-restored');
+      const failed = await failRecreateLeavingFailed(p.id);
+      const after = makeProvisioner(dockerInspecting({ [p.containerName]: 'absent' }).client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+      await after.reconcileRelays([]);
+      await ctx.store.sandboxRepairIntents.clear(p.id);
+      await after.reconcileRelays([failed]);
+      expect(recreate).not.toHaveBeenCalled();
+      expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+    });
+
+    it('ends the automatic mandate when a manual recreate fails', async () => {
+      const p = await seedActive('manual-supersedes', 'dev-manual-supersedes');
+      await failRecreateLeavingFailed(p.id);
+      const { client } = dockerInspecting({ [p.containerName]: 'absent' });
+      client.pullImage = async () => {
+        throw new Error('manual pull failed');
+      };
+      const after = makeProvisioner(client);
+      // The manual attempt is deliberately unable to finish; its failure must
+      // not inherit the earlier automatic repair's permission to retry.
+      await expect(after.recreateContainer(p.id)).rejects.toThrow();
+      expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      const next = makeProvisioner(dockerInspecting({ [p.containerName]: 'absent' }).client);
+      next.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(next, 'recreateContainer').mockResolvedValue(p);
+      await next.reconcileRelays([(await ctx.store.getProject(p.id))!]);
+      expect(recreate).not.toHaveBeenCalled();
+    });
+
+    it('retains an interrupted repair when Docker cannot establish its identity', async () => {
+      const p = await seedActive('unknown-auto', 'dev-unknown-auto');
+      const failed = await failRecreateLeavingFailed(p.id);
+      const { client } = fakeDocker({
+        inspectContainer: async () => {
+          throw new Error('daemon unavailable');
+        },
+      });
+      const after = makeProvisioner(client);
+      after.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+      await expect(after.reconcileRelays([failed])).rejects.toThrow();
+      expect(recreate).not.toHaveBeenCalled();
+      expect(await ctx.store.sandboxRepairIntents.list()).toHaveLength(1);
+    });
+
+    it('never adopts a failed project it owes no repair', async () => {
+      // A failure this reconciler did not cause — a manual Repair, a clone error —
+      // stays the operator's to retry.
+      const p = await seedActive('not-owed', 'dev-not-owed');
+      const failed = (await ctx.store.updateProjectState(p.id, 'failed', 'clone failed'))!;
+      const provisioner = makeProvisioner(dockerInspecting({ 'dev-not-owed': 'absent' }).client);
+      provisioner.attachProjectBusyProbe(async () => false);
+      const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+      await provisioner.reconcileRelays([failed]);
+      expect(recreate).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(['turn', 'dev_server', 'preview', 'unknown'] as const)(
+    'protects an orphan with structured %s activity beyond the former timeout',
+    async (reason) => {
+      const p = await seedActive('activity-orphan', 'dev-activity-orphan');
+      const before = makeProvisioner(
+        dockerInspecting({ [p.containerName]: migratedInspect(p.id) }).client,
+        { isHealthy: async () => false },
+      );
+      const snapshot = { observations: [{ reason, source: 'busy_probe' as const }] };
+      before.attachProjectBusyProbe(async () => snapshot);
+      const recreate = vi.spyOn(before, 'recreateContainer').mockResolvedValue(p);
+      const onDeferred = vi.fn();
+      for (let tick = 0; tick < ORPHAN_DEFER_TICK_LIMIT + 2; tick++)
+        await before.reconcileRelays([p], { onDeferred });
+      expect(recreate).not.toHaveBeenCalled();
+      expect(onDeferred).toHaveBeenLastCalledWith(
+        p.id,
+        expect.objectContaining({ reasons: [reason], observations: snapshot.observations }),
+      );
+    },
+  );
+
+  it('names what holds a deferred image update', async () => {
+    // A preview or dev server holds the sandbox exactly like a turn does, but is
+    // ended differently; the report has to say which, or the operator is told to
+    // cancel a turn that does not exist.
+    const p = await seedActive('blocked-by-preview', 'dev-blocked-by-preview');
+    const { client } = dockerInspecting({ 'dev-blocked-by-preview': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client);
+    provisioner.attachProjectBusyProbe(async () => ['preview']);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    const deferred: unknown[] = [];
+
+    await withClockFrom(START_MS, async (advanceTo) => {
+      const pass = () =>
+        provisioner.reconcileRelays([p], {
+          updateAvailable: new Set([p.id]),
+          onDeferred: (_id, info) => deferred.push(info.reasons),
+        });
+      await pass();
+      advanceTo(START_MS + IMAGE_UPDATE_DEFER_REPORT_AFTER_MS);
+      await pass();
+      expect([...provisioner.sandboxUpdateBlockers()]).toEqual([[p.id, ['preview']]]);
+    });
+    expect(deferred).toEqual([['preview'], ['preview']]);
+    expect(recreate).not.toHaveBeenCalled();
+  });
+
+  it('reads an empty activity list as idle', async () => {
+    // An array is truthy; reading it as the old boolean would hold every sandbox
+    // off forever once the probe started naming reasons.
+    const p = await seedActive('empty-activity', 'dev-empty-activity');
+    const { client } = dockerInspecting({ 'dev-empty-activity': migratedInspect(p.id) });
+    const provisioner = makeProvisioner(client, { isHealthy: async () => false });
+    provisioner.attachProjectBusyProbe(async () => []);
+    const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(p);
+    await provisioner.reconcileRelays([p]);
+    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
+  });
+
   it('retracts the report while a recreate for that project is in flight', async () => {
     // The operator taps the stuck icon; that recreate is the repair. The next
     // reconcile pass skips the project because a provision owns its container,
@@ -12243,11 +12568,8 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect([...provisioner.disconnectedSandboxProjects()]).toEqual([]);
   });
 
-  it('repairs a permanently busy orphan once its deferrals run out', async () => {
-    // The livelock, end to end: the agent inside a broker-less sandbox retries a
-    // signed commit, each retry keeps the project busy, and a busy-only guard
-    // postpones the repair forever — observed live as one project deferring on
-    // every tick for a whole server generation while four idle ones healed.
+  it('protects a permanently busy orphan beyond its former deferral limit', async () => {
+    // Relay failure and elapsed time cannot authorize killing active work.
     const p = await seedActive('livelock-orphan', 'dev-livelock-orphan');
     const { client } = dockerInspecting({ 'dev-livelock-orphan': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client, { isHealthy: async () => false });
@@ -12268,10 +12590,8 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(deferred).toHaveLength(ORPHAN_DEFER_TICK_LIMIT);
 
     await tick();
-    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
-    // Reported as an interruption so the log says a turn was taken, not just that
-    // a relay was replaced.
-    expect(repaired).toEqual([{ id: p.id, interruptedTurn: true }]);
+    expect(recreate).not.toHaveBeenCalled();
+    expect(repaired).toEqual([]);
   });
 
   it('restarts the deferral window after a tick that did not defer', async () => {
@@ -12321,7 +12641,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     }
     expect(recreate).not.toHaveBeenCalled();
     await provisioner.reconcileRelays([p]);
-    expect(recreate).toHaveBeenCalledWith(p.id, RECONCILE);
+    expect(recreate).not.toHaveBeenCalled();
   });
 
   it('never spends the window when the busy probe cannot answer', async () => {

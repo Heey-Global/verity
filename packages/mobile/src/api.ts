@@ -592,6 +592,10 @@ const sandboxUpdateSchema = z.object({
   // Defaulted for the same reason as `selfRepair`: a Server one release behind
   // this app does not send it, and `false` is exactly what that Server means.
   turnBlocked: z.boolean().default(false),
+  // What holds a `turnBlocked` update off — `turn`, `dev_server` or `preview` —
+  // so the app names the right remedy. Read as plain strings: members a newer
+  // Server adds are ignored by the helpers rather than failing the project list.
+  blockedBy: z.array(z.string()).default([]),
   // The most recent failed automatic recreate, with its time, so an earlier
   // failure cannot read as the outcome of the attempt running now. Defaulted for
   // the same reason as the fields above.

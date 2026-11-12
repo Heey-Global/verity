@@ -1,3 +1,4 @@
+import type { ProjectActivityReason } from './project-idle-sleep.js';
 import type { ProjectRecord } from '@verity/store';
 import { DockerError, type DockerClient, type ContainerInspect } from './docker.js';
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
@@ -67,13 +68,23 @@ export interface SandboxUpdateStatus {
    */
   turnBlocked: boolean;
   /**
+   * What holds a {@link turnBlocked} update off: a turn, a running dev server or
+   * a shared preview — each ended differently, so a client can name the one that
+   * applies instead of always asking for a turn to be cancelled. Empty when the
+   * update is not blocked, or the probe could not say. Despite its name,
+   * `turnBlocked` covers all three; it keeps that name for older clients.
+   * A client must ignore members it does not know.
+   */
+  blockedBy: ProjectActivityReason[];
+  /**
    * The most recent failed automatic recreate of this sandbox, with its time.
    *
    * Without a time, an old failure reads as the current attempt's: a retry can
    * wait for the Server's single build slot while the earlier refusal is still
    * on screen. Cleared by a successful recreate. Like {@link selfRepair} the
    * checker always reports `null` and the route overlays the provisioner's
-   * record, which lives in memory and therefore starts empty after a restart.
+   * record, which the store keeps across a Server restart while the automatic
+   * repair is still owed.
    */
   lastRepairFailure: { at: string; message: string } | null;
 }
@@ -125,6 +136,7 @@ const CURRENT: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  blockedBy: [],
   lastRepairFailure: null,
 };
 
@@ -582,6 +594,7 @@ function available(args: {
     targetRevision: args.targetRevision ?? null,
     selfRepair: 'converging',
     turnBlocked: false,
+    blockedBy: [],
     lastRepairFailure: null,
   };
 }
@@ -600,6 +613,7 @@ function unknown(reason: string): SandboxUpdateStatus {
     targetRevision: null,
     selfRepair: 'converging',
     turnBlocked: false,
+    blockedBy: [],
     lastRepairFailure: null,
   };
 }

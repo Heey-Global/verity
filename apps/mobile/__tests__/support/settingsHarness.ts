@@ -95,11 +95,15 @@ export function expoRouterMock(): Record<string, unknown> {
     },
     useFocusEffect: (cb: () => void | (() => void)) =>
       react.useEffect(() => {
-        focusCallbacks.add(cb);
-        const cleanup = cb();
+        let cleanup = cb();
+        const focus = () => {
+          cleanup?.();
+          cleanup = cb();
+        };
+        focusCallbacks.add(focus);
         return () => {
           cleanup?.();
-          focusCallbacks.delete(cb);
+          focusCallbacks.delete(focus);
         };
       }, [cb]),
     useLocalSearchParams: () => searchParams,

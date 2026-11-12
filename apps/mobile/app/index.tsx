@@ -44,6 +44,7 @@ import {
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   sandboxUpdateNeedsAttention,
+  sandboxUpdateWaitingLabel,
   sessionBadge,
   attentionNotice,
   attentionNoticeText,
@@ -805,7 +806,7 @@ function SessionList({ client }: { client: VerityClient }) {
       Alert.alert(
         // "Retry" is a claim about history and only one of these two has any:
         // a blocked update has never been attempted, it has been held back.
-        update.turnBlocked ? 'Update waiting for a turn' : 'Retry sandbox update?',
+        update.turnBlocked ? sandboxUpdateWaitingLabel(update) : 'Retry sandbox update?',
         sandboxUpdateAlertMessage(project, update),
         // Dismiss-only while the turn holds it off. `updateProjectSandbox` posts
         // the same recreate the Server refuses for as long as a turn is running
