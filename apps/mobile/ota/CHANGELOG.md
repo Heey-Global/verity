@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.90.1](https://github.com/Heey-Global/verity/compare/mobile-v1.90.0...mobile-v1.90.1) (2026-11-12)
+
+
+### Features
+
+* **mobile:** unify project card states and agent marks ([#2534](https://github.com/Heey-Global/verity/issues/2534)) ([1e9ee51](https://github.com/Heey-Global/verity/commit/1e9ee51c65d48ea344b5d351bd98e112e77cfebf))
+
+
+### Bug Fixes
+
+* **deps:** update dependency ws to v8.22.2 ([#2530](https://github.com/Heey-Global/verity/issues/2530)) ([15ea612](https://github.com/Heey-Global/verity/commit/15ea612851349bf21dfc67e9d88298d8b651e6ee))
+* **mobile:** reorder project cards with a long press ([#2531](https://github.com/Heey-Global/verity/issues/2531)) ([f9977c9](https://github.com/Heey-Global/verity/commit/f9977c903fdab07f975d0082fd6395ff93d18a7a))
+
 ## [1.89.6](https://github.com/Heey-Global/verity/compare/mobile-v1.89.5...mobile-v1.89.6) (2026-11-11)
 
 
