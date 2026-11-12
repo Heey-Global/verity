@@ -8,7 +8,11 @@ import { Icon } from '../Icon';
 import { CountBadge, StatusTag, Text, TileMark } from '../ui';
 import type { StatusIntent } from '../ui/Status';
 import { tint } from '../ui/tint';
-import { useProjectRowDrag, type ProjectReorderController } from '../useProjectReorder';
+import {
+  PROJECT_PICKUP_DELAY_MS,
+  useProjectRowDrag,
+  type ProjectReorderController,
+} from '../useProjectReorder';
 import { WorkingDot } from '../WorkingDot';
 import type { SessionProjectGroup } from '../../lib/projectGroups';
 import { moveProjectIdToIndex, projectSortableRange } from '../../lib/projectReorder';
@@ -110,6 +114,7 @@ export function ProjectCard({
   onMove,
   floating = false,
   reordering,
+  movingProjects = false,
   expanded,
   onOpen,
   onToggle,
@@ -128,7 +133,10 @@ export function ProjectCard({
   sortableIds?: readonly string[];
   onMove?: (order: readonly string[]) => void;
   floating?: boolean;
+  /** Any drag in the list, project or session: taps and move actions pause. */
   reordering: boolean;
+  /** A project card is being dragged: the cards show handles and read as movable. */
+  movingProjects?: boolean;
   /** For a group that opens in place: whether its sessions show. */
   expanded: boolean;
   layoutRevision?: number;
@@ -180,12 +188,18 @@ export function ProjectCard({
           collapsable={false}
           onLayout={onLayout}
           onPress={reordering ? undefined : (onOpen ?? onToggle)}
+          // A hold belongs to the drag: releasing it, moved or not, must not
+          // also open the card, which Pressable does without a long-press handler.
+          onLongPress={sortable ? () => {} : undefined}
+          delayLongPress={PROJECT_PICKUP_DELAY_MS}
           accessibilityRole="button"
           accessibilityLabel={
-            reordering ? `Move ${group.title}` : `${group.title}, ${projectCardLine(group, facts)}`
+            movingProjects
+              ? `Move ${group.title}`
+              : `${group.title}, ${projectCardLine(group, facts)}`
           }
           accessibilityHint={
-            reordering
+            movingProjects
               ? undefined
               : (inPlace ? 'Shows its sessions.' : 'Opens the project.') +
                 (sortable ? ' Hold to reorder, or use the move actions.' : '')
@@ -250,7 +264,7 @@ export function ProjectCard({
               testID={`project-card-waiting-${group.id}`}
             />
           ) : null}
-          {sortable && (reordering || floating) ? (
+          {sortable && (movingProjects || floating) ? (
             // Same size as the chevron it replaces, so the head keeps its layout.
             <View testID={`project-card-handle-${group.id}`}>
               <Icon name="menu" size={18} color={theme.colors.textMuted} />

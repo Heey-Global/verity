@@ -6,6 +6,7 @@
 // and a group without one shows its sessions in place.
 jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 jest.mock('../components/useProjectReorder', () => ({
+  PROJECT_PICKUP_DELAY_MS: 260,
   // Dragging is the classic list's machinery and has its own suite.
   useProjectRowDrag: jest.fn(() => ({
     slotRef: undefined,
@@ -90,7 +91,11 @@ function renderCard(
   expanded = false,
   unread: ReadonlySet<string> = new Set(),
   onMove = jest.fn(),
-  { sortable = true, reordering = false } = {},
+  {
+    sortable = true,
+    reordering = false,
+    movingProjects,
+  }: { sortable?: boolean; reordering?: boolean; movingProjects?: boolean } = {},
 ) {
   const onToggle = jest.fn();
   render(
@@ -104,6 +109,7 @@ function renderCard(
       onMove={onMove}
       sortable={sortable}
       reordering={reordering}
+      movingProjects={movingProjects ?? reordering}
       expanded={expanded}
       onOpen={onOpen}
       onToggle={onToggle}
@@ -200,6 +206,31 @@ describe('project card', () => {
     expect(screen.queryByTestId('project-card-handle-p1')).toBeNull();
     fireEvent.press(screen.getByLabelText(/^website,/));
     expect(onOpen).toHaveBeenCalled();
+  });
+
+  // Pressable fires onPress when a hold is released unless a long-press handler
+  // claims it: a pickup released in place would open the project.
+  it('does not open the card when a hold is released', () => {
+    const onOpen = jest.fn();
+    renderCard(group([]), onOpen);
+    // The press claims the hold no later than the drag picks the card up.
+    const [press] = screen.UNSAFE_getAllByProps({ delayLongPress: 260 });
+    expect(press?.props.onLongPress).toEqual(expect.any(Function));
+    fireEvent(screen.getByLabelText(/^website,/), 'longPress');
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  // A session dragged inside an open group pauses the cards, but they are not
+  // the ones moving: no handles, no "Move" labels.
+  it('keeps chevrons and labels while only a session moves', () => {
+    const onOpen = jest.fn();
+    renderCard(group([]), onOpen, false, new Set(), jest.fn(), {
+      reordering: true,
+      movingProjects: false,
+    });
+    expect(screen.queryByTestId('project-card-handle-p1')).toBeNull();
+    fireEvent.press(screen.getByLabelText(/^website,/));
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
   it('leaves a card that cannot move out of the drag', () => {

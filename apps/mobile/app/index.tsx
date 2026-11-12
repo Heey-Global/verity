@@ -881,6 +881,7 @@ function SessionList({ client }: { client: VerityClient }) {
             onMove={onDropProject}
             floating={floating}
             reordering={draggingAnything}
+            movingProjects={draggingProjectId !== null}
             expanded={!collapsed}
             onOpen={pageId !== undefined ? () => openProject(pageId) : undefined}
             onToggle={() => toggleProjectGroup(item, collapsed)}
