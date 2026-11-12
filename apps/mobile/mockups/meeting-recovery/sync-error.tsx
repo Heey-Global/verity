@@ -7,7 +7,6 @@ import { Icon } from '../../components/Icon';
 import { MeetingWave } from '../../components/meeting/MeetingWave';
 import { NoticedCard, SectionLabel, SpeakerAvatar } from '../../components/meeting/MeetingUI';
 import { Button, IconButton, Text } from '../../components/ui';
-import type { MockupSpec } from '../types';
 
 const ignore = () => undefined;
 
@@ -95,14 +94,6 @@ export default function MeetingSyncErrorMockup() {
     </View>
   );
 }
-
-export const meetingRecoverySpec: MockupSpec = {
-  id: 'meeting-recovery',
-  title: 'Meeting recovery',
-  screens: {
-    'sync-error': { title: 'Meeting sync recovery', Component: MeetingSyncErrorMockup },
-  },
-};
 
 const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, backgroundColor: theme.colors.background },

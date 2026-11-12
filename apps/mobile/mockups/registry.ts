@@ -4,7 +4,7 @@ import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
-import { meetingRecoverySpec } from './meeting-recovery/sync-error';
+import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
 import { projectNamesSpec } from './project-names';
 import { repositoriesSpec } from './repositories';
