@@ -11019,6 +11019,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       isHealthy?: (binding: { projectId: string; containerGeneration: string }) => Promise<boolean>;
       resume?: ProjectRelayControl['resume'];
       withContainerReplace?: ProvisionerOptions['withContainerReplace'];
+      veritySettings?: ProvisionerOptions['veritySettings'];
       recreateEnvDriftedSandboxes?: boolean;
       now?: () => number;
     } = {},
@@ -11039,6 +11040,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       hostCloneRoot: '/srv/verity/workspaces',
       isDirectory: () => false,
       projectRelay: relayControl(opts.isHealthy, opts.resume),
+      veritySettings: opts.veritySettings,
       ...(opts.withContainerReplace === undefined
         ? {}
         : { withContainerReplace: opts.withContainerReplace }),
@@ -12387,6 +12389,43 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       expect((await ctx.store.getProject(p.id))?.state).toBe('active');
       expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
     });
+
+    it.each([false, true])(
+      'resumes a waiting repair left container_starting (restart=%s)',
+      async (restart) => {
+        // A settings read can throw outside the phase's individual failed-state
+        // writes. Waiting intent is still ownership, not a concurrent provision.
+        const p = await seedActive('waiting-starting', 'dev-waiting-starting');
+        let present = true;
+        const { client } = fakeDocker({
+          inspectContainer: vi.fn(async () => {
+            if (!present)
+              throw new DockerError({ kind: 'container_not_found', id: p.containerName });
+            return migratedInspect(p.id);
+          }),
+          removeContainer: vi.fn(async () => {
+            present = false;
+          }),
+        });
+        const before = makeProvisioner(client, {
+          isHealthy: async () => false,
+          veritySettings: async () => {
+            throw new Error('injected settings failure');
+          },
+        });
+        before.attachProjectBusyProbe(async () => false);
+        await expect(before.reconcileRelays([p])).rejects.toThrow('Relay migration failed');
+        const interrupted = (await ctx.store.getProject(p.id))!;
+        expect(interrupted.state).toBe('container_starting');
+        expect((await ctx.store.sandboxRepairIntents.list())[0]?.status).toBe('waiting');
+        const after = restart ? makeProvisioner(client) : before;
+        after.attachProjectBusyProbe(async () => false);
+        const retry = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+        await after.reconcileRelays([interrupted]);
+        expect(retry).toHaveBeenCalledWith(p.id, RECONCILE);
+        expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      },
+    );
 
     it('ends an owed repair once the project is put to sleep', async () => {
       // Sleeping was chosen after the failure; an automatic recreate must not

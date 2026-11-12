@@ -4349,8 +4349,12 @@ export class ProvisionerImpl implements Provisioner {
       if (intents === undefined) return;
       const now = (this.opts.now ?? Date.now)();
       for (const intent of await intents.list()) {
-        if (this.pendingSandboxRepairRetries.has(intent.projectId)) continue;
         const project = await this.opts.store.getProject(intent.projectId);
+        if (
+          this.pendingSandboxRepairRetries.has(intent.projectId) &&
+          project?.state !== 'container_starting'
+        )
+          continue;
         if (!project || !['active', 'failed', 'container_starting'].includes(project.state)) {
           await intents.clear(intent.projectId);
           continue;
@@ -4378,7 +4382,7 @@ export class ProvisionerImpl implements Provisioner {
           continue;
         }
         if (project.state === 'container_starting') {
-          if (intent.status !== 'running' || this.inFlightProvisions.has(project.id)) continue;
+          if (this.inFlightProvisions.has(project.id)) continue;
           await this.opts.store.updateProjectState(
             project.id,
             'failed',
@@ -5000,6 +5004,10 @@ export class ProvisionerImpl implements Provisioner {
                 lastFailureMessage: lastFailure.message,
               }),
             ).catch((persistError: unknown) => failures.push(persistError));
+            // Some early container-phase failures leave container_starting.
+            // Revisit the durable intent next tick, as a new Server would, once
+            // the provision promise has released its in-flight ownership.
+            this.sandboxRepairIntentsRestored = undefined;
           } else {
             // Consecutive means consecutive completed recreate attempts. A tick
             // that cannot even classify or probe the sandbox breaks the streak;
