@@ -11779,6 +11779,14 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       f.advance(SANDBOX_REPAIR_RETRY_MIN_MS);
       await f.tick();
       expect([...f.provisioner.unrepairedSandboxes()]).toEqual([f.p.id]);
+      // A database round trip must not let the next pass restore the backoff
+      // that the successful manual repair is still clearing.
+      const intents = ctx.store.sandboxRepairIntents;
+      const clear = intents.clear.bind(intents);
+      vi.spyOn(intents, 'clear').mockImplementation(async (projectId) => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await clear(projectId);
+      });
       f.attempt.mockResolvedValueOnce(f.p);
       await f.provisioner.recreateContainer(f.p.id);
       expect([...f.provisioner.unrepairedSandboxes()]).toEqual([]);

@@ -4347,6 +4347,9 @@ export class ProvisionerImpl implements Provisioner {
     this.sandboxRepairIntentsRestored ??= (async () => {
       const intents = (this.opts.store as Partial<EventStore>).sandboxRepairIntents;
       if (intents === undefined) return;
+      // A successful repair may still be clearing its durable intent. Reading
+      // before that write settles would resurrect the obsolete failure/backoff.
+      await this.sandboxRepairIntentWrites;
       const now = (this.opts.now ?? Date.now)();
       for (const intent of await intents.list()) {
         const project = await this.opts.store.getProject(intent.projectId);
