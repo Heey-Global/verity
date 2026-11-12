@@ -8,6 +8,7 @@ import { planCardSpec } from './plan-card';
 import { projectNamesSpec } from './project-names';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
+import { teamInvitationsSpec } from './team-invitations';
 import type { MockupScreen, MockupSpec } from './types';
 import { wikiSpec } from './wiki';
 import { wikiMaintenanceSpec } from './wiki-maintenance';
@@ -24,6 +25,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   projectNamesSpec,
   repositoriesSpec,
   sourceActionsSpec,
+  teamInvitationsSpec,
   wikiSpec,
   wikiMaintenanceSpec,
 ];
