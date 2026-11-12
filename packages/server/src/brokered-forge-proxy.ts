@@ -122,7 +122,10 @@ async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>;
+type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>> & {
+  /** The person whose turn is calling; absent for the container capability. */
+  userId?: string | null;
+};
 
 /** Extend the HTTP secret broker with a repository-bound streaming transport.
  * Only this server owns TLS keys and provider credentials. The project listener
@@ -301,11 +304,16 @@ export function createBrokeredForgeProxy(options: {
                 current && options.resolveRepository
                   ? await options.resolveRepository(current, hostname, path)
                   : current;
-              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : []).filter(
-                (candidate) =>
-                  candidate.projectId === identity.projectId &&
-                  candidate.containerGeneration === identity.containerGeneration,
-              );
+              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : [])
+                .filter(
+                  (candidate) =>
+                    candidate.projectId === identity.projectId &&
+                    candidate.containerGeneration === identity.containerGeneration,
+                )
+                // The adapter acts with this person's own forge access.
+                .map((candidate) =>
+                  turn === undefined ? candidate : { ...candidate, userId: turn.userId },
+                );
               const selected = chosen;
               return selected
                 ? candidates.find(

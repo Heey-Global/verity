@@ -146,6 +146,7 @@ export interface ControlPlaneDeps {
   /** Project- and generation-bound signing authority for the relay UDS listener. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
   turnCredentials?: ServerDeps['turnCredentials'];
+  githubUserAuthorization?: ServerDeps['githubUserAuthorization'];
   /** Network-origin guard for `/internal/*` (audit H1 follow-up) — when set, those
    *  routes 404 unless the request arrived on the internal listener. Forwarded to
    *  {@link buildServer}. */
@@ -480,6 +481,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.pushSender !== undefined ? { pushSender: deps.pushSender } : {}),
     ...(deps.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: deps.wsAllowedOrigins } : {}),
     ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
+    ...(deps.githubUserAuthorization !== undefined
+      ? { githubUserAuthorization: deps.githubUserAuthorization }
+      : {}),
     ...(deps.signingCapabilities !== undefined
       ? { signingCapabilities: deps.signingCapabilities }
       : {}),

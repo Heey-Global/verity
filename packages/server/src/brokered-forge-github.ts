@@ -31,6 +31,9 @@ interface ForgeBinding {
   owner: string;
   repo: string;
   containerGeneration?: string | undefined;
+  /** The person whose turn is calling (from its badge); absent for the
+   *  container-wide capability, which names no person. */
+  userId?: string | null | undefined;
 }
 export interface ForgeRequest {
   hostname: string;
@@ -131,6 +134,12 @@ async function collectJson(response: IncomingMessage): Promise<unknown> {
 
 export function createGitHubForgeAdapter(options: {
   mint(binding: { owner: string; repo: string }): Promise<string | undefined>;
+  /** The person's own user-to-server token (ADR 0023 §3); undefined when they
+   *  have not authorized GitHub. GitHub limits it to their own permissions. */
+  mintForUser?(userId: string): Promise<string | undefined>;
+  /** Whether a person without their own authorization may still act with the
+   *  installation token — only the administrator, whose access it always was. */
+  mayUseInstallationToken?(userId: string): Promise<boolean>;
   mintDiagnostic?(
     binding: { owner: string; repo: string },
     permission: 'statuses' | 'administration' | 'contents',
@@ -767,10 +776,22 @@ export function createGitHubForgeAdapter(options: {
               )
             ? 'statuses'
             : undefined;
+      // A turn acts with its person's own GitHub access. Without it, only the
+      // administrator falls back to the installation token; a member is refused
+      // rather than handed access GitHub never granted them.
+      const person = binding.userId ?? undefined;
+      const personal = person === undefined ? undefined : await options.mintForUser?.(person);
+      const installationAllowed =
+        person === undefined ||
+        (personal === undefined && (await options.mayUseInstallationToken?.(person)) === true);
       const token =
-        diagnosticPermission === undefined
-          ? await options.mint(binding)
-          : await options.mintDiagnostic?.(binding, diagnosticPermission);
+        personal !== undefined
+          ? personal
+          : !installationAllowed
+            ? undefined
+            : diagnosticPermission === undefined
+              ? await options.mint(binding)
+              : await options.mintDiagnostic?.(binding, diagnosticPermission);
       if (!token || token.length > 4096 || /[\r\n]/.test(token)) rejected();
       for (const node of pendingNodes) {
         const type = await verifyNode(node.id, node.type, token);

@@ -236,6 +236,7 @@ import { createAuditRecorder } from './audit-recorder.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
 import { createTurnCredentials } from './turn-credentials.js';
+import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
@@ -574,6 +575,8 @@ export async function buildEmbeddedServer(
   const gatewayRequestMacKeys = createGatewayRequestMacKeyring(db, secretCipher);
   // The turn's badge: names the person a supervised turn runs for to sandbox routes.
   const turnCredentials = createTurnCredentials();
+  // Each person's own GitHub App authorization; one instance so a token renews once.
+  const githubUserAuthorization = createGitHubUserAuthorization({ store: eventStore });
   const mcpGatewayTokens = createMcpGatewayTokens({
     onResolveRejected: (input) => {
       // Keep the bearer and its digest out of logs. The reason and the two already-known
@@ -2066,6 +2069,8 @@ export async function buildEmbeddedServer(
   );
   const githubForgeAdapter = createGitHubForgeAdapter({
     mint: cachedProjectTokenMint,
+    mintForUser: (userId) => githubUserAuthorization.accessToken(userId),
+    mayUseInstallationToken: (userId) => eventStore.isActiveAdministrator(userId),
     mintDiagnostic: (binding, permission) => diagnosticMints[permission]!(binding),
     transport: brokeredHttpStreamTransport,
   });
@@ -4088,6 +4093,7 @@ export async function buildEmbeddedServer(
     ...(config.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: config.wsAllowedOrigins } : {}),
     signingCapabilities,
     turnCredentials,
+    githubUserAuthorization,
     // When a dedicated internal listener is configured, gate `/internal/*` to it
     // (the public listener 404s those paths). main.ts starts that listener and
     // tags its sockets; this predicate reads the tag. Omit → no gate.

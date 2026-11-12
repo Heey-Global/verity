@@ -115,6 +115,7 @@ async function harness(
     transport?: BrokeredHttpStreamTransport;
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
     turnCredentials?: TurnCredentials;
+    personalTokens?: Record<string, string>;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -161,7 +162,16 @@ async function harness(
           baseUrl: 'https://forge.test:8443/prefix',
           credentials: () => Promise.resolve({ token, login: 'acme' }),
         })
-      : createGitHubForgeAdapter({ mint, transport });
+      : createGitHubForgeAdapter({
+          mint,
+          transport,
+          ...(options.personalTokens
+            ? {
+                mintForUser: async (userId: string) => options.personalTokens?.[userId],
+                mayUseInstallationToken: async () => false,
+              }
+            : {}),
+        });
   const proxy = createBrokeredForgeProxy({
     certificate,
     capabilities: options.forgejo
@@ -650,10 +660,11 @@ describe('brokered forge TLS boundary', () => {
   // binding and generation checks, but only from its own project and only while
   // the turn lives — otherwise a settled turn could keep pushing.
   it("accepts a turn's badge from its own project like the container capability", async () => {
+    // Personless badges: which token a person gets is the adapter's rule, tested there.
     const turns = createTurnCredentials();
     const h = await harness((_req, res) => res.end('ok'), { turnCredentials: turns });
-    const badge = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' });
-    const foreign = turns.issue({ projectId: 'p2', sessionId: 's2', turnId: 't2', userId: 'lena' });
+    const badge = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: null });
+    const foreign = turns.issue({ projectId: 'p2', sessionId: 's2', turnId: 't2', userId: null });
     expect(
       (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${badge}`)).status,
     ).toBe(200);
@@ -672,10 +683,30 @@ describe('brokered forge TLS boundary', () => {
       generation: 'old',
       turnCredentials: turns,
     });
-    const current = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't3', userId: 'lena' });
+    const current = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't3', userId: null });
     expect(
       (await call(old.port, '/repos/acme/app/issues', `Bearer verity-broker-${current}`)).status,
     ).toBe(401);
+  });
+
+  // The person on the badge must reach the adapter; otherwise every turn would
+  // act with the installation token whatever the person may do on GitHub.
+  it("forwards with the badge person's own GitHub token", async () => {
+    const turns = createTurnCredentials();
+    const h = await harness((_req, res) => res.end('ok'), {
+      turnCredentials: turns,
+      personalTokens: { lena: 'ghu_lena' },
+    });
+    const lena = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' });
+    const bob = turns.issue({ projectId: 'p1', sessionId: 's2', turnId: 't2', userId: 'bob' });
+    expect(
+      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${lena}`)).status,
+    ).toBe(200);
+    expect(h.received.at(-1)?.auth).toBe('Bearer ghu_lena');
+    expect(
+      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${bob}`)).status,
+    ).toBe(403);
+    expect(h.mint).not.toHaveBeenCalled();
   });
 
   it('relays Release and Actions evidence reads with server-side credentials', async () => {

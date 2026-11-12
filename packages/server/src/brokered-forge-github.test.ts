@@ -44,6 +44,49 @@ function harness(repo = 'acme/app', type = 'Issue') {
   return { adapter: createGitHubForgeAdapter({ mint, transport }), mint, transport };
 }
 
+describe('GitHub forge access per person', () => {
+  const push = {
+    hostname: 'github.com',
+    method: 'POST',
+    path: '/acme/app.git/git-receive-pack',
+  };
+  function personal(tokens: Record<string, string>) {
+    const mint = vi.fn(async () => 'installation-token');
+    const adapter = createGitHubForgeAdapter({
+      mint,
+      mintForUser: async (userId) => tokens[userId],
+      mayUseInstallationToken: async (userId) => userId === 'admin',
+      transport: vi.fn<BrokeredHttpStreamTransport>(),
+    });
+    return { adapter, mint };
+  }
+  const tokenOf = (
+    result: Awaited<ReturnType<ReturnType<typeof personal>['adapter']['authorize']>>,
+  ) => result.credentials.find((credential) => credential.alias === 'FORGE_TOKEN')?.value;
+
+  // GitHub limits a person's own token to what they may do. Falling back to the
+  // installation token for a member would let them push where GitHub would not.
+  it("pushes with the turn's person's own token and never lends a member the App's", async () => {
+    const { adapter, mint } = personal({ lena: 'ghu_lena' });
+    const signal = new AbortController().signal;
+    expect(
+      tokenOf(await adapter.authorize(push, { ...binding, userId: 'lena' }, actions, signal)),
+    ).toBe('ghu_lena');
+    await expect(
+      adapter.authorize(push, { ...binding, userId: 'bob' }, actions, signal),
+    ).rejects.toThrow();
+    expect(mint).not.toHaveBeenCalled();
+    // The administrator keeps the installation access they always had.
+    expect(
+      tokenOf(await adapter.authorize(push, { ...binding, userId: 'admin' }, actions, signal)),
+    ).toBe('installation-token');
+    // The container capability names no person and keeps the project default.
+    expect(tokenOf(await adapter.authorize(push, binding, actions, signal))).toBe(
+      'installation-token',
+    );
+  });
+});
+
 describe('GitHub forge policy', () => {
   it.each([
     { method: 'GET', path: '/pre-commit/pre-commit-hooks.git/info/refs?service=git-upload-pack' },
