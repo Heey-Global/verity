@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { TLSSocket, createSecureContext } from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import type { PemCertificate } from './claude-egress-ca.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import {
@@ -131,6 +132,9 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  /** A turn's own badge, accepted alongside the container capability; it proves
+   *  the project and names the turn's person for personal forge access later. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   resolveRepository?: (
     binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
     hostname: string,
@@ -278,7 +282,21 @@ export function createBrokeredForgeProxy(options: {
             let chosen: RepositoryBinding | undefined;
             let candidates: RepositoryBinding[] = [];
             const resolveBinding = async () => {
-              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              const turn =
+                presented === undefined
+                  ? undefined
+                  : options.turnCredentials?.resolve({
+                      projectId: identity.projectId,
+                      token: presented,
+                    });
+              // A badge proves the project itself; the repository and generation are
+              // the project's current container binding, exactly as its capability
+              // would have named them.
+              const current = !presented
+                ? undefined
+                : turn !== undefined
+                  ? await options.capabilities.bindingForProject?.(identity.projectId)
+                  : await options.capabilities.resolve(presented);
               const resolved =
                 current && options.resolveRepository
                   ? await options.resolveRepository(current, hostname, path)

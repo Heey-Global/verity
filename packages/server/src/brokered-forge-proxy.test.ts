@@ -25,6 +25,7 @@ import {
 import Fastify from 'fastify';
 import { startProjectInternalUnixListener } from './internal-listener.js';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTurnCredentials, type TurnCredentials } from './turn-credentials.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
 import { createGitHubForgeAdapter, type ForgeAction } from './brokered-forge-github.js';
 import {
@@ -46,6 +47,7 @@ const binding = { ...identity, owner: 'acme', repo: 'app' };
 const capabilities: GhTokenCapabilityRegistry = {
   issue: async () => cap,
   resolve: async (value) => (value === cap ? binding : undefined),
+  bindingForProject: async (projectId) => (projectId === binding.projectId ? binding : undefined),
   revokeProject: async () => {},
 };
 const allActions = new Set<ForgeAction>([
@@ -112,6 +114,7 @@ async function harness(
     resolveRepository?: Parameters<typeof createBrokeredForgeProxy>[0]['resolveRepository'];
     transport?: BrokeredHttpStreamTransport;
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
+    turnCredentials?: TurnCredentials;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -175,6 +178,7 @@ async function harness(
     transport: options.transport ?? transport,
     ...(options.certificateFor ? { certificateFor: options.certificateFor } : {}),
     ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
+    ...(options.turnCredentials ? { turnCredentials: options.turnCredentials } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
   });
@@ -642,6 +646,38 @@ describe('brokered forge TLS boundary', () => {
     const disabled = await harness((_req, res) => res.end('ok'), { enabled: false });
     expect((await call(disabled.port, '/repos/acme/app/issues')).status).toBe(403);
   });
+  // A turn's badge stands in for the container capability: same repository
+  // binding and generation checks, but only from its own project and only while
+  // the turn lives — otherwise a settled turn could keep pushing.
+  it("accepts a turn's badge from its own project like the container capability", async () => {
+    const turns = createTurnCredentials();
+    const h = await harness((_req, res) => res.end('ok'), { turnCredentials: turns });
+    const badge = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' });
+    const foreign = turns.issue({ projectId: 'p2', sessionId: 's2', turnId: 't2', userId: 'lena' });
+    expect(
+      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${badge}`)).status,
+    ).toBe(200);
+    expect(h.received.at(-1)?.auth).toBe(`Bearer ${token}`);
+    expect(
+      (await call(h.port, '/repos/other/app/issues', `Bearer verity-broker-${badge}`)).status,
+    ).toBe(403);
+    expect(
+      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${foreign}`)).status,
+    ).toBe(401);
+    turns.release(badge);
+    expect(
+      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${badge}`)).status,
+    ).toBe(401);
+    const old = await harness((_req, res) => res.end('ok'), {
+      generation: 'old',
+      turnCredentials: turns,
+    });
+    const current = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't3', userId: 'lena' });
+    expect(
+      (await call(old.port, '/repos/acme/app/issues', `Bearer verity-broker-${current}`)).status,
+    ).toBe(401);
+  });
+
   it('relays Release and Actions evidence reads with server-side credentials', async () => {
     const h = await harness((_req, res) => res.end('{"evidence":true}'), {
       actions: new Set<ForgeAction>(['releases-read', 'actions-read']),

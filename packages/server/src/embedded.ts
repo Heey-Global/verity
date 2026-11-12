@@ -2083,6 +2083,7 @@ export async function buildEmbeddedServer(
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
+          turnCredentials,
           resolveRepository: (binding, hostname, path) =>
             resolveForgeRepositoryBinding(eventStore, binding, hostname, path),
           allowsHost: async (authority) =>
