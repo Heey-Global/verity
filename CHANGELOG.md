@@ -6,6 +6,15 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.91.1](https://github.com/Heey-Global/verity/compare/v4.91.0...v4.91.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **mobile:** detect one-way upstream stalls and recheck remembered direct routes ([#2521](https://github.com/Heey-Global/verity/issues/2521)) ([1485808](https://github.com/Heey-Global/verity/commit/1485808dcfea58e87570363b915d5636e97d56dc))
+* **preview:** preserve valid shares across control interruptions ([#2523](https://github.com/Heey-Global/verity/issues/2523)) ([871d3cf](https://github.com/Heey-Global/verity/commit/871d3cf853686bd7e824c8097f804739bf7bee8e))
+* **secrets:** explain common Secret Run argument rejections ([#2526](https://github.com/Heey-Global/verity/issues/2526)) ([ff8b290](https://github.com/Heey-Global/verity/commit/ff8b290f3accf18b1d872ea739aafbc62de028c5))
+
 ## [4.91.0](https://github.com/Heey-Global/verity/compare/v4.90.6...v4.91.0) (2026-11-11)
 
 

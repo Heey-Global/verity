@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.90.0](https://github.com/Heey-Global/verity/compare/mobile-v1.89.0...mobile-v1.90.0) (2026-11-11)
+
+
+### Features
+
+* **claude:** replace Fable 5.1 with Fable 5.2 ([#2514](https://github.com/Heey-Global/verity/issues/2514)) ([3a38c5c](https://github.com/Heey-Global/verity/commit/3a38c5c0b6b9287221095c50d2bf2de916c4a0eb))
+* **projects:** add independent names and inline profile editing ([#2462](https://github.com/Heey-Global/verity/issues/2462)) ([7b495e9](https://github.com/Heey-Global/verity/commit/7b495e944a8dbaf6c46b6db89a3623debc7e7b73))
+
+
+### Bug Fixes
+
+* **mobile:** detect one-way upstream stalls and recheck remembered direct routes ([#2521](https://github.com/Heey-Global/verity/issues/2521)) ([1485808](https://github.com/Heey-Global/verity/commit/1485808dcfea58e87570363b915d5636e97d56dc))
+* **mobile:** keep session categories stable across Home and projects ([#2487](https://github.com/Heey-Global/verity/issues/2487)) ([792fbe3](https://github.com/Heey-Global/verity/commit/792fbe3ca0d6c9325e575d2d3c591f3b79992733))
+* **mobile:** prioritize working status over unread indicators ([#2486](https://github.com/Heey-Global/verity/issues/2486)) ([e112f8b](https://github.com/Heey-Global/verity/commit/e112f8b63b40da69140877a0d4a26c3f050b99a9))
+* **mobile:** restore explicit project sorting mode ([#2518](https://github.com/Heey-Global/verity/issues/2518)) ([150f154](https://github.com/Heey-Global/verity/commit/150f15470a831c70a7883079846c61b9bda3a134))
+* **mobile:** retain selected recording across reconnects ([#2474](https://github.com/Heey-Global/verity/issues/2474)) ([6962259](https://github.com/Heey-Global/verity/commit/6962259e7932c616dc98baf19d373d84a066e772))
+* **server:** report sandbox update attempts truthfully and back off failed recreates ([#2498](https://github.com/Heey-Global/verity/issues/2498)) ([c4c2f9c](https://github.com/Heey-Global/verity/commit/c4c2f9cd95cf45a5a903661ae576eb6fb0b9e4b0))
+
 ## [1.89.0](https://github.com/Heey-Global/verity/compare/mobile-v1.88.0...mobile-v1.89.0) (2026-11-09)
 
 
