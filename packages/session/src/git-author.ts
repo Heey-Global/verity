@@ -50,6 +50,27 @@ export function gitAuthorEnv(author: GitAuthor | undefined): Record<string, stri
   };
 }
 
+/**
+ * Marks, in the worker's agent environment, a turn whose person has no signing
+ * key. The broker turns it into its own frame field; only the agent sees the
+ * resulting `commit.gpgsign=false`, appended after the container's own
+ * `GIT_CONFIG_*` pairs so the signing setup itself stays in place.
+ */
+export const UNSIGNED_COMMITS_ENV = 'VERITY_UNSIGNED_COMMITS';
+
+/** Append `commit.gpgsign=false` to the `GIT_CONFIG_COUNT` pairs of `env`. */
+export function unsignedCommitsConfig(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const raw = env.GIT_CONFIG_COUNT;
+  const count = raw !== undefined && /^\d{1,3}$/u.test(raw) ? Number(raw) : 0;
+  return {
+    GIT_CONFIG_COUNT: String(count + 1),
+    [`GIT_CONFIG_KEY_${String(count)}`]: 'commit.gpgsign',
+    [`GIT_CONFIG_VALUE_${String(count)}`]: 'false',
+  };
+}
+
 /** Read the author back out of an agent environment built by {@link gitAuthorEnv}. */
 export function gitAuthorFromEnv(env: NodeJS.ProcessEnv | undefined): GitAuthor | undefined {
   const author = { name: env?.GIT_AUTHOR_NAME, email: env?.GIT_AUTHOR_EMAIL };

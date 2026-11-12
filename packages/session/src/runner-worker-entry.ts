@@ -13,7 +13,12 @@ import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import { AcpOpenCodeBackend } from './acp-opencode-backend.js';
 import { createBrokerSpawner, TURN_CAPABILITY_ENV } from './broker-spawner.js';
-import { gitAuthorEnv, isGitAuthor } from './git-author.js';
+import {
+  gitAuthorEnv,
+  isGitAuthor,
+  UNSIGNED_COMMITS_ENV,
+  unsignedCommitsConfig,
+} from './git-author.js';
 import { RunnerServer } from './runner-server.js';
 import { resolveRunnerMcpServers } from './runner-mcp-servers.js';
 
@@ -72,6 +77,8 @@ const startTurnRequestSchema = z
       .optional(),
     /** The person this turn's commits are authored by; see git-author.ts. */
     gitAuthor: z.unknown().refine(isGitAuthor, 'invalid git author').optional(),
+    /** False when the turn's person has no signing key; see git-author.ts. */
+    signCommits: z.literal(false).optional(),
     mcpServers: z.array(httpMcpServerSchema).max(16).optional(),
     sessionEnv: z
       .strictObject({
@@ -249,6 +256,9 @@ const turn = await server.run(join(turnDir, 'events.jsonl'), {
       : { [TURN_CAPABILITY_ENV]: undefined }),
     // Likewise: only this turn's own author, never one ambient in the container.
     ...gitAuthorEnv(request.gitAuthor),
+    ...(request.signCommits === false
+      ? { [UNSIGNED_COMMITS_ENV]: '1', ...unsignedCommitsConfig(process.env) }
+      : { [UNSIGNED_COMMITS_ENV]: undefined }),
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

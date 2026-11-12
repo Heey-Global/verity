@@ -54,3 +54,19 @@ export async function resolveTurnGitAuthor(
   if (author === undefined) throw new Error('no usable git author for this person');
   return author;
 }
+
+/**
+ * Whether a person's turn signs its commits. The signing route uses the person's
+ * own key, and the instance key only for the administrator, whose key it was
+ * (ADR 0023 §3). Anyone else without a key commits unsigned: the commits stay
+ * internal until a developer pushes them and re-signs them with their own key.
+ */
+export async function turnSignsCommits(
+  sources: {
+    hasSigningKey(userId: string): Promise<boolean>;
+    isAdministrator(userId: string): Promise<boolean>;
+  },
+  userId: string,
+): Promise<boolean> {
+  return (await sources.hasSigningKey(userId)) || (await sources.isAdministrator(userId));
+}

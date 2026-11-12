@@ -1,5 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
-import { resolveTurnGitAuthor } from './turn-git-author.js';
+import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
@@ -4586,6 +4586,15 @@ export async function buildEmbeddedServer(
               gitIdentity: (id) => eventStore.userGitIdentities.author(id),
               githubAccount: (id) => eventStore.userGithubAuthorizations.account(id),
               displayName: async (id) => (await eventStore.userProfiles.read(id))?.displayName,
+            },
+            userId,
+          ),
+        turnSignsCommits: (userId) =>
+          turnSignsCommits(
+            {
+              hasSigningKey: async (id) =>
+                (await eventStore.userGitIdentities.publicIdentity(id)).hasSigningKey,
+              isAdministrator: (id) => eventStore.isActiveAdministrator(id),
             },
             userId,
           ),

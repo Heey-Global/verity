@@ -4085,6 +4085,12 @@ describe('verity-runner supervisor runtime', () => {
       expect(() => validateStartTurnRequest({ ...base, gitAuthor: malformed })).toThrow(
         /invalid gitAuthor/u,
       );
+    expect(validateStartTurnRequest({ ...base, signCommits: false }).signCommits).toBe(false);
+    expect(validateStartTurnRequest(base).signCommits).toBeUndefined();
+    for (const malformed of [true, 'false', 0])
+      expect(() => validateStartTurnRequest({ ...base, signCommits: malformed })).toThrow(
+        /invalid signCommits/u,
+      );
   });
 
   it('forwards a well-formed turn badge for any backend and refuses anything else', () => {

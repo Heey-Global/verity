@@ -210,6 +210,12 @@ export interface SupervisorRunnerClientOptions {
    * the unknown field and keeps the container default.
    */
   gitAuthor?: (() => Promise<GitAuthor | undefined>) | undefined;
+  /**
+   * Whether this turn's person can sign commits. False only for a person without
+   * a key: their commits stay unsigned (and internal) until a developer pushes
+   * and re-signs them, instead of every commit failing at the signing route.
+   */
+  signCommits?: (() => Promise<boolean>) | undefined;
   /** Mint and retire the bearer used by configured MCP proxy bindings. */
   mcpProxyTokens?:
     | {
@@ -1267,6 +1273,7 @@ export class SupervisorRunnerClient implements RunnerClient {
     // A person's turn must never fall back to the container's identity, which is
     // another person's: an unusable author fails the turn instead.
     const gitAuthor = await this.options.gitAuthor?.();
+    const signCommits = await this.options.signCommits?.();
     if (gitAuthor !== undefined && !isGitAuthor(gitAuthor)) {
       throw new Error('supervisor runner received an invalid git author');
     }
@@ -1325,6 +1332,7 @@ export class SupervisorRunnerClient implements RunnerClient {
       ...(mcpProxyToken === undefined ? {} : { mcpProxyToken }),
       ...(turnCapability === undefined ? {} : { turnCapability }),
       ...(gitAuthor === undefined ? {} : { gitAuthor }),
+      ...(signCommits === false ? { signCommits: false } : {}),
       ...(mcpServers === undefined
         ? {}
         : {

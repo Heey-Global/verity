@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTurnGitAuthor, type TurnGitAuthorSources } from './turn-git-author.js';
+import {
+  resolveTurnGitAuthor,
+  turnSignsCommits,
+  type TurnGitAuthorSources,
+} from './turn-git-author.js';
 
 function sources(input: {
   identity?: { authorName: string | null; authorEmail: string | null };
@@ -49,5 +53,19 @@ describe('resolveTurnGitAuthor', () => {
       name: 'Verity member',
       email: 'u-2@users.verity.invalid',
     });
+  });
+});
+
+describe('turnSignsCommits', () => {
+  // The instance key was the administrator's alone; a member without a key of
+  // their own commits unsigned rather than borrowing it.
+  it('signs with a personal key, or as the administrator, and otherwise not', async () => {
+    const sources = (hasKey: boolean, admin: boolean) => ({
+      hasSigningKey: () => Promise.resolve(hasKey),
+      isAdministrator: () => Promise.resolve(admin),
+    });
+    await expect(turnSignsCommits(sources(true, false), 'lena')).resolves.toBe(true);
+    await expect(turnSignsCommits(sources(false, true), 'admin')).resolves.toBe(true);
+    await expect(turnSignsCommits(sources(false, false), 'mia')).resolves.toBe(false);
   });
 });

@@ -1837,6 +1837,10 @@ export function validateStartTurnRequest(request) {
   if (request.gitAuthor !== undefined && !isGitAuthor(request.gitAuthor)) {
     throw new Error('invalid gitAuthor');
   }
+  // False only for a person without a signing key (see git-author.ts).
+  if (request.signCommits !== undefined && request.signCommits !== false) {
+    throw new Error('invalid signCommits');
+  }
   const gitAuthor =
     request.gitAuthor === undefined
       ? undefined
@@ -1945,6 +1949,7 @@ export function validateStartTurnRequest(request) {
     ...(mcpProxyToken !== undefined ? { mcpProxyToken } : {}),
     ...(turnCapability !== undefined ? { turnCapability } : {}),
     ...(gitAuthor !== undefined ? { gitAuthor } : {}),
+    ...(request.signCommits === false ? { signCommits: false } : {}),
     ...(mcpServers !== undefined ? { mcpServers } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),

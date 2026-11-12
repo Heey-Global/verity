@@ -584,6 +584,55 @@ describe('agent spawn broker', () => {
     }
   });
 
+  // A person without a signing key must still be able to commit; the container
+  // signs every commit, so their turn alone turns signing off. The container's
+  // own pairs (the signing program) must survive, and no other turn is affected.
+  it('turns commit signing off only for a turn whose person has no key', async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const broker = await runAgentSpawnBroker({
+      runtimeDir,
+      worktreeRoot: runtimeDir,
+      enforceRoot: false,
+      agentUid: process.getuid!(),
+      agentGid: process.getgid!(),
+      env: {
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'gpg.ssh.program',
+        GIT_CONFIG_VALUE_0: '/opt/agent-seed/bin/verity-git-sign',
+        GIT_CONFIG_KEY_1: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_1: 'true',
+        VERITY_UNSIGNED_COMMITS: '1',
+      },
+      spawnChild: (_command, _args, options) => {
+        environments.push(options.env as NodeJS.ProcessEnv);
+        return spawn(process.execPath, ['-e', ''], options);
+      },
+    });
+    try {
+      const spawnWith = async (env: NodeJS.ProcessEnv) => {
+        const handle = createBrokerSpawner(broker.socketPath)('claude-agent-acp', [], {
+          cwd: runtimeDir,
+          env,
+        });
+        await expect(handle.exited).resolves.toBe(0);
+        return environments.at(-1);
+      };
+      expect(await spawnWith({ VERITY_UNSIGNED_COMMITS: '1' })).toMatchObject({
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_KEY_0: 'gpg.ssh.program',
+        GIT_CONFIG_KEY_1: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_1: 'true',
+        GIT_CONFIG_KEY_2: 'commit.gpgsign',
+        GIT_CONFIG_VALUE_2: 'false',
+      });
+      const signed = await spawnWith({});
+      expect(signed?.GIT_CONFIG_COUNT).toBe('2');
+      expect(signed?.GIT_CONFIG_KEY_2).toBeUndefined();
+    } finally {
+      await broker.close();
+    }
+  });
+
   it("carries only this turn's badge into the agent environment", async () => {
     const environments: NodeJS.ProcessEnv[] = [];
     const ambient = 'a'.repeat(43);

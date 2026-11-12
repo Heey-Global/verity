@@ -556,6 +556,13 @@ describe('SupervisorRunnerClient', () => {
       { clientOptions: { gitAuthor: () => Promise.resolve(author) } },
     );
     expect(request).toMatchObject({ gitAuthor: author });
+    expect(request).not.toHaveProperty('signCommits');
+    const unsigned = await captureStartRequest(
+      'author-unsigned-runtime',
+      { prompt: 'hello' },
+      { clientOptions: { signCommits: () => Promise.resolve(false) } },
+    );
+    expect(unsigned).toMatchObject({ signCommits: false });
 
     const runtime = join(dir, 'author-invalid-runtime');
     await mkdir(runtime, { recursive: true });

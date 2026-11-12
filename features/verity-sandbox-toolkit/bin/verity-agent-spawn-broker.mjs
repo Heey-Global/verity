@@ -276,6 +276,17 @@ const TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
  * the `sessionEnv` key list but ignore unknown fields. Angle brackets and control
  * characters could forge a second identity line in a commit header.
  */
+/** `commit.gpgsign=false` appended to the GIT_CONFIG_COUNT pairs (see git-author.ts). */
+function unsignedCommitsConfig(source) {
+  const raw = source.GIT_CONFIG_COUNT;
+  const count = raw !== undefined && /^\d{1,3}$/u.test(raw) ? Number(raw) : 0;
+  return {
+    GIT_CONFIG_COUNT: String(count + 1),
+    [`GIT_CONFIG_KEY_${count}`]: 'commit.gpgsign',
+    [`GIT_CONFIG_VALUE_${count}`]: 'false',
+  };
+}
+
 function isGitAuthor(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const { name, email } = value;
@@ -876,6 +887,8 @@ async function validateSpawnRequest(raw, options) {
     throw new Error('invalid agent turn capability');
   if (raw.gitAuthor !== undefined && !isGitAuthor(raw.gitAuthor))
     throw new Error('invalid agent git author');
+  if (raw.signCommits !== undefined && raw.signCommits !== false)
+    throw new Error('invalid agent commit signing flag');
   if (raw.planning !== undefined && typeof raw.planning !== 'boolean')
     throw new Error('Invalid planning isolation policy');
   if (raw.gatewayToolsOnly === true && raw.knowledgeIsolation === true)
@@ -900,6 +913,7 @@ async function validateSpawnRequest(raw, options) {
     ...(raw.gitAuthor !== undefined
       ? { gitAuthor: { name: raw.gitAuthor.name, email: raw.gitAuthor.email } }
       : {}),
+    ...(raw.signCommits === false ? { signCommits: false } : {}),
     knowledgeIsolation: raw.knowledgeIsolation === true,
     planning: raw.planning === true,
     gatewayToolsOnly: raw.gatewayToolsOnly === true,
@@ -915,6 +929,7 @@ function childEnvironment(
   sessionEnv = undefined,
   turnCapability = undefined,
   gitAuthor = undefined,
+  signCommits = undefined,
 ) {
   const copy = (name) => (source[name] === undefined ? {} : { [name]: source[name] });
   // Re-filtered here even though `parseRequest` already rejected anything else:
@@ -1036,6 +1051,10 @@ function childEnvironment(
     ...Object.fromEntries(
       Object.entries(source).filter(([name]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/u.test(name)),
     ),
+    // A person without a signing key commits unsigned, from this turn's request
+    // only. Appended after the container's own pairs, which keep the signing
+    // program and key configured for everyone else in the container.
+    ...(signCommits === false ? unsignedCommitsConfig(source) : {}),
     ...copy('VERITY_SIGNING_URL'),
     ...copy('VERITY_SIGNING_TOKEN_FILE'),
     ...copy('VERITY_GH_BROKER_CAPABILITY_FILE'),
@@ -2574,6 +2593,7 @@ export function agentLaunchSpec(request, options) {
           request.sessionEnv,
           request.turnCapability,
           request.gitAuthor,
+          request.signCommits,
         ),
         VERITY_SESSION_WORKTREE: request.cwd,
         // Disabling project config also disables automatic AGENTS.md discovery.

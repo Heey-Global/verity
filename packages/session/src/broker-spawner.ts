@@ -1,4 +1,4 @@
-import { gitAuthorFromEnv } from './git-author.js';
+import { gitAuthorFromEnv, UNSIGNED_COMMITS_ENV } from './git-author.js';
 import { StderrTail } from './stderr-tail.js';
 import { createConnection, type Socket } from 'node:net';
 import { constants as osConstants } from 'node:os';
@@ -247,6 +247,7 @@ export function createBrokerSpawner(
             : {}),
           // The turn's author, as its own field for the same reason as the badge.
           ...(gitAuthor === undefined ? {} : { gitAuthor }),
+          ...(options.env?.[UNSIGNED_COMMITS_ENV] === '1' ? { signCommits: false } : {}),
         });
       })();
     });

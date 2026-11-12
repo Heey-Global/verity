@@ -32010,6 +32010,16 @@ function gitAuthorEnv(author) {
     GIT_COMMITTER_EMAIL: author?.email
   };
 }
+var UNSIGNED_COMMITS_ENV = "VERITY_UNSIGNED_COMMITS";
+function unsignedCommitsConfig(env) {
+  const raw = env.GIT_CONFIG_COUNT;
+  const count3 = raw !== void 0 && /^\d{1,3}$/u.test(raw) ? Number(raw) : 0;
+  return {
+    GIT_CONFIG_COUNT: String(count3 + 1),
+    [`GIT_CONFIG_KEY_${String(count3)}`]: "commit.gpgsign",
+    [`GIT_CONFIG_VALUE_${String(count3)}`]: "false"
+  };
+}
 function gitAuthorFromEnv(env) {
   const author = { name: env?.GIT_AUTHOR_NAME, email: env?.GIT_AUTHOR_EMAIL };
   return isGitAuthor(author) ? author : void 0;
@@ -32204,7 +32214,8 @@ function createBrokerSpawner(socketPath, requireManagedConfiguration = false) {
           ...Object.keys(sessionEnv).length > 0 ? { sessionEnv } : {},
           ...typeof turnCapability === "string" && TURN_CAPABILITY_PATTERN.test(turnCapability) ? { turnCapability } : {},
           // The turn's author, as its own field for the same reason as the badge.
-          ...gitAuthor === void 0 ? {} : { gitAuthor }
+          ...gitAuthor === void 0 ? {} : { gitAuthor },
+          ...options.env?.[UNSIGNED_COMMITS_ENV] === "1" ? { signCommits: false } : {}
         });
       })();
     });
@@ -33246,6 +33257,8 @@ var startTurnRequestSchema = import_zod20.z.strictObject({
   turnCapability: import_zod20.z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional(),
   /** The person this turn's commits are authored by; see git-author.ts. */
   gitAuthor: import_zod20.z.unknown().refine(isGitAuthor, "invalid git author").optional(),
+  /** False when the turn's person has no signing key; see git-author.ts. */
+  signCommits: import_zod20.z.literal(false).optional(),
   mcpServers: import_zod20.z.array(httpMcpServerSchema).max(16).optional(),
   sessionEnv: import_zod20.z.strictObject({
     VERITY_SESSION_BACKEND: boundedString(256).optional(),
@@ -33360,7 +33373,8 @@ var turn = await server.run(join4(turnDir, "events.jsonl"), {
     // Set last so the container's ambient environment can never supply another one.
     ...request.turnCapability !== void 0 ? { [TURN_CAPABILITY_ENV]: request.turnCapability } : { [TURN_CAPABILITY_ENV]: void 0 },
     // Likewise: only this turn's own author, never one ambient in the container.
-    ...gitAuthorEnv(request.gitAuthor)
+    ...gitAuthorEnv(request.gitAuthor),
+    ...request.signCommits === false ? { [UNSIGNED_COMMITS_ENV]: "1", ...unsignedCommitsConfig(process.env) } : { [UNSIGNED_COMMITS_ENV]: void 0 }
   },
   // The gateway URL is the Sandbox's view of the Server's project-bound broker; it is
   // provisioned into the container, never carried by the request. A bearer without a

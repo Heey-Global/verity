@@ -72,6 +72,8 @@ export function buildRunnerConductorWiring(deps: {
   turnCredentials?: TurnCredentials | undefined;
   /** Who a person's turn commits as; see turn-git-author.ts. */
   turnGitAuthor?: ((userId: string) => Promise<GitAuthor>) | undefined;
+  /** Whether a person's turn can sign commits; see turn-git-author.ts. */
+  turnSignsCommits?: ((userId: string) => Promise<boolean>) | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
   /** The project's enabled HTTP MCP servers usable in a turn run for `initiatedBy`. */
@@ -372,6 +374,16 @@ export function buildRunnerConductorWiring(deps: {
                 gitAuthor: (
                   (userId: string) => () =>
                     deps.turnGitAuthor!(userId)
+                )(context.initiatedBy.userId),
+              }),
+          ...(deps.turnSignsCommits === undefined ||
+          ephemeral ||
+          context.initiatedBy?.userId === undefined
+            ? {}
+            : {
+                signCommits: (
+                  (userId: string) => () =>
+                    deps.turnSignsCommits!(userId)
                 )(context.initiatedBy.userId),
               }),
           ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
