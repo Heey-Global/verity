@@ -161,6 +161,9 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
     await connection.execAsync(
       'CREATE TABLE IF NOT EXISTS meeting_audio_recovery (meeting_id TEXT NOT NULL, segment_id TEXT NOT NULL, PRIMARY KEY(meeting_id, segment_id))',
     );
+    await connection.execAsync(
+      'CREATE TABLE IF NOT EXISTS meeting_upload_failures (server_id TEXT NOT NULL, meeting_id TEXT NOT NULL, revision INTEGER NOT NULL, status INTEGER NOT NULL, server_finalized INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(server_id, meeting_id))',
+    );
     // A process exit ends capture even when iOS has no chance to send a final status.
     await connection.runAsync(
       "UPDATE meetings SET state = 'interrupted', ended_at = last_active_at, revision = revision + 1, error = COALESCE(error, 'Capture stopped when the app closed.') WHERE state = 'active' AND owner_token IS NOT NULL",
@@ -673,6 +676,63 @@ export async function acknowledgeMeeting(
   );
 }
 
+export interface MeetingUploadFailure {
+  revision: number;
+  status: number;
+  serverFinalized: boolean;
+}
+
+/** Keep rejected revisions across relaunch without storing response bodies or credentials. */
+export async function meetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+): Promise<MeetingUploadFailure | null> {
+  const row = await (
+    await db()
+  ).getFirstAsync<{
+    revision: number;
+    status: number;
+    server_finalized: number;
+  }>(
+    'SELECT revision, status, server_finalized FROM meeting_upload_failures WHERE server_id = ? AND meeting_id = ?',
+    serverId,
+    meetingId,
+  );
+  return row
+    ? { revision: row.revision, status: row.status, serverFinalized: row.server_finalized === 1 }
+    : null;
+}
+
+export async function saveMeetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+  failure: MeetingUploadFailure,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'INSERT INTO meeting_upload_failures (server_id, meeting_id, revision, status, server_finalized) VALUES (?, ?, ?, ?, ?) ON CONFLICT(server_id, meeting_id) DO UPDATE SET revision=excluded.revision, status=excluded.status, server_finalized=MAX(meeting_upload_failures.server_finalized, excluded.server_finalized)',
+    serverId,
+    meetingId,
+    failure.revision,
+    failure.status,
+    failure.serverFinalized ? 1 : 0,
+  );
+}
+
+export async function clearMeetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'DELETE FROM meeting_upload_failures WHERE server_id = ? AND meeting_id = ?',
+    serverId,
+    meetingId,
+  );
+}
+
 export async function acknowledgeNote(
   serverId: string,
   id: string,
@@ -741,6 +801,7 @@ async function removeMeetingRows(
   if (owned.owner_token) await liveMeetingSTT?.discardMeetingData?.(id);
   await connection.runAsync('DELETE FROM meeting_notes WHERE meeting_id = ?', id);
   await connection.runAsync('DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', id);
+  await connection.runAsync('DELETE FROM meeting_upload_failures WHERE meeting_id = ?', id);
   await connection.runAsync('DELETE FROM meetings WHERE id = ?', id);
 }
 
@@ -778,7 +839,9 @@ export async function importChanges(
           speaker_names=excluded.speaker_names, speaker_corrections=excluded.speaker_corrections,
           speaker_merges=excluded.speaker_merges,
           revision=excluded.revision, synced_revision=excluded.revision
-        WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND meetings.revision < excluded.revision`,
+        WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND
+          (meetings.revision < excluded.revision OR
+           (meetings.revision = excluded.revision AND meetings.state != 'ended' AND excluded.state = 'ended'))`,
         meeting.id,
         sessionId,
         serverId,

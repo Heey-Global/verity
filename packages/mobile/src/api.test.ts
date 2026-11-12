@@ -21,6 +21,17 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+it('finalizes a meeting through the server-only endpoint without sending recorder data', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({ finalized: true, recordingStopped: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.finalizeLiveMeeting('session/one', 'meeting/one');
+  expect(calls[0]?.url).toBe(
+    'http://host/sessions/session%2Fone/live-meetings/meeting%2Fone/finalize',
+  );
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBeUndefined();
+});
+
 it('round-trips revisioned personal and project context through their scoped endpoints', async () => {
   const personal = { instructions: 'Rules', memory: 'Fact', revision: 3 };
   const memory = { memory: 'Project fact', revision: 'memory-revision' };

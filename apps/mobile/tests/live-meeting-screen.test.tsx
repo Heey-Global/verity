@@ -5,7 +5,12 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { KEYBOARD_BOTTOM_OFFSET } from '../lib/keyboardOffsets';
 
 import MeetingScreen from '../app/meeting/[sessionId]';
-import { discardFinishedMeeting } from '../lib/liveMeetingSync';
+import {
+  discardFinishedMeeting,
+  finalizeMeetingOnServer,
+  getMeetingSyncFailure,
+  retryMeetingSync,
+} from '../lib/liveMeetingSync';
 import { createVerityClient, getActiveMeetingServerId } from '../lib/client';
 import {
   clearSpeakerNameSuggestion,
@@ -91,6 +96,10 @@ jest.mock('../lib/liveMeetingStore', () => ({
   finalizeNote: jest.fn().mockResolvedValue(true),
 }));
 jest.mock('../lib/liveMeetingSync', () => ({
+  subscribeMeetingSyncFailure: jest.fn().mockReturnValue(() => {}),
+  getMeetingSyncFailure: jest.fn().mockReturnValue(null),
+  retryMeetingSync: jest.fn().mockResolvedValue(undefined),
+  finalizeMeetingOnServer: jest.fn().mockResolvedValue(undefined),
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   followRemoteMeeting: jest.fn(),
   discardFinishedMeeting: jest.fn().mockResolvedValue(undefined),
@@ -109,6 +118,7 @@ async function noteInput() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(getMeetingSyncFailure).mockReturnValue(null);
   jest.mocked(useLocalSearchParams).mockReturnValue({ sessionId: 'session-1' });
   jest.mocked(subscribeVoiceMeetingRequest).mockReturnValue(jest.fn());
   jest.mocked(currentMeeting).mockReturnValue(null);
@@ -2626,4 +2636,73 @@ it('discards a finished meeting only after confirmation', async () => {
     ),
   );
   measure.mockRestore();
+});
+
+function showSyncRecoveryMeeting(state: 'active' | 'ended', error: string | null = null) {
+  const meeting: MeetingRecord = {
+    id: 'meeting-sync-recovery',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    ownerToken: 'owned-on-this-device',
+    startedAt: Date.now() - 60_000,
+    endedAt: state === 'ended' ? Date.now() : null,
+    state,
+    captureStatus: state === 'ended' ? 'paused' : 'listening',
+    transcript: 'Keep these locally saved words.',
+    error,
+  };
+  jest
+    .mocked(useLocalSearchParams)
+    .mockReturnValue({ sessionId: 'session-1', meetingId: meeting.id });
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  jest
+    .mocked(getMeetingSyncFailure)
+    .mockReturnValue({ status: 400, message: 'Sync needs attention' });
+  return meeting;
+}
+
+it('keeps recovery available after local stop and finalizes without discarding its transcript', async () => {
+  const meeting = showSyncRecoveryMeeting('ended');
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Server end not confirmed')).toBeOnTheScreen();
+  expect(screen.getByText(/Your transcript is saved here/)).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('End on server'));
+  await waitFor(() =>
+    expect(finalizeMeetingOnServer).toHaveBeenCalledWith('session-1', meeting.id),
+  );
+  expect(discardFinishedMeeting).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByText('Retry sync'));
+  await waitFor(() => expect(retryMeetingSync).toHaveBeenCalledWith('session-1', meeting.id));
+});
+
+it('never offers server finalization while the local recording is active', async () => {
+  showSyncRecoveryMeeting('active');
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Transcript sync needs attention')).toBeOnTheScreen();
+  expect(screen.queryByText('End on server')).not.toBeOnTheScreen();
+  expect(screen.getByText('Retry sync')).toBeOnTheScreen();
+});
+
+it('keeps unsynced changes visible after server finalization without offering another end', async () => {
+  showSyncRecoveryMeeting('ended');
+  jest.mocked(getMeetingSyncFailure).mockReturnValue({
+    status: 400,
+    message: 'Sync needs attention',
+    serverFinalized: true,
+  });
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Meeting ended on server')).toBeOnTheScreen();
+  expect(screen.getByText(/Some transcript changes have not been synced/)).toBeOnTheScreen();
+  expect(screen.queryByText('End on server')).not.toBeOnTheScreen();
+  expect(screen.getByText('Retry sync')).toBeOnTheScreen();
+});
+
+it('does not claim local transcript safety after a local save failure', async () => {
+  showSyncRecoveryMeeting('ended', 'Local save failed: storage full');
+  render(<MeetingScreen />);
+  expect(await screen.findByText('Server end not confirmed')).toBeOnTheScreen();
+  expect(screen.queryByText(/Your transcript is saved here/)).not.toBeOnTheScreen();
+  expect(screen.getByText(/Check the local save error before leaving/)).toBeOnTheScreen();
 });
