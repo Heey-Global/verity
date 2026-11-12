@@ -12298,6 +12298,58 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       expect(after.sandboxRepairLastFailures().has(p.id)).toBe(false);
     });
 
+    it.each([false, true])(
+      'retries its own replacement after start failure (restart=%s)',
+      async (restart) => {
+        // A real create stamps a new generation before start fails. Treating that
+        // generation as manual supersession silently drops the automatic retry.
+        const p = await seedActive('owned-start-failure', 'dev-owned-start-failure');
+        let current: ContainerInspect | null = migratedInspect(p.id);
+        const create = vi.fn(async (spec: ContainerSpec) => {
+          current = {
+            ...migratedInspect(p.id),
+            id: 'replacement',
+            labels: spec.labels,
+            running: false,
+            status: 'created',
+          };
+          return { id: 'replacement', warnings: [] };
+        });
+        const { client } = fakeDocker({
+          inspectContainer: vi.fn(async () => {
+            if (!current)
+              throw new DockerError({ kind: 'container_not_found', id: p.containerName });
+            return current;
+          }),
+          removeContainer: vi.fn(async () => {
+            current = null;
+          }),
+          createContainer: create,
+          startContainer: vi.fn(async () => {
+            throw new Error('injected start failure');
+          }),
+        });
+        const before = makeProvisioner(client, { isHealthy: async () => false });
+        before.attachProjectBusyProbe(async () => false);
+        await expect(before.reconcileRelays([p])).rejects.toThrow('Relay migration failed');
+        expect((await ctx.store.getProject(p.id))?.provisionError).toContain(
+          'injected start failure',
+        );
+        expect(create).toHaveBeenCalledOnce();
+        const [intent] = await ctx.store.sandboxRepairIntents.list();
+        expect(current.labels?.['verity.sandbox-repair-attempt']).toBe(intent!.attemptId);
+        expect(current.labels?.['verity.container-generation']).not.toBe(intent!.sourceGeneration);
+        const failed = (await ctx.store.getProject(p.id))!;
+        expect(failed.state).toBe('failed');
+        const after = restart ? makeProvisioner(client, { isHealthy: async () => false }) : before;
+        after.attachProjectBusyProbe(async () => false);
+        const retry = vi.spyOn(after, 'recreateContainer').mockResolvedValue(p);
+        await after.reconcileRelays([failed]);
+        expect(retry).toHaveBeenCalledWith(p.id, RECONCILE);
+        expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+      },
+    );
+
     it('ends an owed repair once the project is put to sleep', async () => {
       // Sleeping was chosen after the failure; an automatic recreate must not
       // wake the project against it, in this process or the next.

@@ -4371,7 +4371,8 @@ export class ProvisionerImpl implements Provisioner {
         if (
           inspect &&
           (inspect.labels?.[PROJECT_ID_LABEL] !== project.id ||
-            (containerGenerationOf(inspect) ?? null) !== intent.sourceGeneration)
+            ((containerGenerationOf(inspect) ?? null) !== intent.sourceGeneration &&
+              inspect.labels?.['verity.sandbox-repair-attempt'] !== intent.attemptId))
         ) {
           await intents.clear(intent.projectId);
           continue;
@@ -4890,7 +4891,9 @@ export class ProvisionerImpl implements Provisioner {
             ((sourceInspect && sourceInspect.labels?.[PROJECT_ID_LABEL] !== project.id) ||
               (sourceInspect !== null &&
                 (containerGenerationOf(sourceInspect) ?? null) !==
-                  previousIntent.sourceGeneration) ||
+                  previousIntent.sourceGeneration &&
+                sourceInspect.labels?.['verity.sandbox-repair-attempt'] !==
+                  previousIntent.attemptId) ||
               (project.imageOverrideRef ?? (await this.defaultImageRef())) !==
                 previousIntent.targetImageRef)
           ) {
@@ -7068,6 +7071,15 @@ export class ProvisionerImpl implements Provisioner {
         : {}),
       labels: {
         [PROJECT_ID_LABEL]: project.id,
+        // Persist the already-durable attempt identity on its replacement before
+        // create/start. A failed start must remain ours to retry after restart,
+        // while an unrelated generation still cancels the old mandate.
+        ...(this.automaticRepairAttemptContext.getStore() === undefined
+          ? {}
+          : {
+              'verity.sandbox-repair-attempt':
+                this.automaticRepairAttemptContext.getStore()!.attemptId,
+            }),
         ...(effectiveClaudeGatewayUrl === undefined
           ? {}
           : { [CLAUDE_EGRESS_GATEWAY_URL_LABEL]: effectiveClaudeGatewayUrl }),
