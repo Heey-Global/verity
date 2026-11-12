@@ -16,8 +16,11 @@ import { Icon } from '../Icon';
 import { AGENT_MARK, AgentTileMark } from '../AgentMark';
 import { Text } from '../ui';
 import { tint } from '../ui/tint';
-import { ReorderHandle } from '../ui/ReorderHandle';
-import { useProjectRowDrag, type ProjectReorderController } from '../useProjectReorder';
+import {
+  PROJECT_PICKUP_DELAY_MS,
+  useProjectRowDrag,
+  type ProjectReorderController,
+} from '../useProjectReorder';
 import type { SessionProjectGroup } from '../../lib/projectGroups';
 import { moveProjectIdToIndex, projectSortableRange } from '../../lib/projectReorder';
 import { projectInboxItems } from './ProjectPage';
@@ -117,7 +120,8 @@ const STATE_WORD: Record<ProjectCardState['state'], string> = {
 /**
  * A project in the new design's project list (Settings › This app): its name,
  * what waits and what runs, and its health — never its sessions, which live on
- * the project page a tap opens. Sorting exposes a dedicated drag handle.
+ * the project page a tap opens. A held press picks the card up to reorder; while
+ * a card moves, drag handles replace the chevrons of every card that can move.
  *
  * Groups without a project page (sessions outside any project, Verity Control)
  * open in place instead and list their sessions as the page's work list does.
@@ -131,10 +135,10 @@ export function ProjectCard({
   renderedOrder,
   sortable,
   sortableIds = renderedOrder,
-  sorting = false,
   onMove,
   floating = false,
   reordering,
+  movingProjects = false,
   expanded,
   onOpen,
   onToggle,
@@ -151,10 +155,12 @@ export function ProjectCard({
   renderedOrder: readonly string[];
   sortable: boolean;
   sortableIds?: readonly string[];
-  sorting?: boolean;
   onMove?: (order: readonly string[]) => void;
   floating?: boolean;
+  /** Any drag in the list, project or session: taps and move actions pause. */
   reordering: boolean;
+  /** A project card is being dragged: the cards show handles and read as movable. */
+  movingProjects?: boolean;
   /** For a group that opens in place: whether its sessions show. */
   expanded: boolean;
   layoutRevision?: number;
@@ -169,11 +175,19 @@ export function ProjectCard({
     id: group.id,
     reorder,
     renderedOrder,
-    enabled: sortable && sorting,
+    enabled: sortable,
     floating,
   });
   const index = renderedOrder.indexOf(group.id);
   const range = projectSortableRange(renderedOrder, sortableIds, group.id);
+  // Screen readers cannot hold and drag; they move a card one slot at a time.
+  const moveActions =
+    sortable && !reordering
+      ? [
+          ...(index > range.min ? [{ name: 'moveUp', label: 'Move up' }] : []),
+          ...(index < range.max ? [{ name: 'moveDown', label: 'Move down' }] : []),
+        ]
+      : [];
   const facts = projectCardFacts(group, now, unread);
   const line = projectCardLineParts(group, facts);
   const inPlace = onOpen === undefined;
@@ -194,13 +208,17 @@ export function ProjectCard({
         testID={`project-card-${group.id}`}
       >
         <Pressable
+          ref={handleCallbackRef}
           collapsable={false}
           onLayout={onLayout}
-          onPress={reordering || sorting ? undefined : (onOpen ?? onToggle)}
-          accessible={!sorting}
+          onPress={reordering ? undefined : (onOpen ?? onToggle)}
+          // A hold belongs to the drag: releasing it, moved or not, must not
+          // also open the card, which Pressable does without a long-press handler.
+          onLongPress={moveActions.length > 0 ? () => {} : undefined}
+          delayLongPress={PROJECT_PICKUP_DELAY_MS}
           accessibilityRole="button"
           accessibilityLabel={
-            reordering
+            movingProjects && sortable
               ? `Move ${group.title}`
               : [
                   group.title,
@@ -212,13 +230,19 @@ export function ProjectCard({
                   .join(', ')
           }
           accessibilityHint={
-            sorting
-              ? 'Use the handle to reorder.'
-              : inPlace
-                ? 'Shows its sessions.'
-                : 'Opens the project.'
+            movingProjects && sortable
+              ? undefined
+              : (inPlace ? 'Shows its sessions.' : 'Opens the project.') +
+                (moveActions.length > 0 ? ' Hold to reorder, or use the move actions.' : '')
           }
-          accessibilityState={inPlace ? { expanded } : {}}
+          accessibilityActions={moveActions}
+          onAccessibilityAction={({ nativeEvent }) => {
+            if (reordering || !moveActions.some((action) => action.name === nativeEvent.actionName))
+              return;
+            const direction = nativeEvent.actionName === 'moveUp' ? -1 : 1;
+            onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction));
+          }}
+          accessibilityState={{ disabled: reordering, ...(inPlace ? { expanded } : {}) }}
           style={({ pressed }) => [styles.head, pressed ? styles.pressed : null]}
         >
           <View
@@ -263,19 +287,11 @@ export function ProjectCard({
               ) : null}
             </Text>
           </View>
-          {sorting ? (
-            sortable ? (
-              <ReorderHandle
-                ref={handleCallbackRef}
-                label={`Move ${group.title}`}
-                canMoveUp={index > range.min}
-                canMoveDown={index < range.max}
-                disabled={reordering}
-                onMove={(direction) =>
-                  onMove?.(moveProjectIdToIndex(renderedOrder, group.id, index + direction))
-                }
-              />
-            ) : null
+          {sortable && (movingProjects || floating) ? (
+            // Same size as the chevron it replaces, so the head keeps its layout.
+            <View testID={`project-card-handle-${group.id}`}>
+              <Icon name="menu" size={18} color={theme.colors.textMuted} />
+            </View>
           ) : (
             <Icon
               name={inPlace ? (expanded ? 'chevron-down' : 'chevron-right') : 'chevron-right'}
