@@ -1074,7 +1074,7 @@ const onlineJoinStatusSchema = z
 const onlineMeetingStatusSchema = z.object({
   status: onlineJoinStatusSchema,
   /** Provider reason code of a failed join, for example `login_required`. */
-  reason: z.string().nullable(),
+  reason: z.string().nullable().catch(null),
   platform: z.enum(['google_meet', 'teams', 'zoom']).nullable().catch(null),
 });
 export type OnlineMeetingStatus = z.infer<typeof onlineMeetingStatusSchema>;

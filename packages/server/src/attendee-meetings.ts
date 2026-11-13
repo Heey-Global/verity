@@ -931,7 +931,7 @@ export class AttendeeMeetings {
         botId: state.botId,
         platform: meetingPlatform(state.meetingUrl),
         botState: providerCode(bot.state) ?? 'unrecognized',
-        previousBotState: state.botState ?? null,
+        previousBotState: providerCode(state.botState),
         joinStatus: join.status,
         reason: join.reason,
         eventType: join.eventType,
