@@ -195,21 +195,39 @@ describe('ConnectionMonitor robustness', () => {
     expect(clock.delays()).toEqual([2_000]);
   });
 
-  it('ignores a check that fails after the server has already answered', async () => {
+  // While the Gateway drains, requests begun before the update still finish
+  // with an answer. Taking that for a recovery would reload every screen into
+  // the next 503 and flap the bar between "updating" and "Connected".
+  it('lets only its own check end an outage, not a late answer', async () => {
     const clock = fakeTimers();
-    const probe = vi.fn(() => new Promise<never>(() => undefined));
-    const monitor = new ConnectionMonitor({ probe, timers: clock.timers, checkTimeoutMs: 10_000 });
+    let up = false;
+    const probe = vi.fn(() =>
+      up ? Promise.resolve() : Promise.reject(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
+    );
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers });
     const recovered = vi.fn();
     monitor.onRecovered(recovered);
     monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
-    clock.advance(2_000);
     monitor.reportSuccess();
-    expect(recovered).toHaveBeenCalledTimes(1);
-    // The hanging check times out only now; it must not reopen the outage.
-    clock.advance(10_000);
+    expect(monitor.getState().kind).toBe('maintenance');
+    expect(recovered).not.toHaveBeenCalled();
+    up = true;
+    clock.advance(2_000);
     await flush();
     expect(monitor.getState().kind).toBe('connected');
     expect(recovered).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a confirming check that fails after the server has answered', async () => {
+    const clock = fakeTimers();
+    const probe = vi.fn(() => new Promise<never>(() => undefined));
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers, checkTimeoutMs: 10_000 });
+    monitor.reportFailure('unreachable', 'Network request failed');
+    monitor.reportSuccess();
+    // The hanging check times out only now; it must not start an outage.
+    clock.advance(10_000);
+    await flush();
+    expect(monitor.getState().kind).toBe('connected');
   });
 
   it('starts the backoff at its first step when the confirming check finds an update', async () => {
@@ -317,8 +335,8 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
-  it('keeps a throwing listener out of the request that reported', () => {
-    const monitor = new ConnectionMonitor();
+  it('keeps a throwing listener from stopping the others', async () => {
+    const monitor = new ConnectionMonitor({ probe: () => Promise.resolve() });
     const after = vi.fn();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     monitor.onRecovered(() => {
@@ -326,7 +344,9 @@ describe('ConnectionMonitor robustness', () => {
     });
     monitor.onRecovered(after);
     monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
-    expect(() => monitor.reportSuccess()).not.toThrow();
+    monitor.retryNow();
+    await flush();
+    expect(monitor.getState().kind).toBe('connected');
     expect(after).toHaveBeenCalledTimes(1);
     warn.mockRestore();
     monitor.reset();

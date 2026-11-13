@@ -128,7 +128,8 @@ const systemTimers: Timers = {
  *
  * A 503 `server maintenance` is definite and shows at once. A transport failure
  * while connected is first confirmed by an immediate check, so a single dropped
- * request does not flash a warning across the app.
+ * request does not flash a warning across the app. Only a check made during an
+ * outage ends it: answers to requests begun before an update are no proof.
  */
 export class ConnectionMonitor implements ConnectionReporter {
   private state: ServerConnectionState = {
@@ -181,7 +182,7 @@ export class ConnectionMonitor implements ConnectionReporter {
   }
 
   /** The request used to check the server; it must report through this monitor. */
-  setProbe(probe: () => Promise<unknown>): void {
+  setProbe(probe: (() => Promise<unknown>) | undefined): void {
     this.probe = probe;
   }
 
@@ -201,19 +202,28 @@ export class ConnectionMonitor implements ConnectionReporter {
   }
 
   reportSuccess(): void {
-    const now = this.timers.now();
+    if (this.state.kind !== 'connected') {
+      // Ignored during an outage: while the Gateway drains, requests begun
+      // before the update still finish with an answer, which would announce a
+      // recovery that has not happened and reload every screen into the next
+      // 503. Only a check started during the outage can end it.
+      return;
+    }
     if (this.checking) {
-      // The server just answered: a check still running is out of date, and
-      // its late failure must not put the app back into an outage.
+      // The server just answered: the check confirming a transport failure is
+      // out of date, and its late failure must not start an outage.
       this.generation += 1;
       this.checking = false;
     }
-    if (this.state.kind === 'connected') {
-      this.state = { ...this.state, lastConnectedAt: now };
-      // Not emitted: a successful request changes nothing anyone renders, and
-      // every request reports one.
-      return;
-    }
+    // Not emitted: a successful request changes nothing anyone renders, and
+    // every request reports one.
+    this.state = { ...this.state, lastConnectedAt: this.timers.now() };
+  }
+
+  /** The server answered a check made during the outage: it is back. */
+  private recover(): void {
+    if (this.state.kind === 'connected') return;
+    const now = this.timers.now();
     this.stopTimer();
     this.attempt = 0;
     this.state = { kind: 'connected', recoveredAt: now, lastConnectedAt: now };
@@ -304,9 +314,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     if (generation !== this.generation) return;
     this.checking = false;
     if (!failed) {
-      // The probe's own request has already reported success; this covers a
-      // probe that does not go through a reporting client.
-      if (this.state.kind !== 'connected') this.reportSuccess();
+      this.recover();
       return;
     }
     // Only an answer from the server proves it is there; any other rejection —
@@ -315,7 +323,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     const kind = answered ? connectionFailureKind(failure) : 'unreachable';
     if (kind === undefined) {
       // The server answered, just not with what the probe wanted: it is there.
-      if (this.state.kind !== 'connected') this.reportSuccess();
+      this.recover();
       return;
     }
     // A check that merely timed out adds nothing: keep the failure that

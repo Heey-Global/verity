@@ -24,8 +24,18 @@ import {
 const TLS_DUMP =
   'Uplink probe (Pinned TLS transport failed [NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE]; tunnel local=2) and direct Core request failed';
 
+/** The server answers the bar's next check, which is what ends an outage. */
+async function serverAnswers() {
+  serverConnection.setProbe(() => Promise.resolve());
+  await act(async () => {
+    serverConnection.retryNow();
+    await Promise.resolve();
+  });
+}
+
 beforeEach(() => jest.useFakeTimers());
 afterEach(() => {
+  serverConnection.setProbe(undefined);
   act(() => serverConnection.reset());
   jest.useRealTimers();
 });
@@ -65,22 +75,23 @@ describe('ConnectionStatusBar', () => {
     expect(screen.getByText(TLS_DUMP)).toBeOnTheScreen();
   });
 
-  it('does not open the details by itself at the next disruption', () => {
+  it('does not open the details by itself at the next disruption', async () => {
     render(<ConnectionStatusBar />);
     act(() => serverConnection.reportFailure('unreachable', TLS_DUMP));
     fireEvent.press(screen.getByRole('button', { name: /Can’t reach your server/ }));
     expect(screen.getByText('Direct connection')).toBeOnTheScreen();
-    act(() => serverConnection.reportSuccess());
+    await serverAnswers();
     act(() => jest.advanceTimersByTime(RECOVERED_NOTICE_MS));
+    serverConnection.setProbe(undefined); // the server is away again
     act(() => serverConnection.reportFailure('unreachable', TLS_DUMP));
     expect(screen.getByText('Can’t reach your server')).toBeOnTheScreen();
     expect(screen.queryByText('Direct connection')).toBeNull();
   });
 
-  it('says "Connected" briefly when the server is back, then disappears', () => {
+  it('says "Connected" briefly when the server is back, then disappears', async () => {
     render(<ConnectionStatusBar />);
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
-    act(() => serverConnection.reportSuccess());
+    await serverAnswers();
     expect(screen.getByText('Connected')).toBeOnTheScreen();
     act(() => jest.advanceTimersByTime(RECOVERED_NOTICE_MS));
     expect(screen.toJSON()).toBeNull();
@@ -109,9 +120,9 @@ describe('hidesConnectionError', () => {
     expect(hidesConnectionError(TLS_DUMP, serverConnection.getState())).toBe(false);
   });
 
-  it('keeps hiding the leftover error while the reload after recovery runs', () => {
+  it('keeps hiding the leftover error while the reload after recovery runs', async () => {
     disrupted();
-    serverConnection.reportSuccess();
+    await serverAnswers();
     const state = serverConnection.getState();
     const recoveredAt = state.kind === 'connected' ? state.recoveredAt! : 0;
     expect(hidesConnectionError(SERVER_MAINTENANCE_MESSAGE, state, recoveredAt + 5_000)).toBe(true);
@@ -124,11 +135,11 @@ describe('hidesConnectionError', () => {
 describe('useHidesConnectionError', () => {
   // A connection error the reload did not clear must come back on screen when
   // the grace ends; nothing else may be needed to re-render the screen.
-  it('shows a leftover error again once the grace after recovery ends', () => {
+  it('shows a leftover error again once the grace after recovery ends', async () => {
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
     const { result } = renderHook(() => useHidesConnectionError(SERVER_MAINTENANCE_MESSAGE));
     expect(result.current).toBe(true);
-    act(() => serverConnection.reportSuccess());
+    await serverAnswers();
     expect(result.current).toBe(true);
     act(() => jest.advanceTimersByTime(RECOVERY_GRACE_MS));
     expect(result.current).toBe(false);
@@ -157,7 +168,7 @@ describe('Settings after an outage', () => {
       </SettingsScaffold>,
     );
     expect(screen.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
-    await act(async () => serverConnection.reportSuccess());
+    await serverAnswers();
     expect(client.getVeritySettings).toHaveBeenCalledTimes(2);
     // `onRetry` may repeat a save: recovery never calls it.
     expect(onRetry).not.toHaveBeenCalled();
