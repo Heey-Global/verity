@@ -141,6 +141,8 @@ export function HomeInbox({
       key={item.key}
       item={item}
       selected={item.sessionId !== undefined && item.sessionId === selectedSessionId}
+      // Drawn as an entry of the work list's groups, which bring the frame.
+      grouped
       pending={feed.pending.get(item.key) ?? false}
       disabled={feed.pending.has(item.key)}
       onDismiss={item.dismiss !== undefined ? () => feed.dismiss(item) : undefined}
@@ -516,9 +518,12 @@ export function InboxCard({
   onAction,
   onDismiss,
   onRestore,
+  grouped = false,
 }: {
   item: InboxItem;
   selected: boolean;
+  /** An entry of a `Group` rather than a card of its own (see `Card`). */
+  grouped?: boolean;
   /** The {@link answerId} of the answer being sent, which shows the spinner. */
   pending: string | false;
   disabled: boolean;
@@ -538,7 +543,7 @@ export function InboxCard({
   useEffect(() => setAnswering(false), [answerKey, restoring, disabled]);
   return (
     <View testID={restoring ? `inbox-hidden-${item.kind}` : `inbox-item-${item.kind}`}>
-      <Card stacked selected={selected} muted={restoring}>
+      <Card stacked grouped={grouped} selected={selected} muted={restoring}>
         <CardHead
           title={item.title}
           subtitle={item.context}

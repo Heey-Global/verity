@@ -150,6 +150,37 @@ it('does not discover accounts until the menu opens, surfaces errors, and cancel
   await waitFor(() => expect(hook.result.current.connected).toBe(true));
 });
 
+// Without the remembered answer every opening hid the Connect section behind a
+// loading line until the read returned, and the menu grew under the finger.
+it('shows the remembered answer at once when the menu reopens, refreshing it quietly', async () => {
+  const api = client();
+  const hook = renderHook(
+    ({ open }: { open: boolean }) => useGoogleAccountAvailability(api, 'remembered', open),
+    { initialProps: { open: true } },
+  );
+  expect(hook.result.current.loading).toBe(true);
+  await waitFor(() => expect(hook.result.current.connected).toBe(true));
+  hook.rerender({ open: false });
+  jest.mocked(api.listGoogleAccounts).mockReturnValueOnce(new Promise(() => {}));
+  hook.rerender({ open: true });
+  expect(api.listGoogleAccounts).toHaveBeenCalledTimes(2);
+  expect(hook.result.current).toEqual({ connected: true, loading: false, error: null });
+  // A later session remounting the chat starts from the same answer.
+  hook.unmount();
+  const again = renderHook(() => useGoogleAccountAvailability(api, 'remembered', false));
+  expect(again.result.current.connected).toBe(true);
+  again.unmount();
+  // A failed refresh keeps it instead of replacing it with an error.
+  jest.mocked(api.listGoogleAccounts).mockRejectedValueOnce(new Error('offline'));
+  const reopened = renderHook(() => useGoogleAccountAvailability(api, 'remembered', true));
+  await waitFor(() => expect(api.listGoogleAccounts).toHaveBeenCalledTimes(3));
+  // Let the rejection reach the hook before judging what it left behind.
+  await act(async () => {
+    await jest.mocked(api.listGoogleAccounts).mock.results[2]!.value.catch(() => undefined);
+  });
+  expect(reopened.result.current).toEqual({ connected: true, loading: false, error: null });
+});
+
 it('keeps visible link and approval reads focused and deferred, with abort on cleanup', async () => {
   const api = client();
   const read = jest.fn(async (_signal: AbortSignal) => {});
