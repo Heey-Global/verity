@@ -65,6 +65,7 @@ const capabilities: GhTokenCapabilityRegistry = {
   bindingForSandbox: async (projectId, userId) =>
     sandboxBindings.find((b) => b.projectId === projectId && b.userId === userId),
   revokeProject: async () => {},
+  revokeSandbox: async () => {},
 };
 const allActions = new Set<ForgeAction>([
   'git-read',

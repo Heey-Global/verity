@@ -58,7 +58,7 @@ export interface GhTokenCapabilityRegistry {
     userId: string,
   ): Promise<GhTokenCapabilityBinding | undefined>;
   /** Drop one sandbox's capability. No-op when none is registered. */
-  revokeSandbox?(projectId: string, userId: string): Promise<void>;
+  revokeSandbox(projectId: string, userId: string): Promise<void>;
   /** Drop every sandbox's capability in a project (deprovision). */
   revokeProject(projectId: string): Promise<void>;
 }

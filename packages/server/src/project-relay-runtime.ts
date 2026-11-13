@@ -36,7 +36,11 @@ export interface ProjectRelayRuntimeOptions {
   codexSocketRoot?: string;
   socketOwnerUid: number;
   relayGid: number;
-  projectNetwork(projectId: string): string;
+  sandboxNetwork(
+    sandbox: Pick<InternalConnectionIdentity, 'projectId' | 'userId' | 'projectDefault'>,
+  ): string;
+  /** The person of a project's original sandbox. */
+  defaultSandboxUser(projectId: string): Promise<string>;
   /** Narrow dependency-injection seams used by composition tests. */
   startBrokerListener?:
     ((identity: InternalConnectionIdentity) => Promise<ProjectInternalUnixListener>) | undefined;
@@ -111,7 +115,7 @@ export function createProjectRelayRuntime(
         : { codexSocketRoot: options.codexSocketRoot }),
       socketOwnerUid: options.socketOwnerUid,
       relayGid: options.relayGid,
-      projectNetwork: (projectId) => options.projectNetwork(projectId),
+      sandboxNetwork: (sandbox) => options.sandboxNetwork(sandbox),
       log: options.app.log,
     });
 
@@ -122,5 +126,6 @@ export function createProjectRelayRuntime(
     startClaudeListener,
     ...(startCodexListener === undefined ? {} : { startCodexListener }),
     startRelay,
+    defaultSandboxUser: (projectId) => options.defaultSandboxUser(projectId),
   });
 }

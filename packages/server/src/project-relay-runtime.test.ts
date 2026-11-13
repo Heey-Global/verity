@@ -46,6 +46,7 @@ describe('project relay runtime composition', () => {
       issue: vi.fn(async () => 'github-cap'),
       resolve: vi.fn(),
       revokeProject: vi.fn(async () => {}),
+      revokeSandbox: vi.fn(async () => {}),
     } satisfies GhTokenCapabilityRegistry;
     const startRelay = vi.fn(async () => ({
       quiesce: vi.fn(async () => {}),
@@ -64,7 +65,8 @@ describe('project relay runtime composition', () => {
       codexSocketRoot: '/data/codex',
       socketOwnerUid: 1000,
       relayGid: 65_532,
-      projectNetwork: (projectId) => `verity-proj-${projectId}`,
+      sandboxNetwork: (sandbox) => `verity-proj-${sandbox.projectId}`,
+      defaultSandboxUser: async () => '00000000-0000-4000-8000-000000000001',
       startBrokerListener: vi.fn(async () => broker),
       startClaudeListener: vi.fn(async () => claude),
       startCodexListener: vi.fn(async () => codex),

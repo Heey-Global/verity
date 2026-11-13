@@ -1,4 +1,5 @@
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
+import { sandboxKey } from './sandbox-identity.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type {
   InternalConnectionIdentity,
@@ -79,9 +80,25 @@ export interface ProjectRelayLifecycleOptions {
     gateway: { host: string; port: number },
   ): Promise<ProjectClaudeUnixListener>;
   startRelay(context: ProjectRelayStartContext): Promise<ProjectRelayRuntime>;
+  /** The person of a project's original sandbox, for callers that name a sandbox
+   *  by its project id alone. */
+  defaultSandboxUser(projectId: string): Promise<string>;
 }
 
+/** One person's sandbox in a project (ADR 0023 §4). */
+export interface ProjectRelaySandbox {
+  projectId: string;
+  userId: string;
+  projectDefault: boolean;
+}
+
+/** A sandbox, or a bare project id naming the project's original sandbox. */
+export type ProjectRelaySandboxRef = string | ProjectRelaySandbox;
+
 interface ActiveRelay {
+  projectId: string;
+  userId: string;
+  projectDefault: boolean;
   egress?: ProjectEgressLifecycle;
   containerGeneration: string;
   brokerListener?: ProjectInternalUnixListener;
@@ -103,7 +120,7 @@ export class ProjectRelayLifecycle {
    *  ({@link isActive}) must not change — this only widens what {@link heldRelays}
    *  reports, so a relay container is covered from before it is created until it
    *  is torn down, with no uncovered stretch in between. */
-  private readonly starting = new Map<string, string>();
+  private readonly starting = new Map<string, { projectId: string; containerGeneration: string }>();
   private readonly operationTails = new Map<string, Promise<void>>();
   private closed = false;
   private closing: Promise<void> | undefined;
@@ -112,7 +129,7 @@ export class ProjectRelayLifecycle {
 
   async start(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
     if (this.closed) throw new Error('project relay lifecycle is closed');
-    return this.serialize(binding.projectId, () => this.startExclusive(binding));
+    return this.serialize(sandboxKey(binding), () => this.startExclusive(binding));
   }
 
   /** Reattach this process to an existing relay generation after a Server restart.
@@ -121,24 +138,37 @@ export class ProjectRelayLifecycle {
    * running sandbox. Only the process-local listeners and relay runtime are rebuilt. */
   async resume(binding: ProjectRelayBinding): Promise<void> {
     if (this.closed) throw new Error('project relay lifecycle is closed');
-    return this.serialize(binding.projectId, () => this.resumeExclusive(binding));
+    return this.serialize(sandboxKey(binding), () => this.resumeExclusive(binding));
   }
 
   /** Wake a retained relay generation with newly issued capabilities. Unlike
    * {@link resume}, this follows an intentional sleep that revoked the old ones. */
   async reactivate(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
     if (this.closed) throw new Error('project relay lifecycle is closed');
-    return this.serialize(binding.projectId, () => this.reactivateExclusive(binding));
+    return this.serialize(sandboxKey(binding), () => this.reactivateExclusive(binding));
   }
 
-  async stop(projectId: string): Promise<void> {
-    return this.serialize(projectId, () => this.stopExclusive(projectId));
+  async stop(ref: ProjectRelaySandboxRef): Promise<void> {
+    const sandbox = await this.sandboxOf(ref);
+    return this.serialize(sandboxKey(sandbox), () => this.stopExclusive(sandbox));
   }
 
   /** Revoke the project's authority and stop its relay without removing the
    * generation container. A later {@link resume} adopts that same container. */
-  async sleep(projectId: string): Promise<void> {
-    return this.serialize(projectId, () => this.sleepExclusive(projectId));
+  async sleep(ref: ProjectRelaySandboxRef): Promise<void> {
+    const sandbox = await this.sandboxOf(ref);
+    return this.serialize(sandboxKey(sandbox), () => this.sleepExclusive(sandbox));
+  }
+
+  private async sandboxOf(ref: ProjectRelaySandboxRef): Promise<ProjectRelaySandbox> {
+    if (typeof ref !== 'string') return ref;
+    const known = this.active.get(ref);
+    if (known !== undefined) return known;
+    return {
+      projectId: ref,
+      userId: await this.options.defaultSandboxUser(ref),
+      projectDefault: true,
+    };
   }
 
   /**
@@ -151,8 +181,8 @@ export class ProjectRelayLifecycle {
    * teardown, so a start in flight reads false — the reconciler skips in-flight
    * provisions separately, so that can never race into a recreate.
    */
-  isActive(projectId: string, containerGeneration?: string): boolean {
-    const active = this.active.get(projectId);
+  isActive(ref: ProjectRelaySandboxRef, containerGeneration?: string): boolean {
+    const active = this.active.get(typeof ref === 'string' ? ref : sandboxKey(ref));
     return (
       active !== undefined &&
       (containerGeneration === undefined || active.containerGeneration === containerGeneration)
@@ -181,9 +211,9 @@ export class ProjectRelayLifecycle {
     const held = new Map<string, { projectId: string; containerGeneration: string }>();
     // Starting first, activated second: while a start is running for a project
     // both can name it, and the two agree on the generation anyway.
-    for (const [projectId, containerGeneration] of [
-      ...this.starting.entries(),
-      ...[...this.active.entries()].map(([id, entry]) => [id, entry.containerGeneration] as const),
+    for (const { projectId, containerGeneration } of [
+      ...this.starting.values(),
+      ...this.active.values(),
     ]) {
       held.set(`${projectId}\0${containerGeneration}`, { projectId, containerGeneration });
     }
@@ -199,8 +229,12 @@ export class ProjectRelayLifecycle {
         );
       }
       const results = await Promise.all(
-        [...this.active.keys()].map((projectId) =>
-          this.stop(projectId).then(
+        [...this.active.values()].map((entry) =>
+          this.stop({
+            projectId: entry.projectId,
+            userId: entry.userId,
+            projectDefault: entry.projectDefault,
+          }).then(
             () => ({ ok: true as const }),
             (error: unknown) => ({ ok: false as const, error }),
           ),
@@ -223,7 +257,7 @@ export class ProjectRelayLifecycle {
       );
     }
     const failures: unknown[] = [];
-    for (const [projectId, entry] of this.active) {
+    for (const [key, entry] of this.active) {
       const entryFailures: unknown[] = [];
       for (const key of ['brokerListener', 'claudeListener', 'codexListener'] as const) {
         const listener = entry[key];
@@ -238,7 +272,7 @@ export class ProjectRelayLifecycle {
       failures.push(...entryFailures);
       // A failed close leaves authority in an unknown live state. Retain the
       // entry so a later suspend/close can retry those process-owned handles.
-      if (entryFailures.length === 0) this.active.delete(projectId);
+      if (entryFailures.length === 0) this.active.delete(key);
     }
     if (failures.length > 0)
       throw new AggregateError(failures, 'project relay lifecycle suspend failed');
@@ -246,8 +280,9 @@ export class ProjectRelayLifecycle {
 
   private async startExclusive(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
     validateBinding(binding);
-    if (this.active.has(binding.projectId)) {
-      throw new Error(`project relay already active: ${binding.projectId}`);
+    const key = sandboxKey(binding);
+    if (this.active.has(key)) {
+      throw new Error(`project relay already active: ${key}`);
     }
     // Claim the generation BEFORE anything can create its container, and hold the
     // claim until the entry has moved into `active`. A start that stalls after
@@ -255,20 +290,23 @@ export class ProjectRelayLifecycle {
     // no sandbox names it, this process does not report it, and once it ages past
     // the sweep's grace period the GC would collect a relay a live provision is
     // about to hand to its sandbox.
-    this.starting.set(binding.projectId, binding.containerGeneration);
+    this.starting.set(sandboxKey(binding), {
+      projectId: binding.projectId,
+      containerGeneration: binding.containerGeneration,
+    });
     try {
       const activation = await this.startClaimed(binding);
       if (activation === undefined)
         throw new Error('project relay activation returned no capabilities');
       return activation;
     } finally {
-      this.starting.delete(binding.projectId);
+      this.starting.delete(sandboxKey(binding));
     }
   }
 
   private async resumeExclusive(binding: ProjectRelayBinding): Promise<void> {
     validateBinding(binding);
-    const active = this.active.get(binding.projectId);
+    const active = this.active.get(sandboxKey(binding));
     if (active !== undefined) {
       // Already owned by this process, so the listeners and capabilities behind the
       // relay are live and nothing needs rebuilding. The container itself may still
@@ -286,27 +324,33 @@ export class ProjectRelayLifecycle {
       }
       return;
     }
-    this.starting.set(binding.projectId, binding.containerGeneration);
+    this.starting.set(sandboxKey(binding), {
+      projectId: binding.projectId,
+      containerGeneration: binding.containerGeneration,
+    });
     try {
       await this.startClaimed(binding, false, true);
     } finally {
-      this.starting.delete(binding.projectId);
+      this.starting.delete(sandboxKey(binding));
     }
   }
 
   private async reactivateExclusive(binding: ProjectRelayBinding): Promise<ProjectRelayActivation> {
     validateBinding(binding);
-    if (this.active.has(binding.projectId)) {
-      throw new Error(`project relay already active: ${binding.projectId}`);
+    if (this.active.has(sandboxKey(binding))) {
+      throw new Error(`project relay already active: ${sandboxKey(binding)}`);
     }
-    this.starting.set(binding.projectId, binding.containerGeneration);
+    this.starting.set(sandboxKey(binding), {
+      projectId: binding.projectId,
+      containerGeneration: binding.containerGeneration,
+    });
     try {
       const activation = await this.startClaimed(binding, true, true);
       if (activation === undefined)
         throw new Error('project relay reactivation returned no capabilities');
       return activation;
     } finally {
-      this.starting.delete(binding.projectId);
+      this.starting.delete(sandboxKey(binding));
     }
   }
 
@@ -355,7 +399,10 @@ export class ProjectRelayLifecycle {
         ...(codexListener === undefined ? {} : { codexSocketPath: codexListener.socketPath }),
         ...(resumeExisting ? { resumeExisting: true } : {}),
       });
-      this.active.set(binding.projectId, {
+      this.active.set(sandboxKey(binding), {
+        projectId: binding.projectId,
+        userId: binding.userId,
+        projectDefault: binding.projectDefault,
         containerGeneration: binding.containerGeneration,
         ...(binding.egress === undefined ? {} : { egress: binding.egress }),
         brokerListener,
@@ -367,7 +414,10 @@ export class ProjectRelayLifecycle {
         return { identity, signingCapability, githubCapability };
     } catch (error) {
       if (error instanceof ProjectRelayStartError) runtime = error.runtime;
-      this.active.set(binding.projectId, {
+      this.active.set(sandboxKey(binding), {
+        projectId: binding.projectId,
+        userId: binding.userId,
+        projectDefault: binding.projectDefault,
         containerGeneration: binding.containerGeneration,
         ...(binding.egress === undefined ? {} : { egress: binding.egress }),
         brokerListener,
@@ -375,7 +425,7 @@ export class ProjectRelayLifecycle {
         ...(codexListener === undefined ? {} : { codexListener }),
         ...(runtime === undefined ? {} : { runtime }),
       });
-      const cleanupFailures = await this.teardown(binding.projectId, issueCapabilities);
+      const cleanupFailures = await this.teardown(binding, issueCapabilities);
       if (cleanupFailures.length > 0) {
         throw new AggregateError(
           [error, ...cleanupFailures],
@@ -387,22 +437,29 @@ export class ProjectRelayLifecycle {
     }
   }
 
-  private async stopExclusive(projectId: string): Promise<void> {
-    const failures = await this.teardown(projectId);
+  private async stopExclusive(sandbox: ProjectRelaySandbox): Promise<void> {
+    const failures = await this.teardown(sandbox);
     if (failures.length > 0) {
-      throw new AggregateError(failures, `project relay teardown failed: ${projectId}`);
+      throw new AggregateError(failures, `project relay teardown failed: ${sandboxKey(sandbox)}`);
     }
   }
 
-  private async sleepExclusive(projectId: string): Promise<void> {
-    const active = this.active.get(projectId);
+  private async sleepExclusive(sandbox: ProjectRelaySandbox): Promise<void> {
+    const key = sandboxKey(sandbox);
+    const active = this.active.get(key);
     const runtime = active?.runtime;
     const brokerListener = active?.brokerListener;
     const claudeListener = active?.claudeListener;
     const codexListener = active?.codexListener;
     const results = await Promise.all([
-      runCleanup(() => this.options.signingCapabilities.revokeProject(projectId)),
-      runCleanup(() => this.options.githubCapabilities.revokeProject(projectId)),
+      // Only this sandbox's authority: another person's sandbox of the same
+      // project keeps its own (ADR 0023 §4).
+      runCleanup(() =>
+        this.options.signingCapabilities.revokeSandbox(sandbox.projectId, sandbox.userId),
+      ),
+      runCleanup(() =>
+        this.options.githubCapabilities.revokeSandbox(sandbox.projectId, sandbox.userId),
+      ),
       ...(runtime === undefined ? [] : [runCleanup(() => runtime.quiesce())]),
       ...(brokerListener === undefined ? [] : [runCleanup(() => brokerListener.close())]),
       ...(claudeListener === undefined ? [] : [runCleanup(() => claudeListener.close())]),
@@ -424,14 +481,18 @@ export class ProjectRelayLifecycle {
     }
     if (codexListener !== undefined && results[resultIndex]?.ok === true)
       delete active!.codexListener;
-    if (failures.length === 0) this.active.delete(projectId);
+    if (failures.length === 0) this.active.delete(key);
     if (failures.length > 0) {
-      throw new AggregateError(failures, `project relay sleep failed: ${projectId}`);
+      throw new AggregateError(failures, `project relay sleep failed: ${key}`);
     }
   }
 
-  private async teardown(projectId: string, revokeCapabilities = true): Promise<unknown[]> {
-    const active = this.active.get(projectId);
+  private async teardown(
+    sandbox: ProjectRelaySandbox,
+    revokeCapabilities = true,
+  ): Promise<unknown[]> {
+    const key = sandboxKey(sandbox);
+    const active = this.active.get(key);
     const runtime = active?.runtime;
     const brokerListener = active?.brokerListener;
     const claudeListener = active?.claudeListener;
@@ -441,8 +502,12 @@ export class ProjectRelayLifecycle {
     // from being revoked or the remaining resources from beginning shutdown.
     const authorityResults = revokeCapabilities
       ? [
-          runCleanup(() => this.options.signingCapabilities.revokeProject(projectId)),
-          runCleanup(() => this.options.githubCapabilities.revokeProject(projectId)),
+          runCleanup(() =>
+            this.options.signingCapabilities.revokeSandbox(sandbox.projectId, sandbox.userId),
+          ),
+          runCleanup(() =>
+            this.options.githubCapabilities.revokeSandbox(sandbox.projectId, sandbox.userId),
+          ),
         ]
       : [];
     const results = await Promise.all([
@@ -467,24 +532,24 @@ export class ProjectRelayLifecycle {
     if (claudeListener !== undefined) resultIndex += 1;
     if (codexListener !== undefined && results[resultIndex]?.ok === true)
       delete active!.codexListener;
-    if (failures.length === 0) this.active.delete(projectId);
+    if (failures.length === 0) this.active.delete(key);
     return failures;
   }
 
-  private async serialize<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.operationTails.get(projectId) ?? Promise.resolve();
+  private async serialize<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.operationTails.get(key) ?? Promise.resolve();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.catch(() => undefined).then(() => gate);
-    this.operationTails.set(projectId, tail);
+    this.operationTails.set(key, tail);
     await previous.catch(() => undefined);
     try {
       return await operation();
     } finally {
       release();
-      if (this.operationTails.get(projectId) === tail) this.operationTails.delete(projectId);
+      if (this.operationTails.get(key) === tail) this.operationTails.delete(key);
     }
   }
 }

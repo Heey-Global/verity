@@ -1170,6 +1170,7 @@ describe('POST /internal/project/memory rejects the retired TCP path', () => {
       return undefined;
     },
     revokeProject: async () => {},
+    revokeSandbox: async () => {},
   };
 
   function memoryApp() {

@@ -40,6 +40,17 @@ export function projectNodeModulesVolumeName(projectId: string): string {
   return projectNetworkName(projectId).replace(/^verity-proj-/, 'verity-node-modules-');
 }
 
+/** The network of one sandbox; see {@link sandboxIdentity}. */
+export function sandboxNetworkName(sandbox: {
+  projectId: string;
+  userId: string;
+  projectDefault: boolean;
+}): string {
+  return sandbox.projectDefault
+    ? projectNetworkName(sandbox.projectId)
+    : `${projectNetworkName(sandbox.projectId)}--${sandboxPersonTag(sandbox.userId)}`;
+}
+
 export function sandboxIdentity(
   project: { id: string; containerName: string },
   sandbox: { userId: string; projectDefault: boolean },
@@ -62,8 +73,23 @@ export function sandboxIdentity(
   return {
     ...base,
     containerName: `${project.containerName}--${tag}`,
-    networkName: `${projectNetworkName(project.id)}--${tag}`,
+    networkName: sandboxNetworkName({ ...base }),
     nodeModulesVolume: `${projectNodeModulesVolumeName(project.id)}--${tag}`,
     runnerDir: `runners/${tag}/${project.id}`,
   };
+}
+
+/**
+ * The key under which in-memory state of one sandbox is held (relays, locks,
+ * leases). The project's original sandbox keeps its project id as key, so state
+ * held for it before sandboxes were per person keeps its meaning.
+ */
+export function sandboxKey(sandbox: {
+  projectId: string;
+  userId: string;
+  projectDefault: boolean;
+}): string {
+  return sandbox.projectDefault
+    ? sandbox.projectId
+    : `${sandbox.projectId}#${sandboxPersonTag(sandbox.userId)}`;
 }

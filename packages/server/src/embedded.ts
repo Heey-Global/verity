@@ -1,4 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { sandboxNetworkName } from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
@@ -303,7 +304,6 @@ import {
   projectClonePath,
   gitAuthHeader,
   devcontainerBuilderIdle,
-  projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
   type ProjectRelayControl,
@@ -5437,7 +5437,8 @@ export async function buildEmbeddedServer(
       codexSocketRoot,
       socketOwnerUid: process.getuid?.() ?? 1000,
       relayGid,
-      projectNetwork: projectNetworkName,
+      sandboxNetwork: sandboxNetworkName,
+      defaultSandboxUser: (projectId) => projectDefaultSandboxUser(eventStore, projectId),
     });
   }
 
