@@ -411,7 +411,6 @@ export function createBrokeredForgeProxy(options: {
             // store still closes it once nothing has confirmed it for too long,
             // rather than suspending revocation while credentials keep flowing.
             let checking = false;
-            let checkStartedAt = 0;
             let confirmedAt = Date.now();
             let lastTick = confirmedAt;
             let lastFailure: { error: unknown } | undefined;
@@ -424,18 +423,21 @@ export function createBrokeredForgeProxy(options: {
               const stalled = Math.max(0, now - lastTick - recheckInterval);
               lastTick = now;
               confirmedAt += stalled;
-              checkStartedAt += stalled;
-              if (checking) {
-                if (now - checkStartedAt > unconfirmedLimit) revoke('revocation-timeout');
-                return;
+              // A healthy stream is reconfirmed every tick; past the bound only an
+              // attempted check — still pending, or failed — can be outstanding.
+              if (now - confirmedAt > unconfirmedLimit) {
+                if (checking) {
+                  revoke('revocation-timeout');
+                  return;
+                }
+                if (lastFailure !== undefined) {
+                  revoke('resolver-error', lastFailure.error);
+                  return;
+                }
               }
-              if (lastFailure !== undefined && now - confirmedAt > unconfirmedLimit) {
-                revoke('resolver-error', lastFailure.error);
-                return;
-              }
+              if (checking) return;
               checking = true;
               const started = now;
-              checkStartedAt = started;
               void resolveBinding()
                 .then(
                   (current) => {

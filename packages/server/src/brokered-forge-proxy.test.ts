@@ -1320,7 +1320,7 @@ it('does not count an event-loop stall against a live Forge stream', async () =>
       const timer = setInterval(() => {
         res.write(`frame${sent}\n`);
         if (sent === 3) {
-          const until = Date.now() + 1000;
+          const until = Date.now() + 2000;
           while (Date.now() < until);
         }
         if (++sent === 8) {
@@ -1334,11 +1334,11 @@ it('does not count an event-loop stall against a live Forge stream', async () =>
       capabilities: {
         ...capabilities,
         resolve: async (value) => {
-          if (++calls > 2) await delay(150);
+          if (++calls > 2) await delay(100);
           return value === cap ? binding : undefined;
         },
       },
-      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 400 },
+      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 800 },
     },
   );
   const result = await call(h.port, '/repos/acme/app/issues');
@@ -1364,6 +1364,33 @@ it('closes a live Forge stream that no re-check confirms within the bound', asyn
     body: '',
   }));
   expect(result.body.split('\n').filter(Boolean).length).toBeLessThan(20);
+  expect(warning).toHaveBeenCalledWith(
+    'Forge broker connection failed',
+    expect.objectContaining({ phase: 'authorization', reason: 'revocation-timeout' }),
+  );
+});
+
+it('bounds a hang that follows failed re-checks from the last confirmation', async () => {
+  // Timing a hung check from its own start would extend the bound by however
+  // long the failures before it had already run.
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(slowStream(30, 3000), {
+    capabilities: {
+      ...capabilities,
+      resolve: (value) => {
+        calls++;
+        if (calls <= 2) return Promise.resolve(value === cap ? binding : undefined);
+        if (calls <= 8) return Promise.reject(new Error('store unavailable'));
+        return new Promise(() => {});
+      },
+    },
+    authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 400 },
+  });
+  const started = Date.now();
+  await call(h.port, '/repos/acme/app/issues').catch(() => ({ status: 0, body: '' }));
+  // Fails until ~350 ms, then hangs: the bound still ends near 400 ms, not 750 ms.
+  expect(Date.now() - started).toBeLessThan(700);
   expect(warning).toHaveBeenCalledWith(
     'Forge broker connection failed',
     expect.objectContaining({ phase: 'authorization', reason: 'revocation-timeout' }),
