@@ -39,20 +39,19 @@ export interface PermissionLine {
 
 export interface PermissionSummary {
   title: string;
-  /** What a reader needs to decide without opening the session. Empty when the
-   *  tool has no summariser, or when its summariser could not read the input. */
+  /** What a reader needs to decide without opening the session: a summariser's
+   *  words, else the whole field a known tool is about (a command, a path, an
+   *  address). Empty when neither applies or the summariser could not read the
+   *  input; the raw input is then the thing to read. */
   lines: PermissionLine[];
   /** Whether {@link lines} carry everything the input asks, so an overview may
    *  fold the raw input. False when a field the lines leave out could matter. */
   covered: boolean;
 }
 
-/** Fields that only describe or pace a call, never change what it does. */
-const COMMENTARY_FIELDS: ReadonlySet<string> = new Set([
-  'description',
-  'timeout',
-  'run_in_background',
-]);
+/** Fields that only describe or bound a call, never change what it does or how
+ *  it runs. Running in the background changes how a command runs, so it is not one. */
+const COMMENTARY_FIELDS: ReadonlySet<string> = new Set(['description', 'timeout']);
 
 function linkedMessage(input: unknown): { target: string; message: string } | null {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
