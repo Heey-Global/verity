@@ -93,7 +93,11 @@ whoever sets it. The edge therefore stores each application cookie in its own na
 - Cookies with invalid names or values are dropped. A cookie whose name and value, including the
   11-byte prefix, exceed 4096 bytes is dropped, because a browser would discard it anyway. The
   connector relays at most 40 cookies or 16 KiB per response and skips any single line the tunnel
-  would refuse, so a response with too many cookies loses the rest rather than failing.
+  would refuse, and it leaves room for the application's other response headers, so a
+  response with too many cookies loses the rest rather than failing.
+- A response that sets an application cookie is sent with `Cache-Control: no-store` unless the
+  application already marked it `private` or `no-store`, so a shared cache never replays one
+  visitor's session to another.
 - Because the path is always `/`, same-named cookies that an application scopes to different
   paths become one cookie, and every request carries all application cookies.
 - WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are

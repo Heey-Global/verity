@@ -26,6 +26,9 @@ import {
   encodedPayloadLimit,
   FORBIDDEN_REQUEST_HEADERS,
   HOP_BY_HOP,
+  MAX_HEADER_COUNT,
+  MAX_TUNNEL_HEADER_BYTES,
+  headerBytes,
   isHttpRequestMeta,
   isHttpResponseMeta,
   isSubprotocolToken,
@@ -2633,11 +2636,6 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
   });
   for (const name of Object.keys(result))
     if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
-  boundedSetCookies(
-    headers.getSetCookie().filter((cookie) => !isCoreSessionCookie(cookie)),
-  ).forEach((cookie, index) => {
-    result[`x-verity-local-set-cookie-${index}`] = cookie;
-  });
   const location = result.location;
   if (location) {
     try {
@@ -2651,6 +2649,17 @@ function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<stri
       delete result.location;
     }
   }
+  // Leave room for the target's own headers: a head over the tunnel limits
+  // would fault the stream instead of only losing cookies.
+  boundedSetCookies(
+    headers.getSetCookie().filter((cookie) => !isCoreSessionCookie(cookie)),
+    {
+      headers: MAX_HEADER_COUNT - Object.keys(result).length,
+      bytes: MAX_TUNNEL_HEADER_BYTES - headerBytes(result),
+    },
+  ).forEach((cookie, index) => {
+    result[`x-verity-local-set-cookie-${index}`] = cookie;
+  });
   return result;
 }
 
@@ -2682,7 +2691,13 @@ function sanitizeResponseHeaders(
       return namespaced === undefined ? [] : [namespaced];
     });
   const output: Record<string, string | string[]> = result;
-  if (cookies.length) output['set-cookie'] = cookies;
+  if (cookies.length) {
+    output['set-cookie'] = cookies;
+    // A shared cache in front of an online share must never replay one
+    // visitor's session cookie to another.
+    if (mode !== 'local-open' && !/\b(?:private|no-store)\b/i.test(result['cache-control'] ?? ''))
+      output['cache-control'] = 'no-store';
+  }
   output['cache-control'] ??= 'no-store';
   return output;
 }

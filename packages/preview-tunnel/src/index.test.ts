@@ -2990,14 +2990,17 @@ async function wsTarget(
   return port;
 }
 
-/** An edge with its connector already attached to `targetPort`, plus a logged-in
- * session cookie — the setup every tunnelling test starts from. */
 describe('application cookies on online shares', () => {
-  async function cookieBridge(shareId: string, setCookies: (path: string) => string[]) {
+  async function cookieBridge(
+    shareId: string,
+    setCookies: (path: string) => string[],
+    extraHeaders: (path: string) => Record<string, string> = () => ({}),
+  ) {
     const received: Array<string | undefined> = [];
     const target = createServer((request, response) => {
       received.push(request.headers.cookie);
       response.writeHead(200, {
+        ...extraHeaders(request.url ?? '/'),
         'set-cookie': setCookies(request.url ?? '/'),
         // An application header in the relay's own namespace must not become a cookie.
         'x-verity-local-set-cookie-0': 'forged=1; Path=/',
@@ -3107,8 +3110,45 @@ describe('application cookies on online shares', () => {
     expect(huge.status).toBe(200);
     expect(huge.headers.getSetCookie()).toEqual(['__Host-app-ok=1; Path=/; Secure']);
   });
+
+  // 90 target headers plus 30 cookies would exceed the tunnel's 100-header
+  // limit and fault the stream if the relay ignored them.
+  it('leaves room for the target’s own headers when relaying cookies', async () => {
+    const cookies = Array.from({ length: 30 }, (_, index) => `c${index}=1`);
+    const { pinCookie, get } = await cookieBridge(
+      'app-cookie-room',
+      () => cookies,
+      () => Object.fromEntries(Array.from({ length: 90 }, (_, index) => [`x-app-${index}`, '1'])),
+    );
+    const response = await get('/', pinCookie);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+    const relayed = response.headers.getSetCookie();
+    expect(relayed.length).toBeGreaterThan(0);
+    expect(relayed.length).toBeLessThan(cookies.length);
+  });
+
+  it('keeps responses that set application cookies out of shared caches', async () => {
+    const { pinCookie, get } = await cookieBridge(
+      'app-cookie-cache',
+      (path) => (path === '/none' ? [] : ['sid=abc']),
+      (path) =>
+        path === '/private'
+          ? { 'cache-control': 'private, max-age=60' }
+          : { 'cache-control': 'public, max-age=600' },
+    );
+    expect((await get('/public', pinCookie)).headers.get('cache-control')).toBe('no-store');
+    expect((await get('/private', pinCookie)).headers.get('cache-control')).toBe(
+      'private, max-age=60',
+    );
+    expect((await get('/none', pinCookie)).headers.get('cache-control')).toBe(
+      'public, max-age=600',
+    );
+  });
 });
 
+/** An edge with its connector already attached to `targetPort`, plus a logged-in
+ * session cookie — the setup every tunnelling test starts from. */
 async function bridge(
   shareId: string,
   targetPort: number,

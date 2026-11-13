@@ -24,12 +24,17 @@ export const MAX_COOKIE_ATTRIBUTE_VALUE_BYTES = 1024;
 export const MAX_RELAYED_SET_COOKIE_CHARACTERS = 8192;
 
 /**
- * Upper bounds on what the connector relays per response. They keep the
- * response head well inside the tunnel's 100-header and 32 KiB limits: one
- * response over those limits would fault its whole stream.
+ * Upper bounds on what the connector relays per response. The caller further
+ * limits them to the room the target's other headers leave inside the tunnel's
+ * header count and size limits: one response over those limits would fault its
+ * whole stream.
  */
 export const MAX_RELAYED_SET_COOKIE_BYTES = 16 * 1024;
 export const MAX_RELAYED_SET_COOKIES = 40;
+
+/** Header name (`x-verity-local-set-cookie-NN`) plus the tunnel's per-header
+ * framing, counted against the byte budget for every relayed line. */
+export const RELAYED_SET_COOKIE_OVERHEAD_BYTES = 32;
 
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 // RFC 6265 cookie-octet, optionally wrapped in double quotes.
@@ -117,18 +122,25 @@ export function appRequestCookies(header: string): string {
 /**
  * The `Set-Cookie` lines the connector may relay, in the order the target sent
  * them. A line the tunnel would reject is skipped. Relaying stops at the count
- * or byte budget, so an application with too many cookies loses the rest
- * instead of faulting the response.
+ * or byte budget, whichever of the fixed bound and the given `room` is smaller,
+ * so an application with too many cookies loses the rest instead of faulting
+ * the response. The connector doesn't apply the edge's validation, so a cookie
+ * the edge will drop still uses up budget.
  */
-export function boundedSetCookies(lines: readonly string[]): string[] {
+export function boundedSetCookies(
+  lines: readonly string[],
+  room: { headers: number; bytes: number } = { headers: Infinity, bytes: Infinity },
+): string[] {
+  const maxCount = Math.min(MAX_RELAYED_SET_COOKIES, room.headers);
+  const maxBytes = Math.min(MAX_RELAYED_SET_COOKIE_BYTES, room.bytes);
   const relayed: string[] = [];
   let bytes = 0;
   for (const line of lines) {
     if (line.length > MAX_RELAYED_SET_COOKIE_CHARACTERS) continue;
-    if (relayed.length >= MAX_RELAYED_SET_COOKIES) break;
-    if (bytes + line.length > MAX_RELAYED_SET_COOKIE_BYTES) break;
+    const cost = line.length + RELAYED_SET_COOKIE_OVERHEAD_BYTES;
+    if (relayed.length >= maxCount || bytes + cost > maxBytes) break;
     relayed.push(line);
-    bytes += line.length;
+    bytes += cost;
   }
   return relayed;
 }

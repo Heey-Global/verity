@@ -7,6 +7,7 @@ import {
   MAX_RELAYED_SET_COOKIE_BYTES,
   MAX_RELAYED_SET_COOKIE_CHARACTERS,
   MAX_RELAYED_SET_COOKIES,
+  RELAYED_SET_COOKIE_OVERHEAD_BYTES,
   appRequestCookies,
   boundedSetCookies,
   namespaceSetCookie,
@@ -110,6 +111,20 @@ describe('boundedSetCookies', () => {
   it('stops at the byte budget', () => {
     const line = `c=${'x'.repeat(4000)}`;
     const relayed = boundedSetCookies(Array.from({ length: 10 }, () => line));
-    expect(relayed.length).toBe(Math.floor(MAX_RELAYED_SET_COOKIE_BYTES / line.length));
+    expect(relayed.length).toBe(
+      Math.floor(MAX_RELAYED_SET_COOKIE_BYTES / (line.length + RELAYED_SET_COOKIE_OVERHEAD_BYTES)),
+    );
+  });
+
+  it('stays within the room the other response headers leave', () => {
+    const lines = Array.from({ length: 10 }, (_, index) => `c${index}=1`);
+    expect(boundedSetCookies(lines, { headers: 3, bytes: Infinity })).toEqual(lines.slice(0, 3));
+    expect(
+      boundedSetCookies(lines, {
+        headers: Infinity,
+        bytes: 2 * (4 + RELAYED_SET_COOKIE_OVERHEAD_BYTES),
+      }),
+    ).toEqual(lines.slice(0, 2));
+    expect(boundedSetCookies(lines, { headers: 0, bytes: 0 })).toEqual([]);
   });
 });
