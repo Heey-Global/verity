@@ -908,6 +908,8 @@ interface UsersTable {
   status: 'active' | 'disabled';
   /** Shown to other people in shared projects; never used for authorization. */
   display_name: string | null;
+  /** How Uplink knows this person as a team member (D6), once they joined through it. */
+  team_membership_ref: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

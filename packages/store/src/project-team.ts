@@ -166,10 +166,25 @@ export class ProjectTeamStore {
         .selectFrom('project_invitations')
         .select('expires_at')
         .where('id', '=', id)
-        .where('state', '=', 'creating')
         .forUpdate()
         .executeTakeFirst();
       if (current === undefined) return undefined;
+      const state = await tx
+        .selectFrom('project_invitations')
+        .select('state')
+        .where('id', '=', id)
+        .executeTakeFirstOrThrow();
+      if (state.state === 'revoked') {
+        // Revoked while Uplink was still creating it: withdraw it there too.
+        await tx
+          .updateTable('project_invitations')
+          .set({ invitation_id: invitationId })
+          .where('id', '=', id)
+          .execute();
+        await this.enqueue(tx, 'team.invite.cancel', { invitationId }, new Date());
+        return undefined;
+      }
+      if (state.state !== 'creating') return undefined;
       // The returned deadline wins, but never extends the one Core chose.
       const deadline =
         expiresAt.getTime() < current.expires_at.getTime() ? expiresAt : current.expires_at;
@@ -222,12 +237,9 @@ export class ProjectTeamStore {
         .returning(['id', 'invitation_id'])
         .executeTakeFirst();
       if (row === undefined) return false;
-      await this.enqueue(
-        tx,
-        'team.invite.cancel',
-        { localInviteId: row.id, invitationId: row.invitation_id },
-        now,
-      );
+      // One Uplink has not created yet is cancelled when its creation is answered.
+      if (row.invitation_id !== null)
+        await this.enqueue(tx, 'team.invite.cancel', { invitationId: row.invitation_id }, now);
       return true;
     });
   }
@@ -266,13 +278,16 @@ export class ProjectTeamStore {
       if (!(await this.managesProject(tx, row.project_id, row.inviter_user_id)))
         throw unavailable();
       const userId = randomUUID();
+      const membershipRef = randomBytes(32).toString('base64url');
+      // Pending until Uplink confirms the join (team.join.committed).
       await tx
         .insertInto('users')
         .values({
           id: userId,
           role: 'member',
-          status: 'active',
+          status: 'disabled',
           display_name: input.displayName.trim() || null,
+          team_membership_ref: membershipRef,
         })
         .execute();
       await tx
@@ -296,8 +311,30 @@ export class ProjectTeamStore {
         })
         .where('id', '=', row.id)
         .execute();
+      await this.enqueue(
+        tx,
+        'team.join.commit',
+        { invitationId: input.invitationId, redemptionId: input.redemptionId, membershipRef },
+        now,
+      );
       return { userId, projectId: row.project_id, replay: false };
     });
+  }
+
+  /** Uplink confirmed the join: the person becomes an active member. */
+  async confirmJoin(redemptionId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('project_invitations')
+      .select('redeemed_by_user_id')
+      .where('redemption_id', '=', redemptionId)
+      .executeTakeFirst();
+    if (row?.redeemed_by_user_id == null) return false;
+    await this.db
+      .updateTable('users')
+      .set({ status: 'active' })
+      .where('id', '=', row.redeemed_by_user_id)
+      .execute();
+    return true;
   }
 
   async listMembers(projectId: string, db: Kysely<Database> = this.db): Promise<ProjectMember[]> {
@@ -374,7 +411,19 @@ export class ProjectTeamStore {
         .where('user_id', '=', userId)
         .executeTakeFirst();
       const lastProject = remaining === undefined;
-      if (lastProject) await this.enqueue(tx, 'team.membership.remove', { userId }, now);
+      const person = await tx
+        .selectFrom('users')
+        .select('team_membership_ref')
+        .where('id', '=', userId)
+        .executeTakeFirst();
+      // Only a person who joined through Uplink is known there (D6).
+      if (lastProject && person?.team_membership_ref != null)
+        await this.enqueue(
+          tx,
+          'team.membership.remove',
+          { membershipRef: person.team_membership_ref, reason: 'membership_removed' },
+          now,
+        );
       return { lastProject };
     });
   }

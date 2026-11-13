@@ -68,6 +68,12 @@ it('redeems an invitation exactly once, as a member who cannot manage', async ()
   const { secret } = await invite();
   const first = await redeem(secret);
   expect(first.replay).toBe(false);
+  // Pending until Uplink confirms the join, which it is asked to do.
+  expect((await team().listMembers('p1')).map((member) => member.userId)).toEqual([ADMIN]);
+  expect((await team().dueOperations()).map((operation) => operation.kind)).toContain(
+    'team.join.commit',
+  );
+  expect(await team().confirmJoin('r1')).toBe(true);
   await expect(redeem(secret)).resolves.toEqual({ ...first, replay: true });
   await expect(redeem(secret, 'r2')).rejects.toBeInstanceOf(ProjectTeamError);
   const members = await team().listMembers('p1');
@@ -140,6 +146,7 @@ it('never shares the control-plane project', async () => {
 it('changes and removes members but never the creator', async () => {
   const { secret } = await invite(false);
   const { userId } = await redeem(secret);
+  await team().confirmJoin('r1');
   await expect(
     team().setMemberRights('p1', userId, { canExecute: true, canManage: true }),
   ).resolves.toMatchObject({ canExecute: true, canManage: true });
@@ -151,4 +158,38 @@ it('changes and removes members but never the creator', async () => {
   expect((await team().dueOperations()).map((operation) => operation.kind)).toContain(
     'team.membership.remove',
   );
+});
+
+// Revoked before Uplink answered the creation: the answer must not bring it
+// back, and Uplink has to be told to cancel it.
+it('withdraws an invitation revoked while Uplink was still creating it', async () => {
+  const created = await team().createInvitation({
+    projectId: 'p1',
+    inviterUserId: ADMIN,
+    inviteeName: 'Lena',
+    canExecute: false,
+  });
+  expect(await team().revokeInvitation('p1', created.invitation.id)).toBe(true);
+  expect((await team().dueOperations()).map((operation) => operation.kind)).not.toContain(
+    'team.invite.cancel',
+  );
+  expect(
+    await team().markInvitationCreated(
+      created.invitation.id,
+      'inv-late',
+      new Date(Date.now() + 1000),
+    ),
+  ).toBeUndefined();
+  const cancel = (await team().dueOperations()).find(
+    (operation) => operation.kind === 'team.invite.cancel',
+  );
+  expect(cancel?.payload).toMatchObject({ invitationId: 'inv-late' });
+  await expect(
+    team().redeemInvitation({
+      invitationId: 'inv-late',
+      secret: created.secret,
+      redemptionId: 'r9',
+      displayName: 'Lena',
+    }),
+  ).rejects.toBeInstanceOf(ProjectTeamError);
 });

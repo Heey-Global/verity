@@ -5964,6 +5964,8 @@ migrations['0218_project_team'] = {
     await sql`create index project_invitations_project on project_invitations (project_id)`.execute(
       db,
     );
+    // The opaque per-person reference Uplink knows a member by (D6); never reused.
+    await sql`alter table users add column team_membership_ref text unique`.execute(db);
     await sql`create table team_outbox (
       operation_id text primary key,
       kind text not null,
@@ -5977,6 +5979,7 @@ migrations['0218_project_team'] = {
   },
   async down(db: Kysely<unknown>): Promise<void> {
     await sql`drop table team_outbox`.execute(db);
+    await sql`alter table users drop column team_membership_ref`.execute(db);
     await sql`drop table project_invitations`.execute(db);
   },
 };
