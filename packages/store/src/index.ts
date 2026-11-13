@@ -304,6 +304,12 @@ export {
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
 export { UserDopplerConnectionStore } from './user-doppler-connection.js';
 export {
+  UserProviderConnectionStore,
+  type ProviderConnectionKind,
+  type UserProviderConnection,
+  type UserProviderConnectionStatus,
+} from './user-provider-connections.js';
+export {
   ProjectSandboxStore,
   type ProjectSandboxRecord,
   type ProjectSandboxState,

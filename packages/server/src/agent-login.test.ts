@@ -324,6 +324,33 @@ describe('createProcessAgentLoginService', () => {
     expect(updates).toEqual([{ codexAuthJson: '{"refresh_token":"codex-refresh"}' }]);
   });
 
+  // ADR 0023 §3: a person's own login belongs to them. Another person must not
+  // read its code or finish it, and the result is that person's connection,
+  // never the instance login.
+  it("stores a person's own login for them and hides it from everyone else", async () => {
+    const personal: Array<[string, string, string]> = [];
+    service.close();
+    service = createProcessAgentLoginService({
+      updateSettings: async (patch) => {
+        updates.push(patch);
+      },
+      storePersonal: async (userId, provider, credential) => {
+        personal.push([userId, provider, credential]);
+      },
+    });
+    const started = await service.start('codex', 'lena');
+    await expect(service.get(started.sessionId, 'mia')).rejects.toThrow('login session not found');
+    await expect(service.get(started.sessionId)).rejects.toThrow('login session not found');
+    let complete = await service.get(started.sessionId, 'lena');
+    for (let i = 0; i < 100 && complete.status !== 'complete'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      complete = await service.get(started.sessionId, 'lena');
+    }
+    expect(complete.status).toBe('complete');
+    expect(personal).toEqual([['lena', 'codex', '{"refresh_token":"codex-refresh"}']]);
+    expect(updates).toEqual([]);
+  });
+
   it('keeps an expired session retrievable with its terminal timeout state', async () => {
     const shortLived = createProcessAgentLoginService({
       updateSettings: async () => undefined,

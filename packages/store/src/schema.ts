@@ -809,6 +809,23 @@ interface UserGitIdentitiesTable {
 }
 
 /** A person's own authorization of the instance's GitHub App (ADR 0023 §3). */
+interface UserProviderConnectionsTable {
+  user_id: string;
+  provider: 'claude' | 'codex' | 'opencode';
+  /** Encrypted at rest: Claude OAuth credentials, Codex auth.json or an OpenCode key. */
+  credential: string;
+  base_url: ColumnType<string | null, string | null | undefined, string | null>;
+  models: ColumnType<string | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
+interface UserProjectPreferencesTable {
+  user_id: string;
+  project_id: string;
+  default_model: ColumnType<string | null, string | null | undefined, string | null>;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 interface ProjectSandboxesTable {
   project_id: string;
   user_id: string;
@@ -1938,6 +1955,8 @@ export interface Database {
   user_github_authorizations: UserGithubAuthorizationsTable;
   user_doppler_connections: UserDopplerConnectionsTable;
   project_sandboxes: ProjectSandboxesTable;
+  user_provider_connections: UserProviderConnectionsTable;
+  user_project_preferences: UserProjectPreferencesTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;

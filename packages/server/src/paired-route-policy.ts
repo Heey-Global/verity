@@ -360,6 +360,13 @@ const activeUserRoutes = new Set([
   routeScopeKey('POST', '/me/github/authorize'),
   routeScopeKey('POST', '/me/github/authorize/complete'),
   routeScopeKey('DELETE', '/me/github'),
+  // A person's own AI provider accounts, bound to the authenticated identity inside the handlers.
+  routeScopeKey('GET', '/me/provider-connections'),
+  routeScopeKey('POST', '/me/provider-connections/:provider/login'),
+  routeScopeKey('GET', '/me/provider-connections/logins/:sessionId'),
+  routeScopeKey('POST', '/me/provider-connections/logins/:sessionId/code'),
+  routeScopeKey('PUT', '/me/provider-connections/opencode'),
+  routeScopeKey('DELETE', '/me/provider-connections/:provider'),
   // A person's own commit identity and signing key, bound to the authenticated identity inside the handlers.
   routeScopeKey('GET', '/me/git-identity'),
   routeScopeKey('PUT', '/me/git-identity'),

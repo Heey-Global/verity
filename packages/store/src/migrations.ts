@@ -5871,3 +5871,39 @@ migrations['0214_project_sandbox_state'] = {
       drop column state, drop column provision_error, drop column state_changed_at`.execute(db);
   },
 };
+
+migrations['0215_user_provider_connections'] = {
+  // A person's own Claude, Codex and OpenCode accounts (ADR 0023 §3): their
+  // turns run only on these. The instance login stays the administrator's
+  // fallback in the instance settings. A project's default model becomes each
+  // person's own choice; the existing one was the administrator's.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table user_provider_connections (
+      user_id text not null references users(id) on delete cascade,
+      provider text not null check (provider in ('claude', 'codex', 'opencode')),
+      credential text not null,
+      base_url text,
+      models text,
+      updated_at timestamptz not null default now(),
+      primary key (user_id, provider)
+    )`.execute(db);
+    await sql`create table user_project_preferences (
+      user_id text not null references users(id) on delete cascade,
+      project_id text not null references projects(id) on delete cascade,
+      default_model text,
+      updated_at timestamptz not null default now(),
+      primary key (user_id, project_id)
+    )`.execute(db);
+    await sql`insert into user_project_preferences (user_id, project_id, default_model)
+      select '00000000-0000-4000-8000-000000000001', project_id, default_model
+      from project_settings
+      where default_model is not null
+        and exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table user_project_preferences`.execute(db);
+    await sql`drop table user_provider_connections`.execute(db);
+  },
+};

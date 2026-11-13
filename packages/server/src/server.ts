@@ -1,4 +1,6 @@
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
+import { fetchOpenCodeModels } from './opencode-model-catalog.js';
+import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import {
@@ -1551,6 +1553,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deps.agentLogin ??
     createProcessAgentLoginService({
       updateSettings: storeAgentCredentials,
+      storePersonal: async (userId, provider, credential) => {
+        if (deps.secretCipher?.isSealed() === true) throw new SealedError();
+        await deps.eventStore.userProviderConnections.set(userId, provider, { credential });
+      },
     });
   app.addHook('onClose', () => {
     agentLogin.close();
@@ -3696,6 +3702,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
   };
   registerGitIdentityRoutes(app, gitIdentityDeps);
+  registerProviderConnectionRoutes(app, {
+    store: deps.eventStore,
+    agentLogin,
+    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
+  });
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,
     listNames: (input) => listDopplerProjectSecretNames(input),
