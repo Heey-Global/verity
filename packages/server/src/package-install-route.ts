@@ -205,58 +205,65 @@ export function registerPackageInstallRoute(
         let rejection: { index: number; error: string } | undefined;
         let failed: string | undefined;
         let next = 0;
+        const lookupOne = async (
+          index: number,
+          name: string,
+          versions: string[],
+        ): Promise<void> => {
+          const times = new Map(
+            versions.map((version) => [
+              version,
+              publicationTime(npmPackageIdentity(name, version)),
+            ]),
+          );
+          const missing = versions.filter((version) => times.get(version) === undefined);
+          if (missing.length > 0) {
+            const metadata = await packageBroker.publicationTimes(
+              name,
+              missing,
+              lookupSignal,
+              authorized,
+            );
+            for (const version of missing) {
+              const identity = npmPackageIdentity(name, version);
+              const published = metadata.times.get(version);
+              const problem = !metadata.versions.has(version)
+                ? 'release metadata is unavailable'
+                : typeof published !== 'string' ||
+                    !npmReleaseEligibility(published, minimumAgeDays).availableAt
+                  ? 'publication time is missing or invalid'
+                  : undefined;
+              if (problem || typeof published !== 'string') {
+                const error = `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
+                if (!rejection || index < rejection.index) rejection = { index, error };
+                stop.abort();
+                return;
+              }
+              while (publicationTimes.size >= PUBLICATION_FACT_LIMIT)
+                publicationTimes.delete(publicationTimes.keys().next().value!);
+              publicationTimes.set(identity, {
+                published,
+                expires: Date.now() + PUBLICATION_FACT_TTL_MS,
+              });
+              times.set(version, published);
+            }
+          }
+          resolved.set(name, times);
+        };
         const lookup = async (): Promise<void> => {
           while (next < lookups.length && !lookupSignal.aborted) {
             const index = next++;
             const [name, versions] = lookups[index]!;
-            const times = new Map(
-              versions.map((version) => [
-                version,
-                publicationTime(npmPackageIdentity(name, version)),
-              ]),
-            );
-            const missing = versions.filter((version) => times.get(version) === undefined);
-            if (missing.length > 0) {
-              let metadata: Awaited<ReturnType<typeof packageBroker.publicationTimes>>;
-              try {
-                metadata = await packageBroker.publicationTimes(
-                  name,
-                  missing,
-                  lookupSignal,
-                  authorized,
-                );
-              } catch (error) {
-                // A lookup cut short by another lookup's verdict does not change it.
-                if (stop.signal.aborted) return;
-                failed ??= `${name}@${versions.join(',')}`;
-                stop.abort();
-                throw error;
-              }
-              for (const version of missing) {
-                const identity = npmPackageIdentity(name, version);
-                const published = metadata.times.get(version);
-                const problem = !metadata.versions.has(version)
-                  ? 'release metadata is unavailable'
-                  : typeof published !== 'string' ||
-                      !npmReleaseEligibility(published, minimumAgeDays).availableAt
-                    ? 'publication time is missing or invalid'
-                    : undefined;
-                if (problem || typeof published !== 'string') {
-                  const error = `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
-                  if (!rejection || index < rejection.index) rejection = { index, error };
-                  stop.abort();
-                  return;
-                }
-                while (publicationTimes.size >= PUBLICATION_FACT_LIMIT)
-                  publicationTimes.delete(publicationTimes.keys().next().value!);
-                publicationTimes.set(identity, {
-                  published,
-                  expires: Date.now() + PUBLICATION_FACT_TTL_MS,
-                });
-                times.set(version, published);
-              }
+            try {
+              await lookupOne(index, name, versions);
+            } catch (error) {
+              // A lookup cut short by another lookup's verdict does not change it.
+              if (stop.signal.aborted) return;
+              // Any failure, not only the registry call, names its package and stops the rest.
+              failed ??= `${name}@${versions.join(',')}`;
+              stop.abort();
+              throw error;
             }
-            resolved.set(name, times);
           }
         };
         const outcomes = await Promise.allSettled(

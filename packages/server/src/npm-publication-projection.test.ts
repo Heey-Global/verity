@@ -111,9 +111,10 @@ it('bounds nesting, input bytes and content encodings and rejects invalid UTF-8'
     response(['{"name":"example","unused":' + '['.repeat(65) + '0' + ']'.repeat(65) + '}']),
     response(['{}'], { 'content-length': String(MAX_NPM_PUBLICATION_BYTES + 1) }),
     response(['{}'], { 'content-encoding': 'gzip' }),
-    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'br' }),
-    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'deflate' }),
-    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'gzip, gzip' }),
+    // Valid JSON bodies: only the encoding check can reject these.
+    response([JSON.stringify(facts)], { 'content-encoding': 'br' }),
+    response([JSON.stringify(facts)], { 'content-encoding': 'deflate' }),
+    response([JSON.stringify(facts)], { 'content-encoding': 'gzip, gzip' }),
     response([Buffer.from([255])]),
   ])
     await expect(projectNpmPublications(input, 'example', new Set(), signal)).rejects.toThrow();
