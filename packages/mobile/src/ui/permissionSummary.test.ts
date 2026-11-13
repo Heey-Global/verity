@@ -96,6 +96,14 @@ describe('permissionSummary', () => {
       permissionSummary('verity_send_session_message', { targetSessionId: 's-2', message: 'hi' })
         .lines,
     ).toEqual([{ kind: 'text', text: 'hi' }]);
+    // A field the line does not show keeps the raw input in view.
+    expect(
+      permissionSummary('verity_send_session_message', {
+        targetSessionId: 's-2',
+        message: 'hi',
+        attach: '/etc/passwd',
+      }).covered,
+    ).toBe(false);
     const knowledge = permissionSummary('verity_knowledge', {
       operation: 'publish_shared',
       path: 'guides/a.md',

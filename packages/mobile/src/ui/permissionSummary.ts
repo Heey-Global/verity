@@ -175,6 +175,10 @@ function summarize(
         ? `Retry delivery to ${linked.target}?`
         : `Send to ${linked.target} and continue the exchange?`,
       lines: [{ kind: 'text', text: linked.message }],
+      // The message is all it sends; any other field stays in view.
+      covered: Object.keys(input as Record<string, unknown>).every(
+        (key) => key === 'targetSessionId' || key === 'message',
+      ),
     };
   const listing = tool === 'verity_list_sessions' ? listSessionsSummary(input) : null;
   if (listing !== null) return { title: listSessionsTitle(listing), lines: [] };

@@ -26,7 +26,7 @@ import {
   projectTitle,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
@@ -220,7 +220,8 @@ export function ProjectWork({
   onSectionsChange?: (counts: { needs: number; active: number; results: number }) => void;
   /** Explicit refreshes reset order; live reloads update group membership. */
   layoutRevision?: number | undefined;
-  onOpenSession: (sessionId: string) => void;
+  /** `mockups` opens the session with its mockup review in front. */
+  onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   /** After a rename, favorite, move, link or delete of `sessionId`, so the page
    *  and its host (the wide layout's list and session pane) catch up. */
   onChanged: (sessionId: string, deleted: boolean) => void;
@@ -256,6 +257,13 @@ export function ProjectWork({
   // A list given no feed keeps one of its own over its sessions. Built either
   // way (hooks cannot be conditional) and left empty when the page has a feed.
   const ownsFeed = feed === undefined;
+  // The host reloads the answered or dismissed session, as after any edit here.
+  const ownSaved = useCallback(
+    (item: InboxItem) => {
+      if (item.sessionId !== undefined) onChanged(item.sessionId, false);
+    },
+    [onChanged],
+  );
   const ownAll = useMemo(
     () => (ownsFeed ? inboxItems({ sessions, projects: [], now: Date.now() }) : []),
     [ownsFeed, sessions],
@@ -270,10 +278,7 @@ export function ProjectWork({
     serverHidden: ownHidden,
     onOpenSession,
     onRepairProject: openSandbox,
-    // The host reloads the answered or dismissed session, as after any edit here.
-    onSaved: (item) => {
-      if (item.sessionId !== undefined) onChanged(item.sessionId, false);
-    },
+    onSaved: ownSaved,
   });
   const inbox = feed ?? ownFeed;
   const items = inbox.items;
@@ -782,7 +787,6 @@ export function ProjectWork({
               <Group>{now.results.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}
-          <InboxHiddenFold feed={inbox} />
         </>
       ) : listed.length === 0 ? (
         <Text variant="body" tone="muted" style={styles.empty}>
@@ -801,6 +805,8 @@ export function ProjectWork({
           })}
         </Group>
       )}
+      {/* Under every filter, so a dismissed item can always be restored. */}
+      <InboxHiddenFold feed={inbox} />
       <AnswerSheet
         item={answering}
         answers={answering !== null ? answersOf(answering) : []}
