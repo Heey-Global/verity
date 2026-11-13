@@ -111,6 +111,18 @@ export interface ControlPlaneDeps {
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads the gateway-held Codex access token for the account-global usage probe. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** What Core knows for an invitation's join link (team contract D5). */
+  teamLinkIdentity?:
+    | (() =>
+        | {
+            serverId: string;
+            identityKey: string;
+            uplinkOrigin: string;
+            installationId: string;
+            installationHandle: string;
+          }
+        | undefined)
+    | undefined;
   /** A fresh access token for a person's own Claude login, if they have one. */
   personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
   /** A person's own Codex access token from the gateway (ADR 0023 §3). */
@@ -428,6 +440,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.claudeOAuthTokenProvider !== undefined
       ? { claudeOAuthTokenProvider: deps.claudeOAuthTokenProvider }
       : {}),
+    ...(deps.teamLinkIdentity !== undefined ? { teamLinkIdentity: deps.teamLinkIdentity } : {}),
     ...(deps.personalClaudeAccessToken !== undefined
       ? { personalClaudeAccessToken: deps.personalClaudeAccessToken }
       : {}),

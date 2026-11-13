@@ -3767,7 +3767,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     store: deps.eventStore,
     projectName: async (projectId) =>
       (await deps.eventStore.getProject(projectId))?.name ?? undefined,
-    ...(deps.invitationLink === undefined ? {} : { invitationLink: deps.invitationLink }),
+    ...(deps.teamLinkIdentity === undefined ? {} : { linkIdentity: deps.teamLinkIdentity }),
     onMemberRemoved: async (projectId, userId) => {
       await revokeMember(projectId, userId);
       await deps.onMemberRemoved?.(projectId, userId);

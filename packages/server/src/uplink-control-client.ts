@@ -544,6 +544,18 @@ export class UplinkControlClient implements PreviewEdgeControl {
     };
   }
 
+  /**
+   * The installation an invitation link names (team contract D5): its id and
+   * handle from welcome and the service origin, while team v1 is negotiated.
+   */
+  teamInstallation():
+    { installationId: string; installationHandle: string; uplinkOrigin: string } | undefined {
+    if (!this.teamNegotiated() || this.remoteInstallation === undefined) return undefined;
+    const uplinkUrl = new URL(this.options.url);
+    uplinkUrl.protocol = 'https:';
+    return { ...this.remoteInstallation, uplinkOrigin: uplinkUrl.origin };
+  }
+
   /** Whether this connection negotiated team v1. */
   teamNegotiated(): boolean {
     return this.teamVersion === 1 && this.socket?.readyState === WebSocket.OPEN;

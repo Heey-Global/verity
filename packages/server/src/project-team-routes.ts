@@ -53,14 +53,19 @@ export function registerProjectTeamRoutes(
   deps: {
     store: Store;
     /**
-     * The `https://verity.build/join#…` link of an invitation Uplink created
-     * (D5), or undefined while it cannot be built yet.
+     * What Core knows of an invitation's join link (team contract D5): its own
+     * identity and the Uplink installation, or undefined while Uplink is not
+     * connected. The inviter's app adds the pin and its server address.
      */
-    invitationLink?: (
-      invitation: ProjectInvitation,
-      secret: string,
-      display: { inviterName: string; projectName: string },
-    ) => Promise<string | undefined>;
+    linkIdentity?: () =>
+      | {
+          serverId: string;
+          identityKey: string;
+          uplinkOrigin: string;
+          installationId: string;
+          installationHandle: string;
+        }
+      | undefined;
     projectName: (projectId: string) => Promise<string | undefined>;
     /** Ends the person's access to the project at once (ADR 0023 §6). */
     onMemberRemoved?: (projectId: string, userId: string) => Promise<void>;
@@ -72,13 +77,23 @@ export function registerProjectTeamRoutes(
     const status = error.code === 'member_not_found' ? 404 : 409;
     return { status, body: { error: error.message, code: error.code } };
   };
-  const link = async (invitation: ProjectInvitation, projectId: string, viewer: string) => {
-    if (deps.invitationLink === undefined || invitation.state !== 'open') return null;
+  const linkFields = async (invitation: ProjectInvitation, projectId: string, viewer: string) => {
+    if (invitation.state !== 'open' || invitation.invitationId === null) return null;
+    const identity = deps.linkIdentity?.();
+    if (identity === undefined) return null;
     const secret = await team().invitationSecret(projectId, invitation.id);
     if (secret === undefined) return null;
     const inviterName = (await deps.store.userProfiles.read(viewer))?.displayName ?? 'Verity';
     const projectName = (await deps.projectName(projectId)) ?? 'Project';
-    return (await deps.invitationLink(invitation, secret, { inviterName, projectName })) ?? null;
+    return {
+      version: 1,
+      purpose: 'team-member',
+      invitationId: invitation.invitationId,
+      secret,
+      expiresAt: invitation.expiresAt.getTime(),
+      ...identity,
+      display: { inviterName, projectName },
+    };
   };
 
   app.get('/projects/:id/team', async (request, reply) => {
@@ -108,7 +123,7 @@ export function registerProjectTeamRoutes(
         canExecute: body.canExecute,
       });
       reply.header('cache-control', 'no-store').code(201);
-      return { invitation: publicInvitation(invitation), link: null };
+      return { invitation: publicInvitation(invitation), linkFields: null };
     } catch (error) {
       const { status, body: answer } = refusal(error);
       return reply.code(status).send(answer);
@@ -124,7 +139,8 @@ export function registerProjectTeamRoutes(
     reply.header('cache-control', 'no-store');
     return {
       invitation: publicInvitation(invitation),
-      link: await link(invitation, id, viewerId(request)),
+      // Only for the inviter's own app, which adds tlsPin and coreOrigin.
+      linkFields: await linkFields(invitation, id, viewerId(request)),
     };
   });
 

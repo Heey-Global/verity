@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -63,6 +64,13 @@ function server(onMemberRemoved = vi.fn(async () => undefined)) {
     store: ctx.store,
     projectName: async () => 'app',
     onMemberRemoved,
+    linkIdentity: () => ({
+      serverId: 'srv_EREREREREREREREREREREQ',
+      identityKey: 'MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERE',
+      uplinkOrigin: 'https://uplink.verity.build',
+      installationId: '0b7f6e5d-4c3b-4a29-8817-161514131211',
+      installationHandle: 'EREREREREREREREREREREQ',
+    }),
   });
   return { app, onMemberRemoved };
 }
@@ -88,7 +96,7 @@ describe('project team routes', () => {
     expect(created.statusCode).toBe(201);
     expect(created.json()).toMatchObject({
       invitation: { inviteeName: 'Lena', canExecute: true, state: 'creating' },
-      link: null,
+      linkFields: null,
     });
     expect(created.body).not.toMatch(/secret/i);
 
@@ -133,5 +141,36 @@ describe('project team routes', () => {
     const id = created.json<{ invitation: { id: string } }>().invitation.id;
     expect((await as(app, ADMIN, 'DELETE', `/projects/p1/invitations/${id}`)).statusCode).toBe(204);
     expect((await as(app, ADMIN, 'DELETE', `/projects/p1/invitations/${id}`)).statusCode).toBe(404);
+  });
+  // The inviter's app completes the link with the pin and its server address;
+  // everything else has to match the contract's link envelope exactly.
+  it('hands the inviter every link field Core holds, but no pin or address', async () => {
+    const { app } = server();
+    const created = await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
+      inviteeName: 'Lena',
+      canExecute: true,
+    });
+    const { id } = created.json<{ invitation: { id: string } }>().invitation;
+    await ctx.store.projectTeam.markInvitationCreated(
+      id,
+      'MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM',
+      new Date(Date.now() + 3_600_000),
+    );
+    const read = await as(app, ADMIN, 'GET', `/projects/p1/invitations/${id}`);
+    const fields = read.json<{ linkFields: Record<string, unknown> }>().linkFields;
+    const envelope = (
+      JSON.parse(
+        readFileSync(
+          new URL('../../../scripts/team-control-contract/wire-fixtures.json', import.meta.url),
+          'utf8',
+        ),
+      ) as { schema: string; valid: boolean; value: Record<string, unknown> }[]
+    ).find((fixture) => fixture.schema === 'invitationLink' && fixture.valid)!.value;
+    expect(Object.keys(fields).sort()).toEqual(
+      Object.keys(envelope)
+        .filter((key) => key !== 'tlsPin' && key !== 'coreOrigin')
+        .sort(),
+    );
+    expect(fields).toMatchObject({ purpose: 'team-member', display: { projectName: 'app' } });
   });
 });

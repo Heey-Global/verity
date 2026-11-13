@@ -4131,6 +4131,13 @@ export async function buildEmbeddedServer(
       if (patch.codexAuthJson !== undefined) await codexModelCatalog?.refresh();
     },
     claudeOAuthTokenProvider: claudeCredentialSync.getAccessToken,
+    teamLinkIdentity: () => {
+      const identity = config.devicePairing?.identity();
+      const installation = uplinkControl?.teamInstallation();
+      return identity === undefined || installation === undefined
+        ? undefined
+        : { ...identity, ...installation };
+    },
     personalClaudeAccessToken: (userId: string) =>
       personalProviderCredentials.claudeAccessToken(userId),
     persistPersonalProviderCredentials: (userId, provider, write) =>
