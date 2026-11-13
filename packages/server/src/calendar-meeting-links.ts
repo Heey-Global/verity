@@ -24,7 +24,8 @@ export function meetingPlatform(meetingUrl: string | undefined): MeetingPlatform
     const url = new URL(meetingUrl);
     if (!isSupportedMeetingUrl(url)) return null;
     if (url.hostname === 'meet.google.com') return 'google_meet';
-    return url.hostname.startsWith('teams.') ? 'teams' : 'zoom';
+    if (url.hostname.startsWith('teams.')) return 'teams';
+    return url.hostname === 'zoom.us' || url.hostname.endsWith('.zoom.us') ? 'zoom' : null;
   } catch {
     return null;
   }

@@ -14,7 +14,7 @@ const commandParams = meetingParams.extend({ commandId: id });
 /** Epoch milliseconds. The iOS recorder stamps events with fractional milliseconds
  * (`timeIntervalSince1970 * 1000`); rejecting those would block the meeting's upload for
  * good, so they are rounded to the integer the store keeps. */
-const epochMs = z.number().nonnegative().transform(Math.round);
+const epochMs = z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(Math.round);
 const meetingBody = z.object({
   title: z.string().max(200).nullable().optional(),
   engine: z.enum(['apple-speech', 'apple-dictation', 'fluid-nemotron', 'fluid-parakeet']),

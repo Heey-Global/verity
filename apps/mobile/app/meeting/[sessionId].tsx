@@ -1259,7 +1259,8 @@ export default function MeetingScreen() {
     meeting.state === 'active' &&
     !meeting.transcript &&
     meeting.captureStatus !== 'listening' &&
-    joinState?.status !== 'joined';
+    joinState?.status !== 'joined' &&
+    joinState?.status !== 'ended';
   const joinFailed =
     meeting?.engine === 'attendee' && !meeting.transcript && joinState?.status === 'failed';
   useEffect(() => {

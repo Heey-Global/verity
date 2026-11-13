@@ -1378,6 +1378,21 @@ it('accepts the fractional end time the iOS recorder sends and stores whole mill
   });
 });
 
+// `1e400` is how an out-of-range number arrives in JSON: it parses to Infinity.
+it('refuses an end time beyond any date', async () => {
+  const response = await app.inject({
+    method: 'PUT',
+    url,
+    headers: { 'content-type': 'application/json' },
+    payload: JSON.stringify({ ...meeting, state: 'ended', endedAt: 0 }).replace(
+      '"endedAt":0',
+      '"endedAt":1e400',
+    ),
+  });
+  expect(response.statusCode).toBe(400);
+  expect(response.json().issues).toEqual([expect.objectContaining({ path: ['endedAt'] })]);
+});
+
 it.each([-1, '2026-11-13T07:56:15Z'])('still refuses an end time of %s', async (endedAt) => {
   const response = await app.inject({
     method: 'PUT',
