@@ -244,8 +244,12 @@ function summarize(
     // description); the content of a Write or an unknown field stays in view.
     covered:
       primary !== null &&
-      Object.keys(input as Record<string, unknown>).every(
-        (key) => key === primary.field || COMMENTARY_FIELDS.has(key),
+      Object.entries(input as Record<string, unknown>).every(
+        ([key, value]) =>
+          key === primary.field ||
+          COMMENTARY_FIELDS.has(key) ||
+          // Explicitly off is the same call as leaving it out.
+          (key === 'run_in_background' && value === false),
       ),
   };
 }
