@@ -363,3 +363,52 @@ it('retains unimported library and type references that change global lint types
     '@typescript-eslint/no-unsafe-return',
   );
 });
+
+it('reports diagnostic phases without changing typed lint findings', async () => {
+  const { root, write } = fixture();
+  write(
+    'packages/server/tsconfig.json',
+    JSON.stringify({
+      compilerOptions: { strict: true, target: 'ES2023', module: 'NodeNext', types: [] },
+      include: ['src/**/*.ts'],
+    }),
+  );
+  const target = write(
+    'packages/server/src/server.ts',
+    'export function read(input: any) { return input.missing; }',
+  );
+  const baseline = await lintFiles([target], root);
+  const output = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.stubEnv('VERITY_LINT_PROFILE', '1');
+  try {
+    const profiled = await lintFiles([target], root);
+    expect(profiled.results.map((result) => result.messages)).toEqual(
+      baseline.results.map((result) => result.messages),
+    );
+    expect(profiled.results[0]?.errorCount).toBeGreaterThan(0);
+    expect(
+      output.mock.calls.map(
+        ([line]) => (JSON.parse(String(line)) as { lintProfile: string }).lintProfile,
+      ),
+    ).toEqual([
+      'program-start',
+      'program-ready',
+      'eslint-start',
+      'rules-start',
+      'rules-exit',
+      'eslint-complete',
+    ]);
+    output.mockClear();
+    vi.stubEnv('LINT_MEASUREMENT_DIR', root);
+    const retained = await lintFiles([target], root);
+    expect(retained.results.map((result) => result.messages)).toEqual(
+      baseline.results.map((result) => result.messages),
+    );
+    expect(output).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, 'phases.ndjson'), 'utf8')).toContain(
+      '"lintProfile":"rules-start"',
+    );
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

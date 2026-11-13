@@ -26,12 +26,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
       - name: Measure isolated server lint heap
         shell: bash
         env:
           CI: 'true'
+          VERITY_LINT_PROFILE: '1'
+          LINT_MEASUREMENT_DIR: ${{ runner.temp }}/lint-server-heap
           MEASUREMENT_DIR: ${{ runner.temp }}/lint-server-heap
         run: |
           set -euo pipefail
@@ -74,7 +76,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
       - name: Measure metadata cache modes
         shell: bash
