@@ -109,3 +109,16 @@ export function createTurnCredentials(options?: {
     },
   };
 }
+
+/**
+ * Whether a turn's badge may be presented from a sandbox (ADR 0023 §4). A badge
+ * naming a person belongs only in that person's own sandbox; a badge without one
+ * only in the project's original sandbox, the only place such turns run. Anything
+ * else is a badge carried out of the sandbox it was issued into.
+ */
+export function turnFitsSandbox(
+  turn: { readonly userId: string | null },
+  sandbox: { readonly userId: string; readonly projectDefault: boolean },
+): boolean {
+  return turn.userId === null ? sandbox.projectDefault : turn.userId === sandbox.userId;
+}

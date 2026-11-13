@@ -12,6 +12,8 @@ import { startProjectInternalUnixListener } from './internal-listener.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { createGoogleDriveAgentTool, type GoogleDriveAgentApi } from './google-drive-agent-tool.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 /** The person the harness turn runs for; the Google account is theirs. */
 const ADMIN = '00000000-0000-4000-8000-000000000001';
 
@@ -156,7 +158,12 @@ async function harness(
   await app.ready();
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot: dir,
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     ownerUid: process.getuid?.() ?? 1000,
     relayGid: process.getgid?.() ?? 1000,
   });

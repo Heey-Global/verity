@@ -22,6 +22,8 @@ import {
   type ProjectInternalUnixListener,
 } from './internal-listener.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 describe('unlinkOwnedUnixSocket', () => {
   it('does not unlink a successor that rebound the same handoff path', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'verity-owned-uds-'));
@@ -63,7 +65,12 @@ describe('internal-listener socket tagging', () => {
 
   it('binds project identity to accepted sockets without reading request data', () => {
     const server = new EventEmitter();
-    const identity = { projectId: 'project-a', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'project-a',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     markInternalConnections(server as unknown as HttpServer, identity);
     const tagged = {};
     server.emit('connection', tagged);
@@ -156,7 +163,12 @@ describe('startProjectInternalUnixListener', () => {
     await app.ready();
 
     dir = mkdtempSync(join(tmpdir(), 'verity-project-uds-'));
-    const identity = { projectId: 'project-a', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'project-a',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     listener = await startProjectInternalUnixListener(app, {
       socketRoot: dir,
       identity,
@@ -208,7 +220,12 @@ describe('startProjectInternalUnixListener', () => {
     await expect(
       startProjectInternalUnixListener(app, {
         socketRoot: dir,
-        identity: { projectId: '', containerGeneration: 'generation-1' },
+        identity: {
+          projectId: '',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         ownerUid: TEST_UID,
         relayGid: TEST_GID,
       }),
@@ -221,7 +238,12 @@ describe('startProjectInternalUnixListener', () => {
     dir = mkdtempSync(join(tmpdir(), 'verity-project-uds-close-'));
     listener = await startProjectInternalUnixListener(app, {
       socketRoot: dir,
-      identity: { projectId: 'project-a', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'project-a',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: TEST_UID,
       relayGid: TEST_GID,
     });
@@ -242,7 +264,12 @@ describe('startProjectInternalUnixListener', () => {
     app = Fastify();
     await app.ready();
     dir = mkdtempSync(join(tmpdir(), 'verity-project-uds-stale-'));
-    const identity = { projectId: 'project-a', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'project-a',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     listener = await startProjectInternalUnixListener(app, {
       socketRoot: dir,
       identity,
@@ -300,7 +327,12 @@ describe('startProjectInternalUnixListener', () => {
     await expect(
       startProjectInternalUnixListener(app, {
         socketRoot: dir,
-        identity: { projectId: 'project-a', containerGeneration: 'generation-1' },
+        identity: {
+          projectId: 'project-a',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         ownerUid: TEST_UID,
         relayGid: TEST_GID,
       }),

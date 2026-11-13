@@ -218,6 +218,7 @@ export function registerManagedDevServerAgentRoute(
       binding === undefined ||
       socket === undefined ||
       socket.projectId !== binding.projectId ||
+      socket.userId !== binding.userId ||
       socket.containerGeneration !== binding.containerGeneration
     )
       return reply.code(401).send({ error: 'unauthorized' });

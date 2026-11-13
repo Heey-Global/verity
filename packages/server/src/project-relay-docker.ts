@@ -3,7 +3,11 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
 import { DockerError, type ContainerSpec, type DockerClient } from './docker.js';
-import { projectSocketBindingName, type InternalConnectionIdentity } from './internal-listener.js';
+import {
+  projectSocketBindingName,
+  type InternalConnectionIdentity,
+  type SandboxGenerationRef,
+} from './internal-listener.js';
 import {
   ProjectRelayStartError,
   type ProjectRelayRuntime,
@@ -70,7 +74,7 @@ function isRelayComponent(component: string | undefined): boolean {
 }
 
 /** Build the fixed, generation-labelled name without exposing project slugs. */
-export function projectRelayContainerName(identity: InternalConnectionIdentity): string {
+export function projectRelayContainerName(identity: SandboxGenerationRef): string {
   const digest = createHash('sha256')
     .update(`verity-relay:${identity.projectId}\0${identity.containerGeneration}`)
     .digest('hex')
@@ -410,7 +414,7 @@ function exactSocketDirectorySubpath(
   socketPath: string,
   socketRoot: string,
   dataVolumeRoot: string,
-  identity: InternalConnectionIdentity,
+  identity: SandboxGenerationRef,
   socketName: string,
   label: string,
   ownerUid: number,

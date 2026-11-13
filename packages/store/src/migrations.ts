@@ -5813,3 +5813,46 @@ migrations['0212_project_sandboxes'] = {
     await sql`drop table project_sandboxes`.execute(db);
   },
 };
+
+migrations['0213_per_sandbox_capabilities'] = {
+  // A sandbox's credentials are per person (ADR 0023 §4): its gateway client
+  // certificate, signing capability and GitHub capability name the person as well
+  // as the project. Every existing row belongs to the project's original container,
+  // which became the administrator's sandbox. Rows without an administrator to own
+  // them are dropped; they are reissued when the sandbox next starts.
+  async up(db: Kysely<unknown>): Promise<void> {
+    for (const table of [
+      'claude_egress_client_certs',
+      'signing_capabilities',
+      'gh_token_capabilities',
+    ]) {
+      await sql`alter table ${sql.table(table)} add column user_id text
+        references users(id) on delete cascade`.execute(db);
+      await sql`update ${sql.table(table)} set user_id = '00000000-0000-4000-8000-000000000001'
+        where exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+        db,
+      );
+      await sql`delete from ${sql.table(table)} where user_id is null`.execute(db);
+      await sql`alter table ${sql.table(table)} alter column user_id set not null`.execute(db);
+      await sql`alter table ${sql.table(table)} drop constraint ${sql.raw(`${table}_pkey`)}`.execute(
+        db,
+      );
+      await sql`alter table ${sql.table(table)} add primary key (project_id, user_id)`.execute(db);
+    }
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    for (const table of [
+      'claude_egress_client_certs',
+      'signing_capabilities',
+      'gh_token_capabilities',
+    ]) {
+      await sql`delete from ${sql.table(table)} t using ${sql.table(table)} o
+        where t.project_id = o.project_id and t.user_id > o.user_id`.execute(db);
+      await sql`alter table ${sql.table(table)} drop constraint ${sql.raw(`${table}_pkey`)}`.execute(
+        db,
+      );
+      await sql`alter table ${sql.table(table)} drop column user_id`.execute(db);
+      await sql`alter table ${sql.table(table)} add primary key (project_id)`.execute(db);
+    }
+  },
+};

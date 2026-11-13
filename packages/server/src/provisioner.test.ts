@@ -113,6 +113,8 @@ import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
 import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 /** Recreates the relay reconciler and turn repair start, with the initiator each records. */
 const RECONCILE = {
   confirmWarnings: true,
@@ -334,13 +336,18 @@ function gitConfigEnv(env: string[]): Record<string, string> {
 
 /** Fake {@link ClaudeEgressIdentityService} returning fixed sandbox material and
  *  recording revocations. `gatewayMaterial` is never used by the provisioner. */
-function fakeEgressIdentity(): { service: ClaudeEgressIdentityService; revoked: string[] } {
+function fakeEgressIdentity(): {
+  service: ClaudeEgressIdentityService;
+  revoked: string[];
+  revokedSandboxes: Array<{ projectId: string; userId: string }>;
+} {
   const revoked: string[] = [];
+  const revokedSandboxes: Array<{ projectId: string; userId: string }> = [];
   const service: ClaudeEgressIdentityService = {
     async gatewayMaterial() {
       throw new Error('gatewayMaterial is not used by the provisioner');
     },
-    async sandboxMaterial(projectId: string) {
+    async sandboxMaterial({ projectId }) {
       return {
         projectId,
         fingerprint256: 'ab'.repeat(32),
@@ -349,11 +356,14 @@ function fakeEgressIdentity(): { service: ClaudeEgressIdentityService; revoked: 
         clientKeyPem: 'CLIENT-KEY-PEM',
       };
     },
+    async revokeSandbox(sandbox) {
+      revokedSandboxes.push(sandbox);
+    },
     async revokeProject(projectId: string) {
       revoked.push(projectId);
     },
   };
-  return { service, revoked };
+  return { service, revoked, revokedSandboxes };
 }
 
 let ctx: TestDb;
@@ -419,6 +429,8 @@ function defaultProjectRelay(): ProjectRelayControl {
       return {
         identity: {
           projectId: binding.projectId,
+          userId: binding.userId,
+          projectDefault: binding.projectDefault,
           containerGeneration: binding.containerGeneration,
         },
         signingCapability: 'test-signing-capability',
@@ -1779,7 +1791,12 @@ describe('ProvisionerImpl (#174)', () => {
       relay.reactivate = async (binding) => {
         bindings.push(binding);
         return {
-          identity: { projectId: id, containerGeneration: 'generation-1' },
+          identity: {
+            projectId: id,
+            userId: SANDBOX_USER,
+            projectDefault: true,
+            containerGeneration: 'generation-1',
+          },
           signingCapability: 'fresh-signing',
           githubCapability: 'fresh-github',
         };
@@ -1978,7 +1995,7 @@ describe('ProvisionerImpl (#174)', () => {
         serverName: 'gateway.test',
       });
       // What provisioning projected into the container and stamped on its label.
-      const created = await identity.sandboxMaterial(id);
+      const created = await identity.sandboxMaterial({ projectId: id, userId: SANDBOX_USER });
       const keyDir = join(secretRoot, 'claude-egress');
       const certPath = join(keyDir, `egress_client.${id}.crt`);
       const keyPath = join(keyDir, `egress_client.${id}.key`);
@@ -2136,7 +2153,12 @@ describe('ProvisionerImpl (#174)', () => {
       });
       const relay = defaultProjectRelay();
       relay.reactivate = vi.fn(async () => ({
-        identity: { projectId: id, containerGeneration: 'generation-1' },
+        identity: {
+          projectId: id,
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         signingCapability: 'fresh-signing',
         githubCapability: 'fresh-github',
       }));
@@ -2185,7 +2207,12 @@ describe('ProvisionerImpl (#174)', () => {
     const reactivate = vi.fn(async () => {
       await gate;
       return {
-        identity: { projectId: id, containerGeneration: 'generation-1' },
+        identity: {
+          projectId: id,
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         signingCapability: 'fresh-signing',
         githubCapability: 'fresh-github',
       };
@@ -2255,7 +2282,12 @@ describe('ProvisionerImpl (#174)', () => {
     const reactivate = vi.fn(async () => {
       await gate;
       return {
-        identity: { projectId: id, containerGeneration: 'generation-1' },
+        identity: {
+          projectId: id,
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         signingCapability: 'fresh-signing',
         githubCapability: 'fresh-github',
       };
@@ -2395,7 +2427,12 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const relay = defaultProjectRelay();
     relay.reactivate = async () => ({
-      identity: { projectId: id, containerGeneration: 'generation-1' },
+      identity: {
+        projectId: id,
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       signingCapability: 'fresh-signing',
       githubCapability: 'fresh-github',
     });
@@ -6149,6 +6186,8 @@ describe('ProvisionerImpl (#174)', () => {
             start: vi.fn(async (binding: ProjectRelayBinding) => ({
               identity: {
                 projectId: binding.projectId,
+                userId: binding.userId,
+                projectDefault: binding.projectDefault,
                 containerGeneration: binding.containerGeneration,
               },
               signingCapability: 'sign-capability',
@@ -6209,6 +6248,8 @@ describe('ProvisionerImpl (#174)', () => {
       const startRelay = vi.fn(async (binding) => ({
         identity: {
           projectId: binding.projectId,
+          userId: binding.userId,
+          projectDefault: binding.projectDefault,
           containerGeneration: binding.containerGeneration,
         },
         signingCapability: 'sign-capability',
@@ -6218,6 +6259,7 @@ describe('ProvisionerImpl (#174)', () => {
       const ghTokenCapabilities = {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(async () => undefined),
       };
       const provisioner = createProvisioner({
@@ -6239,6 +6281,7 @@ describe('ProvisionerImpl (#174)', () => {
             clientKeyPem: 'key',
           })),
           revokeProject: vi.fn(async () => undefined),
+          revokeSandbox: vi.fn(async () => undefined),
         },
         claudeEgressGatewayUrl: 'https://legacy-gateway:9443',
         claudeConnectorPort: 9444,
@@ -6318,6 +6361,7 @@ describe('ProvisionerImpl (#174)', () => {
         ghTokenCapabilities: {
           issue: vi.fn(),
           resolve: vi.fn(),
+          revokeSandbox: vi.fn(async (): Promise<void> => {}),
           revokeProject: vi.fn(async () => undefined),
         },
         claudeEgressIdentity: {
@@ -6330,6 +6374,7 @@ describe('ProvisionerImpl (#174)', () => {
             clientKeyPem: 'key',
           })),
           revokeProject: vi.fn(async () => undefined),
+          revokeSandbox: vi.fn(async () => undefined),
         },
         claudeEgressGatewayUrl: 'https://verity:9443',
         claudeEgressServerName: 'verity',
@@ -6338,6 +6383,8 @@ describe('ProvisionerImpl (#174)', () => {
           start: vi.fn(async (binding) => ({
             identity: {
               projectId: binding.projectId,
+              userId: binding.userId,
+              projectDefault: binding.projectDefault,
               containerGeneration: binding.containerGeneration,
             },
             signingCapability: 'sign-capability',
@@ -6387,6 +6434,8 @@ describe('ProvisionerImpl (#174)', () => {
         start: vi.fn(async (binding) => ({
           identity: {
             projectId: binding.projectId,
+            userId: binding.userId,
+            projectDefault: binding.projectDefault,
             containerGeneration: binding.containerGeneration,
           },
           signingCapability: 'sign-capability',
@@ -7352,6 +7401,7 @@ describe('ProvisionerImpl (#174)', () => {
             async start(binding) {
               const githubCapability = await capabilities.issue({
                 projectId: binding.projectId,
+                userId: binding.userId,
                 forgeConnectionId: binding.forgeConnectionId ?? null,
                 owner: 'example-org',
                 repo: 'example-repo',
@@ -7360,6 +7410,8 @@ describe('ProvisionerImpl (#174)', () => {
               return {
                 identity: {
                   projectId: binding.projectId,
+                  userId: binding.userId,
+                  projectDefault: binding.projectDefault,
                   containerGeneration: binding.containerGeneration,
                 },
                 signingCapability: 'test-signing-capability',
@@ -7437,6 +7489,7 @@ describe('ProvisionerImpl (#174)', () => {
         // The materialized capability resolves back to THIS project's binding.
         expect(await capabilities.resolve(readFileSync(capPath, 'utf8').trim())).toEqual({
           projectId: id,
+          userId: SANDBOX_USER,
           ...(forgejo ? { forgeConnectionId: 'forge' } : {}),
           owner: 'example-org',
           repo: 'example-repo',
@@ -10564,6 +10617,7 @@ describe('DeprovisionerImpl (#174)', () => {
     const capabilities = createGhTokenCapabilityRegistry(ctx.db);
     const cap = await capabilities.issue({
       projectId: id,
+      userId: SANDBOX_USER,
       owner: project.owner,
       repo: project.repo,
     });
@@ -10606,6 +10660,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(async (projectId: string): Promise<void> => {
           revokedGithub.push(projectId);
         }),
@@ -10623,6 +10678,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(async (projectId: string): Promise<void> => {
           revokedSigning.push(projectId);
         }),
@@ -10769,6 +10825,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(async (projectId: string): Promise<void> => {
           revokedGithub.push(projectId);
         }),
@@ -10786,6 +10843,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(async (): Promise<void> => {
           throw new Error('signing capability store unavailable');
         }),
@@ -10832,6 +10890,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn((): Promise<void> => {
           throw new Error('signing registry threw synchronously');
         }),
@@ -10897,6 +10956,7 @@ describe('DeprovisionerImpl (#174)', () => {
       {
         issue: vi.fn(),
         resolve: vi.fn(),
+        revokeSandbox: vi.fn(async (): Promise<void> => {}),
         revokeProject: vi.fn(() => new Promise<void>(() => undefined)),
       },
       undefined,
@@ -10962,9 +11022,11 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     resume?: ProjectRelayControl['resume'],
   ) {
     return {
-      start: vi.fn(async (binding: { projectId: string; containerGeneration: string }) => ({
+      start: vi.fn(async (binding: ProjectRelayBinding) => ({
         identity: {
           projectId: binding.projectId,
+          userId: binding.userId,
+          projectDefault: binding.projectDefault,
           containerGeneration: binding.containerGeneration,
         },
         signingCapability: 'sign',

@@ -8,6 +8,7 @@ import { createRawDb, truncateAll, type RawTestDb } from './testing.js';
 // Test-only 32-byte key, built at runtime so no secret-shaped literal lands in
 // source (not a real secret).
 const KEY = Buffer.alloc(32, 0x22).toString('hex');
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 let raw: RawTestDb;
 let store: EventStore;
@@ -90,6 +91,7 @@ describe('EventStore — Claude egress identity persistence', () => {
     await store.upsertClaudeEgressCa(caRecord());
     await store.upsertClaudeEgressClientCert({
       projectId,
+      userId: SANDBOX_USER,
       certPem: 'old-cert',
       keyPem: 'old-key',
       fingerprint256: 'a'.repeat(64),
@@ -130,6 +132,7 @@ describe('EventStore — Claude egress identity persistence', () => {
 
     await store.upsertClaudeEgressClientCert({
       projectId,
+      userId: SANDBOX_USER,
       certPem: 'client-cert-fixture',
       keyPem: 'client-private-key-fixture-value',
       fingerprint256: 'a'.repeat(64),
@@ -146,8 +149,9 @@ describe('EventStore — Claude egress identity persistence', () => {
     expect(rawRow?.cert_pem).toBe('client-cert-fixture');
     expect(rawRow?.fingerprint256).toBe('a'.repeat(64));
 
-    await expect(store.getClaudeEgressClientCert(projectId)).resolves.toEqual({
+    await expect(store.getClaudeEgressClientCert(projectId, SANDBOX_USER)).resolves.toEqual({
       projectId,
+      userId: SANDBOX_USER,
       certPem: 'client-cert-fixture',
       keyPem: 'client-private-key-fixture-value',
       fingerprint256: 'a'.repeat(64),
@@ -167,6 +171,7 @@ describe('EventStore — Claude egress identity persistence', () => {
       });
       await store.upsertClaudeEgressClientCert({
         projectId,
+        userId: SANDBOX_USER,
         certPem: `cert-${index}`,
         keyPem: `key-${index}`,
         fingerprint256: String(index).repeat(64).slice(0, 64),
@@ -179,6 +184,7 @@ describe('EventStore — Claude egress identity persistence', () => {
     // Rotate the first project's cert — upsert replaces, never duplicates.
     await store.upsertClaudeEgressClientCert({
       projectId: projectA,
+      userId: SANDBOX_USER,
       certPem: 'cert-rotated',
       keyPem: 'key-rotated',
       fingerprint256: 'b'.repeat(64),
@@ -202,6 +208,7 @@ describe('EventStore — Claude egress identity persistence', () => {
       });
       await store.upsertClaudeEgressClientCert({
         projectId,
+        userId: SANDBOX_USER,
         certPem: `cert-${index}`,
         keyPem: `key-${index}`,
         fingerprint256: String(index).repeat(64).slice(0, 64),
@@ -209,12 +216,12 @@ describe('EventStore — Claude egress identity persistence', () => {
       });
     }
 
-    await store.deleteClaudeEgressClientCert(removed);
-    await expect(store.getClaudeEgressClientCert(removed)).resolves.toBeUndefined();
-    await expect(store.getClaudeEgressClientCert(kept)).resolves.toBeDefined();
+    await store.deleteClaudeEgressClientCert(removed, SANDBOX_USER);
+    await expect(store.getClaudeEgressClientCert(removed, SANDBOX_USER)).resolves.toBeUndefined();
+    await expect(store.getClaudeEgressClientCert(kept, SANDBOX_USER)).resolves.toBeDefined();
 
     // Deleting the project cascades to its egress client cert row.
     await raw.db.deleteFrom('projects').where('id', '=', kept).execute();
-    await expect(store.getClaudeEgressClientCert(kept)).resolves.toBeUndefined();
+    await expect(store.getClaudeEgressClientCert(kept, SANDBOX_USER)).resolves.toBeUndefined();
   });
 });

@@ -805,6 +805,8 @@ export interface ClaudeEgressCaRecord {
  *  (a SECRET); the cert + fingerprint are non-secret. */
 export interface ClaudeEgressClientCertRecord {
   projectId: string;
+  /** The person whose sandbox presents this certificate (ADR 0023 §4). */
+  userId: string;
   certPem: string;
   keyPem: string;
   fingerprint256: string;
@@ -9295,31 +9297,33 @@ export class EventStore implements EventSink {
     };
   }
 
-  /** Read one project's client certificate, decrypting its private key. */
   async getClaudeEgressClientCert(
     projectId: string,
+    userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
     const row = await this.db
       .selectFrom('claude_egress_client_certs')
       .selectAll()
       .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
       .executeTakeFirst();
     return row ? this.claudeEgressClientCertRowToRecord(row) : undefined;
   }
 
   /** Every stored client certificate — the source of the gateway's
-   *  fingerprint→project peer bindings. */
+   *  fingerprint→sandbox peer bindings. */
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
     const rows = await this.db
       .selectFrom('claude_egress_client_certs')
       .selectAll()
       .orderBy('project_id', 'asc')
+      .orderBy('user_id', 'asc')
       .execute();
     return rows.map((row) => this.claudeEgressClientCertRowToRecord(row));
   }
 
-  /** Insert or replace a project's client certificate, encrypting the key. A
-   *  rotation upserts on the project_id PK, dropping the superseded fingerprint. */
+  /** Insert or replace a sandbox's client certificate, encrypting the key. A
+   *  rotation upserts on the (project, person) key, dropping the superseded fingerprint. */
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
     const values = {
       cert_pem: record.certPem,
@@ -9329,23 +9333,26 @@ export class EventStore implements EventSink {
     };
     await this.db
       .insertInto('claude_egress_client_certs')
-      .values({ project_id: record.projectId, ...values })
+      .values({ project_id: record.projectId, user_id: record.userId, ...values })
       .onConflict((oc) =>
-        oc.column('project_id').doUpdateSet({ ...values, updated_at: sql`now()` }),
+        oc.columns(['project_id', 'user_id']).doUpdateSet({ ...values, updated_at: sql`now()` }),
       )
       .execute();
   }
 
-  /** Drop a project's client certificate (deprovision / revocation). */
-  async deleteClaudeEgressClientCert(projectId: string): Promise<void> {
-    await this.db
+  /** Drop one sandbox's client certificate, or every one of the project when no
+   *  person is named (deprovision / revocation). */
+  async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
+    let query = this.db
       .deleteFrom('claude_egress_client_certs')
-      .where('project_id', '=', projectId)
-      .execute();
+      .where('project_id', '=', projectId);
+    if (userId !== undefined) query = query.where('user_id', '=', userId);
+    await query.execute();
   }
 
   private claudeEgressClientCertRowToRecord(row: {
     project_id: string;
+    user_id: string;
     cert_pem: string;
     key_pem: string;
     fingerprint256: string;
@@ -9353,6 +9360,7 @@ export class EventStore implements EventSink {
   }): ClaudeEgressClientCertRecord {
     return {
       projectId: row.project_id,
+      userId: row.user_id,
       certPem: row.cert_pem,
       keyPem: this.decryptSecret(row.key_pem) ?? '',
       fingerprint256: row.fingerprint256,

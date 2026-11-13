@@ -22,6 +22,8 @@ import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 import { createDevicePairingManager, type DevicePairingManager } from './device-pairing.js';
 import { buildServer } from './server.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const conductor = {} as unknown as Conductor;
 const PASSWORD = 'correct-horse-battery';
 
@@ -288,7 +290,12 @@ describe('paired device management', () => {
     const registry = await createAuthTokenRegistry(store, { enabled: true });
     const connections = new EventEmitter();
     const generation = new AbortController();
-    const identity = { projectId: 'artifact-project', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'artifact-project',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     markInternalConnections(connections as unknown as Server, identity, generation.signal);
     let internal = true;
     const app = buildServer({

@@ -42,6 +42,8 @@ const fakeSign: SshSignSpawner = ({ keyPath, payloadPath, namespace }) => {
 };
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
+/** The person of the project's original (default) sandbox. */
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -124,25 +126,33 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
     try {
       const valid = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, valid)).status).toBe(200);
 
       const stale = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-0',
       });
       expect((await postUnix(listener.socketPath, stale)).status).toBe(401);
 
       const crossProject = await capabilities.issue({
         projectId: 'p2',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, crossProject)).status).toBe(401);
@@ -170,7 +180,12 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
@@ -190,6 +205,14 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
         userId: 'lena',
       });
       expect((await postUnix(listener.socketPath, foreign)).status).toBe(401);
+      // Same person as the sandbox, but another project: still refused.
+      const foreignProject = turns.issue({
+        projectId: 'p2',
+        sessionId: 's3',
+        turnId: 't3',
+        userId: ADMIN,
+      });
+      expect((await postUnix(listener.socketPath, foreignProject)).status).toBe(401);
 
       turns.release(badge);
       expect((await postUnix(listener.socketPath, badge)).status).toBe(401);
@@ -197,6 +220,7 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
       // The container-wide capability keeps working beside the badges.
       const container = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, container)).status).toBe(200);
@@ -224,7 +248,25 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
       .execute();
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    // A person's turns run in that person's own sandbox (ADR 0023 §4), so lena's
+    // badge is presented from hers rather than from the project's shared one.
+    const lenaListener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: 'lena',
+        projectDefault: false,
+        containerGeneration: 'generation-lena',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
@@ -232,17 +274,20 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
       turns.issue({ projectId: 'p1', sessionId: 's1', turnId: `t-${userId}`, userId });
     try {
       signedWith.length = 0;
-      const refused = await postUnix(listener.socketPath, badgeFor('lena'));
+      const refused = await postUnix(lenaListener.socketPath, badgeFor('lena'));
       expect(refused.status).toBe(409);
       expect(refused.body).toContain('connect GitHub');
       expect(signedWith).toEqual([]);
 
       const LENA_KEY = SIGNING_KEY.replace('BEGIN OPENSSH', 'BEGIN OPENSSH lena');
       await store.userGitIdentities.set('lena', { sshPrivateKey: LENA_KEY });
-      expect((await postUnix(listener.socketPath, badgeFor('lena'))).status).toBe(200);
+      // Her badge carried into the project's default sandbox proves nothing there.
+      expect((await postUnix(listener.socketPath, badgeFor('lena'))).status).toBe(401);
+      expect((await postUnix(lenaListener.socketPath, badgeFor('lena'))).status).toBe(200);
       expect((await postUnix(listener.socketPath, badgeFor(ADMIN))).status).toBe(200);
       expect(signedWith.map((key) => key.trim())).toEqual([LENA_KEY, SIGNING_KEY]);
     } finally {
+      await lenaListener.close();
       await listener.close();
       await app.close();
       rmSync(root, { recursive: true, force: true });
@@ -266,13 +311,19 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
     const listener = await startProjectInternalUnixListener(app, {
       socketRoot: root,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: process.getuid?.() ?? 0,
       relayGid: process.getgid?.() ?? 0,
     });
     try {
       const capability = await capabilities.issue({
         projectId: 'p1',
+        userId: SANDBOX_USER,
         containerGeneration: 'generation-1',
       });
       expect((await postUnix(listener.socketPath, capability)).status).toBe(200);

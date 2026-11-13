@@ -11,9 +11,16 @@ import {
   type ProjectClaudeUnixListener,
 } from './project-claude-unix-listener.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const UID = process.getuid?.() ?? 0;
 const GID = process.getgid?.() ?? 0;
-const identity = { projectId: 'p1', containerGeneration: 'generation-1' };
+const identity = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'generation-1',
+};
 
 let gateway: Server | undefined;
 const gatewaySockets = new Set<Socket>();

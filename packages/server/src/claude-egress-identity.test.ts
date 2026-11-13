@@ -24,6 +24,12 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SERVER_NAME = 'localhost';
 const AUTHORITY = 'claude-proxy.project-1:9443';
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+/** The project-default sandbox of a project. */
+const sandboxOf = (projectId: string) => ({ projectId, userId: SANDBOX_USER });
+/** The FakeStore key of one sandbox's client certificate. */
+const clientKey = (projectId: string, userId = SANDBOX_USER) => `${projectId}\u0000${userId}`;
 
 /** In-memory {@link ClaudeEgressIdentityStore}; counts CA writes so tests can
  *  assert lazy issue-once semantics. */
@@ -51,17 +57,22 @@ class FakeStore implements ClaudeEgressIdentityStore {
   }
   async getClaudeEgressClientCert(
     projectId: string,
+    userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
-    return this.clients.get(projectId);
+    return this.clients.get(clientKey(projectId, userId));
   }
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
-    this.clients.set(record.projectId, record);
+    this.clients.set(clientKey(record.projectId, record.userId), record);
   }
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
     return [...this.clients.values()].sort((a, b) => a.projectId.localeCompare(b.projectId));
   }
-  async deleteClaudeEgressClientCert(projectId: string): Promise<void> {
-    this.clients.delete(projectId);
+  async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
+    for (const [key, record] of this.clients) {
+      if (record.projectId === projectId && (userId === undefined || record.userId === userId)) {
+        this.clients.delete(key);
+      }
+    }
   }
 }
 
@@ -106,15 +117,16 @@ describe('Claude egress identity service', () => {
     const store = new FakeStore();
     const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
 
-    const material = await service.sandboxMaterial('project-1');
+    const material = await service.sandboxMaterial(sandboxOf('project-1'));
     expect(material.projectId).toBe('project-1');
-    const stored = store.clients.get('project-1');
+    const stored = store.clients.get(clientKey('project-1'));
     expect(stored).toBeDefined();
     expect(material.clientCertPem).toBe(stored?.certPem);
 
     const gateway = await service.gatewayMaterial();
+    // A restarted gateway starts from these: the person must be in them.
     expect(gateway.peerBindings).toEqual([
-      { projectId: 'project-1', fingerprint256: stored?.fingerprint256 },
+      { projectId: 'project-1', userId: SANDBOX_USER, fingerprint256: stored?.fingerprint256 },
     ]);
     // The CA was minted once and reused for the client cert.
     expect(store.caWrites).toBe(1);
@@ -131,24 +143,24 @@ describe('Claude egress identity service', () => {
       now: () => new Date(nowMs),
     });
 
-    await service.sandboxMaterial('project-1');
-    const firstFingerprint = store.clients.get('project-1')?.fingerprint256;
+    await service.sandboxMaterial(sandboxOf('project-1'));
+    const firstFingerprint = store.clients.get(clientKey('project-1'))?.fingerprint256;
     // Force the stored cert to look near-expiry relative to the injected clock
     // (openssl stamps notAfter off the real wall clock, so drive freshness
     // through the record's expiresAt instead).
-    const stored = store.clients.get('project-1');
+    const stored = store.clients.get(clientKey('project-1'));
     if (stored === undefined) throw new Error('expected a stored cert');
-    store.clients.set('project-1', { ...stored, expiresAt: new Date(nowMs + DAY_MS) });
+    store.clients.set(clientKey('project-1'), { ...stored, expiresAt: new Date(nowMs + DAY_MS) });
 
-    const rotated = await service.sandboxMaterial('project-1');
-    const secondFingerprint = store.clients.get('project-1')?.fingerprint256;
+    const rotated = await service.sandboxMaterial(sandboxOf('project-1'));
+    const secondFingerprint = store.clients.get(clientKey('project-1'))?.fingerprint256;
     expect(secondFingerprint).not.toBe(firstFingerprint);
-    expect(rotated.clientCertPem).toBe(store.clients.get('project-1')?.certPem);
+    expect(rotated.clientCertPem).toBe(store.clients.get(clientKey('project-1'))?.certPem);
 
     // A still-fresh cert is reused, not reissued.
     nowMs += 1;
-    await service.sandboxMaterial('project-1');
-    expect(store.clients.get('project-1')?.fingerprint256).toBe(secondFingerprint);
+    await service.sandboxMaterial(sandboxOf('project-1'));
+    expect(store.clients.get(clientKey('project-1'))?.fingerprint256).toBe(secondFingerprint);
   });
 
   it('rotates the CA when it is near expiry and drops stale client certs', async () => {
@@ -158,8 +170,9 @@ describe('Claude egress identity service', () => {
     // Make the CA itself look near-expiry so the next call rotates it.
     if (store.ca === undefined) throw new Error('expected a seeded CA');
     store.ca = { ...store.ca, caExpiresAt: new Date(Date.now() + DAY_MS) };
-    store.clients.set('orphan', {
+    store.clients.set(clientKey('orphan'), {
       projectId: 'orphan',
+      userId: SANDBOX_USER,
       certPem: 'old',
       keyPem: 'old',
       fingerprint256: 'a'.repeat(64),
@@ -191,8 +204,9 @@ describe('Claude egress identity service', () => {
     // Pin a different server name so the CA is still fresh but its gateway leaf
     // must be re-issued.
     store.ca = store.ca ? { ...store.ca, gatewayServerName: 'stale-name' } : undefined;
-    store.clients.set('project-1', {
+    store.clients.set(clientKey('project-1'), {
       projectId: 'project-1',
+      userId: SANDBOX_USER,
       certPem: 'keep-cert',
       keyPem: 'keep-key',
       fingerprint256: 'c'.repeat(64),
@@ -218,9 +232,9 @@ describe('Claude egress identity service', () => {
       'verity-agent-gateway',
     );
     // The still-valid client cert survives a gateway-only refresh.
-    expect(store.clients.has('project-1')).toBe(true);
+    expect(store.clients.has(clientKey('project-1'))).toBe(true);
     expect(material.peerBindings).toEqual([
-      { projectId: 'project-1', fingerprint256: 'c'.repeat(64) },
+      { projectId: 'project-1', userId: SANDBOX_USER, fingerprint256: 'c'.repeat(64) },
     ]);
     expect(onGatewayLeafChanged).toHaveBeenCalledOnce();
     expect(onGatewayLeafChanged).toHaveBeenCalledWith({
@@ -318,11 +332,11 @@ describe('Claude egress identity service', () => {
   it('revokes a project by deleting its client cert', async () => {
     const store = new FakeStore();
     const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
-    await service.sandboxMaterial('project-1');
-    expect(store.clients.has('project-1')).toBe(true);
+    await service.sandboxMaterial(sandboxOf('project-1'));
+    expect(store.clients.has(clientKey('project-1'))).toBe(true);
 
     await service.revokeProject('project-1');
-    expect(store.clients.has('project-1')).toBe(false);
+    expect(store.clients.has(clientKey('project-1'))).toBe(false);
   });
 
   it('serializes same-project issuance so concurrent callers share one leaf', async () => {
@@ -332,8 +346,8 @@ describe('Claude egress identity service', () => {
     const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
 
     const [first, second] = await Promise.all([
-      service.sandboxMaterial('project-1'),
-      service.sandboxMaterial('project-1'),
+      service.sandboxMaterial(sandboxOf('project-1')),
+      service.sandboxMaterial(sandboxOf('project-1')),
     ]);
 
     expect(upsert).toHaveBeenCalledOnce();
@@ -345,11 +359,11 @@ describe('Claude egress identity service', () => {
     await seedFreshCa(store);
     const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
 
-    const issuance = service.sandboxMaterial('project-1');
+    const issuance = service.sandboxMaterial(sandboxOf('project-1'));
     const revocation = service.revokeProject('project-1');
     await Promise.all([issuance, revocation]);
 
-    expect(store.clients.has('project-1')).toBe(false);
+    expect(store.clients.has(clientKey('project-1'))).toBe(false);
   });
 
   it('emits the current binding set to onBindingsChanged on issue and revoke', async () => {
@@ -363,10 +377,10 @@ describe('Claude egress identity service', () => {
       },
     });
 
-    await service.sandboxMaterial('project-1');
-    await service.sandboxMaterial('project-2');
+    await service.sandboxMaterial(sandboxOf('project-1'));
+    await service.sandboxMaterial(sandboxOf('project-2'));
     // A reuse (fresh cert already stored) must NOT re-emit.
-    await service.sandboxMaterial('project-1');
+    await service.sandboxMaterial(sandboxOf('project-1'));
     await service.revokeProject('project-1');
 
     // Two issues + one revoke → three emissions, each the full current set.
@@ -376,7 +390,7 @@ describe('Claude egress identity service', () => {
     expect(emitted[2]?.map((b) => b.projectId)).toEqual(['project-2']);
     // The emitted fingerprints match what the gateway peer registry needs.
     expect(emitted[1]?.find((b) => b.projectId === 'project-2')?.fingerprint256).toBe(
-      store.clients.get('project-2')?.fingerprint256,
+      store.clients.get(clientKey('project-2'))?.fingerprint256,
     );
   });
 
@@ -400,7 +414,10 @@ describe('Claude egress identity service', () => {
       },
     });
 
-    await Promise.all([service.sandboxMaterial('project-1'), service.sandboxMaterial('project-2')]);
+    await Promise.all([
+      service.sandboxMaterial(sandboxOf('project-1')),
+      service.sandboxMaterial(sandboxOf('project-2')),
+    ]);
 
     expect(maxActive).toBe(1); // never two callbacks in flight at once
     // The last (serialized) emit observed the full, post-both-mutations set.
@@ -411,7 +428,7 @@ describe('Claude egress identity service', () => {
     const store = new FakeStore();
     const service = createClaudeEgressIdentityService({ store, serverName: SERVER_NAME });
 
-    const sandbox = await service.sandboxMaterial('project-1');
+    const sandbox = await service.sandboxMaterial(sandboxOf('project-1'));
     const material = await service.gatewayMaterial();
 
     const accessToken = vi.fn(async () => 'server-only-token');

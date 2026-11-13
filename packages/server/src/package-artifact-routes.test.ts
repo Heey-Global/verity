@@ -14,7 +14,16 @@ import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 import { createNpmInstallGrant, revokeNpmInstallGrant } from './package-install-grants.js';
-const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+const binding = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+  owner: 'o',
+  repo: 'r',
+};
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));

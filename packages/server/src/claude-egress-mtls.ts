@@ -10,8 +10,17 @@ import {
 
 export interface ClaudeEgressPeerBinding {
   projectId: string;
-  /** SHA-256 fingerprint of the project's client certificate. */
+  /** The person whose sandbox presents the certificate (ADR 0023 §4). Optional
+   *  only for bindings from a Server that predates per-person sandboxes. */
+  userId?: string | undefined;
+  /** SHA-256 fingerprint of the sandbox's client certificate. */
   fingerprint256: string;
+}
+
+/** Who a TLS peer is: the sandbox's project and person (null when unknown). */
+export interface ClaudeEgressPeerIdentity {
+  projectId: string;
+  userId: string | null;
 }
 
 export interface ClaudeEgressPeerCertificate {
@@ -40,8 +49,16 @@ export interface ClaudeEgressMtlsGateway extends Omit<ClaudeEgressGateway, 'relo
 /** Resolve a project only from a TLS-authenticated certificate fingerprint. */
 export function resolveClaudeEgressPeerProject(
   peer: ClaudeEgressPeerCertificate,
-  bindings: ReadonlyMap<string, string>,
+  bindings: ReadonlyMap<string, ClaudeEgressPeerIdentity>,
 ): string | undefined {
+  return resolveClaudeEgressPeerIdentity(peer, bindings)?.projectId;
+}
+
+/** Resolve a sandbox (project and person) only from a TLS-authenticated fingerprint. */
+export function resolveClaudeEgressPeerIdentity(
+  peer: ClaudeEgressPeerCertificate,
+  bindings: ReadonlyMap<string, ClaudeEgressPeerIdentity>,
+): ClaudeEgressPeerIdentity | undefined {
   if (!peer.authorized || peer.fingerprint256 === undefined) return undefined;
   return bindings.get(normalizeFingerprint(peer.fingerprint256));
 }
@@ -55,27 +72,40 @@ export function resolveClaudeEgressPeerProject(
  */
 export function buildClaudeEgressPeerBindings(
   bindings: readonly ClaudeEgressPeerBinding[],
-): Map<string, string> {
-  const projectsByFingerprint = new Map<string, string>();
+): Map<string, ClaudeEgressPeerIdentity> {
+  const sandboxesByFingerprint = new Map<string, ClaudeEgressPeerIdentity>();
   for (const binding of bindings) {
     if (binding.projectId.length === 0) throw new Error('Claude egress mTLS project is empty');
+    if (binding.userId !== undefined && binding.userId.length === 0)
+      throw new Error('Claude egress mTLS person is empty');
     const fingerprint = normalizeFingerprint(binding.fingerprint256);
-    if (projectsByFingerprint.has(fingerprint)) {
+    if (sandboxesByFingerprint.has(fingerprint)) {
       throw new Error('Claude egress mTLS fingerprint is bound more than once');
     }
-    projectsByFingerprint.set(fingerprint, binding.projectId);
+    sandboxesByFingerprint.set(fingerprint, {
+      projectId: binding.projectId,
+      userId: binding.userId ?? null,
+    });
   }
-  return projectsByFingerprint;
+  return sandboxesByFingerprint;
 }
 
 /** Resolve the authenticated project of a TLS peer against a fixed binding map. */
 export function authenticateClaudeEgressPeer(
   socket: Socket,
-  bindings: ReadonlyMap<string, string>,
+  bindings: ReadonlyMap<string, ClaudeEgressPeerIdentity>,
 ): string | undefined {
+  return identifyClaudeEgressPeer(socket, bindings)?.projectId;
+}
+
+/** Resolve the authenticated sandbox (project and person) of a TLS peer. */
+export function identifyClaudeEgressPeer(
+  socket: Socket,
+  bindings: ReadonlyMap<string, ClaudeEgressPeerIdentity>,
+): ClaudeEgressPeerIdentity | undefined {
   if (!(socket instanceof TLSSocket)) return undefined;
   const certificate = socket.getPeerCertificate();
-  return resolveClaudeEgressPeerProject(
+  return resolveClaudeEgressPeerIdentity(
     {
       authorized: socket.authorized,
       ...(certificate.fingerprint256 === undefined

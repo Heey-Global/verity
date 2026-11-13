@@ -8,9 +8,16 @@ import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.j
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 describe('project relay runtime composition', () => {
   it('passes all generation-bound listener paths to the relay starter', async () => {
-    const identity = { projectId: 'p1', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     const closeBroker = vi.fn(async () => {});
     const closeClaude = vi.fn(async () => {});
     const closeCodex = vi.fn(async () => {});
@@ -33,6 +40,7 @@ describe('project relay runtime composition', () => {
       issue: vi.fn(async () => 'sign-cap'),
       resolve: vi.fn(),
       revokeProject: vi.fn(async () => {}),
+      revokeSandbox: vi.fn(async () => {}),
     } satisfies SigningCapabilityRegistry;
     const github = {
       issue: vi.fn(async () => 'github-cap'),

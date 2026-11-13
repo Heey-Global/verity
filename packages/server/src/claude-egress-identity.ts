@@ -29,10 +29,19 @@ export interface ClaudeEgressIdentityStore {
   /** Atomically install a freshly minted CA and drop every client cert in one
    *  transaction (rotation / first issuance). */
   replaceClaudeEgressCa(record: ClaudeEgressCaRecord): Promise<void>;
-  getClaudeEgressClientCert(projectId: string): Promise<ClaudeEgressClientCertRecord | undefined>;
+  getClaudeEgressClientCert(
+    projectId: string,
+    userId: string,
+  ): Promise<ClaudeEgressClientCertRecord | undefined>;
   upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void>;
   listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]>;
-  deleteClaudeEgressClientCert(projectId: string): Promise<void>;
+  deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void>;
+}
+
+/** One person's sandbox in a project (ADR 0023 §4). */
+export interface EgressSandboxRef {
+  projectId: string;
+  userId: string;
 }
 
 export interface ClaudeEgressIdentityService {
@@ -41,10 +50,12 @@ export interface ClaudeEgressIdentityService {
    *  certificate; never mints client certs (peer bindings come from whatever is
    *  already issued). */
   gatewayMaterial(): Promise<GatewayMtlsMaterial>;
-  /** The material projected into a project Sandbox: the public CA + that project's
-   *  own client identity. Lazily issues/rotates the client certificate. */
-  sandboxMaterial(projectId: string): Promise<SandboxEgressMaterial>;
-  /** Drop a project's client certificate (deprovision / revocation). */
+  /** The material projected into one sandbox: the public CA + that sandbox's own
+   *  client identity. Lazily issues/rotates the client certificate. */
+  sandboxMaterial(sandbox: EgressSandboxRef): Promise<SandboxEgressMaterial>;
+  /** Drop one sandbox's client certificate (sleep / revocation). */
+  revokeSandbox(sandbox: EgressSandboxRef): Promise<void>;
+  /** Drop every sandbox's client certificate in a project (deprovision). */
   revokeProject(projectId: string): Promise<void>;
 }
 
@@ -132,7 +143,11 @@ export function createClaudeEgressIdentityService(
     const run = emitTail.then(async () => {
       const certs = await store.listClaudeEgressClientCerts();
       await onBindingsChanged(
-        certs.map((cert) => ({ projectId: cert.projectId, fingerprint256: cert.fingerprint256 })),
+        certs.map((cert) => ({
+          projectId: cert.projectId,
+          userId: cert.userId,
+          fingerprint256: cert.fingerprint256,
+        })),
       );
     });
     // Keep the chain alive even if this emit rejects (the next emit still runs),
@@ -280,12 +295,12 @@ export function createClaudeEgressIdentityService(
       return gatewayMtlsMaterial(ca, gateway, clients);
     },
 
-    async sandboxMaterial(projectId): Promise<SandboxEgressMaterial> {
+    async sandboxMaterial({ projectId, userId }): Promise<SandboxEgressMaterial> {
       return withProjectLock(projectId, async () => {
         // Resolve the CA first: a CA rotation here clears stale client rows, so the
         // lookup below then re-issues against the fresh CA.
         const { ca } = await loadOrIssueCa();
-        const existing = await store.getClaudeEgressClientCert(projectId);
+        const existing = await store.getClaudeEgressClientCert(projectId, userId);
         let client: ProjectClientCertificate;
         if (existing !== undefined && isFresh(existing.expiresAt)) {
           client = {
@@ -297,12 +312,14 @@ export function createClaudeEgressIdentityService(
         } else {
           const issued = await issueProjectClientCertificate(ca, {
             projectId,
+            userId,
             ...(options.leafValidityDays !== undefined
               ? { validityDays: options.leafValidityDays }
               : {}),
           });
           await store.upsertClaudeEgressClientCert({
             projectId,
+            userId,
             certPem: issued.certPem,
             keyPem: issued.keyPem,
             fingerprint256: issued.fingerprint256,
@@ -313,6 +330,13 @@ export function createClaudeEgressIdentityService(
           await emitBindings();
         }
         return sandboxEgressMaterial(ca, client);
+      });
+    },
+
+    async revokeSandbox({ projectId, userId }): Promise<void> {
+      await withProjectLock(projectId, async () => {
+        await store.deleteClaudeEgressClientCert(projectId, userId);
+        await emitBindings();
       });
     },
 

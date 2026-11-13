@@ -31,6 +31,8 @@ import {
   SESSION_HANDOFF_TRANSCRIPT_LABEL,
 } from './session-handoff-tool.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const TEST_UID = process.getuid?.() ?? 1000;
 const TEST_GID = process.getgid?.() ?? 1000;
 
@@ -392,7 +394,12 @@ async function withListener(
   await harness.app.ready();
   const listener = await startProjectInternalUnixListener(harness.app, {
     socketRoot: dir,
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     ownerUid: TEST_UID,
     relayGid: TEST_GID,
   });
@@ -2491,6 +2498,8 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
     const server = createServer((req, res) => harness.app.routing(req, res));
     markInternalConnections(server, {
       projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
       containerGeneration: 'generation-1',
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -2522,7 +2531,12 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
     await harness.app.ready();
     const listener = await startProjectInternalUnixListener(harness.app, {
       socketRoot: dir,
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       ownerUid: TEST_UID,
       relayGid: TEST_GID,
     });

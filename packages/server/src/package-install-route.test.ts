@@ -12,11 +12,20 @@ import { registerPackageInstallRoute } from './package-install-route.js';
 import { npmInstallGrant } from './package-install-grants.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
-const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+const binding = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+  owner: 'o',
+  repo: 'r',
+};
 const input = {
   action: 'check',
   sessionId: 's1',

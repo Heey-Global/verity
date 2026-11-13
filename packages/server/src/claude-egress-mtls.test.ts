@@ -63,7 +63,12 @@ describe('Claude egress mTLS project identity', () => {
   });
 
   it('maps only an authorized peer fingerprint to its fixed project', () => {
-    const bindings = new Map([[FINGERPRINT_ONE.replaceAll(':', '').toLowerCase(), 'project-1']]);
+    const bindings = new Map([
+      [
+        FINGERPRINT_ONE.replaceAll(':', '').toLowerCase(),
+        { projectId: 'project-1', userId: '00000000-0000-4000-8000-000000000001' },
+      ],
+    ]);
 
     expect(
       resolveClaudeEgressPeerProject(

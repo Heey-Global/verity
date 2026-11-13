@@ -16,6 +16,8 @@ import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const exec = promisify(execFile);
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -25,6 +27,8 @@ const capability = 'synthetic-native-package-capability';
 const packageName = 'verity-artifact-fixture';
 const binding = {
   projectId: 'fixture-project',
+  userId: SANDBOX_USER,
+  projectDefault: true,
   containerGeneration: 'fixture-generation',
   owner: 'o',
   repo: 'r',

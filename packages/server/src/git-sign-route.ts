@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { turnFitsSandbox } from './turn-credentials.js';
 import { z } from 'zod';
 import type { EventStore, VeritySettingsRecord } from '@verity/store';
 import { bearerToken } from './auth.js';
@@ -70,13 +71,23 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         // A turn's badge names the turn and the person it runs for; the
         // container-wide capability only names the project. Both sign with the
         // same key today — the badge is what lets the key become personal.
-        const turn =
+        const badge =
           socketIdentity === undefined
             ? undefined
             : deps.turnCredentials?.resolve({
                 projectId: socketIdentity.projectId,
                 token: presented,
               });
+        // A badge carried out of the sandbox it was issued into proves nothing.
+        if (
+          badge !== undefined &&
+          socketIdentity !== undefined &&
+          !turnFitsSandbox(badge, socketIdentity)
+        ) {
+          reply.code(401);
+          return { error: 'unauthorized' };
+        }
+        const turn = badge;
         const capabilityBinding =
           socketIdentity === undefined || turn !== undefined
             ? undefined
@@ -85,6 +96,7 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
           socketIdentity !== undefined &&
           (turn !== undefined ||
             (capabilityBinding?.projectId === socketIdentity.projectId &&
+              capabilityBinding.userId === socketIdentity.userId &&
               capabilityBinding.containerGeneration === socketIdentity.containerGeneration));
 
         // A project socket accepts only its own generation-bound capability. Reject
@@ -109,14 +121,21 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         // (ADR 0023 §3); a member without a key gets a refusal, never someone
         // else's signature. The container capability names no person and keeps
         // the project default, which is the instance key.
+        // The person is the badge's, else the sandbox's own (ADR 0023 §4); the
+        // project's original sandbox keeps the project default without a badge.
+        const person =
+          turn !== undefined
+            ? turn.userId
+            : socketIdentity.projectDefault
+              ? null
+              : socketIdentity.userId;
         let privateKey = instanceKey;
-        if (turn !== undefined && turn.userId !== null) {
-          const personal = (await deps.eventStore.userGitIdentities.get(turn.userId))
-            ?.sshPrivateKey;
+        if (person !== null) {
+          const personal = (await deps.eventStore.userGitIdentities.get(person))?.sshPrivateKey;
           privateKey =
             personal !== undefined && personal !== null && personal.trim().length > 0
               ? personal
-              : (await deps.eventStore.isActiveAdministrator(turn.userId))
+              : (await deps.eventStore.isActiveAdministrator(person))
                 ? instanceKey
                 : null;
           if (privateKey === null) {

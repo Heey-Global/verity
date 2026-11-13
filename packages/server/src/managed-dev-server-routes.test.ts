@@ -17,7 +17,16 @@ import {
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
 
-const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+const binding = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+  owner: 'o',
+  repo: 'r',
+};
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));

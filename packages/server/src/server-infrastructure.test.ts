@@ -53,6 +53,8 @@ import {
   type ServerDeps,
 } from './server.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 describe('removed workflow API', () => {
   it('does not register workflow or provider callback routes', async () => {
     const server = buildServer({ eventStore: ctx.store, bus, conductor });
@@ -1159,8 +1161,12 @@ describe('POST /internal/project/memory rejects the retired TCP path', () => {
   const capabilities = {
     issue: async () => 'good-cap',
     resolve: async (cap: string) => {
-      if (cap === 'good-cap') return { projectId: 'p1', owner: 'heey-global', repo: 'verity' };
-      if (cap === 'cap-p2') return { projectId: 'p2', owner: 'heey-global', repo: 'other' };
+      if (cap === 'good-cap') {
+        return { projectId: 'p1', userId: SANDBOX_USER, owner: 'heey-global', repo: 'verity' };
+      }
+      if (cap === 'cap-p2') {
+        return { projectId: 'p2', userId: SANDBOX_USER, owner: 'heey-global', repo: 'other' };
+      }
       return undefined;
     },
     revokeProject: async () => {},

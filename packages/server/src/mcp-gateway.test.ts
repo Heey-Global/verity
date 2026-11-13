@@ -20,6 +20,8 @@ import {
   type McpGatewayDeps,
 } from './mcp-gateway.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const HTTP_ARGUMENTS = {
   method: 'GET',
   url: 'https://api.revenuecat.com/v2/projects',
@@ -1447,7 +1449,12 @@ it('binds provider requests to the listener generation and blocks work after ret
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: generation.signal,
     },
   });
@@ -1472,7 +1479,12 @@ it('revalidates the initiating user after asynchronous tool credential work', as
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: new AbortController().signal,
     },
   });

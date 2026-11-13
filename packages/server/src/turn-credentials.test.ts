@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createTurnCredentials, TURN_CAPABILITY_PATTERN } from './turn-credentials.js';
+import {
+  createTurnCredentials,
+  TURN_CAPABILITY_PATTERN,
+  turnFitsSandbox,
+} from './turn-credentials.js';
 
 const binding = { projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' };
 
@@ -44,5 +48,21 @@ describe('turn credentials', () => {
     turns.issue(binding);
     turns.issue(binding);
     expect(() => turns.issue(binding)).toThrow(/capacity/u);
+  });
+});
+
+describe('turnFitsSandbox', () => {
+  // A badge read out of one sandbox must prove nothing in another: a person's
+  // badge only in their own sandbox, a badge without a person only in the
+  // project's original sandbox, where such turns run.
+  it('accepts a badge only in the sandbox it belongs to', () => {
+    const own = { userId: 'lena', projectDefault: false };
+    const other = { userId: 'bob', projectDefault: false };
+    const original = { userId: 'admin', projectDefault: true };
+    expect(turnFitsSandbox({ userId: 'lena' }, own)).toBe(true);
+    expect(turnFitsSandbox({ userId: 'lena' }, other)).toBe(false);
+    expect(turnFitsSandbox({ userId: 'lena' }, original)).toBe(false);
+    expect(turnFitsSandbox({ userId: null }, original)).toBe(true);
+    expect(turnFitsSandbox({ userId: null }, own)).toBe(false);
   });
 });

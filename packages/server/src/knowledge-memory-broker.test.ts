@@ -10,10 +10,14 @@ import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { CONTROL_PLANE_PROJECT_ID } from './control-plane-project.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 it('appends project memory through the authenticated overview writer', async () => {
   const app = Fastify();
   const binding = {
     projectId: 'p',
+    userId: SANDBOX_USER,
+    projectDefault: true,
     containerGeneration: 'generation',
     owner: 'test',
     repo: 'memory',
@@ -52,7 +56,12 @@ it.each(['internal', 'external', 'project'] as const)(
       markInternalConnections(
         connections as unknown as Server,
         origin === 'project'
-          ? { projectId: 'verity-control', containerGeneration: 'generation' }
+          ? {
+              projectId: 'verity-control',
+              userId: SANDBOX_USER,
+              projectDefault: true,
+              containerGeneration: 'generation',
+            }
           : undefined,
       );
       app.addHook('onRequest', async (request) => {

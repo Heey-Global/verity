@@ -70,15 +70,17 @@ describe('GitHub forge access per person', () => {
     const { adapter, mint } = personal({ lena: 'ghu_lena' });
     const signal = new AbortController().signal;
     expect(
-      tokenOf(await adapter.authorize(push, { ...binding, userId: 'lena' }, actions, signal)),
+      tokenOf(await adapter.authorize(push, { ...binding, actingUserId: 'lena' }, actions, signal)),
     ).toBe('ghu_lena');
     await expect(
-      adapter.authorize(push, { ...binding, userId: 'bob' }, actions, signal),
+      adapter.authorize(push, { ...binding, actingUserId: 'bob' }, actions, signal),
     ).rejects.toThrow();
     expect(mint).not.toHaveBeenCalled();
     // The administrator keeps the installation access they always had.
     expect(
-      tokenOf(await adapter.authorize(push, { ...binding, userId: 'admin' }, actions, signal)),
+      tokenOf(
+        await adapter.authorize(push, { ...binding, actingUserId: 'admin' }, actions, signal),
+      ),
     ).toBe('installation-token');
     // The container capability names no person and keeps the project default.
     expect(tokenOf(await adapter.authorize(push, binding, actions, signal))).toBe(

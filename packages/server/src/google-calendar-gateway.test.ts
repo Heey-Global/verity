@@ -15,6 +15,8 @@ import { createGoogleContactsTool } from './google-contacts-tool.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { sql } from 'kysely';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 /** The person the harness turn runs for; the Google account is theirs. */
 const OWNER = 'baseline';
 
@@ -161,7 +163,12 @@ async function harness(
   await app.ready();
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot: dir,
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     ownerUid: process.getuid?.() ?? 1000,
     relayGid: process.getgid?.() ?? 1000,
   });

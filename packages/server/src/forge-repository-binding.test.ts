@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { EventStore } from '@verity/store';
 import { resolveForgeRepositoryBinding } from './forge-repository-binding.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const binding = {
   projectId: 'p',
+  userId: SANDBOX_USER,
   owner: 'app',
   repo: 'main',
   forgeConnectionId: 'legacy-github',

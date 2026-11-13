@@ -30,6 +30,8 @@ import type { Kysely } from 'kysely';
  *  token is minted for; the sandbox cannot influence them. */
 interface GhTokenCapabilityBinding {
   projectId: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  userId: string;
   forgeConnectionId?: string | null;
   owner: string;
   repo: string;
@@ -48,11 +50,16 @@ export interface GhTokenCapabilityRegistry {
   issue(binding: GhTokenCapabilityBinding): Promise<string>;
   /** Resolve a presented capability to its binding, or `undefined` if unknown. */
   resolve(capability: string): Promise<GhTokenCapabilityBinding | undefined>;
-  /** The binding currently issued to a project's container, without presenting it.
-   *  A turn's own badge already proves the project; this supplies the repository
-   *  and container generation that the container capability would have named. */
-  bindingForProject?(projectId: string): Promise<GhTokenCapabilityBinding | undefined>;
-  /** Drop a project's capability (deprovision). No-op when none is registered. */
+  /** The binding currently issued to one sandbox, without presenting it. The
+   *  calling socket already proves the sandbox; this supplies the repository and
+   *  container generation that its capability would have named. */
+  bindingForSandbox?(
+    projectId: string,
+    userId: string,
+  ): Promise<GhTokenCapabilityBinding | undefined>;
+  /** Drop one sandbox's capability. No-op when none is registered. */
+  revokeSandbox?(projectId: string, userId: string): Promise<void>;
+  /** Drop every sandbox's capability in a project (deprovision). */
   revokeProject(projectId: string): Promise<void>;
 }
 
@@ -82,6 +89,7 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
         .insertInto('gh_token_capabilities')
         .values({
           project_id: binding.projectId,
+          user_id: binding.userId,
           cap_hash: capHash,
           forge_connection_id: binding.forgeConnectionId ?? null,
           owner: binding.owner,
@@ -89,7 +97,7 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
           container_generation: binding.containerGeneration ?? null,
         })
         .onConflict((oc) =>
-          oc.column('project_id').doUpdateSet({
+          oc.columns(['project_id', 'user_id']).doUpdateSet({
             cap_hash: capHash,
             forge_connection_id: binding.forgeConnectionId ?? null,
             owner: binding.owner,
@@ -105,19 +113,41 @@ export function createGhTokenCapabilityRegistry(db: Kysely<Database>): GhTokenCa
       return toBinding(
         await db
           .selectFrom('gh_token_capabilities')
-          .select(['project_id', 'owner', 'repo', 'container_generation', 'forge_connection_id'])
+          .select([
+            'project_id',
+            'user_id',
+            'owner',
+            'repo',
+            'container_generation',
+            'forge_connection_id',
+          ])
           .where('cap_hash', '=', hashCapability(capability))
           .executeTakeFirst(),
       );
     },
-    async bindingForProject(projectId): Promise<GhTokenCapabilityBinding | undefined> {
+    async bindingForSandbox(projectId, userId): Promise<GhTokenCapabilityBinding | undefined> {
       return toBinding(
         await db
           .selectFrom('gh_token_capabilities')
-          .select(['project_id', 'owner', 'repo', 'container_generation', 'forge_connection_id'])
+          .select([
+            'project_id',
+            'user_id',
+            'owner',
+            'repo',
+            'container_generation',
+            'forge_connection_id',
+          ])
           .where('project_id', '=', projectId)
+          .where('user_id', '=', userId)
           .executeTakeFirst(),
       );
+    },
+    async revokeSandbox(projectId, userId): Promise<void> {
+      await db
+        .deleteFrom('gh_token_capabilities')
+        .where('project_id', '=', projectId)
+        .where('user_id', '=', userId)
+        .execute();
     },
     async revokeProject(projectId): Promise<void> {
       await db.deleteFrom('gh_token_capabilities').where('project_id', '=', projectId).execute();
@@ -129,6 +159,7 @@ function toBinding(
   row:
     | {
         project_id: string;
+        user_id: string;
         owner: string;
         repo: string;
         container_generation: string | null;
@@ -139,6 +170,7 @@ function toBinding(
   if (row === undefined) return undefined;
   return {
     projectId: row.project_id,
+    userId: row.user_id,
     ...(row.forge_connection_id === null ? {} : { forgeConnectionId: row.forge_connection_id }),
     owner: row.owner,
     repo: row.repo,

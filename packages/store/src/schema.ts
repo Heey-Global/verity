@@ -1124,6 +1124,8 @@ interface PrReadyDeliveryTable {
 interface GhTokenCapabilitiesTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   owner: string;
   repo: string;
@@ -1134,6 +1136,8 @@ interface GhTokenCapabilitiesTable {
  * the opaque capability is persisted; one row per project provides rotation. */
 interface SigningCapabilitiesTable {
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   container_generation: string;
 }
@@ -1555,6 +1559,8 @@ interface ClaudeEgressCaTable {
  * fingerprint→project peer bindings. */
 interface ClaudeEgressClientCertTable {
   project_id: string;
+  /** The person whose sandbox presents the certificate (ADR 0023 §4). */
+  user_id: string;
   cert_pem: ColumnType<string, string, string>;
   key_pem: ColumnType<string, string, string>;
   fingerprint256: ColumnType<string, string, string>;

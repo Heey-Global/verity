@@ -10,6 +10,10 @@ import type { SigningCapabilityRegistry } from './signing-capability.js';
 export interface ProjectRelayBinding {
   egress?: ProjectEgressLifecycle;
   projectId: string;
+  /** The person whose sandbox this relay serves (ADR 0023 §4). */
+  userId: string;
+  /** The project's original sandbox, which also serves work without a person. */
+  projectDefault: boolean;
   forgeConnectionId?: string | null;
   owner: string;
   repo: string;
@@ -316,6 +320,8 @@ export class ProjectRelayLifecycle {
     }
     const identity = {
       projectId: binding.projectId,
+      userId: binding.userId,
+      projectDefault: binding.projectDefault,
       containerGeneration: binding.containerGeneration,
     } satisfies InternalConnectionIdentity;
     await binding.egress?.prepare(identity);
@@ -334,6 +340,7 @@ export class ProjectRelayLifecycle {
       const githubCapability = issueCapabilities
         ? await this.options.githubCapabilities.issue({
             projectId: binding.projectId,
+            userId: binding.userId,
             forgeConnectionId: binding.forgeConnectionId ?? null,
             owner: binding.owner,
             repo: binding.repo,

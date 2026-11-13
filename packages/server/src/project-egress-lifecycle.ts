@@ -1,6 +1,6 @@
 import { projectEgressFailure, type ProjectEgressHealth } from './project-egress-health.js';
 import type { DockerClient } from './docker.js';
-import type { InternalConnectionIdentity } from './internal-listener.js';
+import type { SandboxGenerationRef } from './internal-listener.js';
 import type {
   ProjectEgressHostRequest,
   ProjectEgressHostResponse,
@@ -14,19 +14,19 @@ import type {
 export class ProjectEgressLifecycle {
   private readonly renewals = new Map<
     string,
-    { identity: InternalConnectionIdentity; timer?: ReturnType<typeof setTimeout> }
+    { identity: SandboxGenerationRef; timer?: ReturnType<typeof setTimeout> }
   >();
   private closed = false;
-  private stopRenewal(identity: InternalConnectionIdentity): void {
+  private stopRenewal(identity: SandboxGenerationRef): void {
     const pending = this.renewals.get(identity.projectId);
     if (!pending || pending.identity.containerGeneration !== identity.containerGeneration) return;
     clearTimeout(pending.timer);
     this.renewals.delete(identity.projectId);
   }
-  private async renew(identity: InternalConnectionIdentity): Promise<void> {
+  private async renew(identity: SandboxGenerationRef): Promise<void> {
     this.stopRenewal(identity);
     if (this.closed) throw new Error('Project egress lifecycle is closed');
-    const state: { identity: InternalConnectionIdentity; timer?: ReturnType<typeof setTimeout> } = {
+    const state: { identity: SandboxGenerationRef; timer?: ReturnType<typeof setTimeout> } = {
       identity: { ...identity },
     };
     this.renewals.set(identity.projectId, state);
@@ -111,7 +111,7 @@ export class ProjectEgressLifecycle {
       throw new Error('Mismatched host binding');
     return result.binding ?? undefined;
   }
-  async create(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
+  async create(identity: SandboxGenerationRef): Promise<ProjectEgressNetworkBinding> {
     const prior = await this.current(identity.projectId);
     if (prior !== undefined) throw new Error('Retire the current generation before replacement');
     // Creation belongs to the host so its durable intent precedes the Docker mutation.
@@ -129,13 +129,13 @@ export class ProjectEgressLifecycle {
     return result.binding;
   }
 
-  async binding(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
+  async binding(identity: SandboxGenerationRef): Promise<ProjectEgressNetworkBinding> {
     const binding = await this.current(identity.projectId);
     if (binding?.generation !== identity.containerGeneration)
       throw new Error('Unknown or stale host generation');
     return binding;
   }
-  async prepare(identity: InternalConnectionIdentity): Promise<ProjectEgressNetworkBinding> {
+  async prepare(identity: SandboxGenerationRef): Promise<ProjectEgressNetworkBinding> {
     this.stopRenewal(identity);
     const binding = await this.binding(identity);
     await this.acknowledge(
@@ -146,7 +146,7 @@ export class ProjectEgressLifecycle {
     return binding;
   }
   async start(
-    identity: InternalConnectionIdentity,
+    identity: SandboxGenerationRef,
     role: 'sandbox' | 'relay',
     containerId: string,
   ): Promise<void> {
@@ -166,7 +166,7 @@ export class ProjectEgressLifecycle {
     if (result.state === 'started-connected' && result.directAuthority === true && this.renewDirect)
       await this.renew(identity);
   }
-  async connect(identity: InternalConnectionIdentity): Promise<string> {
+  async connect(identity: SandboxGenerationRef): Promise<string> {
     if (this.closed) throw new Error('Project egress lifecycle is closed');
     const result = await this.command({ operation: 'connect', ...this.reference(identity) });
     if (result.state !== 'connected' || result.generation !== identity.containerGeneration)
@@ -174,12 +174,12 @@ export class ProjectEgressLifecycle {
     if (result.directAuthority === true && this.renewDirect) await this.renew(identity);
     return result.relayAddress;
   }
-  async refreshDirect(identity: InternalConnectionIdentity): Promise<void> {
+  async refreshDirect(identity: SandboxGenerationRef): Promise<void> {
     const reply = await this.command({ operation: 'refresh-direct', ...this.reference(identity) });
     if (reply.state !== 'direct-refreshed' || reply.generation !== identity.containerGeneration)
       throw new Error('Direct admission was not acknowledged');
   }
-  async revokeDirect(identity: InternalConnectionIdentity): Promise<void> {
+  async revokeDirect(identity: SandboxGenerationRef): Promise<void> {
     this.stopRenewal(identity);
     const reply = await this.command({ operation: 'revoke-direct', ...this.reference(identity) });
     if (reply.state !== 'direct-revoked' || reply.generation !== identity.containerGeneration)
@@ -187,7 +187,7 @@ export class ProjectEgressLifecycle {
   }
   /** Addresses the host admitted for a granted name of exactly this generation. */
   async resolveDirect(
-    identity: InternalConnectionIdentity,
+    identity: SandboxGenerationRef,
     name: string,
   ): Promise<{ addresses: readonly string[]; ttlSeconds: number } | undefined> {
     if (this.closed) return undefined;
@@ -202,7 +202,7 @@ export class ProjectEgressLifecycle {
       throw new Error('Direct name answer was not acknowledged');
     return { addresses: reply.addresses, ttlSeconds: reply.ttlSeconds };
   }
-  async retire(identity: InternalConnectionIdentity): Promise<void> {
+  async retire(identity: SandboxGenerationRef): Promise<void> {
     this.stopRenewal(identity);
     await this.acknowledge(
       { operation: 'retire', ...this.reference(identity) },
@@ -210,7 +210,7 @@ export class ProjectEgressLifecycle {
       identity.containerGeneration,
     );
   }
-  private reference(identity: InternalConnectionIdentity) {
+  private reference(identity: SandboxGenerationRef) {
     return { projectId: identity.projectId, generation: identity.containerGeneration };
   }
   private async acknowledge(

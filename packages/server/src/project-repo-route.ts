@@ -97,6 +97,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
       binding === undefined ||
       socketIdentity === undefined ||
       socketIdentity.projectId !== binding.projectId ||
+      socketIdentity.userId !== binding.userId ||
       socketIdentity.containerGeneration !== binding.containerGeneration
     ) {
       return reply.code(401).send({ error: 'unauthorized' });

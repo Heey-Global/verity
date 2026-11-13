@@ -1,4 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { createDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
@@ -2527,9 +2528,10 @@ export async function buildEmbeddedServer(
           await rename(temporary, target);
         };
         const refreshIdentityOnce = async (): Promise<void> => {
-          const material = await claudeEgressIdentity!.sandboxMaterial(
-            CONTROL_PLANE_RUNNER_PROJECT_ID,
-          );
+          const material = await claudeEgressIdentity!.sandboxMaterial({
+            projectId: CONTROL_PLANE_RUNNER_PROJECT_ID,
+            userId: await projectDefaultSandboxUser(eventStore, CONTROL_PLANE_RUNNER_PROJECT_ID),
+          });
           // The private key is deliberately NOT read back. It goes out group-readable
           // only (see below), so this process — which owns it — cannot open it, and a
           // read that always fails would make the comparison always stale and

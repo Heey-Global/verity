@@ -42,12 +42,28 @@ const seed = resolve('agent-seed/bin');
 const realGh = spawnSync('sh', ['-c', 'command -v gh'], { encoding: 'utf8' }).stdout.trim();
 const cap = 'c'.repeat(43);
 const token = 'ghs_server_only_test_credential';
-const identity = { projectId: 'p1', containerGeneration: 'g1' };
-const binding = { ...identity, owner: 'acme', repo: 'app' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+const identity = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+};
+const binding = {
+  projectId: identity.projectId,
+  userId: identity.userId,
+  containerGeneration: identity.containerGeneration,
+  owner: 'acme',
+  repo: 'app',
+};
+/** The capability bindings of the project's sandboxes: the default one and the
+ *  personal sandboxes the badge tests present from. */
+const sandboxBindings = [binding, { ...binding, userId: 'lena' }, { ...binding, userId: 'bob' }];
 const capabilities: GhTokenCapabilityRegistry = {
   issue: async () => cap,
   resolve: async (value) => (value === cap ? binding : undefined),
-  bindingForProject: async (projectId) => (projectId === binding.projectId ? binding : undefined),
+  bindingForSandbox: async (projectId, userId) =>
+    sandboxBindings.find((b) => b.projectId === projectId && b.userId === userId),
   revokeProject: async () => {},
 };
 const allActions = new Set<ForgeAction>([
@@ -116,6 +132,8 @@ async function harness(
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
     turnCredentials?: TurnCredentials;
     personalTokens?: Record<string, string>;
+    /** Serve a person's own sandbox instead of the project's default one. */
+    sandboxUser?: string;
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -199,6 +217,9 @@ async function harness(
     socketRoot,
     identity: {
       ...identity,
+      ...(options.sandboxUser !== undefined
+        ? { userId: options.sandboxUser, projectDefault: false }
+        : {}),
       containerGeneration: options.generation ?? identity.containerGeneration,
     },
     ownerUid: process.getuid!(),
@@ -693,9 +714,17 @@ describe('brokered forge TLS boundary', () => {
   // act with the installation token whatever the person may do on GitHub.
   it("forwards with the badge person's own GitHub token", async () => {
     const turns = createTurnCredentials();
+    // A person's badge is presented from that person's own sandbox (ADR 0023 §4);
+    // the project's shared sandbox no longer accepts it.
     const h = await harness((_req, res) => res.end('ok'), {
       turnCredentials: turns,
       personalTokens: { lena: 'ghu_lena' },
+      sandboxUser: 'lena',
+    });
+    const bobs = await harness((_req, res) => res.end('ok'), {
+      turnCredentials: turns,
+      personalTokens: { lena: 'ghu_lena' },
+      sandboxUser: 'bob',
     });
     const lena = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' });
     const bob = turns.issue({ projectId: 'p1', sessionId: 's2', turnId: 't2', userId: 'bob' });
@@ -704,9 +733,34 @@ describe('brokered forge TLS boundary', () => {
     ).toBe(200);
     expect(h.received.at(-1)?.auth).toBe('Bearer ghu_lena');
     expect(
-      (await call(h.port, '/repos/acme/app/issues', `Bearer verity-broker-${bob}`)).status,
+      (await call(bobs.port, '/repos/acme/app/issues', `Bearer verity-broker-${bob}`)).status,
     ).toBe(403);
     expect(h.mint).not.toHaveBeenCalled();
+    expect(bobs.mint).not.toHaveBeenCalled();
+  });
+
+  // ADR 0023 §4: a badge belongs to the sandbox it was issued into. Lena's badge
+  // presented from Bob's sandbox, or from the project's original one, must not
+  // act with her GitHub access.
+  it("refuses a person's badge presented from another sandbox", async () => {
+    const turns = createTurnCredentials();
+    const bobs = await harness((_req, res) => res.end('ok'), {
+      turnCredentials: turns,
+      personalTokens: { lena: 'ghu_lena' },
+      sandboxUser: 'bob',
+    });
+    const original = await harness((_req, res) => res.end('ok'), {
+      turnCredentials: turns,
+      personalTokens: { lena: 'ghu_lena' },
+    });
+    const lena = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' });
+    for (const sandbox of [bobs, original]) {
+      expect(
+        (await call(sandbox.port, '/repos/acme/app/issues', `Bearer verity-broker-${lena}`)).status,
+      ).toBe(401);
+      expect(sandbox.received).toEqual([]);
+      expect(sandbox.mint).not.toHaveBeenCalled();
+    }
   });
 
   it('relays Release and Actions evidence reads with server-side credentials', async () => {

@@ -1,4 +1,5 @@
 import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { projectNetworkName, projectNodeModulesVolumeName } from './sandbox-identity.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
@@ -3551,7 +3552,7 @@ export class ProvisionerImpl implements Provisioner {
           throw new Error('project relay does not support recovery adoption');
         }
         await this.opts.projectRelay.resume(
-          this.relayBinding(
+          await this.relayBinding(
             project,
             retained.generation,
             await this.generationEgress(project.id, retained.generation),
@@ -3855,7 +3856,7 @@ export class ProvisionerImpl implements Provisioner {
           let relayAwake = false;
           try {
             const activation = await reactivateRelay(
-              this.relayBinding(project, generation, egress),
+              await this.relayBinding(project, generation, egress),
             );
             relayAwake = true;
             if (this.opts.gitSecretRoot !== undefined) {
@@ -3881,7 +3882,10 @@ export class ProvisionerImpl implements Provisioner {
                 this.opts.claudeEgressIdentity !== undefined &&
                 mountedDestinations.has(CLAUDE_EGRESS_KEY_FILE)
               ) {
-                const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
+                const material = await this.opts.claudeEgressIdentity.sandboxMaterial({
+                  projectId: project.id,
+                  userId: await projectDefaultSandboxUser(this.opts.store, project.id),
+                });
                 rewriteMountedSecretFile(
                   join(this.opts.gitSecretRoot, 'claude-egress', `egress_ca.${project.id}.crt`),
                   material.caCertPem,
@@ -4276,7 +4280,7 @@ export class ProvisionerImpl implements Provisioner {
     try {
       if (await isHealthy({ projectId: project.id, containerGeneration })) return true;
       if (this.opts.projectRelay.resume === undefined) return false;
-      const binding = this.relayBinding(
+      const binding = await this.relayBinding(
         project,
         containerGeneration,
         await this.generationEgress(project.id, containerGeneration),
@@ -4367,11 +4371,11 @@ export class ProvisionerImpl implements Provisioner {
     await this.opts.projectRelay.stop(projectId);
   }
 
-  private relayBinding(
+  private async relayBinding(
     project: ProjectRecord,
     containerGeneration: string,
     egress: ProjectEgressLifecycle | undefined,
-  ): ProjectRelayBinding {
+  ): Promise<ProjectRelayBinding> {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
     const codexGateway = resolvedCodexGatewayUrl(
@@ -4380,6 +4384,10 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
+      // Every container is still the project's original sandbox; per-person
+      // sandboxes resolve their own person here (ADR 0023 §4).
+      userId: await projectDefaultSandboxUser(this.opts.store, project.id),
+      projectDefault: true,
       ...(egress === undefined ? {} : { egress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
@@ -6145,7 +6153,7 @@ export class ProvisionerImpl implements Provisioner {
     if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     await this.opts.projectRelay.stop(project.id);
     const relayActivation = await this.opts.projectRelay.start(
-      this.relayBinding(project, generation, egress),
+      await this.relayBinding(project, generation, egress),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -6420,7 +6428,10 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.claudeConnectorPort !== undefined &&
       this.opts.gitSecretRoot !== undefined
     ) {
-      const material = await this.opts.claudeEgressIdentity.sandboxMaterial(project.id);
+      const material = await this.opts.claudeEgressIdentity.sandboxMaterial({
+        projectId: project.id,
+        userId: await projectDefaultSandboxUser(this.opts.store, project.id),
+      });
       agentGatewayPeerFingerprint = material.fingerprint256;
       const caPath = writeSecretFile(
         this.opts.gitSecretRoot,

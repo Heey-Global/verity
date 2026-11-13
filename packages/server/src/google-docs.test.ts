@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import type { GoogleFetch, GoogleHttpResponse } from './google-drive.js';
 import { getDocsDocument, getDocsDocumentMetadata, updateDocsDocument } from './google-docs.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 function response(body: unknown, status = 200): GoogleHttpResponse {
   return {
     ok: status >= 200 && status < 300,
@@ -119,6 +121,8 @@ it('keeps the actual Google Docs fetch inside the trusted project generation', a
     withProjectTransportAuthority(
       {
         projectId: 'p',
+        userId: SANDBOX_USER,
+        projectDefault: true,
         containerGeneration: 'old',
         signal: generation.signal,
         authorize: async () => {},

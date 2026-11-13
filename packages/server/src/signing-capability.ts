@@ -5,12 +5,17 @@ import type { Kysely } from 'kysely';
 
 interface SigningCapabilityBinding {
   projectId: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  userId: string;
   containerGeneration: string;
 }
 
 export interface SigningCapabilityRegistry {
   issue(binding: SigningCapabilityBinding): Promise<string>;
   resolve(capability: string): Promise<SigningCapabilityBinding | undefined>;
+  /** Drop one sandbox's capability (sleep, relay stop). */
+  revokeSandbox(projectId: string, userId: string): Promise<void>;
+  /** Drop every sandbox's capability in a project (deprovision). */
   revokeProject(projectId: string): Promise<void>;
 }
 
@@ -31,11 +36,12 @@ export function createSigningCapabilityRegistry(db: Kysely<Database>): SigningCa
         .insertInto('signing_capabilities')
         .values({
           project_id: binding.projectId,
+          user_id: binding.userId,
           cap_hash: capHash,
           container_generation: binding.containerGeneration,
         })
         .onConflict((oc) =>
-          oc.column('project_id').doUpdateSet({
+          oc.columns(['project_id', 'user_id']).doUpdateSet({
             cap_hash: capHash,
             container_generation: binding.containerGeneration,
           }),
@@ -47,12 +53,23 @@ export function createSigningCapabilityRegistry(db: Kysely<Database>): SigningCa
       if (capability.length === 0) return undefined;
       const row = await db
         .selectFrom('signing_capabilities')
-        .select(['project_id', 'container_generation'])
+        .select(['project_id', 'user_id', 'container_generation'])
         .where('cap_hash', '=', hashCapability(capability))
         .executeTakeFirst();
       return row === undefined
         ? undefined
-        : { projectId: row.project_id, containerGeneration: row.container_generation };
+        : {
+            projectId: row.project_id,
+            userId: row.user_id,
+            containerGeneration: row.container_generation,
+          };
+    },
+    async revokeSandbox(projectId, userId): Promise<void> {
+      await db
+        .deleteFrom('signing_capabilities')
+        .where('project_id', '=', projectId)
+        .where('user_id', '=', userId)
+        .execute();
     },
     async revokeProject(projectId): Promise<void> {
       await db.deleteFrom('signing_capabilities').where('project_id', '=', projectId).execute();

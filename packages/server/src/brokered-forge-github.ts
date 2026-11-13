@@ -31,9 +31,9 @@ interface ForgeBinding {
   owner: string;
   repo: string;
   containerGeneration?: string | undefined;
-  /** The person whose turn is calling (from its badge); absent for the
-   *  container-wide capability, which names no person. */
-  userId?: string | null | undefined;
+  /** The person the forge access is for: the turn's or the sandbox's; absent
+   *  for the project default, which the installation serves. */
+  actingUserId?: string | null | undefined;
 }
 export interface ForgeRequest {
   hostname: string;
@@ -779,7 +779,7 @@ export function createGitHubForgeAdapter(options: {
       // A turn acts with its person's own GitHub access. Without it, only the
       // administrator falls back to the installation token; a member is refused
       // rather than handed access GitHub never granted them.
-      const person = binding.userId ?? undefined;
+      const person = binding.actingUserId ?? undefined;
       const personal = person === undefined ? undefined : await options.mintForUser?.(person);
       const installationAllowed =
         person === undefined ||

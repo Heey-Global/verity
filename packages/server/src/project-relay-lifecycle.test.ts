@@ -7,8 +7,12 @@ import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.j
 import { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 const binding = {
   projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
   owner: 'heey-global',
   repo: 'verity',
   containerGeneration: 'generation-1',
@@ -22,7 +26,12 @@ function harness() {
   });
   const brokerListener: ProjectInternalUnixListener = {
     socketPath: '/run/verity/project/broker.sock',
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     close: brokerClose,
   };
   const claudeClose = vi.fn(async () => {
@@ -30,7 +39,12 @@ function harness() {
   });
   const claudeListener: ProjectClaudeUnixListener = {
     socketPath: '/run/verity/project/claude.sock',
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     close: claudeClose,
   };
   const signing = {
@@ -41,6 +55,9 @@ function harness() {
     resolve: vi.fn(),
     revokeProject: vi.fn(async () => {
       calls.push('signing.revoke');
+    }),
+    revokeSandbox: vi.fn(async () => {
+      calls.push('signing.revokeSandbox');
     }),
   } satisfies SigningCapabilityRegistry;
   const github = {
@@ -103,7 +120,12 @@ describe('ProjectRelayLifecycle', () => {
   it('activates a generation-bound listener and both capabilities before the relay', async () => {
     const h = harness();
     await expect(h.lifecycle.start(binding)).resolves.toEqual({
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       signingCapability: 'sign-cap',
       githubCapability: 'gh-cap',
     });
@@ -115,7 +137,12 @@ describe('ProjectRelayLifecycle', () => {
       'runtime.start',
     ]);
     expect(h.startRelay).toHaveBeenCalledWith({
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       brokerSocketPath: '/run/verity/project/broker.sock',
       claudeSocketPath: '/run/verity/project/claude.sock',
     });
@@ -211,13 +238,23 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.lifecycle.isActive('p1')).toBe(false);
 
     await expect(h.lifecycle.reactivate(binding)).resolves.toEqual({
-      identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'generation-1',
+      },
       signingCapability: 'sign-cap',
       githubCapability: 'gh-cap',
     });
     expect(h.startRelay).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+        identity: {
+          projectId: 'p1',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'generation-1',
+        },
         resumeExisting: true,
       }),
     );

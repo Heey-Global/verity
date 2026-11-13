@@ -7,7 +7,10 @@ import {
   type AgentGatewayStatus,
   type CodexCredentialUpdate,
 } from './agent-gateway-control.js';
-import { buildClaudeEgressPeerBindings } from './claude-egress-mtls.js';
+import {
+  buildClaudeEgressPeerBindings,
+  type ClaudeEgressPeerIdentity,
+} from './claude-egress-mtls.js';
 import {
   authenticateClaudeEgressPeer,
   claudeEgressMtlsServerOptions,
@@ -73,7 +76,7 @@ export async function startAgentGatewayRuntime(options: {
   let codexRequired = false;
   let opencodeRequired = false;
   let opencodeCredential: { baseUrl: string; apiKey: string } | undefined;
-  let peerBindings = new Map<string, string>();
+  let peerBindings = new Map<string, ClaudeEgressPeerIdentity>();
   const spill = new AgentGatewaySpill(options.spillPath);
   const codexSpill = new CodexCredentialSpill(
     options.codexSpillPath ?? `${options.spillPath}.codex`,
