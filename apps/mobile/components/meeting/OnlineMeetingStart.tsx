@@ -16,7 +16,13 @@ const PRESELECT_EARLY_MS = 15 * 60_000;
 export const canJoinCalendarMeeting = (meeting: UpcomingMeeting, now: number) =>
   meeting.endsAt > now;
 
-const MEETING_HOSTS = ['meet.google.com', 'teams.microsoft.com', 'teams.live.com', 'zoom.us'];
+/** The hosts the server's `isSupportedMeetingUrl` accepts; a test keeps the two equal. */
+export const MEETING_HOSTS = [
+  'meet.google.com',
+  'teams.microsoft.com',
+  'teams.live.com',
+  'zoom.us',
+];
 
 /**
  * Whether Verity's bot can join a typed link, as the server decides it: HTTPS on Google Meet,

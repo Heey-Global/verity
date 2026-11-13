@@ -1080,7 +1080,8 @@ export default function MeetingScreen() {
         await endMeeting();
         setSyncError(true);
       }
-      await refresh();
+      // Accepted: a failing reload afterwards must not report the stop as failed.
+      await refresh().catch(() => undefined);
     } catch (reason) {
       // End stays available to retry; the header says it did not work.
       stopInFlight.current = null;
@@ -1231,7 +1232,10 @@ export default function MeetingScreen() {
       let again = true;
       try {
         // Asked of the meeting's own server only; another server knows nothing of it.
-        if (onlineServerId !== getActiveMeetingServerId()) return;
+        if (onlineServerId !== getActiveMeetingServerId()) {
+          again = false;
+          return;
+        }
         const value = await createVerityClient()?.getOnlineMeetingStatus?.(
           sessionId,
           onlineMeetingId,

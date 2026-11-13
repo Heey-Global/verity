@@ -67,16 +67,19 @@ export function MeetingResult(props: {
           setError(null);
         }
       } catch (reason) {
-        // Not on the server (deleted, or never uploaded): asking again cannot change that until
-        // the meeting itself changes, which restarts this effect with a new revision.
+        // Not on the server (deleted, or still waiting to upload): ask rarely instead of every
+        // few seconds, so a deleted meeting stops hammering and an uploaded one still appears.
         gone = reason instanceof VerityApiError && reason.status === 404;
         if (!disposed)
           setError(reason instanceof Error ? reason.message : 'Could not load the meeting result.');
       } finally {
-        if (!disposed && !gone)
-          timer = setTimeout(() => {
-            void poll();
-          }, 3000);
+        if (!disposed)
+          timer = setTimeout(
+            () => {
+              void poll();
+            },
+            gone ? 30_000 : 3000,
+          );
       }
     };
     void poll();
