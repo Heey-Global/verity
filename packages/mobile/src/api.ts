@@ -2559,6 +2559,13 @@ const pairedDeviceSchema = z.object({
 });
 export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
 
+const teamJoinedSchema = z.object({
+  token: z.string().min(1),
+  tokenId: z.string().min(1),
+  userId: z.string().min(1),
+  projectId: z.string().min(1),
+});
+export type TeamJoined = z.infer<typeof teamJoinedSchema>;
 const deviceEnrolledSchema = z.object({
   token: z.string().min(1),
   tokenId: z.string().min(1),
@@ -5060,6 +5067,26 @@ export class VerityClient {
       body: JSON.stringify({ code }),
     });
     return pairingRedeemedSchema.parse(await res.json());
+  }
+
+  /**
+   * Join a project with a team invitation, pairing this device to the invited
+   * person (ADR 0023 §7). Unauthenticated: the invitation secret is the
+   * credential. A retry with the same `redemptionId` is a replay.
+   */
+  async joinTeam(body: {
+    invitationId: string;
+    secret: string;
+    redemptionId: string;
+    displayName: string;
+    deviceLabel?: string;
+  }): Promise<TeamJoined> {
+    const res = await this.request('/team/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return teamJoinedSchema.parse(await res.json());
   }
 
   async enrollPairingInvitation(

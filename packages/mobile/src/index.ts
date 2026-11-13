@@ -822,6 +822,7 @@ export {
   invitationLinkFieldsSchema,
   projectTeamSchema,
   type InvitationLinkFields,
+  type TeamJoined,
   type ProjectInvitation as TeamInvitation,
   type ProjectMember,
   type ProjectTeam,

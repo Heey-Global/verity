@@ -12,6 +12,7 @@ import { enterDemoMode } from '../../lib/demoMode';
 import { Button } from '../../components/ui';
 
 const NEXT = '/onboarding/server-url' as Href;
+const JOIN = '/onboarding/join' as Href;
 // The splash mark trimmed to its bounds, so it lines up with the text below.
 const LOGO = require('../../assets/brand/verity-v-mark.png') as number;
 
@@ -33,45 +34,38 @@ export default function OnboardingWelcome() {
           accessibilityIgnoresInvertColors
           accessible={false}
         />
-        <Text style={styles.eyebrow}>Verity</Text>
+        <Text style={styles.title} accessibilityRole="header">
+          Verity
+        </Text>
+        <Text style={styles.lead}>Build software with the AI of your choice.</Text>
         <Text
           style={styles.version}
           accessibilityLabel={`Version ${version}, bundle ${build.text}`}
         >
           Version {version} · Bundle {build.text}
         </Text>
-        <Text style={styles.title} accessibilityRole="header">
-          Secure development. Your choice of AI.
-        </Text>
-
-        <View style={styles.card}>
-          <Text style={styles.lead}>
-            Run Claude Code, Codex, and open-source models through OpenCode in isolated project
-            sandboxes. Every session gets its own branch and worktree, while credentials stay
-            outside agent runtimes and your history stays on your server.
-          </Text>
-          <Text style={styles.lead}>
-            Switch AI providers without changing how you manage projects, review changes, or ship
-            your work.
-          </Text>
-        </View>
-
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Get started</Text>
-          <Text style={styles.item}>1. Install Verity on your Linux server with Docker.</Text>
-          <Text style={styles.item}>
-            2. Scan the installer QR code to pair this device securely.
-          </Text>
-          <Text style={styles.item}>3. Connect your preferred AI provider, then open Verity.</Text>
-        </View>
       </ScrollView>
 
       <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <View style={styles.footerInner}>
           <Button
+            label="Set up my own server"
+            disabled={startingDemo}
+            onPress={() => router.push(NEXT)}
+            fullWidth
+          />
+          <Button
+            label="Join a shared project"
+            variant="secondary"
+            disabled={startingDemo}
+            onPress={() => router.push(JOIN)}
+            fullWidth
+          />
+          <Button
             label="Try demo"
             accessibilityHint="Explore Verity with local sample data, without a server"
             variant="text"
+            fullWidth
             loading={startingDemo}
             onPress={() => {
               setStartingDemo(true);
@@ -86,7 +80,6 @@ export default function OnboardingWelcome() {
                 });
             }}
           />
-          <Button label="Continue" disabled={startingDemo} onPress={() => router.push(NEXT)} />
         </View>
       </View>
     </View>
@@ -103,44 +96,28 @@ const styles = StyleSheet.create((theme) => ({
     width: '100%',
     maxWidth: 760,
     alignSelf: 'center',
-    gap: theme.spacing.md,
-    justifyContent: 'flex-start',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },
   logo: {
-    width: 64,
-    height: 45,
+    width: 96,
+    height: 68,
     marginBottom: theme.spacing.sm,
-  },
-  eyebrow: {
-    ...theme.typography.label,
-    color: theme.colors.text,
-  },
-  version: {
-    ...theme.typography.footnote,
-    color: theme.colors.textMuted,
   },
   title: {
     ...theme.typography.display,
     color: theme.colors.text,
   },
-  card: {
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.colors.border,
-  },
   lead: {
     ...theme.typography.body,
-    color: theme.colors.text,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
   },
-  sectionTitle: {
-    ...theme.typography.row,
-    color: theme.colors.text,
-  },
-  item: {
-    ...theme.typography.subtitle,
+  version: {
+    ...theme.typography.footnote,
     color: theme.colors.textMuted,
   },
   footer: {
@@ -154,9 +131,6 @@ const styles = StyleSheet.create((theme) => ({
     width: '100%',
     maxWidth: 760,
     alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
 }));

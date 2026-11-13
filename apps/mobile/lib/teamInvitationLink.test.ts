@@ -1,4 +1,13 @@
-import { invitationLink } from './teamInvitationLink';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import {
+  invitationLink,
+  parseTeamJoinLink,
+  serverIdFor,
+  TeamJoinLinkError,
+} from './teamInvitationLink';
 
 const fields = {
   version: 1 as const,
@@ -42,4 +51,84 @@ it('completes the link with the pinned address of the server this app paired wit
   expect(
     invitationLink(fields, { ...profile, endpoints: [{ url: 'https://x', transport: 'uplink' }] }),
   ).toBeUndefined();
+});
+
+describe('parseTeamJoinLink', () => {
+  // The contract's own fixtures decide what a valid link is, so a field the
+  // contract adds or tightens shows up here instead of in a failed join.
+  const fixtures = (
+    JSON.parse(
+      readFileSync(
+        join(__dirname, '../../../scripts/team-control-contract/wire-fixtures.json'),
+        'utf8',
+      ),
+    ) as Array<{ name: string; schema: string; valid: boolean; value: Record<string, unknown> }>
+  ).filter((fixture) => fixture.schema === 'invitationLink');
+  const encode = (value: unknown) =>
+    `https://verity.build/join#${Buffer.from(JSON.stringify(value)).toString('base64url')}`;
+  const before = new Date(1_700_000_000_000);
+  const sha256 = async (bytes: Uint8Array) => {
+    const digest = createHash('sha256').update(bytes).digest();
+    return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.length);
+  };
+
+  it('has contract fixtures to check against', () => {
+    expect(fixtures.some((fixture) => fixture.valid)).toBe(true);
+    expect(fixtures.some((fixture) => !fixture.valid)).toBe(true);
+  });
+
+  it.each(fixtures.map((fixture) => [fixture.name, fixture] as const))(
+    '%s',
+    async (_name, fixture) => {
+      let accepted: boolean;
+      try {
+        const link = parseTeamJoinLink(encode(fixture.value), before);
+        accepted = (await serverIdFor(link.identityKey, sha256)) === link.serverId;
+      } catch (error) {
+        expect(error).toBeInstanceOf(TeamJoinLinkError);
+        accepted = false;
+      }
+      expect(accepted).toBe(fixture.valid);
+    },
+  );
+
+  it('reads back the link this app builds for an inviter', () => {
+    const valid = fixtures.find((fixture) => fixture.valid)!.value;
+    const built = invitationLink(
+      { ...(valid as unknown as Parameters<typeof invitationLink>[0]) },
+      {
+        ...profile,
+        serverId: valid.serverId as string,
+        identityKey: valid.identityKey as string,
+        activeUrl: valid.coreOrigin as string,
+        endpoints: [
+          {
+            url: valid.coreOrigin as string,
+            transport: 'direct',
+            tlsPin: valid.tlsPin as string,
+          },
+        ],
+      },
+    )!;
+    expect(parseTeamJoinLink(built, before)).toMatchObject({
+      tlsPin: valid.tlsPin,
+      coreOrigin: valid.coreOrigin,
+      secret: valid.secret,
+    });
+  });
+
+  it('tells an expired invitation apart from a broken link', () => {
+    const valid = fixtures.find((fixture) => fixture.valid)!.value;
+    const after = new Date((valid.expiresAt as number) + 1);
+    expect(() => parseTeamJoinLink(encode(valid), after)).toThrow(
+      expect.objectContaining({ reason: 'expired' }),
+    );
+    expect(() => parseTeamJoinLink('https://verity.build/join#e30', before)).toThrow(
+      expect.objectContaining({ reason: 'invalid' }),
+    );
+    // Another host serving the same fragment is not an invitation.
+    expect(() =>
+      parseTeamJoinLink(encode(valid).replace('verity.build', 'verity.example'), before),
+    ).toThrow(expect.objectContaining({ reason: 'invalid' }));
+  });
 });
