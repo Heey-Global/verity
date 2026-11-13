@@ -5264,6 +5264,30 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       usable,
     );
   };
+  /**
+   * Who may work in a shared project, by name: what the app labels each person's
+   * messages with. Undefined in a project only one person works in, whose
+   * transcript stays unlabelled.
+   */
+  const projectPeopleNames = async (
+    projectId: string | null,
+  ): Promise<Record<string, string> | undefined> => {
+    if (!(await sharedProject(projectId))) return undefined;
+    const ids = [
+      ...new Set([
+        legacyAdministratorId,
+        ...(await deps.eventStore.listProjectUserIds(projectId!, 'read')),
+      ]),
+    ];
+    const chosen = await deps.eventStore.userDisplayNames(ids);
+    const names: Record<string, string> = {};
+    for (const id of ids) {
+      const author =
+        chosen.get(id) ?? (await deps.eventStore.userGitIdentities.author(id))?.authorName;
+      names[id] = author?.trim() || (id === legacyAdministratorId ? 'Administrator' : 'Member');
+    }
+    return names;
+  };
   /** A person's own default model for a project, hidden while the agent rule excludes it. */
   const ownDefaultModel = async (
     viewer: string,
@@ -5342,10 +5366,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               : 'completed'
             : projectedStatus;
       const ownModel = await personSessionModel(session, viewer);
+      const people = await projectPeopleNames(session.projectId);
       return {
         ...session,
-        // In a shared session the composer shows the viewer's own model.
+        // In a shared session the composer shows the viewer's own model, and each
+        // message can be labelled with its sender's name.
         ...(ownModel === undefined ? {} : { model: ownModel }),
+        ...(people === undefined ? {} : { people, viewerUserId: viewer }),
         ...(await deps.eventStore.viewState.sessionView(viewer, id)),
         googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
         status,

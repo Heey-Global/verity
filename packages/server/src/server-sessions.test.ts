@@ -1463,8 +1463,18 @@ describe('POST /sessions/:id/turns', () => {
       expect(runBackendHandoff).not.toHaveBeenCalled();
       expect((await ctx.store.getSession('s-shared'))?.model).toBe('claude-opus-5-5');
 
+      await ctx.db
+        .updateTable('users')
+        .set({ display_name: 'Lena' })
+        .where('id', '=', 'lena')
+        .execute();
       const hers = await asLena.inject({ method: 'GET', url: '/sessions/s-shared' });
       expect(hers.json<{ model: string }>().model).toBe('codex/gpt-5.5');
+      // Each message can name its sender; the viewer is told who they are.
+      expect(hers.json()).toMatchObject({
+        people: { lena: 'Lena', '00000000-0000-4000-8000-000000000001': 'Administrator' },
+        viewerUserId: 'lena',
+      });
       const admins = await app.inject({ method: 'GET', url: '/sessions/s-shared' });
       expect(admins.json<{ model: string }>().model).toBe('claude-opus-5-5');
     } finally {
