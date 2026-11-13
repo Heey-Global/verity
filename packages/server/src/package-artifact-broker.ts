@@ -136,8 +136,14 @@ export function createPackageArtifactBroker(
   let metadataInFlight = 0;
   const metadataWaiters: (() => void)[] = [];
   const acquireMetadataSlot = async (signal: AbortSignal): Promise<() => void> => {
+    // A waiter woken for a free slot and aborted before taking it passes the
+    // wake-up on, so the slot does not sit idle while others stay queued.
+    const abandon = (): never => {
+      if (metadataInFlight < PUBLICATION_METADATA_SLOTS) metadataWaiters.shift()?.();
+      return reject(401);
+    };
     while (metadataInFlight >= PUBLICATION_METADATA_SLOTS) {
-      if (signal.aborted) reject(401);
+      if (signal.aborted) abandon();
       await new Promise<void>((wake) => {
         // Remove the queued entry itself on abort; a stale entry would later absorb
         // the wake-up of a free slot and leave a live waiter parked.
@@ -154,7 +160,7 @@ export function createPackageArtifactBroker(
         signal.addEventListener('abort', onAbort, { once: true });
       });
     }
-    if (signal.aborted) reject(401);
+    if (signal.aborted) abandon();
     metadataInFlight++;
     let released = false;
     return () => {

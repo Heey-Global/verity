@@ -200,12 +200,15 @@ export function registerPackageInstallRoute(
         const resolved = new Map<string, Map<string, string | undefined>>();
         const stop = new AbortController();
         const lookupSignal = AbortSignal.any([controller.signal, stop.signal]);
-        let rejection: string | undefined;
+        // Report the earliest rejected package in lockfile order among completed
+        // lookups, not whichever finished first.
+        let rejection: { index: number; error: string } | undefined;
         let failed: string | undefined;
         let next = 0;
         const lookup = async (): Promise<void> => {
           while (next < lookups.length && !lookupSignal.aborted) {
-            const [name, versions] = lookups[next++]!;
+            const index = next++;
+            const [name, versions] = lookups[index]!;
             const times = new Map(
               versions.map((version) => [
                 version,
@@ -239,7 +242,8 @@ export function registerPackageInstallRoute(
                     ? 'publication time is missing or invalid'
                     : undefined;
                 if (problem || typeof published !== 'string') {
-                  rejection ??= `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
+                  const error = `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
+                  if (!rejection || index < rejection.index) rejection = { index, error };
                   stop.abort();
                   return;
                 }
@@ -263,7 +267,7 @@ export function registerPackageInstallRoute(
           controller.signal.aborted ||
           outcomes.some((outcome) => outcome.status === 'rejected');
         if (!lookupFailed && rejection !== undefined)
-          return reply.code(409).send({ error: rejection });
+          return reply.code(409).send({ error: rejection.error });
         try {
           if (lookupFailed) throw new Error('publication lookup failed');
           // Evaluate in lockfile order so the reported exceptions stay deterministic.
