@@ -85,7 +85,18 @@ type FailurePhase =
   | 'request-timeout'
   | 'generation-abort'
   | 'authorization';
+/** Why a live stream lost its authorization. Logged in place of an error code,
+ *  so a slow store is distinguishable from an actual revocation. */
+type AuthorizationFailure =
+  'revocation-timeout' | 'resolver-error' | 'binding-mismatch' | 'disabled';
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
+/** How often a live stream re-checks its capability and repository binding. */
+const AUTHORIZATION_RECHECK_INTERVAL_MS = 500;
+/** How long a live stream may run without a confirming re-check. A slow or
+ *  failing check is inconclusive, not a revocation: an event-loop stall or a
+ *  slow store must not cut an initial clone, but a wedged store must still
+ *  close the stream within this bound. */
+const AUTHORIZATION_UNCONFIRMED_LIMIT_MS = 15_000;
 
 function capability(request: IncomingMessage): string | undefined {
   const value = request.headers.authorization;
@@ -140,7 +151,13 @@ export function createBrokeredForgeProxy(options: {
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
   transport?: BrokeredHttpStreamTransport;
+  /** Test seam for the live-stream re-check timing. */
+  authorizationRecheck?: { intervalMs?: number; unconfirmedLimitMs?: number };
 }): BrokeredForgeProxy {
+  const recheckInterval =
+    options.authorizationRecheck?.intervalMs ?? AUTHORIZATION_RECHECK_INTERVAL_MS;
+  const unconfirmedLimit =
+    options.authorizationRecheck?.unconfirmedLimitMs ?? AUTHORIZATION_UNCONFIRMED_LIMIT_MS;
   const context = createSecureContext({
     key: options.certificate.keyPem,
     cert: options.certificate.certPem,
@@ -157,7 +174,11 @@ export function createBrokeredForgeProxy(options: {
       let phase: FailurePhase = 'request';
       let reported = false;
       let completed = false;
-      const report = (failurePhase: FailurePhase, error?: unknown) => {
+      const report = (
+        failurePhase: FailurePhase,
+        error?: unknown,
+        reason?: AuthorizationFailure,
+      ) => {
         if (reported || completed) return;
         reported = true;
         const now = Date.now();
@@ -172,6 +193,7 @@ export function createBrokeredForgeProxy(options: {
           connectionId,
           phase: failurePhase,
           code: typeof code === 'string' && SAFE_TRANSPORT_CODES.has(code) ? code : 'UNKNOWN',
+          ...(reason === undefined ? {} : { reason }),
         });
       };
       void (async () => {
@@ -380,35 +402,45 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 401);
               return;
             }
+            const revoke = (reason: AuthorizationFailure, error?: unknown) => {
+              report('authorization', error, reason);
+              abort.abort();
+            };
+            // An affirmative mismatch or a disabled project closes the stream at
+            // once. A slow or failing check only leaves it unconfirmed; a wedged
+            // store still closes it once nothing has confirmed it for too long,
+            // rather than suspending revocation while credentials keep flowing.
             let checking = false;
+            let confirmedAt = Date.now();
+            let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
-              if (checking || abort.signal.aborted) return;
+              if (abort.signal.aborted) return;
+              if (Date.now() - confirmedAt > unconfirmedLimit) {
+                if (checking || lastFailure === undefined) revoke('revocation-timeout');
+                else revoke('resolver-error', lastFailure.error);
+                return;
+              }
+              if (checking) return;
               checking = true;
-              // A wedged capability store must close the stream, not suspend
-              // revocation checks indefinitely while credentials keep flowing.
-              const deadline = setTimeout(() => {
-                report('authorization');
-                abort.abort();
-              }, 1000);
-              deadline.unref();
+              const started = Date.now();
               void resolveBinding()
                 .then(
                   (current) => {
-                    if (!matches(current) || !options.enabled(identity.projectId)) {
-                      report('authorization');
-                      abort.abort();
+                    if (!matches(current)) revoke('binding-mismatch');
+                    else if (!options.enabled(identity.projectId)) revoke('disabled');
+                    else {
+                      confirmedAt = Math.max(confirmedAt, started);
+                      lastFailure = undefined;
                     }
                   },
                   (error: unknown) => {
-                    report('authorization', error);
-                    abort.abort();
+                    lastFailure = { error };
                   },
                 )
                 .finally(() => {
-                  clearTimeout(deadline);
                   checking = false;
                 });
-            }, 500);
+            }, recheckInterval);
             authorizationPoll.unref();
             if (auth.registryTokenResponse) {
               response.writeHead(200, { 'content-type': 'application/json' });
