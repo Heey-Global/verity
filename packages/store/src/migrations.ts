@@ -5856,3 +5856,18 @@ migrations['0213_per_sandbox_capabilities'] = {
     }
   },
 };
+
+migrations['0214_project_sandbox_state'] = {
+  // A person's sandbox has its own container lifecycle (ADR 0023 §4). The
+  // project's original sandbox keeps reporting through the project row.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_sandboxes
+      add column state text not null default 'absent',
+      add column provision_error text,
+      add column state_changed_at timestamptz not null default now()`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_sandboxes
+      drop column state, drop column provision_error, drop column state_changed_at`.execute(db);
+  },
+};

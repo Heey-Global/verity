@@ -1,6 +1,14 @@
 import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import type { ProjectRelaySandbox, ProjectRelaySandboxRef } from './project-relay-lifecycle.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
-import { projectNetworkName, projectNodeModulesVolumeName } from './sandbox-identity.js';
+import {
+  projectNetworkName,
+  projectNodeModulesVolumeName,
+  sandboxIdentity,
+  sandboxKey,
+  sandboxPersonTag,
+  type SandboxIdentity,
+} from './sandbox-identity.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
@@ -135,7 +143,13 @@ import {
   recordAgentGatewayProjection,
 } from './agent-gateway-projection.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
-import type { VeritySettingsRecord, Database, EventStore, ProjectRecord } from '@verity/store';
+import type {
+  VeritySettingsRecord,
+  Database,
+  EventStore,
+  ProjectRecord,
+  ProjectState,
+} from '@verity/store';
 import {
   DockerError,
   type DockerClient,
@@ -196,10 +210,11 @@ export interface ProjectRelayControl {
    * Server restart, without rotating the capabilities mounted in its sandbox. */
   resume?(binding: ProjectRelayBinding): Promise<boolean>;
   /** Retire a live generation without deleting its relay container. */
-  sleep?(projectId: string): Promise<void>;
+  /** A bare project id names the project's original sandbox. */
+  sleep?(sandbox: ProjectRelaySandboxRef): Promise<void>;
   /** Reattach a sleeping generation and rotate every generation capability. */
   reactivate?(binding: ProjectRelayBinding): Promise<ProjectRelayActivation>;
-  stop(projectId: string): Promise<void>;
+  stop(sandbox: ProjectRelaySandboxRef): Promise<void>;
   brokerUrl(activation: ProjectRelayActivation): string;
   claudeGatewayUrl(activation: ProjectRelayActivation): string;
   codexGatewayUrl?(activation: ProjectRelayActivation): string;
@@ -213,6 +228,40 @@ export interface ProjectRelayControl {
 }
 
 const execFileAsync = promisify(execFile);
+
+/** Marks a person's own sandbox resources; the original sandbox carries none. */
+export const SANDBOX_PERSON_LABEL = 'verity.sandbox-person';
+
+export function sandboxLabels(identity: {
+  userId: string;
+  projectDefault: boolean;
+}): Record<string, string> {
+  return identity.projectDefault
+    ? {}
+    : { [SANDBOX_PERSON_LABEL]: sandboxPersonTag(identity.userId) };
+}
+
+/** One container phase run for one sandbox: its names, how its lifecycle state is
+ *  recorded, and how a successful start is recorded. */
+interface SandboxRun {
+  identity: SandboxIdentity;
+  /** In-memory state key; the project id for the original sandbox. */
+  key: string;
+  /** Distinguishes per-sandbox files and volumes; the project id for the original. */
+  fileKey: string;
+  /** The relay's sandbox; the original one is named by its bare project id. */
+  relaySandbox: ProjectRelaySandboxRef;
+  setState(
+    state: ProjectState,
+    error?: string | null,
+    warning?: string | null,
+  ): Promise<ProjectRecord | undefined>;
+  activate(
+    imageRef: string,
+    toolkitIdentity: string | null,
+    warning: string | null,
+  ): Promise<ProjectRecord>;
+}
 
 // The hard limit is derived from Docker host capacity. The 6 GiB constant below
 // is only the fallback for daemons that cannot report capacity.
@@ -1973,6 +2022,12 @@ export interface Provisioner {
   /** Recreate only the project container using the existing clone path.
    * Does not fetch, reset, delete, or otherwise mutate the project worktree. */
   recreateContainer?(projectId: string, opts?: RecreateContainerOptions): Promise<ProjectRecord>;
+  /**
+   * Make sure a person's own sandbox of a provisioned project is running
+   * (ADR 0023 §4) and return its names. The project's original sandbox is the
+   * person's when they own it; that one is managed by provision and wake.
+   */
+  ensurePersonalSandbox?(projectId: string, userId: string): Promise<SandboxIdentity>;
   /** Reattach a verified retained relay without replacing its Sandbox. */
   resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
@@ -2616,6 +2671,7 @@ export class ProvisionerImpl implements Provisioner {
    *  freshly started container, and both surfaced misleading errors. Concurrent
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
+  private readonly personalSandboxStarts = new Map<string, Promise<SandboxIdentity>>();
   private readonly retiringSandboxes = new Set<string>();
   private readonly sandboxReplacementGenerations = new Map<string, number>();
   private readonly supervisorReconciliations = new Map<
@@ -2733,16 +2789,25 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  private prepareRunnerRuntime(projectId: string, enabled: boolean): string | undefined {
+  /** Prepare a sandbox's Runner runtime under `<dataVolumeRoot>/<runnerDir>`:
+   *  `runners/<projectId>` for the project's original sandbox, or
+   *  `runners/<person tag>/<projectId>` for a person's own (ADR 0023 §4). */
+  private prepareRunnerRuntime(runnerDir: string, enabled: boolean): string | undefined {
     if (!enabled) return undefined;
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(projectId)) {
+    const parts = runnerDir.split('/');
+    if (
+      parts[0] !== 'runners' ||
+      parts.length < 2 ||
+      parts.length > 3 ||
+      parts.slice(1).some((part) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(part))
+    ) {
       throw new ProvisioningError('Runner supervisor received an invalid project id');
     }
     const root = this.opts.dataVolumeRoot;
     if (root === undefined || root.length === 0) {
       throw new ProvisioningError('Runner supervisor requires dataVolumeRoot');
     }
-    const path = join(root, standardDataMountPaths(projectId, '').runner);
+    const path = join(root, runnerDir);
     const uid = this.opts.runnerRuntimeUid ?? RUNNER_RUNTIME_UID;
     const gid = this.opts.runnerRuntimeGid ?? RUNNER_RUNTIME_GID;
     if (this.opts.prepareRunnerRuntime !== undefined) {
@@ -2761,6 +2826,20 @@ export class ProvisionerImpl implements Provisioner {
       const runnersStats = lstatSync(runners);
       if (!runnersStats.isDirectory() || runnersStats.isSymbolicLink()) {
         throw new ProvisioningError('Runner supervisor parent is not a real directory');
+      }
+      if (parts.length === 3) {
+        // A person's runtimes live under their own tag directory, created with the
+        // same mode as `runners` itself.
+        const personal = join(runners, parts[1]!);
+        try {
+          mkdirSync(personal, { mode: 0o750 });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        }
+        const personalStats = lstatSync(personal);
+        if (!personalStats.isDirectory() || personalStats.isSymbolicLink()) {
+          throw new ProvisioningError('Runner supervisor parent is not a real directory');
+        }
       }
       try {
         mkdirSync(path, { mode: 0o770 });
@@ -4371,10 +4450,56 @@ export class ProvisionerImpl implements Provisioner {
     await this.opts.projectRelay.stop(projectId);
   }
 
+  /** The project's original sandbox: its names are the project's, and its state
+   *  and image are the project's own record. */
+  private async originalSandboxRun(project: ProjectRecord): Promise<SandboxRun> {
+    const userId = await projectDefaultSandboxUser(this.opts.store, project.id);
+    const identity = sandboxIdentity(project, { userId, projectDefault: true });
+    return {
+      identity,
+      key: project.id,
+      fileKey: project.id,
+      relaySandbox: project.id,
+      setState: (state, error = null, warning = null) =>
+        this.opts.store.updateProjectState(project.id, state, error, warning),
+      activate: async (imageRef, toolkitIdentity, warning) => {
+        await this.opts.store.deleteProjectSessionBackendStates(project.id);
+        await this.opts.store.recordProjectImageRef(project.id, imageRef, toolkitIdentity);
+        return (await this.opts.store.updateProjectState(
+          project.id,
+          'active',
+          null,
+          warning,
+        )) as ProjectRecord;
+      },
+    };
+  }
+
+  /** A person's own sandbox (ADR 0023 §4): own names and own lifecycle state. The
+   *  project's record, image and backend states belong to the original sandbox
+   *  and are left untouched. */
+  private memberSandboxRun(project: ProjectRecord, userId: string): SandboxRun {
+    const identity = sandboxIdentity(project, { userId, projectDefault: false });
+    const key = sandboxKey(identity);
+    const setState = async (state: ProjectState, error: string | null = null) => {
+      await this.opts.store.projectSandboxes.setState(project.id, userId, state, error);
+      return project;
+    };
+    return {
+      identity,
+      key,
+      fileKey: `${project.id}.${sandboxPersonTag(userId)}`,
+      relaySandbox: { projectId: project.id, userId, projectDefault: false },
+      setState,
+      activate: async () => setState('active'),
+    };
+  }
+
   private async relayBinding(
     project: ProjectRecord,
     containerGeneration: string,
     egress: ProjectEgressLifecycle | undefined,
+    sandbox?: ProjectRelaySandbox,
   ): Promise<ProjectRelayBinding> {
     const { selected: projectClaudeGateway, url: claudeGateway } =
       this.resolveRelayClaudeGateway(project);
@@ -4384,10 +4509,9 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
-      // Every container is still the project's original sandbox; per-person
-      // sandboxes resolve their own person here (ADR 0023 §4).
-      userId: await projectDefaultSandboxUser(this.opts.store, project.id),
-      projectDefault: true,
+      // Without a named sandbox, the project's original one (ADR 0023 §4).
+      userId: sandbox?.userId ?? (await projectDefaultSandboxUser(this.opts.store, project.id)),
+      projectDefault: sandbox?.projectDefault ?? true,
       ...(egress === undefined ? {} : { egress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
       owner: project.owner,
@@ -4935,6 +5059,56 @@ export class ProvisionerImpl implements Provisioner {
 
     // Phase 3: container start (also outside the lock).
     return rebuilt(this.runContainerPhase(project, false, opts));
+  }
+
+  async ensurePersonalSandbox(projectId: string, userId: string): Promise<SandboxIdentity> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined) throw new ProvisioningError(`project not found: ${projectId}`);
+    const defaultUser = await projectDefaultSandboxUser(this.opts.store, projectId);
+    if (defaultUser === userId) {
+      return sandboxIdentity(project, { userId, projectDefault: true });
+    }
+    const run = this.memberSandboxRun(project, userId);
+    const pending = this.personalSandboxStarts.get(run.key);
+    if (pending !== undefined) return pending;
+    const start = (async (): Promise<SandboxIdentity> => {
+      // A person's sandbox reuses what the original sandbox prepared: the clone
+      // and the project image. It never provisions the project itself.
+      if (project.state !== 'active') {
+        throw new ProvisioningError(
+          `project ${projectId} must be provisioned and awake before a personal sandbox starts`,
+        );
+      }
+      await this.opts.store.projectSandboxes.ensure(projectId, userId);
+      const current = await this.opts.store.projectSandboxes.state(projectId, userId);
+      const inspect = await this.opts.docker
+        .inspectContainer(run.identity.containerName)
+        .catch(() => undefined);
+      if (
+        current?.state === 'active' &&
+        inspect?.running === true &&
+        inspect.labels?.[PROJECT_ID_LABEL] === projectId &&
+        inspect.labels[SANDBOX_PERSON_LABEL] === sandboxPersonTag(userId) &&
+        this.opts.projectRelay.isHealthy !== undefined
+      ) {
+        const generation = inspect.labels[CONTAINER_GENERATION_LABEL];
+        if (
+          generation !== undefined &&
+          (await this.opts.projectRelay.isHealthy({ projectId, containerGeneration: generation }))
+        )
+          return run.identity;
+      }
+      // The project owner already confirmed the project's devcontainer warnings.
+      await this.runContainerPhase(project, false, { confirmWarnings: true }, undefined, run);
+      return run.identity;
+    })();
+    this.personalSandboxStarts.set(run.key, start);
+    try {
+      return await start;
+    } finally {
+      if (this.personalSandboxStarts.get(run.key) === start)
+        this.personalSandboxStarts.delete(run.key);
+    }
   }
 
   async recreateContainer(
@@ -5934,8 +6108,11 @@ export class ProvisionerImpl implements Provisioner {
     forcePull = false,
     opts: RecreateContainerOptions = {},
     preparedImage?: ProjectImage,
+    sandboxRun?: SandboxRun,
   ): Promise<ProjectRecord> {
-    const run = () => this.runContainerPhaseUnlocked(project, forcePull, opts, preparedImage);
+    const sandbox = sandboxRun ?? (await this.originalSandboxRun(project));
+    const run = () =>
+      this.runContainerPhaseUnlocked(project, forcePull, opts, preparedImage, sandbox);
     return !forcePull && this.opts.withContainerReplace
       ? this.opts.withContainerReplace(project, run)
       : run();
@@ -5943,9 +6120,10 @@ export class ProvisionerImpl implements Provisioner {
 
   private async runContainerPhaseUnlocked(
     project: ProjectRecord,
-    forcePull = false,
-    opts: RecreateContainerOptions = {},
-    preparedImage?: ProjectImage,
+    forcePull: boolean,
+    opts: RecreateContainerOptions,
+    preparedImage: ProjectImage | undefined,
+    sandbox: SandboxRun,
   ): Promise<ProjectRecord> {
     const relayAttempt: { started: boolean; generation?: string } = { started: false };
     try {
@@ -5955,11 +6133,12 @@ export class ProvisionerImpl implements Provisioner {
         opts,
         relayAttempt,
         preparedImage,
+        sandbox,
       );
     } catch (error) {
       if (relayAttempt.started) {
         try {
-          await this.opts.projectRelay.stop(project.id);
+          await this.opts.projectRelay.stop(sandbox.relaySandbox);
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
@@ -5969,7 +6148,7 @@ export class ProvisionerImpl implements Provisioner {
         }
       }
       try {
-        if (relayAttempt.generation) {
+        if (relayAttempt.generation && sandbox.identity.projectDefault) {
           const binding = await this.opts.projectEgress?.current(project.id);
           if (binding?.generation === relayAttempt.generation)
             await this.opts.projectEgress?.retire({
@@ -5977,7 +6156,8 @@ export class ProvisionerImpl implements Provisioner {
               containerGeneration: binding.generation,
             });
         }
-        await removeLegacyProjectNetwork(this.opts.docker, project.id);
+        if (sandbox.identity.projectDefault)
+          await removeLegacyProjectNetwork(this.opts.docker, project.id);
       } catch (cleanupError) {
         throw new AggregateError(
           [error, cleanupError],
@@ -6010,18 +6190,19 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     forcePull = false,
     opts: RecreateContainerOptions = {},
-    relayAttempt: { started: boolean; generation?: string } = { started: false },
-    preparedImage?: ProjectImage,
+    relayAttempt: { started: boolean; generation?: string },
+    preparedImage: ProjectImage | undefined,
+    sandbox: SandboxRun,
   ): Promise<ProjectRecord> {
-    await this.opts.store.updateProjectState(project.id, 'container_starting');
-    const dirs = projectDirs(this.opts.hostCloneRoot, project);
+    const sandboxId = sandbox.identity;
+    await sandbox.setState('container_starting');
+    const dirs = {
+      ...projectDirs(this.opts.hostCloneRoot, project),
+      containerName: sandboxId.containerName,
+    };
     const preflightWarning = await this.devcontainerWarningForProject(project);
     if (preflightWarning !== null && opts.confirmWarnings !== true) {
-      await this.opts.store.updateProjectState(
-        project.id,
-        'failed',
-        `provision requires confirmation: ${preflightWarning}`,
-      );
+      await sandbox.setState('failed', `provision requires confirmation: ${preflightWarning}`);
       throw new ProvisioningWarning([preflightWarning]);
     }
     let image: ProjectImage;
@@ -6039,7 +6220,7 @@ export class ProvisionerImpl implements Provisioner {
         process.env.VERITY_REGISTRY_AUTH,
       ]);
       const message = `devcontainer build failed: ${detail}`;
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message, cause);
     }
     // Central settings carry git identity/signing material. Doppler credentials
@@ -6130,8 +6311,15 @@ export class ProvisionerImpl implements Provisioner {
       this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME);
     await this.ensureSandboxRuntime(project, sandboxRuntime);
     let sandboxNetwork: string;
+    if (!sandboxId.projectDefault && egress !== undefined) {
+      // The experimental egress transport keys its generations by project; a
+      // second sandbox of the project would retire the original one's.
+      const message = 'A personal sandbox cannot run with the experimental egress transport';
+      await sandbox.setState('failed', message);
+      throw new ProvisioningError(message);
+    }
     // A fenced predecessor is retired either way; a switched-off server starts open.
-    await this.retireEgressGeneration(project.id);
+    if (sandboxId.projectDefault) await this.retireEgressGeneration(project.id);
     if (egress !== undefined) {
       relayAttempt.generation = generation;
       sandboxNetwork = (
@@ -6141,19 +6329,30 @@ export class ProvisionerImpl implements Provisioner {
         })
       ).networkName;
     } else {
-      sandboxNetwork = projectNetworkName(project.id);
+      // Each sandbox has its own network: one person's dev servers, which run
+      // with that person's secrets, are not reachable from another's sandbox.
+      sandboxNetwork = sandboxId.networkName;
       await this.opts.docker.ensureNetwork!(sandboxNetwork, {
-        labels: { 'verity.project-id': project.id, 'verity.component': 'project-network' },
+        labels: {
+          'verity.project-id': project.id,
+          'verity.component': 'project-network',
+          ...sandboxLabels(sandboxId),
+        },
       });
     }
 
     // Capabilities are currently one-row-per-project, so two generations cannot
     // authenticate concurrently. Fail closed: retire the old Sandbox before
     // revoking its relay, then construct the complete replacement generation.
-    if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
-    await this.opts.projectRelay.stop(project.id);
+    if (!forcePull) await stopAndRemoveExistingContainer(this.opts.docker, sandboxId.containerName);
+    await this.opts.projectRelay.stop(sandbox.relaySandbox);
     const relayActivation = await this.opts.projectRelay.start(
-      await this.relayBinding(project, generation, egress),
+      await this.relayBinding(
+        project,
+        generation,
+        egress,
+        typeof sandbox.relaySandbox === 'string' ? undefined : sandbox.relaySandbox,
+      ),
     );
     relayAttempt.started = true;
     const effectiveBrokerUrl = this.opts.projectRelay.brokerUrl(relayActivation);
@@ -6203,7 +6402,7 @@ export class ProvisionerImpl implements Provisioner {
         gvisorResolvBinds = [standardMountBind('dns', resolvPath)];
       } catch (cause) {
         const message = `gVisor Sandbox name resolution could not be prepared: ${failureMessage(cause)}`;
-        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        await sandbox.setState('failed', message);
         throw new ProvisioningError(message, cause);
       }
     }
@@ -6224,7 +6423,7 @@ export class ProvisionerImpl implements Provisioner {
         'a git signing key is configured but no signing broker is wired ' +
         'through the project relay. Signing is broker-only — the key is never ' +
         'mounted into a sandbox.';
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message);
     }
     // Named-volume fail-closed (security review follow-up). When a data volume is
@@ -6257,7 +6456,7 @@ export class ProvisionerImpl implements Provisioner {
           `outside its root '${root}': ${offenders.join(', ')}. They would silently become ` +
           `host binds a sibling container cannot resolve. Put them under the data root, or ` +
           `use inline DB-stored git material instead of file paths.`;
-        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        await sandbox.setState('failed', message);
         throw new ProvisioningError(message);
       }
     }
@@ -6296,7 +6495,7 @@ export class ProvisionerImpl implements Provisioner {
     const signingBrokerEnv = brokerMode
       ? [
           `VERITY_SIGNING_URL=${effectiveBrokerUrl}`,
-          `VERITY_SIGNING_DOCKER_CONTAINER=${project.containerName}`,
+          `VERITY_SIGNING_DOCKER_CONTAINER=${sandboxId.containerName}`,
           // The actual GIT_CONFIG_* entries are assembled below together with
           // the GitHub credential helper. Keep this block to broker endpoint env
           // only so both features can coexist without clobbering indexes.
@@ -6320,7 +6519,7 @@ export class ProvisionerImpl implements Provisioner {
       const capability = relayActivation.githubCapability;
       ghTokenCapabilityPath = writeSecretFile(
         this.opts.gitSecretRoot,
-        `gh_token_capability.${project.id}`,
+        `gh_token_capability.${sandbox.fileKey}`,
         capability,
         'git',
         0o600,
@@ -6430,26 +6629,26 @@ export class ProvisionerImpl implements Provisioner {
     ) {
       const material = await this.opts.claudeEgressIdentity.sandboxMaterial({
         projectId: project.id,
-        userId: await projectDefaultSandboxUser(this.opts.store, project.id),
+        userId: sandboxId.userId,
       });
       agentGatewayPeerFingerprint = material.fingerprint256;
       const caPath = writeSecretFile(
         this.opts.gitSecretRoot,
-        `egress_ca.${project.id}.crt`,
+        `egress_ca.${sandbox.fileKey}.crt`,
         material.caCertPem,
         'claude-egress',
         0o644,
       );
       const certPath = writeSecretFile(
         this.opts.gitSecretRoot,
-        `egress_client.${project.id}.crt`,
+        `egress_client.${sandbox.fileKey}.crt`,
         material.clientCertPem,
         'claude-egress',
         0o644,
       );
       const keyPath = writeSecretFile(
         this.opts.gitSecretRoot,
-        `egress_client.${project.id}.key`,
+        `egress_client.${sandbox.fileKey}.key`,
         material.clientKeyPem,
         'claude-egress',
         0o600,
@@ -6570,15 +6769,15 @@ export class ProvisionerImpl implements Provisioner {
     const codexHome = GATEWAY_MOUNTS.codex.directory;
     if (runnerRuntimeEnabled && this.opts.dockerHostForBuild === undefined) {
       const message = 'Runner supervisor requires dockerHostForBuild';
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message);
     }
     let runnerRuntimePath: string | undefined;
     try {
-      runnerRuntimePath = this.prepareRunnerRuntime(project.id, runnerRuntimeEnabled);
+      runnerRuntimePath = this.prepareRunnerRuntime(sandboxId.runnerDir, runnerRuntimeEnabled);
     } catch (cause) {
       const message = `Runner runtime preparation failed: ${failureMessage(cause)}`;
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message, cause);
     }
     const agentSeedHostPath = this.opts.agentSeedHostPath ?? DEFAULT_AGENT_SEED_SOURCE;
@@ -6593,7 +6792,7 @@ export class ProvisionerImpl implements Provisioner {
       await this.sanitizeLocalCloneConfig(project, dirs.clonePath, localConfig);
     } catch (cause) {
       const message = `local clone config could not be sanitized: ${failureMessage(cause)}`;
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message, cause);
     }
     // Every knowledge mount source has to exist before the container is created:
@@ -6613,7 +6812,7 @@ export class ProvisionerImpl implements Provisioner {
           knowledgeBinds = knowledgeBinds.filter((bind) => !bind.includes(':/knowledge/insights'));
       } catch (cause) {
         const message = `knowledge folder could not be prepared: ${failureMessage(cause)}`;
-        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        await sandbox.setState('failed', message);
         throw new ProvisioningError(message, cause);
       }
     }
@@ -6642,7 +6841,7 @@ export class ProvisionerImpl implements Provisioner {
           this.opts.claudeConnectorPort,
         ),
         ...(devcontainerRuntime.binds ?? []).map((bind) =>
-          projectDevcontainerVolumeBind(project.id, bind),
+          projectDevcontainerVolumeBind(sandbox.fileKey, bind),
         ),
         ...gvisorResolvBinds,
       ],
@@ -6686,10 +6885,10 @@ export class ProvisionerImpl implements Provisioner {
       this.isFile(join(dirs.clonePath, 'package-lock.json')) &&
       !hasMountAtTarget(specBinds, volumeMounts, NODE_MODULES_TARGET)
     ) {
-      const volume = projectNodeModulesVolumeName(project.id);
+      const volume = sandboxId.nodeModulesVolume;
       try {
         const { mountpoint } = await this.opts.docker.ensureVolume(volume, {
-          labels: { [PROJECT_ID_LABEL]: project.id },
+          labels: { [PROJECT_ID_LABEL]: project.id, ...sandboxLabels(sandboxId) },
         });
         nodeModules = {
           volume,
@@ -6697,7 +6896,7 @@ export class ProvisionerImpl implements Provisioner {
         };
       } catch (cause) {
         const message = `node_modules volume could not be created: ${failureMessage(cause)}`;
-        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        await sandbox.setState('failed', message);
         throw new ProvisioningError(message, cause);
       }
     }
@@ -6717,6 +6916,7 @@ export class ProvisionerImpl implements Provisioner {
         : {}),
       labels: {
         [PROJECT_ID_LABEL]: project.id,
+        ...sandboxLabels(sandboxId),
         ...(effectiveClaudeGatewayUrl === undefined
           ? {}
           : { [CLAUDE_EGRESS_GATEWAY_URL_LABEL]: effectiveClaudeGatewayUrl }),
@@ -6903,7 +7103,10 @@ export class ProvisionerImpl implements Provisioner {
           const inspect = await this.opts.docker
             .inspectContainer(dirs.containerName)
             .catch(() => null);
-          if (inspect?.labels?.['verity.project-id'] !== project.id) {
+          if (
+            inspect?.labels?.['verity.project-id'] !== project.id ||
+            inspect.labels[SANDBOX_PERSON_LABEL] !== sandboxLabels(sandboxId)[SANDBOX_PERSON_LABEL]
+          ) {
             throw new ProvisioningError(
               `docker container name conflict is not owned by project ${project.id}`,
               cause,
@@ -6942,12 +7145,12 @@ export class ProvisionerImpl implements Provisioner {
       }
     } catch (cause) {
       const message = `docker start failed: ${failureMessage(cause)}`;
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await sandbox.setState('failed', message);
       throw new ProvisioningError(message, cause);
     }
     try {
-      this.supervisorHealthy.delete(project.id);
-      this.runnerReadyNotifications.delete(project.id);
+      this.supervisorHealthy.delete(sandbox.key);
+      this.runnerReadyNotifications.delete(sandbox.key);
       await this.opts.onContainerStarted?.(project);
     } catch (cause) {
       const message = `post-start projection failed: ${failureMessage(cause)}`;
@@ -6964,8 +7167,10 @@ export class ProvisionerImpl implements Provisioner {
       // sandboxMaterial() may have issued a client certificate before container
       // creation. Once the running container is rolled back, revoke that identity
       // too so a failed/nonexistent sandbox cannot remain authorized.
-      await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await this.opts.claudeEgressIdentity
+        ?.revokeSandbox({ projectId: project.id, userId: sandboxId.userId })
+        .catch(() => undefined);
+      await sandbox.setState('failed', message);
       if (removalFailure !== undefined) {
         throw new AggregateError([cause, removalFailure], `${message}; container removal failed`, {
           cause,
@@ -7002,7 +7207,7 @@ export class ProvisionerImpl implements Provisioner {
         });
         if (runnerRuntimePath !== undefined) {
           await (this.opts.supervisorReachable ?? serverCanReachSupervisor)(runnerRuntimePath);
-          this.notifyRunnerReady(project);
+          if (sandboxId.projectDefault) this.notifyRunnerReady(project);
         }
       } catch (cause) {
         const component =
@@ -7018,8 +7223,10 @@ export class ProvisionerImpl implements Provisioner {
         } catch (error) {
           removalFailure = error;
         }
-        await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
-        await this.opts.store.updateProjectState(project.id, 'failed', message);
+        await this.opts.claudeEgressIdentity
+          ?.revokeSandbox({ projectId: project.id, userId: sandboxId.userId })
+          .catch(() => undefined);
+        await sandbox.setState('failed', message);
         if (removalFailure !== undefined) {
           throw new AggregateError(
             [cause, removalFailure],
@@ -7034,7 +7241,7 @@ export class ProvisionerImpl implements Provisioner {
     }
     let lifecycleFailureLabel = 'pending session cleanup';
     try {
-      await this.opts.beforeRunnerAdmission?.(project);
+      if (sandboxId.projectDefault) await this.opts.beforeRunnerAdmission?.(project);
       lifecycleFailureLabel = 'postCreateCommand';
       if (image.usesDevcontainerImage && this.opts.dockerHostForBuild !== undefined) {
         if (devcontainerRuntime.remoteUser !== undefined) {
@@ -7061,18 +7268,7 @@ export class ProvisionerImpl implements Provisioner {
           }
         }
         if (devcontainerRuntime.postCreateCommand === undefined) {
-          await this.opts.store.deleteProjectSessionBackendStates(project.id);
-          await this.opts.store.recordProjectImageRef(
-            project.id,
-            image.imageRef,
-            recordedToolkitIdentity,
-          );
-          return (await this.opts.store.updateProjectState(
-            project.id,
-            'active',
-            null,
-            provisionWarning,
-          )) as ProjectRecord;
+          return await sandbox.activate(image.imageRef, recordedToolkitIdentity, provisionWarning);
         }
         let installLockWaitSeconds = NODE_MODULES_INSTALL_LOCK_WAIT_SECONDS;
         if (runnerRuntimePath !== undefined) {
@@ -7131,8 +7327,10 @@ export class ProvisionerImpl implements Provisioner {
       } catch (error) {
         removalFailure = error;
       }
-      await this.opts.claudeEgressIdentity?.revokeProject(project.id).catch(() => undefined);
-      await this.opts.store.updateProjectState(project.id, 'failed', message);
+      await this.opts.claudeEgressIdentity
+        ?.revokeSandbox({ projectId: project.id, userId: sandboxId.userId })
+        .catch(() => undefined);
+      await sandbox.setState('failed', message);
       if (removalFailure !== undefined) {
         throw new AggregateError([cause, removalFailure], `${message}; container removal failed`, {
           cause,
@@ -7140,18 +7338,7 @@ export class ProvisionerImpl implements Provisioner {
       }
       throw new ProvisioningError(message, cause);
     }
-    await this.opts.store.deleteProjectSessionBackendStates(project.id);
-    await this.opts.store.recordProjectImageRef(
-      project.id,
-      image.imageRef,
-      recordedToolkitIdentity,
-    );
-    return (await this.opts.store.updateProjectState(
-      project.id,
-      'active',
-      null,
-      provisionWarning,
-    )) as ProjectRecord;
+    return await sandbox.activate(image.imageRef, recordedToolkitIdentity, provisionWarning);
   }
 
   /** Decide the image the project container runs on (ADR 0003 R3.1). The default

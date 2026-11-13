@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
 
 /** A person's sandbox in a project (ADR 0023 §4). */
@@ -7,6 +7,13 @@ export interface ProjectSandboxRecord {
   userId: string;
   /** The project's original container, kept under its pre-multi-user names. */
   projectDefault: boolean;
+}
+
+/** Container lifecycle of a person's sandbox (not the project default's). */
+export interface ProjectSandboxState {
+  state: string;
+  provisionError: string | null;
+  stateChangedAt: Date;
 }
 
 export class ProjectSandboxStore {
@@ -53,6 +60,36 @@ export class ProjectSandboxStore {
     const row = await this.get(projectId, userId);
     if (row === undefined) throw new Error('project sandbox could not be recorded');
     return row;
+  }
+
+  async state(projectId: string, userId: string): Promise<ProjectSandboxState | undefined> {
+    const row = await this.db
+      .selectFrom('project_sandboxes')
+      .select(['state', 'provision_error', 'state_changed_at'])
+      .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return row === undefined
+      ? undefined
+      : {
+          state: row.state,
+          provisionError: row.provision_error,
+          stateChangedAt: row.state_changed_at,
+        };
+  }
+
+  async setState(
+    projectId: string,
+    userId: string,
+    state: string,
+    provisionError: string | null = null,
+  ): Promise<void> {
+    await this.db
+      .updateTable('project_sandboxes')
+      .set({ state, provision_error: provisionError, state_changed_at: sql`now()` })
+      .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
+      .execute();
   }
 
   /** Record the project's original container as this person's sandbox. Used for a

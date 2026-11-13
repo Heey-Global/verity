@@ -814,6 +814,11 @@ interface ProjectSandboxesTable {
   user_id: string;
   /** The project's original container, kept under its pre-multi-user names. */
   project_default: ColumnType<boolean, boolean | undefined, never>;
+  /** Container lifecycle of a person's sandbox; unused for the project default,
+   *  which reports through `projects.state`. */
+  state: ColumnType<string, string | undefined, string>;
+  provision_error: ColumnType<string | null, string | null | undefined, string | null>;
+  state_changed_at: ColumnType<Date, string | undefined, string | undefined>;
   created_at: ColumnType<Date, string | undefined, never>;
 }
 

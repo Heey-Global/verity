@@ -76,6 +76,7 @@ import {
   type GitRunner,
   type DevcontainerBuildSpawner,
   type ContainerCommandRunner,
+  SANDBOX_PERSON_LABEL,
 } from './provisioner.js';
 import {
   NODE_MODULES_INSTALL_ENV,
@@ -110,6 +111,7 @@ import {
 import { normalizeFingerprint } from './claude-egress-mtls.js';
 import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
+import { sandboxPersonTag } from './sandbox-identity.js';
 import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
 
@@ -1465,7 +1467,8 @@ describe('ProvisionerImpl (#174)', () => {
       });
       const slept: string[] = [];
       const relay = defaultProjectRelay();
-      relay.sleep = async (projectId) => void slept.push(projectId);
+      relay.sleep = async (sandbox) =>
+        void slept.push(typeof sandbox === 'string' ? sandbox : sandbox.projectId);
       const egress = fakeEgressIdentity();
       const lifecycle = vi.fn(() => {
         throw new Error('telemetry sink unavailable');
@@ -1581,7 +1584,8 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const slept: string[] = [];
     const relay = defaultProjectRelay();
-    relay.sleep = async (projectId) => void slept.push(projectId);
+    relay.sleep = async (sandbox) =>
+      void slept.push(typeof sandbox === 'string' ? sandbox : sandbox.projectId);
     const egress = fakeEgressIdentity();
     const provisioner = createProvisioner({
       store: ctx.store,
@@ -1618,7 +1622,8 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const slept: string[] = [];
     const relay = defaultProjectRelay();
-    relay.sleep = async (projectId) => void slept.push(projectId);
+    relay.sleep = async (sandbox) =>
+      void slept.push(typeof sandbox === 'string' ? sandbox : sandbox.projectId);
     const egress = fakeEgressIdentity();
     const provisioner = createProvisioner({
       store: ctx.store,
@@ -1658,7 +1663,8 @@ describe('ProvisionerImpl (#174)', () => {
     relay.resume = async () => {
       throw new Error('adoption failed');
     };
-    relay.sleep = async (projectId) => void slept.push(projectId);
+    relay.sleep = async (sandbox) =>
+      void slept.push(typeof sandbox === 'string' ? sandbox : sandbox.projectId);
     const egress = fakeEgressIdentity();
     const provisioner = createProvisioner({
       store: ctx.store,
@@ -5362,7 +5368,7 @@ describe('ProvisionerImpl (#174)', () => {
     try {
       const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
       const { client: docker, calls: dockerCalls } = fakeDocker({});
-      const { service, revoked } = fakeEgressIdentity();
+      const { service, revoked, revokedSandboxes } = fakeEgressIdentity();
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
@@ -5388,7 +5394,9 @@ describe('ProvisionerImpl (#174)', () => {
       );
       expect(dockerCalls.some((call) => call.method === 'stopContainer')).toBe(true);
       expect(dockerCalls.some((call) => call.method === 'removeContainer')).toBe(true);
-      expect(revoked).toEqual([id]);
+      // Only this sandbox's identity: other sandboxes of the project keep theirs.
+      expect(revokedSandboxes).toEqual([{ projectId: id, userId: SANDBOX_USER }]);
+      expect(revoked).toEqual([]);
       expect((await ctx.store.getProject(id))?.state).toBe('failed');
     } finally {
       rmSync(secretRoot, { recursive: true, force: true });
@@ -5405,7 +5413,7 @@ describe('ProvisionerImpl (#174)', () => {
       const removeContainer = vi.spyOn(docker, 'removeContainer').mockImplementation(async () => {
         if (projectionFailed) throw new Error('daemon removal failed');
       });
-      const { service, revoked } = fakeEgressIdentity();
+      const { service, revoked, revokedSandboxes } = fakeEgressIdentity();
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
@@ -5431,7 +5439,9 @@ describe('ProvisionerImpl (#174)', () => {
       );
       expect(dockerCalls.some((call) => call.method === 'stopContainer')).toBe(true);
       expect(removeContainer).toHaveBeenCalledWith(expect.any(String));
-      expect(revoked).toEqual([id]);
+      // Only this sandbox's identity: other sandboxes of the project keep theirs.
+      expect(revokedSandboxes).toEqual([{ projectId: id, userId: SANDBOX_USER }]);
+      expect(revoked).toEqual([]);
       expect((await ctx.store.getProject(id))?.state).toBe('failed');
     } finally {
       rmSync(secretRoot, { recursive: true, force: true });
@@ -7331,6 +7341,115 @@ describe('ProvisionerImpl (#174)', () => {
       expect((spec.binds ?? []).some((b) => b.includes('.gh-token'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ADR 0023 §4: a person's sandbox is their own container, network, runtime and
+  // credential files, beside the project's original one. Starting it must leave
+  // the original sandbox and the project's own record alone.
+  it("starts a person's own sandbox beside the original one without touching it", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-member-clone-'));
+    const secretRoot = mkdtempSync(join(tmpdir(), 'verity-member-secret-'));
+    try {
+      const id = await seedProject('absent');
+      await ctx.db
+        .insertInto('users')
+        .values({ id: 'lena', role: 'member', status: 'active' })
+        .onConflict((conflict) => conflict.column('id').doNothing())
+        .execute();
+      const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
+      const { client: docker, calls: dockerCalls } = fakeDocker({
+        inspectContainer: vi.fn(async (container: string) => ({
+          id: container,
+          running: true,
+          networks: { 'verity-net': { ipAddress: '172.19.0.4' } },
+        })),
+      });
+      const capabilities = createGhTokenCapabilityRegistry(ctx.db);
+      const relayStarts: ProjectRelayBinding[] = [];
+      const relayStops: unknown[] = [];
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'default',
+        hostCloneRoot: root,
+        gitSecretRoot: secretRoot,
+        ghTokenCapabilities: capabilities,
+        projectRelay: {
+          async start(binding) {
+            relayStarts.push(binding);
+            const githubCapability = await capabilities.issue({
+              projectId: binding.projectId,
+              userId: binding.userId,
+              forgeConnectionId: null,
+              owner: 'example-org',
+              repo: 'example-repo',
+              containerGeneration: binding.containerGeneration,
+            });
+            return {
+              identity: {
+                projectId: binding.projectId,
+                userId: binding.userId,
+                projectDefault: binding.projectDefault,
+                containerGeneration: binding.containerGeneration,
+              },
+              signingCapability: 'test-signing-capability',
+              githubCapability,
+            };
+          },
+          async stop(sandbox) {
+            relayStops.push(sandbox);
+          },
+          brokerUrl: () => 'http://relay:8080',
+          claudeGatewayUrl: () => 'https://relay:8443',
+        },
+        projectTokenMint: async () => 'server-side-token',
+        git,
+        isDirectory: () => false,
+      });
+      await provisioner.provision(id);
+      const project = (await ctx.store.getProject(id))!;
+      expect(project.state).toBe('active');
+      const containersBefore = dockerCalls.filter((c) => c.method === 'createContainer').length;
+      const callsBefore = dockerCalls.length;
+
+      const sandbox = await provisioner.ensurePersonalSandbox(id, 'lena');
+
+      const tag = sandboxPersonTag('lena');
+      expect(sandbox.containerName).toBe(`${project.containerName}--${tag}`);
+      const created = dockerCalls.filter((c) => c.method === 'createContainer');
+      expect(created).toHaveLength(containersBefore + 1);
+      const spec = created.at(-1)!.payload as ContainerSpec;
+      expect(spec.name).toBe(sandbox.containerName);
+      expect(spec.labels).toMatchObject({
+        'verity.project-id': id,
+        [SANDBOX_PERSON_LABEL]: tag,
+      });
+      expect(spec.network).toBe(sandbox.networkName);
+      expect(
+        dockerCalls.some((c) => c.method === 'ensureNetwork' && c.payload === sandbox.networkName),
+      ).toBe(true);
+      // Its own capability file; the original sandbox's stays as it was.
+      const capPath = join(secretRoot, 'git', `gh_token_capability.${id}.${tag}`);
+      expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
+      expect(relayStarts.at(-1)).toMatchObject({ userId: 'lena', projectDefault: false });
+      expect(relayStops.at(-1)).toEqual({ projectId: id, userId: 'lena', projectDefault: false });
+      // The original sandbox's container was not removed, and the project's own
+      // record still describes the original sandbox.
+      expect(
+        dockerCalls
+          .slice(callsBefore)
+          .filter((c) => c.method === 'removeContainer' || c.method === 'stopContainer')
+          .map((c) => c.payload),
+      ).not.toContain(project.containerName);
+      const after = (await ctx.store.getProject(id))!;
+      expect(after.state).toBe('active');
+      expect(after.containerName).toBe(project.containerName);
+      expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('active');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(secretRoot, { recursive: true, force: true });
     }
   });
 
