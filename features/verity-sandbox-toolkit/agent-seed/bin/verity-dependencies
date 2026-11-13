@@ -833,6 +833,16 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
   }
 }
 async function main() {
+  // Git hooks export repository-local variables such as GIT_DIR. Inherited by
+  // `git -C <staging directory>`, they make the npm runtime place central
+  // staging inside the session's gitdir, so preparation from pre-push always
+  // failed as if the sandbox tooling were outdated. Every repository below is
+  // addressed explicitly, so clear them before the first git call.
+  for (const name of execFileSync('git', ['rev-parse', '--local-env-vars'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).split('\n'))
+    if (name) delete process.env[name];
   const root = git('rev-parse', '--show-toplevel');
   const common = resolve(root, git('rev-parse', '--git-common-dir'));
   const base = dirname(common);

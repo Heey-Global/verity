@@ -1148,6 +1148,58 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(readFileSync(join(f.worktree, 'policy-prepared'), 'utf8')).toBe('prepare\n');
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('prepares centrally when invoked from a git hook that exports GIT_DIR', () => {
+    // pre-push runs the helper with GIT_DIR set. The shipped runtime resolves the
+    // staging state through `git -C <stage>`; an inherited GIT_DIR made that answer
+    // the session gitdir, so every hook-driven preparation was refused as if the
+    // sandbox tooling were outdated.
+    const f = fixture();
+    const trusted = join(f.root, 'bin', 'hook-policy');
+    mkdirSync(trusted);
+    cpSync(
+      'features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs',
+      join(trusted, 'verity-npm-preflight.mjs'),
+    );
+    writeFileSync(
+      join(trusted, 'verity-package-install.mjs'),
+      `import fs from 'node:fs';
+if (process.argv.slice(2).join(' ') === 'npm --verity-prepare-only') fs.writeFileSync('.npmrc','min-release-age=3\\n');
+else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') process.exit(2);
+`,
+    );
+    const instrumented = join(f.root, 'bin', 'hook-helper.mjs');
+    writeFileSync(
+      instrumented,
+      readFileSync(helper, 'utf8').replace(
+        "const directory = '/usr/local/lib/verity';",
+        `const directory = ${JSON.stringify(trusted)};`,
+      ),
+    );
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: f.worktree,
+      env,
+      encoding: 'utf8',
+    }).trim();
+    const installed = spawnSync(process.execPath, [instrumented, 'install'], {
+      cwd: f.worktree,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        VERITY_SESSION_ID: 'fixture-session',
+        GIT_DIR: gitDir,
+      },
+      encoding: 'utf8',
+    });
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
   it.each(['missing', 'legacy'])(
     'blocks central preparation with a %s staging-aware runtime verifier',
     (variant) => {
