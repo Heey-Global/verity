@@ -2783,6 +2783,20 @@ describe('online meeting joining', () => {
     expect(await screen.findByLabelText('Start meeting')).toBeOnTheScreen();
   });
 
+  // Kept for good, the failure screen would hide discard and assign for that meeting.
+  it('opens an older failed join as a finished meeting', async () => {
+    serve('failed', 'login_required');
+    jest
+      .mocked(listMeetings)
+      .mockResolvedValue([online({ state: 'ended', endedAt: Date.now() - 3_600_000 })]);
+    jest
+      .mocked(useLocalSearchParams)
+      .mockReturnValue({ sessionId: 'session-1', meetingId: 'online-1' });
+    render(<MeetingScreen />);
+    await waitFor(() => expect(screen.queryByText('Could not join')).toBeNull());
+    expect((await screen.findAllByLabelText('Meeting actions')).length).toBeGreaterThan(0);
+  });
+
   // Each tap used to send another stop request while the bot was leaving.
   it('ends an online meeting once however often End is tapped', async () => {
     const client = serve('joined');

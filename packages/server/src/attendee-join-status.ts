@@ -60,9 +60,9 @@ export interface JoinProgress {
  * the lobby stays `joining`, so `waiting` is shown only when the provider says so.
  */
 export function joinProgress(bot: AttendeeBot, joinedBefore: boolean): JoinProgress {
-  const events = [...(bot.events ?? [])].sort((a, b) =>
-    (a.created_at ?? '').localeCompare(b.created_at ?? ''),
-  );
+  // By time, not text: the provider omits zero fractions, so `…:30.5Z` sorts before `…:30Z`.
+  const at = (value: string | null | undefined) => Date.parse(value ?? '') || 0;
+  const events = [...(bot.events ?? [])].sort((a, b) => at(a.created_at) - at(b.created_at));
   const newest = events.at(-1);
   const diagnostics = {
     eventType: providerCode(newest?.type),

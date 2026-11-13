@@ -85,3 +85,26 @@ it('never reports a failure for a bot the provider says had joined', () => {
     ).status,
   ).toBe('ended');
 });
+
+it('orders events by time when the provider drops zero fractions', () => {
+  expect(
+    joinProgress(
+      {
+        state: 'fatal_error',
+        events: [
+          {
+            type: 'could_not_join_meeting',
+            sub_type: 'meeting_not_found',
+            created_at: '2026-11-13T08:00:30Z',
+          },
+          {
+            type: 'could_not_join_meeting',
+            sub_type: 'login_required',
+            created_at: '2026-11-13T08:00:30.5Z',
+          },
+        ],
+      },
+      false,
+    ).reason,
+  ).toBe('login_required');
+});

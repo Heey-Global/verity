@@ -244,7 +244,7 @@ describe('isSupportedMeetingLink', () => {
     );
     const hosts = /const MEETING_HOSTS = (\[[^\]]*\])/u.exec(server)?.[1];
     expect(hosts).toBeDefined();
-    expect(MEETING_HOSTS).toEqual(JSON.parse(hosts!.replaceAll("'", '"')));
+    expect(MEETING_HOSTS).toEqual(JSON.parse(hosts!.replaceAll("'", '"').replace(/,\s*\]$/u, ']')));
   });
 
   it.each([

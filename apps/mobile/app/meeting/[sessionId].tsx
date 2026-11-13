@@ -148,6 +148,9 @@ function publishPendingNote(meetingId: string) {
   for (const listener of pendingNoteListeners) listener(meetingId);
 }
 
+/** How long a failed online join keeps its own screen before it opens as a finished meeting. */
+const JOIN_FAILURE_SHOWN_MS = 10 * 60_000;
+
 function elapsed(startedAt: number, now: number) {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
@@ -1276,8 +1279,13 @@ export default function MeetingScreen() {
     meeting.captureStatus !== 'listening' &&
     joinState?.status !== 'joined' &&
     joinState?.status !== 'ended';
+  // Shown right after the attempt; later the meeting opens as any finished one, so it can
+  // still be discarded or assigned.
   const joinFailed =
-    meeting?.engine === 'attendee' && !meeting.transcript && joinState?.status === 'failed';
+    meeting?.engine === 'attendee' &&
+    !meeting.transcript &&
+    joinState?.status === 'failed' &&
+    (live || (meeting.endedAt ?? 0) > now - JOIN_FAILURE_SHOWN_MS);
   useEffect(() => {
     // The meeting it was ending is gone or over: End belongs to whatever comes next.
     if (!live || stopping?.meetingId !== meeting?.id) {
@@ -2647,7 +2655,7 @@ export default function MeetingScreen() {
               : 'In person'
           }
         />
-        {meeting.serverId === null ? (
+        {(meeting.serverId ?? null) === null ? (
           <StatusPill intent="neutral" icon="smartphone" label="Only on this device" />
         ) : null}
       </View>
