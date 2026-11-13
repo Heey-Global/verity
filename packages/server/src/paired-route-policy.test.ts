@@ -331,3 +331,29 @@ it('lets a manager rename a project without opening the rest of its settings', a
     }),
   ).toBe('forbidden');
 });
+
+// Deleting a project, or tearing down its sandboxes, ends everyone's work in it.
+// Only its creator, while still in the project, or an administrator may do that;
+// managing members does not include it.
+it.each([
+  ['DELETE', '/projects/:id'],
+  ['POST', '/projects/:id/deprovision'],
+] as const)('lets only the creator or an administrator %s %s', async (method, route) => {
+  const store: PairedRoutePolicyStore = {
+    isActiveLocalUser: async (userId) => userId !== 'disabled-creator',
+    isActiveAdministrator: async (userId) => userId === 'admin',
+    hasProjectPermission: async (userId) =>
+      userId === 'creator' || userId === 'manager' || userId === 'disabled-creator',
+    getSession: async () => undefined,
+    isProjectCreator: async (userId) =>
+      ['creator', 'removed-creator', 'disabled-creator'].includes(userId),
+  };
+  const decide = (userId: string) =>
+    authorizePairedRoute(store, userId, method, route, { id: 'p1' });
+  expect(await decide('admin')).toBe('allow');
+  expect(await decide('creator')).toBe('allow');
+  expect(await decide('manager')).toBe('forbidden');
+  // Removed from the project, or deactivated: creating it no longer counts.
+  expect(await decide('removed-creator')).toBe('forbidden');
+  expect(await decide('disabled-creator')).toBe('forbidden');
+});

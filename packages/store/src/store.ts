@@ -7132,6 +7132,16 @@ export class EventStore implements EventSink {
   /** Local project authority comes from an active user's membership, never
    * from their instance role alone. Route handlers will use this once team
    * access is enabled. */
+  /** Whether `userId` created the project (ADR 0023). */
+  async isProjectCreator(userId: string, projectId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('projects')
+      .select('created_by_user_id')
+      .where('id', '=', projectId)
+      .executeTakeFirst();
+    return row?.created_by_user_id === userId;
+  }
+
   async hasProjectPermission(
     userId: string,
     projectId: string,

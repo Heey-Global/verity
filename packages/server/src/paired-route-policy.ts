@@ -1,18 +1,29 @@
 import { routeScopeKey } from './route-scopes.js';
 
 type ProjectPermission = 'read' | 'execute' | 'manage';
-type ResourceRule = {
-  readonly kind: 'project' | 'session';
-  readonly parameter: string;
-  readonly permission: ProjectPermission;
-};
+type ResourceRule =
+  | {
+      readonly kind: 'project' | 'session';
+      readonly parameter: string;
+      readonly permission: ProjectPermission;
+    }
+  /** The project's creator, while still a member, or any administrator. */
+  | { readonly kind: 'project_creator'; readonly parameter: string };
 type PairedRoutePolicy =
   ResourceRule | { readonly kind: 'administrator' } | { readonly kind: 'active_user' };
 
 /** Routes become available to members only after their resource and required
  * permission are declared here. Everything else remains administrator-only,
  * including collections and cross-project actions. */
-const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
+const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, ResourceRule>([
+  // Deleting a project, or tearing down its sandboxes, ends everyone's work in it:
+  // only the person who created it or an administrator may (members with manage
+  // permission may not).
+  [routeScopeKey('DELETE', '/projects/:id'), { kind: 'project_creator', parameter: 'id' }],
+  [
+    routeScopeKey('POST', '/projects/:id/deprovision'),
+    { kind: 'project_creator', parameter: 'id' },
+  ],
   [
     routeScopeKey('POST', '/sessions/:id/mockups'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
@@ -389,6 +400,8 @@ export interface PairedRoutePolicyStore {
     permission: ProjectPermission,
   ): Promise<boolean>;
   getSession(sessionId: string): Promise<{ projectId: string | null } | undefined>;
+  /** Whether the user created the project; absent, only administrators qualify. */
+  isProjectCreator?(userId: string, projectId: string): Promise<boolean>;
 }
 
 export async function authorizePairedRoute(
@@ -407,6 +420,14 @@ export async function authorizePairedRoute(
   }
   const resourceId = params[policy.parameter];
   if (typeof resourceId !== 'string') return 'not_found';
+  if (policy.kind === 'project_creator') {
+    if (await store.isActiveAdministrator(userId)) return 'allow';
+    return (await store.isActiveLocalUser(userId)) &&
+      (await store.isProjectCreator?.(userId, resourceId)) === true &&
+      (await store.hasProjectPermission(userId, resourceId, 'read'))
+      ? 'allow'
+      : 'forbidden';
+  }
   const projectId =
     policy.kind === 'project' ? resourceId : (await store.getSession(resourceId))?.projectId;
   if (projectId === undefined) return 'not_found';

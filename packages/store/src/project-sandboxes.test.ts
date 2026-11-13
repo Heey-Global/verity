@@ -120,3 +120,10 @@ it("assigns existing sandbox credentials to the administrator's sandbox on upgra
     await raw.close();
   }
 });
+
+it('recognizes only the creator of a project', async () => {
+  // Projects record their creator; the fixture's project was created by the administrator.
+  expect(await ctx.store.isProjectCreator(ADMIN, 'p1')).toBe(true);
+  expect(await ctx.store.isProjectCreator('lena', 'p1')).toBe(false);
+  expect(await ctx.store.isProjectCreator(ADMIN, 'missing')).toBe(false);
+});
