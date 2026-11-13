@@ -273,6 +273,8 @@ export function FeedCard({
       unread={unread}
       also={also}
       selected={selected}
+      // Drawn as an entry of the work list's groups, which bring the frame.
+      grouped
       pending={feed.pending.get(item.key) ?? false}
       disabled={feed.pending.has(item.key)}
       onDismiss={item.dismiss !== undefined ? () => feed.dismiss(item) : undefined}
@@ -298,9 +300,12 @@ export function InboxCard({
   onRestore,
   unread = false,
   also,
+  grouped = false,
 }: {
   item: InboxItem;
   selected: boolean;
+  /** An entry of a `Group` rather than a card of its own (see `Card`). */
+  grouped?: boolean;
   /** The session has messages the operator has not read; marked in the head. */
   unread?: boolean;
   /** The session's other open items, named under this one so a session stays one card. */
@@ -324,7 +329,7 @@ export function InboxCard({
   useEffect(() => setAnswering(false), [answerKey, restoring, disabled]);
   return (
     <View testID={restoring ? `inbox-hidden-${item.kind}` : `inbox-item-${item.kind}`}>
-      <Card stacked selected={selected} muted={restoring}>
+      <Card stacked grouped={grouped} selected={selected} muted={restoring}>
         <CardHead
           title={item.title}
           subtitle={item.context}

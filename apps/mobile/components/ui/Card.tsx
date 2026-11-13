@@ -23,6 +23,7 @@ export function Card({
   attention = false,
   stacked = false,
   divided = false,
+  grouped = false,
 }: {
   children: ReactNode;
   selected?: boolean;
@@ -37,6 +38,10 @@ export function Card({
   /** For a stacked card made of sections — a head and the blocks below it:
    *  separates them with the same 1 px divider `Group` draws between rows. */
   divided?: boolean;
+  /** For a card that is one entry of a `Group`: the group draws the frame and
+   *  the dividers, so the card draws neither border nor corners of its own, and
+   *  selected fills it like a selected row instead of outlining it. */
+  grouped?: boolean;
 }) {
   const sections = divided ? Children.toArray(children).filter(isValidElement) : null;
   return (
@@ -45,8 +50,9 @@ export function Card({
         styles.card,
         stacked ? styles.cardStacked : null,
         flush ? styles.cardFlush : null,
-        attention ? styles.cardAttention : null,
-        selected ? styles.cardSelected : null,
+        attention && !grouped ? styles.cardAttention : null,
+        grouped ? styles.cardGrouped : null,
+        selected ? (grouped ? styles.rowActive : styles.cardSelected) : null,
         muted ? styles.muted : null,
       ]}
     >
@@ -521,6 +527,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: 'stretch',
     paddingVertical: theme.spacing.lg,
   },
+  cardGrouped: { borderWidth: 0, borderRadius: 0 },
   cardAttention: { borderColor: tint(theme.colors.attention, 'border') },
   cardSelected: {
     borderColor: theme.colors.action,

@@ -856,3 +856,31 @@ it('drops retained results when they leave the project, are archived or deleted'
   view.rerender(page([]));
   expect(screen.queryByText('retained')).toBeNull();
 });
+
+// Inside "Needs you" a card is one entry of the section's group. Drawing its
+// own border and corners as well left a rounded card frame inside the group's
+// frame, touching the next row, and selection only outlined the card.
+it('draws a decision card as an entry of the work group, filled when selected', async () => {
+  // A session with a second decision is still one entry, so the selection
+  // fills that one card rather than outlining part of a stacked block.
+  const waiting = session('permission', {
+    ...question,
+    sessionId: 'permission',
+    pendingPermissions: ['permission-1'],
+    permissionAwaitingInput: true,
+  });
+  await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });
+  // The card's own surface: the first drawn view inside the item.
+  const frame = (testID: string) =>
+    StyleSheet.flatten(
+      screen
+        .getByTestId(testID)
+        .findAll((node) => typeof node.type === 'string' && node.props.style !== undefined)[0]!
+        .props.style,
+    ) as Record<string, unknown>;
+  const permissionCard = frame('inbox-item-permission');
+  expect(permissionCard.borderWidth).toBe(0);
+  expect(permissionCard.borderRadius).toBe(0);
+  expect(permissionCard.backgroundColor).toBe(lightTheme.colors.surfaceAlt);
+  expect(permissionCard.shadowColor).toBeUndefined();
+});
