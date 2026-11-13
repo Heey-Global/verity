@@ -47,6 +47,22 @@ const HTTP_DATE = /^[A-Za-z]{3,9}, \d{1,2}[ -][A-Za-z]{3}[ -]\d{2,4} \d{2}:\d{2}
 const SAME_SITE: Record<string, string> = { strict: 'Strict', lax: 'Lax', none: 'None' };
 const PRIORITY: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
 
+/** An HTTP date as browsers read it in a cookie, or `undefined`. */
+function cookieDate(raw: string): string | undefined {
+  if (!HTTP_DATE.test(raw)) return undefined;
+  const time = Date.parse(raw);
+  if (!Number.isFinite(time)) return undefined;
+  const date = new Date(time);
+  // RFC 6265 §5.1.1 reads two-digit years 00–69 as 20xx and 70–99 as 19xx;
+  // `Date.parse` disagrees for some of them.
+  const year = /[ -](\d{2}) \d{2}:/.exec(raw)?.[1];
+  if (year !== undefined) {
+    const value = Number(year);
+    date.setUTCFullYear(value + (value <= 69 ? 2000 : 1900));
+  }
+  return date.toUTCString();
+}
+
 /**
  * Rewrites one application `Set-Cookie` line for an online share, or returns
  * `undefined` when the browser must not receive it at all. The output is
@@ -79,8 +95,7 @@ export function namespaceSetCookie(line: string): string | undefined {
     if (key === 'max-age') {
       if (MAX_AGE.test(raw)) maxAge = raw;
     } else if (key === 'expires') {
-      const time = HTTP_DATE.test(raw) ? Date.parse(raw) : Number.NaN;
-      if (Number.isFinite(time)) expires = new Date(time).toUTCString();
+      expires = cookieDate(raw) ?? expires;
     } else if (key === 'httponly') httpOnly = true;
     else if (key === 'samesite') sameSite = SAME_SITE[raw.toLowerCase()] ?? sameSite;
     else if (key === 'partitioned') partitioned = true;

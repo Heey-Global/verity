@@ -2676,8 +2676,9 @@ function sanitizeResponseHeaders(
   const relayed: Array<[number, string]> = [];
   for (const name of Object.keys(result)) {
     if (name.startsWith('x-verity-local-set-cookie-')) {
-      const index = Number(name.slice('x-verity-local-set-cookie-'.length));
-      if (Number.isSafeInteger(index) && index >= 0) relayed.push([index, result[name]!]);
+      const suffix = name.slice('x-verity-local-set-cookie-'.length);
+      const index = Number(suffix);
+      if (/^\d+$/.test(suffix) && Number.isSafeInteger(index)) relayed.push([index, result[name]!]);
       delete result[name];
     }
   }

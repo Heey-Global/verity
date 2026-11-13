@@ -45,6 +45,10 @@ describe('namespaceSetCookie', () => {
     expect(namespaceSetCookie('a=b; Expires=Sunday, 06-Nov-94 08:49:37 GMT')).toBe(
       `${APP_COOKIE_PREFIX}a=b; Path=/; Secure; Expires=Sun, 06 Nov 1994 08:49:37 GMT`,
     );
+    // A two-digit 55 is 2055 for browsers; reading it as 1955 would delete the cookie.
+    expect(namespaceSetCookie('a=b; Expires=Saturday, 01-Jan-55 00:00:00 GMT')).toBe(
+      `${APP_COOKIE_PREFIX}a=b; Path=/; Secure; Expires=Fri, 01 Jan 2055 00:00:00 GMT`,
+    );
     expect(
       namespaceSetCookie('a=b; Max-Age=soon; Expires=never; SameSite=Sometimes; Priority=x'),
     ).toBe(`${APP_COOKIE_PREFIX}a=b; Path=/; Secure`);

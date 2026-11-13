@@ -3070,6 +3070,26 @@ describe('application cookies on online shares', () => {
     expect(received).toEqual([undefined]);
   });
 
+  // Every share is same-site with every other, so SameSite can't stop a sibling
+  // page from sending the application's own cookies along.
+  it('rejects unsafe requests from sibling shares before they carry app cookies', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge('app-cookie-csrf', () => []);
+    for (const headers of [
+      { origin: 'https://sibling.preview.example.test' },
+      { 'sec-fetch-site': 'same-site' },
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${edgePort}/transfer`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { ...headers, cookie: `${pinCookie}; __Host-app-sid=abc` },
+        body: 'amount=1',
+      });
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe('Forbidden preview origin.');
+    }
+    expect(received).toEqual([]);
+  });
+
   it('forwards namespaced cookies in WebSocket handshakes', async () => {
     const { pinCookie, edgePort } = await cookieBridge('app-cookie-websocket', () => []);
     for (const [cookie, expected] of [
