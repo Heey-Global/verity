@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 
-import { INVITATION_MAX_TTL_MS, ProjectTeamError } from './project-team.js';
+import { createSecretCipher } from './crypto.js';
+import { INVITATION_MAX_TTL_MS, ProjectTeamError, ProjectTeamStore } from './project-team.js';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
@@ -27,7 +28,8 @@ beforeEach(async () => {
   });
 });
 
-const team = () => ctx.store.projectTeam;
+// A real cipher: the test store's passthrough would store the secret in clear.
+const team = () => new ProjectTeamStore(ctx.db, createSecretCipher('cd'.repeat(32)));
 const invite = async (canExecute = true) => {
   const created = await team().createInvitation({
     projectId: 'p1',
@@ -47,6 +49,8 @@ it('keeps the link secret out of storage and queues the creation for Uplink', as
   const { invitation, secret } = await invite();
   const stored = await ctx.db.selectFrom('project_invitations').selectAll().executeTakeFirst();
   expect(JSON.stringify(stored)).not.toContain(secret);
+  // Kept encrypted to rebuild the link, and only while it can still be shared.
+  await expect(team().invitationSecret('p1', invitation.id)).resolves.toBe(secret);
   const [operation] = await team().dueOperations();
   expect(operation).toMatchObject({
     kind: 'team.invite.create',
@@ -105,6 +109,7 @@ it('refuses a wrong secret, a revoked or expired invitation and a departed invit
   await expect(redeem(secret)).rejects.toBeInstanceOf(ProjectTeamError);
   await manage(true);
   expect(await team().revokeInvitation('p1', invitation.id)).toBe(true);
+  await expect(team().invitationSecret('p1', invitation.id)).resolves.toBeUndefined();
   await expect(redeem(secret)).rejects.toBeInstanceOf(ProjectTeamError);
   expect((await team().dueOperations()).map((operation) => operation.kind)).toContain(
     'team.invite.cancel',

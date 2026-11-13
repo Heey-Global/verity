@@ -835,6 +835,9 @@ interface ProjectInvitationsTable {
   can_execute: boolean;
   /** SHA-256 of the link secret; the secret itself is never stored. */
   secret_hash: string;
+  /** The link secret, encrypted, while the invitation can still be shared; cleared
+   *  once it is redeemed or revoked. */
+  secret_encrypted: string | null;
   /** Uplink's invitation id (D4), once Uplink created the invitation. */
   invitation_id: string | null;
   state: 'creating' | 'open' | 'redeemed' | 'revoked';

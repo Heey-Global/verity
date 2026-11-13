@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { sql, type Kysely, type Transaction } from 'kysely';
 
+import type { SecretCipher } from './crypto.js';
 import type { Database } from './schema.js';
 
 /** An invitation is valid for 7 days by default and at most (Uplink team contract). */
@@ -98,7 +99,10 @@ function invitation(row: Row, now: Date): ProjectInvitation {
  * the team outbox, so it is delivered even after a restart.
  */
 export class ProjectTeamStore {
-  constructor(private readonly db: Kysely<Database>) {}
+  constructor(
+    private readonly db: Kysely<Database>,
+    private readonly cipher: SecretCipher,
+  ) {}
 
   /**
    * Create an invitation and return it with its link secret, which is never
@@ -129,6 +133,7 @@ export class ProjectTeamStore {
           invitee_name: input.inviteeName.trim(),
           can_execute: input.canExecute,
           secret_hash: sha256(secret),
+          secret_encrypted: this.cipher.encrypt(secret),
           state: 'creating',
           expires_at: expiresAt,
         })
@@ -182,6 +187,18 @@ export class ProjectTeamStore {
     });
   }
 
+  /** The link secret of an invitation that can still be shared, to rebuild its link. */
+  async invitationSecret(projectId: string, id: string): Promise<string | undefined> {
+    const row = await this.db
+      .selectFrom('project_invitations')
+      .select('secret_encrypted')
+      .where('id', '=', id)
+      .where('project_id', '=', projectId)
+      .where('state', 'in', ['creating', 'open'])
+      .executeTakeFirst();
+    return row?.secret_encrypted == null ? undefined : this.cipher.decrypt(row.secret_encrypted);
+  }
+
   async listInvitations(projectId: string, now = new Date()): Promise<ProjectInvitation[]> {
     const rows = await this.db
       .selectFrom('project_invitations')
@@ -198,7 +215,7 @@ export class ProjectTeamStore {
     return this.db.transaction().execute(async (tx) => {
       const row = await tx
         .updateTable('project_invitations')
-        .set({ state: 'revoked', revoked_at: now })
+        .set({ state: 'revoked', revoked_at: now, secret_encrypted: null })
         .where('id', '=', id)
         .where('project_id', '=', projectId)
         .where('state', 'in', ['creating', 'open'])
@@ -272,6 +289,7 @@ export class ProjectTeamStore {
         .updateTable('project_invitations')
         .set({
           state: 'redeemed',
+          secret_encrypted: null,
           redemption_id: input.redemptionId,
           redeemed_by_user_id: userId,
           redeemed_at: now,

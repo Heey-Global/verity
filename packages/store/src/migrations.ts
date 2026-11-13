@@ -5951,6 +5951,7 @@ migrations['0218_project_team'] = {
       invitee_name text not null,
       can_execute boolean not null,
       secret_hash text not null,
+      secret_encrypted text,
       invitation_id text unique,
       state text not null check (state in ('creating', 'open', 'redeemed', 'revoked')),
       expires_at timestamptz not null,
