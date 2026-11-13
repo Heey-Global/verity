@@ -117,6 +117,8 @@ export interface UplinkControlClientOptions {
   onShareExpired?: (shareId: string) => Promise<void>;
   /** Remote admission is offered only when explicitly enabled. */
   offerRemoteControl?: boolean;
+  /** Team v1 (project invitations) is offered only when explicitly enabled. */
+  offerTeam?: boolean;
   reserveRemoteConnector?: (
     request: RemoteConnectorRequest,
     signal: AbortSignal,
@@ -228,6 +230,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private generation = 0;
   private authorityLossNotified = false;
   private welcomed = false;
+  /** The team version the service selected in `welcome`; undefined → none. */
+  private teamVersion: 1 | undefined;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
   private pendingMessageCount = 0;
@@ -538,6 +542,24 @@ export class UplinkControlClient implements PreviewEdgeControl {
         ? { lastCloseCode: this.lastCloseCode }
         : {}),
     };
+  }
+
+  /** Whether this connection negotiated team v1. */
+  teamNegotiated(): boolean {
+    return this.teamVersion === 1 && this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Send a team request and wait for one of its responses. Refused without a
+   * negotiated team version: neither side sends team.* otherwise.
+   */
+  teamRequest(
+    type: string,
+    fields: Record<string, unknown>,
+    responses: readonly string[],
+  ): Promise<Record<string, unknown>> {
+    if (!this.teamNegotiated()) return Promise.reject(new Error('Uplink team v1 not negotiated'));
+    return this.request(type, { teamVersion: 1, ...fields }, [...responses, 'team.error']);
   }
 
   remoteControlDescriptor(): RemoteControlDescriptor {
@@ -1053,6 +1075,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       new WebSocket(this.options.url, { maxPayload: MAX_CONTROL_FRAME_BYTES });
     this.socket = socket;
     this.welcomed = false;
+    this.teamVersion = undefined;
     this.controlReady = false;
     socket.once('open', () => {
       if (this.stopped || generation !== this.generation || this.socket !== socket) {
@@ -1079,6 +1102,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
               }
             : {}),
           serverVersion: this.options.serverVersion,
+          ...(this.options.offerTeam === true ? { teamVersions: [1] } : {}),
           ...(this.options.offerRemoteControl === true && this.switches.remoteAccess
             ? {
                 capabilities: [
@@ -1250,6 +1274,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         return;
       }
       const installationHandle = validInstallationHandle(frame.handle) ? frame.handle : undefined;
+      // Omission means unsupported, never an implicit v1 (team contract).
+      this.teamVersion = this.options.offerTeam === true && frame.teamVersion === 1 ? 1 : undefined;
       const negotiation = remoteNegotiation(frame);
       this.retryMs = 1_000;
       this.retryCeilingMs = RECONNECT_MAX_MS;
@@ -1642,6 +1668,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     this.remoteInstallation = undefined;
     this.clearRemoteSessions(reason);
     this.welcomed = false;
+    this.teamVersion = undefined;
     this.controlReady = false;
     this.unansweredPings = 0;
     if (this.heartbeat) clearInterval(this.heartbeat);

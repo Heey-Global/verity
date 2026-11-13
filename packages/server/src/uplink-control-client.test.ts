@@ -55,6 +55,7 @@ function setup(
     expectedInstallationId?: string;
     url?: string;
     offerRemoteControl?: boolean;
+    offerTeam?: boolean;
     reserveRemoteConnector?: (
       request: RemoteConnectorRequest,
       signal: AbortSignal,
@@ -108,6 +109,7 @@ function setup(
     ...(options.offerRemoteControl !== undefined
       ? { offerRemoteControl: options.offerRemoteControl }
       : {}),
+    ...(options.offerTeam !== undefined ? { offerTeam: options.offerTeam } : {}),
     ...(options.reserveRemoteConnector
       ? { reserveRemoteConnector: options.reserveRemoteConnector }
       : {}),
@@ -200,6 +202,58 @@ describe('UplinkControlClient', () => {
       try {
         expect(fixture.socketFactory).not.toHaveBeenCalled();
         expect(fixture.client.isAvailable()).toBe(false);
+      } finally {
+        await fixture.client.stop();
+      }
+    },
+  );
+
+  // Team v1 is opt-in on both sides: the client offers it, and sends team.*
+  // only after the service selected it; omission never means an implicit v1.
+  it.each([undefined, 1])(
+    'sends team requests only after welcome selects team v1 (%s)',
+    async (teamVersion) => {
+      const fixture = setup({ offerTeam: true });
+      fixture.client.start();
+      await flush();
+      fixture.socket.open();
+      await flush();
+      const hello = JSON.parse(fixture.socket.sent[0]!) as Record<string, unknown>;
+      expect(hello.teamVersions).toEqual([1]);
+      fixture.socket.message({
+        type: 'welcome',
+        installationId: 'installation-1',
+        features: ['sharing'],
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        ...(teamVersion === undefined ? {} : { teamVersion }),
+      });
+      await flush();
+      try {
+        expect(fixture.client.teamNegotiated()).toBe(teamVersion === 1);
+        const request = fixture.client.teamRequest(
+          'team.invite.cancel',
+          { operationId: 'op', invitationId: 'inv' },
+          ['team.invite.cancelled'],
+        );
+        if (teamVersion === undefined) {
+          await expect(request).rejects.toThrow('not negotiated');
+          return;
+        }
+        await flush();
+        const sent = JSON.parse(fixture.socket.sent.at(-1)!) as Record<string, unknown>;
+        expect(sent).toMatchObject({
+          type: 'team.invite.cancel',
+          teamVersion: 1,
+          operationId: 'op',
+        });
+        fixture.socket.message({
+          type: 'team.invite.cancelled',
+          requestId: sent.requestId,
+          teamVersion: 1,
+          invitationId: 'inv',
+          alreadyCommitted: false,
+        });
+        await expect(request).resolves.toMatchObject({ type: 'team.invite.cancelled' });
       } finally {
         await fixture.client.stop();
       }

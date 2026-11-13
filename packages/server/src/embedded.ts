@@ -373,6 +373,7 @@ import {
   type AgentGatewayPerson,
 } from './agent-gateway-control.js';
 import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
+import { createTeamOutboxWorker } from './team-outbox-worker.js';
 import {
   startAgentGatewaySynchronizer,
   type AgentGatewaySynchronizer,
@@ -1494,6 +1495,8 @@ export async function buildEmbeddedServer(
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
+          // Team v1 is only used once the service selects it in welcome.
+          offerTeam: true,
           ...(config.publicPreviews.expectedInstallationId === undefined
             ? {}
             : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
@@ -5529,6 +5532,23 @@ export async function buildEmbeddedServer(
     });
   }
   app.addHook('onClose', () => claudeCredentialSync.close());
+  if (uplinkControl !== undefined) {
+    // Deliver queued team changes to Uplink once it negotiated team v1.
+    const teamOutbox = createTeamOutboxWorker({
+      team: eventStore.projectTeam,
+      uplink: uplinkControl,
+      identityKey: () => config.devicePairing?.identity().identityKey,
+      log: app.log,
+    });
+    const teamTimer = setInterval(() => {
+      void teamOutbox.run().catch((error: unknown) => {
+        if (!(error instanceof SealedError))
+          app.log.warn({ err: error }, 'verity: team outbox delivery failed');
+      });
+    }, 10_000);
+    teamTimer.unref();
+    app.addHook('onClose', () => clearInterval(teamTimer));
+  }
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>
     preserveProjectRelaysOnClose

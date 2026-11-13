@@ -142,6 +142,10 @@ The core creates a fresh, random one of at least 128 bits before
 reuses one after removal, so re-inviting a removed member is not blocked by its
 tombstone; the owner and memberships created without Uplink have none.
 `expiresAt` may be shortened by service policy; the returned deadline wins.
+`installationKeyFingerprint` is `sha256-` followed by the unpadded base64url
+SHA-256 of the Core identity key (the DER SubjectPublicKeyInfo that also derives
+`serverId`), so Uplink can bind an invitation to the installation that created
+it.
 Uplink returns no redemption URL. Core hands the link fields to the inviter's
 app, which adds the pinned `tlsPin` and `coreOrigin` from its paired server
 profile and encodes the `https://verity.build/join#` link (reconciled decision
