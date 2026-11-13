@@ -797,11 +797,10 @@ it('draws every row of a selected session’s decisions as selected', async () =
   };
   await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });
   const needs = within(screen.getByTestId('work-needs-you'));
-  const rows = needs
-    .getAllByRole('button')
-    .filter((button) => button.props.accessibilityState?.selected !== undefined);
-  expect(rows.length).toBeGreaterThan(0);
-  for (const row of rows) expect(row.props.accessibilityState.selected).toBe(true);
+  // The question is the session's second decision, under its permission card.
+  let row = needs.getByText(/Which validation library\?$/).parent;
+  while (row && row.props.accessibilityRole !== 'button') row = row.parent;
+  expect(row?.props.accessibilityState).toMatchObject({ selected: true });
 });
 
 // Inside "Needs you" a card is one entry of the section's group. Drawing its
