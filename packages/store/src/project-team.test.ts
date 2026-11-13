@@ -40,8 +40,30 @@ const invite = async (canExecute = true) => {
   await team().markInvitationCreated(created.invitation.id, 'inv-1', created.invitation.expiresAt);
   return created;
 };
-const redeem = (secret: string, redemptionId = 'r1') =>
-  team().redeemInvitation({ invitationId: 'inv-1', secret, redemptionId, displayName: 'Lena' });
+/** Core accepts the join's tunnel, as `team.join.pending` would have it. */
+const admit = async (redemptionId: string, invitationId = 'inv-1', permissions?: string[]) => {
+  const row = await ctx.db
+    .selectFrom('project_invitations')
+    .select('can_execute')
+    .where('invitation_id', '=', invitationId)
+    .executeTakeFirst();
+  return team().admitJoin({
+    sessionId: `session-${redemptionId}`,
+    invitationId,
+    redemptionId,
+    projectId: 'p1',
+    permissions: permissions ?? (row?.can_execute ? ['read', 'execute'] : ['read']),
+  });
+};
+const redeem = async (secret: string, redemptionId = 'r1') => {
+  await admit(redemptionId);
+  return team().redeemInvitation({
+    invitationId: 'inv-1',
+    secret,
+    redemptionId,
+    displayName: 'Lena',
+  });
+};
 
 // The link secret is the only thing that lets someone join; it must not be
 // readable from the database, and Uplink learns only its commitment.
@@ -94,6 +116,7 @@ it('redeems an invitation exactly once, as a member who cannot manage', async ()
 it('refuses a wrong secret, a revoked or expired invitation and a departed inviter', async () => {
   const { invitation, secret } = await invite();
   await expect(redeem('wrong')).rejects.toBeInstanceOf(ProjectTeamError);
+  await admit('late');
   await expect(
     team().redeemInvitation({
       invitationId: 'inv-1',
@@ -184,6 +207,7 @@ it('withdraws an invitation revoked while Uplink was still creating it', async (
     (operation) => operation.kind === 'team.invite.cancel',
   );
   expect(cancel?.payload).toMatchObject({ invitationId: 'inv-late' });
+  await admit('r9', 'inv-late');
   await expect(
     team().redeemInvitation({
       invitationId: 'inv-late',
@@ -192,4 +216,109 @@ it('withdraws an invitation revoked while Uplink was still creating it', async (
       displayName: 'Lena',
     }),
   ).rejects.toBeInstanceOf(ProjectTeamError);
+});
+
+it('admits a join tunnel only for what the invitation binds, and stores the decision', async () => {
+  await invite(false);
+  // The permissions Uplink presents must be the invitation's own.
+  await expect(admit('r-wide', 'inv-1', ['read', 'execute'])).resolves.toBe('refused');
+  await expect(admit('r-ok', 'inv-1', ['read'])).resolves.toBe('accepted');
+  // A repeated pending message gets the same stored answer, not a new decision.
+  await expect(admit('r-ok', 'inv-1', ['read'])).resolves.toBe('accepted');
+  await expect(
+    team().admitJoin({
+      sessionId: 'session-other',
+      invitationId: 'inv-1',
+      redemptionId: 'r-ok',
+      projectId: 'p1',
+      permissions: ['read'],
+    }),
+  ).resolves.toBe('refused');
+  await expect(
+    team().admitJoin({
+      sessionId: 'session-p2',
+      invitationId: 'inv-1',
+      redemptionId: 'r-p2',
+      projectId: 'p2',
+      permissions: ['read'],
+    }),
+  ).resolves.toBe('refused');
+  await expect(admit('r-unknown', 'inv-unknown', ['read'])).resolves.toBe('refused');
+});
+
+it('redeems only with the redemption of an accepted tunnel', async () => {
+  const { secret } = await invite();
+  // A redemption the app made up itself is never accepted.
+  await expect(
+    team().redeemInvitation({
+      invitationId: 'inv-1',
+      secret,
+      redemptionId: 'mine',
+      displayName: 'Lena',
+    }),
+  ).rejects.toBeInstanceOf(ProjectTeamError);
+  // Nor one whose tunnel Core refused.
+  await admit('refused', 'inv-1', ['read']);
+  await expect(
+    team().redeemInvitation({
+      invitationId: 'inv-1',
+      secret,
+      redemptionId: 'refused',
+      displayName: 'Lena',
+    }),
+  ).rejects.toBeInstanceOf(ProjectTeamError);
+  // Nor one past its tunnel's lifetime.
+  await admit('stale');
+  await expect(
+    team().redeemInvitation({
+      invitationId: 'inv-1',
+      secret,
+      redemptionId: 'stale',
+      displayName: 'Lena',
+      now: new Date(Date.now() + 11 * 60 * 1000),
+    }),
+  ).rejects.toBeInstanceOf(ProjectTeamError);
+  await expect(redeem(secret, 'r1')).resolves.toMatchObject({ replay: false });
+});
+
+it('fences a pending person whose join Uplink refused for good', async () => {
+  const { secret, invitation } = await invite();
+  const joined = await redeem(secret);
+  await ctx.db
+    .insertInto('auth_tokens')
+    .values({ id: 't1', user_id: joined.userId, token_hash: 'h' })
+    .execute();
+  await expect(team().failJoin('r1')).resolves.toBe(true);
+  const memberships = await ctx.db
+    .selectFrom('project_memberships')
+    .select('user_id')
+    .where('user_id', '=', joined.userId)
+    .execute();
+  expect(memberships).toEqual([]);
+  const tokens = await ctx.db
+    .selectFrom('auth_tokens')
+    .select('id')
+    .where('user_id', '=', joined.userId)
+    .execute();
+  expect(tokens).toEqual([]);
+  // The inviter sees it failed and invites again.
+  const [listed] = await team().listInvitations('p1');
+  expect(listed).toMatchObject({ id: invitation.id, state: 'failed' });
+  // A later confirmation cannot bring the fenced person back.
+  expect((await team().listMembers('p1')).map((member) => member.userId)).not.toContain(
+    joined.userId,
+  );
+});
+
+it('marks an invitation Uplink refused to create as failed', async () => {
+  const created = await team().createInvitation({
+    projectId: 'p1',
+    inviterUserId: ADMIN,
+    inviteeName: 'Mia',
+    canExecute: false,
+  });
+  await team().failInvitation(created.invitation.id);
+  const [listed] = await team().listInvitations('p1');
+  expect(listed).toMatchObject({ state: 'failed' });
+  await expect(team().invitationSecret('p1', created.invitation.id)).resolves.toBeUndefined();
 });

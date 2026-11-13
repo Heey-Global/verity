@@ -4,7 +4,13 @@ import type { ProjectTeamStore, TeamOutboxEntry } from '@verity/store';
 
 type Team = Pick<
   ProjectTeamStore,
-  'dueOperations' | 'completeOperation' | 'retryOperation' | 'markInvitationCreated' | 'confirmJoin'
+  | 'dueOperations'
+  | 'completeOperation'
+  | 'retryOperation'
+  | 'markInvitationCreated'
+  | 'confirmJoin'
+  | 'failJoin'
+  | 'failInvitation'
 >;
 
 export interface TeamUplink {
@@ -77,6 +83,12 @@ export function createTeamOutboxWorker(deps: {
           { kind: operation.kind, code: answer.code },
           'verity: Uplink refused a team change',
         );
+        // Refused for good: the person or invitation it was for must not stay
+        // pending forever. The inviter sees it failed and invites again.
+        if (operation.kind === 'team.join.commit')
+          await deps.team.failJoin(String(payload.redemptionId));
+        if (operation.kind === 'team.invite.create')
+          await deps.team.failInvitation(String(payload.localInviteId));
         await deps.team.completeOperation(operation.operationId);
       }
       return;

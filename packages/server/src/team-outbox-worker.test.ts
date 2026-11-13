@@ -85,6 +85,13 @@ describe('team outbox worker', () => {
     const [open] = await team.listInvitations('p1');
     expect(open).toMatchObject({ id: invitation.id, state: 'open' });
 
+    await team.admitJoin({
+      sessionId: 'session_1',
+      invitationId: 'MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM',
+      redemptionId: 'redemption_1',
+      projectId: 'p1',
+      permissions: ['read', 'execute'],
+    });
     const joined = await team.redeemInvitation({
       invitationId: 'MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM',
       secret,
@@ -105,7 +112,7 @@ describe('team outbox worker', () => {
       );
   });
 
-  it('retries what Uplink calls retryable and drops a final refusal', async () => {
+  it('retries what Uplink calls retryable and marks the invitation failed on a final refusal', async () => {
     const team = ctx.store.projectTeam;
     let retryable = true;
     const { uplink: fake } = uplink({
@@ -130,5 +137,70 @@ describe('team outbox worker', () => {
     });
     await late.run();
     expect(await team.dueOperations(later)).toEqual([]);
+    // Never left "creating": the inviter sees it failed and invites again.
+    expect((await team.listInvitations('p1', later))[0]).toMatchObject({ state: 'failed' });
+  });
+
+  it('keeps a join held back by the seat limit pending, and fences one refused for good', async () => {
+    const team = ctx.store.projectTeam;
+    const INVITATION = 'MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM';
+    let commit: Record<string, unknown> = {
+      type: 'team.error',
+      code: 'member_limit_reached',
+      retryable: true,
+      retryAfterSeconds: 300,
+    };
+    const { uplink: fake } = uplink({
+      'team.invite.create': () => ({
+        type: 'team.invite.created',
+        invitationId: INVITATION,
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      }),
+      'team.join.commit': () => commit,
+    });
+    const worker = createTeamOutboxWorker({ team, uplink: fake, identityKey: () => IDENTITY_KEY });
+    const { secret } = await team.createInvitation({
+      projectId: 'p1',
+      inviterUserId: ADMIN,
+      inviteeName: 'Lena',
+      canExecute: false,
+    });
+    await worker.run();
+    await team.admitJoin({
+      sessionId: 'session_1',
+      invitationId: INVITATION,
+      redemptionId: 'redemption_1',
+      projectId: 'p1',
+      permissions: ['read'],
+    });
+    const joined = await team.redeemInvitation({
+      invitationId: INVITATION,
+      secret,
+      redemptionId: 'redemption_1',
+      displayName: 'Lena',
+    });
+    await worker.run();
+    const later = new Date(Date.now() + 10 * 60_000);
+    expect(await team.dueOperations(later)).toHaveLength(1);
+    expect(
+      await ctx.db
+        .selectFrom('users')
+        .select('status')
+        .where('id', '=', joined.userId)
+        .executeTakeFirst(),
+    ).toEqual({ status: 'disabled' });
+
+    commit = { type: 'team.error', code: 'invitation_unavailable', retryable: false };
+    await createTeamOutboxWorker({
+      team,
+      uplink: fake,
+      identityKey: () => IDENTITY_KEY,
+      now: () => later,
+    }).run();
+    expect(await team.dueOperations(later)).toEqual([]);
+    expect((await team.listMembers('p1')).map((member) => member.userId)).not.toContain(
+      joined.userId,
+    );
+    expect((await team.listInvitations('p1', later))[0]).toMatchObject({ state: 'failed' });
   });
 });

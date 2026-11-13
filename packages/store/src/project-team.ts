@@ -10,7 +10,10 @@ export const INVITATION_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** A team operation is retried for 7 days before it is given up. */
 export const TEAM_OUTBOX_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
 
-export type InvitationState = 'creating' | 'open' | 'redeemed' | 'revoked' | 'expired';
+export type InvitationState = 'creating' | 'open' | 'redeemed' | 'revoked' | 'expired' | 'failed';
+
+/** How long an accepted join tunnel may still redeem: the tunnel's five minutes plus its attach window. */
+export const JOIN_ADMISSION_TTL_MS = 10 * 60 * 1000;
 
 export interface ProjectInvitation {
   id: string;
@@ -69,7 +72,7 @@ type Row = {
   invitee_name: string;
   can_execute: boolean;
   invitation_id: string | null;
-  state: 'creating' | 'open' | 'redeemed' | 'revoked';
+  state: 'creating' | 'open' | 'redeemed' | 'revoked' | 'failed';
   expires_at: Date;
   created_at: Date;
   redeemed_by_user_id: string | null;
@@ -219,7 +222,8 @@ export class ProjectTeamStore {
       .selectFrom('project_invitations')
       .selectAll()
       .where('project_id', '=', projectId)
-      .where('state', 'in', ['creating', 'open'])
+      // A failed one stays visible, so the inviter sees to invite again.
+      .where('state', 'in', ['creating', 'open', 'failed'])
       .orderBy('created_at', 'desc')
       .execute();
     return rows.map((row) => invitation(row, now));
@@ -249,6 +253,124 @@ export class ProjectTeamStore {
    * membership, and bind the redemption. A replay of the same redemption
    * returns the same person and changes nothing; any other use is refused.
    */
+  /**
+   * Core's decision on a team join's tunnel (`team.join.pending`). Accepted only
+   * for an open invitation of this project with exactly these permissions,
+   * whose inviter may still manage the project. The decision is stored before
+   * Core answers, and a repeated request for the same session gets it again.
+   */
+  async admitJoin(input: {
+    sessionId: string;
+    invitationId: string;
+    redemptionId: string;
+    projectId: string;
+    permissions: readonly string[];
+    now?: Date;
+  }): Promise<'accepted' | 'refused'> {
+    const now = input.now ?? new Date();
+    return this.db.transaction().execute(async (tx) => {
+      const earlier = await tx
+        .selectFrom('team_join_admissions')
+        .select(['decision', 'invitation_id', 'redemption_id'])
+        .where('session_id', '=', input.sessionId)
+        .executeTakeFirst();
+      if (earlier !== undefined)
+        return earlier.invitation_id === input.invitationId &&
+          earlier.redemption_id === input.redemptionId
+          ? earlier.decision
+          : 'refused';
+      const row = await tx
+        .selectFrom('project_invitations')
+        .selectAll()
+        .where('invitation_id', '=', input.invitationId)
+        .forUpdate()
+        .executeTakeFirst();
+      const expected = row?.can_execute ? ['read', 'execute'] : ['read'];
+      let decision: 'accepted' | 'refused' = 'refused';
+      if (
+        row !== undefined &&
+        row.state === 'open' &&
+        row.expires_at.getTime() > now.getTime() &&
+        row.project_id === input.projectId &&
+        input.permissions.join(',') === expected.join(',') &&
+        (await this.managesProject(tx, row.project_id, row.inviter_user_id))
+      ) {
+        try {
+          await this.requireShareable(tx, row.project_id);
+          decision = 'accepted';
+        } catch {
+          decision = 'refused';
+        }
+      }
+      const stored = await tx
+        .insertInto('team_join_admissions')
+        .values({
+          session_id: input.sessionId,
+          invitation_id: input.invitationId,
+          redemption_id: input.redemptionId,
+          decision,
+          expires_at: new Date(now.getTime() + JOIN_ADMISSION_TTL_MS),
+        })
+        .onConflict((conflict) => conflict.doNothing())
+        .returning('decision')
+        .executeTakeFirst();
+      // A redemption already bound to another session is never accepted twice.
+      return stored?.decision ?? 'refused';
+    });
+  }
+
+  /**
+   * Uplink refused a join for good (`invitation_unavailable`, `revoked`): the
+   * pending person is fenced, never becomes active, and the invitation is
+   * `failed` so the inviter invites again.
+   */
+  async failJoin(redemptionId: string): Promise<boolean> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('project_invitations')
+        .select(['id', 'project_id', 'redeemed_by_user_id'])
+        .where('redemption_id', '=', redemptionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return false;
+      await tx
+        .updateTable('project_invitations')
+        .set({ state: 'failed' })
+        .where('id', '=', row.id)
+        .execute();
+      if (row.redeemed_by_user_id !== null) {
+        // Only a person who never became active; an active member is removed
+        // through removeMember, which tells Uplink.
+        const user = await tx
+          .selectFrom('users')
+          .select('status')
+          .where('id', '=', row.redeemed_by_user_id)
+          .executeTakeFirst();
+        if (user?.status === 'disabled') {
+          await tx
+            .deleteFrom('project_memberships')
+            .where('user_id', '=', row.redeemed_by_user_id)
+            .execute();
+          await tx
+            .deleteFrom('auth_tokens')
+            .where('user_id', '=', row.redeemed_by_user_id)
+            .execute();
+        }
+      }
+      return true;
+    });
+  }
+
+  /** Uplink refused to create the invitation for good; it can never be joined. */
+  async failInvitation(localInviteId: string): Promise<void> {
+    await this.db
+      .updateTable('project_invitations')
+      .set({ state: 'failed', secret_encrypted: null })
+      .where('id', '=', localInviteId)
+      .where('state', '=', 'creating')
+      .execute();
+  }
+
   async redeemInvitation(input: {
     invitationId: string;
     secret: string;
@@ -273,6 +395,20 @@ export class ProjectTeamStore {
         throw unavailable();
       }
       if (row.state !== 'open' || row.expires_at.getTime() <= now.getTime()) throw unavailable();
+      // Only the redemption Uplink minted for a tunnel Core accepted, and only
+      // while that tunnel can still be open: an app cannot bring its own.
+      const admission = await tx
+        .selectFrom('team_join_admissions')
+        .select(['invitation_id', 'expires_at'])
+        .where('redemption_id', '=', input.redemptionId)
+        .where('decision', '=', 'accepted')
+        .executeTakeFirst();
+      if (
+        admission === undefined ||
+        admission.invitation_id !== input.invitationId ||
+        admission.expires_at.getTime() <= now.getTime()
+      )
+        throw unavailable();
       await this.requireShareable(tx, row.project_id);
       // The inviter must still be allowed to manage the project.
       if (!(await this.managesProject(tx, row.project_id, row.inviter_user_id)))
@@ -321,12 +457,37 @@ export class ProjectTeamStore {
     });
   }
 
+  /**
+   * Whether Uplink is needed for team work right now: an invitation someone
+   * may still join, or a change Uplink has not acknowledged yet.
+   */
+  async hasTeamWork(now = new Date()): Promise<boolean> {
+    const open = await this.db
+      .selectFrom('project_invitations')
+      .select('id')
+      .where('state', 'in', ['creating', 'open'])
+      .where('expires_at', '>', now)
+      .limit(1)
+      .executeTakeFirst();
+    if (open !== undefined) return true;
+    const queued = await this.db
+      .selectFrom('team_outbox')
+      .select('operation_id')
+      .where('done_at', 'is', null)
+      .where('give_up_at', '>', now)
+      .limit(1)
+      .executeTakeFirst();
+    return queued !== undefined;
+  }
+
   /** Uplink confirmed the join: the person becomes an active member. */
   async confirmJoin(redemptionId: string): Promise<boolean> {
     const row = await this.db
       .selectFrom('project_invitations')
       .select('redeemed_by_user_id')
       .where('redemption_id', '=', redemptionId)
+      // A join fenced as failed stays fenced, whatever arrives late.
+      .where('state', '=', 'redeemed')
       .executeTakeFirst();
     if (row?.redeemed_by_user_id == null) return false;
     await this.db

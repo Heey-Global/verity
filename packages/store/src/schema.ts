@@ -840,7 +840,8 @@ interface ProjectInvitationsTable {
   secret_encrypted: string | null;
   /** Uplink's invitation id (D4), once Uplink created the invitation. */
   invitation_id: string | null;
-  state: 'creating' | 'open' | 'redeemed' | 'revoked';
+  /** `failed`: Uplink refused its join for good; the inviter invites again. */
+  state: 'creating' | 'open' | 'redeemed' | 'revoked' | 'failed';
   expires_at: ColumnType<Date, string | Date, never>;
   created_at: ColumnType<Date, string | undefined, never>;
   /** The one redemption that used it; a replay of the same one changes nothing. */
@@ -848,6 +849,18 @@ interface ProjectInvitationsTable {
   redeemed_by_user_id: string | null;
   redeemed_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
   revoked_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+}
+
+/** Core's stored decision on one team join's tunnel (team bootstrap v1). */
+interface TeamJoinAdmissionsTable {
+  session_id: string;
+  /** Uplink's invitation id. */
+  invitation_id: string;
+  /** Minted by Uplink; the join accepts no other. */
+  redemption_id: string;
+  decision: 'accepted' | 'refused';
+  created_at: ColumnType<Date, string | undefined, never>;
+  expires_at: ColumnType<Date, string | Date, never>;
 }
 
 interface TeamOutboxTable {
@@ -2005,6 +2018,7 @@ export interface Database {
   session_user_models: SessionUserModelsTable;
   project_invitations: ProjectInvitationsTable;
   team_outbox: TeamOutboxTable;
+  team_join_admissions: TeamJoinAdmissionsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;

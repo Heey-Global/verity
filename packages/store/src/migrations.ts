@@ -5983,3 +5983,33 @@ migrations['0218_project_team'] = {
     await sql`drop table project_invitations`.execute(db);
   },
 };
+
+migrations['0219_team_join_admissions'] = {
+  // Core's decision on one team join's tunnel (team bootstrap interface v1):
+  // stored before session.accept, so a repeated team.join.pending gets the
+  // same answer, and the join itself accepts only the redemption Uplink
+  // minted for an accepted tunnel. A join Uplink refused for good leaves its
+  // invitation `failed`, so the inviter sees to invite again.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table team_join_admissions (
+      session_id text primary key,
+      invitation_id text not null,
+      redemption_id text not null unique,
+      decision text not null check (decision in ('accepted', 'refused')),
+      created_at timestamptz not null default now(),
+      expires_at timestamptz not null
+    )`.execute(db);
+    await sql`alter table project_invitations
+      drop constraint project_invitations_state_check`.execute(db);
+    await sql`alter table project_invitations add constraint project_invitations_state_check
+      check (state in ('creating', 'open', 'redeemed', 'revoked', 'failed'))`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`update project_invitations set state = 'revoked' where state = 'failed'`.execute(db);
+    await sql`alter table project_invitations
+      drop constraint project_invitations_state_check`.execute(db);
+    await sql`alter table project_invitations add constraint project_invitations_state_check
+      check (state in ('creating', 'open', 'redeemed', 'revoked'))`.execute(db);
+    await sql`drop table team_join_admissions`.execute(db);
+  },
+};

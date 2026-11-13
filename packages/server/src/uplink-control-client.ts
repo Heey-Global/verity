@@ -51,6 +51,7 @@ export const MAX_CONTROL_PENDING_MESSAGES = 128;
 export const MAX_CONTROL_PENDING_BYTES = 1024 * 1024;
 const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
 const REMOTE_CAPABILITY = 'remote-control-v1';
+const TEAM_BOOTSTRAP_CAPABILITY = 'team-bootstrap-v1';
 const REMOTE_CHANNEL = 'remote';
 const MAX_REMOTE_RESERVATIONS = 4;
 const MAX_REFUSAL_REASON_CHARS = 200;
@@ -94,10 +95,25 @@ export interface RemoteConnectorRequest {
   requestId: string;
   sessionId: string;
   decisionExpiresAt: number;
+  /** Remote Control when absent; a team join's tunnel otherwise. */
+  capability?: typeof TEAM_BOOTSTRAP_CAPABILITY;
+}
+
+/** What Uplink asks Core when an app wants to join a project (team bootstrap v1). */
+export interface TeamJoinPending {
+  requestId: string;
+  sessionId: string;
+  invitationId: string;
+  redemptionId: string;
+  projectId: string;
+  permissions: string[];
+  decisionExpiresAt: number;
 }
 
 interface RemoteSession {
   requestId: string;
+  /** Set for a team join's tunnel: the redemption its ticket must name. */
+  joinRedemptionId?: string;
   controller: AbortController;
   deadlineTimer: NodeJS.Timeout;
   reservation?: RemoteConnectorReservation;
@@ -123,6 +139,11 @@ export interface UplinkControlClientOptions {
     request: RemoteConnectorRequest,
     signal: AbortSignal,
   ) => Promise<RemoteConnectorReservation | 'unavailable' | 'limit_reached'>;
+  /**
+   * Core's stored decision on a team join's tunnel; it must be durable before
+   * it resolves, since `session.accept` is its acknowledgement.
+   */
+  admitTeamJoin?: (pending: TeamJoinPending) => Promise<'accepted' | 'refused'>;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -232,6 +253,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   /** The team version the service selected in `welcome`; undefined → none. */
   private teamVersion: 1 | undefined;
+  private teamWanted = false;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
   private pendingMessageCount = 0;
@@ -279,10 +301,38 @@ export class UplinkControlClient implements PreviewEdgeControl {
     );
   }
 
+  /**
+   * Team v1 needs the connection while Core has team work: an invitation
+   * someone may join right now, or a change Uplink still has to learn.
+   */
+  private teamDemand(): boolean {
+    return (
+      this.teamWanted &&
+      this.options.offerTeam === true &&
+      (this.grants === undefined ||
+        (this.grants.has('team-sharing') && this.grantExpiresAt > Date.now()))
+    );
+  }
+
+  /** Tell the client whether Core has team work for Uplink (see teamDemand). */
+  setTeamDemand(wanted: boolean): void {
+    if (this.teamWanted === wanted) return;
+    this.teamWanted = wanted;
+    if (this.stopped) return;
+    if (wanted && this.idle) {
+      this.grants = undefined;
+      this.idle = false;
+      void this.connect();
+    } else if (!wanted) {
+      this.settleDemand();
+    }
+  }
+
   private hasDemand(): boolean {
     return (
       this.probing ||
       this.remoteDemand() ||
+      this.teamDemand() ||
       (this.switches.sharing &&
         (this.grants === undefined || this.grants.has('sharing')) &&
         (this.activeShares.size > 0 || this.shareOperations > 0))
@@ -1468,6 +1518,29 @@ export class UplinkControlClient implements PreviewEdgeControl {
       }
       return;
     }
+    if (frame.type === 'team.join.pending') {
+      if (!this.teamNegotiated() || !this.features.has('team-sharing'))
+        throw new Error('unnegotiated team join request');
+      if (
+        Buffer.byteLength(raw, 'utf8') > MAX_REMOTE_SESSION_FRAME_BYTES ||
+        !validTeamJoinPending(frame)
+      )
+        throw new Error('invalid team join request');
+      const pending = frame as unknown as TeamJoinPending;
+      void this.handleRemoteSessionRequest(
+        {
+          requestId: pending.requestId,
+          sessionId: pending.sessionId,
+          decisionExpiresAt: pending.decisionExpiresAt,
+          capability: TEAM_BOOTSTRAP_CAPABILITY,
+        },
+        pending,
+      ).catch((error: unknown) => {
+        this.options.log?.warn({ error }, 'team join reservation failed');
+        this.releaseRemoteSession(pending.sessionId, 'team join reservation failed');
+      });
+      return;
+    }
     if (frame.type === 'session.request') {
       if (!this.remoteNegotiated || !this.features.has('remote-control')) {
         throw new Error('unnegotiated remote control request');
@@ -1488,16 +1561,36 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     if (frame.type === 'session.cancelled') {
-      if (!this.remoteNegotiated) throw new Error('unnegotiated remote cancellation');
+      if (!this.remoteNegotiated && !this.teamNegotiated())
+        throw new Error('unnegotiated remote cancellation');
       if (!validRemoteSessionCancelled(frame)) throw new Error('invalid remote cancellation');
       this.releaseRemoteSession(frame.sessionId as string, 'Uplink cancelled remote session');
       return;
     }
     if (frame.type === 'session.ticket') {
-      if (!this.remoteNegotiated || !this.features.has('remote-control'))
+      const join = frame.capability === TEAM_BOOTSTRAP_CAPABILITY;
+      if (
+        join
+          ? !this.teamNegotiated() || !this.features.has('team-sharing')
+          : !this.remoteNegotiated || !this.features.has('remote-control')
+      )
         throw new Error('unnegotiated remote ticket');
-      if (!validRemoteSessionTicket(frame)) throw new Error('invalid remote ticket');
+      if (!(join ? validTeamSessionTicket(frame) : validRemoteSessionTicket(frame)))
+        throw new Error('invalid remote ticket');
       const session = this.remoteSessions.get(frame.sessionId as string);
+      // A ticket of the other kind, or for another redemption, is not this
+      // session's: a join's tunnel only opens for the redemption Core accepted.
+      if (session !== undefined && (session.joinRedemptionId !== undefined) !== join) {
+        this.releaseRemoteSession(frame.sessionId as string, 'remote ticket of another kind');
+        return;
+      }
+      if (
+        session?.joinRedemptionId !== undefined &&
+        session.joinRedemptionId !== frame.redemptionId
+      ) {
+        this.releaseRemoteSession(frame.sessionId as string, 'team ticket for another redemption');
+        return;
+      }
       // A well-formed ticket for a session this side already released is a
       // race with its own deadline, not a hostile peer. Closing the control
       // socket for it would take every other remote session and the preview
@@ -1693,7 +1786,10 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (notify) void this.disableFeaturesOnce(reason).catch(() => undefined);
   }
 
-  private async handleRemoteSessionRequest(request: RemoteConnectorRequest): Promise<void> {
+  private async handleRemoteSessionRequest(
+    request: RemoteConnectorRequest,
+    join?: TeamJoinPending,
+  ): Promise<void> {
     const socket = this.socket;
     const startedAt = Date.now();
     this.options.log?.info(
@@ -1717,8 +1813,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
     };
     if (this.remoteSessions.has(request.sessionId)) return;
     // The capability stays negotiated so switching back on needs no reconnect;
-    // while the switch is off every admission is refused here.
-    if (!this.switches.remoteAccess) return refuse('unavailable');
+    // while the switch is off every admission is refused here. A team join is
+    // not Remote Control and does not depend on that switch.
+    if (join === undefined && !this.switches.remoteAccess) return refuse('unavailable');
     if (this.remoteSessions.size >= MAX_REMOTE_RESERVATIONS) return refuse('limit_reached');
     if (!this.options.reserveRemoteConnector || request.decisionExpiresAt <= Date.now()) {
       return refuse('unavailable');
@@ -1727,8 +1824,27 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const timeoutMs = Math.min(15_000, request.decisionExpiresAt - Date.now());
     const deadlineTimer = setTimeout(() => controller.abort(), timeoutMs);
     deadlineTimer.unref();
-    const session: RemoteSession = { requestId: request.requestId, controller, deadlineTimer };
+    const session: RemoteSession = {
+      requestId: request.requestId,
+      controller,
+      deadlineTimer,
+      ...(join === undefined ? {} : { joinRedemptionId: join.redemptionId }),
+    };
     this.remoteSessions.set(request.sessionId, session);
+    if (join !== undefined) {
+      // Durable before the accept: `session.accept` acknowledges this decision.
+      let decision: 'accepted' | 'refused';
+      try {
+        decision = (await this.options.admitTeamJoin?.(join)) ?? 'refused';
+      } catch {
+        decision = 'refused';
+      }
+      if (decision !== 'accepted' || this.remoteSessions.get(request.sessionId) !== session) {
+        if (this.remoteSessions.get(request.sessionId) === session)
+          this.releaseRemoteSession(request.sessionId, 'team join refused');
+        return refuse('unavailable');
+      }
+    }
     let result: RemoteConnectorReservation | 'unavailable' | 'limit_reached';
     let handedOff = false;
     let released = false;
@@ -1760,8 +1876,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
       this.remoteSessions.get(request.sessionId) !== session ||
       controller.signal.aborted ||
       this.socket !== socket ||
-      !this.remoteNegotiated ||
-      !this.features.has('remote-control') ||
+      (join === undefined
+        ? !this.remoteNegotiated || !this.features.has('remote-control')
+        : !this.teamNegotiated() || !this.features.has('team-sharing')) ||
       Date.now() >= request.decisionExpiresAt
     ) {
       if (typeof result !== 'string' && !released) {
@@ -2074,6 +2191,56 @@ function validRemoteSessionRequest(frame: Record<string, unknown>): boolean {
     typeof frame.decisionExpiresAt === 'number' &&
     Number.isSafeInteger(frame.decisionExpiresAt) &&
     frame.decisionExpiresAt > 0
+  );
+}
+
+/** `team.join.pending` exactly as team bootstrap interface v1 defines it. */
+function validTeamJoinPending(frame: Record<string, unknown>): boolean {
+  const keys = [
+    'type',
+    'requestId',
+    'sessionId',
+    'invitationId',
+    'redemptionId',
+    'projectId',
+    'permissions',
+    'bootstrapSessionId',
+    'decisionExpiresAt',
+    'capability',
+  ];
+  const permissions = frame.permissions;
+  return (
+    Object.keys(frame).length === keys.length &&
+    keys.every((key) => Object.hasOwn(frame, key)) &&
+    frame.type === 'team.join.pending' &&
+    validRemoteId(frame.requestId) &&
+    validRemoteId(frame.sessionId) &&
+    typeof frame.invitationId === 'string' &&
+    /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(frame.invitationId) &&
+    validRemoteId(frame.redemptionId) &&
+    validRemoteId(frame.projectId) &&
+    Array.isArray(permissions) &&
+    (JSON.stringify(permissions) === '["read"]' ||
+      JSON.stringify(permissions) === '["read","execute"]') &&
+    frame.bootstrapSessionId === frame.sessionId &&
+    typeof frame.decisionExpiresAt === 'number' &&
+    Number.isSafeInteger(frame.decisionExpiresAt) &&
+    frame.decisionExpiresAt > 0 &&
+    frame.capability === TEAM_BOOTSTRAP_CAPABILITY
+  );
+}
+
+function validTeamSessionTicket(frame: Record<string, unknown>): boolean {
+  return (
+    Object.keys(frame).length === 6 &&
+    frame.type === 'session.ticket' &&
+    validRemoteId(frame.sessionId) &&
+    validRemoteId(frame.redemptionId) &&
+    typeof frame.ticket === 'string' &&
+    /^[A-Za-z0-9_-]{1,512}$/.test(frame.ticket) &&
+    typeof frame.expiresAt === 'number' &&
+    Number.isSafeInteger(frame.expiresAt) &&
+    frame.capability === TEAM_BOOTSTRAP_CAPABILITY
   );
 }
 

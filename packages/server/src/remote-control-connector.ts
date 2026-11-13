@@ -400,7 +400,7 @@ class ConnectorSession implements RemoteConnectorReservation {
             if (
               !isFrame(frame, 'attached', ['sessionId', 'capability']) ||
               frame.sessionId !== this.request.sessionId ||
-              frame.capability !== 'remote-control-v1'
+              frame.capability !== (this.request.capability ?? 'remote-control-v1')
             ) {
               this.failProtocol(frame);
               return;

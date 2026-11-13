@@ -1495,8 +1495,11 @@ export async function buildEmbeddedServer(
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
-          // Team v1 is only used once the service selects it in welcome.
-          offerTeam: true,
+          // Team v1 is only used once the service selects it in welcome, and
+          // only offered where an invited person can also join: through the
+          // same connector Remote Control uses for its tunnel.
+          offerTeam: remoteConnector !== undefined,
+          admitTeamJoin: (pending) => eventStore.projectTeam.admitJoin(pending),
           ...(config.publicPreviews.expectedInstallationId === undefined
             ? {}
             : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
@@ -5548,7 +5551,11 @@ export async function buildEmbeddedServer(
       log: app.log,
     });
     const teamTimer = setInterval(() => {
-      void teamOutbox.run().catch((error: unknown) => {
+      void (async () => {
+        // Hold the Uplink connection while someone may join or a change is queued.
+        uplinkControl.setTeamDemand(await eventStore.projectTeam.hasTeamWork());
+        await teamOutbox.run();
+      })().catch((error: unknown) => {
         if (!(error instanceof SealedError))
           app.log.warn({ err: error }, 'verity: team outbox delivery failed');
       });

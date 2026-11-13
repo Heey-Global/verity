@@ -44,6 +44,14 @@ describe('team join route', () => {
       INVITATION,
       new Date(Date.now() + 3_600_000),
     );
+    // Core accepted this join's tunnel; the route takes only its redemption.
+    await ctx.store.projectTeam.admitJoin({
+      sessionId: 'session_1',
+      invitationId: INVITATION,
+      redemptionId: 'r1',
+      projectId: 'p1',
+      permissions: ['read', 'execute'],
+    });
     const join = (overrides: Record<string, string> = {}) =>
       app.inject({
         method: 'POST',
@@ -69,7 +77,9 @@ describe('team join route', () => {
     const wrongSecret = await join({ secret: 'A'.repeat(43), redemptionId: 'r2' });
     const otherRedemption = await join({ redemptionId: 'r3' });
     const unknown = await join({ invitationId: 'B'.repeat(43), redemptionId: 'r4' });
-    for (const refused of [wrongSecret, otherRedemption, unknown]) {
+    // A redemption no accepted tunnel carries, as an app inventing one would send.
+    const invented = await join({ redemptionId: 'invented' });
+    for (const refused of [wrongSecret, otherRedemption, unknown, invented]) {
       expect(refused.statusCode).toBe(410);
       expect(refused.json()).toEqual(wrongSecret.json());
     }
