@@ -2,6 +2,7 @@ import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
 import { registerProjectTeamRoutes } from './project-team-routes.js';
+import { registerTeamJoinRoutes } from './team-join-routes.js';
 import { createMemberRevocation } from './member-revocation.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
@@ -3763,6 +3764,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     onError: (step, error) =>
       app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
   });
+  registerTeamJoinRoutes(app, { store: deps.eventStore, authRegistry: deps.authRegistry });
   registerProjectTeamRoutes(app, {
     store: deps.eventStore,
     projectName: async (projectId) =>

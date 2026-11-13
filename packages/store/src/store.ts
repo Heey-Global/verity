@@ -9809,12 +9809,15 @@ export class EventStore implements EventSink {
     id: string;
     tokenHash: string;
     label?: string | null;
+    /** The person the device belongs to; absent → the column default (the administrator). */
+    userId?: string;
   }): Promise<string> {
     const row = await this.db
       .insertInto('auth_tokens')
       .values({
         id: record.id,
         token_hash: record.tokenHash,
+        ...(record.userId === undefined ? {} : { user_id: record.userId }),
         label: record.label ?? null,
         expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
       })
