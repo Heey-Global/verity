@@ -204,18 +204,21 @@ export async function retireStoppedContainers(input: {
           keep(current, 'No newer image in the managed repository');
           return;
         }
-        // A relay may only be retired with its stopped sandbox generation, never independently of a running sandbox.
+        // A relay is retired only after its sandbox generation is gone. A sleeping
+        // project keeps a STOPPED sandbox whose wake adopts this exact relay by
+        // name; removing the relay alone left that sandbox un-wakeable. Once the
+        // sandbox itself is retired (earlier in this pass or later), the re-listing
+        // here no longer finds it and the relay follows.
         if (
           relay(current) &&
           (await docker.listContainers!()).some(
             (c) =>
               c.labels?.[projectLabel] === projectId &&
               !relay(c) &&
-              c.labels?.[generationLabel] === current.labels?.[generationLabel] &&
-              !stopped(c),
+              c.labels?.[generationLabel] === current.labels?.[generationLabel],
           )
         ) {
-          keep(current, 'Relay generation still has a running sandbox');
+          keep(current, 'Relay generation still has a sandbox');
           return;
         }
         if (!latestProject && heldProjects.has(projectId)) return; // Project changed during the pass; retry next time.

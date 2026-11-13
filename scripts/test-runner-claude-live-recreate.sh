@@ -65,7 +65,7 @@ start_sandbox() {
 server_args=(--network "$network" --user 1000:1000 --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$repo_source:/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 node packages/server/dist/runner-claude-recreate-server.js)
+  node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 node packages/server/dist/runner-claude-recreate-server.js)
 
 start_sandbox
 docker run --name "$server_seed" "${server_args[@]}" seed
@@ -81,7 +81,7 @@ start_sandbox
 server_args=(--network "$network" --user 1000:1000 --group-add 1101 -w /repo
   -e "VERITY_LIVE_SMOKE_POSTGRES_URL=$postgres_url"
   -v "$repo_source:/repo:ro" -v "$runtime_volume:/runtime" -v "$work_volume:/work"
-  node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 node packages/server/dist/runner-claude-recreate-server.js)
+  node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 node packages/server/dist/runner-claude-recreate-server.js)
 docker run --name "$server_resume" "${server_args[@]}" resume
 
 test "$(docker run --rm -v "$work_volume:/work:ro" busybox:1.37 \

@@ -1,12 +1,37 @@
 import { ESLint } from 'eslint';
 import ts from 'typescript';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { appendFileSync } from 'node:fs';
 import { setImmediate } from 'node:timers/promises';
 import { LocalLintCache } from './lint-cache.mjs';
 import { AmbientClassificationCache } from './lint-ambient-cache.mjs';
 
-// Keep type graphs small even when a scoped invocation names many files.
-const typeBatchSize = 16;
+// Keep type graphs small even when a scoped invocation names many files. The
+// runner passes its group size, so each worker builds exactly one program.
+const defaultTypeBatchSize = 16;
+
+/** @param {string[]} files @param {string} stage */
+function profilePhase(files, stage) {
+  if (
+    process.env.VERITY_LINT_PROFILE !== '1' ||
+    !files.some((file) => file.endsWith('/packages/server/src/server.ts'))
+  )
+    return;
+  const { rss, heapUsed, heapTotal } = process.memoryUsage();
+  const line = JSON.stringify({
+    lintProfile: stage,
+    time: process.uptime(),
+    rss,
+    heapUsed,
+    heapTotal,
+  });
+  // The parent discards partial worker output after OOM; retain phase evidence separately.
+  if (process.env.LINT_MEASUREMENT_DIR) {
+    appendFileSync(join(process.env.LINT_MEASUREMENT_DIR, 'phases.ndjson'), `${line}\n`);
+  } else {
+    console.error(line);
+  }
+}
 
 /** @param {ts.Diagnostic} diagnostic */
 function diagnosticError(diagnostic) {
@@ -80,6 +105,7 @@ function createLintProject(configPath, cache, classifications) {
     // Each invocation discovers current configuration and ambient declarations.
     // Discard temporary discovery ASTs and completed ESLint state before parsing.
     globalThis.gc?.();
+    profilePhase(files, 'program-start');
     const host = Object.assign(ts.createCompilerHost(config.options), {
       useSourceOfProjectReferenceRedirect: () => true,
       // Documentation trees across the server's imports can exhaust a worker's
@@ -87,12 +113,14 @@ function createLintProject(configPath, cache, classifications) {
       // inspect TypeScript documentation tags.
       jsDocParsingMode: ts.JSDocParsingMode.ParseForTypeInfo,
     });
-    return ts.createProgram({
+    const program = ts.createProgram({
       rootNames: [...new Set([...files, ...ambient])],
       options: config.options,
       projectReferences: config.projectReferences,
       host: cache ? cache.observe(host) : host,
     });
+    profilePhase(files, 'program-ready');
+    return program;
   };
 }
 
@@ -112,6 +140,9 @@ export function createLintProgram(configPath, files) {
  * @param {string} cwd
  */
 async function lintBatch(batch, program, cwd) {
+  const profile =
+    process.env.VERITY_LINT_PROFILE === '1' &&
+    batch.some((file) => file.endsWith('/packages/server/src/server.ts'));
   const eslint = new ESLint({
     cwd,
     warnIgnored: false,
@@ -122,19 +153,49 @@ async function lintBatch(batch, program, cwd) {
         languageOptions: {
           parserOptions: { projectService: false, programs: [program] },
         },
+        ...(profile
+          ? {
+              plugins: {
+                'lint-profile': {
+                  rules: {
+                    phase: {
+                      meta: { schema: [] },
+                      create() {
+                        return {
+                          Program() {
+                            profilePhase(batch, 'rules-start');
+                          },
+                          'Program:exit'() {
+                            profilePhase(batch, 'rules-exit');
+                          },
+                        };
+                      },
+                    },
+                  },
+                },
+              },
+              rules: { 'lint-profile/phase': 'warn' },
+            }
+          : {}),
       },
     ],
   });
-  return eslint.lintFiles(batch);
+  profilePhase(batch, 'eslint-start');
+  const results = await eslint.lintFiles(batch);
+  profilePhase(batch, 'eslint-complete');
+  return results;
 }
 
 /**
  * Explicit file paths only, matching the scoped npm command and lint.sh batches.
  * @param {string[]} files
  * @param {string} [cwd]
- * @param {{ cache?: boolean, ambientCache?: boolean }} [options]
+ * @param {{ cache?: boolean, ambientCache?: boolean, typeBatchSize?: number }} [options]
  */
 export async function lintFiles(files, cwd = process.cwd(), options = {}) {
+  const typeBatchSize = options.typeBatchSize ?? defaultTypeBatchSize;
+  if (!Number.isInteger(typeBatchSize) || typeBatchSize < 1)
+    throw new Error('The type batch size must be a positive integer.');
   if (!files.length) throw new Error('Provide explicit file paths to lint.');
   const base = new ESLint({ cwd, warnIgnored: false });
   /** @type {Map<string, string[]>} */
@@ -193,16 +254,21 @@ export async function lintFiles(files, cwd = process.cwd(), options = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
+  const typeBatch = process.argv.find((argument) => argument.startsWith('--type-batch='));
   const files = process.argv
     .slice(2)
     .filter(
       (argument) =>
-        argument !== '--' && argument !== '--local-cache' && argument !== '--no-ambient-cache',
+        argument !== '--' &&
+        argument !== '--local-cache' &&
+        argument !== '--no-ambient-cache' &&
+        !argument.startsWith('--type-batch='),
     );
   const cache = process.argv.includes('--local-cache') && !process.env.CI;
   const { eslint, results, cached } = await lintFiles(files, process.cwd(), {
     cache,
     ambientCache: !process.argv.includes('--no-ambient-cache'),
+    ...(typeBatch ? { typeBatchSize: Number(typeBatch.slice('--type-batch='.length)) } : {}),
   });
   if (cached) process.stdout.write(`Reused clean lint results for ${files.length} files.\n`);
   process.stdout.write((await eslint.loadFormatter('stylish')).format(results));

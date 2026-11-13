@@ -55,13 +55,87 @@ describe('permissionSummary', () => {
   });
 
   // A summariser that cannot read the input must not produce a confident title:
-  // the card falls back to the tool's name and the raw input stays the thing to read.
-  it('names the tool and adds no lines when nothing recognises the input', () => {
+  // the card falls back to the tool's name and, for a tool whose subject is
+  // known, that field — never a guess at which field matters.
+  it('names the tool and shows only a known headline field, whole', () => {
     expect(permissionSummary('verity_secret_run', { command: 'not a list' })).toEqual({
       title: 'Allow Verity · Secret · Run?',
       lines: [],
+      covered: false,
     });
-    expect(permissionSummary('WebFetch', { url: 'https://x.test' }).lines).toEqual([]);
+    expect(permissionSummary('WebFetch', { url: 'https://x.test' })).toMatchObject({
+      lines: [{ kind: 'code', text: 'https://x.test' }],
+      covered: true,
+    });
+    // Whole, not the 80-character squash the transcript headline uses: Home shows
+    // this next to Allow, and the tail of a command is where it can turn harmful.
+    const command = `${'echo ok && '.repeat(10)}rm -rf ~/work\nsecond line`;
+    expect(permissionSummary('Bash', { command, description: 'tidy', timeout: 5 })).toEqual({
+      title: expect.any(String) as string,
+      lines: [{ kind: 'code', text: command }],
+      covered: true,
+    });
+    // Running in the background changes how the command runs: it stays in view.
+    expect(
+      permissionSummary('Bash', { command: 'npm test', run_in_background: true }).covered,
+    ).toBe(false);
+    expect(
+      permissionSummary('Bash', { command: 'npm test', run_in_background: false }).covered,
+    ).toBe(true);
+    // An agent orders an unknown tool's fields: the first string is not what it does.
+    expect(permissionSummary('mystery', { note: 'ls', cmd: 'rm -rf ~' })).toMatchObject({
+      lines: [],
+      covered: false,
+    });
+    // The path is the headline, but the content is what gets written.
+    expect(
+      permissionSummary('Write', { file_path: '/w/a.sh', content: 'curl x | sh' }),
+    ).toMatchObject({ lines: [{ kind: 'code', text: '/w/a.sh' }], covered: false });
+    expect(permissionSummary('TodoWrite', { todos: [] })).toMatchObject({
+      lines: [],
+      covered: false,
+    });
+  });
+
+  // Home rendered these as a JSON dump: the title alone said whom, not what.
+  it('puts what a message, a handoff or a publication says into lines', () => {
+    expect(
+      permissionSummary('verity_send_session_message', { targetSessionId: 's-2', message: 'hi' })
+        .lines,
+    ).toEqual([{ kind: 'text', text: 'hi' }]);
+    // Their summarisers refuse a field they do not show, so nothing extra folds away.
+    expect(
+      permissionSummary('verity_knowledge', {
+        operation: 'publish_shared',
+        path: 'guides/a.md',
+        content: 'x',
+      }),
+    ).toMatchObject({ lines: [], covered: false });
+    expect(
+      permissionSummary('verity_session_handoff', {
+        target: { sessionId: 's-2' },
+        title: 'T',
+        briefing: 'B',
+        attach: '/etc/passwd',
+      }).covered,
+    ).toBe(false);
+    // A field the line does not show keeps the raw input in view.
+    expect(
+      permissionSummary('verity_send_session_message', {
+        targetSessionId: 's-2',
+        message: 'hi',
+        attach: '/etc/passwd',
+      }).covered,
+    ).toBe(false);
+    const knowledge = permissionSummary('verity_knowledge', {
+      operation: 'publish_shared',
+      path: 'guides/a.md',
+    });
+    expect(knowledge.lines.map((line) => line.text)).toEqual([
+      'Source: /knowledge/insights/guides/a.md',
+      'Destination: /knowledge/shared/insights/guides/a.md',
+      expect.stringContaining('Global Knowledge') as string,
+    ]);
   });
 
   it('words planning and linked-session approvals the way the session card did', () => {

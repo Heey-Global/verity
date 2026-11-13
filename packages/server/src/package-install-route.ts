@@ -20,6 +20,12 @@ import {
   revokeNpmInstallGrant,
 } from './package-install-grants.js';
 
+/** Registry lookups one verification runs at once; the broker bounds all requests. */
+export const PUBLICATION_LOOKUP_CONCURRENCY = 6;
+/** Publication times never change once released, so facts outlive one install. */
+export const PUBLICATION_FACT_TTL_MS = 24 * 60 * 60_000;
+export const PUBLICATION_FACT_LIMIT = 50_000;
+
 const npmPackages = z
   .array(
     z
@@ -178,6 +184,7 @@ export function registerPackageInstallRoute(
           return reply
             .code(400)
             .send({ error: 'npm verification needs packages and minimumAgeDays' });
+        const minimumAgeDays = body.minimumAgeDays;
         const identities = new Set<string>();
         const exceptions = new Set<string>();
         const violations: string[] = [];
@@ -188,47 +195,94 @@ export function registerPackageInstallRoute(
           if (!versions.includes(pkg.version)) versions.push(pkg.version);
           byName.set(pkg.name, versions);
         }
-        let verifying = '';
-        try {
-          for (const [name, versions] of byName) {
-            verifying = `${name}@${versions.join(',')}`;
-            const times = new Map(
-              versions.map((version) => [
-                version,
-                publicationTime(npmPackageIdentity(name, version)),
-              ]),
+        // Look up names concurrently; the first failure stops the remaining lookups.
+        const lookups = [...byName];
+        const resolved = new Map<string, Map<string, string | undefined>>();
+        const stop = new AbortController();
+        const lookupSignal = AbortSignal.any([controller.signal, stop.signal]);
+        // Report the earliest rejected package in lockfile order among completed
+        // lookups, not whichever finished first.
+        let rejection: { index: number; error: string } | undefined;
+        let failed: string | undefined;
+        let next = 0;
+        const lookupOne = async (
+          index: number,
+          name: string,
+          versions: string[],
+        ): Promise<void> => {
+          const times = new Map(
+            versions.map((version) => [
+              version,
+              publicationTime(npmPackageIdentity(name, version)),
+            ]),
+          );
+          const missing = versions.filter((version) => times.get(version) === undefined);
+          if (missing.length > 0) {
+            const metadata = await packageBroker.publicationTimes(
+              name,
+              missing,
+              lookupSignal,
+              authorized,
             );
-            const missing = versions.filter((version) => times.get(version) === undefined);
-            if (missing.length > 0) {
-              const metadata = await packageBroker.publicationTimes(
-                name,
-                missing,
-                AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]),
-                authorized,
-              );
-              for (const version of missing) {
-                const identity = npmPackageIdentity(name, version);
-                if (!metadata.versions.has(version))
-                  return reply
-                    .code(409)
-                    .send({ error: `Cannot verify ${identity}: release metadata is unavailable.` });
-                const published = metadata.times.get(version);
-                if (
-                  typeof published !== 'string' ||
-                  !npmReleaseEligibility(published, body.minimumAgeDays).availableAt
-                )
-                  return reply.code(409).send({
-                    error: `Cannot verify ${identity}: publication time is missing or invalid.`,
-                  });
-                while (publicationTimes.size >= 10_000)
-                  publicationTimes.delete(publicationTimes.keys().next().value!);
-                publicationTimes.set(identity, { published, expires: Date.now() + 5 * 60_000 });
-                times.set(version, published);
+            for (const version of missing) {
+              const identity = npmPackageIdentity(name, version);
+              const published = metadata.times.get(version);
+              const problem = !metadata.versions.has(version)
+                ? 'release metadata is unavailable'
+                : typeof published !== 'string' ||
+                    !npmReleaseEligibility(published, minimumAgeDays).availableAt
+                  ? 'publication time is missing or invalid'
+                  : undefined;
+              if (problem || typeof published !== 'string') {
+                const error = `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
+                if (!rejection || index < rejection.index) rejection = { index, error };
+                stop.abort();
+                return;
               }
+              while (publicationTimes.size >= PUBLICATION_FACT_LIMIT)
+                publicationTimes.delete(publicationTimes.keys().next().value!);
+              publicationTimes.set(identity, {
+                published,
+                expires: Date.now() + PUBLICATION_FACT_TTL_MS,
+              });
+              times.set(version, published);
             }
+          }
+          resolved.set(name, times);
+        };
+        const lookup = async (): Promise<void> => {
+          while (next < lookups.length && !lookupSignal.aborted) {
+            const index = next++;
+            const [name, versions] = lookups[index]!;
+            try {
+              await lookupOne(index, name, versions);
+            } catch (error) {
+              // A lookup cut short by another lookup's verdict does not change it.
+              if (stop.signal.aborted) return;
+              // Any failure, not only the registry call, names its package and stops the rest.
+              failed ??= `${name}@${versions.join(',')}`;
+              stop.abort();
+              throw error;
+            }
+          }
+        };
+        const outcomes = await Promise.allSettled(
+          Array.from({ length: Math.min(PUBLICATION_LOOKUP_CONCURRENCY, lookups.length) }, lookup),
+        );
+        const lookupFailed =
+          failed !== undefined ||
+          controller.signal.aborted ||
+          outcomes.some((outcome) => outcome.status === 'rejected');
+        if (!lookupFailed && rejection !== undefined)
+          return reply.code(409).send({ error: rejection.error });
+        try {
+          if (lookupFailed) throw new Error('publication lookup failed');
+          // Evaluate in lockfile order so the reported exceptions stay deterministic.
+          for (const [name, versions] of byName) {
+            const times = resolved.get(name)!;
             for (const version of versions) {
               const identity = npmPackageIdentity(name, version);
-              const eligibility = npmReleaseEligibility(times.get(version), body.minimumAgeDays);
+              const eligibility = npmReleaseEligibility(times.get(version), minimumAgeDays);
               if (!eligibility.availableAt)
                 return reply.code(409).send({
                   error: `Cannot verify ${identity}: publication time is missing or invalid.`,
@@ -243,7 +297,7 @@ export function registerPackageInstallRoute(
         } catch {
           if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
           return reply.code(502).send({
-            error: `Cannot verify ${verifying || 'npm release'} metadata; installation remains blocked.`,
+            error: `Cannot verify ${failed ?? 'npm release'} metadata; installation remains blocked.`,
           });
         }
         if (violations.length > 0) {
@@ -257,11 +311,11 @@ export function registerPackageInstallRoute(
             toolUseId: `package-install-exception-${randomUUID()}`,
             toolName: 'verity_package_install',
             input: {
-              command: `${body.command}\nRelease-age exception for this installation only (${body.minimumAgeDays} days):\n${violations.join('\n')}`,
+              command: `${body.command}\nRelease-age exception for this installation only (${minimumAgeDays} days):\n${violations.join('\n')}`,
               manager: 'npm',
               supported: false,
               packages: [...exceptions],
-              minimumAgeDays: body.minimumAgeDays,
+              minimumAgeDays,
             },
             channel: 'acp',
             allowStandingGrant: false,
@@ -285,7 +339,7 @@ export function registerPackageInstallRoute(
           projectId,
           containerGeneration: binding.containerGeneration,
           sessionId: body.sessionId,
-          policy: { minimumAgeDays: body.minimumAgeDays, packages: identities, exceptions },
+          policy: { minimumAgeDays, packages: identities, exceptions },
         });
         return { action: 'continue', installToken };
       }

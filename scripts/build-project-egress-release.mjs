@@ -97,7 +97,7 @@ if (augment) {
       nodeFeature:
         'ghcr.io/devcontainers/features/node@sha256:8c0de46939b61958041700ee89e3493f3b2e4131a06dc46b4d9423427d06e5f6',
       additionalFeatures: toolkit ? [toolkit] : [],
-      nodeOptions: { version: '26.13.0' },
+      nodeOptions: { version: '26.13.1' },
       toolkitOptions: { installRunnerSupervisor: true },
     }) + '\n',
   );

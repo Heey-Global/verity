@@ -985,6 +985,7 @@ it('logs the meeting data path without transcript text, PIN or credentials', asy
       revision: 1,
     },
     botId: 'bot',
+    meetingUrl: 'https://meet.google.com/abc-defg-hij',
     pin: '123456',
     credentials: { apiKey: 'secret-key', webhookSecret: Buffer.alloc(32).toString('base64') },
     identities: {},
@@ -1041,7 +1042,17 @@ it('logs the meeting data path without transcript text, PIN or credentials', asy
       ),
     );
     expect(log.info).toHaveBeenCalledWith(
-      { meetingId: 'meeting', botState: 'joined_recording', previousBotState: null },
+      {
+        meetingId: 'meeting',
+        botId: 'bot',
+        platform: 'google_meet',
+        botState: 'joined_recording',
+        previousBotState: null,
+        joinStatus: 'joined',
+        reason: null,
+        eventType: null,
+        eventSubType: null,
+      },
       'Online meeting bot state changed',
     );
     const origin = (service as unknown as { targetOrigin: string }).targetOrigin;
@@ -1101,7 +1112,7 @@ it('logs the meeting data path without transcript text, PIN or credentials', asy
       ),
     ).toHaveLength(1);
     const logged = JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls]);
-    expect(logged).not.toMatch(/confidential|123456|secret-key/u);
+    expect(logged).not.toMatch(/confidential|123456|secret-key|abc-defg-hij/u);
   } finally {
     await service.close();
   }
@@ -1196,3 +1207,192 @@ it.each([false, true])(
     }
   },
 );
+
+/** A running online meeting with a provider bot, as the reconciliation loop finds it. */
+function joiningMeeting(bot: () => unknown) {
+  const rows = new Map<string, unknown>([
+    [
+      'meeting:meeting',
+      {
+        meeting: {
+          id: 'meeting',
+          sessionId: 'session',
+          engine: 'attendee',
+          title: null,
+          startedAt: 0,
+          endedAt: null,
+          state: 'active',
+          transcript: '',
+          captureStatus: 'preparing',
+          ownerTokenHash: 'hash',
+          revision: 1,
+        },
+        botId: 'bot',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        pin: '123456',
+        credentials: { apiKey: 'secret-key', webhookSecret: Buffer.alloc(32).toString('base64') },
+        identities: {},
+        phase: 'running',
+        stopRequested: false,
+        listenForVerity: false,
+      },
+    ],
+  ]);
+  const store = {
+    getSession: async () => ({ id: 'session' }),
+    getAttendeeState: async (id: string) => rows.get(id),
+    putAttendeeState: async (id: string, state: unknown) => {
+      rows.set(id, structuredClone(state));
+    },
+    deleteAttendeeState: async (id: string) => {
+      rows.delete(id);
+    },
+    listAttendeeState: async () =>
+      [...rows].filter(([id]) => id !== 'config').map(([id, state]) => ({ id, state })),
+  } as unknown as EventStore;
+  const request = vi.fn(async (path: string) => (path.endsWith('/leave') ? null : bot()));
+  const log = { info: vi.fn(), warn: vi.fn() };
+  const service = new AttendeeMeetings({
+    store,
+    ingest: vi.fn(),
+    log,
+    client: () =>
+      ({
+        request,
+        transcript: async () => [],
+      }) as unknown as import('./attendee-client.js').AttendeeClient,
+  });
+  return { rows, request, log, service };
+}
+
+// Before this, the bot's provider reason was dropped: a meeting that could not be joined
+// looked like one still joining until someone pressed End.
+it('reports why the bot could not join, without logging the meeting link', async () => {
+  const { service, log } = joiningMeeting(() => ({
+    state: 'fatal_error',
+    events: [
+      { type: 'join_requested', created_at: '2026-11-13T07:56:50Z' },
+      {
+        type: 'could_not_join_meeting',
+        sub_type: 'login_required',
+        created_at: '2026-11-13T07:57:30Z',
+      },
+    ],
+  }));
+  await service.open();
+  try {
+    await vi.waitFor(async () =>
+      expect(await service.status('session', 'meeting')).toEqual({
+        status: 'failed',
+        reason: 'login_required',
+        platform: 'google_meet',
+      }),
+    );
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        meetingId: 'meeting',
+        botId: 'bot',
+        platform: 'google_meet',
+        botState: 'fatal_error',
+        joinStatus: 'failed',
+        reason: 'login_required',
+        eventType: 'could_not_join_meeting',
+        eventSubType: 'login_required',
+      }),
+      'Online meeting bot could not join',
+    );
+    // Another session's caller learns nothing about this meeting.
+    expect(await service.status('other', 'meeting')).toBeUndefined();
+    const logged = JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls]);
+    expect(logged).not.toMatch(/abc-defg-hij|123456|secret-key/u);
+  } finally {
+    await service.close();
+  }
+});
+
+it('shows the waiting room only when the provider reports it', async () => {
+  let state = 'joining';
+  const { service } = joiningMeeting(() => ({ state, events: [] }));
+  await service.open();
+  try {
+    await vi.waitFor(async () =>
+      expect(await service.status('session', 'meeting')).toMatchObject({ status: 'joining' }),
+    );
+    state = 'waiting_room';
+    (service as unknown as { poll(): void }).poll();
+    await vi.waitFor(async () =>
+      expect(await service.status('session', 'meeting')).toMatchObject({ status: 'waiting' }),
+    );
+    expect(await service.joinStatuses()).toEqual(new Map([['meeting', 'waiting']]));
+  } finally {
+    await service.close();
+  }
+});
+
+// The app sent End up to nine times while a bot hung in joining; each one asked the provider
+// to leave again.
+it('asks the provider to leave once however often End is pressed', async () => {
+  const { service, request } = joiningMeeting(() => ({ state: 'joining' }));
+  await Promise.all([service.stop('session', 'meeting'), service.stop('session', 'meeting')]);
+  await service.stop('session', 'meeting');
+  expect(request.mock.calls.filter(([path]) => String(path).endsWith('/leave'))).toHaveLength(1);
+});
+
+it('logs the enum fields of a signed state change and nothing else', async () => {
+  const { createHmac } = await import('node:crypto');
+  const { service, log } = joiningMeeting(() => ({ state: 'joining' }));
+  await service.open();
+  try {
+    const event = {
+      idempotency_key: '00000000-0000-4000-8000-000000000001',
+      bot_id: 'bot',
+      trigger: 'bot.state_change',
+      data: {
+        new_state: 'waiting_room',
+        old_state: 'joining',
+        event_type: 'put_in_waiting_room',
+        event_sub_type: null,
+        note: 'Ask Alice for the budget',
+      },
+    };
+    const canonical = (value: unknown): string =>
+      Array.isArray(value)
+        ? `[${value.map(canonical).join(',')}]`
+        : value && typeof value === 'object'
+          ? `{${Object.keys(value)
+              .sort()
+              .map(
+                (key) =>
+                  `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+              )
+              .join(',')}}`
+          : JSON.stringify(value);
+    const signature = createHmac('sha256', Buffer.alloc(32))
+      .update(canonical(event), 'utf8')
+      .digest('base64');
+    const origin = (service as unknown as { targetOrigin: string }).targetOrigin;
+    const response = await fetch(new URL('/webhooks/attendee', origin), {
+      method: 'POST',
+      headers: { 'x-webhook-signature': signature },
+      body: JSON.stringify(event),
+    });
+    expect(response.status).toBe(202);
+    expect(log.info).toHaveBeenCalledWith(
+      {
+        status: 202,
+        outcome: 'accepted',
+        trigger: 'bot.state_change',
+        meetingId: 'meeting',
+        botId: 'bot',
+        newState: 'waiting_room',
+        oldState: 'joining',
+        eventType: 'put_in_waiting_room',
+        eventSubType: null,
+      },
+      'Attendee webhook answered',
+    );
+    expect(JSON.stringify(log.info.mock.calls)).not.toMatch(/budget/u);
+  } finally {
+    await service.close();
+  }
+});

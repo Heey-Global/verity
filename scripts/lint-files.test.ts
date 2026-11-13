@@ -174,6 +174,40 @@ it('checks every batch and project while keeping ignored files out of the result
   ).toEqual(['no-undef']);
 });
 
+it('finds the same problems with one shared program as with many small ones', async () => {
+  // CI lints large groups in one type program. Sharing the program must not hide
+  // or add findings, and it must actually be one program, not several.
+  const { root, write } = fixture();
+  const shared = write('src/shared.ts', 'export const value: any = "unsafe";');
+  const targets = Array.from({ length: 40 }, (_, index) =>
+    write(
+      `src/target-${index}.ts`,
+      index % 2
+        ? 'import { value } from "./shared.js"; export const result: string = value;'
+        : 'export const fine: string = "ok";',
+    ),
+  );
+  const findings = (results: Awaited<ReturnType<typeof lintFiles>>['results']) =>
+    Object.fromEntries(
+      results.map((result) => [result.filePath, result.messages.map((m) => m.ruleId)]),
+    );
+  const reads = vi.spyOn(ts.sys, 'readFile');
+  const small = await lintFiles(targets, root, { typeBatchSize: 1 });
+  const smallReads = reads.mock.calls.filter(([file]) => file === shared).length;
+  reads.mockClear();
+  const large = await lintFiles(targets, root, { typeBatchSize: targets.length });
+  // Project discovery reads every included file once; each program reads it again.
+  expect(reads.mock.calls.filter(([file]) => file === shared)).toHaveLength(1 + 1);
+  // Small programs load the shared module only for the targets that import it.
+  expect(smallReads).toBe(1 + targets.filter((_, index) => index % 2).length);
+  expect(findings(large.results)).toEqual(findings(small.results));
+  expect(Object.values(findings(large.results)).flat()).toContain(
+    '@typescript-eslint/no-unsafe-assignment',
+  );
+  reads.mockRestore();
+  await expect(lintFiles(targets, root, { typeBatchSize: 0 })).rejects.toThrow('positive integer');
+});
+
 it('refreshes global types and project includes between invocations', async () => {
   const { root, write } = fixture();
   const target = write('src/target.ts', 'export const result: string = globalValue;');
@@ -191,7 +225,7 @@ it('refreshes global types and project includes between invocations', async () =
   await expect(lintFiles([target], root)).rejects.toThrow('is not included');
 });
 
-it('covers current tracked and new files exactly once in bounded processes and stops on failure', () => {
+it('covers current tracked and new files exactly once per package and stops on failure', () => {
   const { root, write } = fixture();
   const capture = join(root, 'arguments');
   write(
@@ -214,11 +248,15 @@ exit "$LINT_EXIT"
     .split('\0\0')
     .filter(Boolean)
     .map((line) => line.split('\0'));
+  // The runner bounds each worker group; lint.sh hands it one package at a time.
   const files = batches.flatMap((args) => {
     expect(args.slice(0, 2)).toEqual(['scripts/lint-runner.mjs', '--']);
-    expect(args.length - 2).toBeLessThanOrEqual(16);
     return args.slice(2);
   });
+  const packages = new Set(
+    files.filter((file) => file.startsWith('packages/')).map((file) => file.split('/')[1]),
+  );
+  expect(batches.length).toBe(packages.size + 1);
   const tracked = execFileSync(
     'git',
     ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
@@ -362,4 +400,53 @@ it('retains unimported library and type references that change global lint types
   expect(results.flatMap((result) => result.messages.map((message) => message.ruleId))).toContain(
     '@typescript-eslint/no-unsafe-return',
   );
+});
+
+it('reports diagnostic phases without changing typed lint findings', async () => {
+  const { root, write } = fixture();
+  write(
+    'packages/server/tsconfig.json',
+    JSON.stringify({
+      compilerOptions: { strict: true, target: 'ES2023', module: 'NodeNext', types: [] },
+      include: ['src/**/*.ts'],
+    }),
+  );
+  const target = write(
+    'packages/server/src/server.ts',
+    'export function read(input: any) { return input.missing; }',
+  );
+  const baseline = await lintFiles([target], root);
+  const output = vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.stubEnv('VERITY_LINT_PROFILE', '1');
+  try {
+    const profiled = await lintFiles([target], root);
+    expect(profiled.results.map((result) => result.messages)).toEqual(
+      baseline.results.map((result) => result.messages),
+    );
+    expect(profiled.results[0]?.errorCount).toBeGreaterThan(0);
+    expect(
+      output.mock.calls.map(
+        ([line]) => (JSON.parse(String(line)) as { lintProfile: string }).lintProfile,
+      ),
+    ).toEqual([
+      'program-start',
+      'program-ready',
+      'eslint-start',
+      'rules-start',
+      'rules-exit',
+      'eslint-complete',
+    ]);
+    output.mockClear();
+    vi.stubEnv('LINT_MEASUREMENT_DIR', root);
+    const retained = await lintFiles([target], root);
+    expect(retained.results.map((result) => result.messages)).toEqual(
+      baseline.results.map((result) => result.messages),
+    );
+    expect(output).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, 'phases.ndjson'), 'utf8')).toContain(
+      '"lintProfile":"rules-start"',
+    );
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
