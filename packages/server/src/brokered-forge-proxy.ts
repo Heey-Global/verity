@@ -411,7 +411,8 @@ export function createBrokeredForgeProxy(options: {
             // store still closes it once nothing has confirmed it for too long,
             // rather than suspending revocation while credentials keep flowing.
             let checking = false;
-            let confirmedAt = Date.now();
+            // Monotonic: a wall-clock step must neither extend nor forgive a bound.
+            let confirmedAt = performance.now();
             let lastTick = confirmedAt;
             let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
@@ -419,7 +420,7 @@ export function createBrokeredForgeProxy(options: {
               // The bounds count time the server could run, not an event-loop
               // stall: no check can answer while the loop is blocked, so a stall
               // alone must never exhaust them.
-              const now = Date.now();
+              const now = performance.now();
               const stalled = Math.max(0, now - lastTick - recheckInterval);
               lastTick = now;
               confirmedAt += stalled;
