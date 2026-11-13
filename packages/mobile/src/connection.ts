@@ -319,7 +319,11 @@ export class ConnectionMonitor implements ConnectionReporter {
     if (generation !== this.generation) return;
     this.checking = false;
     if (!failed) {
-      this.recover();
+      // A check begun to confirm a transport failure cannot end an update that
+      // started while it ran: a draining Gateway still answers it. The next
+      // check, made during the update, decides.
+      if (confirming && this.state.kind !== 'connected') this.schedule();
+      else this.recover();
       return;
     }
     // Only an answer from the server proves it is there; any other rejection,

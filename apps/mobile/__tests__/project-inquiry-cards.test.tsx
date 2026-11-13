@@ -116,15 +116,18 @@ it('still says requests are missing while the server is away', async () => {
   const { serverConnection } =
     jest.requireActual<typeof import('../lib/serverConnection')>('../lib/serverConnection');
   serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
-  const client = {
-    listProjectInquiries: jest
-      .fn()
-      .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
-  } as unknown as VerityClient;
-  const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
-  await waitFor(() =>
-    expect(view.getByText('Project requests load once the server is back.')).toBeTruthy(),
-  );
-  expect(view.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
-  serverConnection.reset();
+  try {
+    const client = {
+      listProjectInquiries: jest
+        .fn()
+        .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
+    } as unknown as VerityClient;
+    const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
+    await waitFor(() =>
+      expect(view.getByText('Project requests load once the server is back.')).toBeTruthy(),
+    );
+    expect(view.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
+  } finally {
+    serverConnection.reset();
+  }
 });

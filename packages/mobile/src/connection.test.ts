@@ -359,6 +359,28 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
+  it('does not let a confirming check end an update that began while it ran', async () => {
+    const clock = fakeTimers();
+    let answer: (() => void) | undefined;
+    const probe = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers });
+    const recovered = vi.fn();
+    monitor.onRecovered(recovered);
+    monitor.reportFailure('unreachable', 'Network request failed');
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    answer?.(); // the draining Gateway still answers the confirming check
+    await flush();
+    expect(monitor.getState().kind).toBe('maintenance');
+    expect(recovered).not.toHaveBeenCalled();
+    expect(clock.delays()).toEqual([2_000]);
+    monitor.reset();
+  });
+
   it('keeps a throwing listener from stopping the others', async () => {
     const monitor = new ConnectionMonitor({ probe: () => Promise.resolve() });
     const after = vi.fn();
@@ -415,6 +437,21 @@ describe('VerityClient connection reporting', () => {
     );
     await expect(aborted.client.getHealth()).rejects.toThrow();
     expect(aborted.reporter.reportFailure).not.toHaveBeenCalled();
+  });
+
+  it('takes a 502 neither for the server nor for an outage', async () => {
+    const { reporter, client: api } = client(
+      vi.fn(
+        async () =>
+          new Response('{"error":"GitHub is unavailable"}', {
+            status: 502,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    await expect(api.getHealth()).rejects.toBeInstanceOf(VerityApiError);
+    expect(reporter.reportSuccess).not.toHaveBeenCalled();
+    expect(reporter.reportFailure).not.toHaveBeenCalled();
   });
 
   it('counts any other answer, including an error, as the server being there', async () => {

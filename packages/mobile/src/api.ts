@@ -7322,7 +7322,9 @@ export class VerityClient {
       // any other answer, error or not, proves the server is there.
       if (res.status === 503 && payload.message === SERVER_MAINTENANCE_MESSAGE)
         this.connection?.reportFailure('maintenance', payload.message);
-      else this.connection?.reportSuccess();
+      // 502/504 may be the server about an upstream service or a relay in front
+      // of a server that is away: neither proof of the server nor of an outage.
+      else if (res.status !== 502 && res.status !== 504) this.connection?.reportSuccess();
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
