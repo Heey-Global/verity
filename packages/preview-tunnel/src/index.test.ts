@@ -1029,7 +1029,8 @@ describe('preview tunnel', () => {
       path: '/hello?from=external',
       host: `127.0.0.1:${targetPort}`,
     });
-    expect(forwarded.headers.get('set-cookie')).toBeNull();
+    // Online shares relay application cookies only inside their own namespace.
+    expect(forwarded.headers.getSetCookie()).toEqual(['__Host-app-unsafe=value; Path=/; Secure']);
 
     const applicationPin = await fetch(`http://127.0.0.1:${edgePort}/hello?pin=app-value`, {
       headers: { cookie: cookie!.split(';')[0]! },
@@ -2988,6 +2989,230 @@ async function wsTarget(
   });
   return port;
 }
+
+describe('application cookies on online shares', () => {
+  async function cookieBridge(
+    shareId: string,
+    setCookies: (path: string) => string[],
+    extraHeaders: (path: string) => Record<string, string> = () => ({}),
+  ) {
+    const received: Array<string | undefined> = [];
+    const target = createServer((request, response) => {
+      received.push(request.headers.cookie);
+      response.writeHead(200, {
+        ...extraHeaders(request.url ?? '/'),
+        'set-cookie': setCookies(request.url ?? '/'),
+        // An application header in the relay's own namespace must not become a cookie.
+        'x-verity-local-set-cookie-0': 'forged=1; Path=/',
+      });
+      response.end('ok');
+    });
+    const sockets = new WebSocketServer({ server: target });
+    sockets.on('connection', (socket, request) => socket.send(request.headers.cookie ?? 'none'));
+    const port = await listen(target);
+    cleanups.push(async () => {
+      for (const client of sockets.clients) client.terminate();
+      await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await closeServer(target);
+    });
+    const { edgePort, cookie } = await bridge(shareId, port);
+    const get = (path: string, cookies: string) =>
+      fetch(`http://127.0.0.1:${edgePort}${path}`, {
+        redirect: 'manual',
+        headers: { cookie: cookies },
+      });
+    return { edgePort, pinCookie: cookie, received, get };
+  }
+
+  it('namespaces application sessions and keeps the PIN session out of reach', async () => {
+    const { pinCookie, received, get } = await cookieBridge('app-cookie-session', (path) =>
+      path === '/login'
+        ? [
+            'sid=abc; Path=/app; Domain=share.verity.build; HttpOnly; SameSite=Lax',
+            '__Host-verity-preview=forged; Path=/',
+          ]
+        : path === '/logout'
+          ? ['sid=; Path=/app; Max-Age=0']
+          : [],
+    );
+    const loginResponse = await get('/login', pinCookie);
+    expect(loginResponse.status).toBe(200);
+    expect(loginResponse.headers.get('x-verity-local-set-cookie-0')).toBeNull();
+    expect(loginResponse.headers.getSetCookie()).toEqual([
+      '__Host-app-sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax',
+      '__Host-app-__Host-verity-preview=forged; Path=/; Secure',
+    ]);
+    // The PIN session is the edge's credential, never the application's.
+    expect(received[0]).toBeUndefined();
+
+    const browserCookies = `${pinCookie}; __Host-app-sid=abc; __Host-app-__Host-verity-preview=forged`;
+    const signedIn = await get('/whoami', browserCookies);
+    expect(signedIn.status).toBe(200);
+    expect(received[1]).toBe('sid=abc; __Host-verity-preview=forged');
+
+    const loggedOut = await get('/logout', browserCookies);
+    expect(loggedOut.headers.getSetCookie()).toEqual([
+      '__Host-app-sid=; Path=/; Secure; Max-Age=0',
+    ]);
+  });
+
+  it('drops cookies a sibling share or the client could plant', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge('app-cookie-sibling', () => []);
+    // `sid` arrives as a parent-domain cookie tossed by a sibling would; the
+    // lower-case prefix is what an older browser lets a sibling set.
+    const response = await fetch(`http://127.0.0.1:${edgePort}/`, {
+      headers: {
+        // The last one restores to Core's session name, which the connector withholds.
+        cookie: `${pinCookie}; sid=evil; __host-app-sid=evil; __Host-verity_session=core; __Host-app-__Host-verity_session=core`,
+        'x-verity-local-request-cookie-0': 'sid=forged',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(received).toEqual([undefined]);
+  });
+
+  // Every share is same-site with every other, so SameSite can't stop a sibling
+  // page from sending the application's own cookies along.
+  it('rejects unsafe requests from sibling shares before they carry app cookies', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge('app-cookie-csrf', () => []);
+    for (const headers of [
+      { origin: 'https://sibling.preview.example.test' },
+      { 'sec-fetch-site': 'same-site' },
+    ]) {
+      const response = await fetch(`http://127.0.0.1:${edgePort}/transfer`, {
+        method: 'POST',
+        redirect: 'manual',
+        headers: { ...headers, cookie: `${pinCookie}; __Host-app-sid=abc` },
+        body: 'amount=1',
+      });
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe('Forbidden preview origin.');
+    }
+    expect(received).toEqual([]);
+  });
+
+  it('rejects WebSocket upgrades from sibling shares before they carry app cookies', async () => {
+    const { pinCookie, edgePort } = await cookieBridge('app-cookie-cswsh', () => []);
+    for (const headers of [
+      { origin: 'https://sibling.preview.example.test' },
+      { 'sec-fetch-site': 'same-site' },
+    ]) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, {
+        headers: { ...headers, cookie: `${pinCookie}; __Host-app-sid=abc` },
+      });
+      cleanups.push(() => client.terminate());
+      const status = await new Promise<number | undefined>((resolve) => {
+        client.once('unexpected-response', (_request, response) => resolve(response.statusCode));
+        client.once('open', () => resolve(101));
+        client.once('error', () => resolve(undefined));
+      });
+      expect(status).toBe(403);
+    }
+  });
+
+  // A browser holding more application cookies than fit beside the request's
+  // other headers would otherwise get a 431 on every request.
+  it('drops trailing request cookies that do not fit the tunnel', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge(
+      'app-cookie-request-room',
+      () => [],
+    );
+    const cookies = Array.from({ length: 4 }, (_, index) => `c${index}=${'x'.repeat(3000)}`);
+    const response = await fetch(`http://127.0.0.1:${edgePort}/`, {
+      headers: {
+        ...Object.fromEntries(Array.from({ length: 93 }, (_, index) => [`x-app-${index}`, '1'])),
+        cookie: [pinCookie, ...cookies.map((cookie) => `__Host-app-${cookie}`)].join('; '),
+      },
+    });
+    expect(response.status).toBe(200);
+    const forwarded = received[0]?.split('; ') ?? [];
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(forwarded).toEqual(cookies.slice(0, forwarded.length));
+    expect(forwarded.length).toBeLessThan(cookies.length);
+  });
+
+  it('forwards namespaced cookies in WebSocket handshakes', async () => {
+    const { pinCookie, edgePort } = await cookieBridge('app-cookie-websocket', () => []);
+    for (const [cookie, expected] of [
+      [`${pinCookie}; __Host-app-sid=abc; sid=evil`, 'sid=abc'],
+      [pinCookie, 'none'],
+    ] as const) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+      cleanups.push(() => client.terminate());
+      const message = await new Promise<string>((resolve, reject) => {
+        client.once('message', (data: WebSocket.RawData) =>
+          resolve(
+            (Array.isArray(data)
+              ? Buffer.concat(data)
+              : Buffer.from(data as ArrayBuffer)
+            ).toString(),
+          ),
+        );
+        client.once('error', reject);
+      });
+      expect(message).toBe(expected);
+    }
+  });
+
+  it('bounds relayed cookies instead of failing the response', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => `c${index}=${'x'.repeat(100)}`);
+    const { pinCookie, get } = await cookieBridge('app-cookie-bounds', (path) =>
+      path === '/many' ? many : [`huge=${'x'.repeat(9000)}`, 'ok=1'],
+    );
+    const manyResponse = await get('/many', pinCookie);
+    expect(manyResponse.status).toBe(200);
+    const relayed = manyResponse.headers.getSetCookie();
+    expect(relayed.length).toBeGreaterThan(0);
+    expect(relayed.length).toBeLessThan(many.length);
+    expect(relayed).toEqual(
+      many.slice(0, relayed.length).map((cookie) => `__Host-app-${cookie}; Path=/; Secure`),
+    );
+    const huge = await get('/huge', pinCookie);
+    expect(huge.status).toBe(200);
+    expect(huge.headers.getSetCookie()).toEqual(['__Host-app-ok=1; Path=/; Secure']);
+  });
+
+  // 90 target headers plus 30 cookies would exceed the tunnel's 100-header
+  // limit and fault the stream if the relay ignored them.
+  it('leaves room for the target’s own headers when relaying cookies', async () => {
+    const cookies = Array.from({ length: 30 }, (_, index) => `c${index}=1`);
+    const { pinCookie, get } = await cookieBridge(
+      'app-cookie-room',
+      () => cookies,
+      () => Object.fromEntries(Array.from({ length: 90 }, (_, index) => [`x-app-${index}`, '1'])),
+    );
+    const response = await get('/', pinCookie);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+    const relayed = response.headers.getSetCookie();
+    expect(relayed.length).toBeGreaterThan(0);
+    expect(relayed.length).toBeLessThan(cookies.length);
+  });
+
+  it('keeps responses that set application cookies out of shared caches', async () => {
+    const { pinCookie, get } = await cookieBridge(
+      'app-cookie-cache',
+      (path) => (path === '/none' ? [] : ['sid=abc']),
+      (path) => ({
+        // `private` qualified with field names still lets a shared cache store the rest.
+        'cache-control':
+          path === '/private' ? 'private="x-user", max-age=60' : 'public, max-age=600',
+        'cdn-cache-control': 'max-age=600',
+        'surrogate-control': 'max-age=600',
+      }),
+    );
+    for (const path of ['/public', '/private']) {
+      const response = await get(path, pinCookie);
+      expect(response.headers.get('cache-control'), path).toBe('no-store');
+      expect(response.headers.get('cdn-cache-control'), path).toBeNull();
+      expect(response.headers.get('surrogate-control'), path).toBeNull();
+    }
+    // Without a cookie the application's caching stays its own decision.
+    const none = await get('/none', pinCookie);
+    expect(none.headers.get('cache-control')).toBe('public, max-age=600');
+    expect(none.headers.get('cdn-cache-control')).toBe('max-age=600');
+  });
+});
 
 /** An edge with its connector already attached to `targetPort`, plus a logged-in
  * session cookie — the setup every tunnelling test starts from. */

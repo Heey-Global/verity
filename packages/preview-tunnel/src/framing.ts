@@ -13,7 +13,7 @@
  */
 
 const MAX_STREAM_ID_CHARACTERS = 128;
-const MAX_HEADER_COUNT = 100;
+export const MAX_HEADER_COUNT = 100;
 const MAX_HEADER_NAME_CHARACTERS = 100;
 const MAX_HEADER_VALUE_CHARACTERS = 8192;
 
@@ -35,7 +35,7 @@ export function sendableCloseCode(code: number): boolean {
   return code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006;
 }
 
-const MAX_TUNNEL_HEADER_BYTES = 32 * 1024;
+export const MAX_TUNNEL_HEADER_BYTES = 32 * 1024;
 const MAX_TUNNEL_PATH_CHARACTERS = 8192;
 const MAX_UTF8_BYTES_PER_CHARACTER = 4;
 const MAX_JSON_ESCAPE_EXPANSION = 2;
@@ -177,7 +177,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   );
 }
 
-function headerBytes(headers: Record<string, string>): number {
+export function headerBytes(headers: Record<string, string>): number {
   return Object.entries(headers).reduce(
     (total, [name, value]) => total + Buffer.byteLength(name) + Buffer.byteLength(value) + 4,
     0,
