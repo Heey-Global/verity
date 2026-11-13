@@ -92,10 +92,10 @@ type AuthorizationFailure =
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
 /** How often a live stream re-checks its capability and repository binding. */
 const AUTHORIZATION_RECHECK_INTERVAL_MS = 500;
-/** How long a live stream may run without a confirming re-check. A slow or
- *  failing check is inconclusive, not a revocation: an event-loop stall or a
- *  slow store must not cut an initial clone, but a wedged store must still
- *  close the stream within this bound. */
+/** How long a live stream may run without a confirming re-check, not counting
+ *  event-loop stalls. A slow or failing check is inconclusive, not a revocation:
+ *  a stall or a slow store must not cut an initial clone, but a wedged store
+ *  still closes the stream — at most twice this long, stalls included. */
 const AUTHORIZATION_UNCONFIRMED_LIMIT_MS = 15_000;
 
 function capability(request: IncomingMessage): string | undefined {
@@ -414,15 +414,22 @@ export function createBrokeredForgeProxy(options: {
             // Monotonic: a wall-clock step must neither extend nor forgive a bound.
             let confirmedAt = performance.now();
             let lastTick = confirmedAt;
+            let stallCredit = 0;
             let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
               if (abort.signal.aborted) return;
               // The bounds count time the server could run, not an event-loop
               // stall: no check can answer while the loop is blocked, so a stall
-              // alone must never exhaust them.
+              // alone must never exhaust them. The credit is capped until the next
+              // confirmation, so sustained lag cannot postpone a wedged store
+              // beyond twice the bound.
               const now = performance.now();
-              const stalled = Math.max(0, now - lastTick - recheckInterval);
+              const stalled = Math.min(
+                Math.max(0, now - lastTick - recheckInterval),
+                unconfirmedLimit - stallCredit,
+              );
               lastTick = now;
+              stallCredit += stalled;
               confirmedAt += stalled;
               // A healthy stream is reconfirmed every tick; past the bound only an
               // attempted check — still pending, or failed — can be outstanding.
@@ -446,6 +453,7 @@ export function createBrokeredForgeProxy(options: {
                     else if (!options.enabled(identity.projectId)) revoke('disabled');
                     else {
                       confirmedAt = Math.max(confirmedAt, started);
+                      stallCredit = 0;
                       lastFailure = undefined;
                     }
                   },

@@ -1320,7 +1320,7 @@ it('does not count an event-loop stall against a live Forge stream', async () =>
       const timer = setInterval(() => {
         res.write(`frame${sent}\n`);
         if (sent === 3) {
-          const until = Date.now() + 2000;
+          const until = Date.now() + 1500;
           while (Date.now() < until);
         }
         if (++sent === 8) {
@@ -1338,7 +1338,7 @@ it('does not count an event-loop stall against a live Forge stream', async () =>
           return value === cap ? binding : undefined;
         },
       },
-      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 800 },
+      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 1000 },
     },
   );
   const result = await call(h.port, '/repos/acme/app/issues');
