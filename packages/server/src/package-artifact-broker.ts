@@ -13,6 +13,10 @@ import {
 } from './brokered-http-stream.js';
 
 const PREFIX = '/internal/package-artifacts/';
+/** Concurrent registry metadata lookups across all verifications; others wait. */
+export const PUBLICATION_METADATA_SLOTS = 6;
+/** Time one metadata lookup may take once it holds a slot; queueing does not count. */
+const PUBLICATION_LOOKUP_TIMEOUT_MS = 30_000;
 const METADATA_LIMIT = 2 * 1024 ** 2;
 const ARTIFACT_LIMIT = 32 * 1024 ** 2;
 interface Artifact {
@@ -116,6 +120,57 @@ async function bounded(
   }
 }
 
+/**
+ * Bounded slots handed out first-in-first-out. A released slot passes directly
+ * to the oldest waiter, and newcomers queue while anyone waits: waiting has no
+ * timeout of its own, so later requests must not overtake it indefinitely.
+ */
+export function createSlotPool(limit: number) {
+  let inUse = 0;
+  const waiters: (() => void)[] = [];
+  const releaser = (): (() => void) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = waiters.shift();
+      if (next) next();
+      else inUse--;
+    };
+  };
+  return {
+    async acquire(signal: AbortSignal): Promise<() => void> {
+      if (signal.aborted) reject(401);
+      if (inUse < limit && waiters.length === 0) {
+        inUse++;
+        return releaser();
+      }
+      const handedOver = await new Promise<boolean>((settle) => {
+        const entry = (): void => {
+          signal.removeEventListener('abort', onAbort);
+          settle(true);
+        };
+        // Leaving the queue on abort keeps a dead entry from absorbing a hand-over.
+        const onAbort = (): void => {
+          const index = waiters.indexOf(entry);
+          if (index >= 0) waiters.splice(index, 1);
+          settle(false);
+        };
+        waiters.push(entry);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (!handedOver) reject(401);
+      const release = releaser();
+      // Aborted between the hand-over and resuming: pass the slot on at once.
+      if (signal.aborted) {
+        release();
+        reject(401);
+      }
+      return release;
+    },
+  };
+}
+
 /** Native registry/index adapter. Content selectors are learned from bounded provider
  * metadata, revalidate selectors under the current generation, and never authorize scripts
  * or arbitrary URLs. Registry API: github.com/npm/registry; PyPI: PEP 691.
@@ -127,6 +182,9 @@ export function createPackageArtifactBroker(
 ) {
   const transport = options.transport ?? brokeredHttpStreamTransport;
   let inFlight = 0;
+  // Verification fans out across many names, so it queues for a slot instead of
+  // failing with 429 like interactive artifact requests.
+  const metadataSlots = createSlotPool(PUBLICATION_METADATA_SLOTS);
   const selectorFor = (
     ecosystem: 'npm' | 'pypi',
     name: string,
@@ -152,7 +210,8 @@ export function createPackageArtifactBroker(
         hostname: url.hostname,
         path: url.pathname,
         method: 'GET',
-        headers: { accept: 'application/json', 'accept-encoding': 'identity' },
+        // Full packuments compress about eightfold; the projection bounds both sizes.
+        headers: { accept: 'application/json', 'accept-encoding': 'gzip' },
         body: Buffer.alloc(0),
         signal,
       });
@@ -196,14 +255,12 @@ export function createPackageArtifactBroker(
         versions.some((version) => !/^[0-9A-Za-z.+_-]{1,128}$/u.test(version))
       )
         reject();
-      if (++inFlight > 2) {
-        inFlight--;
-        reject(429);
-      }
+      const release = await metadataSlots.acquire(signal);
       try {
-        return await project(name, versions, signal, authorized);
+        const timed = AbortSignal.any([signal, AbortSignal.timeout(PUBLICATION_LOOKUP_TIMEOUT_MS)]);
+        return await project(name, versions, timed, authorized);
       } finally {
-        inFlight--;
+        release();
       }
     },
     async advisories(

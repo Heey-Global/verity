@@ -6,6 +6,24 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.93.0](https://github.com/Heey-Global/verity/compare/v4.92.0...v4.93.0) (2026-11-13)
+
+
+### Features
+
+* **meetings:** show online join progress and fix stale meeting state ([#2554](https://github.com/Heey-Global/verity/issues/2554)) ([539d90d](https://github.com/Heey-Global/verity/commit/539d90d2112effb8f8aa5e43e06509230ca48f1a))
+
+
+### Bug Fixes
+
+* reuse dependency inventories, speed up release-age verification and size CI lint workers ([#2549](https://github.com/Heey-Global/verity/issues/2549)) ([9476702](https://github.com/Heey-Global/verity/commit/9476702cc4e3e17a2834ee38df47952195a98f70))
+* **server:** keep sleeping projects wakeable when their relay is gone ([#2550](https://github.com/Heey-Global/verity/issues/2550)) ([da10f7f](https://github.com/Heey-Global/verity/commit/da10f7f781f842ca6b3b2380f269d6f8d59c5144))
+
+
+### Performance Improvements
+
+* **lint:** lint CI groups of up to 192 files with one shared type program ([#2557](https://github.com/Heey-Global/verity/issues/2557)) ([4b44d9d](https://github.com/Heey-Global/verity/commit/4b44d9dfec8cd9ae9bd78630a7b64ab626400da0))
+
 ## [4.92.0](https://github.com/Heey-Global/verity/compare/v4.91.1...v4.92.0) (2026-11-12)
 
 

@@ -1,6 +1,8 @@
 import {
   VerityApiError,
-  inboxView,
+  alsoWaiting,
+  inboxDismissedKeys,
+  inboxItems,
   markerAttention,
   projectDisplayName,
   sessionWorkSections,
@@ -24,12 +26,12 @@ import {
   projectTitle,
 } from '@verity/mobile';
 import { router } from 'expo-router';
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Alert, Platform, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { AgentTileMark } from '../AgentMark';
-import type { InboxFeed } from '../home/HomeInbox';
+import { FeedCard, InboxHiddenFold, useInboxFeed, type InboxFeed } from '../inbox/InboxFeed';
 import { isActive } from '../../lib/sessionActivity';
 import { AnswerButtons, AnswerSheet } from './AnswerSheet';
 import { SessionMarkerColumn, sessionMarkers, sessionMarkersLabel } from '../SessionMarkerColumn';
@@ -83,8 +85,8 @@ const TONE_INTENT: Record<InboxItem['tone'], StatusIntent> = {
 
 const FLAG_TAG = WORK_PROBLEM_LABELS;
 
-/** Answers a row can give in place. A permission opens its session instead: the
- *  row has no room for the request the operator has to read before allowing it. */
+/** Answers a row can give in place. A permission is never a row: it is drawn as
+ *  its card, which has room for the request to read before allowing it. */
 const IN_PLACE: ReadonlySet<InboxAction['kind']> = new Set([
   'answer',
   'merge',
@@ -93,6 +95,11 @@ const IN_PLACE: ReadonlySet<InboxAction['kind']> = new Set([
 ]);
 
 export { isActive };
+
+/** A project's own item is about its sandbox; its settings explain and repair it. */
+function openSandbox(projectId: string) {
+  router.push({ pathname: '/project/[id]/settings/sandbox', params: { id: projectId } });
+}
 
 export type NeedsYouEntry = SessionWorkEntry;
 export const nowSections = sessionWorkSections;
@@ -166,8 +173,10 @@ function itemSubtitle(item: InboxItem, label: string): string | undefined {
  * with nothing in it is left out. All lists every session in {@link workOrder};
  * the star keeps the favorites.
  *
- * Dismissing is Home's: an item dismissed there stays out of Now, and Home is
- * where it is restored, so this list keeps no fold of hidden items.
+ * Home, a project's page and a project card all draw this list with the same
+ * mechanics; Home only feeds it every project's items (and adds meetings). An
+ * item dismissed in one waits, restorable, in the fold under Now of every list
+ * that holds it.
  *
  * Each row leads with its {@link sessionTile}: the pull request's phase and
  * verdict, else automation, else a neutral tile, with the agent's state (working,
@@ -188,8 +197,6 @@ export function ProjectWork({
   overview = false,
   projects = [],
   onSectionsChange,
-  renderProjectItem,
-  renderSessionItem,
   onOpenSession,
   selectedSessionId,
   onChanged,
@@ -200,8 +207,9 @@ export function ProjectWork({
   sessions: readonly SessionSummary[];
   selectedSessionId?: string | null | undefined;
   /** The page's inbox feed: what waits on the operator and how to answer it.
-   *  Without one, Now derives the same items from the sessions — dismissed ones
-   *  left out — but offers no answers in place. */
+   *  Without one, the list keeps its own from the sessions, so every list —
+   *  Home, a project's page, a project card — answers, dismisses and restores
+   *  the same way. */
   feed?: InboxFeed | undefined;
   /** Rows the page adds at the top of "Needs you", such as severe findings. */
   leadingRows?: readonly ReactElement[];
@@ -210,12 +218,10 @@ export function ProjectWork({
   overview?: boolean;
   projects?: readonly ProjectRecord[];
   onSectionsChange?: (counts: { needs: number; active: number; results: number }) => void;
-  renderProjectItem?: (item: InboxItem) => ReactElement;
-  /** Home retains the complete request before offering permission actions. */
-  renderSessionItem?: (item: InboxItem) => ReactElement | undefined;
   /** Explicit refreshes reset order; live reloads update group membership. */
   layoutRevision?: number | undefined;
-  onOpenSession: (sessionId: string) => void;
+  /** `mockups` opens the session with its mockup review in front. */
+  onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   /** After a rename, favorite, move, link or delete of `sessionId`, so the page
    *  and its host (the wide layout's list and session pane) catch up. */
   onChanged: (sessionId: string, deleted: boolean) => void;
@@ -248,14 +254,34 @@ export function ProjectWork({
     [sessions, unreadIds],
   );
   const previews = useSessionPreviews();
-  const derived = useMemo(
-    () =>
-      feed === undefined
-        ? inboxView({ sessions, projects: [], now: Date.now() }).visible
-        : undefined,
-    [feed, sessions],
+  // A list given no feed keeps one of its own over its sessions. Built either
+  // way (hooks cannot be conditional) and left empty when the page has a feed.
+  const ownsFeed = feed === undefined;
+  // The host reloads the answered or dismissed session, as after any edit here.
+  const ownSaved = useCallback(
+    (item: InboxItem) => {
+      if (item.sessionId !== undefined) onChanged(item.sessionId, false);
+    },
+    [onChanged],
   );
-  const items = feed?.items ?? derived;
+  const ownAll = useMemo(
+    () => (ownsFeed ? inboxItems({ sessions, projects: [], now: Date.now() }) : []),
+    [ownsFeed, sessions],
+  );
+  const ownHidden = useMemo(
+    () => (ownsFeed ? inboxDismissedKeys({ sessions, projects: [] }) : new Set<string>()),
+    [ownsFeed, sessions],
+  );
+  const ownFeed = useInboxFeed({
+    client,
+    all: ownAll,
+    serverHidden: ownHidden,
+    onOpenSession,
+    onRepairProject: openSandbox,
+    onSaved: ownSaved,
+  });
+  const inbox = feed ?? ownFeed;
+  const items = inbox.items;
   const answering =
     answeringKey === null ? null : (items?.find((item) => item.key === answeringKey) ?? null);
   useEffect(() => {
@@ -562,11 +588,11 @@ export function ProjectWork({
             ) : undefined
           }
           action={
-            item?.dismiss !== undefined && feed !== undefined ? (
+            item?.dismiss !== undefined ? (
               <IconButton
                 icon="x"
                 accessibilityLabel="Dismiss"
-                onPress={() => feed.dismiss(item)}
+                onPress={() => inbox.dismiss(item)}
               />
             ) : undefined
           }
@@ -604,24 +630,23 @@ export function ProjectWork({
   const send = (item: InboxItem, action: InboxAction) => {
     // `perform` reports failures as outcomes; anything it throws is
     // unexpected, but the operator still has to learn it was not sent.
-    feed?.run(item, action).catch(() => {
+    inbox.run(item, action).catch(() => {
       Alert.alert('Not sent', 'Something went wrong. Open the session and try again.');
     });
   };
   const answersFor = (item: InboxItem) => {
-    if (feed === undefined) return undefined;
     const answers = answersOf(item);
     const links = item.actions.filter(
       (action) => action.kind === 'open_session' || action.kind === 'review_mockups',
     );
     if (answers.length === 0 && links.length === 0) return undefined;
     // Only this item's answers wait; the other rows stay answerable.
-    const locked = feed.pending.has(item.key);
+    const locked = inbox.pending.has(item.key);
     return (
       <View style={styles.answers}>
         <AnswerButtons
           answers={answers}
-          pending={feed.pending.get(item.key) ?? false}
+          pending={inbox.pending.get(item.key) ?? false}
           disabled={locked}
           onMore={() => setAnsweringKey(item.key)}
           onAnswer={(action) => send(item, action)}
@@ -638,82 +663,70 @@ export function ProjectWork({
       </View>
     );
   };
-  const decisionRow = (session: SessionSummary, item: InboxItem) => {
-    const custom = renderSessionItem?.(item);
-    if (custom !== undefined) return <View key={item.key}>{custom}</View>;
-    return (
-      <Row
-        key={item.key}
-        title={item.title}
-        subtitle={overview ? item.context : item.message}
-        tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
-        answers={answersFor(item)}
-        navigates
-        onPress={() => onOpenSession(session.sessionId)}
-        action={
-          item.dismiss !== undefined && feed !== undefined ? (
-            <IconButton icon="x" accessibilityLabel="Dismiss" onPress={() => feed.dismiss(item)} />
-          ) : undefined
-        }
-      />
-    );
-  };
   const needsYouRow = (entry: NeedsYouEntry): ReactElement => {
-    if (entry.kind === 'session' && entry.additionalItems !== undefined) {
-      // One session position, with every live approval still reachable.
-      const { additionalItems, ...primary } = entry;
-      return (
-        <View key={entry.session.sessionId}>
-          {needsYouRow(primary)}
-          {additionalItems.map((item) => decisionRow(entry.session, item))}
-        </View>
-      );
-    }
     if (entry.kind === 'project') {
       const { item } = entry;
-      if (renderProjectItem !== undefined)
-        return <View key={item.key}>{renderProjectItem(item)}</View>;
+      // Across projects the row is named by its project; on the project's own
+      // page by what is wrong with it.
+      const open = overview
+        ? item.actions.find((action) => action.kind === 'open_project')
+        : undefined;
       return (
         <Row
           key={item.key}
-          title={item.context}
-          subtitle={item.message}
+          title={overview ? item.title : item.context}
+          subtitle={
+            overview ? [item.context, item.message].filter(Boolean).join(' · ') : item.message
+          }
           leading={{ icon: 'server', intent: 'needsSetup' }}
           tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
-          // A project's own item is about its sandbox; the settings explain it
-          // even when no answer can be given here, such as a stalled update.
+          // Where the item can say more: its project when it leads there (from
+          // Home), else the sandbox settings, which explain it even when no
+          // answer can be given here, such as a stalled update.
           navigates
           onPress={() =>
-            router.push({
-              pathname: '/project/[id]/settings/sandbox',
-              params: { id: item.projectId ?? projectId ?? '' },
-            })
+            open !== undefined ? send(item, open) : openSandbox(item.projectId ?? projectId ?? '')
           }
           answers={answersFor(item)}
+          action={
+            item.dismiss !== undefined ? (
+              <IconButton
+                icon="x"
+                accessibilityLabel="Dismiss"
+                onPress={() => inbox.dismiss(item)}
+              />
+            ) : undefined
+          }
         />
       );
     }
     const { session, item, flag } = entry;
     if (item !== undefined) {
-      const custom = renderSessionItem?.(item);
-      if (custom !== undefined)
+      // One session, one entry: the most pressing item leads and the others are
+      // named on it. Each comes forward in turn once the one before is answered,
+      // and the session itself shows them all.
+      const also = entry.additionalItems ?? [];
+      // A permission is decided on what the tool will receive, which a row has
+      // no room for; it is drawn as its card, with the request one tap away.
+      if (item.kind === 'permission')
         return (
-          <View key={session.sessionId}>
-            {unreadIds.has(session.sessionId) ? (
-              <View style={styles.trailing}>
-                <View accessibilityRole="image" accessibilityLabel="Unread messages">
-                  <TileMark tone="action" />
-                </View>
-                <Text variant="caption">Unread</Text>
-              </View>
-            ) : null}
-            {custom}
-          </View>
+          <FeedCard
+            key={session.sessionId}
+            feed={inbox}
+            item={item}
+            selected={session.sessionId === selectedSessionId}
+            unread={unreadIds.has(session.sessionId)}
+            also={also}
+          />
         );
+      const subtitle = itemSubtitle(item, sessionLabel(session));
       return sessionRow(session, {
         tag: item.tag,
         intent: TONE_INTENT[item.tone],
-        subtitle: itemSubtitle(item, sessionLabel(session)),
+        subtitle:
+          also.length > 0
+            ? [subtitle, alsoWaiting(also)].filter((part) => part !== undefined).join(' · ')
+            : subtitle,
         item,
         needs: true,
       });
@@ -792,6 +805,8 @@ export function ProjectWork({
           })}
         </Group>
       )}
+      {/* Under every filter, so a dismissed item can always be restored. */}
+      <InboxHiddenFold feed={inbox} />
       <AnswerSheet
         item={answering}
         answers={answering !== null ? answersOf(answering) : []}

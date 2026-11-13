@@ -41,8 +41,12 @@ export function reduceNativeMeetingEvent(
   if (!Number.isSafeInteger(sequence) || sequence <= 0) throw new Error('Invalid native sequence.');
   if (sequence <= state.sequence) return state;
   const next: NativeMeetingState = { ...state, sequence };
-  if (event.recordedAt !== undefined && Number.isFinite(event.recordedAt))
-    next.recordedAt = event.recordedAt;
+  // iOS stamps events with fractional milliseconds; the server keeps whole ones.
+  const recordedAt =
+    event.recordedAt !== undefined && Number.isFinite(event.recordedAt)
+      ? Math.round(event.recordedAt)
+      : undefined;
+  if (recordedAt !== undefined) next.recordedAt = recordedAt;
   if (event.kind === 'segment' || event.kind === 'snapshot') {
     next.transcript = applySTTEvent(state.transcript, event);
     const through = event.kind === 'segment' ? event.end : event.audioThrough;
@@ -105,11 +109,11 @@ export function reduceNativeMeetingEvent(
   if (event.kind === 'status') {
     if (event.state === 'failed') {
       next.terminal = 'interrupted';
-      next.endedAt = event.recordedAt;
+      next.endedAt = recordedAt;
       next.error = event.message ?? 'Transcription stopped.';
     } else if (event.state === 'stopped') {
       next.terminal = 'ended';
-      next.endedAt = event.recordedAt;
+      next.endedAt = recordedAt;
     } else next.captureStatus = event.state;
   }
   return next;

@@ -16,6 +16,7 @@ import {
   hasActiveMeetingCapture,
   endMeeting,
   pauseMeeting,
+  releaseMeeting,
   resumeMeeting,
   startMeeting,
   subscribeVoiceMeetingRequest,
@@ -1000,3 +1001,14 @@ it.each(['research', 'opinion'] as const)(
     }
   },
 );
+
+// Releasing a running recording would orphan its microphone; only a finished one may go.
+it('releases a finished meeting but never a running one', async () => {
+  const meeting = await startMeeting('session-1', 'fluid-nemotron', 4);
+  expect(releaseMeeting(meeting.id)).toBe(false);
+  expect(currentMeeting()?.id).toBe(meeting.id);
+  await endMeeting();
+  expect(releaseMeeting('another-meeting')).toBe(false);
+  expect(releaseMeeting(meeting.id)).toBe(true);
+  expect(currentMeeting()).toBeNull();
+});

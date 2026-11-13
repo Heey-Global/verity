@@ -175,6 +175,7 @@ export {
   inboxDismissedKeys,
   inboxItems,
   inboxSummary,
+  alsoWaiting,
   inboxView,
   MEETING_LEAD_MS,
   type InboxAction,
@@ -544,6 +545,7 @@ export {
 export { secretStatusSchema, type SecretStatus } from './api.js';
 export type {
   ActiveLiveMeetings,
+  OnlineMeetingStatus,
   CalendarWatch,
   SchedulingRequestView,
   UpcomingMeeting,
