@@ -98,7 +98,8 @@ whoever sets it. The edge therefore stores each application cookie in its own na
   response with too many cookies loses the rest rather than failing.
 - A response that sets an application cookie is always sent with `Cache-Control: no-store` and
   without `CDN-Cache-Control` or `Surrogate-Control`, so a shared cache never replays one
-  visitor's session to another.
+  visitor's session cookie to another. Other responses keep the application's cache headers, so
+  an application must not mark pages that depend on its cookies as publicly cacheable.
 - Because the path is always `/`, same-named cookies that an application scopes to different
   paths become one cookie, and every request carries all application cookies.
 - WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are
