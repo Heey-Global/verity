@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { configureAgentGateway } from './agent-gateway-control.js';
+import { configureAgentGateway, readCodexAccessToken } from './agent-gateway-control.js';
 import {
   logCodexEgressRequestEnd,
   logClaudeEgressRequestEnd,
@@ -204,6 +204,12 @@ describe('standalone agent gateway runtime', () => {
       accountId: 'acct-lena',
     });
     await expect(codex?.credential(mia)).rejects.toThrow('no login for this person');
+    // Background work for a person reads only that person's own token.
+    await expect(readCodexAccessToken(join(root, 'control.sock'), 'lena')).resolves.toEqual({
+      accessToken: 'lena-codex',
+      accountId: 'acct-lena',
+    });
+    await expect(readCodexAccessToken(join(root, 'control.sock'), 'mia')).resolves.toBeUndefined();
     expect(codex?.opencodeCredential?.(admin)).toEqual({
       baseUrl: 'https://admin.example/v1',
       apiKey: 'admin-oc',

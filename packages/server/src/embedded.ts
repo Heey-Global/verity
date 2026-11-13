@@ -4113,6 +4113,14 @@ export async function buildEmbeddedServer(
     // stored `codexAuthJson`, which would make the Server a second writer. Without a
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
+    ...(codexGatewayControlSocket === undefined
+      ? {}
+      : {
+          codexGatewayCredentialFor:
+            (userId: string): CodexUsageCredentialProvider =>
+            () =>
+              readCodexAccessToken(codexGatewayControlSocket, userId),
+        }),
     onSecretUnlocked: async () => {
       // Restore process-local relay listeners before filtering persisted gateway
       // certificates. A new Server owns none yet; treating that as identity drift

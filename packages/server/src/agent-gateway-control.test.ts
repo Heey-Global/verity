@@ -143,6 +143,39 @@ describe('agent gateway Unix control channel', () => {
     await expect(readCodexAccessToken(socketPath)).resolves.toEqual(login.credential);
   });
 
+  // A gateway that predates per-person logins ignores the person in the request
+  // and would answer with the administrator's login; such a gateway is never
+  // asked for a person's token at all.
+  it("reads a person's own Codex token only from a gateway that tells people apart", async () => {
+    const socketPath = await temporarySocket();
+    let capable = false;
+    const asked: Array<string | undefined> = [];
+    servers.push(
+      await startAgentGatewayControlServer({
+        socketPath,
+        configure: () => undefined,
+        status: () => ({
+          ready: true,
+          configured: true,
+          claudePeerCount: 0,
+          ...(capable ? { perUserCredentials: true } : {}),
+        }),
+        readCodexAccessToken: (userId) => {
+          asked.push(userId);
+          return { accessToken: `token-${userId ?? 'instance'}`, accountId: 'acct' };
+        },
+      }),
+    );
+    await expect(readCodexAccessToken(socketPath, 'lena')).resolves.toBeUndefined();
+    expect(asked).toEqual([]);
+    capable = true;
+    await expect(readCodexAccessToken(socketPath, 'lena')).resolves.toEqual({
+      accessToken: 'token-lena',
+      accountId: 'acct',
+    });
+    expect(asked).toEqual(['lena']);
+  });
+
   it('reports a failed Codex token read structurally, without the failure detail', async () => {
     const socketPath = await temporarySocket();
     const server = await startAgentGatewayControlServer({

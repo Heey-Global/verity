@@ -385,10 +385,17 @@ export async function startAgentGatewayRuntime(options: {
     // The Server's usage probe reads the account-global quota straight from the
     // ChatGPT backend. It gets a short-lived access token here rather than a copy
     // of the rotating refresh token, so this stays the only writer (ADR 0010).
-    readCodexAccessToken: async () => {
-      if (codexAuthority === undefined) return undefined;
+    readCodexAccessToken: async (userId) => {
+      // A person's own login, or the instance login when it is theirs.
+      // Before the Server sent the personal section, nobody's login is known to
+      // be a person's; answer nothing rather than the instance login.
+      if (userId !== undefined && !personal.enforced) return undefined;
+      const choice = userId === undefined ? undefined : personal.codex(userId);
+      if (choice?.kind === 'none') return undefined;
+      const authority = choice?.kind === 'own' ? choice.value : codexAuthority;
+      if (authority === undefined) return undefined;
       try {
-        return await codexAuthority.resolve();
+        return await authority.resolve();
       } catch (error) {
         // The control answer is deliberately detail-free, so this is the only place
         // the actual reason survives. Without it a wrong banner has nothing behind

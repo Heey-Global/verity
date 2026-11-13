@@ -102,7 +102,7 @@ type ControlRequest =
       updatedRevision: string;
       userId?: string;
     }
-  | { type: 'read-codex-access-token' };
+  | { type: 'read-codex-access-token'; userId?: string };
 export interface CodexCredentialUpdate {
   /** Set for a person's own login; absent for the instance login. */
   userId?: string;
@@ -154,7 +154,10 @@ interface ControlHandlers {
   ) => void;
   /** Rejects/throws when no Codex login is installed or a refresh fails; the
    *  caller sees only the structural error, never the failure detail. */
-  readCodexAccessToken?: () => Promise<CodexAccessToken | undefined> | CodexAccessToken | undefined;
+  /** `userId` names a person whose own login is read; absent → the instance login. */
+  readCodexAccessToken?: (
+    userId?: string,
+  ) => Promise<CodexAccessToken | undefined> | CodexAccessToken | undefined;
 }
 
 export async function startAgentGatewayControlServer(
@@ -255,8 +258,19 @@ export class CodexAccessTokenRejectedError extends CodexSignInUnusableError {
  */
 export async function readCodexAccessToken(
   socketPath: string,
+  /** A person whose own login to read (ADR 0023 §3); absent → the instance login. */
+  userId?: string,
 ): Promise<CodexAccessToken | undefined> {
-  const response = await exchange(socketPath, { type: 'read-codex-access-token' });
+  if (userId !== undefined) {
+    // A gateway without per-person logins ignores `userId` and would answer with
+    // the instance login, which is not this person's.
+    const status = await readAgentGatewayStatus(socketPath);
+    if (status.perUserCredentials !== true) return undefined;
+  }
+  const response = await exchange(socketPath, {
+    type: 'read-codex-access-token',
+    ...(userId === undefined ? {} : { userId }),
+  });
   if (!response.ok) {
     if (response.signInRejected === true) throw new CodexAccessTokenRejectedError(response.error);
     throw new Error(`Agent gateway access token read failed: ${response.error}`);
@@ -304,7 +318,7 @@ async function handleControlSocket(
       // else reaching the outer catch is the frame or the gateway.
       let token: CodexAccessToken | undefined;
       try {
-        token = await options.readCodexAccessToken?.();
+        token = await options.readCodexAccessToken?.(request.userId);
       } catch (error) {
         // The reader decides. "Something threw" is not the same claim as "signing
         // in again fixes this" — a token endpoint that is unreachable, or a bug in
@@ -361,7 +375,14 @@ function parseRequest(value: unknown): ControlRequest {
   }
   if (value.type === 'status') return { type: 'status' };
   if (value.type === 'read-codex-credential-update') return { type: value.type };
-  if (value.type === 'read-codex-access-token') return { type: value.type };
+  if (value.type === 'read-codex-access-token') {
+    if (value.userId !== undefined && (typeof value.userId !== 'string' || !value.userId))
+      throw new ControlProtocolError('invalid control request');
+    return {
+      type: value.type,
+      ...(typeof value.userId === 'string' ? { userId: value.userId } : {}),
+    };
+  }
   if (
     value.type === 'ack-codex-credential-update' &&
     typeof value.sourceRevision === 'string' &&
