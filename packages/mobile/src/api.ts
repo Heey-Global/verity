@@ -1398,6 +1398,51 @@ export const agentLoginSchema = z.object({
 export type AgentLogin = z.infer<typeof agentLoginSchema>;
 const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
 
+/** A project's team (ADR 0023 §1): members and open invitations. */
+export const projectMemberSchema = z.object({
+  userId: z.string(),
+  displayName: z.string().nullable(),
+  canRead: z.boolean(),
+  canExecute: z.boolean(),
+  canManage: z.boolean(),
+  creator: z.boolean(),
+  joinedAt: z.string(),
+});
+export type ProjectMember = z.infer<typeof projectMemberSchema>;
+export const projectInvitationSchema = z.object({
+  id: z.string(),
+  inviteeName: z.string(),
+  canExecute: z.boolean(),
+  state: z.enum(['creating', 'open', 'redeemed', 'revoked', 'expired']),
+  expiresAt: z.string(),
+  createdAt: z.string(),
+});
+export type ProjectInvitation = z.infer<typeof projectInvitationSchema>;
+export const projectTeamSchema = z.object({
+  members: z.array(projectMemberSchema),
+  invitations: z.array(projectInvitationSchema),
+});
+export type ProjectTeam = z.infer<typeof projectTeamSchema>;
+/** What the server holds of a join link; the inviter's app adds pin and address. */
+export const invitationLinkFieldsSchema = z.object({
+  version: z.literal(1),
+  purpose: z.literal('team-member'),
+  invitationId: z.string(),
+  secret: z.string(),
+  expiresAt: z.number(),
+  serverId: z.string(),
+  identityKey: z.string(),
+  uplinkOrigin: z.string(),
+  installationId: z.string(),
+  installationHandle: z.string(),
+  display: z.object({ inviterName: z.string(), projectName: z.string() }).optional(),
+});
+export type InvitationLinkFields = z.infer<typeof invitationLinkFieldsSchema>;
+const invitationResponseSchema = z.object({
+  invitation: projectInvitationSchema,
+  linkFields: invitationLinkFieldsSchema.nullable(),
+});
+
 /** A provider account of the signed-in person's own (ADR 0023 §3). */
 export const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
 export type ProviderConnectionKind = z.infer<typeof providerConnectionKindSchema>;
@@ -4099,6 +4144,67 @@ export class VerityClient {
       method: 'GET',
     });
     return agentLoginResponseSchema.parse(await res.json()).login;
+  }
+
+  async getProjectTeam(projectId: string): Promise<ProjectTeam> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/team`, {
+      method: 'GET',
+    });
+    return projectTeamSchema.parse(await res.json());
+  }
+
+  /** Invite a person to read, or to read and send messages ("Can edit"). */
+  async createProjectInvitation(
+    projectId: string,
+    input: { inviteeName: string; canExecute: boolean; inviterName?: string },
+  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return invitationResponseSchema.parse(await res.json());
+  }
+
+  async getProjectInvitation(
+    projectId: string,
+    invitationId: string,
+  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
+      { method: 'GET' },
+    );
+    return invitationResponseSchema.parse(await res.json());
+  }
+
+  async revokeProjectInvitation(projectId: string, invitationId: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async setProjectMemberRights(
+    projectId: string,
+    userId: string,
+    rights: { canExecute: boolean; canManage: boolean },
+  ): Promise<ProjectMember> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(rights),
+      },
+    );
+    return z.object({ member: projectMemberSchema }).parse(await res.json()).member;
+  }
+
+  async removeProjectMember(projectId: string, userId: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+    );
   }
 
   /** The signed-in person's own provider accounts; never any credential. */

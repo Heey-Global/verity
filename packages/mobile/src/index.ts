@@ -818,3 +818,11 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export {
+  invitationLinkFieldsSchema,
+  projectTeamSchema,
+  type InvitationLinkFields,
+  type ProjectInvitation as TeamInvitation,
+  type ProjectMember,
+  type ProjectTeam,
+} from './api.js';
