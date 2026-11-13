@@ -16,7 +16,7 @@ const PREFIX = '/internal/package-artifacts/';
 /** Concurrent registry metadata lookups across all verifications; others wait. */
 export const PUBLICATION_METADATA_SLOTS = 6;
 /** Time one metadata lookup may take once it holds a slot; queueing does not count. */
-export const PUBLICATION_LOOKUP_TIMEOUT_MS = 30_000;
+const PUBLICATION_LOOKUP_TIMEOUT_MS = 30_000;
 const METADATA_LIMIT = 2 * 1024 ** 2;
 const ARTIFACT_LIMIT = 32 * 1024 ** 2;
 interface Artifact {
