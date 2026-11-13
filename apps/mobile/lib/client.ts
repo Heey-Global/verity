@@ -15,6 +15,7 @@ import {
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
+import { serverConnection } from './serverConnection';
 import { DEMO_BASE_URL, demoFetch } from './demoTransport';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
@@ -38,6 +39,8 @@ export function subscribeVerityBaseUrl(listener: () => void): () => void {
 }
 
 function notifyBaseUrlChanged(): void {
+  // Another server's outage is not this one's.
+  serverConnection.reset();
   for (const listener of baseUrlListeners) listener();
 }
 let lastDescriptorToken: string | null = null;
@@ -153,6 +156,7 @@ export function createVerityClient(): VerityClient | null {
       fetch: browserFetch,
       uploadFetch: browserFetch,
       allowBackgroundUpload: false,
+      connection: serverConnection,
     });
     registerBranchesClientScope(
       client,
@@ -182,6 +186,7 @@ export function createVerityClient(): VerityClient | null {
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);
     },
+    connection: serverConnection,
   });
   registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);
@@ -219,3 +224,9 @@ export function createVerityClient(): VerityClient | null {
   }
   return client;
 }
+
+// While the server is away the connection bar checks it with the liveness probe;
+// that request reports through the monitor like any other, which ends the outage.
+serverConnection.setProbe(async () => {
+  await createVerityClient()?.getHealth();
+});

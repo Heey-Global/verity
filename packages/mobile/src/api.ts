@@ -1,3 +1,4 @@
+import { SERVER_MAINTENANCE_MESSAGE, type ConnectionReporter } from './connection.js';
 import {
   projectRepositorySchema,
   projectInquirySchema,
@@ -2435,6 +2436,9 @@ export interface VerityClientOptions {
    *  screen. NOT fired for the `/secret/*` on-ramp, whose 401 is a wrong-password
    *  signal the unlock UI handles inline. */
   onUnauthorized?: () => void;
+  /** Receives every request's outcome, so the app can show one connection state
+   *  instead of each screen rendering the same transport failure. */
+  connection?: ConnectionReporter;
 }
 
 function uploadBodyWithMimeType(data: Blob): Blob {
@@ -3258,6 +3262,7 @@ export class VerityClient {
   private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
+  private readonly connection: ConnectionReporter | undefined;
 
   constructor(opts: VerityClientOptions) {
     this.recordingDigest = opts.recordingDigest ?? recordingDigest;
@@ -3271,6 +3276,7 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
+    this.connection = opts.connection;
   }
 
   private async knowledgeRequest(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -7292,6 +7298,13 @@ export class VerityClient {
     } catch (error) {
       finishRuntimeRequest(true);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      // Only a transport failure reaches here; one the caller cancelled says
+      // nothing about the server and is not reported.
+      if (this.connection !== undefined && !(error instanceof Error && error.name === 'AbortError'))
+        this.connection.reportFailure(
+          'unreachable',
+          error instanceof Error ? error.message : String(error),
+        );
       throw error;
     }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
@@ -7305,12 +7318,18 @@ export class VerityClient {
       // on-ramp is always exempt (its 401 is a wrong-password shown inline).
       if (res.status === 401 && sentToken && !path.startsWith('/secret/')) this.onUnauthorized?.();
       const payload = await errorPayload(res);
+      // The Gateway answers every request with this while the server updates;
+      // any other answer, error or not, proves the server is there.
+      if (res.status === 503 && payload.message === SERVER_MAINTENANCE_MESSAGE)
+        this.connection?.reportFailure('maintenance', payload.message);
+      else this.connection?.reportSuccess();
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
         code: payload.code,
       });
     }
+    this.connection?.reportSuccess();
     return res;
   }
 }

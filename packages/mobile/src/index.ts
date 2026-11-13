@@ -828,3 +828,12 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export {
+  CONNECTION_RETRY_DELAYS,
+  ConnectionMonitor,
+  SERVER_MAINTENANCE_MESSAGE,
+  connectionFailureKind,
+  type ConnectionFailureKind,
+  type ConnectionReporter,
+  type ServerConnectionState,
+} from './connection.js';

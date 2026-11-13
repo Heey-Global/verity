@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { View } from 'react-native';
 import { useProjectInquiries } from '../../hooks/useProjectInquiries';
+import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { Button, Card, CardHead, StatusTag, Text } from '../ui';
 
 /** The same durable target-side approval is shown on Home and in the session. */
@@ -16,6 +17,12 @@ export function ProjectInquiryCards({
   projectId?: string;
 }) {
   const resource = useProjectInquiries(client, sessionId, projectId);
+  // During a server update the header's connection bar says so; this card only
+  // reports failures that are its own, and asks again once the server is back.
+  const hidesError = useHidesConnectionError(resource.error);
+  useConnectionRecovered(() => {
+    if (resource.error) resource.reload();
+  });
   const [busy, setBusy] = useState<string>();
   const decide = async (targetSessionId: string, id: string, decision: 'approve' | 'reject') => {
     setBusy(id);
@@ -34,7 +41,7 @@ export function ProjectInquiryCards({
   // A failed permissions query must remain visible: otherwise a pending request looks absent.
   return (
     <>
-      {resource.error ? (
+      {resource.error && !hidesError ? (
         <Card stacked>
           <Text tone="attention">{resource.error}</Text>
           <Button label="Retry project requests" variant="text" onPress={resource.reload} />

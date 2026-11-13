@@ -448,6 +448,29 @@ row never styles its own.
   indicator and `Subtitle` word under the bubble.
 - No bubble, card or `signature`: a system notice is not Verity speaking.
 
+### 5.10 Connection status
+
+Whether the server can be reached is said once for the whole app, by
+`ConnectionStatusBar` (`components/ConnectionStatusBar.tsx`) under the header of
+every screen. Screens do not repeat a server update or a lost route as their own
+error; they hide such errors while the bar shows them and reload by themselves
+when the server answers again.
+
+- **Frame:** the session bar (`SessionBar`): `surfaceAlt` with the default
+  border, inset from the screen edge. No tinted band and no colored border; color
+  is only on the status mark.
+- **Server is updating** (`transient`): a muted spinner in place of the dot,
+  `Reconnecting automatically · 1:24`. Nothing to tap but the bar itself.
+- **Can't reach your server** (`needsSetup`): the attention dot, `Retrying in
+  8 s`, and a compact secondary `Try now` (`rotate-cw`).
+- **Connected** (`ready`): the success dot for a moment after either state ends,
+  then the bar disappears.
+- **Details:** tapping the bar while the server is away opens a sheet named
+  `Connection`: the server and when it was last reached, each failed route in
+  words with a status dot, the next attempt, and the raw output last inside a
+  `Disclosure` (`Technical details`) with `Copy`. The sheet's single primary
+  button is `Try now`. Raw transport output never appears outside it.
+
 ## 6. Patterns
 
 ### 6.1 Settings screen

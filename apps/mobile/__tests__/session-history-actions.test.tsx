@@ -7,8 +7,9 @@ import ts from 'typescript';
 
 // Exercise the screen's actual action wiring without opening unrelated live resources.
 const source = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
-const start = source.indexOf('      {historyError ?');
-const end = source.indexOf('      {streamError ?', start);
+const start = source.indexOf('      {historyError && !hidesHistoryError ?');
+const end = source.indexOf('      {streamError && !hidesStreamError ?', start);
+if (start < 0 || end < 0) throw new Error('session history actions moved; update the markers');
 const compiled = ts.transpileModule(`const element = <>${source.slice(start, end)}</>;`, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;
@@ -18,13 +19,14 @@ const build = new Function(
   'Button',
   'props',
   `
-  const { historyError, loadingHistory, loadingOlder, loaded, loadOlder, retryHistory } = props;
+  const { historyError, hidesHistoryError, loadingHistory, loadingOlder, loaded, loadOlder, retryHistory } = props;
   ${compiled}
   return element;
 `,
 );
 const props = () => ({
   historyError: undefined as string | undefined,
+  hidesHistoryError: false,
   loadingHistory: false,
   loadingOlder: false,
   loaded: false,
@@ -63,6 +65,15 @@ it.each([false, true])(
     expect(loaded ? input.retryHistory : input.loadOlder).not.toHaveBeenCalled();
   },
 );
+// During a server update the header's connection bar is the one notice; a
+// second "Retry history" under it would only repeat the same 503.
+it('leaves a connection failure to the connection bar', () => {
+  const input = { ...props(), historyError: 'server maintenance', hidesHistoryError: true };
+  // Neither the raw 503 text nor a retry button.
+  const rendered = JSON.stringify(renderActions(input).toJSON());
+  expect(rendered).not.toContain('server maintenance');
+  expect(rendered).not.toContain('Retry history');
+});
 // Older pages load as the user scrolls up. A manual button for it crowded the
 // transcript and, while shown, also switched scroll paging off.
 it('offers no manual control for loading earlier history', () => {
