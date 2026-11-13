@@ -167,7 +167,8 @@ export function ProjectCard({
   /** Opens the project page; absent for a group without one. */
   onOpen?: (() => void) | undefined;
   onToggle: () => void;
-  onOpenSession: (sessionId: string) => void;
+  /** `mockups` opens the session with its mockup review in front. */
+  onOpenSession: (sessionId: string, options?: { mockups?: boolean }) => void;
   onSessionChanged: (sessionId: string, deleted: boolean) => void;
 }) {
   const { theme } = useUnistyles();

@@ -2,7 +2,7 @@ jest.mock('./liveConnection', () => ({ subscribeLiveRefresh: () => () => {} }));
 import { createVerityClient, getActiveMeetingServerId } from './client';
 import { waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
-import { currentMeeting, endMeeting } from './liveMeetingSession';
+import { currentMeeting, endMeeting, releaseMeeting } from './liveMeetingSession';
 import {
   acknowledgeMeeting,
   acknowledgeNote,
@@ -37,6 +37,7 @@ jest.mock('./liveMeetingSession', () => ({
   subscribeMeeting: () => () => {},
   endMeeting: jest.fn().mockResolvedValue(undefined),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
+  releaseMeeting: jest.fn().mockReturnValue(true),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('./liveMeetingStore', () => ({
@@ -349,6 +350,39 @@ it('passes meetings discarded on another device to the local store', async () =>
   });
   await syncMeetingSession('session-1');
   expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 9, [], [], ['meeting-1']);
+  expect(releaseMeeting).not.toHaveBeenCalled();
+});
+
+it('lets go of a finished meeting discarded on another device', async () => {
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, state: 'ended', error: null });
+  client.getLiveMeetingChanges.mockResolvedValueOnce({
+    cursor: 9,
+    meetings: [],
+    notes: [],
+    deletedMeetingIds: ['meeting-1'],
+  });
+  await syncMeetingSession('session-1');
+  expect(releaseMeeting).toHaveBeenCalledWith('meeting-1');
+});
+
+// A finished recording answered 404 on /commands after it was discarded, every few seconds.
+it('polls recorder commands only until the recording has ended', async () => {
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, state: 'ended', error: null });
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const subscription = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockReturnValue({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
+  const stop = startLiveMeetingSync();
+  try {
+    const { recoverNativeMeetings } = jest.requireMock('./liveMeetingSession');
+    // The sync loop has ticked: native recovery runs first and resolves into the tick.
+    await waitFor(() => expect(recoverNativeMeetings).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.getLiveMeetingCommands).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    subscription.mockRestore();
+  }
 });
 
 // Without this, a recorder holding an unsent revision would retry the refused upload on
@@ -377,6 +411,8 @@ describe('discardFinishedMeeting', () => {
     await discardFinishedMeeting('session-1', ended, client as never);
     expect(client.discardSessionMeeting).toHaveBeenCalledWith('session-1', meeting.id);
     expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
+    // The app kept polling a discarded meeting for 15 minutes and more: it stayed current.
+    expect(releaseMeeting).toHaveBeenCalledWith(meeting.id);
     expect(client.discardSessionMeeting.mock.invocationCallOrder[0]).toBeLessThan(
       jest.mocked(deleteMeeting).mock.invocationCallOrder[0]!,
     );
@@ -388,6 +424,7 @@ describe('discardFinishedMeeting', () => {
       'unavailable',
     );
     expect(deleteMeeting).not.toHaveBeenCalled();
+    expect(releaseMeeting).not.toHaveBeenCalled();
   });
 
   it('deletes locally when the server no longer has the meeting', async () => {

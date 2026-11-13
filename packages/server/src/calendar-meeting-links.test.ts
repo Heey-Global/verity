@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { joinableMeeting, meetingCallKey, meetingLinkFromEvent } from './calendar-meeting-links.js';
+import {
+  joinableMeeting,
+  meetingCallKey,
+  meetingLinkFromEvent,
+  meetingPlatform,
+} from './calendar-meeting-links.js';
 import type { CalendarEventRecord } from './google-calendar.js';
 
 const event = (fields: Partial<CalendarEventRecord> = {}): CalendarEventRecord => ({
@@ -144,5 +149,19 @@ describe('meetingCallKey', () => {
     expect(meetingCallKey('https://meet.google.com/abc-defg-hij')).not.toBe(
       meetingCallKey('https://meet.google.com/xyz-defg-hij'),
     );
+  });
+});
+
+describe('meetingPlatform', () => {
+  it.each([
+    ['https://meet.google.com/abc-defg-hij', 'google_meet'],
+    ['https://teams.microsoft.com/l/meetup-join/x', 'teams'],
+    ['https://teams.live.com/meet/123', 'teams'],
+    ['https://us02web.zoom.us/j/123', 'zoom'],
+    ['https://meet.example.com/abc', null],
+    ['not a link', null],
+    [undefined, null],
+  ] as const)('reads %s as %s', (url, platform) => {
+    expect(meetingPlatform(url)).toBe(platform);
   });
 });

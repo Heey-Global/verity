@@ -2,7 +2,7 @@
 # no shell, package manager, diagnostics, credentials, or configurable upstream.
 
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS builder
 
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string

@@ -8,7 +8,12 @@ import type { EventStore } from '@verity/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { markInternalConnections } from './internal-listener.js';
-import { registerPackageInstallRoute } from './package-install-route.js';
+import {
+  PUBLICATION_FACT_LIMIT,
+  PUBLICATION_FACT_TTL_MS,
+  PUBLICATION_LOOKUP_CONCURRENCY,
+  registerPackageInstallRoute,
+} from './package-install-route.js';
 import { npmInstallGrant } from './package-install-grants.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
@@ -36,6 +41,36 @@ const verifyInput = {
   packages: [{ name: 'example', version: '1.0.0' }],
   minimumAgeDays: 3,
 };
+/** Registry document for the package named by the request path. */
+function namedMetadata(
+  published: (name: string) => unknown,
+  delayMs = 0,
+): BrokeredHttpStreamTransport {
+  return async ({ path }) => {
+    const name = decodeURIComponent(path.slice(1));
+    if (delayMs) await new Promise((done) => setTimeout(done, delayMs));
+    return Object.assign(
+      Readable.from([
+        JSON.stringify({
+          name,
+          versions: {
+            '1.0.0': {
+              name,
+              version: '1.0.0',
+              dist: {
+                tarball: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`,
+                integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+              },
+            },
+          },
+          'dist-tags': { latest: '1.0.0' },
+          time: { '1.0.0': published(name) },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+  };
+}
 function packageMetadata(published: unknown): BrokeredHttpStreamTransport {
   return async () =>
     Object.assign(
@@ -190,6 +225,52 @@ describe('package install broker', () => {
     ).toBe(400);
   });
 
+  it('looks up many packages concurrently within the bound and keeps lockfile order', async () => {
+    // Serial lookups made a ~1,500-version lockfile take minutes; unbounded ones
+    // would flood the registry. Both the bound and the result must hold.
+    let active = 0;
+    let peak = 0;
+    const inner = namedMetadata((name) =>
+      name === 'pkg-3' ? new Date(Date.now() - 86400_000).toISOString() : '2020-01-01T00:00:00Z',
+    );
+    const transport = vi.fn<BrokeredHttpStreamTransport>().mockImplementation(async (request) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((done) => setTimeout(done, 20));
+      active--;
+      return inner(request);
+    });
+    const f = fixture('protected', true, transport);
+    f.prompt.mockResolvedValue(allow('install'));
+    const names = Array.from({ length: PUBLICATION_LOOKUP_CONCURRENCY * 3 }, (_, i) => `pkg-${i}`);
+    const response = await f.post({
+      ...verifyInput,
+      packages: names.map((name) => ({ name, version: '1.0.0' })),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(names.length);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(PUBLICATION_LOOKUP_CONCURRENCY);
+    expect(f.prompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.prompt.mock.calls[0]![0])).toContain('pkg-3@1.0.0');
+  });
+  it('stops remaining lookups after a rejection and keeps the 409', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockImplementation(
+        namedMetadata((name) => (name === 'pkg-0' ? undefined : '2020-01-01T00:00:00Z'), 20),
+      );
+    const f = fixture('protected', true, transport);
+    const names = Array.from({ length: PUBLICATION_LOOKUP_CONCURRENCY * 4 }, (_, i) => `pkg-${i}`);
+    const response = await f.post({
+      ...verifyInput,
+      packages: names.map((name) => ({ name, version: '1.0.0' })),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>().error).toContain('pkg-0@1.0.0');
+    expect(transport.mock.calls.length).toBeLessThan(names.length);
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
   it('fails closed when provider metadata cannot be retrieved', async () => {
     const f = fixture('protected', true, async () => {
       throw new Error('offline');
@@ -197,7 +278,7 @@ describe('package install broker', () => {
     expect((await f.post(verifyInput)).statusCode).toBe(502);
     expect(f.prompt).not.toHaveBeenCalled();
   });
-  it('reuses publication facts briefly while rechecking floors and never caching exceptions', async () => {
+  it('reuses publication facts for their lifetime while rechecking floors and never caching exceptions', async () => {
     const transport = vi
       .fn<BrokeredHttpStreamTransport>()
       .mockImplementation(packageMetadata(new Date(Date.now() - 4 * 86400_000).toISOString()));
@@ -210,7 +291,7 @@ describe('package install broker', () => {
     expect(f.prompt).toHaveBeenCalledTimes(2);
     f.resolve.mockResolvedValueOnce(undefined);
     expect((await f.post(verifyInput)).statusCode).toBe(401);
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5 * 60_000 + 1);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + PUBLICATION_FACT_TTL_MS + 1);
     try {
       expect((await f.post(verifyInput)).statusCode).toBe(200);
       expect(transport).toHaveBeenCalledTimes(2);
@@ -261,12 +342,14 @@ describe('package install broker', () => {
         ) as IncomingMessage,
     );
     const f = fixture('protected', true, transport);
-    for (const [start, count] of [
-      [0, 5000],
-      [5000, 5000],
-      [10000, 1],
-      [0, 1],
-    ]) {
+    // Fill the fact cache exactly, add one more release, then ask for the first one
+    // again: it must have been evicted rather than retained beyond the bound.
+    const batch = 5000;
+    const rounds = Array.from({ length: PUBLICATION_FACT_LIMIT / batch }, (_, index) => [
+      index * batch,
+      batch,
+    ]);
+    for (const [start, count] of [...rounds, [PUBLICATION_FACT_LIMIT, 1], [0, 1]]) {
       currentVersions = Array.from({ length: count! }, (_, index) => `1.0.${start! + index}`);
       const response = await f.post({
         ...verifyInput,
@@ -274,7 +357,7 @@ describe('package install broker', () => {
       });
       expect(response.statusCode).toBe(200);
     }
-    expect(transport).toHaveBeenCalledTimes(4);
+    expect(transport).toHaveBeenCalledTimes(rounds.length + 2);
   });
 
   it('keeps a saved Skip authoritative when another manager already has protection', async () => {

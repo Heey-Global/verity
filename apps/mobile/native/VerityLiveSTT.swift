@@ -500,7 +500,7 @@ private final class LiveSTTService {
     guard dictationOwner == nil, let meetingId else { callback(event); return }
     guard !journalFailed else { return }
     var event = event
-    event["recordedAt"] = Date().timeIntervalSince1970 * 1000
+    event["recordedAt"] = (Date().timeIntervalSince1970 * 1000).rounded()
     if event["kind"] as? String == "snapshot", event["final"] as? Bool == true {
       event["audioThrough"] = progress.snapshot().seconds
     }

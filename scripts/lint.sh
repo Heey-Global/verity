@@ -4,18 +4,14 @@ set -euo pipefail
 lint_options=("$@")
 exts=('*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.mts' '*.cts')
 # CI disables result reuse; local snapshots validate current type dependencies.
-# Recycle the process to release the complete type graph and parser state.
-batch=16
+# lint-runner.mjs groups the files and recycles a worker per group, releasing the
+# complete type graph and parser state; group size depends on the environment.
 lint_batched() {
   local label="$1"; shift
-  local -a all=("$@")
-  local i part=1
-  for ((i = 0; i < ${#all[@]}; i += batch)); do
-    echo "::group::eslint $label ($part)"
-    node scripts/lint-runner.mjs "${lint_options[@]}" -- "${all[@]:i:batch}"
-    echo "::endgroup::"
-    part=$((part + 1))
-  done
+  [ "$#" -gt 0 ] || return 0
+  echo "::group::eslint $label"
+  node scripts/lint-runner.mjs "${lint_options[@]}" -- "$@"
+  echo "::endgroup::"
 }
 for pkg in packages/*; do
   [ -d "$pkg" ] || continue
