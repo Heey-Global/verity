@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
-import { gzipSync } from 'node:zlib';
+import { pipeline } from 'node:stream/promises';
+import { createGzip, gzipSync } from 'node:zlib';
 import type { IncomingMessage } from 'node:http';
 import { expect, it } from 'vitest';
 import { MAX_NPM_PUBLICATION_BYTES, projectNpmPublications } from './npm-publication-projection.js';
@@ -149,13 +150,19 @@ it('projects facts from a gzip-compressed registry document', async () => {
 
 it('bounds the decompressed size of a small gzip body', async () => {
   // A compressed body far below the transfer budget can expand past it. Only the
-  // decompressed count stops that; the compressed count never would.
-  const document = Buffer.concat([
-    Buffer.from('{"name":"example","description":"'),
-    Buffer.alloc(MAX_NPM_PUBLICATION_BYTES + 1024, 97),
-    Buffer.from('"}'),
-  ]);
-  const compressed = gzipSync(document);
+  // decompressed count stops that; the compressed count never would. Compress in
+  // small chunks so the oversized document never sits in memory.
+  const chunk = Buffer.alloc(1024 ** 2, 97);
+  async function* document() {
+    yield Buffer.from('{"name":"example","description":"');
+    for (let i = 0; i < MAX_NPM_PUBLICATION_BYTES / chunk.length + 1; i++) yield chunk;
+    yield Buffer.from('"}');
+  }
+  const parts: Buffer[] = [];
+  await pipeline(Readable.from(document()), createGzip(), async (compressed) => {
+    for await (const part of compressed) parts.push(part as Buffer);
+  });
+  const compressed = Buffer.concat(parts);
   expect(compressed.length).toBeLessThan(MAX_NPM_PUBLICATION_BYTES / 64);
   await expect(
     projectNpmPublications(
