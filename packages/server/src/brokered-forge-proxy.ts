@@ -411,25 +411,31 @@ export function createBrokeredForgeProxy(options: {
             // store still closes it once nothing has confirmed it for too long,
             // rather than suspending revocation while credentials keep flowing.
             let checking = false;
+            let checkStartedAt = 0;
             let confirmedAt = Date.now();
+            let lastTick = confirmedAt;
             let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
               if (abort.signal.aborted) return;
-              // Only a check that was actually tried can exhaust the bound: after
-              // an event-loop stall the overdue tick starts one instead.
-              if (Date.now() - confirmedAt > unconfirmedLimit) {
-                if (checking) {
-                  revoke('revocation-timeout');
-                  return;
-                }
-                if (lastFailure !== undefined) {
-                  revoke('resolver-error', lastFailure.error);
-                  return;
-                }
+              // The bounds count time the server could run, not an event-loop
+              // stall: no check can answer while the loop is blocked, so a stall
+              // alone must never exhaust them.
+              const now = Date.now();
+              const stalled = Math.max(0, now - lastTick - recheckInterval);
+              lastTick = now;
+              confirmedAt += stalled;
+              checkStartedAt += stalled;
+              if (checking) {
+                if (now - checkStartedAt > unconfirmedLimit) revoke('revocation-timeout');
+                return;
               }
-              if (checking) return;
+              if (lastFailure !== undefined && now - confirmedAt > unconfirmedLimit) {
+                revoke('resolver-error', lastFailure.error);
+                return;
+              }
               checking = true;
-              const started = Date.now();
+              const started = now;
+              checkStartedAt = started;
               void resolveBinding()
                 .then(
                   (current) => {

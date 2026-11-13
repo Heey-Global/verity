@@ -1309,6 +1309,44 @@ it('keeps a live Forge stream when revocation re-checks are slower than one poll
   expect(warning).not.toHaveBeenCalled();
 });
 
+it('does not count an event-loop stall against a live Forge stream', async () => {
+  // A blocked loop delays every re-check at once; counted as store latency,
+  // a stall longer than the bound would revoke a healthy clone.
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(
+    (_req, res) => {
+      let sent = 0;
+      const timer = setInterval(() => {
+        res.write(`frame${sent}\n`);
+        if (sent === 3) {
+          const until = Date.now() + 1000;
+          while (Date.now() < until);
+        }
+        if (++sent === 8) {
+          clearInterval(timer);
+          res.end();
+        }
+      }, 100);
+      res.once('close', () => clearInterval(timer));
+    },
+    {
+      capabilities: {
+        ...capabilities,
+        resolve: async (value) => {
+          if (++calls > 2) await delay(150);
+          return value === cap ? binding : undefined;
+        },
+      },
+      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 400 },
+    },
+  );
+  const result = await call(h.port, '/repos/acme/app/issues');
+  expect(result.status).toBe(200);
+  expect(result.body.split('\n').filter(Boolean)).toHaveLength(8);
+  expect(warning).not.toHaveBeenCalled();
+});
+
 it('closes a live Forge stream that no re-check confirms within the bound', async () => {
   let calls = 0;
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
