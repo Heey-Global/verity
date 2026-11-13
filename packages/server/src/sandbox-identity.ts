@@ -51,6 +51,16 @@ export function sandboxNetworkName(sandbox: {
     : `${projectNetworkName(sandbox.projectId)}--${sandboxPersonTag(sandbox.userId)}`;
 }
 
+/** The Runner runtime directory of one sandbox, relative to the data volume root. */
+export function sandboxRunnerDir(
+  projectId: string,
+  sandbox: { userId: string; projectDefault: boolean },
+): string {
+  return sandbox.projectDefault
+    ? `runners/${projectId}`
+    : `runners/${sandboxPersonTag(sandbox.userId)}/${projectId}`;
+}
+
 export function sandboxIdentity(
   project: { id: string; containerName: string },
   sandbox: { userId: string; projectDefault: boolean },
@@ -66,7 +76,7 @@ export function sandboxIdentity(
       containerName: project.containerName,
       networkName: projectNetworkName(project.id),
       nodeModulesVolume: projectNodeModulesVolumeName(project.id),
-      runnerDir: `runners/${project.id}`,
+      runnerDir: sandboxRunnerDir(project.id, sandbox),
     };
   }
   const tag = sandboxPersonTag(sandbox.userId);
@@ -75,7 +85,7 @@ export function sandboxIdentity(
     containerName: `${project.containerName}--${tag}`,
     networkName: sandboxNetworkName({ ...base }),
     nodeModulesVolume: `${projectNodeModulesVolumeName(project.id)}--${tag}`,
-    runnerDir: `runners/${tag}/${project.id}`,
+    runnerDir: sandboxRunnerDir(project.id, sandbox),
   };
 }
 
@@ -92,4 +102,18 @@ export function sandboxKey(sandbox: {
   return sandbox.projectDefault
     ? sandbox.projectId
     : `${sandbox.projectId}#${sandboxPersonTag(sandbox.userId)}`;
+}
+
+/**
+ * Whether the agent gateway may serve a sandbox's certificate. The gateway holds
+ * one provider login, the administrator's, which belongs to the project's
+ * original sandbox. Any other sandbox — a person's own — gets no route until it
+ * can be served with that person's own login (ADR 0023 §3–4); routing it would
+ * hand the administrator's account to another person's container.
+ */
+export function gatewayServesSandbox(
+  binding: { readonly userId?: string | undefined },
+  projectDefaultUser: string,
+): boolean {
+  return binding.userId !== undefined && binding.userId === projectDefaultUser;
 }

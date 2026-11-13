@@ -1,4 +1,6 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { PERSONAL_SANDBOX_LOGIN_REQUIRED, resolveTurnSandbox } from './turn-sandbox.js';
+import { gatewayServesSandbox } from './sandbox-identity.js';
 import { sandboxNetworkName } from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
@@ -2023,6 +2025,17 @@ export async function buildEmbeddedServer(
       }
       const project = await eventStore.getProject(binding.projectId);
       if (project === undefined || project.kind === 'control_plane') continue;
+      // The gateway serves one provider login, the administrator's, whose sandbox
+      // is the project's original one. A person's own sandbox gets no route until
+      // it can be served with that person's own login (ADR 0023 §3–4); anything
+      // else would hand another person's account to their container.
+      if (
+        !gatewayServesSandbox(
+          binding,
+          await projectDefaultSandboxUser(eventStore, binding.projectId),
+        )
+      )
+        continue;
       try {
         const inspected = await docker.inspectContainer(project.containerName);
         if (await healthyRelayGeneration(project.id, inspected)) {
@@ -4595,6 +4608,8 @@ export async function buildEmbeddedServer(
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         turnCredentials,
+        turnSandbox: (projectId, initiatedBy) =>
+          resolveTurnSandbox(eventStore, projectId, initiatedBy),
         turnGitAuthor: (userId) =>
           resolveTurnGitAuthor(
             {
@@ -4748,6 +4763,14 @@ export async function buildEmbeddedServer(
           return withControlPlaneAgentCredentials(sessionSelected, async (inherited) =>
             materializeControlPlaneAgentEnv(secretRoot, inherited),
           );
+        }
+        // A person's turn runs in their own sandbox (ADR 0023 §4), which the gateway
+        // does not serve until it can use that person's own provider login. Refused
+        // here, before anything is prepared, rather than failing inside the agent.
+        if (
+          !(await resolveTurnSandbox(store, project.id, preparation.initiatedBy)).projectDefault
+        ) {
+          throw new Error(PERSONAL_SANDBOX_LOGIN_REQUIRED);
         }
         const supervisorRefusal = acpSupervisorWiringRefusal({
           runnerSupervisorBackend: selected.runnerSupervisorBackend,

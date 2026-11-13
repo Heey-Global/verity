@@ -13,6 +13,8 @@ import {
   type SupervisorRunnerRecoveryOptions,
   transcriptPath,
 } from '@verity/session';
+import { sandboxRunnerDir } from './sandbox-identity.js';
+import type { TurnSandbox } from './turn-sandbox.js';
 import { TranscriptStore } from '@verity/store';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
@@ -70,6 +72,13 @@ export function buildRunnerConductorWiring(deps: {
   mcpGatewayTokens?: McpGatewayTokens | undefined;
   /** Per-turn sandbox credentials naming the person a turn runs for. */
   turnCredentials?: TurnCredentials | undefined;
+  /** The sandbox a project turn runs in; its Runner runtime is that sandbox's. */
+  turnSandbox?:
+    | ((
+        projectId: string,
+        initiatedBy: { readonly userId: string } | undefined,
+      ) => Promise<TurnSandbox>)
+    | undefined;
   /** Who a person's turn commits as; see turn-git-author.ts. */
   turnGitAuthor?: ((userId: string) => Promise<GitAuthor>) | undefined;
   /** Whether a person's turn can sign commits; see turn-git-author.ts. */
@@ -162,7 +171,18 @@ export function buildRunnerConductorWiring(deps: {
         if (backend.runnerSupervisorBackend === undefined) {
           return new LoopbackRunnerClient(backend);
         }
-        const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
+        // A project turn reaches the Runner of its own sandbox (ADR 0023 §4); the
+        // control-plane runner and the project's original sandbox keep
+        // `runners/<projectId>`.
+        const runtimeDir = join(
+          dataVolumeRoot,
+          useControlPlaneRunner || deps.turnSandbox === undefined
+            ? `runners/${runnerProjectId}`
+            : sandboxRunnerDir(
+                runnerProjectId,
+                await deps.turnSandbox(runnerProjectId, context.initiatedBy),
+              ),
+        );
         // Provisioning can deliberately disable the Sandbox supervisor for a project
         // when its container boundary is not safe for Stage 5c. Native backends may
         // still use the legacy in-process loopback, but ACP must never do so:
