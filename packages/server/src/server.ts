@@ -1,6 +1,7 @@
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
+import { registerProjectTeamRoutes } from './project-team-routes.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import {
@@ -3744,6 +3745,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
     persist: persistPersonal,
+  });
+  registerProjectTeamRoutes(app, {
+    store: deps.eventStore,
+    projectName: async (projectId) =>
+      (await deps.eventStore.getProject(projectId))?.name ?? undefined,
+    ...(deps.invitationLink === undefined ? {} : { invitationLink: deps.invitationLink }),
+    ...(deps.onMemberRemoved === undefined ? {} : { onMemberRemoved: deps.onMemberRemoved }),
   });
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,

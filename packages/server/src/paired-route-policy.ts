@@ -52,6 +52,31 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
+  // A project's team: members and invitations need the permission to manage it.
+  [
+    routeScopeKey('GET', '/projects/:id/team'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/invitations'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/invitations/:invitationId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/invitations/:invitationId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('PATCH', '/projects/:id/members/:userId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/members/:userId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
   // A person's own default model for the project, bound to the signed-in person.
   [
     routeScopeKey('PUT', '/projects/:id/default-model'),

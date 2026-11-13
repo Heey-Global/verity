@@ -4,6 +4,7 @@ import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
   EventStore,
+  ProjectInvitation,
   ProjectRecord,
   ProviderConnectionKind,
   SealableSecretCipher,
@@ -234,6 +235,16 @@ export interface ServerDeps {
   /** Reads a short-lived Codex access token from the Agent Gateway, which owns the
    * rotating login (ADR 0010). Absent → the Codex usage probe stays inert. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** The join link of an invitation Uplink created (Uplink team contract D5). */
+  invitationLink?:
+    | ((
+        invitation: ProjectInvitation,
+        secret: string,
+        display: { inviterName: string; projectName: string },
+      ) => Promise<string | undefined>)
+    | undefined;
+  /** Ends a removed member's access to a project at once (ADR 0023 §6). */
+  onMemberRemoved?: ((projectId: string, userId: string) => Promise<void>) | undefined;
   /** A fresh access token for a person's own Claude login, if they have one. */
   personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
   /** A person's own Codex access token from the gateway (ADR 0023 §3). */
