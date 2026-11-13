@@ -81,7 +81,15 @@ enrollment envelope — `invitationId`, `secret`, `expiresAt`, `serverId`,
 https form replaces `verity://enroll/v1#`, because only an https link on the
 app's associated domain opens the app from a messenger or mail client.
 
-- `team.invite.created` no longer returns `redeemUrl`; Core assembles the link.
+- `team.invite.created` no longer returns `redeemUrl`. Core supplies every field
+  it holds — `invitationId`, `secret`, `expiresAt`, `serverId`, `identityKey`,
+  `uplinkOrigin`, `installationId`, `installationHandle` and `display` — to the
+  inviter's own app over its authenticated connection. That app adds `tlsPin`
+  and `coreOrigin` from the server profile it verified when it paired, and
+  encodes the envelope. Core does not know its own pin (the installer hands it
+  to the first device), and Uplink must never supply or alter it: the pin is
+  what protects a joining device from Uplink itself. Uplink never sees the
+  link, since the fragment never reaches a server.
 - The full `tlsPin` is required. A short fingerprint shown in the UI is not a
   trust anchor.
 - `serverId` must be recomputed from `identityKey`; a mismatch rejects the link.

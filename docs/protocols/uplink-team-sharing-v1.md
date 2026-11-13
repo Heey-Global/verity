@@ -142,9 +142,10 @@ The core creates a fresh, random one of at least 128 bits before
 reuses one after removal, so re-inviting a removed member is not blocked by its
 tombstone; the owner and memberships created without Uplink have none.
 `expiresAt` may be shortened by service policy; the returned deadline wins.
-Uplink returns no redemption URL. Core assembles the
-`https://verity.build/join#` link from the reviewed envelope (reconciled
-decision D5). The bootstrap secret is not logged or sent over control; only its
+Uplink returns no redemption URL. Core hands the link fields to the inviter's
+app, which adds the pinned `tlsPin` and `coreOrigin` from its paired server
+profile and encodes the `https://verity.build/join#` link (reconciled decision
+D5). The bootstrap secret is not logged or sent over control; only its
 commitment is registered.
 
 Service events:
