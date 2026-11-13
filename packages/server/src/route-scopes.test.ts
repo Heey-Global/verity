@@ -1,3 +1,4 @@
+import { ADMINISTRATOR_ONLY_RESOURCE_ROUTES, pairedRoutePolicy } from './paired-route-policy.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -245,6 +246,28 @@ describe('route scope declarations', () => {
       }
     }
     expect(computed).toEqual([]);
+  });
+
+  // A session or project route nobody declared silently stays administrator-only,
+  // so members of a shared project would lose it without anyone deciding that
+  // (ADR 0023 §1). Each one has to be declared for members or listed as
+  // administrator-only on purpose.
+  it('decides for every session and project route who may use it', () => {
+    const undecided = [...new Set(registeredRouteKeys())].filter((key) => {
+      const [method, url] = key.split(' ', 2) as [string, string];
+      if (!/^\/(sessions|projects)(\/|$)/u.test(url)) return false;
+      return (
+        pairedRoutePolicy(method, url).kind === 'administrator' &&
+        !ADMINISTRATOR_ONLY_RESOURCE_ROUTES.has(key)
+      );
+    });
+    expect(undecided).toEqual([]);
+    const registered = new Set(registeredRouteKeys());
+    for (const key of ADMINISTRATOR_ONLY_RESOURCE_ROUTES) {
+      const [method, url] = key.split(' ', 2) as [string, string];
+      expect(registered.has(key), `${key} is not registered`).toBe(true);
+      expect(pairedRoutePolicy(method, url).kind, `${key} is also declared`).toBe('administrator');
+    }
   });
 
   it('registers no explicit HEAD route', () => {

@@ -3476,6 +3476,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerSessionOrderRoute(app, { store: deps.eventStore });
   registerSessionListRoute(app, {
     store: deps.eventStore,
+    visibleTo: async (viewer) => {
+      if (await deps.eventStore.isActiveAdministrator(viewer)) return { all: true };
+      return {
+        all: false,
+        projectIds: new Set(await deps.eventStore.listReadableProjectIds(viewer)),
+        unassigned: false,
+      };
+    },
     prunePrSummaryCache,
     pruneBranchCache,
     summarizeSessions,
@@ -6096,6 +6104,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   const sessionCreate = registerSessionCreateRoute(app, {
     eventStore: deps.eventStore,
+    mayStartIn: async (viewer, projectId) => {
+      if (projectId === null)
+        return (await deps.eventStore.isActiveAdministrator(viewer)) ? 'allow' : 'forbidden';
+      if (await deps.eventStore.hasProjectPermission(viewer, projectId, 'execute')) return 'allow';
+      return (await deps.eventStore.hasProjectPermission(viewer, projectId, 'read'))
+        ? 'forbidden'
+        : 'not_found';
+    },
     ...(deps.dataRoot === undefined ? {} : { dataRoot: deps.dataRoot }),
     ...(deps.provisioner === undefined ? {} : { provisioner: deps.provisioner }),
     ...(deps.projectCloneRoot === undefined ? {} : { projectCloneRoot: deps.projectCloneRoot }),

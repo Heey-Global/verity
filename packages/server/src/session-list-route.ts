@@ -12,6 +12,16 @@ export interface SessionListRouteDeps {
   collectAttention: () => Promise<AttentionSignal[]>;
   /** Sessions the server runs for itself (Wiki maintenance); no list shows them. */
   hiddenSessionIds?: () => Promise<ReadonlySet<string>>;
+  /**
+   * What `viewer` may see (ADR 0023 §1): everything, or the sessions of the
+   * projects they can read, plus sessions without a project for an
+   * administrator. Absent → everything, as for the single operator.
+   */
+  visibleTo?: (
+    viewer: string,
+  ) => Promise<
+    { all: true } | { all: false; projectIds: ReadonlySet<string>; unassigned: boolean }
+  >;
 }
 
 export function registerSessionListRoute(app: FastifyInstance, deps: SessionListRouteDeps): void {
@@ -62,10 +72,18 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
     return read;
   };
   app.get('/sessions', async (request): Promise<SessionSummary[] | SessionListEnvelope> => {
-    const [shared, views] = await Promise.all([
+    const viewer = viewerId(request);
+    const [all, views, scope] = await Promise.all([
       sharedLoad(),
-      deps.store.viewState.sessionViews(viewerId(request)),
+      deps.store.viewState.sessionViews(viewer),
+      deps.visibleTo?.(viewer) ?? Promise.resolve({ all: true as const }),
     ]);
+    // A session of a project this person cannot read is not theirs to list.
+    const shared = scope.all
+      ? all
+      : all.filter((summary) =>
+          summary.projectId == null ? scope.unassigned : scope.projectIds.has(summary.projectId),
+        );
     // The shared load may serve several people at once, so each answer gets its
     // own copies carrying the requester's read mark and dismissed Home items.
     // A session this person never touched is unread-neutral and hides nothing.
@@ -83,7 +101,11 @@ export function registerSessionListRoute(app: FastifyInstance, deps: SessionList
       };
     });
     if ((request.query as { envelope?: unknown } | undefined)?.envelope !== '1') return summaries;
-    const attention = await measureLatencyPhase('session_attention', deps.collectAttention);
+    // Server attention signals are the administrator's to act on.
+    const attention =
+      scope.all || scope.unassigned
+        ? await measureLatencyPhase('session_attention', deps.collectAttention)
+        : [];
     // Absent when healthy, so the envelope stays quiet in the steady state.
     return {
       sessions: summaries,

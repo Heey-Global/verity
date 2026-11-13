@@ -52,6 +52,298 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
+  // Working in a shared project (ADR 0023 §1): reading a session, sending its
+  // turns and handling its files and servers follow the project permission.
+  [
+    routeScopeKey('GET', '/sessions/:id/activity'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/branches'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/events'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/files'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/files/content'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/files/download'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/files/history'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/google-status'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/history/v1'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/live-meetings/:meetingId/insights'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/live-meetings/:meetingId/result'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:id/automation'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:sessionId/dev-servers'),
+    { kind: 'session', parameter: 'sessionId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:sessionId/managed-dev-servers'),
+    { kind: 'session', parameter: 'sessionId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:sessionId/managed-dev-servers/:serverId/logs'),
+    { kind: 'session', parameter: 'sessionId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:sessionId/local-shares'),
+    { kind: 'session', parameter: 'sessionId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/sessions/:sessionId/public-static-directories'),
+    { kind: 'session', parameter: 'sessionId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/turns'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/cancel'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/permissions/:toolUseId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/queue/:itemId/cancel'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/planning'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/files'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/files/move'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/branch'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/merge'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/pull-request/merge'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/recover-worktree'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/save-to-project'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/knowledge-sources'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/meetings/transcripts'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/meetings/transcripts/stream'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/result/retry'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PUT', '/sessions/:id/files/content'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/sessions/:id/files'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/live-meetings/:meetingId/result/tasks/:taskId'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PUT', '/sessions/:id/automation'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PATCH', '/sessions/:id/automation'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/sessions/:id/automation'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-servers/:serverId/start'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-servers/:serverId/stop'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-servers/:serverId/restart'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-servers/:serverId/approve'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-servers/:serverId/local'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/managed-dev-server-instances/:instanceId/stop'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/local-shares'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/public-port-shares'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:sessionId/public-static-shares'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/sessions/:sessionId/managed-dev-servers/:serverId'),
+    { kind: 'session', parameter: 'sessionId', permission: 'execute' },
+  ],
+  // Deleting a shared session removes it for everyone in the project.
+  [
+    routeScopeKey('DELETE', '/sessions/:id'),
+    { kind: 'session', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:projectId/local-shares'),
+    { kind: 'project', parameter: 'projectId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:projectId/public-shares'),
+    { kind: 'project', parameter: 'projectId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:projectId/secret-names'),
+    { kind: 'project', parameter: 'projectId', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/wake'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/sleep'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:projectId/public-static-shares'),
+    { kind: 'project', parameter: 'projectId', permission: 'execute' },
+  ],
+  // A project's settings, grants and connections are managed by its managers.
+  [
+    routeScopeKey('PATCH', '/projects/:id/setup-status'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:id/repair'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/secret-grants'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/secret-grants/:grantId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/knowledge-grants'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/knowledge-grants'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/mcp-bindings'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/mcp-bindings/:connectionId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/mcp-bindings/:connectionId'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:id/integrations'),
+    { kind: 'project', parameter: 'id', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:projectId/secret-permissions'),
+    { kind: 'project', parameter: 'projectId', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:projectId/secret-permissions'),
+    { kind: 'project', parameter: 'projectId', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:projectId/secret-permissions/:permissionId'),
+    { kind: 'project', parameter: 'projectId', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('GET', '/projects/:projectId/secret-providers/doppler/bindings'),
+    { kind: 'project', parameter: 'projectId', permission: 'manage' },
+  ],
+  [
+    routeScopeKey('POST', '/projects/:projectId/secret-providers/doppler/bindings'),
+    { kind: 'project', parameter: 'projectId', permission: 'manage' },
+  ],
   // A project's team: members and invitations need the permission to manage it.
   [
     routeScopeKey('GET', '/projects/:id/team'),
@@ -406,6 +698,10 @@ const activeUserRoutes = new Set([
   // handshake consumes the ticket, not a paired-device bearer.
   routeScopeKey('POST', '/live/ticket'),
   routeScopeKey('GET', '/projects'),
+  // Sessions are filtered to readable projects inside the handler, and creating
+  // one is checked against the target project there.
+  routeScopeKey('GET', '/sessions'),
+  routeScopeKey('POST', '/sessions'),
   routeScopeKey('GET', '/auth/session'),
   routeScopeKey('POST', '/auth/logout'),
   // Tasks are owner-scoped inside the handler (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md §7.2).
@@ -422,7 +718,66 @@ const activeUserRoutes = new Set([
   routeScopeKey('DELETE', '/tasks/:id'),
 ]);
 
-function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
+/**
+ * Session and project routes that deliberately stay administrator-only: creating
+ * projects, cross-session links and moves, diagnostics, and everything bound to
+ * the administrator's own Google account. Every other session or project route
+ * must declare its resource and permission above; a guard test holds that.
+ */
+export const ADMINISTRATOR_ONLY_RESOURCE_ROUTES: ReadonlySet<string> = new Set([
+  // A project's settings include instance-wide choices; managers rename projects
+  // and set their own default model through their own routes.
+  routeScopeKey('PATCH', '/projects/:id/settings'),
+  routeScopeKey('POST', '/projects'),
+  routeScopeKey('POST', '/projects/:id/link'),
+  routeScopeKey('POST', '/projects/:id/link-github'),
+  routeScopeKey('PATCH', '/projects/order'),
+  routeScopeKey('PATCH', '/sessions/order'),
+  routeScopeKey('POST', '/sessions/:id/project'),
+  routeScopeKey('POST', '/sessions/:id/links'),
+  routeScopeKey('DELETE', '/sessions/:id/links/:targetId'),
+  routeScopeKey('GET', '/sessions/:id/links'),
+  routeScopeKey('GET', '/sessions/:id/linked-message-approvals'),
+  routeScopeKey('GET', '/sessions/:id/qa-approvals'),
+  routeScopeKey('GET', '/sessions/:id/diagnostics'),
+  routeScopeKey('POST', '/sessions/:id/debug/scroll'),
+  routeScopeKey('POST', '/sessions/:id/google-drive/import'),
+  routeScopeKey('GET', '/sessions/:id/calendar'),
+  routeScopeKey('PUT', '/sessions/:id/calendar'),
+  routeScopeKey('DELETE', '/sessions/:id/calendar'),
+  routeScopeKey('GET', '/sessions/:id/contacts'),
+  routeScopeKey('PUT', '/sessions/:id/contacts'),
+  routeScopeKey('DELETE', '/sessions/:id/contacts'),
+  routeScopeKey('GET', '/sessions/:id/gmail'),
+  routeScopeKey('PUT', '/sessions/:id/gmail'),
+  routeScopeKey('DELETE', '/sessions/:id/gmail'),
+  routeScopeKey('GET', '/sessions/:id/google-slides/deck'),
+  routeScopeKey('PUT', '/sessions/:id/google-slides/deck'),
+  routeScopeKey('DELETE', '/sessions/:id/google-slides/deck'),
+  routeScopeKey('GET', '/sessions/:id/google-workspace/file'),
+  routeScopeKey('PUT', '/sessions/:id/google-workspace/file'),
+  routeScopeKey('DELETE', '/sessions/:id/google-workspace/file'),
+  routeScopeKey('GET', '/sessions/:id/google/:service'),
+  routeScopeKey('PUT', '/sessions/:id/google/:service'),
+  routeScopeKey('GET', '/projects/:id/google/:service'),
+  routeScopeKey('PUT', '/projects/:id/google/:service'),
+  routeScopeKey('DELETE', '/projects/:id/google/:service'),
+  routeScopeKey('PUT', '/projects/:id/google-drive/folder'),
+  routeScopeKey('DELETE', '/projects/:id/google-drive/folder'),
+  routeScopeKey('GET', '/projects/:id/google-drive/folders'),
+  routeScopeKey('DELETE', '/projects/:id/google-drive/folders/:linkId'),
+  routeScopeKey('GET', '/projects/:id/google-drive/folders/:folderId/files'),
+  routeScopeKey('GET', '/projects/:id/google-drive/folders/:folderId/files/:fileId'),
+  routeScopeKey('GET', '/projects/:id/google-drive/folders/:folderId/files/:fileId/download'),
+  routeScopeKey('PATCH', '/projects/:id/google-drive/folders/:folderId/files/:fileId'),
+  routeScopeKey('DELETE', '/projects/:id/google-drive/folders/:folderId/files/:fileId'),
+  routeScopeKey('POST', '/projects/:id/google-drive/folders/:folderId/files/:fileId/import'),
+  routeScopeKey('POST', '/projects/:id/google-drive/folders/:folderId/files/create'),
+  routeScopeKey('POST', '/projects/:id/google-drive/folders/:folderId/files/upload'),
+  routeScopeKey('PUT', '/projects/:id/google-drive/folders/:folderId/files/:fileId/content'),
+]);
+
+export function pairedRoutePolicy(method: string, routeUrl: string): PairedRoutePolicy {
   const key = routeScopeKey(method, routeUrl);
   if (activeUserRoutes.has(key)) return { kind: 'active_user' };
   return resourceRules.get(key) ?? { kind: 'administrator' };
@@ -465,6 +820,9 @@ export async function authorizePairedRoute(
       ? 'allow'
       : 'forbidden';
   }
+  // These routes were the administrator's before members could use them; an
+  // administrator keeps every one of them.
+  if (await store.isActiveAdministrator(userId)) return 'allow';
   const projectId =
     policy.kind === 'project' ? resourceId : (await store.getSession(resourceId))?.projectId;
   if (projectId === undefined) return 'not_found';

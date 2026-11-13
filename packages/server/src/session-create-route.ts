@@ -61,6 +61,11 @@ export interface SessionCreateRouteDeps extends Pick<
   ) => void;
   makeBranch: (name: string | undefined, issue?: number) => string;
   isProjectSessionModel: (model: string | undefined) => boolean;
+  /** Whether `viewer` may start a session in a project, or outside any (null). */
+  mayStartIn?: (
+    viewer: string,
+    projectId: string | null,
+  ) => Promise<'allow' | 'forbidden' | 'not_found'>;
   availableModels: (options: {
     allowLegacyCodexFallback?: boolean;
     viewer?: string | undefined;
@@ -142,6 +147,17 @@ export function registerSessionCreateRoute(
       reply.code(400);
       return { error: 'OpenCode sessions require a project sandbox' };
     }
+    // A session outside a project runs on the instance, which is the
+    // administrator's.
+    if (
+      body.project === undefined &&
+      body.projectId === undefined &&
+      deps.mayStartIn !== undefined &&
+      (await deps.mayStartIn(viewer, null)) !== 'allow'
+    ) {
+      reply.code(403);
+      return { error: 'Sessions outside a project are for the administrator.' };
+    }
     if (body.project !== undefined || body.projectId !== undefined) {
       if (
         body.model !== undefined &&
@@ -221,6 +237,19 @@ export function registerSessionCreateRoute(
             };
           }
           project = projects[0] ?? matches.find((match) => match.hiddenAt === null) ?? matches[0];
+        }
+        // Starting work in a project needs the permission to work in it (ADR 0023
+        // §1); a project the person cannot read is answered like a missing one.
+        if (project !== undefined && deps.mayStartIn !== undefined) {
+          const allowed = await deps.mayStartIn(viewer, project.id);
+          if (allowed !== 'allow') {
+            reply.code(allowed === 'not_found' ? 404 : 403);
+            return allowed === 'not_found'
+              ? {
+                  error: `project ${body.projectId ?? body.project ?? ''} is not in the fleet registry`,
+                }
+              : { error: 'You may not start sessions in this project.' };
+          }
         }
         // A soft-deleted project is gone as far as every caller is concerned:
         // `getProject` still returns the row (the hide keeps it so the

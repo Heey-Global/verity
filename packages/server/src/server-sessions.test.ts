@@ -3477,6 +3477,83 @@ describe('POST /sessions with project field (#174)', () => {
     }
   });
 
+  // A member sees only the sessions of projects they can read, and may start one
+  // only where they can work; sessions outside any project are the
+  // administrator's.
+  it("lists and starts sessions only within a member's projects", async () => {
+    for (const id of ['p-mine', 'p-other']) {
+      await ctx.store.upsertProject({
+        id,
+        owner: 'heey-global',
+        repo: id,
+        containerName: `dev-${id}`,
+        state: 'active',
+      });
+    }
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'reader', role: 'member', status: 'active' })
+      .execute();
+    await ctx.db
+      .insertInto('project_memberships')
+      .values({
+        project_id: 'p-mine',
+        user_id: 'reader',
+        can_read: true,
+        can_execute: false,
+        can_manage: false,
+      })
+      .execute();
+    await ctx.store.createSession({
+      sessionId: 's-mine',
+      worktree: '/wt/s-mine',
+      model: 'm',
+      projectId: 'p-mine',
+    });
+    await ctx.store.createSession({
+      sessionId: 's-other',
+      worktree: '/wt/s-other',
+      model: 'm',
+      projectId: 'p-other',
+    });
+    await ctx.store.createSession({ sessionId: 's-none', worktree: '/wt/s-none', model: 'm' });
+    const asReader = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      provisioner: fakeProvisioner(),
+      projectCloneRoot: '/data/dev',
+      projectBackend: fakeProjectBackend,
+      projectWorktrees: () => fakeProjectWorktrees(),
+      worktrees: { add: vi.fn(async () => '/wt/new'), remove: vi.fn(async () => {}) },
+    });
+    asReader.addHook('onRequest', async (request) => {
+      request.localUserId = 'reader';
+    });
+    try {
+      const listed = await asReader.inject({ method: 'GET', url: '/sessions' });
+      expect(listed.json<{ sessionId: string }[]>().map((session) => session.sessionId)).toEqual([
+        's-mine',
+      ]);
+      const inProject = await asReader.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { projectId: 'p-mine' },
+      });
+      expect(inProject.statusCode).toBe(403);
+      const elsewhere = await asReader.inject({
+        method: 'POST',
+        url: '/sessions',
+        payload: { projectId: 'p-other' },
+      });
+      expect(elsewhere.statusCode).toBe(404);
+      const outside = await asReader.inject({ method: 'POST', url: '/sessions', payload: {} });
+      expect(outside.statusCode).toBe(403);
+    } finally {
+      await asReader.close();
+    }
+  });
+
   it('uses the project default model when no model is supplied', async () => {
     await ctx.store.upsertProject({
       id: 'p-default-model',
