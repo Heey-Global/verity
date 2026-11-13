@@ -58,6 +58,8 @@ export function ActiveMeetingOverlay() {
   const [recorderOnline, setRecorderOnline] = useState(true);
   const remoteStopRequested = useRef(false);
   const [busy, setBusy] = useState(false);
+  // The online meeting whose End was accepted: Stop stays down until the bot has left.
+  const [onlineStopping, setOnlineStopping] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [voiceSending, setVoiceSending] = useState(false);
   const [voiceRequestSent, setVoiceRequestSent] = useState(false);
@@ -312,6 +314,13 @@ export function ActiveMeetingOverlay() {
     discovered?.unassigned[0] ??
     null;
   const showMeeting = alive(meeting);
+  const joinStatus = online
+    ? discovered?.running.find((item) => item.id === meeting?.id)?.joinStatus
+    : undefined;
+  const stoppingOnline = online && meeting !== null && onlineStopping === meeting.id;
+  useEffect(() => {
+    if (!showMeeting) setOnlineStopping(null);
+  }, [showMeeting]);
   useEffect(() => {
     if (!showMeeting && !unassigned) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -468,7 +477,7 @@ export function ActiveMeetingOverlay() {
     }
   };
   const stop = async () => {
-    if (busy || activePendingCommand === 'stop') return;
+    if (busy || activePendingCommand === 'stop' || stoppingOnline) return;
     setBusy(true);
     try {
       if (remote && (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId()))
@@ -477,6 +486,7 @@ export function ActiveMeetingOverlay() {
         const client = createVerityClient();
         if (!client) throw new Error('Connect to the server to stop this meeting.');
         await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+        setOnlineStopping(meeting.id);
         void discoverRef.current();
       } else if (remote) {
         const client = createVerityClient();
@@ -516,9 +526,15 @@ export function ActiveMeetingOverlay() {
                 ? 'Meeting'
                 : meeting.captureStatus === 'paused'
                   ? 'Paused'
-                  : online
-                    ? 'Online'
-                    : 'Live meeting'}{' '}
+                  : stoppingOnline
+                    ? 'Ending'
+                    : joinStatus === 'joining'
+                      ? 'Joining'
+                      : joinStatus === 'waiting'
+                        ? 'Waiting'
+                        : online
+                          ? 'Online'
+                          : 'Live meeting'}{' '}
               · {Math.floor((now - meeting.startedAt) / 60000)} min
             </Text>
           </View>
@@ -536,11 +552,13 @@ export function ActiveMeetingOverlay() {
             </Text>
           ) : null}
           <Text variant="footnote">
-            {activePendingCommand
-              ? recorderOnline
-                ? `Waiting to ${activePendingCommand} · keep recorder app open`
-                : 'Recorder unreachable · open Verity there'
-              : 'Drag to move · Open meeting'}
+            {joinStatus === 'waiting' && !stoppingOnline
+              ? 'Ask the host to let Verity in'
+              : activePendingCommand
+                ? recorderOnline
+                  ? `Waiting to ${activePendingCommand} · keep recorder app open`
+                  : 'Recorder unreachable · open Verity there'
+                : 'Drag to move · Open meeting'}
           </Text>
         </Pressable>
         {error ? (
@@ -587,7 +605,7 @@ export function ActiveMeetingOverlay() {
             icon="square"
             variant="destructive"
             size="compact"
-            disabled={busy || activePendingCommand === 'stop'}
+            disabled={busy || activePendingCommand === 'stop' || stoppingOnline}
             onPress={stop}
           />
         </View>

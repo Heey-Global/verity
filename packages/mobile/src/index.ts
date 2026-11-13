@@ -545,6 +545,7 @@ export {
 export { secretStatusSchema, type SecretStatus } from './api.js';
 export type {
   ActiveLiveMeetings,
+  OnlineMeetingStatus,
   CalendarWatch,
   SchedulingRequestView,
   UpcomingMeeting,

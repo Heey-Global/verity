@@ -845,6 +845,20 @@ export function currentMeeting(): MeetingRecord | null {
   return active;
 }
 
+/**
+ * Lets go of a finished meeting once it is deleted, so nothing keeps polling a meeting the
+ * server no longer has. A recording still running, starting or stopping is never released;
+ * the local copy and its upload outbox are untouched either way.
+ */
+export function releaseMeeting(meetingId: string): boolean {
+  if (active?.id !== meetingId || active.state === 'active' || startInFlight || ending)
+    return false;
+  active = null;
+  transcript = emptySTTTranscript;
+  publish();
+  return true;
+}
+
 export function hasActiveMeetingCapture(): boolean {
   return startInFlight !== null || active?.state === 'active';
 }
