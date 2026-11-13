@@ -14,7 +14,7 @@ import {
   GATEWAY_MOUNTS,
 } from './sandbox-standard-mounts.js';
 import { knowledgeSandboxBinds } from './knowledge-folder.js';
-import type { EventStore, PublicPreviewShareRecord } from '@verity/store';
+import type { EventStore, ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -3320,5 +3320,38 @@ describe('public share recovery through Uplink control interruptions', () => {
     } finally {
       await f.client.stop();
     }
+  });
+});
+
+describe('preview sandbox', () => {
+  // ADR 0023 §4: a managed server runs in its person's sandbox. Its preview must
+  // reach that container on that sandbox's own network, never the original one.
+  it('targets the sandbox a managed server runs in, and the original otherwise', async () => {
+    const instances = new Map([['lena-server', { lastRunUserId: 'lena' }]]);
+    const manager = new PreviewShareManager({
+      store: {
+        managedDevServers: { getInstance: async (id: string) => instances.get(id) },
+      } as unknown as EventStore,
+      docker: {} as DockerClient,
+      edge: {} as never,
+      resolveConnectorImage: async () => undefined,
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/data',
+      hostCloneRoot: '/data',
+      isDevServerRunning: async () => true,
+      sandboxFor: async (project, userId) => ({
+        containerName: `${project.containerName}--${String(userId)}`,
+        networkName: `net--${String(userId)}`,
+      }),
+    });
+    const project = { id: 'p1', containerName: 'sandbox' } as ProjectRecord;
+    expect(await manager.previewSandbox(project, 'lena-server')).toMatchObject({
+      containerName: 'sandbox--lena',
+      previewNetwork: 'net--lena',
+    });
+    expect(await manager.previewSandbox(project, undefined)).toMatchObject({
+      containerName: 'sandbox',
+      previewNetwork: 'verity-proj-p1',
+    });
   });
 });

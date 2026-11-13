@@ -1,7 +1,7 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { PERSONAL_SANDBOX_LOGIN_REQUIRED, resolveTurnSandbox } from './turn-sandbox.js';
 import { gatewayServesSandbox } from './sandbox-identity.js';
-import { sandboxNetworkName } from './sandbox-identity.js';
+import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
@@ -1537,6 +1537,16 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
+      // A managed server's preview reaches the sandbox it runs in (ADR 0023 §4).
+      sandboxFor: async (project, userId) => {
+        const sandbox = await resolveTurnSandbox(
+          eventStore,
+          project.id,
+          userId === null ? undefined : { userId },
+        );
+        const identity = sandboxIdentity(project, sandbox);
+        return { containerName: identity.containerName, networkName: identity.networkName };
+      },
       onShareEnded: (share) => {
         if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
@@ -2977,6 +2987,21 @@ export async function buildEmbeddedServer(
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
       }),
+      sandboxContainer: async (project, userId, start) => {
+        const sandbox = await resolveTurnSandbox(
+          eventStore,
+          project.id,
+          userId === null ? undefined : { userId },
+        );
+        if (sandbox.projectDefault) return project.containerName;
+        if (start) {
+          if (provisioner?.ensurePersonalSandbox === undefined)
+            throw new Error('personal sandboxes are not available');
+          return (await provisioner.ensurePersonalSandbox(project.id, sandbox.userId))
+            .containerName;
+        }
+        return sandboxIdentity(project, sandbox).containerName;
+      },
       agentPerson: async (sessionId) => {
         const running = (await eventStore.listRunningTurns()).find(
           (turn) => turn.sessionId === sessionId,

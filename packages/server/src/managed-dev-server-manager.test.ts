@@ -153,6 +153,41 @@ afterEach(() => manager.close());
 const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0]!.instance!;
 
 describe('managed dev servers', () => {
+  // ADR 0023 §4: a server runs in the sandbox of the person it is for, and with
+  // their secrets. Started by Lena, it runs in Lena's sandbox; restarted by the
+  // administrator, it ends there and runs in the original sandbox.
+  it("runs a server in its starter's sandbox and moves it when someone else restarts it", async () => {
+    await manager.close();
+    const containerOf = vi.fn(async (_project: ProjectRecord, userId: string | null) =>
+      userId === 'lena' ? 'sandbox--lena' : 'sandbox',
+    );
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      canSupervise: () => supervisionReady,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
+        worktree.replace('/clone', '/work'),
+      now: () => now,
+      sandboxContainer: containerOf,
+    });
+    const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+    const containers = (calls: unknown[][]) =>
+      calls.map(([project]) => (project as ProjectRecord).containerName);
+    const starts = vi.spyOn(sandbox.runtime, 'startManagedServer');
+    const stops = vi.spyOn(sandbox.runtime, 'stopManagedServer');
+
+    await manager.start('s1', 'Demo', 'operator', { person: 'lena' });
+    expect(containers(starts.mock.calls)).toEqual(['sandbox--lena']);
+    expect(containerOf).toHaveBeenCalledWith(expect.anything(), 'lena', true);
+
+    await manager.restart('s1', 'Demo', 'operator', 'admin');
+    expect(containers(stops.mock.calls)).toContain('sandbox--lena');
+    expect(containers(starts.mock.calls).at(-1)).toBe('sandbox');
+  });
+
   it('defers supervision until preview ownership is ready', async () => {
     const readListeners = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });

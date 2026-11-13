@@ -19,6 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import {
   type EventStore,
+  type ProjectRecord,
   type PublicPreviewShareRecord,
   type PublicPreviewShareState,
 } from '@verity/store';
@@ -118,6 +119,17 @@ export interface PreviewEdgeControl {
 }
 
 export interface PreviewShareManagerOptions {
+  /**
+   * The container and network of the sandbox a managed dev server runs in: its
+   * person's own sandbox, or the original one (ADR 0023 §4). Absent, every
+   * preview targets the project's original sandbox.
+   */
+  sandboxFor?:
+    | ((
+        project: ProjectRecord,
+        userId: string | null,
+      ) => Promise<{ containerName: string; networkName: string }>)
+    | undefined;
   store: EventStore;
   docker: DockerClient;
   edge: PreviewEdgeControl;
@@ -237,22 +249,45 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
+  /**
+   * The project as seen from the sandbox a preview targets: a managed server's
+   * person's sandbox, else the original one. Its container and network are the
+   * ones a connector must reach, and no other sandbox's network is joined.
+   */
+  async previewSandbox(
+    project: ProjectRecord,
+    managedInstanceId: string | null | undefined,
+  ): Promise<ProjectRecord & { previewNetwork: string }> {
+    const instance = managedInstanceId
+      ? await this.options.store.managedDevServers.getInstance(managedInstanceId)
+      : undefined;
+    if (instance === undefined || this.options.sandboxFor === undefined)
+      return { ...project, previewNetwork: projectNetworkName(project.id) };
+    const target = await this.options.sandboxFor(project, instance.lastRunUserId);
+    return { ...project, containerName: target.containerName, previewNetwork: target.networkName };
+  }
+
   async prepareLocalTarget(
     sessionId: string,
-    target: { targetPort?: number | undefined; staticPath?: string | undefined },
+    target: {
+      targetPort?: number | undefined;
+      staticPath?: string | undefined;
+      managedInstanceId?: string | undefined;
+    },
   ) {
     const session = await this.options.store.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
-    const project = await this.options.store.getProject(session.projectId);
-    if (!project) throw new PreviewShareNotFoundError('project not found');
-    if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const loaded = await this.options.store.getProject(session.projectId);
+    if (!loaded) throw new PreviewShareNotFoundError('project not found');
+    if (loaded.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const project = await this.previewSandbox(loaded, target.managedInstanceId);
     const sandbox = await this.options.docker.inspectContainer(project.containerName);
     const generation = containerGenerationOf(sandbox);
     if (!sandbox.running || !generation)
       throw new PreviewShareConflictError('sandbox is not running');
     await assertEligibleSandbox(
       sandbox,
-      projectNetworkName(project.id),
+      project.previewNetwork,
       project.id,
       projectWorkspaceSubpath(project, this.options),
       this.options,
@@ -510,6 +545,7 @@ export class PreviewShareManager {
     if (managed && managed.projectId !== project.id)
       throw new PreviewShareInputError('managed server does not belong to project');
     if (project.state !== 'active') throw new PreviewShareConflictError('project is not active');
+    const sandboxProject = await this.previewSandbox(project, managed?.id);
     if (devServer && !(await this.options.isDevServerRunning({ project, devServer }))) {
       throw new PreviewShareConflictError('dev server is not running');
     }
@@ -553,7 +589,7 @@ export class PreviewShareManager {
       : undefined;
     if (staticPath && staticRoot) await this.validateStaticDirectory(staticRoot, staticPath);
 
-    const sandbox = await this.options.docker.inspectContainer(project.containerName);
+    const sandbox = await this.options.docker.inspectContainer(sandboxProject.containerName);
     const generation = containerGenerationOf(sandbox);
     if (!sandbox.running || !generation) {
       throw new PreviewShareConflictError('sandbox is not running with a relay generation');
@@ -561,7 +597,7 @@ export class PreviewShareManager {
     const workspaceSubpath = projectWorkspaceSubpath(project, this.options);
     await assertEligibleSandbox(
       sandbox,
-      projectNetworkName(project.id),
+      sandboxProject.previewNetwork,
       project.id,
       workspaceSubpath,
       this.options,
@@ -719,18 +755,18 @@ export class PreviewShareManager {
       }
       connectorId = await this.createConnector(
         record,
-        project.containerName,
+        sandboxProject.containerName,
         connectorImage,
         staticMount,
         timer,
       );
-      const after = await this.options.docker.inspectContainer(project.containerName);
+      const after = await this.options.docker.inspectContainer(sandboxProject.containerName);
       if (!after.running || containerGenerationOf(after) !== generation) {
         throw new Error('sandbox generation changed while the share was being created');
       }
       await assertEligibleSandbox(
         after,
-        projectNetworkName(project.id),
+        sandboxProject.previewNetwork,
         project.id,
         workspaceSubpath,
         this.options,
@@ -1261,7 +1297,11 @@ export class PreviewShareManager {
     }
     const sandbox =
       project.state === 'active'
-        ? await this.options.docker.inspectContainer(project.containerName).catch(() => undefined)
+        ? await this.options.docker
+            .inspectContainer(
+              (await this.previewSandbox(project, share.managedInstanceId)).containerName,
+            )
+            .catch(() => undefined)
         : undefined;
     try {
       if (sandbox) assertPreviewNetworkSupported(sandbox);
@@ -1302,7 +1342,8 @@ export class PreviewShareManager {
       wasOffline === offline &&
       (offline ||
         (share.containerGeneration === generation &&
-          origin === `http://${project.containerName}:${preparedPort}`))
+          origin ===
+            `http://${(await this.previewSandbox(project, share.managedInstanceId)).containerName}:${preparedPort}`))
     )
       return;
     await this.replaceConnector(
@@ -1326,7 +1367,7 @@ export class PreviewShareManager {
     if (!project) return;
     const id = await this.createConnector(
       share,
-      project.containerName,
+      (await this.previewSandbox(project, share.managedInstanceId)).containerName,
       await this.resolveConnectorImage(),
       staticMount,
       undefined,
@@ -1388,7 +1429,11 @@ export class PreviewShareManager {
             : [`VERITY_PREVIEW_TARGET_ORIGIN=http://${targetContainerName}:${targetPort}`]),
       ],
       ...(staticMount ? { volumeMounts: [staticMount] } : {}),
-      network: offline ? 'verity-net' : projectNetworkName(share.projectId),
+      network: offline
+        ? 'verity-net'
+        : project === undefined
+          ? projectNetworkName(share.projectId)
+          : (await this.previewSandbox(project, share.managedInstanceId)).previewNetwork,
       restartPolicy: 'on-failure' as const,
       readOnlyRootfs: true,
       tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
