@@ -89,7 +89,9 @@ describe('connectionFailureKind', () => {
 describe('ConnectionMonitor', () => {
   it('shows an update at once and checks again with backoff until it ends', async () => {
     const clock = fakeTimers();
-    const probe = vi.fn(() => Promise.reject(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)));
+    const probe = vi.fn((): Promise<unknown> =>
+      Promise.reject(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
+    );
     const monitor = new ConnectionMonitor({ probe, timers: clock.timers });
     const recovered = vi.fn();
     monitor.onRecovered(recovered);
@@ -167,6 +169,35 @@ describe('ConnectionMonitor', () => {
       lastConnectedAt: undefined,
     });
     expect(clock.delays()).toEqual([]);
+  });
+});
+
+describe('ConnectionMonitor robustness', () => {
+  it('gives up on a check that hangs, so the outage is shown and retried', async () => {
+    const clock = fakeTimers();
+    const probe = vi.fn(() => new Promise<never>(() => undefined));
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers, checkTimeoutMs: 10_000 });
+    monitor.reportFailure('unreachable', 'Network request failed');
+    expect(monitor.getState().kind).toBe('connected');
+    clock.advance(10_000);
+    await flush();
+    expect(monitor.getState()).toMatchObject({ kind: 'unreachable' });
+    expect(clock.delays()).toEqual([2_000]);
+  });
+
+  it('keeps a throwing listener out of the request that reported', () => {
+    const monitor = new ConnectionMonitor();
+    const after = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    monitor.onRecovered(() => {
+      throw new Error('screen reload failed');
+    });
+    monitor.onRecovered(after);
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    expect(() => monitor.reportSuccess()).not.toThrow();
+    expect(after).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+    monitor.reset();
   });
 });
 

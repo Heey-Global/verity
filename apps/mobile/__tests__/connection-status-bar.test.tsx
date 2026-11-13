@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react-native';
 import { SERVER_MAINTENANCE_MESSAGE } from '@verity/mobile';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -6,7 +6,12 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 
 import { ConnectionStatusBar } from '../components/ConnectionStatusBar';
-import { hidesConnectionError, RECOVERED_NOTICE_MS } from '../hooks/useServerConnection';
+import {
+  hidesConnectionError,
+  RECOVERED_NOTICE_MS,
+  RECOVERY_GRACE_MS,
+  useHidesConnectionError,
+} from '../hooks/useServerConnection';
 import { serverConnection } from '../lib/serverConnection';
 
 const TLS_DUMP =
@@ -53,6 +58,18 @@ describe('ConnectionStatusBar', () => {
     expect(screen.getByText(TLS_DUMP)).toBeOnTheScreen();
   });
 
+  it('does not open the details by itself at the next disruption', () => {
+    render(<ConnectionStatusBar />);
+    act(() => serverConnection.reportFailure('unreachable', TLS_DUMP));
+    fireEvent.press(screen.getByRole('button', { name: /Can’t reach your server/ }));
+    expect(screen.getByText('Direct connection')).toBeOnTheScreen();
+    act(() => serverConnection.reportSuccess());
+    act(() => jest.advanceTimersByTime(RECOVERED_NOTICE_MS));
+    act(() => serverConnection.reportFailure('unreachable', TLS_DUMP));
+    expect(screen.getByText('Can’t reach your server')).toBeOnTheScreen();
+    expect(screen.queryByText('Direct connection')).toBeNull();
+  });
+
   it('says "Connected" briefly when the server is back, then disappears', () => {
     render(<ConnectionStatusBar />);
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
@@ -94,5 +111,19 @@ describe('hidesConnectionError', () => {
     expect(hidesConnectionError(SERVER_MAINTENANCE_MESSAGE, state, recoveredAt + 60_000)).toBe(
       false,
     );
+  });
+});
+
+describe('useHidesConnectionError', () => {
+  // A connection error the reload did not clear must come back on screen when
+  // the grace ends; nothing else may be needed to re-render the screen.
+  it('shows a leftover error again once the grace after recovery ends', () => {
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    const { result } = renderHook(() => useHidesConnectionError(SERVER_MAINTENANCE_MESSAGE));
+    expect(result.current).toBe(true);
+    act(() => serverConnection.reportSuccess());
+    expect(result.current).toBe(true);
+    act(() => jest.advanceTimersByTime(RECOVERY_GRACE_MS));
+    expect(result.current).toBe(false);
   });
 });

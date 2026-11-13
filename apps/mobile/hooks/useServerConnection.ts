@@ -10,7 +10,7 @@ export const RECOVERED_NOTICE_MS = 2_500;
  * the reload the recovery triggered needs a moment to replace it, and the
  * stale error must not flash up beside "Connected".
  */
-const RECOVERY_GRACE_MS = 10_000;
+export const RECOVERY_GRACE_MS = 10_000;
 
 const subscribe = (listener: () => void) => serverConnection.subscribe(listener);
 const getState = () => serverConnection.getState();
@@ -84,5 +84,16 @@ export function hidesConnectionError(
 
 export function useHidesConnectionError(error: unknown): boolean {
   const state = useSyncExternalStore(subscribe, getState, getState);
-  return hidesConnectionError(error, state);
+  const [now, setNow] = useState(() => Date.now());
+  const recoveredAt = state.kind === 'connected' ? state.recoveredAt : undefined;
+  // Re-render when the grace runs out: an error the reload did not clear must
+  // come back on screen then, not at some unrelated later render.
+  useEffect(() => {
+    if (recoveredAt === undefined) return undefined;
+    const remaining = recoveredAt + RECOVERY_GRACE_MS - Date.now();
+    if (remaining <= 0) return undefined;
+    const timeout = setTimeout(() => setNow(Date.now()), remaining);
+    return () => clearTimeout(timeout);
+  }, [recoveredAt]);
+  return hidesConnectionError(error, state, Math.max(now, Date.now()));
 }

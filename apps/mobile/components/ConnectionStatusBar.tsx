@@ -1,5 +1,5 @@
 import * as Clipboard from 'expo-clipboard';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -27,9 +27,14 @@ export function ConnectionStatusBar() {
   const { theme } = useUnistyles();
   const { state, view, now, retryNow } = useServerConnection();
   const [open, setOpen] = useState(false);
+  const disrupted = state.kind !== 'connected';
+  // The sheet belongs to one disruption: left open when the server came back,
+  // it would otherwise pop up by itself at the start of the next one.
+  useEffect(() => {
+    if (!disrupted) setOpen(false);
+  }, [disrupted]);
   const text = connectionBarText(view, state, now);
   if (text === null) return null;
-  const disrupted = state.kind !== 'connected';
   return (
     <>
       <View accessibilityLiveRegion="polite">

@@ -77,6 +77,21 @@ export type ServerConnectionState =
 /** Delays between automatic checks while the server is away (ms). */
 export const CONNECTION_RETRY_DELAYS: readonly number[] = [2_000, 4_000, 8_000, 15_000];
 
+/** How long one automatic check may take before it counts as unreachable (ms). */
+export const CONNECTION_CHECK_TIMEOUT_MS = 10_000;
+
+/**
+ * Listeners run inside the request that changed the state; one that throws
+ * must neither fail that request nor keep the others from running.
+ */
+function notify(listener: () => void): void {
+  try {
+    listener();
+  } catch (error) {
+    console.warn('Connection listener failed', error);
+  }
+}
+
 interface Timers {
   now(): number;
   setTimeout(callback: () => void, ms: number): unknown;
@@ -108,6 +123,7 @@ export class ConnectionMonitor implements ConnectionReporter {
   private probe: (() => Promise<unknown>) | undefined;
   private readonly timers: Timers;
   private readonly delays: readonly number[];
+  private readonly checkTimeoutMs: number;
   private attempt = 0;
   private timer: unknown;
   private checking = false;
@@ -118,11 +134,13 @@ export class ConnectionMonitor implements ConnectionReporter {
       probe?: () => Promise<unknown>;
       timers?: Timers;
       delays?: readonly number[];
+      checkTimeoutMs?: number;
     } = {},
   ) {
     this.probe = opts.probe;
     this.timers = opts.timers ?? systemTimers;
     this.delays = opts.delays ?? CONNECTION_RETRY_DELAYS;
+    this.checkTimeoutMs = opts.checkTimeoutMs ?? CONNECTION_CHECK_TIMEOUT_MS;
   }
 
   /** The request used to check the server; it must report through this monitor. */
@@ -157,7 +175,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     this.attempt = 0;
     this.state = { kind: 'connected', recoveredAt: now, lastConnectedAt: now };
     this.emit();
-    for (const listener of [...this.recoveredListeners]) listener();
+    for (const listener of [...this.recoveredListeners]) notify(listener);
   }
 
   reportFailure(kind: ConnectionFailureKind, details: string): void {
@@ -222,7 +240,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     let failure: unknown;
     let failed = false;
     try {
-      await probe();
+      await this.withTimeout(probe());
     } catch (error) {
       failed = true;
       failure = error;
@@ -250,6 +268,19 @@ export class ConnectionMonitor implements ConnectionReporter {
     }
   }
 
+  /** A check on a dead network can hang for a minute; it fails sooner. */
+  private withTimeout(check: Promise<unknown>): Promise<unknown> {
+    let handle: unknown;
+    const timeout = new Promise<never>((_, reject) => {
+      handle = this.timers.setTimeout(() => {
+        const error = new Error('Connection check timed out');
+        error.name = 'TimeoutError';
+        reject(error);
+      }, this.checkTimeoutMs);
+    });
+    return Promise.race([check, timeout]).finally(() => this.timers.clearTimeout(handle));
+  }
+
   private schedule(): void {
     if (this.state.kind === 'connected') return;
     this.stopTimer();
@@ -270,6 +301,6 @@ export class ConnectionMonitor implements ConnectionReporter {
   }
 
   private emit(): void {
-    for (const listener of [...this.listeners]) listener();
+    for (const listener of [...this.listeners]) notify(listener);
   }
 }
