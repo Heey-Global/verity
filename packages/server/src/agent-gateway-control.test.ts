@@ -15,6 +15,7 @@ import {
   readAgentGatewayStatus,
   startAgentGatewayControlServer,
   type AgentGatewayConfiguration,
+  type AgentGatewayPerson,
   type AgentGatewayControlServer,
 } from './agent-gateway-control.js';
 import {
@@ -64,6 +65,66 @@ describe('agent gateway Unix control channel', () => {
     await expect(readCodexCredentialUpdate(socketPath)).resolves.toEqual(update);
     await ackCodexCredentialUpdate(socketPath, update);
     await expect(readCodexCredentialUpdate(socketPath)).resolves.toBeUndefined();
+  });
+
+  // Which login serves a person must never depend on entry order, and a person's
+  // rotation must be acknowledged as theirs, never as the instance login's.
+  it('accepts a personal section only with one entry per person and acks per person', async () => {
+    const socketPath = await temporarySocket();
+    const acks: Array<string | undefined> = [];
+    const configured: AgentGatewayConfiguration[] = [];
+    servers.push(
+      await startAgentGatewayControlServer({
+        socketPath,
+        configure: (configuration) => {
+          configured.push(configuration);
+        },
+        status: () => ({ ready: true, configured: true, claudePeerCount: 0 }),
+        ackCodexCredentialUpdate: (_source, _updated, userId) => {
+          acks.push(userId);
+        },
+      }),
+    );
+    const base: AgentGatewayConfiguration = {
+      revision: 'r',
+      claude: { tls: { ca: 'ca', cert: 'cert', key: 'key' }, peerBindings: [] },
+    };
+    const personal = (people: AgentGatewayPerson[]) => ({
+      ...base,
+      personal: { instanceUserId: 'admin', unsealKey: '6a'.repeat(32), people },
+    });
+    await configureAgentGateway(
+      socketPath,
+      personal([{ userId: 'lena', claude: { accessToken: 't' } }]),
+    );
+    expect(configured).toHaveLength(1);
+    await expect(
+      configureAgentGateway(
+        socketPath,
+        personal([
+          { userId: 'lena', claude: { accessToken: 'a' } },
+          { userId: 'lena', claude: { accessToken: 'b' } },
+        ]),
+      ),
+    ).rejects.toThrow('invalid gateway configuration');
+    await expect(
+      configureAgentGateway(
+        socketPath,
+        personal([{ userId: 'lena', claude: { accessToken: 'a\nb' } }]),
+      ),
+    ).rejects.toThrow('invalid gateway configuration');
+    expect(configured).toHaveLength(1);
+
+    await ackCodexCredentialUpdate(socketPath, {
+      userId: 'lena',
+      sourceRevision: '1'.repeat(64),
+      updatedRevision: '2'.repeat(64),
+    });
+    await ackCodexCredentialUpdate(socketPath, {
+      sourceRevision: '1'.repeat(64),
+      updatedRevision: '2'.repeat(64),
+    });
+    expect(acks).toEqual(['lena', undefined]);
   });
 
   it('hands the Server a Codex access token without exposing the rotating login', async () => {

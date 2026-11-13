@@ -202,9 +202,9 @@ describe('hermetic standalone gateway live gates', () => {
       startClaudeGateway: (options) =>
         startClaudeEgressMtlsGateway({
           ...options,
-          accessToken: async (projectId) => {
+          accessToken: async (projectId, socket) => {
             credentialResolutions += 1;
-            return options.accessToken(projectId);
+            return options.accessToken(projectId, socket);
           },
           forward,
         }),
@@ -260,9 +260,9 @@ describe('hermetic standalone gateway live gates', () => {
       startClaudeGateway: (options) =>
         startClaudeEgressMtlsGateway({
           ...options,
-          accessToken: async (projectId) => {
+          accessToken: async (projectId, socket) => {
             credentialResolutions += 1;
-            return options.accessToken(projectId);
+            return options.accessToken(projectId, socket);
           },
           forward,
         }),

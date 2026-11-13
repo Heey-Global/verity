@@ -1,3 +1,5 @@
+import { Socket } from 'node:net';
+import { TLSSocket } from 'node:tls';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +15,9 @@ import {
 import { AgentGatewaySpill } from './agent-gateway-spill.js';
 import type { ClaudeEgressMtlsGatewayOptions } from './claude-egress-mtls.js';
 import type { CodexEgressGatewayOptions } from './codex-egress-gateway.js';
+
+/** A peer outside any TLS binding: without a personal section it keeps the instance login. */
+const plainSocket = new Socket();
 
 const roots: string[] = [];
 const runtimes: AgentGatewayRuntime[] = [];
@@ -67,7 +72,7 @@ describe('standalone agent gateway runtime', () => {
     let tokenVisibleDuringStart = false;
     const startClaudeGateway = vi.fn(async (options: ClaudeEgressMtlsGatewayOptions) => {
       gatewayOptions = options;
-      tokenVisibleDuringStart = (await options.accessToken('one')) === 'shadow-token';
+      tokenVisibleDuringStart = (await options.accessToken('one', plainSocket)) === 'shadow-token';
       return {
         port: 9443,
         reloadTls: vi.fn(),
@@ -83,6 +88,7 @@ describe('standalone agent gateway runtime', () => {
       claudePeerCount: 0,
       credentialReady: false,
       listenerReady: false,
+      perUserCredentials: true,
     });
     await configureAgentGateway(socketPath, {
       revision: 'snapshot-2',
@@ -104,10 +110,11 @@ describe('standalone agent gateway runtime', () => {
       credentialReady: true,
       listenerReady: true,
       claudePort: 9443,
+      perUserCredentials: true,
     });
     expect(startClaudeGateway).toHaveBeenCalledOnce();
     expect(tokenVisibleDuringStart).toBe(true);
-    await expect(gatewayOptions?.accessToken('one')).resolves.toBe('shadow-token');
+    await expect(gatewayOptions?.accessToken('one', plainSocket)).resolves.toBe('shadow-token');
 
     await configureAgentGateway(socketPath, {
       ...configuration('6a'.repeat(32)),
@@ -121,9 +128,103 @@ describe('standalone agent gateway runtime', () => {
       credentialReady: false,
       listenerReady: true,
     });
-    await expect(gatewayOptions?.accessToken('one')).rejects.toThrow(
+    await expect(gatewayOptions?.accessToken('one', plainSocket)).rejects.toThrow(
       'Claude egress has no OAuth token configured',
     );
+  });
+
+  // The instance login was the administrator's. Once the Server sends the
+  // personal section, a member's sandbox is served with that member's own login
+  // or not at all; a withdrawn login stops serving at once.
+  it("serves each person's sandbox with that person's own login and nobody else's", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'verity-agent-gateway-runtime-'));
+    roots.push(root);
+    let claude: ClaudeEgressMtlsGatewayOptions | undefined;
+    let codex: CodexEgressGatewayOptions | undefined;
+    const runtime = await startAgentGatewayRuntime({
+      ...runtimeOptions(root, async (options) => {
+        claude = options;
+        return { port: 9443, reloadTls: vi.fn(), close: vi.fn(async () => undefined) };
+      }),
+      codexPort: 9444,
+      codexListenerAuthority: 'verity-agent-gateway:9444',
+      startCodexGateway: async (options) => {
+        codex = options;
+        return { port: 9444, reloadTls: vi.fn(), close: vi.fn(async () => undefined) };
+      },
+    });
+    runtimes.push(runtime);
+    const key = '6a'.repeat(32);
+    const peerBindings = [
+      { projectId: 'one', userId: 'admin', fingerprint256: '1'.repeat(64) },
+      { projectId: 'one', userId: 'lena', fingerprint256: '2'.repeat(64) },
+      { projectId: 'one', userId: 'mia', fingerprint256: '3'.repeat(64) },
+    ];
+    const admin = peer('1'.repeat(64));
+    const lena = peer('2'.repeat(64));
+    const mia = peer('3'.repeat(64));
+    const lenaCodex = JSON.stringify({
+      tokens: {
+        access_token: 'lena-codex',
+        refresh_token: 'lena-refresh',
+        account_id: 'acct-lena',
+      },
+    });
+    const base = {
+      ...configuration(key, 'admin-token'),
+      claude: { ...configuration(key, 'admin-token').claude, peerBindings },
+      opencode: { baseUrl: 'https://admin.example/v1', apiKey: 'admin-oc' },
+    };
+    // A Server without the personal section routes only the administrator's
+    // sandboxes; this gateway then keeps serving the instance login as before.
+    await configureAgentGateway(join(root, 'control.sock'), base);
+    await expect(claude?.accessToken('one', mia)).resolves.toBe('admin-token');
+
+    await configureAgentGateway(join(root, 'control.sock'), {
+      ...base,
+      revision: 'personal',
+      personal: {
+        instanceUserId: 'admin',
+        unsealKey: key,
+        people: [
+          {
+            userId: 'lena',
+            claude: { accessToken: 'lena-token' },
+            codex: { sourceRevision: 'a'.repeat(64), authJson: lenaCodex },
+            opencode: { baseUrl: 'https://lena.example/v1', apiKey: 'lena-oc' },
+          },
+        ],
+      },
+    });
+    await expect(claude?.accessToken('one', admin)).resolves.toBe('admin-token');
+    await expect(claude?.accessToken('one', lena)).resolves.toBe('lena-token');
+    await expect(claude?.accessToken('one', mia)).rejects.toThrow('no login for this person');
+    await expect(codex?.credential(lena)).resolves.toEqual({
+      accessToken: 'lena-codex',
+      accountId: 'acct-lena',
+    });
+    await expect(codex?.credential(mia)).rejects.toThrow('no login for this person');
+    expect(codex?.opencodeCredential?.(admin)).toEqual({
+      baseUrl: 'https://admin.example/v1',
+      apiKey: 'admin-oc',
+    });
+    expect(codex?.opencodeCredential?.(lena)).toEqual({
+      baseUrl: 'https://lena.example/v1',
+      apiKey: 'lena-oc',
+    });
+    expect(codex?.opencodeCredential?.(mia)).toBeUndefined();
+    // A peer that matches no binding is nobody, not the administrator.
+    await expect(claude?.accessToken('one', peer('4'.repeat(64)))).rejects.toThrow(
+      'no login for this person',
+    );
+
+    await configureAgentGateway(join(root, 'control.sock'), {
+      ...base,
+      revision: 'lena-signed-out',
+      personal: { instanceUserId: 'admin', unsealKey: key, people: [] },
+    });
+    await expect(claude?.accessToken('one', lena)).rejects.toThrow('no login for this person');
+    await expect(codex?.credential(lena)).rejects.toThrow('no login for this person');
   });
 
   it('rejects duplicate peer bindings without replacing the active snapshot', async () => {
@@ -180,7 +281,7 @@ describe('standalone agent gateway runtime', () => {
     runtimes.push(second);
     await configureAgentGateway(join(root, 'control.sock'), configuration(key));
 
-    await expect(gatewayOptions?.accessToken('one')).resolves.toBe('recovered-token');
+    await expect(gatewayOptions?.accessToken('one', plainSocket)).resolves.toBe('recovered-token');
     expect(second.status()).toMatchObject({ credentialReady: true, listenerReady: true });
 
     await configureAgentGateway(join(root, 'control.sock'), {
@@ -224,7 +325,7 @@ describe('standalone agent gateway runtime', () => {
         },
       }),
     ).rejects.toThrow('control request failed');
-    await expect(gatewayOptions?.accessToken('one')).rejects.toThrow(
+    await expect(gatewayOptions?.accessToken('one', plainSocket)).rejects.toThrow(
       'Claude egress has no OAuth token configured',
     );
     expect(runtime.status()).toMatchObject({ revision: 'snapshot', credentialReady: false });
@@ -325,7 +426,7 @@ describe('standalone agent gateway runtime', () => {
 
     const installedOptions = startCodexGateway.mock.calls.at(-1)?.[0];
     expect(installedOptions?.onRequestEnd).toBe(logCodexEgressRequestEnd);
-    await expect(installedOptions?.credential()).resolves.toEqual({
+    await expect(installedOptions?.credential(plainSocket)).resolves.toEqual({
       accessToken: 'codex-access',
       accountId: 'account-1',
     });
@@ -351,7 +452,7 @@ describe('standalone agent gateway runtime', () => {
         },
       },
     });
-    await expect(installedOptions?.credential()).resolves.toEqual({
+    await expect(installedOptions?.credential(plainSocket)).resolves.toEqual({
       accessToken: 'codex-access-2',
       accountId: 'account-1',
     });
@@ -382,7 +483,7 @@ describe('standalone agent gateway runtime', () => {
       codex: { credential: { unsealKey: key, sourceRevision: '2'.repeat(64) } },
     });
     const recoveredOptions = startCodexGateway.mock.calls.at(-1)?.[0];
-    await expect(recoveredOptions?.credential()).resolves.toEqual({
+    await expect(recoveredOptions?.credential(plainSocket)).resolves.toEqual({
       accessToken: 'codex-access-2',
       accountId: 'account-1',
     });
@@ -517,6 +618,14 @@ describe('default Codex egress request log', () => {
     }
   });
 });
+
+/** A TLS peer presenting a verified certificate with this fingerprint. */
+function peer(fingerprint256: string): TLSSocket {
+  return Object.assign(Object.create(TLSSocket.prototype) as TLSSocket, {
+    authorized: true,
+    getPeerCertificate: () => ({ fingerprint256 }),
+  });
+}
 
 function configuration(unsealKey: string, accessToken?: string) {
   return {

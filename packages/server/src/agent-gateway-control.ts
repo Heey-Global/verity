@@ -49,6 +49,29 @@ export interface AgentGatewayConfiguration {
     baseUrl: string;
     apiKey: string | null;
   };
+  /** Each person's own provider logins (ADR 0023 §3). Absent from a Server that
+   *  routes only the administrator's sandboxes; once present, the instance login
+   *  serves only `instanceUserId` and sandboxes without a person. */
+  personal?: AgentGatewayPersonalConfiguration;
+}
+
+export interface AgentGatewayPersonalConfiguration {
+  /** The person the instance login belonged to: the administrator. */
+  instanceUserId: string;
+  /** Seals each person's rotated Codex login in their own local spill. */
+  unsealKey: string;
+  people: readonly AgentGatewayPerson[];
+}
+
+export interface AgentGatewayPerson {
+  userId: string;
+  claude?: { accessToken: string };
+  codex?: {
+    /** Digest of the Server-owned login, as for the instance login. */
+    sourceRevision: string;
+    authJson: string;
+  };
+  opencode?: { baseUrl: string; apiKey: string };
 }
 
 export interface AgentGatewayStatus {
@@ -63,15 +86,26 @@ export interface AgentGatewayStatus {
   codexListenerReady?: boolean;
   codexPort?: number;
   opencodeReady?: boolean;
+  /** This gateway serves each person with their own login. A gateway without it
+   *  ignores the personal section and would serve the instance login to every
+   *  routed sandbox. */
+  perUserCredentials?: boolean;
 }
 
 type ControlRequest =
   | { type: 'configure'; configuration: AgentGatewayConfiguration }
   | { type: 'status' }
   | { type: 'read-codex-credential-update' }
-  | { type: 'ack-codex-credential-update'; sourceRevision: string; updatedRevision: string }
+  | {
+      type: 'ack-codex-credential-update';
+      sourceRevision: string;
+      updatedRevision: string;
+      userId?: string;
+    }
   | { type: 'read-codex-access-token' };
 export interface CodexCredentialUpdate {
+  /** Set for a person's own login; absent for the instance login. */
+  userId?: string;
   sourceRevision: string;
   updatedRevision: string;
   authJson: string;
@@ -113,7 +147,11 @@ interface ControlHandlers {
   configure: (configuration: AgentGatewayConfiguration) => void | Promise<void>;
   status: () => AgentGatewayStatus;
   readCodexCredentialUpdate?: () => CodexCredentialUpdate | undefined;
-  ackCodexCredentialUpdate?: (sourceRevision: string, updatedRevision: string) => void;
+  ackCodexCredentialUpdate?: (
+    sourceRevision: string,
+    updatedRevision: string,
+    userId?: string,
+  ) => void;
   /** Rejects/throws when no Codex login is installed or a refresh fails; the
    *  caller sees only the structural error, never the failure detail. */
   readCodexAccessToken?: () => Promise<CodexAccessToken | undefined> | CodexAccessToken | undefined;
@@ -230,9 +268,16 @@ export async function readCodexAccessToken(
 
 export async function ackCodexCredentialUpdate(
   socketPath: string,
-  update: Pick<CodexCredentialUpdate, 'sourceRevision' | 'updatedRevision'>,
+  update: Pick<CodexCredentialUpdate, 'sourceRevision' | 'updatedRevision' | 'userId'>,
 ): Promise<void> {
-  const response = await exchange(socketPath, { type: 'ack-codex-credential-update', ...update });
+  // Name the fields: the update also carries the login itself, which the
+  // acknowledgement has no reason to send back.
+  const response = await exchange(socketPath, {
+    type: 'ack-codex-credential-update',
+    sourceRevision: update.sourceRevision,
+    updatedRevision: update.updatedRevision,
+    ...(update.userId === undefined ? {} : { userId: update.userId }),
+  });
   if (!response.ok) throw new Error(`Agent gateway credential ack failed: ${response.error}`);
 }
 
@@ -280,7 +325,11 @@ async function handleControlSocket(
       return;
     }
     if (request.type === 'ack-codex-credential-update') {
-      options.ackCodexCredentialUpdate?.(request.sourceRevision, request.updatedRevision);
+      options.ackCodexCredentialUpdate?.(
+        request.sourceRevision,
+        request.updatedRevision,
+        request.userId,
+      );
     }
     writeControlFrame(socket, { ok: true, status: options.status() });
   } catch (error) {
@@ -318,10 +367,13 @@ function parseRequest(value: unknown): ControlRequest {
     typeof value.sourceRevision === 'string' &&
     typeof value.updatedRevision === 'string'
   ) {
+    if (value.userId !== undefined && (typeof value.userId !== 'string' || !value.userId))
+      throw new ControlProtocolError('invalid control request');
     return {
       type: value.type,
       sourceRevision: value.sourceRevision,
       updatedRevision: value.updatedRevision,
+      ...(typeof value.userId === 'string' ? { userId: value.userId } : {}),
     };
   }
   if (value.type !== 'configure' || !isConfiguration(value.configuration)) {
@@ -397,6 +449,7 @@ function isConfiguration(value: unknown): value is AgentGatewayConfiguration {
     )
       return false;
   }
+  if (value.personal !== undefined && !isPersonal(value.personal)) return false;
   return claude.peerBindings.every(
     (binding) =>
       isRecord(binding) &&
@@ -405,6 +458,45 @@ function isConfiguration(value: unknown): value is AgentGatewayConfiguration {
       typeof binding.fingerprint256 === 'string' &&
       /^[a-f0-9:]{64,95}$/iu.test(binding.fingerprint256),
   );
+}
+
+const isHeaderSafe = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0 && !/[\r\n]/u.test(value);
+
+function isPersonal(value: unknown): value is AgentGatewayPersonalConfiguration {
+  if (
+    !isRecord(value) ||
+    typeof value.instanceUserId !== 'string' ||
+    value.instanceUserId.length === 0 ||
+    typeof value.unsealKey !== 'string' ||
+    !/^[a-f0-9]{64}$/iu.test(value.unsealKey) ||
+    !Array.isArray(value.people)
+  )
+    return false;
+  const seen = new Set<string>();
+  return value.people.every((person: unknown) => {
+    if (!isRecord(person) || typeof person.userId !== 'string' || person.userId.length === 0)
+      return false;
+    // One entry per person: a duplicate would make whose login serves them
+    // depend on order.
+    if (seen.has(person.userId)) return false;
+    seen.add(person.userId);
+    const { claude, codex, opencode } = person;
+    return (
+      (claude === undefined || (isRecord(claude) && isHeaderSafe(claude.accessToken))) &&
+      (codex === undefined ||
+        (isRecord(codex) &&
+          typeof codex.sourceRevision === 'string' &&
+          /^[a-f0-9]{64}$/u.test(codex.sourceRevision) &&
+          typeof codex.authJson === 'string' &&
+          codex.authJson.trim().length > 0)) &&
+      (opencode === undefined ||
+        (isRecord(opencode) &&
+          typeof opencode.baseUrl === 'string' &&
+          opencode.baseUrl.length > 0 &&
+          isHeaderSafe(opencode.apiKey)))
+    );
+  });
 }
 
 async function exchange(socketPath: string, request: ControlRequest): Promise<ControlResponse> {
@@ -433,7 +525,9 @@ function isControlResponse(value: unknown): value is ControlResponse {
       (isRecord(update) &&
         typeof update.sourceRevision === 'string' &&
         typeof update.updatedRevision === 'string' &&
-        typeof update.authJson === 'string')
+        typeof update.authJson === 'string' &&
+        (update.userId === undefined ||
+          (typeof update.userId === 'string' && update.userId.length > 0)))
     );
   }
   if ('codexAccessToken' in value) {
@@ -461,6 +555,7 @@ function isControlResponse(value: unknown): value is ControlResponse {
     (status.codexListenerReady === undefined || typeof status.codexListenerReady === 'boolean') &&
     (status.codexPort === undefined || typeof status.codexPort === 'number') &&
     (status.opencodeReady === undefined || typeof status.opencodeReady === 'boolean') &&
+    (status.perUserCredentials === undefined || typeof status.perUserCredentials === 'boolean') &&
     (status.revision === undefined || typeof status.revision === 'string')
   );
 }
