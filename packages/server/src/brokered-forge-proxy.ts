@@ -415,10 +415,17 @@ export function createBrokeredForgeProxy(options: {
             let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
               if (abort.signal.aborted) return;
+              // Only a check that was actually tried can exhaust the bound: after
+              // an event-loop stall the overdue tick starts one instead.
               if (Date.now() - confirmedAt > unconfirmedLimit) {
-                if (checking || lastFailure === undefined) revoke('revocation-timeout');
-                else revoke('resolver-error', lastFailure.error);
-                return;
+                if (checking) {
+                  revoke('revocation-timeout');
+                  return;
+                }
+                if (lastFailure !== undefined) {
+                  revoke('resolver-error', lastFailure.error);
+                  return;
+                }
               }
               if (checking) return;
               checking = true;
