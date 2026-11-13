@@ -14,7 +14,12 @@ import {
   useHidesConnectionError,
 } from '../hooks/useServerConnection';
 import { serverConnection } from '../lib/serverConnection';
-import { loadVeritySettings, resetVeritySettingsStore } from '../lib/settingsStore';
+import {
+  loadVeritySettings,
+  resetVeritySettingsStore,
+  saveVeritySettings,
+  useVeritySettings,
+} from '../lib/settingsStore';
 
 const TLS_DUMP =
   'Uplink probe (Pinned TLS transport failed [NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE]; tunnel local=2) and direct Core request failed';
@@ -131,43 +136,67 @@ describe('useHidesConnectionError', () => {
 });
 
 describe('Settings after an outage', () => {
-  const scaffold = (error: string, onRetry: () => void) => (
-    <SettingsScaffold title="Settings" state={{ error, saving: false }} onRetry={onRetry}>
-      {null}
-    </SettingsScaffold>
-  );
+  afterEach(() => resetVeritySettingsStore());
+  const failingClient = () =>
+    ({
+      getVeritySettings: jest
+        .fn()
+        .mockRejectedValueOnce(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE))
+        .mockResolvedValue({}),
+      getSecretStatus: jest.fn().mockResolvedValue({ state: 'unlocked' }),
+    }) as unknown as VerityClient & { getVeritySettings: jest.Mock };
 
-  // `onRetry` may repeat a save. A save that failed because the server was
-  // updating may already have been applied: recovery must never replay it.
-  it('hides the outage but never retries from the banner by itself', () => {
-    const onRetry = jest.fn();
+  it('leaves a failed load to the bar and reloads it once the server is back', async () => {
+    const client = failingClient();
+    await act(() => loadVeritySettings(client));
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
-    render(scaffold(SERVER_MAINTENANCE_MESSAGE, onRetry));
+    const onRetry = jest.fn();
+    render(
+      <SettingsScaffold title="Settings" onRetry={onRetry}>
+        {null}
+      </SettingsScaffold>,
+    );
     expect(screen.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
-    act(() => serverConnection.reportSuccess());
+    await act(async () => serverConnection.reportSuccess());
+    expect(client.getVeritySettings).toHaveBeenCalledTimes(2);
+    // `onRetry` may repeat a save: recovery never calls it.
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('keeps an error of its own on screen', () => {
-    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
-    render(scaffold('Save rejected: name already taken', jest.fn()));
-    expect(screen.getByText('Save rejected: name already taken')).toBeOnTheScreen();
-  });
-
-  it('reloads settings whose load failed once the server is back', async () => {
-    const getVeritySettings = jest
-      .fn()
-      .mockRejectedValueOnce(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE))
-      .mockResolvedValue({});
+  // The bar says the server is away, not that an edit was lost: while a save
+  // is still pending, a later failed load must not hide the banner with it.
+  it('keeps the banner while a failed save is pending', async () => {
     const client = {
-      getVeritySettings,
+      getVeritySettings: jest
+        .fn()
+        .mockResolvedValueOnce({})
+        .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
       getSecretStatus: jest.fn().mockResolvedValue({ state: 'unlocked' }),
+      updateVeritySettings: jest.fn().mockRejectedValue(new TypeError('Network request failed')),
     } as unknown as VerityClient;
     await act(() => loadVeritySettings(client));
-    expect(getVeritySettings).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await saveVeritySettings(client, { defaultModel: 'claude-opus-5-5' } as never);
+    });
+    await act(() => loadVeritySettings(client));
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
-    act(() => serverConnection.reportSuccess());
-    expect(getVeritySettings).toHaveBeenCalledTimes(2);
-    resetVeritySettingsStore();
+    const { result } = renderHook(() => useVeritySettings());
+    const error = result.current.error;
+    expect(error).toBeDefined();
+    render(<SettingsScaffold title="Settings">{null}</SettingsScaffold>);
+    expect(screen.getByText(error!)).toBeOnTheScreen();
+  });
+
+  it('keeps an error of a screen with its own state on screen', () => {
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    render(
+      <SettingsScaffold
+        title="Settings"
+        state={{ error: SERVER_MAINTENANCE_MESSAGE, saving: false }}
+      >
+        {null}
+      </SettingsScaffold>,
+    );
+    expect(screen.getByText(SERVER_MAINTENANCE_MESSAGE)).toBeOnTheScreen();
   });
 });

@@ -299,6 +299,24 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
+  it('keeps the failure that names the routes when a later check times out', async () => {
+    const clock = fakeTimers();
+    const dump = 'Uplink probe (Pinned TLS transport failed) and direct Core request failed';
+    const monitor = new ConnectionMonitor({
+      probe: () => new Promise<never>(() => undefined),
+      timers: clock.timers,
+      checkTimeoutMs: 10_000,
+    });
+    monitor.reportFailure('unreachable', dump);
+    clock.advance(10_000);
+    await flush();
+    expect(monitor.getState()).toMatchObject({ kind: 'unreachable', details: dump });
+    clock.advance(2_000 + 10_000);
+    await flush();
+    expect(monitor.getState()).toMatchObject({ details: dump });
+    monitor.reset();
+  });
+
   it('keeps a throwing listener out of the request that reported', () => {
     const monitor = new ConnectionMonitor();
     const after = vi.fn();

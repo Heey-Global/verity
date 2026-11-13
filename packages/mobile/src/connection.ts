@@ -93,6 +93,8 @@ export type ServerConnectionState =
 /** Delays between automatic checks while the server is away (ms). */
 export const CONNECTION_RETRY_DELAYS: readonly number[] = [2_000, 4_000, 8_000, 15_000];
 
+const CHECK_TIMED_OUT = 'Connection check timed out';
+
 /** How long one automatic check may take before it counts as unreachable (ms). */
 export const CONNECTION_CHECK_TIMEOUT_MS = 10_000;
 
@@ -316,7 +318,10 @@ export class ConnectionMonitor implements ConnectionReporter {
       if (this.state.kind !== 'connected') this.reportSuccess();
       return;
     }
-    const message = failure instanceof Error ? failure.message : details;
+    // A check that merely timed out adds nothing: keep the failure that
+    // started the outage, which names the routes that failed.
+    const timedOut = failure instanceof Error && failure.message === CHECK_TIMED_OUT;
+    const message = timedOut ? details : failure instanceof Error ? failure.message : details;
     if (this.state.kind === 'connected') this.enter(kind, message);
     else if (confirming) {
       // The outage began during this check (its own request reported it):
@@ -336,7 +341,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     let handle: unknown;
     const timeout = new Promise<never>((_, reject) => {
       handle = this.timers.setTimeout(() => {
-        const error = new Error('Connection check timed out');
+        const error = new Error(CHECK_TIMED_OUT);
         error.name = 'TimeoutError';
         reject(error);
       }, this.checkTimeoutMs);

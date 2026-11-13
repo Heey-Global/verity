@@ -340,6 +340,14 @@ export function setApplyRun(applyRun: ApplyRun, scope = storeGeneration): void {
   publish({ applyRun });
 }
 
+/**
+ * Whether the store's banner is a failed load, which the app reloads by itself
+ * after an outage, rather than a save the person still has to repeat.
+ */
+export function veritySettingsLoadFailed(): boolean {
+  return settingsFailed && failedPatches.length === 0;
+}
+
 /** Show a settings-wide error (e.g. a sealed store discovered by a sub-panel). */
 export function setVeritySettingsError(message: string | undefined): void {
   publish({ error: message });
