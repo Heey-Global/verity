@@ -50,6 +50,7 @@ import {
   type TurnOptions,
 } from '@verity/session';
 import type {
+  ProviderConnectionKind,
   SequencedEvent,
   SessionProjectionFacts,
   SessionRecord,
@@ -1549,13 +1550,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       await persist();
     }
   };
+  const persistPersonal = (
+    userId: string,
+    provider: ProviderConnectionKind,
+    write: () => Promise<void>,
+  ): Promise<void> => deps.persistPersonalProviderCredentials?.(userId, provider, write) ?? write();
   const agentLogin =
     deps.agentLogin ??
     createProcessAgentLoginService({
       updateSettings: storeAgentCredentials,
       storePersonal: async (userId, provider, credential) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-        await deps.eventStore.userProviderConnections.set(userId, provider, { credential });
+        await persistPersonal(userId, provider, () =>
+          deps.eventStore.userProviderConnections.set(userId, provider, { credential }),
+        );
       },
     });
   app.addHook('onClose', () => {
@@ -3707,6 +3715,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     agentLogin,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
+    persist: persistPersonal,
   });
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,

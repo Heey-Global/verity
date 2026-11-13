@@ -5,6 +5,7 @@ import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
   EventStore,
   ProjectRecord,
+  ProviderConnectionKind,
   SealableSecretCipher,
   VeritySettingsPatch,
   VeritySettingsRecord,
@@ -219,6 +220,15 @@ export interface ServerDeps {
   /** Serializes a credential DB write with propagation into live sandbox mounts. */
   persistAgentCredentials?:
     ((patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>) | undefined;
+  /** Runs a write to one person's own provider login in that person's queue, so it
+   *  never interleaves with a refresh or rotation of the same login. */
+  persistPersonalProviderCredentials?:
+    | ((
+        userId: string,
+        provider: ProviderConnectionKind,
+        write: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
   /** Single serialized Claude OAuth provider shared by turns and usage polling. */
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads a short-lived Codex access token from the Agent Gateway, which owns the

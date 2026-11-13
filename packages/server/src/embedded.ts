@@ -1,7 +1,6 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { sweepPersonalSandboxes } from './personal-sandbox-sleep.js';
 import { PERSONAL_SANDBOX_LOGIN_REQUIRED, resolveTurnSandbox } from './turn-sandbox.js';
-import { gatewayServesSandbox } from './sandbox-identity.js';
 import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
@@ -361,7 +360,12 @@ import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import { readCodexAccessToken, type AgentGatewayConfiguration } from './agent-gateway-control.js';
+import {
+  readCodexAccessToken,
+  type AgentGatewayConfiguration,
+  type AgentGatewayPerson,
+} from './agent-gateway-control.js';
+import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
 import {
   startAgentGatewaySynchronizer,
   type AgentGatewaySynchronizer,
@@ -1743,6 +1747,17 @@ export async function buildEmbeddedServer(
   let agentGatewayAccessToken: string | null | undefined;
   let agentGatewayCodexAuthJson: string | null | undefined;
   let agentGatewayOpenCode: { baseUrl: string; apiKey: string | null } | undefined;
+  // Each person's own logins (ADR 0023 §3), projected beside the instance login.
+  let agentGatewayPeople: readonly AgentGatewayPerson[] = [];
+  const personalProviderCredentials = createPersonalProviderCredentials({
+    store: eventStore,
+    onError: (error) => {
+      if (error instanceof SealedError) return;
+      // Never include credential contents in this diagnostic.
+      console.warn(`verity: a personal provider login could not be refreshed: ${String(error)}`);
+    },
+  });
+  let agentGatewayPersonalClaudeTokens = new Map<string, string>();
   const { url: agentGatewayUrl } = validateAgentGatewayRoutingConfig({
     url: config.agentGatewayUrl,
     controlSocket: config.agentGatewayControlSocket,
@@ -1760,7 +1775,12 @@ export async function buildEmbeddedServer(
             app.log.warn({ err: error }, 'Standalone agent gateway reconciliation failed');
           },
           persistCodexCredentialUpdate: (update) =>
-            claudeCredentialSync.persistCodexCredentialUpdate(update),
+            update.userId === undefined
+              ? claudeCredentialSync.persistCodexCredentialUpdate(update)
+              : personalProviderCredentials.persistCodexUpdate({
+                  ...update,
+                  userId: update.userId,
+                }),
         });
   const codexGatewayControlSocket = config.agentGatewayControlSocket;
   // Passed straight through: `readCodexAccessToken` already throws a
@@ -1805,10 +1825,13 @@ export async function buildEmbeddedServer(
       )
       .update(
         routedBindings
-          .map((binding) => `${binding.projectId}:${binding.fingerprint256}`)
+          .map(
+            (binding) => `${binding.projectId}:${binding.userId ?? ''}:${binding.fingerprint256}`,
+          )
           .sort()
           .join('\n'),
       )
+      .update(`\0personal:${JSON.stringify(agentGatewayPeople)}`)
       .digest('hex');
     return {
       revision,
@@ -1842,6 +1865,17 @@ export async function buildEmbeddedServer(
             },
           }),
       ...(agentGatewayOpenCode === undefined ? {} : { opencode: agentGatewayOpenCode }),
+      ...(config.agentGatewayUnsealKey === undefined
+        ? {}
+        : {
+            personal: {
+              // Every project's original sandbox is the administrator's, whose
+              // login the instance login was.
+              instanceUserId: legacyAdministratorId,
+              unsealKey: config.agentGatewayUnsealKey,
+              people: agentGatewayPeople,
+            },
+          }),
     };
   };
   const syncAgentGateway = (): void => {
@@ -2036,17 +2070,9 @@ export async function buildEmbeddedServer(
       }
       const project = await eventStore.getProject(binding.projectId);
       if (project === undefined || project.kind === 'control_plane') continue;
-      // The gateway serves one provider login, the administrator's, whose sandbox
-      // is the project's original one. A person's own sandbox gets no route until
-      // it can be served with that person's own login (ADR 0023 §3–4); anything
-      // else would hand another person's account to their container.
-      if (
-        !gatewayServesSandbox(
-          binding,
-          await projectDefaultSandboxUser(eventStore, binding.projectId),
-        )
-      )
-        continue;
+      // A person's own sandbox is routed too: the gateway serves it with that
+      // person's own login or none, and the synchronizer withdraws such routes
+      // from a gateway that cannot tell people apart (ADR 0023 §3–4).
       try {
         const inspected = await docker.inspectContainer(project.containerName);
         if (await healthyRelayGeneration(project.id, inspected)) {
@@ -3100,14 +3126,18 @@ export async function buildEmbeddedServer(
         openCodeApiKey.length === 0
           ? undefined
           : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
+      const personal = await personalProviderCredentials.people(agentGatewayPersonalClaudeTokens);
       if (
         projected !== agentGatewayAccessToken ||
         projectedCodex !== agentGatewayCodexAuthJson ||
-        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode)
+        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode) ||
+        JSON.stringify(personal.people) !== JSON.stringify(agentGatewayPeople)
       ) {
         agentGatewayAccessToken = projected;
         agentGatewayCodexAuthJson = projectedCodex;
         agentGatewayOpenCode = projectedOpenCode;
+        agentGatewayPeople = personal.people;
+        agentGatewayPersonalClaudeTokens = personal.claudeTokens;
         syncAgentGateway();
       }
       // Claude refresh must not hold another provider's logout hostage. Report
@@ -3148,11 +3178,13 @@ export async function buildEmbeddedServer(
     };
     projectCredentialSafely();
     const unsubscribe = claudeCredentialSync.onCredentialsChanged(projectCredentialSafely);
+    const unsubscribePersonal = personalProviderCredentials.onChanged(projectCredentialSafely);
     const timer = setInterval(projectCredentialSafely, 60_000);
     timer.unref();
     stopAgentGatewayCredentialProjection = async (): Promise<void> => {
       clearInterval(timer);
       unsubscribe();
+      unsubscribePersonal();
       projectionClosed = true;
       await projection;
     };
@@ -3983,6 +4015,8 @@ export async function buildEmbeddedServer(
       if (patch.codexAuthJson !== undefined) await codexModelCatalog?.refresh();
     },
     claudeOAuthTokenProvider: claudeCredentialSync.getAccessToken,
+    persistPersonalProviderCredentials: (userId, provider, write) =>
+      personalProviderCredentials.persist(userId, provider, write),
     // The Codex quota probe reads its token from the gateway, the single refresh
     // authority for the rotating Codex login (ADR 0010) — deliberately not from the
     // stored `codexAuthJson`, which would make the Server a second writer. Without a

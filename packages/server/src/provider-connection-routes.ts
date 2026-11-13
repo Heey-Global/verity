@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { SealedError, type EventStore, type SealableSecretCipher } from '@verity/store';
+import {
+  SealedError,
+  type EventStore,
+  type ProviderConnectionKind,
+  type SealableSecretCipher,
+} from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
 import type { AgentLoginService } from './agent-login.js';
@@ -32,8 +37,19 @@ export function registerProviderConnectionRoutes(
     secretCipher?: SealableSecretCipher | undefined;
     /** Lists the provider's models with the given address and key, proving both work. */
     listOpenCodeModels: (baseUrl: string, apiKey: string) => Promise<string[]>;
+    /** Runs a write in the person's queue beside refreshes of the same login. */
+    persist?: (
+      userId: string,
+      provider: ProviderConnectionKind,
+      write: () => Promise<void>,
+    ) => Promise<void>;
   },
 ): void {
+  const persist = (
+    userId: string,
+    provider: ProviderConnectionKind,
+    write: () => Promise<void>,
+  ): Promise<void> => deps.persist?.(userId, provider, write) ?? write();
   const unsealed = () => {
     if (deps.secretCipher?.isSealed() === true) throw new SealedError();
   };
@@ -100,18 +116,24 @@ export function registerProviderConnectionRoutes(
         .code(400)
         .send({ error: 'this address and key did not answer with a model list' });
     }
-    await deps.store.userProviderConnections.set(viewerId(request), 'opencode', {
-      credential: input.data.apiKey,
-      baseUrl: input.data.baseUrl,
-      models: models.join('\n'),
-    });
+    const userId = viewerId(request);
+    await persist(userId, 'opencode', () =>
+      deps.store.userProviderConnections.set(userId, 'opencode', {
+        credential: input.data.apiKey,
+        baseUrl: input.data.baseUrl,
+        models: models.join('\n'),
+      }),
+    );
     reply.header('cache-control', 'no-store');
     return { provider: 'opencode', baseUrl: input.data.baseUrl, models };
   });
 
   app.delete('/me/provider-connections/:provider', async (request, reply) => {
     const { provider } = anyProvider.parse(request.params);
-    await deps.store.userProviderConnections.delete(viewerId(request), provider);
+    const userId = viewerId(request);
+    await persist(userId, provider, () =>
+      deps.store.userProviderConnections.delete(userId, provider),
+    );
     return reply.code(204).send();
   });
 }

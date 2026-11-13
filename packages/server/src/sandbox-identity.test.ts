@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  gatewayServesSandbox,
   projectNetworkName,
   projectNodeModulesVolumeName,
   sandboxIdentity,
@@ -37,16 +36,5 @@ describe('sandbox identity', () => {
     expect(mia.runnerDir).toMatch(/^runners\/u[0-9a-f]{16}\/Proj_1$/u);
     for (const name of [mia.containerName, mia.networkName, mia.nodeModulesVolume])
       expect(name).toMatch(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/u);
-  });
-});
-
-describe('gatewayServesSandbox', () => {
-  // The gateway's one login is the administrator's: only the sandbox that login
-  // belongs to may be routed, never a person's own sandbox, and never a binding
-  // that does not say whose it is.
-  it("routes only the original sandbox's person", () => {
-    expect(gatewayServesSandbox({ userId: 'admin' }, 'admin')).toBe(true);
-    expect(gatewayServesSandbox({ userId: 'lena' }, 'admin')).toBe(false);
-    expect(gatewayServesSandbox({}, 'admin')).toBe(false);
   });
 });

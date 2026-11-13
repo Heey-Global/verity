@@ -103,17 +103,3 @@ export function sandboxKey(sandbox: {
     ? sandbox.projectId
     : `${sandbox.projectId}#${sandboxPersonTag(sandbox.userId)}`;
 }
-
-/**
- * Whether the agent gateway may serve a sandbox's certificate. The gateway holds
- * one provider login, the administrator's, which belongs to the project's
- * original sandbox. Any other sandbox — a person's own — gets no route until it
- * can be served with that person's own login (ADR 0023 §3–4); routing it would
- * hand the administrator's account to another person's container.
- */
-export function gatewayServesSandbox(
-  binding: { readonly userId?: string | undefined },
-  projectDefaultUser: string,
-): boolean {
-  return binding.userId !== undefined && binding.userId === projectDefaultUser;
-}

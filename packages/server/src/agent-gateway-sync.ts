@@ -1,12 +1,35 @@
 import {
   ackCodexCredentialUpdate,
   configureAgentGateway,
+  readAgentGatewayStatus,
   readCodexCredentialUpdate,
   type AgentGatewayConfiguration,
   type CodexCredentialUpdate,
 } from './agent-gateway-control.js';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 5_000;
+
+/**
+ * The configuration a gateway without per-person logins may receive: only the
+ * routes the instance login is meant for — the administrator's sandboxes and
+ * sandboxes without a person. Such a gateway ignores the personal section and
+ * would serve the administrator's account to every route it is given.
+ */
+export function instanceOnlyConfiguration(
+  configuration: AgentGatewayConfiguration,
+): AgentGatewayConfiguration {
+  const instanceUserId = configuration.personal?.instanceUserId;
+  if (instanceUserId === undefined) return configuration;
+  const peerBindings = configuration.claude.peerBindings.filter(
+    (binding) => binding.userId === undefined || binding.userId === instanceUserId,
+  );
+  if (peerBindings.length === configuration.claude.peerBindings.length) return configuration;
+  return {
+    ...configuration,
+    revision: `${configuration.revision}:instance-only`,
+    claude: { ...configuration.claude, peerBindings },
+  };
+}
 
 export interface AgentGatewaySynchronizer {
   update(configuration: AgentGatewayConfiguration): void;
@@ -51,7 +74,22 @@ export function startAgentGatewaySynchronizer(options: {
         if (snapshot === undefined) break;
         const snapshotGeneration = generation;
         try {
-          const status = await configureAgentGateway(options.socketPath, snapshot);
+          // Ask first, every time: the gateway may have been replaced by one that
+          // cannot tell people apart since the last snapshot was applied.
+          const capable =
+            snapshot.personal === undefined ||
+            (await readAgentGatewayStatus(options.socketPath)).perUserCredentials === true;
+          let status = await configureAgentGateway(
+            options.socketPath,
+            capable ? snapshot : instanceOnlyConfiguration(snapshot),
+          );
+          if (capable && snapshot.personal !== undefined && status.perUserCredentials !== true) {
+            // Replaced between the two requests: withdraw the personal routes now.
+            status = await configureAgentGateway(
+              options.socketPath,
+              instanceOnlyConfiguration(snapshot),
+            );
+          }
           if (
             snapshot.codex?.credential.authJson !== null &&
             snapshot.codex !== undefined &&
@@ -60,8 +98,12 @@ export function startAgentGatewaySynchronizer(options: {
             throw new Error('Agent Gateway Codex listener is not ready');
           }
           if (options.persistCodexCredentialUpdate !== undefined) {
-            const update = await readCodexCredentialUpdate(options.socketPath);
-            if (update !== undefined && (await options.persistCodexCredentialUpdate(update))) {
+            // One person's rotation may wait behind another's; read until the
+            // gateway has nothing left this Server can store.
+            for (let read = 0; read < 32; read += 1) {
+              const update = await readCodexCredentialUpdate(options.socketPath);
+              if (update === undefined || !(await options.persistCodexCredentialUpdate(update)))
+                break;
               await ackCodexCredentialUpdate(options.socketPath, update);
             }
           }

@@ -6,7 +6,12 @@ import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
 import { welcomeSessionPrompt } from './welcome-session.js';
-import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
+import type {
+  VeritySettingsPatch,
+  EventStore,
+  ProviderConnectionKind,
+  SealableSecretCipher,
+} from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
   VERITY_CONTROL_PROJECT_ID,
@@ -93,6 +98,15 @@ export interface ControlPlaneDeps {
   /** Serializes a Claude/Codex credential DB write with runtime-file propagation. */
   persistAgentCredentials?:
     ((patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>) | undefined;
+  /** Runs a write to one person's own provider login in that person's queue, so it
+   *  never interleaves with a refresh or rotation of the same login. */
+  persistPersonalProviderCredentials?:
+    | ((
+        userId: string,
+        provider: ProviderConnectionKind,
+        write: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
   /** Serialized Claude OAuth access-token provider shared across all sessions. */
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads the gateway-held Codex access token for the account-global usage probe. */
@@ -401,6 +415,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { googleDriveClientId: deps.googleDriveClientId }
       : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.persistPersonalProviderCredentials !== undefined
+      ? { persistPersonalProviderCredentials: deps.persistPersonalProviderCredentials }
+      : {}),
     ...(deps.persistAgentCredentials !== undefined
       ? { persistAgentCredentials: deps.persistAgentCredentials }
       : {}),
