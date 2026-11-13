@@ -7,8 +7,7 @@ import Invite from './invite';
 import Member from './member';
 import InviteCreated from './invite-created';
 import Landing from './landing';
-import Session from './session';
-import SessionStates from './session-states';
+import Projects from './projects';
 import Team from './team';
 import Welcome from './welcome';
 
@@ -25,8 +24,7 @@ export const teamInvitationsSpec: MockupSpec = {
     accept: { title: 'Join project', Component: Accept },
     'accept-invalid': { title: 'Invitation', Component: AcceptInvalid },
     connections: { title: 'Connections', Component: Connections },
-    instances: { title: 'Switch', Component: Instances },
-    session: { title: 'Session', Component: Session },
-    'session-states': { title: 'Session', Component: SessionStates },
+    instances: { title: 'Servers', Component: Instances },
+    projects: { title: 'Projects', Component: Projects },
   },
 };

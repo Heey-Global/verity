@@ -12,15 +12,17 @@ export default function MemberMockup() {
         title="Anna Meier"
         titleLeading={<Avatar initials="AM" />}
         onClose={ignore}
-        footer={<Button label="Remove from verity" variant="destructive" onPress={ignore} fullWidth />}
+        footer={
+          <Button label="Remove from “verity”" variant="destructive" onPress={ignore} fullWidth />
+        }
       >
         <Text variant="footnote" tone="muted">
           Joined 3 Nov · 2 devices · Claude connected
         </Text>
-        <SectionHeader title="Right in verity" variant="eyebrow" flush />
+        <SectionHeader title="Right in “verity”" variant="eyebrow" flush />
         <Group>
           <Row selected={false} title="Can read" onPress={ignore} />
-          <Row selected title="Can run" onPress={ignore} />
+          <Row selected title="Can edit" onPress={ignore} />
           <Row selected={false} title="Can manage" onPress={ignore} />
         </Group>
         <SectionHeader title="Also on your server" variant="eyebrow" flush />
@@ -39,9 +41,6 @@ export default function MemberMockup() {
             onPress={ignore}
           />
         </Group>
-        <Text variant="footnote" tone="muted">
-          Removing ends access to verity only; other projects stay shared.
-        </Text>
       </Sheet>
     </>
   );

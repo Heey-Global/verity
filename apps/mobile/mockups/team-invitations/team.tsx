@@ -1,4 +1,4 @@
-import { Button, Group, Row, SectionHeader, StatusTag, Text } from '../../components/ui';
+import { Button, Group, Row, SectionHeader, StatusTag } from '../../components/ui';
 import { Avatar, ignore, Page } from './parts';
 
 /**
@@ -8,10 +8,6 @@ import { Avatar, ignore, Page } from './parts';
 export function TeamPage() {
   return (
     <Page>
-      <Text variant="bodySmall" tone="muted">
-        People on this project see its sessions, files and project knowledge. Each person works
-        with their own AI and service connections.
-      </Text>
       <SectionHeader title="Members · 3" variant="eyebrow" />
       <Group>
         <Row
@@ -24,7 +20,7 @@ export function TeamPage() {
           leading={{ element: <Avatar initials="AM" /> }}
           title="Anna Meier"
           subtitle="Joined 3 Nov · last active today"
-          trailing={<StatusTag intent="ready" label="Can run" />}
+          trailing={<StatusTag intent="ready" label="Can edit" />}
           navigates
           onPress={ignore}
         />
@@ -42,8 +38,8 @@ export function TeamPage() {
         <Row
           leading={{ icon: 'link', quiet: true }}
           title="Invitation for Lena"
-          subtitle="Can run · expires in 5 days"
-          trailing={<StatusTag intent="transient" label="Waiting" />}
+          subtitle="Can edit · expires in 5 days"
+          trailing={<StatusTag intent="optional" label="Open" />}
           navigates
           onPress={ignore}
         />

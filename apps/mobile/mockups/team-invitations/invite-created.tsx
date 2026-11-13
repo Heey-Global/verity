@@ -2,7 +2,7 @@ import QRCode from 'react-native-qrcode-svg';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Button, Group, Row, StatusTag, Text } from '../../components/ui';
+import { Button, Group, IconButton, Row, SectionHeader, StatusTag } from '../../components/ui';
 import { ignore, Page, PROJECT } from './parts';
 
 const LINK = 'https://verity.build/join#k=4F2C9A17&s=7Qm2c9TkV4xRbW1p';
@@ -14,15 +14,12 @@ export default function InviteCreatedMockup() {
     <Page
       footer={
         <>
-          <Button label="Share link" icon="share" onPress={ignore} fullWidth />
+          <Button label="Send invitation" icon="share" onPress={ignore} fullWidth />
           <Button label="Revoke invitation" variant="text" onPress={ignore} fullWidth />
         </>
       }
     >
-      <Text variant="bodySmall" tone="muted">
-        Send the link by WhatsApp, Signal or email, or let Lena scan the code. It works once and
-        opens only {PROJECT}, nothing else on your server.
-      </Text>
+      <SectionHeader title="Send to Lena" variant="eyebrow" />
       <View style={styles.qrFrame}>
         <QRCode
           value={LINK}
@@ -34,26 +31,26 @@ export default function InviteCreatedMockup() {
       <Group>
         <Row
           leading={{ icon: 'link', quiet: true }}
-          title="verity.build/join#…"
-          subtitle="Tap to copy · routed through Uplink"
-          trailing={<StatusTag intent="transient" label="Waiting" />}
-          onPress={ignore}
+          title="Invitation link"
+          subtitle="verity.build/join#…"
+          trailing={
+            <IconButton icon="copy" accessibilityLabel="Copy invitation link" onPress={ignore} />
+          }
         />
+      </Group>
+      <Group>
         <Row
-          leading={{ icon: 'user-check', quiet: true }}
-          title="Can run"
-          subtitle={`Only the project ${PROJECT}`}
+          leading={{ icon: 'mail', quiet: true }}
+          title="Invitation for Lena"
+          trailing={<StatusTag intent="optional" label="Open" />}
         />
+        <Row leading={{ icon: 'user-check', quiet: true }} title={`Can edit “${PROJECT}”`} />
         <Row
           leading={{ icon: 'clock', quiet: true }}
           title="Valid until 19 Nov, 14:20"
-          subtitle="7 days · single use"
+          subtitle="Can be used once"
         />
       </Group>
-      <Text variant="footnote" tone="muted">
-        Anyone holding the link can join until it is used, expires or is revoked. Send it only to
-        Lena. You see here when it was accepted.
-      </Text>
     </Page>
   );
 }

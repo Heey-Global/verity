@@ -1,43 +1,38 @@
-import { Button, Group, Row, StatusTag, StepIntro, Text, TextField } from '../../components/ui';
+import { Button, Group, Row, StepIntro, TextField } from '../../components/ui';
 import { OnboardingProgress } from '../../components/OnboardingProgress';
-import { Avatar, ignore, Page, PROJECT } from './parts';
+import { ignore, Page, PROJECT } from './parts';
 
-/** Accepting on the invited person's phone: who shares which project, with which right. */
+/** Accepting on the invited person's phone: which project, with which right, under which name. */
 export default function AcceptMockup() {
   return (
     <Page
       footer={
         <>
-          <Button label="Join and continue" onPress={ignore} fullWidth />
+          <Button label="Join project" onPress={ignore} fullWidth />
           <Button label="Decline" variant="text" onPress={ignore} fullWidth />
         </>
       }
     >
       <OnboardingProgress current={1} total={3} />
       <StepIntro
-        headline="Holger Teske shares"
+        headline="Holger invites you to"
         accent={PROJECT}
-        lead="Join to work on this project with your own AI connection."
+        lead="Work on it together, with your own AI."
       />
       <Group>
         <Row
-          leading={{ element: <Avatar initials="HT" /> }}
-          title="Holger Teske"
-          subtitle="Server verified through Uplink · key 4F2C 9A17"
-          trailing={<StatusTag intent="ready" label="Verified" />}
+          leading={{ icon: 'folder', quiet: true }}
+          title={`The project “${PROJECT}”`}
+          subtitle="48 sessions · files · wiki"
         />
         <Row
-          leading={{ icon: 'folder', quiet: true }}
-          title={`Only the project ${PROJECT}`}
-          subtitle="48 sessions · files · wiki and decisions"
+          leading={{ icon: 'edit-2', quiet: true }}
+          title="Can edit"
+          subtitle="See everything and send messages with your own AI account"
+          wrap
         />
-        <Row leading={{ icon: 'user-check', quiet: true }} title="Can run" subtitle="Read everything in the project and start turns" />
       </Group>
-      <TextField label="Your name, as the team sees it" value="Lena" onChangeText={ignore} />
-      <Text variant="footnote" tone="muted">
-        Holger and other members see your name and messages in shared sessions, never your
-        connections. Your own Verity server and its sign-in stay unchanged.
-      </Text>
+      <TextField label="Your name in the team" value="Lena" onChangeText={ignore} />
     </Page>
   );
 }
