@@ -61,7 +61,8 @@ export function workerHeapLimit(probe = {}) {
   const usage =
     probe.current ??
     (readLimit('/sys/fs/cgroup/memory.current') ||
-      readLimit('/sys/fs/cgroup/memory/memory.usage_in_bytes'));
+      readLimit('/sys/fs/cgroup/memory/memory.usage_in_bytes') ||
+      0);
   // A machine-sized ceiling must also count what runs outside this cgroup.
   const current = machine ? Math.max(usage, total - (probe.free ?? freemem())) : usage;
   return heapLimitMiB(ceiling, current, ci ? CI_HEAP_CAP_MIB : LOCAL_HEAP_CAP_MIB);
