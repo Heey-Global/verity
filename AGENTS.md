@@ -59,7 +59,7 @@ current file content and the TypeScript/classifier version; this metadata is bou
 to 4 MiB under `.cache/lint-ambient` and never stores ASTs or type programs. Use
 `npm run lint -- --no-cache` or `npm run lint:changed -- --no-cache <files>` to
 bypass both caches and force a fresh check. Workers run sequentially under a conservative heap
-budget, limit both file count and source bytes per group, and retry smaller groups
+budget (512 MiB in sandboxes; up to 2 GiB on CI runners, which own their machine), limit both file count and source bytes per group, and retry smaller groups
 after memory exhaustion; the heap budget never grows automatically. Full local lint
 includes new unignored files and skips files deleted from the working tree.
 

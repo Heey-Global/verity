@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
 import { measureLintHeap } from './lint-heap-probe.mjs';
+import { CI_HEAP_CAP_MIB, LOCAL_HEAP_CAP_MIB } from './lint-runner.mjs';
 
 vi.mock('node:child_process', () => ({ spawnSync: vi.fn() }));
 
@@ -48,7 +49,10 @@ it.each([false, true])('retains native traces and the worker outcome after OOM=%
   };
   expect(metadata.files).toEqual(['packages/server/src/server.ts']);
   expect(metadata.heapMiB).toBeGreaterThan(0);
-  expect(metadata.heapMiB).toBeLessThanOrEqual(512);
+  // The probe must measure under the runner's own budget for this environment.
+  expect(metadata.heapMiB).toBeLessThanOrEqual(
+    process.env.GITHUB_ACTIONS === 'true' ? CI_HEAP_CAP_MIB : LOCAL_HEAP_CAP_MIB,
+  );
   expect(metadata.ambientCache).toBe(false);
   expect(metadata.signal).toBe(oom ? 'SIGABRT' : null);
   const args = vi.mocked(spawnSync).mock.calls[0]![1] as string[];
