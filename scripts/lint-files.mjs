@@ -1,6 +1,7 @@
 import { ESLint } from 'eslint';
 import ts from 'typescript';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { appendFileSync } from 'node:fs';
 import { setImmediate } from 'node:timers/promises';
 import { LocalLintCache } from './lint-cache.mjs';
 import { AmbientClassificationCache } from './lint-ambient-cache.mjs';
@@ -16,9 +17,19 @@ function profilePhase(files, stage) {
   )
     return;
   const { rss, heapUsed, heapTotal } = process.memoryUsage();
-  console.error(
-    JSON.stringify({ lintProfile: stage, time: process.uptime(), rss, heapUsed, heapTotal }),
-  );
+  const line = JSON.stringify({
+    lintProfile: stage,
+    time: process.uptime(),
+    rss,
+    heapUsed,
+    heapTotal,
+  });
+  // The parent discards partial worker output after OOM; retain phase evidence separately.
+  if (process.env.LINT_MEASUREMENT_DIR) {
+    appendFileSync(join(process.env.LINT_MEASUREMENT_DIR, 'phases.ndjson'), `${line}\n`);
+  } else {
+    console.error(line);
+  }
 }
 
 /** @param {ts.Diagnostic} diagnostic */

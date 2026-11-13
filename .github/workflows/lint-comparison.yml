@@ -32,6 +32,8 @@ jobs:
         shell: bash
         env:
           CI: 'true'
+          VERITY_LINT_PROFILE: '1'
+          LINT_MEASUREMENT_DIR: ${{ runner.temp }}/lint-server-heap
           MEASUREMENT_DIR: ${{ runner.temp }}/lint-server-heap
         run: |
           set -euo pipefail

@@ -398,6 +398,16 @@ it('reports diagnostic phases without changing typed lint findings', async () =>
       'rules-exit',
       'eslint-complete',
     ]);
+    output.mockClear();
+    vi.stubEnv('LINT_MEASUREMENT_DIR', root);
+    const retained = await lintFiles([target], root);
+    expect(retained.results.map((result) => result.messages)).toEqual(
+      baseline.results.map((result) => result.messages),
+    );
+    expect(output).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, 'phases.ndjson'), 'utf8')).toContain(
+      '"lintProfile":"rules-start"',
+    );
   } finally {
     vi.unstubAllEnvs();
   }
