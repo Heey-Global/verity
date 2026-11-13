@@ -91,14 +91,14 @@ whoever sets it. The edge therefore stores each application cookie in its own na
   edge, including the edge's own `__Host-verity-preview` session and cookies a sibling share
   planted. Every rewritten name starts with the prefix, so the application can't overwrite the
   PIN session either.
-- Cookies with invalid names or values are dropped. A cookie whose name and value, including the
+- `Set-Cookie` headers with invalid names or values are dropped. A cookie whose name and value, including the
   11-byte prefix, exceed 4096 bytes is dropped, because a browser would discard it anyway. The
   connector relays at most 40 cookies or 16 KiB per response and skips any single line the tunnel
   would refuse, and it leaves room for the application's other response headers, so a
   response with too many cookies loses the rest rather than failing.
 - A response that sets an application cookie is sent with `Cache-Control: no-store` unless the
-  application already marked it `private` or `no-store`, so a shared cache never replays one
-  visitor's session to another.
+  application already marked it `private` or `no-store`, and without `CDN-Cache-Control` or
+  `Surrogate-Control`, so a shared cache never replays one visitor's session to another.
 - Because the path is always `/`, same-named cookies that an application scopes to different
   paths become one cookie, and every request carries all application cookies.
 - WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are
@@ -118,9 +118,12 @@ whoever sets it. The edge therefore stores each application cookie in its own na
 The edge applies these rules. The connector, which runs inside the sandbox, only transports the
 cookies. An edge and a connector from before this behavior keep dropping application cookies,
 whichever of the two is updated first. Open local shares (2.1) keep application cookie names
-unchanged, because they share the host with Verity and serve plain HTTP. Registering the
-public preview parent domain on the Public Suffix List would additionally stop browsers from
-accepting parent-domain cookies, but isolation does not depend on it.
+unchanged, because they share the host with Verity and serve plain HTTP.
+
+Older browsers that predate the `__Host-` protection for nameless cookies still let a sibling
+share write a parent-domain cookie whose serialized form starts with `__Host-app-`. Registering
+the public preview parent domain on the Public Suffix List stops browsers from accepting any
+parent-domain cookie and closes that gap; current browsers don't depend on it.
 
 ### 2.3 Raw TCP is not provided
 

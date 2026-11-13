@@ -3197,9 +3197,18 @@ describe('application cookies on online shares', () => {
           ? { 'cache-control': 'private, max-age=60' }
           : path === '/quoted'
             ? { 'cache-control': 'public, max-age=600, ext="no-store"' }
-            : { 'cache-control': 'public, max-age=600' },
+            : {
+                'cache-control': 'public, max-age=600',
+                'cdn-cache-control': 'max-age=600',
+                'surrogate-control': 'max-age=600',
+              },
     );
-    expect((await get('/public', pinCookie)).headers.get('cache-control')).toBe('no-store');
+    const publicResponse = await get('/public', pinCookie);
+    expect(publicResponse.headers.get('cache-control')).toBe('no-store');
+    expect(publicResponse.headers.get('cdn-cache-control')).toBeNull();
+    expect(publicResponse.headers.get('surrogate-control')).toBeNull();
+    // Without a cookie the application's caching stays its own decision.
+    expect((await get('/none', pinCookie)).headers.get('cdn-cache-control')).toBe('max-age=600');
     expect((await get('/private', pinCookie)).headers.get('cache-control')).toBe(
       'private, max-age=60',
     );

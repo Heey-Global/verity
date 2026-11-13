@@ -118,6 +118,10 @@ export function namespaceSetCookie(line: string): string | undefined {
   ].join('; ');
 }
 
+function trimCookieWhitespace(value: string): string {
+  return value.replace(/^[ \t]+|[ \t]+$/g, '');
+}
+
 /**
  * Selects the application's cookies from a browser `Cookie` header on an online
  * share and restores their original names. Order and duplicates are kept, and
@@ -133,11 +137,13 @@ export function appRequestCookies(header: string, maxBytes = Infinity): string {
   for (const part of header.split(';')) {
     const separator = part.indexOf('=');
     if (separator < 0) continue;
-    const name = part.slice(0, separator).trim();
+    // Only SP and HTAB separate cookies; JavaScript's wider `trim` could turn
+    // other leading bytes into a matching prefix.
+    const name = trimCookieWhitespace(part.slice(0, separator));
     if (!name.startsWith(APP_COOKIE_PREFIX)) continue;
     const original = name.slice(APP_COOKIE_PREFIX.length);
     if (!TOKEN.test(original)) continue;
-    const cookie = `${original}=${part.slice(separator + 1).trim()}`;
+    const cookie = `${original}=${trimCookieWhitespace(part.slice(separator + 1))}`;
     const cost = Buffer.byteLength(cookie) + (cookies.length ? 2 : 0);
     if (bytes + cost > maxBytes) break;
     cookies.push(cookie);

@@ -111,6 +111,9 @@ describe('appRequestCookies', () => {
         `${EDGE_COOKIE}=v1.1.s; __Host-verity_session=core; sid=evil; __host-app-sid=evil; __HOST-APP-sid=evil; ${APP_COOKIE_PREFIX}=empty; ${APP_COOKIE_PREFIX}a b=bad; ${APP_COOKIE_PREFIX}novalue`,
       ),
     ).toBe('');
+    // Only SP and HTAB separate cookies, so other whitespace can't complete the prefix.
+    expect(appRequestCookies(`\u00a0${APP_COOKIE_PREFIX}a=1;\v${APP_COOKIE_PREFIX}b=2`)).toBe('');
+    expect(appRequestCookies(`\t${APP_COOKIE_PREFIX}a=1 \t`)).toBe('a=1');
   });
 });
 
