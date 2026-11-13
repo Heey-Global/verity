@@ -44,6 +44,9 @@ function notifyBaseUrlChanged(): void {
   probeClient = undefined;
   for (const listener of baseUrlListeners) listener();
 }
+// One client for every check of an outage, rather than a new one every few
+// seconds; it is rebuilt when the app is pointed at another server.
+let probeClient: VerityClient | null | undefined;
 let lastDescriptorToken: string | null = null;
 let lastDescriptorAttempt = 0;
 
@@ -229,10 +232,14 @@ export function createVerityClient(): VerityClient | null {
 
 // While the server is away the connection bar checks it with the liveness probe;
 // that request reports through the monitor like any other, which ends the outage.
-// One client for every check of an outage, rather than a new one every few
-// seconds; it is rebuilt when the app is pointed at another server.
-let probeClient: VerityClient | null | undefined;
 serverConnection.setProbe(async () => {
+  // The demo talks to no server: nothing to check, and a demo client must
+  // never end a real outage.
+  if (isDemoMode()) {
+    probeClient = undefined;
+    serverConnection.reset();
+    return;
+  }
   probeClient ??= createVerityClient();
   const client = probeClient;
   // No server is configured any more: there is nothing to be connected to,

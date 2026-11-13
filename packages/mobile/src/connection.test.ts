@@ -285,6 +285,20 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
+  it('treats a probe failure in unfamiliar words as the server still away', async () => {
+    const clock = fakeTimers();
+    const probe = vi.fn(() => Promise.reject(new Error('The request timed out.')));
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers });
+    const recovered = vi.fn();
+    monitor.onRecovered(recovered);
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    await flush();
+    expect(monitor.getState().kind).toBe('unreachable');
+    expect(recovered).not.toHaveBeenCalled();
+    monitor.reset();
+  });
+
   it('keeps a throwing listener out of the request that reported', () => {
     const monitor = new ConnectionMonitor();
     const after = vi.fn();

@@ -307,7 +307,10 @@ export class ConnectionMonitor implements ConnectionReporter {
       if (this.state.kind !== 'connected') this.reportSuccess();
       return;
     }
-    const kind = connectionFailureKind(failure);
+    // Only an answer from the server proves it is there; any other rejection —
+    // whatever its wording — is the transport failing, as `VerityClient` reports it.
+    const answered = failure instanceof Error && failure.name === 'VerityApiError';
+    const kind = answered ? connectionFailureKind(failure) : 'unreachable';
     if (kind === undefined) {
       // The server answered, just not with what the probe wanted: it is there.
       if (this.state.kind !== 'connected') this.reportSuccess();
