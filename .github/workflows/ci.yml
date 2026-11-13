@@ -72,7 +72,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # Merged release PRs are authored by the release app, whose `<slug>[bot]`
       # login the barrier must trust next to github-actions[bot]. The slug is an
       # output of minting a token, so mint one that can only read metadata.
@@ -729,7 +729,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - name: Install pinned Gitleaks
         shell: bash
@@ -768,7 +768,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # ESLint covers every Node package but deliberately ignores the Expo app
       # (see eslint.config.js). Install that exact workspace set plus the root
@@ -910,7 +910,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Knip analyzes the whole monorepo, so install every workspace. Its parser
       # has a platform-specific optional binding, which rules out the lint lane's
@@ -929,7 +929,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
           # the lockfile-derived install across parallel jobs. Keep the repository's
           # limited Actions cache available for the smaller targeted tool caches and
@@ -979,7 +979,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
       # only the Server dependency closure plus root test tooling; the Expo graph
@@ -1067,7 +1067,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # The DOM host contract imports the web app and its Expo/Apps SDK dependencies.
       - run: npm ci --workspace @verity/server --workspace @verity/mobile-app --include-workspace-root --ignore-scripts
       - name: Run repository contract suites
@@ -1102,7 +1102,7 @@ jobs:
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
+      VERITY_INSTALLER_IMAGE: node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
       # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
       VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
@@ -1193,7 +1193,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci --workspace @verity/server --include-workspace-root
       # Only the PostgreSQL-gated suites run here, and the sole reason they need
@@ -1256,7 +1256,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Coverage exercises the same root Vitest package set as the sharded test
       # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
@@ -1319,7 +1319,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # The full mobile dependency closure grows the shared npm cache to roughly
       # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
       # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
@@ -1360,7 +1360,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache
