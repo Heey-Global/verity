@@ -2,6 +2,7 @@ import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
 import { registerProjectTeamRoutes } from './project-team-routes.js';
+import { createMemberRevocation } from './member-revocation.js';
 import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import {
@@ -3754,12 +3755,23 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
     persist: persistPersonal,
   });
+  const revokeMember = createMemberRevocation({
+    store: deps.eventStore,
+    dequeue: (sessionId, id) => conductor.dequeue(sessionId, id),
+    cancelTurn: (sessionId) => conductor.cancelTurn(sessionId),
+    sleepSandbox: deps.provisioner?.sleepPersonalSandbox?.bind(deps.provisioner),
+    onError: (step, error) =>
+      app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
+  });
   registerProjectTeamRoutes(app, {
     store: deps.eventStore,
     projectName: async (projectId) =>
       (await deps.eventStore.getProject(projectId))?.name ?? undefined,
     ...(deps.invitationLink === undefined ? {} : { invitationLink: deps.invitationLink }),
-    ...(deps.onMemberRemoved === undefined ? {} : { onMemberRemoved: deps.onMemberRemoved }),
+    onMemberRemoved: async (projectId, userId) => {
+      await revokeMember(projectId, userId);
+      await deps.onMemberRemoved?.(projectId, userId);
+    },
   });
   registerDopplerConnectionRoutes(app, {
     store: deps.eventStore,

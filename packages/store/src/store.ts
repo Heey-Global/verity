@@ -7244,6 +7244,16 @@ export class EventStore implements EventSink {
       .map((membership) => membership.project_id);
   }
 
+  /** Delete every standing grant a person gave in a project (ADR 0023 §6). */
+  async deleteUserProjectGrants(projectId: string, userId: string): Promise<number> {
+    const result = await this.db
+      .deleteFrom('secret_provider_permissions')
+      .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return Number(result.numDeletedRows);
+  }
+
   /** The names people chose to be shown under in shared projects (ADR 0023). */
   async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();
