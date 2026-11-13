@@ -1,7 +1,7 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { sweepPersonalSandboxes } from './personal-sandbox-sleep.js';
-import { PERSONAL_SANDBOX_LOGIN_REQUIRED, resolveTurnSandbox } from './turn-sandbox.js';
-import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
+import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
+import { sandboxIdentity, sandboxNetworkName, sandboxRunnerDir } from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
@@ -1910,12 +1910,13 @@ export async function buildEmbeddedServer(
    *  connects yet. A toolkit without the request keeps its previous behaviour. */
   const probeSandboxEgressReadiness = async (
     runnersVolumeRoot: string,
-    projectId: string,
+    /** The sandbox's runner directory, relative to the data volume root. */
+    runnerDir: string,
   ): Promise<SandboxEgressProbe> => {
     try {
       return parseEgressReadiness(
         await requestRunnerSupervisor(
-          join(runnersVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+          join(runnersVolumeRoot, runnerDir, 'supervisor.sock'),
           { kind: 'egress-readiness' },
           3_000,
         ),
@@ -1976,6 +1977,48 @@ export async function buildEmbeddedServer(
    * the caller raises the one operator-facing message, naming the repair's own
    * cause when there is one.
    */
+  /**
+   * The repair of {@link repairSandboxForAgentTurn} for a person's own sandbox:
+   * rebuild it and report whether the turn may proceed on it. Only that person's
+   * sandbox is touched; the project's original one keeps running.
+   */
+  const repairPersonalSandboxForAgentTurn = async (
+    project: ProjectRecord,
+    userId: string,
+    preparation: TurnPreparationContext,
+  ): Promise<{ ready: true } | { ready: false; failure?: AgentGatewayRepairFailure }> => {
+    if (!preparation.canWait || docker === undefined) return { ready: false };
+    if (provisioner?.ensurePersonalSandbox === undefined) return { ready: false };
+    preparation.waitingOn(
+      'Your Sandbox has to be rebuilt before this message can run. Keeping the turn queued while Verity attempts the rebuild; it continues automatically if the Sandbox becomes ready.',
+    );
+    let containerName: string;
+    try {
+      containerName = (
+        await provisioner.ensurePersonalSandbox(project.id, userId, { recreate: true })
+      ).containerName;
+    } catch (error) {
+      app.log.warn(
+        { err: error, projectId: project.id },
+        'turn-time personal sandbox repair failed',
+      );
+      return { ready: false, failure: { stage: 'rebuild', cause: error } };
+    }
+    try {
+      const inspected = await docker.inspectContainer(containerName);
+      await refreshAgentGatewayCredential();
+      await synchronizeAgentGatewayForTurn();
+      return (await agentGatewayReady(project.id, inspected))
+        ? { ready: true }
+        : { ready: false, failure: { stage: 'still_unready' } };
+    } catch (error) {
+      app.log.warn(
+        { err: error, projectId: project.id },
+        'could not verify the Agent Gateway identity after a personal sandbox repair',
+      );
+      return { ready: false, failure: { stage: 'verify', cause: error } };
+    }
+  };
   const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
@@ -4824,14 +4867,22 @@ export async function buildEmbeddedServer(
             materializeControlPlaneAgentEnv(secretRoot, inherited),
           );
         }
-        // A person's turn runs in their own sandbox (ADR 0023 §4), which the gateway
-        // does not serve until it can use that person's own provider login. Refused
-        // here, before anything is prepared, rather than failing inside the agent.
-        if (
-          !(await resolveTurnSandbox(store, project.id, preparation.initiatedBy)).projectDefault
-        ) {
-          throw new Error(PERSONAL_SANDBOX_LOGIN_REQUIRED);
-        }
+        // A person's turn runs in their own sandbox (ADR 0023 §4), on their own
+        // provider login: the gateway serves that sandbox with nobody else's. Without
+        // one the turn is refused here, before anything is prepared, rather than
+        // failing inside the agent.
+        const turnSandbox = await resolveTurnSandbox(store, project.id, preparation.initiatedBy);
+        const turnProvider = isClaudeSession
+          ? 'claude'
+          : isCodexSession
+            ? 'codex'
+            : isOpenCodeSession
+              ? 'opencode'
+              : undefined;
+        const loginRefusal = await personalTurnRefusal(store, turnSandbox, turnProvider);
+        if (loginRefusal !== undefined) throw new Error(loginRefusal);
+        if (!turnSandbox.projectDefault && provisioner?.ensurePersonalSandbox === undefined)
+          throw new Error('Personal sandboxes need the project provisioner.');
         const supervisorRefusal = acpSupervisorWiringRefusal({
           runnerSupervisorBackend: selected.runnerSupervisorBackend,
           runnerSupervisor: config.runnerSupervisor === true,
@@ -4878,6 +4929,11 @@ export async function buildEmbeddedServer(
                     ensureAwake: provisioner.ensureProjectSandboxAwake.bind(provisioner),
                   }),
             });
+            // The person's own sandbox reuses the clone and image the project's
+            // original sandbox prepared above; starting it is idempotent.
+            const sandbox = turnSandbox.projectDefault
+              ? sandboxIdentity(project, turnSandbox)
+              : await provisioner!.ensurePersonalSandbox(project.id, turnSandbox.userId);
             await refreshProjectToken?.(project);
             const settings = isProjectSettingsReader(store)
               ? await store.getProjectSettings(project.id)
@@ -4899,7 +4955,7 @@ export async function buildEmbeddedServer(
               let gatewayReady: boolean;
               let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
-                const inspected = await docker.inspectContainer(project.containerName);
+                const inspected = await docker.inspectContainer(sandbox.containerName);
                 gatewayReady = await agentGatewayReady(project.id, inspected);
               } catch (error) {
                 app.log.warn(
@@ -4919,11 +4975,13 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                const repair = await repairSandboxForAgentTurn(
-                  project,
-                  preparation,
-                  queuedSessionIds,
-                );
+                const repair = turnSandbox.projectDefault
+                  ? await repairSandboxForAgentTurn(project, preparation, queuedSessionIds)
+                  : await repairPersonalSandboxForAgentTurn(
+                      project,
+                      turnSandbox.userId,
+                      preparation,
+                    );
                 gatewayReady = repair.ready;
                 repairFailure = repair.ready ? undefined : repair.failure;
               }
@@ -4941,6 +4999,9 @@ export async function buildEmbeddedServer(
               // Binding issuance and revocation keep the routed set current: read the
               // latest rotating credential and wait for the gateway to acknowledge
               // that exact cached identity configuration.
+              // A person's own login may have been refreshed or connected just now;
+              // project it before the gateway snapshot this turn waits for.
+              if (!turnSandbox.projectDefault) await refreshAgentGatewayCredential();
               await synchronizeAgentGatewayForTurn();
               // The checks above trust Docker's `running`, which a relay reaches
               // before its process listens. Confirm from inside the Sandbox that
@@ -4955,7 +5016,11 @@ export async function buildEmbeddedServer(
                   relayed: projectRelayEnabled,
                   canWait: preparation.canWait,
                   waitingOn: (message) => preparation.waitingOn(message),
-                  probe: () => probeSandboxEgressReadiness(dataVolumeRoot, project.id),
+                  probe: () =>
+                    probeSandboxEgressReadiness(
+                      dataVolumeRoot,
+                      sandboxRunnerDir(project.id, turnSandbox),
+                    ),
                   log: app.log,
                 });
               }
@@ -4968,7 +5033,7 @@ export async function buildEmbeddedServer(
               egressActive: claudeEgressActive,
             });
             return new DockerExecBackend({
-              containerName: project.containerName,
+              containerName: sandbox.containerName,
               hostProjectRoot: projectClonePath(hostCloneRoot, project),
               dockerBaseUrl,
               backend: sessionSelected,

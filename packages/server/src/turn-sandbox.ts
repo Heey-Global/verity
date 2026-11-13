@@ -26,6 +26,35 @@ export async function resolveTurnSandbox(
     : { userId, projectDefault: false };
 }
 
-/** Refusal for a person's turn until it can run on that person's own provider login. */
-export const PERSONAL_SANDBOX_LOGIN_REQUIRED =
-  "Your turns run in your own sandbox and need your own Claude, Codex or OpenCode account, which Verity cannot connect yet. The administrator's account is never used for your turns.";
+export type TurnProvider = 'claude' | 'codex' | 'opencode';
+
+const providerName: Record<TurnProvider, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+
+/**
+ * Why a turn in a person's own sandbox cannot start: it runs only on that
+ * person's own account for the model's provider, never on anyone else's.
+ */
+export function personalLoginMissing(provider: TurnProvider): string {
+  return `Connect your ${providerName[provider]} account in Verity to send messages with this model.`;
+}
+
+/**
+ * Refusal for a turn that cannot run on its person's own login, or `undefined`
+ * when it may start. The project's original sandbox keeps the instance login it
+ * always had; every other sandbox runs only on its person's own account for the
+ * model's provider.
+ */
+export async function personalTurnRefusal(
+  store: Pick<EventStore, 'userProviderConnections'>,
+  sandbox: TurnSandbox,
+  provider: TurnProvider | undefined,
+): Promise<string | undefined> {
+  if (sandbox.projectDefault) return undefined;
+  if (provider === undefined) return personalLoginMissing('claude');
+  const own = await store.userProviderConnections.get(sandbox.userId, provider);
+  return own === undefined ? personalLoginMissing(provider) : undefined;
+}

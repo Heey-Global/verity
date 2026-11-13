@@ -2030,7 +2030,11 @@ export interface Provisioner {
    * (ADR 0023 §4) and return its names. The project's original sandbox is the
    * person's when they own it; that one is managed by provision and wake.
    */
-  ensurePersonalSandbox?(projectId: string, userId: string): Promise<SandboxIdentity>;
+  ensurePersonalSandbox?(
+    projectId: string,
+    userId: string,
+    opts?: { recreate?: boolean },
+  ): Promise<SandboxIdentity>;
   /** Put a person's own idle sandbox to sleep: its relay and certificate lose
    *  their authority and its container stops. The next ensure starts it again. */
   sleepPersonalSandbox?(projectId: string, userId: string): Promise<void>;
@@ -5067,7 +5071,16 @@ export class ProvisionerImpl implements Provisioner {
     return rebuilt(this.runContainerPhase(project, false, opts));
   }
 
-  async ensurePersonalSandbox(projectId: string, userId: string): Promise<SandboxIdentity> {
+  /**
+   * Start a person's own sandbox in a project, or keep it when it is running with
+   * a healthy relay. `recreate` rebuilds it even then, for a turn whose agent
+   * route the running one could not provide.
+   */
+  async ensurePersonalSandbox(
+    projectId: string,
+    userId: string,
+    opts: { recreate?: boolean } = {},
+  ): Promise<SandboxIdentity> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) throw new ProvisioningError(`project not found: ${projectId}`);
     const defaultUser = await projectDefaultSandboxUser(this.opts.store, projectId);
@@ -5091,6 +5104,7 @@ export class ProvisionerImpl implements Provisioner {
         .inspectContainer(run.identity.containerName)
         .catch(() => undefined);
       if (
+        opts.recreate !== true &&
         current?.state === 'active' &&
         inspect?.running === true &&
         inspect.labels?.[PROJECT_ID_LABEL] === projectId &&

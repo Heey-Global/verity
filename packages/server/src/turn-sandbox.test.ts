@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTurnSandbox } from './turn-sandbox.js';
+import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
 
 const store = (owner: string) =>
   ({
@@ -31,5 +31,36 @@ describe('resolveTurnSandbox', () => {
       userId: 'admin',
       projectDefault: true,
     });
+  });
+});
+
+describe('personalTurnRefusal', () => {
+  const connections = (owned: string[]) =>
+    ({
+      userProviderConnections: {
+        get: async (userId: string, provider: string) =>
+          owned.includes(`${userId}/${provider}`) ? { userId, provider } : undefined,
+      },
+    }) as never;
+
+  // A person's sandbox is served only with their own login. A turn whose model
+  // they have no account for must stop here with a reason, not run on nobody's
+  // login and fail inside the agent.
+  it("starts a person's turn only on their own account for the model's provider", async () => {
+    const lena = { userId: 'lena', projectDefault: false };
+    await expect(
+      personalTurnRefusal(connections(['lena/claude']), lena, 'claude'),
+    ).resolves.toBeUndefined();
+    await expect(personalTurnRefusal(connections(['lena/claude']), lena, 'codex')).resolves.toBe(
+      'Connect your Codex account in Verity to send messages with this model.',
+    );
+    // Another person's account is not hers.
+    await expect(
+      personalTurnRefusal(connections(['admin/codex']), lena, 'codex'),
+    ).resolves.toBeDefined();
+    // The original sandbox keeps the instance login it always had.
+    await expect(
+      personalTurnRefusal(connections([]), { userId: 'admin', projectDefault: true }, 'codex'),
+    ).resolves.toBeUndefined();
   });
 });
