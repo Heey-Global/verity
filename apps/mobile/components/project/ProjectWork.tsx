@@ -648,6 +648,9 @@ export function ProjectWork({
         subtitle={overview ? item.context : item.message}
         tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
         answers={answersFor(item)}
+        // Part of the session's position: open beside the list, the whole
+        // block is drawn selected, not only its first row.
+        active={session.sessionId === selectedSessionId}
         navigates
         onPress={() => onOpenSession(session.sessionId)}
         action={

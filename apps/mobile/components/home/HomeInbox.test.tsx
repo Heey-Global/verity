@@ -785,3 +785,52 @@ it('drops retained results when they leave the project, are archived or deleted'
   view.rerender(page([]));
   expect(screen.queryByText('retained')).toBeNull();
 });
+
+// A session with several open decisions takes one position of stacked rows.
+// Only its first row followed the selection, so the block opened beside the
+// list was drawn half selected.
+it('draws every row of a selected session’s decisions as selected', async () => {
+  const waiting: SessionSummary = {
+    ...question,
+    pendingPermissions: ['permission-1'],
+    permissionAwaitingInput: true,
+  };
+  await renderInbox([waiting], fakeClient(), { selectedSessionId: waiting.sessionId });
+  const needs = within(screen.getByTestId('work-needs-you'));
+  const rows = needs
+    .getAllByRole('button')
+    .filter((button) => button.props.accessibilityState?.selected !== undefined);
+  expect(rows.length).toBeGreaterThan(0);
+  for (const row of rows) expect(row.props.accessibilityState.selected).toBe(true);
+});
+
+// Inside "Needs you" a card is one entry of the section's group. Drawing its
+// own border and corners as well left a rounded card frame inside the group's
+// frame, touching the next row, and selection only outlined the card.
+it('draws decision cards as entries of the work group, filled when selected', async () => {
+  const broken = { ...project, id: 'broken', state: 'failed', provisionError: 'Image pull failed' };
+  const waiting = session('permission', {
+    pendingPermissions: ['permission-1'],
+    permissionAwaitingInput: true,
+  });
+  await renderInbox([waiting], fakeClient(), {
+    projects: [broken as ProjectRecord],
+    selectedSessionId: waiting.sessionId,
+  });
+  // The card's own surface: the first drawn view inside the item.
+  const frame = (testID: string) =>
+    StyleSheet.flatten(
+      screen
+        .getByTestId(testID)
+        .findAll((node) => typeof node.type === 'string' && node.props.style !== undefined)[0]!
+        .props.style,
+    ) as Record<string, unknown>;
+  const projectCard = frame('inbox-item-project_health');
+  expect(projectCard.borderWidth).toBe(0);
+  expect(projectCard.borderRadius).toBe(0);
+  expect(projectCard.backgroundColor).toBe(lightTheme.colors.surface);
+  const permissionCard = frame('inbox-item-permission');
+  expect(permissionCard.borderWidth).toBe(0);
+  expect(permissionCard.backgroundColor).toBe(lightTheme.colors.surfaceAlt);
+  expect(permissionCard.shadowColor).toBeUndefined();
+});
