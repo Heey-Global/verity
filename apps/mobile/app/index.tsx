@@ -16,6 +16,7 @@ import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { createProjectOrderSaver } from '../lib/projectOrderSaver';
 import { SessionDragSlot } from '../components/SessionDragSlot';
+import { OtherServerProjects } from '../components/home/OtherServerProjects';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
 import {
@@ -1108,6 +1109,7 @@ function SessionList({ client }: { client: VerityClient }) {
             }
             ListFooterComponent={
               <>
+                <OtherServerProjects />
                 {pausedGroups.length > 0 ? (
                   <View style={styles.pausedSection}>
                     <View style={styles.sectionHeaderRow}>

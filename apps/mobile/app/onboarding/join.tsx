@@ -10,6 +10,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
 import { createVerityClient } from '../../lib/client';
+import { bumpServerRevision } from '../../lib/serverProfile';
 import { joinTeam, TeamJoinError } from '../../lib/teamJoin';
 import {
   parseTeamJoinLink,
@@ -42,7 +43,11 @@ export default function JoinScreen() {
     <JoinView
       initialLink={typeof link === 'string' ? link : undefined}
       onClose={() => router.replace('/onboarding/welcome')}
-      onJoined={() => router.replace('/')}
+      onJoined={() => {
+        router.replace('/');
+        // Start the whole app over for the server just joined.
+        bumpServerRevision();
+      }}
     />
   );
 }

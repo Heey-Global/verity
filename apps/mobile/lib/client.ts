@@ -12,6 +12,7 @@ import {
   getServerProfile,
   hydrateServerProfile,
   saveRemoteControlDescriptor,
+  type VerityServerProfile,
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
@@ -218,4 +219,26 @@ export function createVerityClient(): VerityClient | null {
       });
   }
   return client;
+}
+
+/**
+ * A read client for a server this app knows but is not switched to, for showing
+ * its projects next to the active server's. Only over a pinned direct address
+ * and only with a credential that is already unlocked; never prompts and never
+ * changes stored state when the server refuses it.
+ */
+export function createVerityClientForProfile(profile: VerityServerProfile): VerityClient | null {
+  if (isDemoMode() || Platform.OS === 'web') return null;
+  const url = profile.activeUrl;
+  const endpoint = profile.endpoints.find((entry) => entry.url === url);
+  if (endpoint?.transport !== 'direct' || endpoint.tlsPin === undefined) return null;
+  if (getAuthToken(url) === null) return null;
+  const pinnedFetch = createPinnedFetch(endpoint.tlsPin, true);
+  return new VerityClient({
+    baseUrl: url,
+    fetch: pinnedFetch,
+    uploadFetch: pinnedFetch,
+    allowBackgroundUpload: false,
+    getToken: () => getAuthToken(url),
+  });
 }

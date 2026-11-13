@@ -42,9 +42,11 @@ const mockSaveProfile = jest.fn(async (profile: unknown) => {
   mockCalls.push('profile');
   mockProfile.current = profile;
 });
+const mockOthers = { current: [] as unknown[] };
 jest.mock('./serverProfile', () => ({
   getServerProfile: () => mockProfile.current,
-  saveServerProfile: (profile: unknown) => mockSaveProfile(profile),
+  getOtherServerProfiles: () => mockOthers.current,
+  activateServerProfile: (profile: unknown) => mockSaveProfile(profile),
 }));
 const mockIdentity = jest.fn();
 const mockJoin = jest.fn();
@@ -89,6 +91,7 @@ beforeEach(() => {
   mockCalls.length = 0;
   mockClients.length = 0;
   mockProfile.current = null;
+  mockOthers.current = [];
   jest.clearAllMocks();
   mockIdentity.mockResolvedValue({
     serverId: link.serverId,
@@ -152,9 +155,18 @@ it('reports a used, revoked or expired invitation as unavailable', async () => {
   expect(mockSetToken).not.toHaveBeenCalled();
 });
 
-it('leaves an app already connected to a server untouched', async () => {
-  mockProfile.current = { serverId: 'srv_other', activeUrl: 'https://mine.example' };
-  await expect(joinTeam(link, 'Lena')).rejects.toMatchObject({ reason: 'other_server' });
+it('joins a second server next to the one the app already uses', async () => {
+  mockProfile.current = { serverId: 'srv_mine', activeUrl: 'https://mine.example' };
+  await joinTeam(link, 'Lena');
+  // Activating keeps the previous server among the others (serverProfile.test).
+  expect(mockSaveProfile).toHaveBeenCalledWith(
+    expect.objectContaining({ serverId: link.serverId, sharedBy: 'Holger Teske' }),
+  );
+});
+
+it('refuses to join a server this app already knows, without contacting it', async () => {
+  mockOthers.current = [{ serverId: link.serverId, activeUrl: link.coreOrigin }];
+  await expect(joinTeam(link, 'Lena')).rejects.toMatchObject({ reason: 'known_server' });
   expect(mockClients).toHaveLength(0);
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
 });

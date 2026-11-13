@@ -1,8 +1,12 @@
 import * as SecureStore from 'expo-secure-store';
 
 import {
+  activateServerProfile,
   addServerEndpoint,
+  getOtherServerProfiles,
+  getServerProfile,
   hydrateServerProfile,
+  removeOtherServerProfile,
   profileFromPairing,
   saveRemoteControlDescriptor,
   saveServerProfile,
@@ -79,5 +83,58 @@ describe('server profile', () => {
     expect(
       await saveRemoteControlDescriptor({ version: 1, enabled: false, reason: 'disabled' }),
     ).not.toHaveProperty('remoteControl');
+  });
+});
+
+describe('several servers', () => {
+  const stored = new Map<string, string>();
+  const other = {
+    ...profileFromPairing(
+      { ...pairing, serverId: 'srv_fedcba9876543210', suggestedUrl: 'https://10.0.0.7:8443' },
+      'https://10.0.0.7:8443',
+    ),
+    sharedBy: 'Holger',
+  };
+  beforeEach(() => {
+    stored.clear();
+    (SecureStore.getItemAsync as jest.Mock).mockImplementation(
+      async (key: string) => stored.get(key) ?? null,
+    );
+    (SecureStore.setItemAsync as jest.Mock).mockImplementation(
+      async (key: string, value: string) => void stored.set(key, value),
+    );
+  });
+
+  it('keeps the previously active server when another one becomes active', async () => {
+    const mine = profileFromPairing(pairing, pairing.suggestedUrl);
+    await saveServerProfile(mine);
+    await activateServerProfile(other);
+    expect(getServerProfile()?.serverId).toBe(other.serverId);
+    expect(getServerProfile()?.sharedBy).toBe('Holger');
+    expect(getOtherServerProfiles().map((profile) => profile.serverId)).toEqual([mine.serverId]);
+
+    // Switching back swaps them; neither is lost or duplicated, across a restart too.
+    await activateServerProfile(getOtherServerProfiles()[0]!);
+    await hydrateServerProfile();
+    expect(getServerProfile()?.serverId).toBe(mine.serverId);
+    expect(getOtherServerProfiles().map((profile) => profile.serverId)).toEqual([other.serverId]);
+  });
+
+  it('drops one unreadable stored server without losing the others', async () => {
+    await saveServerProfile(profileFromPairing(pairing, pairing.suggestedUrl));
+    stored.set(
+      'verity.serverProfiles.others.v1',
+      JSON.stringify([{ ...other, identityKey: '../bad' }, other]),
+    );
+    await hydrateServerProfile();
+    expect(getOtherServerProfiles().map((profile) => profile.serverId)).toEqual([other.serverId]);
+  });
+
+  it('forgets a server that is not the active one', async () => {
+    await saveServerProfile(profileFromPairing(pairing, pairing.suggestedUrl));
+    await activateServerProfile(other);
+    await removeOtherServerProfile(pairing.serverId);
+    expect(getOtherServerProfiles()).toEqual([]);
+    expect(getServerProfile()?.serverId).toBe(other.serverId);
   });
 });

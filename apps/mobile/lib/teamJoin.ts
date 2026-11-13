@@ -6,7 +6,12 @@ import { clearStoredAuthState, setAuthToken } from './authToken';
 import { setVerityBaseUrl } from './client';
 import { deviceLabel } from './deviceLabel';
 import { createPinnedFetch, verifyPairedIdentity } from './pinnedTransport';
-import { getServerProfile, saveServerProfile, type VerityServerProfile } from './serverProfile';
+import {
+  activateServerProfile,
+  getOtherServerProfiles,
+  getServerProfile,
+  type VerityServerProfile,
+} from './serverProfile';
 import { serverIdFor, TeamJoinLinkError, type TeamJoinLink } from './teamInvitationLink';
 
 const ATTEMPT_KEY = 'verity.teamJoinAttempt.v1';
@@ -41,7 +46,7 @@ async function redemptionIdFor(invitationId: string): Promise<string> {
 
 export class TeamJoinError extends Error {
   constructor(
-    readonly reason: 'unavailable' | 'other_server' | 'identity',
+    readonly reason: 'unavailable' | 'known_server' | 'identity',
     message: string,
   ) {
     super(message);
@@ -60,16 +65,11 @@ export async function joinTeam(
   displayName: string,
 ): Promise<{ projectId: string }> {
   if (link.expiresAt <= Date.now()) throw new TeamJoinLinkError('expired');
-  const current = getServerProfile();
-  // One server per app until server profiles can be kept side by side.
-  if (current !== null && current.serverId !== link.serverId) {
-    throw new TeamJoinError(
-      'other_server',
-      'This app is already connected to another Verity server.',
-    );
-  }
-  if (current !== null) {
-    throw new TeamJoinError('other_server', 'This app is already connected to this server.');
+  // A server this app already uses keeps its own credential; a second one for
+  // the same server would sign this device in as someone else.
+  const known = [getServerProfile(), ...getOtherServerProfiles()];
+  if (known.some((profile) => profile?.serverId === link.serverId)) {
+    throw new TeamJoinError('known_server', 'This app is already connected to this server.');
   }
   const derived = await serverIdFor(link.identityKey, (bytes) =>
     digest(CryptoDigestAlgorithm.SHA256, bytes),
@@ -125,8 +125,10 @@ export async function joinTeam(
       installationHandle: link.installationHandle,
       uplinkOrigin: link.uplinkOrigin,
     },
+    ...(link.display === undefined ? {} : { sharedBy: link.display.inviterName }),
   };
-  await saveServerProfile(profile);
+  // The server used so far stays known, so the app can switch back to it.
+  await activateServerProfile(profile);
   await setVerityBaseUrl(link.coreOrigin);
   await SecureStore.deleteItemAsync(ATTEMPT_KEY).catch(() => undefined);
   return { projectId: joined.projectId };

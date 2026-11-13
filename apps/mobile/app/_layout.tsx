@@ -43,6 +43,7 @@ import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+import { restoreOtherServerCredentials, useServerRevision } from '../lib/serverSwitch';
 import { isDemoShowcase } from '../lib/demoShowcase';
 // One subpath per weight: the package root would pull all eighteen Inter
 // files (about 6 MB) into the bundle, not just the four the theme uses.
@@ -77,6 +78,7 @@ export default function RootLayout() {
   useEffect(() => startRuntimeDiagnostics(), []);
   const { theme } = useUnistyles();
   const demoRevision = useDemoRevision();
+  const serverRevision = useServerRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
   // session can autofocus the composer on the first try when a hardware keyboard is
   // attached. No-op off iPad.
@@ -128,6 +130,7 @@ export default function RootLayout() {
         await hydrateVerityBaseUrl().catch(() => undefined);
         if (!isDemoMode() && Platform.OS !== 'web') {
           await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+          await restoreOtherServerCredentials().catch(() => undefined);
         }
       }
       if (active) setHydrated(true);
@@ -150,7 +153,7 @@ export default function RootLayout() {
     );
   }
 
-  return <HydratedRoot key={demoRevision} />;
+  return <HydratedRoot key={`${String(demoRevision)}:${String(serverRevision)}`} />;
 }
 
 function HydratedRoot() {

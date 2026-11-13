@@ -90,6 +90,7 @@ describe('settings index — destinations', () => {
         'Network protection',
         'Backup',
         'Server address',
+        'Servers',
         'Devices & Web Browsers',
         'Logs',
       ],

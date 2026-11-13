@@ -4,6 +4,10 @@ import type { VerityPairingPayload } from './pairing';
 import type { RemoteControlDescriptor } from '@verity/mobile';
 
 const PROFILE_KEY = 'verity.serverProfile.v1';
+// The servers this app knows besides the active one (ADR 0023 §7). The active
+// profile keeps its own key, so everything reading it is unchanged.
+const OTHERS_KEY = 'verity.serverProfiles.others.v1';
+const MAX_PROFILES = 16;
 const TOKEN = /^[A-Za-z0-9_-]+$/;
 const PIN = /^sha256-[A-Za-z0-9_-]{43}$/;
 
@@ -26,9 +30,31 @@ export interface VerityServerProfile {
     installationHandle: string;
     uplinkOrigin: string;
   };
+  /** Whose server this is, for a server this app joined through an invitation. */
+  sharedBy?: string;
 }
 
 let currentProfile: VerityServerProfile | null = null;
+let otherProfiles: VerityServerProfile[] = [];
+let revision = 0;
+const revisionListeners = new Set<() => void>();
+
+/** Bumped when the app switches to another server; the app shell remounts on it. */
+export function getServerRevision(): number {
+  return revision;
+}
+
+export function subscribeServerRevision(listener: () => void): () => void {
+  revisionListeners.add(listener);
+  return () => {
+    revisionListeners.delete(listener);
+  };
+}
+
+export function bumpServerRevision(): void {
+  revision += 1;
+  for (const listener of revisionListeners) listener();
+}
 
 function origin(value: string): string {
   const url = new URL(value);
@@ -106,12 +132,23 @@ function validateServerProfile(value: unknown): VerityServerProfile {
   ) {
     throw new Error('Invalid remote control descriptor.');
   }
+  const sharedBy = candidate.sharedBy;
+  if (
+    sharedBy !== undefined &&
+    (typeof sharedBy !== 'string' ||
+      sharedBy.length === 0 ||
+      sharedBy.length > 80 ||
+      /[\p{Cc}\u2028\u2029]/u.test(sharedBy))
+  ) {
+    throw new Error('Invalid server profile.');
+  }
   return {
     version: 1,
     serverId: candidate.serverId,
     identityKey: candidate.identityKey,
     activeUrl,
     endpoints,
+    ...(sharedBy === undefined ? {} : { sharedBy }),
     ...(remote === undefined
       ? {}
       : {
@@ -138,8 +175,36 @@ export function profileFromPairing(
   });
 }
 
+async function readOthers(): Promise<VerityServerProfile[]> {
+  try {
+    const encoded = await SecureStore.getItemAsync(OTHERS_KEY);
+    if (encoded === null) return [];
+    const parsed = JSON.parse(encoded) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const profiles: VerityServerProfile[] = [];
+    for (const entry of parsed.slice(0, MAX_PROFILES)) {
+      try {
+        profiles.push(validateServerProfile(entry));
+      } catch {
+        // One unreadable profile must not take the others with it.
+      }
+    }
+    return profiles;
+  } catch {
+    return [];
+  }
+}
+
+async function writeOthers(profiles: VerityServerProfile[]): Promise<void> {
+  await SecureStore.setItemAsync(OTHERS_KEY, JSON.stringify(profiles), {
+    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+  });
+  otherProfiles = profiles;
+}
+
 export async function hydrateServerProfile(): Promise<VerityServerProfile | null> {
   currentProfile = null;
+  otherProfiles = [];
   try {
     const encoded = await SecureStore.getItemAsync(PROFILE_KEY);
     if (encoded !== null) currentProfile = validateServerProfile(JSON.parse(encoded));
@@ -147,6 +212,7 @@ export async function hydrateServerProfile(): Promise<VerityServerProfile | null
     currentProfile = null;
     throw new Error('Could not read the paired server profile.', { cause: error });
   }
+  otherProfiles = await readOthers();
   return currentProfile;
 }
 
@@ -158,7 +224,34 @@ export function getServerProfile(): VerityServerProfile | null {
  * installation. SecureStore survives an iOS uninstall, unlike AsyncStorage. */
 export async function clearServerProfile(): Promise<void> {
   await SecureStore.deleteItemAsync(PROFILE_KEY);
+  await SecureStore.deleteItemAsync(OTHERS_KEY);
   currentProfile = null;
+  otherProfiles = [];
+}
+
+/** The servers this app knows besides the active one. */
+export function getOtherServerProfiles(): readonly VerityServerProfile[] {
+  return otherProfiles;
+}
+
+/**
+ * Make a known or new server the active one. The previously active server is
+ * kept among the others, so the app can switch back to it.
+ */
+export async function activateServerProfile(profile: VerityServerProfile): Promise<void> {
+  const next = validateServerProfile(profile);
+  const previous = currentProfile;
+  const others = otherProfiles.filter((entry) => entry.serverId !== next.serverId);
+  if (previous !== null && previous.serverId !== next.serverId) others.unshift(previous);
+  if (others.length >= MAX_PROFILES) throw new Error('This app knows too many servers.');
+  // Write the others first: an interruption leaves a duplicate, never a lost server.
+  await writeOthers(others);
+  await saveServerProfile(next);
+}
+
+/** Forget a server that is not the active one. */
+export async function removeOtherServerProfile(serverId: string): Promise<void> {
+  await writeOthers(otherProfiles.filter((entry) => entry.serverId !== serverId));
 }
 
 export async function saveServerProfile(profile: VerityServerProfile): Promise<void> {
