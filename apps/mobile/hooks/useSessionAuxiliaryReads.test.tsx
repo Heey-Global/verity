@@ -169,9 +169,9 @@ it('shows the remembered answer at once when the menu reopens, refreshing it qui
   hook.unmount();
   const again = renderHook(() => useGoogleAccountAvailability(api, 'remembered', false));
   expect(again.result.current.connected).toBe(true);
+  again.unmount();
   // A failed refresh keeps it instead of replacing it with an error.
   jest.mocked(api.listGoogleAccounts).mockRejectedValueOnce(new Error('offline'));
-  again.rerender({});
   const reopened = renderHook(() => useGoogleAccountAvailability(api, 'remembered', true));
   await waitFor(() => expect(api.listGoogleAccounts).toHaveBeenCalledTimes(3));
   // Let the rejection reach the hook before judging what it left behind.
