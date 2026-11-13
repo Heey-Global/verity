@@ -382,7 +382,7 @@ describe('project card', () => {
     expect(onToggle).toHaveBeenCalled();
   });
 
-  it('keeps a waiting session in Now without the page’s feed', () => {
+  it('keeps a waiting session in Now and answers it like Home without the page’s feed', () => {
     // The card passes no inbox feed; without its own items a session waiting
     // for an answer would drop out of Now while the head counts it.
     const other = group([ask('loose')], {
@@ -394,7 +394,7 @@ describe('project card', () => {
     fireEvent.press(screen.getByRole('tab', { name: 'Now · 1' }));
     const needs = screen.getByTestId('work-needs-you');
     expect(within(needs).getByLabelText(/^loose, .*Question$/)).toBeTruthy();
-    // Answers need the feed that sends them, which only the page holds.
-    expect(within(needs).queryByRole('button', { name: 'Yes' })).toBeNull();
+    // The list keeps its own feed, so the card answers in place like Home.
+    expect(within(needs).getByRole('button', { name: 'Yes' })).toBeTruthy();
   });
 });

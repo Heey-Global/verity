@@ -215,7 +215,7 @@ describe('inboxItems', () => {
     expect(item?.request).toBe(JSON.stringify(input, null, 2));
   });
 
-  it('keeps an unknown tool readable from its raw input alone', () => {
+  it('words an unknown tool by the field it is about and keeps its raw input', () => {
     const [item] = inboxItems({
       sessions: [
         session('egress', {
@@ -235,7 +235,9 @@ describe('inboxItems', () => {
       projects: [project()],
       now: NOW,
     });
-    expect(item?.lines).toBeUndefined();
+    // Home opened on the JSON; the address is what the operator decides on.
+    expect(item?.lines).toEqual([{ kind: 'code', text: 'https://api.exa.ai' }]);
+    expect(item?.message).toBeUndefined();
     expect(item?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
   });
 

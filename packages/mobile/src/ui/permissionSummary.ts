@@ -8,7 +8,10 @@ import {
 } from './brokeredHttpSummary.js';
 import { calendarChangeSummary } from './calendarChangeSummary.js';
 import { gmailSendSummary } from './gmailSendSummary.js';
-import { knowledgePublishSummary } from './knowledgePublishSummary.js';
+import {
+  KNOWLEDGE_PUBLISH_EXPLANATION,
+  knowledgePublishSummary,
+} from './knowledgePublishSummary.js';
 import { matrixSendSummary } from './matrixSendSummary.js';
 import { packageInstallSummary } from './packageInstallSummary.js';
 import { schedulingApprovalSummary } from './schedulingSummary.js';
@@ -20,7 +23,7 @@ import {
   sessionHandoffTitle,
   sessionProgressSummary,
 } from './sessionHandoffSummary.js';
-import { toolCallView } from './toolCall.js';
+import { toolCallPrimaryInput, toolCallView } from './toolCall.js';
 import {
   trustedCliInjectionSummary,
   trustedCliSecretLabel,
@@ -41,11 +44,11 @@ export interface PermissionSummary {
   lines: PermissionLine[];
 }
 
-function linkedMessageTarget(input: unknown): string | null {
+function linkedMessage(input: unknown): { target: string; message: string } | null {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
   const fields = input as Record<string, unknown>;
   return typeof fields.targetSessionId === 'string' && typeof fields.message === 'string'
-    ? fields.targetSessionId
+    ? { target: fields.targetSessionId, message: fields.message }
     : null;
 }
 
@@ -104,13 +107,22 @@ function summarize(
         { kind: 'text', text: spellOutBidiControls(packageInstall.explanation) },
       ],
     };
-  if (tool === 'verity_knowledge')
+  if (tool === 'verity_knowledge') {
+    const knowledge = knowledgePublishSummary(input);
     return {
-      title: knowledgePublishSummary(input)?.replacesExisting
+      title: knowledge?.replacesExisting
         ? 'Save changes to Global Knowledge?'
         : 'Publish insight to Global Knowledge?',
-      lines: [],
+      lines:
+        knowledge === null
+          ? []
+          : [
+              { kind: 'text', text: `Source: ${knowledge.source}` },
+              { kind: 'text', text: `Destination: ${knowledge.destination}` },
+              { kind: 'text', text: KNOWLEDGE_PUBLISH_EXPLANATION },
+            ],
     };
+  }
   const http = tool === 'verity_http_request' ? brokeredHttpSummary(input) : null;
   if (http !== null)
     return {
@@ -133,14 +145,24 @@ function summarize(
       ],
     };
   const handoff = tool === 'verity_session_handoff' ? sessionHandoffSummary(input) : null;
-  if (handoff !== null) return { title: sessionHandoffTitle(handoff), lines: [] };
-  const target = tool === 'verity_send_session_message' ? linkedMessageTarget(input) : null;
-  if (target !== null)
+  // The briefing and the message are what approving turns into another session's
+  // prompt, so they are the lines to read, in full.
+  if (handoff !== null)
+    return {
+      title: sessionHandoffTitle(handoff),
+      lines: [
+        { kind: 'text', text: `To ${handoff.target}` },
+        { kind: 'text', text: handoff.title },
+        { kind: 'text', text: handoff.briefing },
+      ],
+    };
+  const linked = tool === 'verity_send_session_message' ? linkedMessage(input) : null;
+  if (linked !== null)
     return {
       title: options.approvedForDelivery
-        ? `Retry delivery to ${target}?`
-        : `Send to ${target} and continue the exchange?`,
-      lines: [],
+        ? `Retry delivery to ${linked.target}?`
+        : `Send to ${linked.target} and continue the exchange?`,
+      lines: [{ kind: 'text', text: linked.message }],
     };
   const listing = tool === 'verity_list_sessions' ? listSessionsSummary(input) : null;
   if (listing !== null) return { title: listSessionsTitle(listing), lines: [] };
@@ -193,5 +215,11 @@ function summarize(
   });
   // Spelled out like every other string on the card. Tool names are
   // server-controlled today, so this is consistency rather than exposure.
-  return { title: `Allow ${spellOutBidiControls(view.title)}?`, lines: [] };
+  // The field the call is about (a command, a path, an address), whole, so an
+  // overview can show it instead of the raw input.
+  const primary = toolCallPrimaryInput(tool, input);
+  return {
+    title: `Allow ${spellOutBidiControls(view.title)}?`,
+    lines: primary !== null && primary.trim() !== '' ? [{ kind: 'code', text: primary }] : [],
+  };
 }

@@ -252,6 +252,26 @@ function basename(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
+/**
+ * The field {@link summarizeInput} would headline, whole: every line, no clipping. For a
+ * reader who decides on it, such as Home's permission card, where an 80-character squash of
+ * a command could hide the part that matters. Bidi controls are spelled out like every other
+ * line a card shows. Null when the call has no such field.
+ */
+export function toolCallPrimaryInput(toolName: string, input: unknown): string | null {
+  const name = canonicalToolName(toolName);
+  if (typeof input === 'string') return spellOutBidiControls(input);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const obj = input as Record<string, unknown>;
+  const key = PRIMARY_FIELD[name];
+  if (key !== undefined && typeof obj[key] === 'string') return spellOutBidiControls(obj[key]);
+  if (ONLY_PRIMARY_FIELD.has(name)) return null;
+  for (const value of Object.values(obj)) {
+    if (typeof value === 'string') return spellOutBidiControls(value);
+  }
+  return null;
+}
+
 function summarizeInput(name: string, input: unknown): string | null {
   if (typeof input === 'string') return oneLine(input, MAX_LEN);
   if (!input || typeof input !== 'object') return null;

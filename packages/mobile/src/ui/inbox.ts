@@ -195,6 +195,12 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   return parts.join(' · ');
 }
 
+/** "Also waiting: Merge ready": what else a session asks, named by its items' tags,
+ *  so an overview can keep one entry per session without hiding the rest. */
+export function alsoWaiting(items: readonly InboxItem[]): string {
+  return `Also waiting: ${[...new Set(items.map((item) => item.tag))].join(', ')}`;
+}
+
 function sessionItems(
   session: SessionSummary,
   projects: ReadonlyMap<string, ProjectRecord>,
