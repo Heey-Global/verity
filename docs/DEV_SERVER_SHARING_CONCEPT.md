@@ -112,8 +112,9 @@ whoever sets it. The edge therefore stores each application cookie in its own na
 - Because all public shares are same-site with each other, `SameSite` does not stop a page on
   another share from sending requests with the application's cookies. The edge rejects requests
   other than `GET`, `HEAD` and `OPTIONS` whose `Origin` is not the share's own origin, or whose
-  `Sec-Fetch-Site` is `same-site` or `cross-site`, before they reach the application. Applications
-  should still keep `GET` requests free of side effects.
+  `Sec-Fetch-Site` is `same-site` or `cross-site`, before they reach the application. WebSocket
+  upgrades get the same check whatever their method. Applications should still keep `GET`
+  requests free of side effects.
 
 The edge applies these rules. The connector, which runs inside the sandbox, only transports the
 cookies. An edge and a connector from before this behavior keep dropping application cookies,
