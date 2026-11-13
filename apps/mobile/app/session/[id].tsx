@@ -10078,10 +10078,6 @@ function AttachMenu({
         accessibilityLabel="Close attachment menu"
       />
       <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
-        {googleCatalogLoading ? (
-          <Text style={styles.menuRowDetail}>Loading Google accounts…</Text>
-        ) : null}
-        {googleCatalogError ? <Text style={styles.menuRowDetail}>{googleCatalogError}</Text> : null}
         {rows.map((row, index) =>
           'section' in row ? (
             <Text key={row.section} style={styles.menuSectionLabel}>
@@ -10105,6 +10101,29 @@ function AttachMenu({
             </Pressable>
           ),
         )}
+        {/* Where the Connect section appears, so the menu does not jump when it
+            arrives: a first read in progress, or one that failed. */}
+        {!googleConnected && (googleCatalogLoading || googleCatalogError) ? (
+          <>
+            <View style={styles.menuDivider} />
+            <View
+              style={styles.menuRow}
+              accessibilityRole={googleCatalogError ? 'alert' : undefined}
+              accessibilityLabel={googleCatalogError ?? 'Checking Google accounts'}
+            >
+              {googleCatalogError ? (
+                <Icon name="alert-circle" size={20} color={theme.colors.textMuted} />
+              ) : (
+                <ActivityIndicator size="small" color={theme.colors.textMuted} />
+              )}
+              <View style={styles.menuRowText}>
+                <Text style={styles.menuRowDetail}>
+                  {googleCatalogError ?? 'Checking Google accounts…'}
+                </Text>
+              </View>
+            </View>
+          </>
+        ) : null}
       </View>
     </Modal>
   );
