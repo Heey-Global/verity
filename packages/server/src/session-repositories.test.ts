@@ -182,6 +182,16 @@ it('categorizes checkout failures so a stopped sandbox is not reported as a fail
   await expect(noProxy.service.open('s', 'r')).rejects.toMatchObject({
     reason: 'forge proxy transport unavailable',
   });
+  // Only exit 1 means "no proxy configured"; a broken session worktree is not.
+  const broken = harness();
+  broken.git.mockImplementation(async () => {
+    throw Object.assign(new Error('not a git repository'), { code: 128 });
+  });
+  const failure = await broken.service.open('s', 'r').catch((caught: unknown) => caught);
+  expect(describeCheckoutFailure(failure)).toMatchObject({
+    reason: 'checkout failed',
+    exitCode: 128,
+  });
   await expect(harness(true).service.open('s', 'r')).rejects.toMatchObject({
     reason: 'planning active',
   });

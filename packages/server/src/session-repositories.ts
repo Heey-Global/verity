@@ -216,7 +216,6 @@ export function createSessionRepositories(deps: {
       // environment config is scoped to the default forge origin, so another host
       // needs its own settings before the initial fetch as well as later agent git.
       let proxyConfig: string;
-      let proxyLookupError: unknown;
       try {
         proxyConfig = await git([
           '-C',
@@ -226,9 +225,9 @@ export function createSessionRepositories(deps: {
           '^http\\..*\\.proxy$',
         ]);
       } catch (error) {
-        // `git config --get-regexp` exits 1 when nothing matches.
-        if (error instanceof SandboxUnavailableError) throw gitStepFailed('clone failed', error);
-        proxyLookupError = error;
+        // `git config --get-regexp` exits 1 when nothing matches. Any other
+        // failure is not a missing proxy and keeps its own classification.
+        if ((error as { code?: unknown } | null)?.code !== 1) throw error;
         proxyConfig = '';
       }
       const proxy = proxyConfig
@@ -240,7 +239,6 @@ export function createSessionRepositories(deps: {
         throw new RepositoryCheckoutError(
           'forge proxy transport unavailable',
           'forge proxy transport unavailable',
-          proxyLookupError,
         );
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
       const transport = [
