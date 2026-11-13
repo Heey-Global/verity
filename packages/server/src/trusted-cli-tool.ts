@@ -1,4 +1,5 @@
 import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
+import type { DopplerPerson } from './doppler-credential.js';
 import { createHash } from 'node:crypto';
 import type { TrustedCliOutputStore } from './trusted-cli-output.js';
 import {
@@ -48,6 +49,8 @@ export function createTrustedCliTool(options: {
     dopplerProject: string;
     dopplerConfig: string;
     secretName: string;
+    /** The calling turn; its person's Doppler connection resolves the secret. */
+    person: DopplerPerson;
   }) => Promise<Uint8Array>;
   consumeApproval: (input: {
     projectId: string;
@@ -119,6 +122,7 @@ export function createTrustedCliTool(options: {
           dopplerProject: binding.dopplerProject,
           dopplerConfig: binding.dopplerConfig,
           secretName: entry.secretAlias,
+          person: { sessionId, turnId },
         });
         resolved.push(raw);
         let secret: string;

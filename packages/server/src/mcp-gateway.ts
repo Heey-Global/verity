@@ -1,4 +1,5 @@
 import { withProjectTransportAuthority } from './project-transport-authority.js';
+import { DOPPLER_CONNECTION_REQUIRED_MESSAGE } from './doppler-credential.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import { capabilityVariants, capabilityArguments } from './agent-capabilities.js';
 import { presentMockupsRequestSchema } from './mockups.js';
@@ -67,6 +68,7 @@ import {
 const DOPPLER_RESOLUTION_PHASES = new Set([
   'project configuration',
   'secret alias',
+  'Doppler connection',
   'Doppler authentication',
   'Doppler request start',
   'Doppler request timeout',
@@ -77,6 +79,8 @@ const SAFE_PROJECT_CONFIGURATION = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}@v[1-9]\d{
 
 function dopplerResolutionMessage(error: DopplerSecretResolutionError): string | undefined {
   if (error.phase === undefined || !DOPPLER_RESOLUTION_PHASES.has(error.phase)) return undefined;
+  // A fixed text naming no project or person: the agent relays it as the connect prompt.
+  if (error.phase === 'Doppler connection') return DOPPLER_CONNECTION_REQUIRED_MESSAGE;
   if (
     error.httpStatus !== undefined &&
     (!Number.isInteger(error.httpStatus) || error.httpStatus < 100 || error.httpStatus > 599)

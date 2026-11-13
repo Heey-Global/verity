@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { legacyAdministratorId } from './view-state-routes.js';
 import type { Server } from 'node:http';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { EventStore } from '@verity/store';
@@ -180,7 +181,10 @@ describe('Preview sheet routes', () => {
       url: '/sessions/s1/managed-dev-servers/srv/start',
     });
     expect(response.statusCode).toBe(409);
-    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: undefined });
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', {
+      local: undefined,
+      person: legacyAdministratorId,
+    });
   });
 
   // Shared online alone starts the server without a network address; the route
@@ -198,14 +202,17 @@ describe('Preview sheet routes', () => {
       url: '/sessions/s1/managed-dev-servers/srv/start',
       payload: { local: false },
     });
-    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: false });
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', {
+      local: false,
+      person: legacyAdministratorId,
+    });
     const off = await app.inject({
       method: 'POST',
       url: '/sessions/s1/managed-dev-servers/srv/local',
       payload: { on: false },
     });
     expect(off.statusCode).toBe(200);
-    expect(setLocal).toHaveBeenCalledWith('s1', 'srv', false);
+    expect(setLocal).toHaveBeenCalledWith('s1', 'srv', false, legacyAdministratorId);
     expect(
       (
         await app.inject({

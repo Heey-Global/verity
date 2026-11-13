@@ -10,6 +10,13 @@ beforeAll(async () => {
   ctx = await createTestDb();
 });
 beforeEach(async () => {
+  await ctx.db
+    .insertInto('users')
+    .values([
+      { id: 'lena', role: 'member', status: 'active' },
+      { id: 'mia', role: 'member', status: 'active' },
+    ])
+    .execute();
   await ctx.store.upsertProject({
     id: 'project-1',
     owner: 'acme',
@@ -27,6 +34,7 @@ const target = {
   projectId: 'project-1',
   bindingId: 'project-doppler:test-binding',
   sessionId: 'session-1',
+  userId: 'lena',
   secretAlias: 'REVENUECAT_ADMIN_KEY',
   toolName: 'verity_http_request' as const,
   target: 'api.revenuecat.com',
@@ -93,6 +101,19 @@ async function ageAcpApprovals(byMs: number): Promise<void> {
 }
 
 describe('brokered HTTP grant store (ADR 0011 D2)', () => {
+  // ADR 0023 §3: a standing grant is one person's advance consent. Another
+  // person's turn in the same project must still ask, and may hold its own grant.
+  it("applies a grant only in its own person's turns", async () => {
+    const store = createBrokeredHttpGrantStore(ctx.db);
+    await store.grant({ ...target, scope: 'project' });
+    await expect(store.check(target)).resolves.toBe(true);
+    await expect(store.check({ ...target, userId: 'mia' })).resolves.toBe(false);
+    await store.grant({ ...target, userId: 'mia', scope: 'project' });
+    await expect(store.check({ ...target, userId: 'mia' })).resolves.toBe(true);
+    const grants = await store.list('project-1', target.bindingId);
+    expect(grants.map((grant) => grant.grantedBy).sort()).toEqual(['lena', 'mia']);
+  });
+
   it('covers matching requests after a project-scoped grant, keyed by alias + origin', async () => {
     const store = createBrokeredHttpGrantStore(ctx.db);
     await expect(store.check(target)).resolves.toBe(false);

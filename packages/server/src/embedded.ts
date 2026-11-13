@@ -1,4 +1,7 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
+import { legacyAdministratorId } from './view-state-routes.js';
+import { createDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
@@ -524,8 +527,36 @@ export async function buildEmbeddedServer(
   const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
   const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
   const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
+  // The administrator's instance token; only the instance-level Doppler routes and
+  // the per-person rule below read it.
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
+  // ADR 0023 §3: a project's secrets resolve through the Doppler connection of the
+  // person the work is for; see doppler-credential.ts.
+  const dopplerCredentialFor = createDopplerCredentials({
+    personal: (userId, projectId) =>
+      eventStore.userDopplerConnections.tokenBytes(userId, projectId),
+    instance: readBrokerDopplerCredential,
+    isAdministrator: (userId) => eventStore.isActiveAdministrator(userId),
+  });
+  /** The person a turn acts for while it runs; null for a turn without one. A turn
+   *  that is no longer running resolves nothing. */
+  const runningTurnPerson = async (sessionId: string, turnId: string): Promise<string | null> => {
+    const running = (await eventStore.listRunningTurns()).find(
+      (turn) => turn.sessionId === sessionId,
+    );
+    if (running === undefined || running.turnId !== turnId) {
+      throw new DopplerSecretResolutionError(
+        'Secret resolution failed during project configuration. No secret value was exposed.',
+        'project configuration',
+      );
+    }
+    return (await eventStore.promptInitiatorAt(sessionId, running.promptSeq))?.userId ?? null;
+  };
+  const dopplerPersonId = (person: DopplerPerson): Promise<string | null> =>
+    'userId' in person
+      ? Promise.resolve(person.userId)
+      : runningTurnPerson(person.sessionId, person.turnId);
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
   const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
   const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
@@ -535,16 +566,13 @@ export async function buildEmbeddedServer(
     const dopplerConfig = settings?.dopplerConfig?.trim();
     return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
-  const resolveBrokerDopplerSecret = async (
-    input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
-  ): Promise<Uint8Array> => {
-    const token = await readBrokerDopplerCredential();
-    if (token === undefined) {
-      throw new DopplerSecretResolutionError(
-        'Secret resolution failed during Doppler authentication. No secret value was exposed.',
-        'Doppler authentication',
-      );
-    }
+  const resolveBrokerDopplerSecret = async ({
+    person,
+    ...input
+  }: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'> & {
+    person: DopplerPerson;
+  }): Promise<Uint8Array> => {
+    const token = await dopplerCredentialFor(await dopplerPersonId(person), input.projectId);
     try {
       return await resolveDopplerProjectSecret({ ...input, token });
     } finally {
@@ -722,41 +750,12 @@ export async function buildEmbeddedServer(
     if (binding === undefined) return undefined;
     return brokeredDopplerBindingId(binding);
   };
-  // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
-  // stops guessing aliases. Briefly cached; every failure degrades to "no list".
-  const brokeredAliasCache = new Map<string, { names: readonly string[]; expiresAt: number }>();
-  const brokeredSecretAliases = async (projectId: string): Promise<readonly string[]> => {
-    const cached = brokeredAliasCache.get(projectId);
-    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.names;
-    if (cached !== undefined) brokeredAliasCache.delete(projectId);
-    const binding = await getBrokeredProjectBinding(projectId);
-    if (binding === undefined) return [];
-    let names: readonly string[];
-    let ttlMs = 60_000;
-    let token: Uint8Array | undefined;
-    try {
-      token = await readBrokerDopplerCredential();
-      if (token === undefined) throw new Error('broker Doppler identity is unavailable');
-      names = await listDopplerProjectSecretNames({
-        dopplerProject: binding.dopplerProject,
-        dopplerConfig: binding.dopplerConfig,
-        token,
-      });
-    } catch {
-      // Keep provider outages best-effort without paying the same network timeout
-      // at the start of every turn. Retry soon enough to recover automatically.
-      names = [];
-      ttlMs = 10_000;
-    } finally {
-      token?.fill(0);
-    }
-    if (brokeredAliasCache.size >= 256) {
-      const oldestProjectId = brokeredAliasCache.keys().next().value;
-      if (oldestProjectId !== undefined) brokeredAliasCache.delete(oldestProjectId);
-    }
-    brokeredAliasCache.set(projectId, { names, expiresAt: Date.now() + ttlMs });
-    return names;
-  };
+  // ADR 0011 D3: secret NAMES (never values) for the turn context, per person.
+  const brokeredSecretAliases = createBrokeredSecretAliases({
+    getProjectBinding: getBrokeredProjectBinding,
+    credentialFor: dopplerCredentialFor,
+    listNames: listDopplerProjectSecretNames,
+  });
   const secretKeyMeta = await eventStore.getSecretKeyMeta();
   const hasMasterPassword = secretKeyMeta !== undefined;
   // The one non-interactive way in (ADR 0008 D8): a Server promoted by a
@@ -1622,7 +1621,8 @@ export async function buildEmbeddedServer(
           ? createDopplerSecretResolver({
               ...secretJobsConfig.doppler,
               catalog: secretProviderCatalog!,
-              readCredential: readBrokerDopplerCredential,
+              readCredential: (_ref, { projectId, userId }) =>
+                dopplerCredentialFor(userId, projectId),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -2962,6 +2962,13 @@ export async function buildEmbeddedServer(
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
       }),
+      agentPerson: async (sessionId) => {
+        const running = (await eventStore.listRunningTurns()).find(
+          (turn) => turn.sessionId === sessionId,
+        );
+        if (running === undefined) return undefined;
+        return (await eventStore.promptInitiatorAt(sessionId, running.promptSeq))?.userId ?? null;
+      },
       runtime: new DockerProjectRuntime({
         listListeningProcesses,
         isSecretManagedServer: async (id) =>
@@ -4490,7 +4497,13 @@ export async function buildEmbeddedServer(
         return bindingId === undefined ||
           (input.bindingId !== undefined && input.bindingId !== bindingId)
           ? false
-          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
+          : brokeredHttpGrants.check({
+              ...input,
+              // A turn without a person acts as the administrator, whose grants the
+              // pre-multi-user ones became; see doppler-credential.ts.
+              userId: input.userId ?? legacyAdministratorId,
+              bindingId: input.bindingId ?? bindingId,
+            });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
@@ -4632,9 +4645,16 @@ export async function buildEmbeddedServer(
           if (projectId == null) return false;
           const bindingId = await brokeredGrantBindingId(projectId);
           if (bindingId === undefined) return false;
+          // Only the running turn's person can have consented in advance (ADR 0023 §3).
+          const running = (await eventStore.listRunningTurns()).find(
+            (turn) => turn.sessionId === sessionId,
+          );
+          if (running === undefined) return false;
+          const initiator = await eventStore.promptInitiatorAt(sessionId, running.promptSeq);
           return brokeredHttpGrants.check({
             projectId,
             sessionId,
+            userId: initiator?.userId ?? legacyAdministratorId,
             bindingId,
             channel,
             ...target,
@@ -5057,7 +5077,7 @@ export async function buildEmbeddedServer(
       secretProviderCatalog,
       createDopplerSecretNameLister({
         ...dopplerOptions,
-        readCredential: readBrokerDopplerCredential,
+        readCredential: (_ref, { projectId, userId }) => dopplerCredentialFor(userId, projectId),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];

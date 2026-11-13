@@ -60,6 +60,8 @@ export interface BrokeredGrantRecord {
   target: string;
   scope: BrokeredGrantScope;
   sessionId: string | null;
+  /** The person whose consent this is; null for a grant from before persons. */
+  grantedBy: string | null;
   appliesNow: boolean;
   expiresAt: string | null;
   createdAt: string;
@@ -87,6 +89,8 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       projectId: string;
       bindingId: string;
       sessionId: string;
+      /** The person granting it; the grant applies only in their turns (ADR 0023 §3). */
+      userId: string;
       secretAlias: string;
       toolName: BrokeredGrantToolName;
       target: string;
@@ -106,6 +110,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       const toolId = `${input.toolName}:${input.target}`;
       const sessionId = input.scope === 'session' ? input.sessionId : null;
       const key = [
+        input.userId,
         input.projectId,
         input.bindingId,
         input.secretAlias,
@@ -124,6 +129,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
             .where('tool_id', '=', toolId)
             .where('scope', '=', input.scope)
             .where('session_id', sessionId === null ? 'is' : '=', sessionId)
+            .where('user_id', '=', input.userId)
             .where('state', '=', 'active')
             .where('issuer', '=', GRANT_ISSUER)
             .executeTakeFirst()
@@ -171,6 +177,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
               .where('tool_id', '=', toolId)
               .where('scope', '=', input.scope)
               .where('session_id', sessionId === null ? 'is' : '=', sessionId)
+              .where('user_id', '=', input.userId)
               .where('state', '=', 'active')
               .where('issuer', '=', GRANT_ISSUER)
               .where('expires_at', '<=', new Date())
@@ -212,6 +219,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
                     : null,
                 remaining_uses: null,
                 granted_by: 'operator',
+                user_id: input.userId,
                 issuer: GRANT_ISSUER,
                 state: 'active',
               })
@@ -275,6 +283,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
           'expires_at',
           'created_at',
           'issuer',
+          'user_id',
         ])
         .where('project_id', '=', projectId)
         .where('state', '=', 'active')
@@ -299,6 +308,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
             target: row.tool_id.slice(separator + 1),
             scope,
             sessionId: row.session_id,
+            grantedBy: row.user_id,
             appliesNow: row.issuer === GRANT_ISSUER && row.binding_id === currentBindingId,
             expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
             createdAt: new Date(row.created_at).toISOString(),
@@ -346,6 +356,8 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
       projectId: string;
       bindingId: string;
       sessionId: string;
+      /** The person the turn runs for; only their own grants apply. */
+      userId: string;
       secretAlias: string;
       toolName: BrokeredGrantToolName;
       target: string;
@@ -362,6 +374,7 @@ export function createBrokeredHttpGrantStore(db: Kysely<Database>) {
         .where('tool_id', '=', `${input.toolName}:${input.target}`)
         .where('state', '=', 'active')
         .where('issuer', '=', GRANT_ISSUER)
+        .where('user_id', '=', input.userId)
         .execute();
       const now = Date.now();
       const covering = rows.filter(

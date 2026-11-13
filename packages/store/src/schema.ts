@@ -1404,6 +1404,8 @@ export interface ManagedDevServerInstancesTable {
   detail: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_command: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Whose Doppler connection resolved the last run's secrets; null without a person. */
+  last_run_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   started_at: ColumnType<Date | null, string | null | undefined, string | null>;
   last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
   /** Explicit access lifecycle start; automatic process recovery preserves it. */

@@ -1,4 +1,5 @@
 import { assertBrokeredDopplerBinding } from './brokered-doppler-binding.js';
+import type { DopplerPerson } from './doppler-credential.js';
 import {
   createRestrictedHttpJsonConnector,
   restrictedHttpJsonRequestSchema,
@@ -53,6 +54,8 @@ export function createBrokeredHttpTool(options: {
     dopplerProject: string;
     dopplerConfig: string;
     secretName: string;
+    /** The calling turn; its person's Doppler connection resolves the secret. */
+    person: DopplerPerson;
   }) => Promise<Uint8Array>;
   consumeApproval: (input: {
     projectId: string;
@@ -92,6 +95,7 @@ export function createBrokeredHttpTool(options: {
           dopplerProject: binding.dopplerProject,
           dopplerConfig: binding.dopplerConfig,
           secretName,
+          person: { sessionId, turnId },
         }),
       consumeApproval: async (requestHash) => {
         assertBrokeredDopplerBinding(await options.getProjectBinding(projectId), binding);

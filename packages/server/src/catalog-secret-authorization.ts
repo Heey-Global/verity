@@ -56,6 +56,13 @@ export function createCatalogSecretAuthorization(options: {
   catalog: SecretProviderCatalog;
   approvals: SecretApprovalStore;
   grants: SecretGrantIssuer;
+  /** The person the requesting turn runs for (null without one). Recorded in the
+   *  claims so the job resolves secrets through that person's connection. */
+  initiatorOf: (context: {
+    projectId: string;
+    sessionId: string;
+    turnId: string;
+  }) => Promise<string | null>;
   authorizeApproval: (approvalId: string, actor: AuthenticatedApprovalActor) => Promise<boolean>;
   authorizeCurrentClaims: (claims: RunGrantClaims) => Promise<boolean>;
   /**
@@ -114,6 +121,7 @@ export function createCatalogSecretAuthorization(options: {
         sessionId: invocation.context.sessionId,
         turnId: invocation.context.turnId,
         toolCallId: invocation.context.toolCallId,
+        initiatorUserId: await options.initiatorOf(invocation.context),
         profile: invocation.request.profile,
         executorImageDigest: profile.imageDigest,
         aliases: resolvedClaims.aliases,

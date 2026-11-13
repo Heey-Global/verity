@@ -45,6 +45,11 @@ export const runGrantClaimsSchema = z
     sessionId: secretContractIdSchema,
     turnId: secretContractIdSchema,
     toolCallId: secretContractIdSchema,
+    /** The person the turn ran for when the grant was issued; null for a turn without
+     *  one. Secrets resolve through that person's provider connection (ADR 0023 §3),
+     *  because a job can outlast its turn. Absent on grants issued before it existed,
+     *  which then resolve through no one's connection. */
+    initiatorUserId: secretContractIdSchema.nullable().optional(),
     profile: executionProfileRefSchema,
     /** Immutable executor image selected when the approval request is created. */
     executorImageDigest: sha256HexSchema.optional(),

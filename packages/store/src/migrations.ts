@@ -5734,3 +5734,55 @@ migrations['0209_user_doppler_connections'] = {
     await sql`drop table user_doppler_connections`.execute(db);
   },
 };
+
+migrations['0210_managed_dev_server_run_user'] = {
+  // A dev server's secrets resolve through the Doppler connection of the person
+  // who started it, also when it is recovered later (ADR 0023 §3). Deliberately
+  // no foreign key: clearing it on user deletion would turn a deleted person's
+  // server into one without a person, which resolves with the instance token.
+  // Existing instances were started before members existed, by the administrator.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances add column last_run_user_id text`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_server_instances drop column last_run_user_id`.execute(db);
+  },
+};
+
+migrations['0211_per_person_brokered_grants'] = {
+  // A standing grant is one person's consent (ADR 0023 §3), so two people may each
+  // hold the same grant; the single-live-grant fence becomes per person.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index secret_provider_permissions_brokered_v2_active_unique`.execute(db);
+    await sql`
+      CREATE UNIQUE INDEX secret_provider_permissions_brokered_v2_active_unique
+      ON secret_provider_permissions (
+        project_id,
+        binding_id,
+        secret_name,
+        tool_id,
+        scope,
+        COALESCE(session_id, ''),
+        COALESCE(user_id, '')
+      )
+      WHERE state = 'active' AND issuer = 'brokered-prompt-v2'
+    `.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index secret_provider_permissions_brokered_v2_active_unique`.execute(db);
+    await sql`
+      CREATE UNIQUE INDEX secret_provider_permissions_brokered_v2_active_unique
+      ON secret_provider_permissions (
+        project_id,
+        binding_id,
+        secret_name,
+        tool_id,
+        scope,
+        COALESCE(session_id, '')
+      )
+      WHERE state = 'active' AND issuer = 'brokered-prompt-v2'
+    `.execute(db);
+  },
+};

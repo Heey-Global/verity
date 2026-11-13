@@ -1,4 +1,6 @@
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
+import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
+import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import {
   createSessionRepositories,
   removeSessionRepositoryWorkspaces,
@@ -3694,6 +3696,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
   };
   registerGitIdentityRoutes(app, gitIdentityDeps);
+  registerDopplerConnectionRoutes(app, {
+    store: deps.eventStore,
+    listNames: (input) => listDopplerProjectSecretNames(input),
+  });
   registerGitHubUserRoutes(app, {
     authorization:
       deps.githubUserAuthorization ?? createGitHubUserAuthorization({ store: deps.eventStore }),

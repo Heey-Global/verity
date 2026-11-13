@@ -1293,6 +1293,7 @@ describe('standing brokered-secret grant routes (ADR 0011 D2)', () => {
     target: `/usr/local/bin/fastlane#${'a'.repeat(64)}`,
     scope: 'forever' as const,
     sessionId: null,
+    grantedBy: null,
     appliesNow: true,
     expiresAt: null,
     createdAt: '2026-08-02T00:00:00.000Z',

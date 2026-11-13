@@ -23,6 +23,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: true });
 export type DopplerSecretResolutionPhase =
   | 'project configuration'
   | 'secret alias'
+  | 'Doppler connection'
   | 'Doppler authentication'
   | 'Doppler request start'
   | 'Doppler request timeout'
@@ -50,7 +51,12 @@ export interface DopplerSecretCatalog {
 }
 
 /** Return a fresh, owned credential buffer. The resolver consumes and zeroizes it after use. */
-export type SecretCredentialReader = (credentialRef: string) => Promise<Uint8Array | undefined>;
+/** Reads the provider credential for a person in a project (ADR 0023 §3); `userId`
+ *  null is a turn without a person. */
+export type SecretCredentialReader = (
+  credentialRef: string,
+  context: { projectId: string; userId: string | null },
+) => Promise<Uint8Array | undefined>;
 
 export interface DopplerSecretResolverOptions {
   catalog: DopplerSecretCatalog;
@@ -64,7 +70,11 @@ export interface DopplerSecretResolverOptions {
   retryDelayMs?: number;
   sleep?: (delayMs: number) => Promise<void>;
 }
-export type DopplerSecretNameLister = (binding: ProviderBindingRecord) => Promise<string[]>;
+/** Lists names with the given person's connection; `userId` null as above. */
+export type DopplerSecretNameLister = (
+  binding: ProviderBindingRecord,
+  userId: string | null,
+) => Promise<string[]>;
 
 function rejected(
   phase: DopplerSecretResolutionPhase = 'project configuration',
@@ -482,7 +492,13 @@ export function createDopplerSecretResolver(options: DopplerSecretResolverOption
         ) {
           throw rejected('project configuration');
         }
-        const credential = await options.readCredential(binding.credentialRef);
+        // A grant without a recorded person predates per-person connections; it
+        // must not resolve through anyone's, least of all the instance token.
+        if (claims.initiatorUserId === undefined) throw rejected('Doppler connection');
+        const credential = await options.readCredential(binding.credentialRef, {
+          projectId: claims.projectId,
+          userId: claims.initiatorUserId,
+        });
         if (credential === undefined) throw rejected('Doppler authentication', { binding });
         const keys = [...new Set(group.aliases.map(({ record }) => record.providerKey))];
         // The reader contract returns an owned buffer. downloadSecrets consumes and zeroizes it
@@ -544,10 +560,13 @@ export function createDopplerSecretNameLister(
   ) {
     throw new Error('Doppler response limit must be a positive integer');
   }
-  return async (bindingInput) => {
+  return async (bindingInput, userId) => {
     const binding = providerBindingRecordSchema.parse(bindingInput);
     if (binding.provider !== 'doppler' || binding.state !== 'active') throw rejected();
-    const credential = await options.readCredential(binding.credentialRef);
+    const credential = await options.readCredential(binding.credentialRef, {
+      projectId: binding.projectId,
+      userId,
+    });
     if (credential === undefined) throw rejected();
     try {
       const token = utf8.decode(credential).trim();

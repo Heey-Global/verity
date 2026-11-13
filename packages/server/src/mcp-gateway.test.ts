@@ -7,6 +7,10 @@ import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/
 import { describe, expect, it, vi } from 'vitest';
 
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
+import {
+  DOPPLER_CONNECTION_REQUIRED_MESSAGE,
+  dopplerConnectionRequired,
+} from './doppler-credential.js';
 
 import {
   createMcpGateway,
@@ -866,6 +870,22 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
       kind: 'gateway_call_rejected',
       rejection: 'unavailable',
     });
+  });
+
+  // ADR 0023 §3: a person without their own Doppler connection is told how to
+  // connect, in a fixed text, rather than given a generic failure.
+  it('tells an ACP caller to connect their own Doppler token', async () => {
+    const { gateway } = harness({
+      invokeTool: vi.fn(async () => {
+        throw dopplerConnectionRequired();
+      }),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toBe(DOPPLER_CONNECTION_REQUIRED_MESSAGE);
   });
 
   it('does not trust free text on a malformed Doppler resolution error', async () => {

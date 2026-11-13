@@ -1,4 +1,5 @@
 import { PermissionDecisionInProgressError, type Conductor } from '@verity/session';
+import { viewerId } from './view-state-routes.js';
 import type { EventStore } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -83,6 +84,7 @@ export function registerSessionControlRoutes(
         body.behavior === 'allow' && body.scope !== undefined
           ? await deps.conductor.decidePermission(id, toolUseId, decision, {
               scope: body.scope,
+              decidedByUser: viewerId(request),
               onScopeSaved: (saved) => {
                 scopeSaved = saved;
               },

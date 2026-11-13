@@ -41,6 +41,20 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map([
     routeScopeKey('POST', '/sessions/:id/project-inquiries/:inquiryId/decision'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
+  // A person's own Doppler token for the project, bound to the signed-in person
+  // inside the handlers; using secrets needs execute permission, so does this.
+  [
+    routeScopeKey('GET', '/projects/:id/doppler/connection'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('PUT', '/projects/:id/doppler/connection'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
+  [
+    routeScopeKey('DELETE', '/projects/:id/doppler/connection'),
+    { kind: 'project', parameter: 'id', permission: 'execute' },
+  ],
   [
     routeScopeKey('GET', '/projects/:id/repositories'),
     { kind: 'project', parameter: 'id', permission: 'read' },

@@ -1,4 +1,5 @@
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
+import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
   ManagedDevServerConflictError,
   managedDevServerBindingsEqual,
@@ -86,7 +87,14 @@ export interface ManagedDevServerManagerOptions {
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
     providerAuthority: string,
+    startedBy: string | null,
   ) => Promise<{ env: string; value: string }[]>;
+  /**
+   * The person an agent's request acts for: the initiator of the session's running
+   * turn, null for a turn without one, undefined when no turn runs. Its Doppler
+   * connection resolves the server's secrets (ADR 0023 §3).
+   */
+  agentPerson?: ((sessionId: string) => Promise<string | null | undefined>) | undefined;
   /** Defer supervision until durable preview ownership is loaded and the store is unlocked. */
   canSupervise?: () => boolean;
   /** Absent when local previews are unavailable; entries then run without an address. */
@@ -561,9 +569,10 @@ export class ManagedDevServerManager {
     sessionId: string,
     idOrName: string,
     by: StartedBy,
-    options: { local?: boolean | undefined } = {},
+    options: { local?: boolean | undefined; person?: string | null | undefined } = {},
   ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
+    const person = await this.personFor(sessionId, by, options.person);
     const entry = await this.entry(context.project.id, idOrName);
     if (by === 'operator' || entry.secretBindings.length > 0) {
       // Switching an entry on is the operator's own act and approves what runs,
@@ -571,7 +580,9 @@ export class ManagedDevServerManager {
       if (!entry.approved)
         throw new ManagedDevServerError('Review and approve the command first', 409);
     }
-    await this.locked(context.project.id, () => this.startEntry(context, entry, by, options.local));
+    await this.locked(context.project.id, () =>
+      this.startEntry(context, entry, by, options.local, person),
+    );
     return this.viewOf(sessionId, entry.id);
   }
 
@@ -579,7 +590,12 @@ export class ManagedDevServerManager {
    * The Local switch. On starts the server if needed and publishes it; off ends
    * local access and, when no public link is left either, stops the server.
    */
-  async setLocal(sessionId: string, idOrName: string, on: boolean): Promise<ManagedServerView> {
+  async setLocal(
+    sessionId: string,
+    idOrName: string,
+    on: boolean,
+    person: string | null = null,
+  ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
     const { project } = context;
     const entry = await this.entry(project.id, idOrName);
@@ -601,7 +617,7 @@ export class ManagedDevServerManager {
           if (updated?.state === 'running') await this.publish(project, entry, updated);
           return;
         }
-        await this.startEntry(context, entry, 'operator', true);
+        await this.startEntry(context, entry, 'operator', true, person);
         return;
       }
       if (!instance) return;
@@ -665,8 +681,14 @@ export class ManagedDevServerManager {
     );
   }
 
-  async restart(sessionId: string, idOrName: string, by: StartedBy): Promise<ManagedServerView> {
+  async restart(
+    sessionId: string,
+    idOrName: string,
+    by: StartedBy,
+    operator: string | null = null,
+  ): Promise<ManagedServerView> {
     const context = await this.context(sessionId);
+    const person = await this.personFor(sessionId, by, operator);
     const entry = await this.entry(context.project.id, idOrName);
     // Refuse before stopping: a restart that cannot start must not kill what runs.
     if (
@@ -682,7 +704,7 @@ export class ManagedDevServerManager {
         instance && !instance.localAccess && (await this.hasLivePublicLink(instance))
           ? undefined
           : true;
-      await this.startEntry(context, entry, by, by === 'operator' ? local : undefined);
+      await this.startEntry(context, entry, by, by === 'operator' ? local : undefined, person);
     });
     return this.viewOf(sessionId, entry.id);
   }
@@ -796,11 +818,26 @@ export class ManagedDevServerManager {
     return view;
   }
 
+  /** Whose Doppler connection a start resolves secrets with; see agentPerson. */
+  private async personFor(
+    sessionId: string,
+    by: StartedBy,
+    operator: string | null | undefined,
+  ): Promise<string | null> {
+    if (by !== 'agent') return operator ?? null;
+    if (this.options.agentPerson === undefined) return null;
+    const person = await this.options.agentPerson(sessionId);
+    if (person === undefined)
+      throw new ManagedDevServerError('the session has no running turn to act for', 409);
+    return person;
+  }
+
   private async startEntry(
     context: SessionContext,
     entry: ManagedDevServerRecord,
     by: StartedBy,
     local?: boolean,
+    person: string | null = null,
   ): Promise<void> {
     const { project, sessionId } = context;
     await this.assertStartAllowed(sessionId);
@@ -823,6 +860,7 @@ export class ManagedDevServerManager {
           by === 'recovery' ? (instance.lastRunCommand ?? entry.command) : entry.command,
         lastRunSecretBindings:
           by === 'recovery' ? instance.lastRunSecretBindings : entry.secretBindings,
+        lastRunUserId: by === 'recovery' ? instance.lastRunUserId : person,
         lastRunWorkdir:
           by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir,
         startedAt: new Date(this.now()),
@@ -901,6 +939,8 @@ export class ManagedDevServerManager {
     const workdir = by === 'recovery' ? (instance.lastRunWorkdir ?? entry.workdir) : entry.workdir;
     const secretBindings =
       by === 'recovery' ? instance.lastRunSecretBindings : entry.secretBindings;
+    // Recovery keeps the person the server last ran for: never whoever is around now.
+    const runAs = by === 'recovery' ? instance.lastRunUserId : person;
     if (
       secretBindings.length > 0 &&
       !(await this.servers.isApproved(entry.id, command, workdir, secretBindings))
@@ -923,7 +963,12 @@ export class ManagedDevServerManager {
         )
           throw new Error('provider authority changed');
         if (!this.options.resolveSecrets) throw new Error('secret resolver unavailable');
-        secrets = await this.options.resolveSecrets(project.id, secretBindings, approvedAuthority);
+        secrets = await this.options.resolveSecrets(
+          project.id,
+          secretBindings,
+          approvedAuthority,
+          runAs,
+        );
         if (
           approvedAuthority !== (await this.options.providerAuthority?.(project.id)) ||
           approvedAuthority !== (await this.servers.approvedProviderAuthority(entry.id)) ||
@@ -931,12 +976,15 @@ export class ManagedDevServerManager {
         )
           throw new Error('provider authority changed');
       }
-    } catch {
+    } catch (error) {
       await this.servers.updateInstance(instance.id, {
         desired: 'stopped',
         state: 'crashed',
+        lastRunUserId: runAs,
         detail:
-          'Could not validate or resolve server secrets. Review the provider and approve again. No server was started.',
+          error instanceof DopplerSecretResolutionError && error.phase === 'Doppler connection'
+            ? 'Could not resolve server secrets: the person who started it has not connected Doppler for this project. No server was started.'
+            : 'Could not validate or resolve server secrets. Review the provider and approve again. No server was started.',
       });
       return;
     }
@@ -968,6 +1016,7 @@ export class ManagedDevServerManager {
             : result.reason,
         lastRunCommand: command,
         lastRunSecretBindings: secretBindings,
+        lastRunUserId: runAs,
         lastRunWorkdir: workdir,
       });
       return;
@@ -979,6 +1028,7 @@ export class ManagedDevServerManager {
       detail: null,
       lastRunCommand: command,
       lastRunSecretBindings: secretBindings,
+      lastRunUserId: runAs,
       lastRunWorkdir: workdir,
       startedAt: now,
       accessStartedAt:

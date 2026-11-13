@@ -10571,7 +10571,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
             url: 'https://updated.example:8443/v2/projects',
           },
         },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(persist).not.toHaveBeenCalled();
@@ -10625,7 +10625,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-failed',
         'toolu_failed',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10656,6 +10656,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-g',
       sessionId: 'sg3',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -10721,7 +10722,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-acp-persist',
         'toolu_acp_persist',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(true);
@@ -10775,7 +10776,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-cli-forever',
         'toolu_cli_forever',
         { behavior: 'allow' },
-        { scope: 'forever', onScopeSaved },
+        { scope: 'forever', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10805,10 +10806,12 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       'sg-cli-project',
       'toolu_cli_project',
       { behavior: 'allow' },
-      { scope: 'project', onScopeSaved },
+      { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
     );
     expect(onScopeSaved).toHaveBeenCalledWith(true);
-    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
+    );
     await vi.waitFor(() => expect(conductor.isBusy('sg-cli-project')).toBe(false));
   });
 
@@ -10916,7 +10919,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg5',
         'toolu_failed_scope',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10960,6 +10963,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     signal?: AbortSignal,
   ): Promise<{ decision: { behavior: string }; decidedBy: string }> {
     return conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId,
       toolUseId,
       toolName: 'verity_http_request',
@@ -11089,11 +11093,55 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x4',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
     });
+  });
+
+  // ADR 0023 §3: a standing grant is one person's advance consent. A gateway prompt
+  // is answered only by the calling turn's person's grants, a prompt naming no one
+  // by none, and a scope is saved only for the person who answered the card.
+  it("consults only the calling person's grants and saves a scope only for the decider", async () => {
+    await createProjectSession('grant-person');
+    const check = vi.fn(async (input: { userId: string | null }) => input.userId === 'lena');
+    const persist = vi.fn(async () => {});
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const prompt = (toolUseId: string, grantUserId?: string | null) =>
+      conductor.requestExternalPermission({
+        sessionId: 'grant-person',
+        toolUseId,
+        toolName: 'verity_http_request',
+        input: gatewayInput,
+        channel: 'acp',
+        ...(grantUserId !== undefined ? { grantUserId } : {}),
+      });
+    await expect(prompt('lena-call', 'lena')).resolves.toMatchObject({ decidedBy: 'grant' });
+    expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ userId: 'lena' }));
+
+    check.mockClear();
+    const unnamed = prompt('unnamed-call');
+    await vi.waitFor(() =>
+      expect(conductor.pendingPermissions('grant-person')).toEqual(['unnamed-call']),
+    );
+    expect(check).not.toHaveBeenCalled();
+    const onScopeSaved = vi.fn();
+    await conductor.decidePermission(
+      'grant-person',
+      'unnamed-call',
+      { behavior: 'allow' },
+      { scope: 'project', onScopeSaved },
+    );
+    await expect(unnamed).resolves.toMatchObject({ decidedBy: 'card' });
+    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it('keeps the server-resolved binding for grant lookup and persistence across approval waits', async () => {
@@ -11119,6 +11167,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       input: { ...gatewayInput, bindingId: 'untrusted-tool-binding' },
       channel: 'acp' as const,
       brokeredGrantBindingId: 'original-provider-binding',
+      grantUserId: null,
     };
     const answered = conductor.requestExternalPermission(params);
     // A provider update while the card waits must not retarget the saved consent.
@@ -11127,6 +11176,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'binding-frozen',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -11142,13 +11192,14 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'binding-frozen',
       'binding-request',
       { behavior: 'allow' },
-      { scope: 'session', onScopeSaved },
+      { scope: 'session', onScopeSaved, decidedByUser: 'operator-1' },
     );
     await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
     expect(conductor.pendingPermissions('binding-frozen')).toEqual([]);
     expect(persist).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'binding-frozen',
+      userId: 'operator-1',
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -11175,6 +11226,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     });
     const request = (sessionId: string, toolUseId: string) =>
       conductor.requestExternalPermission({
+        grantUserId: null,
         sessionId,
         toolUseId,
         toolName: 'verity_secret_run',
@@ -11191,7 +11243,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'cwd-first',
       'first',
       { behavior: 'allow' },
-      { scope: 'project' },
+      { scope: 'project', decidedByUser: 'operator-1' },
     );
     await first;
     await expect(request('cwd-first', 'reuse')).resolves.toMatchObject({ decidedBy: 'grant' });
@@ -11220,6 +11272,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       persistBrokeredHttpGrant: persist,
     });
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x4-cli',
       toolUseId: 'toolu_cli',
       toolName: 'verity_secret_run',
@@ -11239,12 +11292,14 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x4-cli',
         'toolu_cli',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
     expect(onScopeSaved).toHaveBeenCalledWith(true);
-    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
+    );
   });
 
   it('never consults a grant for a tool that resolves no secret, flag or no flag', async () => {
@@ -11261,6 +11316,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // any tool outside the brokered pair, so the gateway route may set it from the tool name
     // without changing what the control-plane tools do. A grant is neither read nor written.
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x4-handoff',
       toolUseId: 'toolu_handoff',
       toolName: 'verity_session_handoff',
@@ -11283,7 +11339,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x4-handoff',
         'toolu_handoff',
         { behavior: 'allow' },
-        { scope: 'forever', onScopeSaved },
+        { scope: 'forever', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
@@ -11314,6 +11370,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // on its own — `brokeredGrantToolName` has no name for these, so `maybeAutoApprove` returns
     // before it can look a grant up. Both would have to be undone to auto-answer them.
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId,
       toolUseId: 'toolu_cp',
       toolName,
@@ -11350,7 +11407,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x5',
         'toolu_scope',
         { behavior: 'allow' },
-        { scope: 'session', onScopeSaved },
+        { scope: 'session', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
@@ -11358,6 +11415,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(persist).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x5',
+      userId: 'operator-1',
       scope: 'session',
       channel: 'acp',
       secretAlias: 'REVENUECAT_ADMIN_KEY',
@@ -11388,6 +11446,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       persistBrokeredHttpGrant: persist,
     });
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x5-multi',
       toolUseId: 'toolu_multi',
       toolName: 'verity_secret_run',
@@ -11402,7 +11461,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'x5-multi',
       'toolu_multi',
       { behavior: 'allow' },
-      { scope: 'session' },
+      { scope: 'session', decidedByUser: 'operator-1' },
     );
     await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
     expect(persist).toHaveBeenNthCalledWith(1, expect.objectContaining({ secretAlias: 'KEY_ID' }));
@@ -11418,6 +11477,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       checkBrokeredHttpGrant: check,
     });
     const pending = checking.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x5-multi-check',
       toolUseId: 'toolu_multi_check',
       toolName: 'verity_secret_run',

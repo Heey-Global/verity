@@ -2321,9 +2321,11 @@ export function registerServerMcpRoutes({
                   ),
                 }
               : {}),
-            // Secret tools reuse consent for their bound request shape.
+            // Secret tools reuse consent for their bound request shape, and only the
+            // calling turn's person's own consent (ADR 0023 §3).
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
+            grantUserId: (await runningTurnInitiator(sessionId, turnId))?.userId ?? null,
             signal,
           });
         } catch (error) {

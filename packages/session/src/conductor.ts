@@ -524,7 +524,14 @@ export interface ConductorDeps {
    * project (ADR 0011 D3); best-effort — failures or absence simply omit the list from
    * the turn context. Backend-independent: the names reach every ACP backend that can
    * call those tools over the MCP gateway. */
-  brokeredSecretAliases?: ((projectId: string) => Promise<readonly string[]>) | undefined;
+  /** Secret alias names for a turn; resolved with the turn's person's Doppler
+   *  connection (ADR 0023 §3), so `initiatedBy` is part of the lookup. */
+  brokeredSecretAliases?:
+    | ((
+        projectId: string,
+        initiatedBy: { readonly userId: string } | undefined,
+      ) => Promise<readonly string[]>)
+    | undefined;
   /** ADR 0011 D2: does a persisted grant cover this (project, session, alias, tool, target)?
    * True auto-approves the brokered-secret prompt without operator interaction.
    * `channel` is the transport this prompt arrived on (ADR 0014 D3); the store applies
@@ -533,6 +540,8 @@ export interface ConductorDeps {
     | ((input: {
         projectId: string;
         sessionId: string;
+        /** The turn's person (null for a turn without one); only their grants apply. */
+        userId: string | null;
         secretAlias: string;
         toolName: BrokeredGrantToolName;
         target: string;
@@ -547,6 +556,8 @@ export interface ConductorDeps {
     | ((input: {
         projectId: string;
         sessionId: string;
+        /** The person who answered the card; the grant is their consent. */
+        userId: string;
         secretAlias: string;
         toolName: BrokeredGrantToolName;
         target: string;
@@ -1669,7 +1680,7 @@ export class Conductor {
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
-      await this.brokeredAliasesFor(session.projectId, backend),
+      await this.brokeredAliasesFor(session.projectId, backend, handle.initiatedBy),
     );
     // ADR 0006 Stage 4: allocate this attempt's durable turn identity and bind it
     // onto the in-flight marker BEFORE the Runner launches (D2), so a crash-then-
@@ -3152,6 +3163,9 @@ export class Conductor {
        *  (ADR 0014 D3), which must not claim an operator saw a card that never
        *  reached them. */
       decidedBy?: PermissionDecisionSource;
+      /** The person answering; a standing scope becomes their grant (ADR 0023 §3).
+       *  Without one, the answer stands but no scope is saved. */
+      decidedByUser?: string;
     },
   ): Promise<boolean> {
     const pending = this.pendingPermissionRequests.get(sessionId);
@@ -3211,10 +3225,13 @@ export class Conductor {
           return true;
         }
         try {
+          if (options.decidedByUser === undefined)
+            throw new Error('a standing grant needs the person granting it');
           await this.persistBrokeredGrant(
             sessionId,
             request,
             options.scope,
+            options.decidedByUser,
             external?.channel,
             external?.brokeredGrantBindingId,
           );
@@ -3273,12 +3290,23 @@ export class Conductor {
     request: PermissionRequest,
     statedChannel?: BrokeredGrantChannel,
     bindingId?: string,
+    /** The person stated by the caller, for a prompt that no turn carries. */
+    statedUserId?: string | null,
   ): Promise<boolean> {
     const toolName = brokeredGrantToolName(request.toolName);
     const check = this.deps.checkBrokeredHttpGrant;
     if (toolName === undefined || check === undefined) return false;
-    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
+    const turn = this.turns.get(sessionId);
+    const channel = statedChannel ?? turn?.grantChannel;
     if (channel === undefined) return false;
+    // Only the person the requesting turn acts for can have consented in advance.
+    const userId =
+      statedUserId !== undefined
+        ? statedUserId
+        : turn === undefined
+          ? undefined
+          : (turn.initiatedBy?.userId ?? null);
+    if (userId === undefined) return false;
     try {
       const session = await this.deps.store.getSession(sessionId);
       const projectId = session?.projectId;
@@ -3295,6 +3323,7 @@ export class Conductor {
           check({
             projectId,
             sessionId,
+            userId,
             channel,
             secretAlias,
             toolName: target.toolName,
@@ -3313,6 +3342,7 @@ export class Conductor {
     sessionId: string,
     request: PermissionRequest,
     scope: 'session' | 'project' | 'forever',
+    userId: string,
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
     bindingId?: string,
@@ -3344,6 +3374,7 @@ export class Conductor {
       await persist({
         projectId,
         sessionId,
+        userId,
         scope,
         channel,
         secretAlias,
@@ -3403,6 +3434,11 @@ export class Conductor {
     brokeredGrantBindingId?: string;
     /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
+    /**
+     * The person the requesting turn acts for (null for a turn without one). Only
+     * their own standing grants can answer the prompt (ADR 0023 §3); absent, none do.
+     */
+    grantUserId?: string | null | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
     const { sessionId, toolUseId, channel, signal, brokeredGrantBindingId } = params;
@@ -3455,7 +3491,14 @@ export class Conductor {
       if (
         params.allowStandingGrant !== false &&
         (await Promise.race([
-          this.isCoveredByBrokeredGrant(sessionId, request, channel, brokeredGrantBindingId),
+          params.grantUserId !== undefined &&
+            this.isCoveredByBrokeredGrant(
+              sessionId,
+              request,
+              channel,
+              brokeredGrantBindingId,
+              params.grantUserId,
+            ),
           answered.then(() => false),
         ]))
       ) {
@@ -5472,7 +5515,7 @@ export class Conductor {
         runOpts.appendSystemPrompt = withBackendSystemPrompt(
           runOpts.appendSystemPrompt,
           backend,
-          await this.brokeredAliasesFor(contextProjectId, backend),
+          await this.brokeredAliasesFor(contextProjectId, backend, opts.initiatedBy),
         );
         const workspaceSession =
           opts.sessionId === undefined
@@ -6262,11 +6305,12 @@ export class Conductor {
   private async brokeredAliasesFor(
     projectId: string | null | undefined,
     backend: Backend,
+    initiatedBy: { readonly userId: string } | undefined,
   ): Promise<readonly string[] | undefined> {
     if (!carriesBrokeredSecretTools(backend)) return undefined;
     if (projectId == null || this.deps.brokeredSecretAliases === undefined) return undefined;
     try {
-      return await this.deps.brokeredSecretAliases(projectId);
+      return await this.deps.brokeredSecretAliases(projectId, initiatedBy);
     } catch {
       return undefined;
     }

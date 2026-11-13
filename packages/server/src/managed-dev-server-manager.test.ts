@@ -1116,12 +1116,14 @@ describe('managed servers with secret bindings', () => {
     resolveSecrets: NonNullable<
       ConstructorParameters<typeof ManagedDevServerManager>[0]['resolveSecrets']
     >,
+    agentPerson?: (sessionId: string) => Promise<string | null | undefined>,
   ) => {
     await manager.close();
     manager = new ManagedDevServerManager({
       store: ctx.store,
       runtime: sandbox.runtime,
       resolveSecrets,
+      ...(agentPerson !== undefined ? { agentPerson } : {}),
       providerAuthority: async (projectId) => {
         const settings = await ctx.store.getProjectSettings(projectId);
         return JSON.stringify([
@@ -1249,6 +1251,7 @@ describe('managed servers with secret bindings', () => {
           dopplerProject: 'demo',
           dopplerConfig: 'staging',
           secretName: 'ATTENDEE_API_KEY',
+          person: { userId: null },
         });
         if (change === 'unchanged') {
           expect(sandbox.started).toHaveLength(1);
@@ -1289,6 +1292,7 @@ describe('managed servers with secret bindings', () => {
       'p1',
       secretBindings,
       JSON.stringify(['test', 'test']),
+      null,
     );
     expect(sandbox.started[0]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-1' }]);
     expect(sandbox.started[0]!.env).not.toHaveProperty('API_KEY');
@@ -1397,11 +1401,50 @@ describe('managed servers with secret bindings', () => {
     now += 6000;
     await manager.tick();
     expect(resolveSecrets.mock.calls).toEqual([
-      ['p1', secretBindings, JSON.stringify(['test', 'test'])],
-      ['p1', secretBindings, JSON.stringify(['test', 'test'])],
+      ['p1', secretBindings, JSON.stringify(['test', 'test']), null],
+      ['p1', secretBindings, JSON.stringify(['test', 'test']), null],
     ]);
     expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value' }]);
     await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('approve');
+  });
+
+  // ADR 0023 §3: a server's secrets resolve through the connection of the person it
+  // was started for. Recovery must keep that person, never whoever is around later.
+  it('resolves with the starting person and keeps them on recovery', async () => {
+    const resolveSecrets = vi.fn<(...args: unknown[]) => Promise<{ env: string; value: string }[]>>(
+      async () => [{ env: 'API_KEY', value: 'synthetic-value' }],
+    );
+    let runningFor: string | null | undefined = 'lena';
+    await withResolver(resolveSecrets, async () => runningFor);
+    const entry = await manager.add('s1', {
+      name: 'api',
+      command: 'node server.mjs',
+      secretBindings,
+    });
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    await manager.start('s1', 'api', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    runningFor = 'mia';
+    sandbox.recreate();
+    now += 6000;
+    await manager.tick();
+    expect(resolveSecrets.mock.calls.map((call) => call[3])).toEqual(['lena', 'lena']);
+    expect(
+      (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!.lastRunUserId,
+    ).toBe('lena');
+
+    await manager.restart('s1', 'api', 'operator', 'admin');
+    expect(resolveSecrets.mock.calls.at(-1)?.[3]).toBe('admin');
+
+    runningFor = undefined;
+    await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('no running turn');
   });
 });
 
