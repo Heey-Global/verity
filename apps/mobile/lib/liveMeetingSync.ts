@@ -299,11 +299,11 @@ async function flushOwnerMeeting(serverId: string, id: string): Promise<void> {
 async function handleOwnerCommands(suppliedClient?: VerityClient): Promise<void> {
   if (handlingCommand) return;
   const meeting = currentMeeting();
-  // Remote commands steer a running recorder; a finished one has nothing left to obey, and
-  // its server copy may already be deleted.
+  // Remote commands steer a recorder; an ended one has nothing left to obey, and its server
+  // copy may already be deleted.
   if (
     !meeting ||
-    meeting.state !== 'active' ||
+    meeting.state === 'ended' ||
     !meeting.ownerToken ||
     !meeting.serverId ||
     meeting.serverId !== getActiveMeetingServerId()
@@ -403,7 +403,7 @@ export function startLiveMeetingSync(): () => void {
       meeting?.sessionId,
       meeting?.id,
       meeting?.ownerToken,
-      meeting?.state === 'active',
+      meeting?.state === 'ended',
     ]);
     if (key !== watchedKey) {
       watchedKey = key;
@@ -411,7 +411,8 @@ export function startLiveMeetingSync(): () => void {
       detach = () => {};
       if (
         client &&
-        meeting?.state === 'active' &&
+        meeting &&
+        meeting.state !== 'ended' &&
         meeting.ownerToken &&
         meeting.serverId === getActiveMeetingServerId()
       ) {

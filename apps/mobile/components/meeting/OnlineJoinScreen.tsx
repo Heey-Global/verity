@@ -61,6 +61,7 @@ export function OnlineJoinScreen({
   topInset,
   bottomInset,
   cancelling,
+  cancelFailed = false,
   onMinimize,
   onCancel,
   onRetry,
@@ -74,6 +75,8 @@ export function OnlineJoinScreen({
   topInset: number;
   bottomInset: number;
   cancelling: boolean;
+  /** The last Cancel did not reach the server; the bot may still be joining. */
+  cancelFailed?: boolean;
   onMinimize: () => void;
   onCancel: () => void;
   onRetry: () => void;
@@ -181,14 +184,21 @@ export function OnlineJoinScreen({
             <Button label="Close" variant="secondary" onPress={onClose} fullWidth />
           </>
         ) : (
-          <Button
-            label={cancelling ? 'Cancelling…' : 'Cancel'}
-            accessibilityLabel="Cancel joining"
-            variant="secondary"
-            disabled={cancelling}
-            onPress={onCancel}
-            fullWidth
-          />
+          <>
+            {cancelFailed ? (
+              <Text variant="footnote" tone="attention" style={styles.footerNote}>
+                Could not cancel. Try again.
+              </Text>
+            ) : null}
+            <Button
+              label={cancelling ? 'Cancelling…' : 'Cancel'}
+              accessibilityLabel="Cancel joining"
+              variant="secondary"
+              disabled={cancelling}
+              onPress={onCancel}
+              fullWidth
+            />
+          </>
         )}
       </View>
     </View>
@@ -225,4 +235,5 @@ const styles = StyleSheet.create((theme) => ({
   },
   stepLabel: { textAlign: 'center' },
   footer: { gap: theme.spacing.sm, paddingBottom: theme.spacing.md },
+  footerNote: { textAlign: 'center' },
 }));

@@ -2721,13 +2721,13 @@ describe('online meeting joining', () => {
     error: null,
     ...fields,
   });
-  const serve = (status: string, reason: string | null = null, extra: object = {}) => {
+  const serve = <T extends object>(status: string, reason: string | null = null, extra?: T) => {
     const client = {
       getOnlineMeetingStatus: jest.fn().mockResolvedValue({ status, reason, platform: 'teams' }),
       stopOnlineMeeting: jest.fn().mockResolvedValue(undefined),
       getAttendeeSettings: jest.fn().mockResolvedValue({ configured: true }),
       getUpcomingMeetings: jest.fn().mockResolvedValue([]),
-      ...extra,
+      ...(extra as T),
     };
     jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
     jest.mocked(createVerityClient).mockReturnValue(client as never);
@@ -2760,7 +2760,8 @@ describe('online meeting joining', () => {
     render(<MeetingScreen />);
     expect(await screen.findByLabelText('End meeting')).toBeOnTheScreen();
     expect(await screen.findByText('Microsoft Teams')).toBeOnTheScreen();
-    expect(screen.getByText(/^Joining…$|^Live · /)).toBeOnTheScreen();
+    // In the call but not transcribing yet: never "Joining…" once the bot is in.
+    expect(screen.getByText('Starting transcript…')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Pause meeting')).toBeNull();
     expect(screen.queryByText('Joining the call')).toBeNull();
   });

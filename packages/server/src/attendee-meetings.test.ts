@@ -1077,13 +1077,12 @@ it('logs the meeting data path without transcript text, PIN or credentials', asy
         status: 401,
         outcome: 'signature_missing',
         trigger: 'transcript.update',
-        botId: 'bot',
         meetingId: 'meeting',
       },
       'Attendee webhook answered',
     );
     expect(log.info).toHaveBeenCalledWith(
-      { status: 401, outcome: 'unknown_meeting', trigger: 'transcript.update', botId: 'other' },
+      { status: 401, outcome: 'unknown_meeting', trigger: 'transcript.update' },
       'Attendee webhook answered',
     );
     expect(log.info).toHaveBeenCalledWith(
@@ -1383,8 +1382,8 @@ it('logs the enum fields of a signed state change and nothing else', async () =>
         status: 202,
         outcome: 'accepted',
         trigger: 'bot.state_change',
-        botId: 'bot',
         meetingId: 'meeting',
+        botId: 'bot',
         newState: 'waiting_room',
         oldState: 'joining',
         eventType: 'put_in_waiting_room',

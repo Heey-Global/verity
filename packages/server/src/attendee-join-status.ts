@@ -27,7 +27,15 @@ const JOINED = new Set([
   'joining_breakout_room',
   'leaving_breakout_room',
 ]);
-const BEFORE_JOIN = new Set(['ready', 'scheduled', 'staged', 'joining', 'connecting']);
+/** States after which the bot is no longer trying to get in; any other is still joining. */
+const DONE = new Set([
+  'leaving',
+  'post_processing',
+  'ended',
+  'fatal_error',
+  'data_deleted',
+  'disconnecting',
+]);
 const FAILURE_EVENTS = new Set(['could_not_join_meeting', 'fatal_error']);
 /** Ending the meeting before the bot got in is a cancellation, not a failure to report. */
 const CANCELLED = new Set(['leave_requested_before_bot_joined']);
@@ -62,7 +70,8 @@ export function joinProgress(bot: AttendeeBot, joinedBefore: boolean): JoinProgr
   };
   if (JOINED.has(bot.state)) return { status: 'joined', reason: null, ...diagnostics };
   if (bot.state === 'waiting_room') return { status: 'waiting', reason: null, ...diagnostics };
-  if (BEFORE_JOIN.has(bot.state)) return { status: 'joining', reason: null, ...diagnostics };
+  // A state added by the provider later reads as still joining rather than as over.
+  if (!DONE.has(bot.state)) return { status: 'joining', reason: null, ...diagnostics };
   if (joinedBefore) return { status: 'ended', reason: null, ...diagnostics };
   const failure = events.findLast((event) => FAILURE_EVENTS.has(event.type));
   const reason = providerCode(failure?.sub_type);

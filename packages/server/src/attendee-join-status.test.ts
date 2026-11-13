@@ -6,6 +6,7 @@ const at = (second: number) => `2026-11-13T08:00:${String(second).padStart(2, '0
 it.each([
   ['joining', 'joining'],
   ['ready', 'joining'],
+  ['some_future_state', 'joining'],
   ['waiting_room', 'waiting'],
   ['joined_not_recording', 'joined'],
   ['joined_recording', 'joined'],

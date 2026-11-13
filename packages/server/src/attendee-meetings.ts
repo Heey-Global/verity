@@ -337,11 +337,7 @@ export class AttendeeMeetings {
               : !verifyAttendeeSignature(payload, signature, state.credentials.webhookSecret)
                 ? 'signature_invalid'
                 : undefined;
-        const entry = {
-          trigger: event.trigger,
-          botId: event.bot_id,
-          ...(state ? { meetingId: state.meeting.id } : {}),
-        };
+        const entry = { trigger: event.trigger, ...(state ? { meetingId: state.meeting.id } : {}) };
         if (rejected) {
           answer(401, rejected, entry);
           return;
@@ -352,6 +348,7 @@ export class AttendeeMeetings {
         // Only a signed delivery describes the bot; probes never reach the log with content.
         answer(202, 'accepted', {
           ...entry,
+          botId: event.bot_id,
           ...(event.trigger === 'bot.state_change' ? stateChangeFields(event.data) : {}),
         });
       })().catch((error: unknown) => {

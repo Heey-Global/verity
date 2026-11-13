@@ -366,7 +366,7 @@ it('lets go of a finished meeting discarded on another device', async () => {
 });
 
 // A finished recording answered 404 on /commands after it was discarded, every few seconds.
-it('polls recorder commands only while the recording runs', async () => {
+it('polls recorder commands only until the recording has ended', async () => {
   jest.mocked(currentMeeting).mockReturnValue({ ...meeting, state: 'ended', error: null });
   Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
   const subscription = jest
@@ -374,7 +374,9 @@ it('polls recorder commands only while the recording runs', async () => {
     .mockReturnValue({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
   const stop = startLiveMeetingSync();
   try {
-    await waitFor(() => expect(getSyncCursor).not.toHaveBeenCalled());
+    const { recoverNativeMeetings } = jest.requireMock('./liveMeetingSession');
+    // The sync loop has ticked: native recovery runs first and resolves into the tick.
+    await waitFor(() => expect(recoverNativeMeetings).toHaveBeenCalled());
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(client.getLiveMeetingCommands).not.toHaveBeenCalled();
   } finally {

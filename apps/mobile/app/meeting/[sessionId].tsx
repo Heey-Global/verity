@@ -1072,6 +1072,9 @@ export default function MeetingScreen() {
         else {
           await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
           setPendingCommand('stop');
+          // The recorder's command state takes over, including a stop that fails there.
+          stopInFlight.current = null;
+          setStopping(null);
         }
       } else {
         await endMeeting();
@@ -1211,6 +1214,7 @@ export default function MeetingScreen() {
     meeting?.state === 'active' ||
     (meeting?.engine === 'attendee' && meeting.state === 'interrupted');
   const onlineMeetingId = meeting?.engine === 'attendee' ? meeting.id : null;
+  const onlineServerId = meeting?.serverId ?? null;
   const joinState =
     onlineMeetingId !== null && onlineStatus?.meetingId === onlineMeetingId
       ? onlineStatus.value
@@ -1226,13 +1230,15 @@ export default function MeetingScreen() {
     const load = async () => {
       let again = true;
       try {
+        // Asked of the meeting's own server only; another server knows nothing of it.
+        if (onlineServerId !== getActiveMeetingServerId()) return;
         const value = await createVerityClient()?.getOnlineMeetingStatus?.(
           sessionId,
           onlineMeetingId,
         );
         if (current && value) setOnlineStatus({ meetingId: onlineMeetingId, value });
       } catch (reason) {
-        if (reason instanceof VerityApiError && reason.status === 404) {
+        if (reason instanceof VerityApiError && (reason.status === 404 || reason.status === 403)) {
           again = false;
           if (current) setOnlineStatusMissing(onlineMeetingId);
         }
@@ -1245,7 +1251,7 @@ export default function MeetingScreen() {
       current = false;
       clearTimeout(timer);
     };
-  }, [sessionId, onlineMeetingId, joinSettled, onlineStatusMissing]);
+  }, [sessionId, onlineMeetingId, onlineServerId, joinSettled, onlineStatusMissing]);
   // A bot still outside the call: the meeting screen opens once it is in. Words already
   // transcribed or a listening capture prove it is in, also for servers without join status.
   const joiningCall =
@@ -2378,6 +2384,7 @@ export default function MeetingScreen() {
           topInset={insets.top}
           bottomInset={insets.bottom}
           cancelling={stopping?.meetingId === meeting.id && !stopping.failed}
+          cancelFailed={stopping?.meetingId === meeting.id && stopping.failed}
           onMinimize={minimize}
           onCancel={() => void end()}
           onRetry={() => {
@@ -2549,9 +2556,11 @@ export default function MeetingScreen() {
         ? 'Preparing language model…'
         : preparing
           ? // An online meeting has no microphone here: its bot joins the call instead.
-            meeting.engine === 'attendee'
-            ? 'Joining…'
-            : 'Preparing microphone…'
+            meeting.engine !== 'attendee'
+            ? 'Preparing microphone…'
+            : joinState?.status === 'joined'
+              ? 'Starting transcript…'
+              : 'Joining…'
           : !active && !recorderOnline && meeting.engine !== 'attendee'
             ? // Viewed from another device whose recorder stopped reporting.
               'Meeting'
