@@ -111,7 +111,7 @@ import {
 import { normalizeFingerprint } from './claude-egress-mtls.js';
 import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import type { ProjectRelayBinding } from './project-relay-lifecycle.js';
-import { sandboxPersonTag } from './sandbox-identity.js';
+import { sandboxIdentity, sandboxPersonTag } from './sandbox-identity.js';
 import type { AuditEvent, AuditEventInput, AuditLog } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
 
@@ -10625,6 +10625,51 @@ describe('DeprovisionerImpl (#174)', () => {
     // container is gone, because the daemon refuses to remove a volume in use.
     expect(order).toEqual(['container', projectNodeModulesVolumeName(id)]);
     expect(isDirCalls).toEqual(['/data/dev/example-org-example-repo', `/srv/verity/runners/${id}`]);
+  });
+
+  // ADR 0023 §4: deleting a project ends every person's own sandbox in it too —
+  // container, relay, runtime and volume — while their runtimes for other projects stay.
+  it("removes every person's own sandbox of a purged project", async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({ id, ...baseInput, state: 'active' });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .onConflict((conflict) => conflict.column('id').doNothing())
+      .execute();
+    await ctx.store.projectSandboxes.ensure(id, 'lena');
+    const project = (await ctx.store.getProject(id))!;
+    const lena = sandboxIdentity(project, { userId: 'lena', projectDefault: false });
+    const tag = sandboxPersonTag('lena');
+    const rmCalls: string[] = [];
+    const removed: string[] = [];
+    const relayStops: unknown[] = [];
+    const { client: docker } = fakeDocker({
+      removeContainer: vi.fn(async (name: string) => void removed.push(name)),
+      removeVolume: vi.fn(async (name: string) => void removed.push(name)),
+    });
+    const deprovisioner = new DeprovisionerImpl(
+      ctx.store,
+      ctx.db,
+      docker,
+      '/data/dev',
+      () => true,
+      (p) => void rmCalls.push(p),
+      undefined,
+      '/srv/verity/runners',
+      undefined,
+      { stop: async (sandbox) => void relayStops.push(sandbox) },
+    );
+
+    await deprovisioner.deprovision(id, { purge: true });
+
+    expect(removed).toEqual(
+      expect.arrayContaining([project.containerName, lena.containerName, lena.nodeModulesVolume]),
+    );
+    expect(relayStops).toContainEqual({ projectId: id, userId: 'lena', projectDefault: false });
+    expect(rmCalls).toContain(`/srv/verity/runners/${tag}/${id}`);
+    expect(rmCalls).not.toContain(`/srv/verity/runners/${tag}`);
+    expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('absent');
   });
 
   it('purge=true honors a clone directory pinned before GitHub linking', async () => {

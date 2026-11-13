@@ -1,4 +1,7 @@
-import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import {
+  removeLegacyProjectNetwork,
+  removePersonalSandboxNetwork,
+} from './project-network-cleanup.js';
 import type { ProjectRelaySandbox, ProjectRelaySandboxRef } from './project-relay-lifecycle.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import {
@@ -8106,6 +8109,38 @@ export class DeprovisionerImpl implements Deprovisioner {
     // showing up later as an unexplained hang.
     await bestEffort('relay-stop', () => this.projectRelay?.stop(project.id));
     await bestEffort('network-remove', () => removeLegacyProjectNetwork(this.docker, project.id));
+    // Every person's own sandbox of the project goes with it (ADR 0023 §4): its
+    // container, relay and network now, its runtime and volume on purge below.
+    // Their capabilities and certificates are revoked project-wide further down.
+    const personalSandboxes = (await this.store.projectSandboxes.list(project.id))
+      .filter((sandbox) => !sandbox.projectDefault)
+      .map((sandbox) => sandboxIdentity(project, sandbox));
+    for (const sandbox of personalSandboxes) {
+      const tag = sandboxPersonTag(sandbox.userId);
+      await bestEffort(
+        `personal-container-stop ${tag}`,
+        () => this.docker.stopContainer(sandbox.containerName),
+        containerGone,
+      );
+      await bestEffort(
+        `personal-container-remove ${tag}`,
+        () => this.docker.removeContainer(sandbox.containerName),
+        containerGone,
+      );
+      await bestEffort(`personal-relay-stop ${tag}`, () =>
+        this.projectRelay?.stop({
+          projectId: project.id,
+          userId: sandbox.userId,
+          projectDefault: false,
+        }),
+      );
+      await bestEffort(`personal-network-remove ${tag}`, () =>
+        removePersonalSandboxNetwork(this.docker, project.id, sandbox.networkName, tag),
+      );
+      await bestEffort(`personal-sandbox-state ${tag}`, () =>
+        this.store.projectSandboxes.setState(project.id, sandbox.userId, 'absent'),
+      );
+    }
     // The purge seams are synchronous by type (`statSync`/`rmSync` by default),
     // and no timer in the process — including this step's own bound — fires
     // while a synchronous call blocks the event loop. The bound therefore
@@ -8133,6 +8168,19 @@ export class DeprovisionerImpl implements Deprovisioner {
       await bestEffort('node-modules-volume-remove', () =>
         this.docker.removeVolume?.(projectNodeModulesVolumeName(project.id)),
       );
+      for (const sandbox of personalSandboxes) {
+        const tag = sandboxPersonTag(sandbox.userId);
+        if (this.runnerRuntimeRoot !== undefined) {
+          // `<runners>/<tag>/<projectId>`: the person's other projects stay.
+          const runtimePath = join(this.runnerRuntimeRoot, tag, project.id);
+          await bestEffort(`personal-runner-runtime-purge ${tag}`, () => {
+            if (this.isDir(runtimePath)) this.removeDir(runtimePath);
+          });
+        }
+        await bestEffort(`personal-node-modules-volume-remove ${tag}`, () =>
+          this.docker.removeVolume?.(sandbox.nodeModulesVolume),
+        );
+      }
     }
 
     // Every authority the sandbox held, revoked together. Each call is STARTED

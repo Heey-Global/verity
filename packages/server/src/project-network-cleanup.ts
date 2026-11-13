@@ -63,29 +63,48 @@ export async function removeLegacyProjectNetwork(
   projectId: string,
   expectedId?: string,
 ) {
+  await removeOwnedProjectNetwork(
+    docker,
+    projectId,
+    `verity-proj-${projectId}`,
+    undefined,
+    expectedId,
+  );
+}
+
+/** Remove a person's own sandbox network (ADR 0023 §4) under the same proof of
+ *  ownership, which additionally names the person it was created for. */
+export async function removePersonalSandboxNetwork(
+  docker: DockerClient,
+  projectId: string,
+  name: string,
+  personTag: string,
+) {
+  await removeOwnedProjectNetwork(docker, projectId, name, personTag, undefined);
+}
+
+async function removeOwnedProjectNetwork(
+  docker: DockerClient,
+  projectId: string,
+  name: string,
+  personTag: string | undefined,
+  expectedId: string | undefined,
+) {
   if (!docker.inspectNetwork || !docker.removeNetwork) return;
-  const name = `verity-proj-${projectId}`;
+  const owned = (candidate: DockerNetwork): boolean =>
+    candidate.Name === name &&
+    candidate.Labels?.['verity.project-id'] === projectId &&
+    candidate.Labels['verity.sandbox-person'] === personTag &&
+    (candidate.Labels['verity.component'] === undefined ||
+      candidate.Labels['verity.component'] === 'project-network');
   const network = await docker.inspectNetwork(name);
   if (!network || (expectedId !== undefined && network.Id !== expectedId)) return;
-  if (
-    network.Name !== name ||
-    network.Labels?.['verity.project-id'] !== projectId ||
-    (network.Labels?.['verity.component'] !== undefined &&
-      network.Labels['verity.component'] !== 'project-network')
-  )
-    throw new Error('Project network ownership is unproven');
+  if (!owned(network)) throw new Error('Project network ownership is unproven');
   if (Object.keys(network.Containers).length !== 0 || (await networkHasContainers(docker, network)))
     return;
   const current = await docker.inspectNetwork(network.Id);
   if (!current) return;
-  if (
-    current.Id !== network.Id ||
-    current.Name !== name ||
-    current.Labels?.['verity.project-id'] !== projectId ||
-    (current.Labels?.['verity.component'] !== undefined &&
-      current.Labels['verity.component'] !== 'project-network') ||
-    Object.keys(current.Containers).length
-  )
+  if (current.Id !== network.Id || !owned(current) || Object.keys(current.Containers).length)
     return;
   await docker.removeNetwork(network.Id);
 }
