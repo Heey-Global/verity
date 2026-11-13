@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -81,6 +82,22 @@ type RemoteOperation = z.infer<typeof remoteRecordSchema>['operation'];
  * the commands with it when it stops, so an attempt older than this has no live
  * local writer left.
  */
+/** Bounds for waiting out host builder maintenance before refusing a build. A
+ *  builder update restarts BuildKit in a few minutes; this leaves headroom for a
+ *  slow image pull without turning a stuck maintenance run into a hung build. */
+const BUILDER_MAINTENANCE_WAIT_MS = 10 * 60_000;
+const BUILDER_MAINTENANCE_POLL_MS = 5_000;
+const BUILDER_MAINTENANCE_REASON = 'builder maintenance is in progress';
+
+/** The host holds the admission lock exclusively for maintenance: transient, so
+ *  admission waits for it, unlike every other refusal. */
+export class BuilderMaintenanceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'BuilderMaintenanceError';
+  }
+}
+
 const FOREIGN_ATTEMPT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 /** Age after which a remote operation's client in another PID namespace is trusted
  *  gone: `docker load` is bounded by a 15-minute client timeout and a build command
@@ -405,6 +422,10 @@ export class BuildStorage {
       return { availableBytes: stats.bavail * stats.bsize, freeInodes: stats.ffree };
     },
     private readonly admissionDirectory?: string,
+    private readonly maintenanceWait: { timeoutMs: number; pollMs: number } = {
+      timeoutMs: BUILDER_MAINTENANCE_WAIT_MS,
+      pollMs: BUILDER_MAINTENANCE_POLL_MS,
+    },
   ) {}
 
   /** Markers carry recovery evidence independently of the artifact directory. */
@@ -557,6 +578,37 @@ export class BuildStorage {
     onQueued?: (ahead: number, holder?: { label: string; since: number }) => void,
     owner: { label: string; projectId?: string } = { label: 'unnamed build' },
   ): Promise<BuildStorageLease> {
+    // Host builder maintenance (a builder update or snapshotter migration) holds
+    // the admission lock for minutes, not hours. Failing at once turned a Repair
+    // issued during that window into a failed project with nothing wrong with it.
+    // Wait for it, bounded, outside the queue so other builds are not held up.
+    const deadline = Date.now() + this.maintenanceWait.timeoutMs;
+    let waitingSince: number | undefined;
+    for (;;) {
+      try {
+        const lease = await this.admitInTurnOnce(onQueued, owner);
+        if (waitingSince !== undefined)
+          console.log(
+            `Builder maintenance ended; ${owner.label} admitted after waiting ${String(Math.round((Date.now() - waitingSince) / 1000))}s.`,
+          );
+        return lease;
+      } catch (error) {
+        if (!(error instanceof BuilderMaintenanceError) || Date.now() >= deadline) throw error;
+        if (waitingSince === undefined) {
+          waitingSince = Date.now();
+          console.warn(
+            `Builder maintenance is in progress; ${owner.label} waits up to ${String(Math.round(this.maintenanceWait.timeoutMs / 1000))}s for it to finish.`,
+          );
+        }
+        await delay(Math.min(this.maintenanceWait.pollMs, Math.max(0, deadline - Date.now())));
+      }
+    }
+  }
+
+  private async admitInTurnOnce(
+    onQueued: ((ahead: number, holder?: { label: string; since: number }) => void) | undefined,
+    owner: { label: string; projectId?: string },
+  ): Promise<BuildStorageLease> {
     if (this.held || this.handingOver || this.waiting.length > 0) {
       // A refusal that does not depend on the lease answers now, not after the wait;
       // admit() checks everything again once the turn comes.
@@ -633,16 +685,18 @@ export class BuildStorage {
         stdio: ['ignore', 'ignore', 'pipe', fd],
         timeout: 5000,
       });
-      if (locked.status !== 0) reason = 'builder maintenance is in progress';
+      if (locked.status !== 0) reason = BUILDER_MAINTENANCE_REASON;
       else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
         reason = 'builder migration recovery is pending';
     } finally {
       closeSync(fd);
     }
-    if (reason !== undefined)
-      throw new Error(
-        `Builder admission unavailable: ${reason}; retry after managed maintenance completes`,
-      );
+    if (reason !== undefined) {
+      const message = `Builder admission unavailable: ${reason}; retry after managed maintenance completes`;
+      throw reason === BUILDER_MAINTENANCE_REASON
+        ? new BuilderMaintenanceError(message)
+        : new Error(message);
+    }
   }
 
   private wakeNext(): void {
@@ -815,7 +869,7 @@ export class BuildStorage {
           stdio: ['ignore', 'ignore', 'pipe', admissionFd],
           timeout: 5000,
         });
-        if (locked.status !== 0) throw new Error('builder maintenance is in progress');
+        if (locked.status !== 0) throw new BuilderMaintenanceError(BUILDER_MAINTENANCE_REASON);
         if (existsSync(join(this.admissionDirectory, 'migration-pending')))
           throw new Error('builder migration recovery is pending');
         // The shared descriptor fences the check/create race with the host's exclusive lock.
@@ -823,10 +877,10 @@ export class BuildStorage {
         admissionMarker = this.createAdmissionMarker(this.admissionDirectory);
       } catch (cause) {
         if (admissionFd !== undefined) closeSync(admissionFd);
-        throw new Error(
-          `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`,
-          { cause },
-        );
+        const message = `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`;
+        throw cause instanceof BuilderMaintenanceError
+          ? new BuilderMaintenanceError(message, { cause })
+          : new Error(message, { cause });
       }
     }
     try {

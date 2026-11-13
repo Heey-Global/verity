@@ -742,7 +742,8 @@ type SandboxWakeFallbackReason =
   | 'ownership_mismatch'
   | 'generation_missing'
   | 'contract_mismatch'
-  | 'stale_runtime_state';
+  | 'stale_runtime_state'
+  | 'relay_missing';
 
 /**
  * gVisor names the rootfs overlay filestore after the sandbox id, which Docker
@@ -3899,10 +3900,17 @@ export class ProvisionerImpl implements Provisioner {
           }
 
           let relayAwake = false;
+          let relayMissing = false;
           try {
             const activation = await reactivateRelay(
               this.relayBinding(project, generation, egress),
-            );
+            ).catch((error: unknown) => {
+              // The retained relay is adopted by its generation-derived name. When
+              // it no longer exists (removed by host maintenance, a manual cleanup
+              // or an older GC), this generation can never be resumed in place.
+              relayMissing = error instanceof DockerError && error.kind === 'container_not_found';
+              throw error;
+            });
             relayAwake = true;
             if (this.opts.gitSecretRoot !== undefined) {
               const mountedDestinations = new Set(
@@ -4046,6 +4054,9 @@ export class ProvisionerImpl implements Provisioner {
             // The retained container can never start again (see
             // isStaleGvisorFilestore); returning it to sleep would fail every wake.
             if (isStaleGvisorFilestore(cause)) return await replaceRetained('stale_runtime_state');
+            // Returning to sleep would fail every later wake the same way; a cold
+            // wake mints a fresh generation with its own relay and keeps project data.
+            if (relayMissing) return await replaceRetained('relay_missing');
             await this.opts.store.updateProjectSleepState(project.id, 'sleeping', {
               sleepCompatibilityFingerprint: project.sleepCompatibilityFingerprint,
               sleepingSince: project.sleepingSince ?? new Date(),

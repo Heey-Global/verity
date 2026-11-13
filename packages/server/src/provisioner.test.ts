@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
-import { BuildStorage } from './build-storage.js';
+import { BuildStorage, BuilderMaintenanceError } from './build-storage.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID, X509Certificate } from 'node:crypto';
@@ -2157,6 +2157,94 @@ describe('ProvisionerImpl (#174)', () => {
       expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
     },
   );
+
+  // Wake adopts the retained relay by its generation-derived name. If host
+  // cleanup removed it while the project slept, returning to sleep made every
+  // later wake fail with container_not_found; a cold wake mints a new generation
+  // and relay and keeps project data.
+  it('cold-wakes a retained sleeping Sandbox whose relay container is gone', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      networks: { [projectNetworkName(id)]: {} },
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      createdContainerId: 'container-2',
+      inspectContainer: vi
+        .fn()
+        .mockResolvedValueOnce(retained)
+        .mockResolvedValue({ ...retained, id: 'container-2', running: true }),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = vi.fn(async () => {
+      throw new DockerError({ kind: 'container_not_found', id: 'verity-relay-gone' });
+    });
+    const relayStart = vi.spyOn(relay, 'start');
+    const fallback = vi.fn();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      onSandboxWakeFallback: fallback,
+    });
+
+    expect((await provisioner.ensureProjectSandboxAwake(id)).state).toBe('active');
+    expect(fallback).toHaveBeenCalledWith({ projectId: id, reason: 'relay_missing' });
+    expect(relayStart).toHaveBeenCalledOnce();
+    expect(relayStart.mock.calls[0]![0].containerGeneration).not.toBe('generation-1');
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
+  });
+
+  it('keeps a sleeping Sandbox asleep when relay reactivation fails for another reason', async () => {
+    const id = await seedProject('active');
+    const retained = {
+      networks: { [projectNetworkName(id)]: {} },
+      id: 'container-1',
+      running: false,
+      image: 'sandbox:test',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-1' },
+    };
+    await ctx.store.updateProjectSleepState(id, 'sleeping', {
+      sleepCompatibilityFingerprint: sandboxSleepCompatibilityFingerprint(retained),
+      sleepingSince: new Date(),
+      wakeStartedAt: null,
+    });
+    const { client: docker, calls } = fakeDocker({
+      inspectContainer: vi.fn().mockResolvedValue(retained),
+    });
+    const relay = defaultProjectRelay();
+    relay.reactivate = vi.fn(async () => {
+      throw new DockerError({ kind: 'network', cause: new Error('Docker API timeout') });
+    });
+    const fallback = vi.fn();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      projectTokenMint: async () => undefined,
+      defaultImageRef: 'sandbox:test',
+      hostCloneRoot: '/work',
+      projectRelay: relay,
+      onSandboxWakeFallback: fallback,
+    });
+
+    await expect(provisioner.ensureProjectSandboxAwake(id)).rejects.toThrow('project wake failed');
+    expect(await ctx.store.getProject(id)).toMatchObject({ state: 'sleeping' });
+    expect(fallback).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === 'createContainer')).toBe(false);
+  });
 
   it('marks no activity after a scan wake but on every joining wake', async () => {
     const id = await seedProject('active');
@@ -8711,6 +8799,50 @@ describe('ProvisionerImpl resolve-or-build devcontainer image (ADR 0003 R3.1)', 
       expect(build).not.toHaveBeenCalled();
       const created = calls.find((c) => c.method === 'createContainer');
       expect((created?.payload as ContainerSpec).image).toMatch(/^verity-devc-/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Repair (provision) of a project whose build is refused (builder maintenance)
+  // must leave its existing Sandbox and relay generation untouched: the image is
+  // resolved before anything is retired, so the refusal costs nothing but the try.
+  // A sleeping project's Repair reaches this same container phase after its clone.
+  it('keeps the existing Sandbox when a Repair cannot get builder admission', async () => {
+    const { root } = makeCloneRoot(true);
+    try {
+      const id = await seedProject();
+      const storage = new BuildStorage(join(root, 'build-storage'));
+      vi.spyOn(storage, 'admitInTurn').mockRejectedValue(
+        new BuilderMaintenanceError(
+          'Builder admission unavailable: builder maintenance is in progress; retry after managed maintenance completes',
+        ),
+      );
+      const build = vi.fn<DevcontainerBuildSpawner>(async () => ({ stdout: '', stderr: '' }));
+      const { client: docker, calls } = fakeDocker({ imageExists: async () => false });
+      const relay = defaultProjectRelay();
+      const relayStop = vi.spyOn(relay, 'stop');
+      const relayStart = vi.spyOn(relay, 'start');
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker,
+        defaultImageRef: 'ghcr.io/heey-global/dev-base:default',
+        hostCloneRoot: root,
+        devcontainerBuild: build,
+        dockerHostForBuild: 'unix:///var/run/docker.sock',
+        devcontainerFeature: toolkitFeature,
+        buildStorage: storage,
+        projectRelay: relay,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow('builder maintenance is in progress');
+
+      expect(build).not.toHaveBeenCalled();
+      for (const method of ['stopContainer', 'removeContainer', 'createContainer'])
+        expect(calls.filter((call) => call.method === method)).toEqual([]);
+      expect(relayStop).not.toHaveBeenCalled();
+      expect(relayStart).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

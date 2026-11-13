@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BuildStorage,
   buildStoragePolicy,
+  BuilderMaintenanceError,
   estimateBuildStorageBytes,
   isBuildStorageCapacityRefusal,
   remoteOperationEnded,
@@ -979,6 +980,59 @@ describe('host maintenance admission', () => {
     lease.dispose();
     expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(0);
     expect(readdirSync(join(gate, 'leases'))).toHaveLength(0);
+  });
+  // A Repair issued during a short builder update used to fail at once and leave
+  // the project `failed`. Maintenance is transient: a queued build waits it out.
+  it('waits for host maintenance to finish before admitting a build, within a bound', async () => {
+    const { spawn } = await import('node:child_process');
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(join(gate, 'leases'), { recursive: true });
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    const holdMaintenance = async () => {
+      const maintenance = spawn('flock', [
+        '--no-fork',
+        '-x',
+        join(gate, 'build-admission.lock'),
+        process.execPath,
+        '-e',
+        "process.stdin.resume(); process.stdout.write('locked');",
+      ]);
+      await once(maintenance.stdout, 'data');
+      return async () => {
+        const exited = once(maintenance, 'exit');
+        maintenance.stdin.end();
+        await exited;
+      };
+    };
+
+    const patient = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate, {
+      timeoutMs: 30_000,
+      pollMs: 20,
+    });
+    const release = await holdMaintenance();
+    let admitted = false;
+    const waiting = patient.admitInTurn().then((lease) => {
+      admitted = true;
+      return lease;
+    });
+    await setTimeout(150);
+    expect(admitted).toBe(false);
+    await release();
+    (await waiting).dispose();
+
+    const bounded = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate, {
+      timeoutMs: 100,
+      pollMs: 20,
+    });
+    const releaseAgain = await holdMaintenance();
+    try {
+      await expect(bounded.admitInTurn()).rejects.toBeInstanceOf(BuilderMaintenanceError);
+    } finally {
+      await releaseAgain();
+    }
+    // The refused request left no place in the queue behind.
+    (await bounded.admitInTurn()).dispose();
   });
   it('fails closed on partial provisioning, pending recovery and held maintenance', async () => {
     const { spawn } = await import('node:child_process');
