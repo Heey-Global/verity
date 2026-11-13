@@ -381,6 +381,55 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
+  it('lets a slow route that answers after the check gave up end the outage', async () => {
+    const clock = fakeTimers();
+    let answer: (() => void) | undefined;
+    const monitor = new ConnectionMonitor({
+      probe: () =>
+        new Promise<void>((resolve) => {
+          answer = resolve;
+        }),
+      timers: clock.timers,
+      checkTimeoutMs: 10_000,
+    });
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    clock.advance(10_000);
+    await flush();
+    expect(monitor.getState().kind).toBe('unreachable');
+    answer?.();
+    await flush();
+    expect(monitor.getState().kind).toBe('connected');
+    monitor.reset();
+  });
+
+  it('does not let a late answer from an earlier outage end a later one', async () => {
+    const clock = fakeTimers();
+    const answers: (() => void)[] = [];
+    let probe: () => Promise<unknown> = () =>
+      new Promise<void>((resolve) => {
+        answers.push(resolve);
+      });
+    const monitor = new ConnectionMonitor({
+      probe: () => probe(),
+      timers: clock.timers,
+      checkTimeoutMs: 10_000,
+    });
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    clock.advance(10_000); // the first check gives up; its answer is still pending
+    await flush();
+    probe = () => Promise.resolve();
+    monitor.retryNow();
+    await flush();
+    expect(monitor.getState().kind).toBe('connected');
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    answers[0]?.();
+    await flush();
+    expect(monitor.getState().kind).toBe('maintenance');
+    monitor.reset();
+  });
+
   it('keeps a throwing listener from stopping the others', async () => {
     const monitor = new ConnectionMonitor({ probe: () => Promise.resolve() });
     const after = vi.fn();

@@ -151,6 +151,8 @@ export class ConnectionMonitor implements ConnectionReporter {
   private generation = 0;
   /** Changes only with {@link reset}: which server the reports are about. */
   private serverEpoch = 0;
+  /** Counts outages (and resets), so a late answer ends only its own. */
+  private outage = 0;
 
   constructor(
     opts: {
@@ -266,6 +268,7 @@ export class ConnectionMonitor implements ConnectionReporter {
     this.stopTimer();
     this.generation += 1;
     this.serverEpoch += 1;
+    this.outage += 1;
     this.attempt = 0;
     this.checking = false;
     this.state = { kind: 'connected', recoveredAt: undefined, lastConnectedAt: undefined };
@@ -273,6 +276,7 @@ export class ConnectionMonitor implements ConnectionReporter {
   }
 
   private enter(kind: ConnectionFailureKind, details: string): void {
+    this.outage += 1;
     this.state = {
       kind,
       since: this.timers.now(),
@@ -310,8 +314,20 @@ export class ConnectionMonitor implements ConnectionReporter {
     }
     let failure: unknown;
     let failed = false;
+    const answer = probe();
+    if (!confirming) {
+      // A slow route (Remote Control) may answer only after the check gave up;
+      // that answer still ends the outage the check was made during.
+      const outage = this.outage;
+      answer.then(
+        () => {
+          if (outage === this.outage && !this.checking) this.recover();
+        },
+        () => undefined,
+      );
+    }
     try {
-      await this.withTimeout(probe());
+      await this.withTimeout(answer);
     } catch (error) {
       failed = true;
       failure = error;
