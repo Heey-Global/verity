@@ -111,6 +111,8 @@ export interface ControlPlaneDeps {
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads the gateway-held Codex access token for the account-global usage probe. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** A fresh access token for a person's own Claude login, if they have one. */
+  personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
   /** A person's own Codex access token from the gateway (ADR 0023 §3). */
   codexGatewayCredentialFor?: ((userId: string) => CodexUsageCredentialProvider) | undefined;
   /** Activates encrypted runtime services after the store is initialized/unlocked. */
@@ -425,6 +427,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.claudeOAuthTokenProvider !== undefined
       ? { claudeOAuthTokenProvider: deps.claudeOAuthTokenProvider }
+      : {}),
+    ...(deps.personalClaudeAccessToken !== undefined
+      ? { personalClaudeAccessToken: deps.personalClaudeAccessToken }
       : {}),
     ...(deps.codexGatewayCredentialFor !== undefined
       ? { codexGatewayCredentialFor: deps.codexGatewayCredentialFor }

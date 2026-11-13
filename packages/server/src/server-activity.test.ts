@@ -1851,6 +1851,40 @@ describe('GET /provider-limits', () => {
     }
   });
 
+  // The instance accounts were the administrator's: a member's meter must show
+  // their own accounts' quota, never the administrator's.
+  it("shows a member their own accounts' quota, not the instance's", async () => {
+    const instanceLimits = vi.fn(async () => [
+      {
+        status: 'allowed' as const,
+        resetsAt: 1_700_000_100,
+        window: 'five_hour' as const,
+        usedPercent: 90,
+        providerLabel: 'Claude',
+      },
+    ]);
+    const personalClaudeAccessToken = vi.fn(async () => undefined);
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      claudeUsage: { getLimits: instanceLimits },
+      personalClaudeAccessToken,
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const res = await asLena.inject({ method: 'GET', url: '/provider-limits' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+      expect(instanceLimits).not.toHaveBeenCalled();
+      expect(personalClaudeAccessToken).toHaveBeenCalledWith('lena');
+    } finally {
+      await asLena.close();
+    }
+  });
+
   it('serves the Codex account-global quota next to Claude', async () => {
     // Codex's own per-turn events only advance while an interactive session runs,
     // so the probe is what keeps the Codex meter true; the route must merge both.

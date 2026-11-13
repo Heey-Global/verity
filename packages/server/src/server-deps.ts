@@ -234,6 +234,8 @@ export interface ServerDeps {
   /** Reads a short-lived Codex access token from the Agent Gateway, which owns the
    * rotating login (ADR 0010). Absent → the Codex usage probe stays inert. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** A fresh access token for a person's own Claude login, if they have one. */
+  personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
   /** A person's own Codex access token from the gateway (ADR 0023 §3). */
   codexGatewayCredentialFor?: ((userId: string) => CodexUsageCredentialProvider) | undefined;
   /** Runs after a successful first initialization or unlock. Used by services whose

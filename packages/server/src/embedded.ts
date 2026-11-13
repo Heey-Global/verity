@@ -4106,6 +4106,8 @@ export async function buildEmbeddedServer(
       if (patch.codexAuthJson !== undefined) await codexModelCatalog?.refresh();
     },
     claudeOAuthTokenProvider: claudeCredentialSync.getAccessToken,
+    personalClaudeAccessToken: (userId: string) =>
+      personalProviderCredentials.claudeAccessToken(userId),
     persistPersonalProviderCredentials: (userId, provider, write) =>
       personalProviderCredentials.persist(userId, provider, write),
     // The Codex quota probe reads its token from the gateway, the single refresh

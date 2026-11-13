@@ -3493,7 +3493,35 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   // Both probes are cached, backed off and never throw. An unconfigured provider
   // simply contributes nothing.
-  registerProviderLimitsRoute(app, { claudeUsage, codexUsage });
+  // Each person sees the quota of their own accounts; the instance probes are the
+  // administrator's. One probe pair per person, kept for the server's lifetime.
+  const personalUsage = new Map<
+    string,
+    { claudeUsage: typeof claudeUsage; codexUsage: typeof codexUsage }
+  >();
+  registerProviderLimitsRoute(app, {
+    claudeUsage,
+    codexUsage,
+    probesFor: (viewer) => {
+      if (viewer === legacyAdministratorId) return undefined;
+      const known = personalUsage.get(viewer);
+      if (known !== undefined) return known;
+      const probes = {
+        claudeUsage: createClaudeUsageService({
+          log: app.log,
+          tokenProvider: () =>
+            deps.personalClaudeAccessToken?.(viewer).catch(() => undefined) ??
+            Promise.resolve(undefined),
+        }),
+        codexUsage: createCodexUsageService({
+          log: app.log,
+          credentialProvider: deps.codexGatewayCredentialFor?.(viewer),
+        }),
+      };
+      personalUsage.set(viewer, probes);
+      return probes;
+    },
+  });
 
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
   // the source of the new-session picker's project list. When a GitHub provider is
