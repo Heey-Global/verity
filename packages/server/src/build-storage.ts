@@ -75,19 +75,14 @@ const remoteRecordSchema = z.object({
 });
 type RemoteOperation = z.infer<typeof remoteRecordSchema>['operation'];
 
-/**
- * An attempt from another PID namespace (the previous Server container) has no
- * process this one can inspect. Every command the Server runs is bounded by its own
- * timeout (at most 30 minutes) while that Server lives, and its container takes
- * the commands with it when it stops, so an attempt older than this has no live
- * local writer left.
- */
 /** Bounds for waiting out host builder maintenance before refusing a build. A
  *  builder update restarts BuildKit in a few minutes; this leaves headroom for a
  *  slow image pull without turning a stuck maintenance run into a hung build. */
 const BUILDER_MAINTENANCE_WAIT_MS = 10 * 60_000;
 const BUILDER_MAINTENANCE_POLL_MS = 5_000;
 const BUILDER_MAINTENANCE_REASON = 'builder maintenance is in progress';
+/** `flock --nonblock` exit status when another holder has the lock. */
+const FLOCK_HELD = 1;
 
 /** The host holds the admission lock exclusively for maintenance: transient, so
  *  admission waits for it, unlike every other refusal. */
@@ -98,6 +93,13 @@ export class BuilderMaintenanceError extends Error {
   }
 }
 
+/**
+ * An attempt from another PID namespace (the previous Server container) has no
+ * process this one can inspect. Every command the Server runs is bounded by its own
+ * timeout (at most 30 minutes) while that Server lives, and its container takes
+ * the commands with it when it stops, so an attempt older than this has no live
+ * local writer left.
+ */
 const FOREIGN_ATTEMPT_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 /** Age after which a remote operation's client in another PID namespace is trusted
  *  gone: `docker load` is bounded by a 15-minute client timeout and a build command
@@ -685,7 +687,10 @@ export class BuildStorage {
         stdio: ['ignore', 'ignore', 'pipe', fd],
         timeout: 5000,
       });
-      if (locked.status !== 0) reason = BUILDER_MAINTENANCE_REASON;
+      // Only "lock held" (exit 1 under --nonblock) is maintenance; a timeout or a
+      // failed spawn is a broken check, which must not be waited out as one.
+      if (locked.status === FLOCK_HELD) reason = BUILDER_MAINTENANCE_REASON;
+      else if (locked.status !== 0) reason = 'the builder admission lock could not be checked';
       else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
         reason = 'builder migration recovery is pending';
     } finally {
@@ -869,7 +874,9 @@ export class BuildStorage {
           stdio: ['ignore', 'ignore', 'pipe', admissionFd],
           timeout: 5000,
         });
-        if (locked.status !== 0) throw new BuilderMaintenanceError(BUILDER_MAINTENANCE_REASON);
+        if (locked.status === FLOCK_HELD)
+          throw new BuilderMaintenanceError(BUILDER_MAINTENANCE_REASON);
+        if (locked.status !== 0) throw new Error('the builder admission lock could not be checked');
         if (existsSync(join(this.admissionDirectory, 'migration-pending')))
           throw new Error('builder migration recovery is pending');
         // The shared descriptor fences the check/create race with the host's exclusive lock.
