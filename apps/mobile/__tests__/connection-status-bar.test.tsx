@@ -1,5 +1,5 @@
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react-native';
-import { SERVER_MAINTENANCE_MESSAGE } from '@verity/mobile';
+import { SERVER_MAINTENANCE_MESSAGE, VerityApiError, type VerityClient } from '@verity/mobile';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
@@ -14,6 +14,7 @@ import {
   useHidesConnectionError,
 } from '../hooks/useServerConnection';
 import { serverConnection } from '../lib/serverConnection';
+import { loadVeritySettings, resetVeritySettingsStore } from '../lib/settingsStore';
 
 const TLS_DUMP =
   'Uplink probe (Pinned TLS transport failed [NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE]; tunnel local=2) and direct Core request failed';
@@ -129,29 +130,44 @@ describe('useHidesConnectionError', () => {
   });
 });
 
-describe('SettingsScaffold after an outage', () => {
+describe('Settings after an outage', () => {
   const scaffold = (error: string, onRetry: () => void) => (
     <SettingsScaffold title="Settings" state={{ error, saving: false }} onRetry={onRetry}>
       {null}
     </SettingsScaffold>
   );
 
-  it('hides the outage and retries the load it broke once the server is back', () => {
+  // `onRetry` may repeat a save. A save that failed because the server was
+  // updating may already have been applied: recovery must never replay it.
+  it('hides the outage but never retries from the banner by itself', () => {
     const onRetry = jest.fn();
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
     render(scaffold(SERVER_MAINTENANCE_MESSAGE, onRetry));
     expect(screen.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
     act(() => serverConnection.reportSuccess());
-    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
   });
 
-  // The banner's Retry may repeat a save: recovery must not replay it unasked.
-  it('leaves an error of its own to the person', () => {
-    const onRetry = jest.fn();
+  it('keeps an error of its own on screen', () => {
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
-    render(scaffold('Save rejected: name already taken', onRetry));
+    render(scaffold('Save rejected: name already taken', jest.fn()));
     expect(screen.getByText('Save rejected: name already taken')).toBeOnTheScreen();
+  });
+
+  it('reloads settings whose load failed once the server is back', async () => {
+    const getVeritySettings = jest
+      .fn()
+      .mockRejectedValueOnce(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE))
+      .mockResolvedValue({});
+    const client = {
+      getVeritySettings,
+      getSecretStatus: jest.fn().mockResolvedValue({ state: 'unlocked' }),
+    } as unknown as VerityClient;
+    await act(() => loadVeritySettings(client));
+    expect(getVeritySettings).toHaveBeenCalledTimes(1);
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
     act(() => serverConnection.reportSuccess());
-    expect(onRetry).not.toHaveBeenCalled();
+    expect(getVeritySettings).toHaveBeenCalledTimes(2);
+    resetVeritySettingsStore();
   });
 });

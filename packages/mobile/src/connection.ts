@@ -234,7 +234,13 @@ export class ConnectionMonitor implements ConnectionReporter {
   private async check(details: string): Promise<void> {
     const probe = this.probe;
     if (probe === undefined) {
+      // Nothing to check with yet: keep counting down, so the bar never shows a
+      // stale "Retrying in 1 s" and the next attempt still happens.
       if (this.state.kind === 'connected') this.enter('unreachable', details);
+      else {
+        this.attempt += 1;
+        this.schedule();
+      }
       return;
     }
     const generation = this.generation;

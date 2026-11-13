@@ -8,7 +8,6 @@
 // a card, a row and a text field look and behave identically whichever of the
 // five screens they happen to be on, and the auto-save banner reports work
 // started on a screen that has since been popped.
-import { connectionFailureKind } from '@verity/mobile';
 import { type ReactNode } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
@@ -20,7 +19,7 @@ import { type IconName } from '../Icon';
 import { Button, Group, Row, SectionHeader, StatusDot, TextField, ToggleRow } from '../ui';
 import { type StatusIntent } from '../ui/Status';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
-import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
+import { useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useVeritySettings } from '../../lib/settingsStore';
 import { ApplyPendingBanner } from './ApplyPendingBanner';
 import { settingsStyles as styles } from './settingsStyles';
@@ -69,14 +68,10 @@ export function SettingsScaffold({
   const verity = useVeritySettings();
   const error = state !== undefined ? state.error : verity.error;
   const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
-  // A server update or outage is shown once, by the header's connection bar;
-  // the screen retries its failed load by itself as soon as the server is back.
+  // A server update or outage is shown once, by the header's connection bar.
+  // Nothing is retried from here: `onRetry` may repeat a save, which must never
+  // be replayed unasked; the settings store reloads failed loads by itself.
   const hidesError = useHidesConnectionError(error);
-  useConnectionRecovered(() => {
-    // Only a load the outage broke: retrying anything else (a rejected save)
-    // would replay it without being asked.
-    if (connectionFailureKind(error) !== undefined) onRetry?.();
-  });
 
   // A pinned footer sits outside the scroll view, so the frame itself has to
   // shrink above the keyboard or the footer's action ends up behind it. Only one

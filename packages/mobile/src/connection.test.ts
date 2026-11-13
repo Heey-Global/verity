@@ -83,6 +83,10 @@ describe('connectionFailureKind', () => {
     ).toBeUndefined();
     expect(connectionFailureKind(new DOMException('aborted', 'AbortError'))).toBeUndefined();
     expect(connectionFailureKind('Could not save decision.')).toBeUndefined();
+    // The server's own words are an answer even when they read like a transport error.
+    expect(
+      connectionFailureKind(new VerityApiError(502, 'Failed to fetch upstream')),
+    ).toBeUndefined();
   });
 });
 
@@ -214,6 +218,19 @@ describe('ConnectionMonitor robustness', () => {
     await flush();
     expect(monitor.getState().kind).toBe('maintenance');
     expect(clock.delays()).toEqual([2_000]);
+  });
+
+  it('keeps counting down while no check is available yet', () => {
+    const clock = fakeTimers();
+    const monitor = new ConnectionMonitor({ timers: clock.timers });
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    expect(monitor.getState()).toMatchObject({
+      kind: 'maintenance',
+      nextAttemptAt: expect.any(Number),
+    });
+    expect(clock.delays()).toEqual([4_000]);
+    monitor.reset();
   });
 
   it('keeps a throwing listener out of the request that reported', () => {
