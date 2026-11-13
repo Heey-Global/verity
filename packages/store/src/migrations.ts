@@ -5786,3 +5786,30 @@ migrations['0211_per_person_brokered_grants'] = {
     `.execute(db);
   },
 };
+
+migrations['0212_project_sandboxes'] = {
+  // One sandbox per person and project (ADR 0023 §4): the container is the
+  // credential boundary. A row says that a person has a sandbox in a project;
+  // container, network, volume and runtime names derive from it. The project's
+  // existing container becomes the administrator's sandbox under its current
+  // names (`project_default`), so nothing is recreated on upgrade.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_sandboxes (
+      project_id text not null references projects(id) on delete cascade,
+      user_id text not null references users(id) on delete cascade,
+      project_default boolean not null default false,
+      created_at timestamptz not null default now(),
+      primary key (project_id, user_id)
+    )`.execute(db);
+    await sql`create unique index project_sandboxes_one_default
+      on project_sandboxes (project_id) where project_default`.execute(db);
+    await sql`insert into project_sandboxes (project_id, user_id, project_default)
+      select id, '00000000-0000-4000-8000-000000000001', true from projects
+      where exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_sandboxes`.execute(db);
+  },
+};

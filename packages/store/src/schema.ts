@@ -809,6 +809,14 @@ interface UserGitIdentitiesTable {
 }
 
 /** A person's own authorization of the instance's GitHub App (ADR 0023 §3). */
+interface ProjectSandboxesTable {
+  project_id: string;
+  user_id: string;
+  /** The project's original container, kept under its pre-multi-user names. */
+  project_default: ColumnType<boolean, boolean | undefined, never>;
+  created_at: ColumnType<Date, string | undefined, never>;
+}
+
 interface UserDopplerConnectionsTable {
   user_id: string;
   project_id: string;
@@ -1918,6 +1926,7 @@ export interface Database {
   user_git_identities: UserGitIdentitiesTable;
   user_github_authorizations: UserGithubAuthorizationsTable;
   user_doppler_connections: UserDopplerConnectionsTable;
+  project_sandboxes: ProjectSandboxesTable;
   project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;

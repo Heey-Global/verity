@@ -1,4 +1,5 @@
 import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
+import { projectNetworkName, projectNodeModulesVolumeName } from './sandbox-identity.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   resolveSandboxMemory,
@@ -1295,9 +1296,7 @@ function hasMountAtTarget(
  * source path verbatim. A named volume's source is its fixed daemon mountpoint;
  * a subpath mount's is a per-start safepath nobody can name in advance.
  */
-export function projectNodeModulesVolumeName(projectId: string): string {
-  return projectNetworkName(projectId).replace(/^verity-proj-/, 'verity-node-modules-');
-}
+export { projectNodeModulesVolumeName } from './sandbox-identity.js';
 
 /**
  * gVisor mount hint giving the sandbox exclusive access to its node_modules
@@ -1321,13 +1320,7 @@ export function nodeModulesMountHint(mountpoint: string): Record<string, string>
 /** Docker network name for a project's isolated sandbox network (security review
  *  H2). Docker network names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]*`; sanitize the
  *  project id and prefix so it is always valid and Verity-owned. */
-export function projectNetworkName(projectId: string): string {
-  const clean = projectId
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, '-')
-    .replace(/^[^a-z0-9]+/, '');
-  return `verity-proj-${clean.length > 0 ? clean : 'x'}`;
-}
+export { projectNetworkName } from './sandbox-identity.js';
 
 /**
  * The keys in `<dir>/devcontainer.json` this runtime refuses to honour, empty

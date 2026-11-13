@@ -303,6 +303,7 @@ export {
 } from './user-profile.js';
 export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
 export { UserDopplerConnectionStore } from './user-doppler-connection.js';
+export { ProjectSandboxStore, type ProjectSandboxRecord } from './project-sandboxes.js';
 export {
   UserGithubAuthorizationStore,
   type UserGithubAuthorization,

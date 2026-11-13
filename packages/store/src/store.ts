@@ -11,6 +11,7 @@ import { UserProfileStore } from './user-profile.js';
 import { UserGitIdentityStore } from './user-git-identity.js';
 import { UserGithubAuthorizationStore } from './user-github-authorization.js';
 import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import { ProjectSandboxStore } from './project-sandboxes.js';
 import {
   ProjectRepositoryStore,
   type AddProjectRepositoryInput,
@@ -2457,6 +2458,10 @@ export class EventStore implements EventSink {
     return new ForgeConnectionStore(this.db, this.cipher, (action) =>
       this.egressDestinationMutation(action),
     );
+  }
+
+  get projectSandboxes(): ProjectSandboxStore {
+    return new ProjectSandboxStore(this.db);
   }
 
   get userDopplerConnections(): UserDopplerConnectionStore {
