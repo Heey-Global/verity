@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { VerityApiError } from '@verity/mobile';
 import { Alert, FlatList } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
@@ -2744,6 +2745,17 @@ describe('online meeting joining', () => {
     expect(await screen.findByText('Microsoft Teams')).toBeOnTheScreen();
     expect(screen.queryByLabelText('End meeting')).toBeNull();
     expect(screen.queryByText(/Preparing microphone/)).toBeNull();
+  });
+
+  // An older server has no join status; hiding the meeting behind "Joining" would strand it.
+  it('shows the meeting as before when the server has no join status', async () => {
+    serve('joining', null, {
+      getOnlineMeetingStatus: jest.fn().mockRejectedValue(new VerityApiError(404, 'Not Found')),
+    });
+    jest.mocked(listMeetings).mockResolvedValue([online()]);
+    render(<MeetingScreen />);
+    expect(await screen.findByLabelText('End meeting', {}, { timeout: 5000 })).toBeOnTheScreen();
+    expect(screen.queryByText('Joining the call')).toBeNull();
   });
 
   it('shows the waiting room the provider reports', async () => {

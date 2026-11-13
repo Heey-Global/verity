@@ -1246,6 +1246,7 @@ export default function MeetingScreen() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       let again = true;
+      let failed = false;
       try {
         // Asked of the meeting's own server only; another server knows nothing of it.
         // Paused, not given up: the meeting's server may be connected again.
@@ -1256,12 +1257,14 @@ export default function MeetingScreen() {
         );
         if (current && value) setOnlineStatus({ meetingId: onlineMeetingId, value });
       } catch (reason) {
+        failed = true;
         if (reason instanceof VerityApiError && (reason.status === 404 || reason.status === 403)) {
           again = false;
           if (current) setOnlineStatusMissing(onlineMeetingId);
         }
       } finally {
-        if (current && again) timer = setTimeout(() => void load(), 3000);
+        // A failing server is asked rarely rather than every few seconds.
+        if (current && again) timer = setTimeout(() => void load(), failed ? 15_000 : 3000);
       }
     };
     void load();
@@ -1275,6 +1278,9 @@ export default function MeetingScreen() {
   const joiningCall =
     meeting?.engine === 'attendee' &&
     meeting.state === 'active' &&
+    // Without a join status to ask for, the meeting screen shows the meeting as before.
+    onlineStatusMissing !== meeting.id &&
+    (meeting.serverId ?? null) === getActiveMeetingServerId() &&
     !meeting.transcript &&
     meeting.captureStatus !== 'listening' &&
     joinState?.status !== 'joined' &&
