@@ -3422,6 +3422,13 @@ export async function buildEmbeddedServer(
 
             const sandboxCwd = sessionSandboxCwd(session.worktree);
             const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
+            if (scope === 'session-delete' && session.projectId !== null) {
+              // Every person who worked in the session may hold its files in their
+              // own sandbox's runtime (ADR 0023 §4).
+              for (const sandbox of await eventStore.projectSandboxes.list(session.projectId))
+                if (!sandbox.projectDefault)
+                  runnerProjectIds.add(`${sandboxPersonTag(sandbox.userId)}/${session.projectId}`);
+            }
             if (scope === 'session-delete') {
               await queueSessionCleanup(cleanupRoot, {
                 sessionId,
@@ -3883,6 +3890,21 @@ export async function buildEmbeddedServer(
             const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
             if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
               return runtimeExists ? 'ready' : 'unavailable';
+            // A person's own runtime (`u<tag>/<project>`) follows their sandbox.
+            const [tag, ownProjectId] = projectId.split('/');
+            if (ownProjectId !== undefined && tag !== undefined) {
+              const sandbox = (await eventStore.projectSandboxes.list(ownProjectId)).find(
+                (candidate) => sandboxPersonTag(candidate.userId) === tag,
+              );
+              const state =
+                sandbox === undefined
+                  ? undefined
+                  : (await eventStore.projectSandboxes.state(ownProjectId, sandbox.userId))?.state;
+              if (!runtimeExists) return state === undefined ? 'absent' : 'unavailable';
+              if (state === 'active') return 'ready';
+              if (state?.startsWith('sleeping')) return 'sleeping';
+              return state === undefined ? 'absent' : 'unavailable';
+            }
             const project = await eventStore.getProject(projectId);
             if (!runtimeExists)
               return project === undefined
