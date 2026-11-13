@@ -6,6 +6,7 @@ import {
   createPackageArtifactBroker,
   PACKAGE_ARTIFACT_BASE_URL,
   PUBLICATION_METADATA_SLOTS,
+  createSlotPool,
 } from './package-artifact-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
@@ -440,6 +441,45 @@ it('queues publication lookups beyond the metadata slots instead of rejecting th
   const results = await all;
   expect(results.every((result) => result.versions.has('1.0.0'))).toBe(true);
   expect(peak).toBe(PUBLICATION_METADATA_SLOTS);
+});
+
+it('hands a freed slot to the oldest waiter before any newcomer', async () => {
+  // Waiting for a slot has no timeout. If a newcomer arriving right after a release
+  // could take the slot ahead of the queue, a waiter could be overtaken forever.
+  const pool = createSlotPool(1);
+  const signal = new AbortController().signal;
+  const order: string[] = [];
+  const first = await pool.acquire(signal);
+  const waiting = pool.acquire(signal).then((release) => {
+    order.push('waiting');
+    return release;
+  });
+  await Promise.resolve();
+  first();
+  const newcomer = pool.acquire(signal).then((release) => {
+    order.push('newcomer');
+    return release;
+  });
+  (await waiting)();
+  (await newcomer)();
+  expect(order).toEqual(['waiting', 'newcomer']);
+});
+
+it('passes a handed-over slot on when its waiter was aborted before resuming', async () => {
+  const pool = createSlotPool(1);
+  const signal = new AbortController().signal;
+  const first = await pool.acquire(signal);
+  const controller = new AbortController();
+  const aborted = pool.acquire(controller.signal);
+  const next = pool.acquire(signal);
+  await Promise.resolve();
+  first();
+  controller.abort();
+  await expect(aborted).rejects.toMatchObject({ status: 401 });
+  const release = await next;
+  release();
+  // The slot is free again: a fresh acquire succeeds immediately.
+  (await pool.acquire(signal))();
 });
 
 it('stops waiting for a metadata slot when the request is aborted', async () => {

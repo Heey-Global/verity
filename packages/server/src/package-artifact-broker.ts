@@ -120,6 +120,57 @@ async function bounded(
   }
 }
 
+/**
+ * Bounded slots handed out first-in-first-out. A released slot passes directly
+ * to the oldest waiter, and newcomers queue while anyone waits: waiting has no
+ * timeout of its own, so later requests must not overtake it indefinitely.
+ */
+export function createSlotPool(limit: number) {
+  let inUse = 0;
+  const waiters: (() => void)[] = [];
+  const releaser = (): (() => void) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = waiters.shift();
+      if (next) next();
+      else inUse--;
+    };
+  };
+  return {
+    async acquire(signal: AbortSignal): Promise<() => void> {
+      if (signal.aborted) reject(401);
+      if (inUse < limit && waiters.length === 0) {
+        inUse++;
+        return releaser();
+      }
+      const handedOver = await new Promise<boolean>((settle) => {
+        const entry = (): void => {
+          signal.removeEventListener('abort', onAbort);
+          settle(true);
+        };
+        // Leaving the queue on abort keeps a dead entry from absorbing a hand-over.
+        const onAbort = (): void => {
+          const index = waiters.indexOf(entry);
+          if (index >= 0) waiters.splice(index, 1);
+          settle(false);
+        };
+        waiters.push(entry);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      if (!handedOver) reject(401);
+      const release = releaser();
+      // Aborted between the hand-over and resuming: pass the slot on at once.
+      if (signal.aborted) {
+        release();
+        reject(401);
+      }
+      return release;
+    },
+  };
+}
+
 /** Native registry/index adapter. Content selectors are learned from bounded provider
  * metadata, revalidate selectors under the current generation, and never authorize scripts
  * or arbitrary URLs. Registry API: github.com/npm/registry; PyPI: PEP 691.
@@ -133,43 +184,7 @@ export function createPackageArtifactBroker(
   let inFlight = 0;
   // Verification fans out across many names, so it queues for a slot instead of
   // failing with 429 like interactive artifact requests.
-  let metadataInFlight = 0;
-  const metadataWaiters: (() => void)[] = [];
-  const acquireMetadataSlot = async (signal: AbortSignal): Promise<() => void> => {
-    // A waiter woken for a free slot and aborted before taking it passes the
-    // wake-up on, so the slot does not sit idle while others stay queued.
-    const abandon = (): never => {
-      if (metadataInFlight < PUBLICATION_METADATA_SLOTS) metadataWaiters.shift()?.();
-      return reject(401);
-    };
-    while (metadataInFlight >= PUBLICATION_METADATA_SLOTS) {
-      if (signal.aborted) abandon();
-      await new Promise<void>((wake) => {
-        // Remove the queued entry itself on abort; a stale entry would later absorb
-        // the wake-up of a free slot and leave a live waiter parked.
-        const entry = (): void => {
-          signal.removeEventListener('abort', onAbort);
-          wake();
-        };
-        const onAbort = (): void => {
-          const index = metadataWaiters.indexOf(entry);
-          if (index >= 0) metadataWaiters.splice(index, 1);
-          wake();
-        };
-        metadataWaiters.push(entry);
-        signal.addEventListener('abort', onAbort, { once: true });
-      });
-    }
-    if (signal.aborted) abandon();
-    metadataInFlight++;
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      metadataInFlight--;
-      metadataWaiters.shift()?.();
-    };
-  };
+  const metadataSlots = createSlotPool(PUBLICATION_METADATA_SLOTS);
   const selectorFor = (
     ecosystem: 'npm' | 'pypi',
     name: string,
@@ -240,7 +255,7 @@ export function createPackageArtifactBroker(
         versions.some((version) => !/^[0-9A-Za-z.+_-]{1,128}$/u.test(version))
       )
         reject();
-      const release = await acquireMetadataSlot(signal);
+      const release = await metadataSlots.acquire(signal);
       try {
         const bounded = AbortSignal.any([
           signal,
