@@ -886,7 +886,8 @@ jobs:
           # Reuse content-validated ambient metadata within this job. CI still
           # disables clean-result reuse, so every lint group is checked.
           # GNU time reports peak individual-process RSS in KiB, not aggregate
-          # container memory. Keep the normal worker heap and sequential policy.
+          # container memory. Workers stay sequential; CI sizes their heap from the
+          # runner's memory (scripts/lint-runner.mjs, CI_HEAP_CAP_MIB).
           /usr/bin/time --verbose --output="$LINT_MEASUREMENT_DIR/resources.txt" \
             npm run lint 2>&1 | tee "$LINT_MEASUREMENT_DIR/lint.log"
       - name: Upload lint measurement
