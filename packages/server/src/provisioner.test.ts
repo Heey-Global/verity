@@ -7381,6 +7381,7 @@ describe('ProvisionerImpl (#174)', () => {
         defaultImageRef: 'default',
         hostCloneRoot: root,
         gitSecretRoot: secretRoot,
+        dataVolumeRoot: root,
         claudeConnectorPort: 47_821,
         ghTokenCapabilities: capabilities,
         projectRelay: {
@@ -7443,6 +7444,12 @@ describe('ProvisionerImpl (#174)', () => {
       // Its own capability file; the original sandbox's stays as it was.
       const capPath = join(secretRoot, 'git', `gh_token_capability.${id}.${tag}`);
       expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
+      // The administrator's Shared knowledge reaches only the original sandbox.
+      expect(spec.binds?.some((bind) => bind.includes(':/knowledge/shared'))).toBe(false);
+      const original = created
+        .map((call) => call.payload as ContainerSpec)
+        .find((candidate) => candidate.name === project.containerName);
+      expect(original?.binds?.some((bind) => bind.includes(':/knowledge/shared'))).toBe(true);
       // Her own OpenCode models, never the instance's, and never her key.
       const openCodeDir = join(secretRoot, `opencode-${tag}`);
       expect(spec.binds).toContain(`${openCodeDir}:/run/verity/opencode-config:ro`);

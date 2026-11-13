@@ -186,7 +186,9 @@ it('requires project management permission to disconnect GitHub', async () => {
   ).toBe('allow');
 });
 
-it('allows active users to read Shared centrally but reserves changes for administrators', async () => {
+// Shared knowledge is the administrator's across all their projects; members of
+// a shared project never read it (ADR 0023 §1).
+it('keeps Shared knowledge to administrators', async () => {
   const store: PairedRoutePolicyStore = {
     isActiveLocalUser: async (id) => id !== 'disabled',
     isActiveAdministrator: async (id) => id === 'admin',
@@ -199,8 +201,8 @@ it('allows active users to read Shared centrally but reserves changes for admini
     '/knowledge/shared/files/download',
     '/knowledge/shared/recent',
   ]) {
-    expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('allow');
-    expect(await authorizePairedRoute(store, 'disabled', 'GET', route, {})).toBe('forbidden');
+    expect(await authorizePairedRoute(store, 'member', 'GET', route, {})).toBe('forbidden');
+    expect(await authorizePairedRoute(store, 'admin', 'GET', route, {})).toBe('allow');
   }
   expect(
     await authorizePairedRoute(store, 'member', 'PUT', '/knowledge/shared/files/content', {}),

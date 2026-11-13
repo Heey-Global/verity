@@ -6904,6 +6904,10 @@ export class ProvisionerImpl implements Provisioner {
         knowledgeBinds = knowledgeSandboxBinds(this.opts.dataVolumeRoot, project.id);
         if (project.kind !== 'control_plane')
           knowledgeBinds = knowledgeBinds.filter((bind) => !bind.includes(':/knowledge/insights'));
+        // The instance's Shared knowledge is the administrator's; a member's own
+        // sandbox never sees it (ADR 0023 §1).
+        if (!sandbox.identity.projectDefault)
+          knowledgeBinds = knowledgeBinds.filter((bind) => !bind.includes(':/knowledge/shared'));
       } catch (cause) {
         const message = `knowledge folder could not be prepared: ${failureMessage(cause)}`;
         await sandbox.setState('failed', message);

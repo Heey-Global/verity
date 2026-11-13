@@ -667,10 +667,6 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
 
 const activeUserRoutes = new Set([
   routeScopeKey('GET', '/project-inquiries/pending'),
-  routeScopeKey('GET', '/knowledge/shared/files'),
-  routeScopeKey('GET', '/knowledge/shared/recent'),
-  routeScopeKey('GET', '/knowledge/shared/files/content'),
-  routeScopeKey('GET', '/knowledge/shared/files/download'),
   // Personal context is bound to the authenticated identity inside the handlers.
   routeScopeKey('GET', '/me/context'),
   routeScopeKey('PUT', '/me/context'),
