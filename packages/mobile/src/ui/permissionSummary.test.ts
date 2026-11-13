@@ -75,6 +75,13 @@ describe('permissionSummary', () => {
       lines: [{ kind: 'code', text: command }],
       covered: true,
     });
+    // Running in the background changes how the command runs: it stays in view.
+    expect(
+      permissionSummary('Bash', { command: 'npm test', run_in_background: true }).covered,
+    ).toBe(false);
+    expect(
+      permissionSummary('Bash', { command: 'npm test', run_in_background: false }).covered,
+    ).toBe(true);
     // An agent orders an unknown tool's fields: the first string is not what it does.
     expect(permissionSummary('mystery', { note: 'ls', cmd: 'rm -rf ~' })).toMatchObject({
       lines: [],
