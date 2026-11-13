@@ -353,3 +353,12 @@ export {
   type ProjectInquiry,
   type ProjectInquiryGrant,
 } from './project-inquiries.js';
+export {
+  INVITATION_MAX_TTL_MS,
+  ProjectTeamError,
+  ProjectTeamStore,
+  type InvitationState,
+  type ProjectInvitation,
+  type ProjectMember,
+  type TeamOutboxEntry,
+} from './project-team.js';

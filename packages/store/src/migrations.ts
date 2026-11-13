@@ -5939,3 +5939,43 @@ migrations['0217_session_user_models'] = {
     await sql`drop table session_user_models`.execute(db);
   },
 };
+
+migrations['0218_project_team'] = {
+  // Project team invitations, their single redemption and the Uplink outbox
+  // (ADR 0023 §1, §7; Uplink team contract D8: Core is the source of truth).
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_invitations (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      inviter_user_id text not null references users(id) on delete cascade,
+      invitee_name text not null,
+      can_execute boolean not null,
+      secret_hash text not null,
+      invitation_id text unique,
+      state text not null check (state in ('creating', 'open', 'redeemed', 'revoked')),
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      redemption_id text unique,
+      redeemed_by_user_id text references users(id) on delete set null,
+      redeemed_at timestamptz,
+      revoked_at timestamptz
+    )`.execute(db);
+    await sql`create index project_invitations_project on project_invitations (project_id)`.execute(
+      db,
+    );
+    await sql`create table team_outbox (
+      operation_id text primary key,
+      kind text not null,
+      payload jsonb not null,
+      attempts integer not null default 0,
+      next_attempt_at timestamptz not null default now(),
+      give_up_at timestamptz not null,
+      created_at timestamptz not null default now(),
+      done_at timestamptz
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table team_outbox`.execute(db);
+    await sql`drop table project_invitations`.execute(db);
+  },
+};

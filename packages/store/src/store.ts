@@ -1,3 +1,4 @@
+import { ProjectTeamStore } from './project-team.js';
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
@@ -2471,6 +2472,10 @@ export class EventStore implements EventSink {
 
   get userProviderConnections(): UserProviderConnectionStore {
     return new UserProviderConnectionStore(this.db, this.cipher);
+  }
+
+  get projectTeam(): ProjectTeamStore {
+    return new ProjectTeamStore(this.db);
   }
 
   get projectSandboxes(): ProjectSandboxStore {

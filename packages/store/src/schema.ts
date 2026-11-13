@@ -827,6 +827,37 @@ interface UserProjectPreferencesTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+interface ProjectInvitationsTable {
+  id: string;
+  project_id: string;
+  inviter_user_id: string;
+  invitee_name: string;
+  can_execute: boolean;
+  /** SHA-256 of the link secret; the secret itself is never stored. */
+  secret_hash: string;
+  /** Uplink's invitation id (D4), once Uplink created the invitation. */
+  invitation_id: string | null;
+  state: 'creating' | 'open' | 'redeemed' | 'revoked';
+  expires_at: ColumnType<Date, string | Date, never>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  /** The one redemption that used it; a replay of the same one changes nothing. */
+  redemption_id: string | null;
+  redeemed_by_user_id: string | null;
+  redeemed_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+  revoked_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+}
+
+interface TeamOutboxTable {
+  operation_id: string;
+  kind: string;
+  payload: ColumnType<unknown, string, string>;
+  attempts: ColumnType<number, number | undefined, number>;
+  next_attempt_at: ColumnType<Date, string | Date | undefined, string | Date>;
+  give_up_at: ColumnType<Date, string | Date, never>;
+  created_at: ColumnType<Date, string | undefined, never>;
+  done_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+}
+
 interface SessionUserModelsTable {
   session_id: string;
   user_id: string;
@@ -1967,6 +1998,8 @@ export interface Database {
   user_project_preferences: UserProjectPreferencesTable;
   project_memberships: ProjectMembershipsTable;
   session_user_models: SessionUserModelsTable;
+  project_invitations: ProjectInvitationsTable;
+  team_outbox: TeamOutboxTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
