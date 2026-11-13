@@ -1010,6 +1010,24 @@ describe('host maintenance admission', () => {
       timeoutMs: 30_000,
       pollMs: 20,
     });
+    // Queued behind another build, the turn arrives while maintenance holds the
+    // lock: the refusal must hand the turn on and the waiter retry, not deadlock.
+    // (The host's exclusive lock waits for running builds, so the refusal is
+    // injected at the queued turn rather than raced against a real holder.)
+    const first = await patient.admitInTurn();
+    const realAdmit = patient.admit.bind(patient);
+    const admit = vi
+      .spyOn(patient, 'admit')
+      .mockImplementationOnce(() => {
+        throw new BuilderMaintenanceError('builder maintenance is in progress');
+      })
+      .mockImplementation(realAdmit);
+    const queued = patient.admitInTurn();
+    first.dispose();
+    (await queued).dispose();
+    expect(admit).toHaveBeenCalledTimes(2);
+    admit.mockRestore();
+
     const release = await holdMaintenance();
     let admitted = false;
     const waiting = patient.admitInTurn().then((lease) => {
