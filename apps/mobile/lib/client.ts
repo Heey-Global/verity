@@ -157,7 +157,8 @@ export function createVerityClient(): VerityClient | null {
       fetch: browserFetch,
       uploadFetch: browserFetch,
       allowBackgroundUpload: false,
-      connection: serverConnection,
+      // Bound to this server: after a switch, its late answers are ignored.
+      connection: serverConnection.reporter(),
     });
     registerBranchesClientScope(
       client,
@@ -187,7 +188,7 @@ export function createVerityClient(): VerityClient | null {
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);
     },
-    connection: serverConnection,
+    connection: serverConnection.reporter(),
   });
   registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);

@@ -29,6 +29,15 @@ const UNREACHABLE_PATTERNS: readonly RegExp[] = [
   /Remote (?:admission|Core probe|tunnel)/u,
 ];
 
+/** A cancellation by the caller, also where `DOMException` is not an `Error`. */
+export function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'AbortError'
+  );
+}
+
 function messageOf(error: unknown): string | undefined {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
@@ -42,7 +51,7 @@ function messageOf(error: unknown): string | undefined {
  */
 export function connectionFailureKind(error: unknown): ConnectionFailureKind | undefined {
   // A caller that cancelled its own request learned nothing about the server.
-  if (error instanceof Error && error.name === 'AbortError') return undefined;
+  if (isAbortError(error)) return undefined;
   if (error instanceof Error && error.name === 'TimeoutError') return 'unreachable';
   // An answer from the server is maintenance only as the Gateway words it,
   // exactly as `VerityClient` reports it; any other answer is the server's own.
@@ -53,7 +62,8 @@ export function connectionFailureKind(error: unknown): ConnectionFailureKind | u
       : undefined;
   const message = messageOf(error);
   if (message === undefined) return undefined;
-  if (message.includes(SERVER_MAINTENANCE_MESSAGE)) return 'maintenance';
+  // Screens keep it as is or behind a prefix ("Projects: server maintenance").
+  if (message.trimEnd().endsWith(SERVER_MAINTENANCE_MESSAGE)) return 'maintenance';
   return UNREACHABLE_PATTERNS.some((pattern) => pattern.test(message)) ? 'unreachable' : undefined;
 }
 
@@ -134,6 +144,8 @@ export class ConnectionMonitor implements ConnectionReporter {
   private timer: unknown;
   private checking = false;
   private generation = 0;
+  /** Changes only with {@link reset}: which server the reports are about. */
+  private serverEpoch = 0;
 
   constructor(
     opts: {
@@ -147,6 +159,23 @@ export class ConnectionMonitor implements ConnectionReporter {
     this.timers = opts.timers ?? systemTimers;
     this.delays = opts.delays ?? CONNECTION_RETRY_DELAYS;
     this.checkTimeoutMs = opts.checkTimeoutMs ?? CONNECTION_CHECK_TIMEOUT_MS;
+  }
+
+  /**
+   * A reporter for one client. After {@link reset} (another server), requests
+   * still in flight from clients of the previous server are ignored.
+   */
+  reporter(): ConnectionReporter {
+    const epoch = this.serverEpoch;
+    const current = () => epoch === this.serverEpoch;
+    return {
+      reportSuccess: () => {
+        if (current()) this.reportSuccess();
+      },
+      reportFailure: (kind, details) => {
+        if (current()) this.reportFailure(kind, details);
+      },
+    };
   }
 
   /** The request used to check the server; it must report through this monitor. */
@@ -219,6 +248,7 @@ export class ConnectionMonitor implements ConnectionReporter {
   reset(): void {
     this.stopTimer();
     this.generation += 1;
+    this.serverEpoch += 1;
     this.attempt = 0;
     this.checking = false;
     this.state = { kind: 'connected', recoveredAt: undefined, lastConnectedAt: undefined };
@@ -288,7 +318,8 @@ export class ConnectionMonitor implements ConnectionReporter {
     else if (confirming) {
       // The outage began during this check (its own request reported it):
       // this was no retry yet, so the backoff starts at its first step.
-      this.state = { ...this.state, details: message };
+      // A check that timed out keeps the failure that started the outage.
+      if (kind === this.state.kind) this.state = { ...this.state, details: message };
       this.schedule();
     } else {
       this.state = { ...this.state, kind, details: message };

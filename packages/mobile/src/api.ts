@@ -1,4 +1,4 @@
-import { SERVER_MAINTENANCE_MESSAGE, type ConnectionReporter } from './connection.js';
+import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   projectRepositorySchema,
   projectInquirySchema,
@@ -7300,7 +7300,7 @@ export class VerityClient {
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
       // Only a transport failure reaches here; one the caller cancelled says
       // nothing about the server and is not reported.
-      if (this.connection !== undefined && !(error instanceof Error && error.name === 'AbortError'))
+      if (this.connection !== undefined && !isAbortError(error))
         this.connection.reportFailure(
           'unreachable',
           error instanceof Error ? error.message : String(error),

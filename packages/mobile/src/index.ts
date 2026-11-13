@@ -833,6 +833,7 @@ export {
   ConnectionMonitor,
   SERVER_MAINTENANCE_MESSAGE,
   connectionFailureKind,
+  isAbortError,
   type ConnectionFailureKind,
   type ConnectionReporter,
   type ServerConnectionState,

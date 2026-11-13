@@ -83,6 +83,9 @@ describe('connectionFailureKind', () => {
     ).toBeUndefined();
     expect(connectionFailureKind(new DOMException('aborted', 'AbortError'))).toBeUndefined();
     expect(connectionFailureKind('Could not save decision.')).toBeUndefined();
+    expect(connectionFailureKind('Blocked by server maintenance window')).toBeUndefined();
+    // Where DOMException is not an Error, a cancellation is still one.
+    expect(connectionFailureKind({ name: 'AbortError', message: 'aborted' })).toBeUndefined();
     expect(
       connectionFailureKind(new VerityApiError(409, 'blocked by server maintenance window')),
     ).toBeUndefined();
@@ -255,6 +258,31 @@ describe('ConnectionMonitor robustness', () => {
     settle?.();
     await flush();
     expect(clock.delays()).toEqual([2_000]);
+  });
+
+  it('ignores late answers from clients of the previous server', () => {
+    const monitor = new ConnectionMonitor();
+    const previous = monitor.reporter();
+    monitor.reset();
+    previous.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    expect(monitor.getState().kind).toBe('connected');
+    monitor.reporter().reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    expect(monitor.getState().kind).toBe('maintenance');
+    monitor.reset();
+  });
+
+  it('keeps reporting after a stale check was discarded', async () => {
+    const clock = fakeTimers();
+    const monitor = new ConnectionMonitor({
+      probe: () => new Promise<never>(() => undefined),
+      timers: clock.timers,
+    });
+    const reporter = monitor.reporter();
+    reporter.reportFailure('unreachable', 'Network request failed');
+    reporter.reportSuccess();
+    reporter.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    expect(monitor.getState().kind).toBe('maintenance');
+    monitor.reset();
   });
 
   it('keeps a throwing listener out of the request that reported', () => {
