@@ -174,7 +174,10 @@ it('shows the remembered answer at once when the menu reopens, refreshing it qui
   again.rerender({});
   const reopened = renderHook(() => useGoogleAccountAvailability(api, 'remembered', true));
   await waitFor(() => expect(api.listGoogleAccounts).toHaveBeenCalledTimes(3));
-  await waitFor(() => expect(reopened.result.current.loading).toBe(false));
+  // Let the rejection reach the hook before judging what it left behind.
+  await act(async () => {
+    await jest.mocked(api.listGoogleAccounts).mock.results[2]!.value.catch(() => undefined);
+  });
   expect(reopened.result.current).toEqual({ connected: true, loading: false, error: null });
 });
 

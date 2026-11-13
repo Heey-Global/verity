@@ -10108,6 +10108,7 @@ function AttachMenu({
             <View style={styles.menuDivider} />
             <View
               style={styles.menuRow}
+              accessible
               accessibilityRole={googleCatalogError ? 'alert' : undefined}
               accessibilityLabel={googleCatalogError ?? 'Checking Google accounts'}
             >
