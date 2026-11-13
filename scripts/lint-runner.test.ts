@@ -3,9 +3,16 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import {
+  CI_GROUP_BYTES,
+  CI_GROUP_FILES,
+  CI_GROUP_MIN_HEAP_MIB,
   CI_HEAP_CAP_MIB,
+  LOCAL_GROUP_BYTES,
+  LOCAL_GROUP_FILES,
   LOCAL_HEAP_CAP_MIB,
   heapLimitMiB,
+  lintGroupLimits,
+  lintWorkerArguments,
   runLint,
   workerHeapLimit,
 } from './lint-runner.mjs';
@@ -22,6 +29,10 @@ const outOfMemory = {
 function options() {
   return {
     heapMiB: 96,
+    // The suite itself runs on CI runners; pin the sandbox groups the other
+    // assertions are written for, so they do not pass locally and fail in CI.
+    groupFiles: LOCAL_GROUP_FILES,
+    groupBytes: LOCAL_GROUP_BYTES,
     output: vi.fn<(text: string) => void>(),
     error: vi.fn<(text: string) => void>(),
   };
@@ -83,6 +94,54 @@ it('bounds initial groups and preserves complete coverage for a large scoped inv
   expect(runLint(files, { ...options(), execute })).toBe(0);
   expect(execute.mock.calls.every(([batch]) => batch.length <= 16)).toBe(true);
   expect(execute.mock.calls.flatMap(([batch]) => batch)).toEqual(files);
+});
+
+it('groups CI runs in larger workers and keeps sandboxes at the small groups', () => {
+  // Small groups rebuild the server's type graph about 200 times in CI; large
+  // groups in a sandbox would hold that graph in memory other sessions share.
+  expect(lintGroupLimits(true)).toEqual({ files: CI_GROUP_FILES, bytes: CI_GROUP_BYTES });
+  expect(lintGroupLimits(false)).toEqual({ files: LOCAL_GROUP_FILES, bytes: LOCAL_GROUP_BYTES });
+  expect(CI_GROUP_FILES).toBeGreaterThan(LOCAL_GROUP_FILES);
+  // A CI runner with less memory keeps small groups instead of failing large ones first.
+  expect(lintGroupLimits(true, CI_GROUP_MIN_HEAP_MIB - 1)).toEqual({
+    files: LOCAL_GROUP_FILES,
+    bytes: LOCAL_GROUP_BYTES,
+  });
+  expect(lintGroupLimits(true, CI_GROUP_MIN_HEAP_MIB).files).toBe(CI_GROUP_FILES);
+  const files = Array.from({ length: CI_GROUP_FILES + 5 }, (_, index) => `${index}.ts`);
+  const previous = { ci: process.env.CI, actions: process.env.GITHUB_ACTIONS };
+  const run = () => {
+    const execute = vi.fn<(batch: string[]) => { status: number }>(() => ({ status: 0 }));
+    // Leave the group limits to the environment for this run.
+    const io: Partial<ReturnType<typeof options>> = { ...options(), heapMiB: CI_HEAP_CAP_MIB };
+    delete io.groupFiles;
+    delete io.groupBytes;
+    expect(runLint(files, { ...io, execute })).toBe(0);
+    expect(execute.mock.calls.flatMap(([batch]) => batch)).toEqual(files);
+    return Math.max(...execute.mock.calls.map(([batch]) => batch.length));
+  };
+  try {
+    process.env.GITHUB_ACTIONS = 'true';
+    expect(run()).toBe(CI_GROUP_FILES);
+    // CI=1 alone, as tools set it in sandboxes, keeps the small groups.
+    delete process.env.GITHUB_ACTIONS;
+    process.env.CI = '1';
+    expect(run()).toBe(LOCAL_GROUP_FILES);
+  } finally {
+    if (previous.ci === undefined) delete process.env.CI;
+    else process.env.CI = previous.ci;
+    if (previous.actions === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = previous.actions;
+  }
+});
+
+it('sizes the type program to the whole worker group', () => {
+  // A second program for the same project in one worker cannot be collected in
+  // time; the worker must size its program to the whole group it was given.
+  const files = Array.from({ length: 40 }, (_, index) => `${index}.ts`);
+  const args = lintWorkerArguments(files, 512, false, true);
+  expect(args).toContain(`--type-batch=${files.length}`);
+  expect(args.slice(args.indexOf('--') + 1)).toEqual(files);
 });
 
 it('separates large sources before starting workers and still checks oversized files', () => {

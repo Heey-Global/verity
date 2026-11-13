@@ -9,9 +9,34 @@ export const LOCAL_HEAP_CAP_MIB = 512;
 /** A CI job owns its runner. The server's type graph alone needs about 330 MiB, and
  * linting server.ts peaks near 510 MiB, so the local cap fails CI by a few MiB. */
 export const CI_HEAP_CAP_MIB = 2048;
-const batchSize = 16;
-// Large suites need their own worker even when a group contains few files.
-const batchSourceBytes = 128 * 1024;
+// Sandboxes recycle a worker after a few files so its type graph never grows
+// large; large suites need their own worker even when a group has few files.
+export const LOCAL_GROUP_FILES = 16;
+export const LOCAL_GROUP_BYTES = 128 * 1024;
+// A CI runner has the memory for one shared type program per larger group. Each
+// program of the server graph costs about 330 MiB and several seconds to build,
+// so small groups spend most of a CI run rebuilding the same graph.
+export const CI_GROUP_FILES = 192;
+export const CI_GROUP_BYTES = 2 * MiB;
+/** Measured: 128 server files fit one program in 1 GiB and 256 in 1.5 GiB. Below
+ * this budget a large group would exhaust the heap and only then be halved. */
+export const CI_GROUP_MIN_HEAP_MIB = 1536;
+
+/** Tools commonly export CI=1 to suppress prompts, sandboxes included; only a
+ * GitHub Actions job is known to own its runner. */
+function ownsRunner() {
+  return process.env.GITHUB_ACTIONS === 'true';
+}
+
+/**
+ * @param {boolean} [ci]
+ * @param {number} [heapMiB]
+ */
+export function lintGroupLimits(ci = ownsRunner(), heapMiB = CI_HEAP_CAP_MIB) {
+  return ci && heapMiB >= CI_GROUP_MIN_HEAP_MIB
+    ? { files: CI_GROUP_FILES, bytes: CI_GROUP_BYTES }
+    : { files: LOCAL_GROUP_FILES, bytes: LOCAL_GROUP_BYTES };
+}
 
 /**
  * Reserve room for native allocations, the supervisor and other processes.
@@ -42,9 +67,7 @@ function readLimit(path) {
  * @param {{ ci?: boolean, limits?: number[], current?: number, total?: number, free?: number }} [probe]
  */
 export function workerHeapLimit(probe = {}) {
-  // Tools commonly export CI=1 to suppress prompts, sandboxes included; only a
-  // GitHub Actions job is known to own its runner.
-  const ci = probe.ci ?? process.env.GITHUB_ACTIONS === 'true';
+  const ci = probe.ci ?? ownsRunner();
   const ceilings = (
     probe.limits ?? [
       process.constrainedMemory(),
@@ -87,14 +110,7 @@ function executeLint(files, heapMiB, cache, ambientCache) {
     'bash',
     [
       resolve(import.meta.dirname, 'lint-worker.sh'),
-      process.execPath,
-      `--max-old-space-size=${heapMiB}`,
-      '--expose-gc',
-      resolve(import.meta.dirname, 'lint-files.mjs'),
-      ...(cache ? ['--local-cache'] : []),
-      ...(!ambientCache ? ['--no-ambient-cache'] : []),
-      '--',
-      ...files,
+      ...lintWorkerArguments(files, heapMiB, cache, ambientCache),
     ],
     { encoding: 'utf8', maxBuffer: 16 * MiB },
   );
@@ -102,12 +118,38 @@ function executeLint(files, heapMiB, cache, ambientCache) {
 
 /**
  * @param {string[]} files
- * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, execute?: (files: string[], heapMiB: number, ambientCache: boolean) => WorkerResult,
+ * @param {number} heapMiB
+ * @param {boolean} cache
+ * @param {boolean} ambientCache
+ */
+export function lintWorkerArguments(files, heapMiB, cache, ambientCache) {
+  return [
+    process.execPath,
+    `--max-old-space-size=${heapMiB}`,
+    '--expose-gc',
+    resolve(import.meta.dirname, 'lint-files.mjs'),
+    // One type program per tsconfig project in the group: a second program for the
+    // same project in one process cannot be collected in time and exhausts the heap.
+    // Package groups hold one project; only the repository-root files span several.
+    `--type-batch=${files.length}`,
+    ...(cache ? ['--local-cache'] : []),
+    ...(!ambientCache ? ['--no-ambient-cache'] : []),
+    '--',
+    ...files,
+  ];
+}
+
+/**
+ * @param {string[]} files
+ * @param {{ cache?: boolean, ambientCache?: boolean, heapMiB?: number, groupFiles?: number, groupBytes?: number, execute?: (files: string[], heapMiB: number, ambientCache: boolean) => WorkerResult,
  * output?: (text: string) => void, error?: (text: string) => void }} [options]
  */
 export function runLint(files, options = {}) {
   if (!files.length) throw new Error('Provide explicit file paths to lint.');
   const heapMiB = options.heapMiB ?? workerHeapLimit();
+  const limits = lintGroupLimits(ownsRunner(), heapMiB);
+  const groupFiles = options.groupFiles ?? limits.files;
+  const groupBytes = options.groupBytes ?? limits.bytes;
   const execute =
     options.execute ??
     ((batch, heap, ambientCache) =>
@@ -161,7 +203,7 @@ export function runLint(files, options = {}) {
     } catch {
       // ESLint reports missing or unreadable inputs; never omit them here.
     }
-    if (batch.length && (batch.length >= batchSize || bytes + size > batchSourceBytes)) {
+    if (batch.length && (batch.length >= groupFiles || bytes + size > groupBytes)) {
       const status = check(batch);
       if (status !== 0) return status;
       batch = [];

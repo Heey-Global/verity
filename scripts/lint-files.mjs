@@ -6,8 +6,9 @@ import { setImmediate } from 'node:timers/promises';
 import { LocalLintCache } from './lint-cache.mjs';
 import { AmbientClassificationCache } from './lint-ambient-cache.mjs';
 
-// Keep type graphs small even when a scoped invocation names many files.
-const typeBatchSize = 16;
+// Keep type graphs small even when a scoped invocation names many files. The
+// runner passes its group size, so each worker builds exactly one program.
+const defaultTypeBatchSize = 16;
 
 /** @param {string[]} files @param {string} stage */
 function profilePhase(files, stage) {
@@ -189,9 +190,12 @@ async function lintBatch(batch, program, cwd) {
  * Explicit file paths only, matching the scoped npm command and lint.sh batches.
  * @param {string[]} files
  * @param {string} [cwd]
- * @param {{ cache?: boolean, ambientCache?: boolean }} [options]
+ * @param {{ cache?: boolean, ambientCache?: boolean, typeBatchSize?: number }} [options]
  */
 export async function lintFiles(files, cwd = process.cwd(), options = {}) {
+  const typeBatchSize = options.typeBatchSize ?? defaultTypeBatchSize;
+  if (!Number.isInteger(typeBatchSize) || typeBatchSize < 1)
+    throw new Error('The type batch size must be a positive integer.');
   if (!files.length) throw new Error('Provide explicit file paths to lint.');
   const base = new ESLint({ cwd, warnIgnored: false });
   /** @type {Map<string, string[]>} */
@@ -250,16 +254,21 @@ export async function lintFiles(files, cwd = process.cwd(), options = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
+  const typeBatch = process.argv.find((argument) => argument.startsWith('--type-batch='));
   const files = process.argv
     .slice(2)
     .filter(
       (argument) =>
-        argument !== '--' && argument !== '--local-cache' && argument !== '--no-ambient-cache',
+        argument !== '--' &&
+        argument !== '--local-cache' &&
+        argument !== '--no-ambient-cache' &&
+        !argument.startsWith('--type-batch='),
     );
   const cache = process.argv.includes('--local-cache') && !process.env.CI;
   const { eslint, results, cached } = await lintFiles(files, process.cwd(), {
     cache,
     ambientCache: !process.argv.includes('--no-ambient-cache'),
+    ...(typeBatch ? { typeBatchSize: Number(typeBatch.slice('--type-batch='.length)) } : {}),
   });
   if (cached) process.stdout.write(`Reused clean lint results for ${files.length} files.\n`);
   process.stdout.write((await eslint.loadFormatter('stylish')).format(results));
