@@ -1051,6 +1051,20 @@ describe('host maintenance admission', () => {
     }
     // The refused request left no place in the queue behind.
     (await bounded.admitInTurn()).dispose();
+
+    // Time queued behind another build is not maintenance: a build that queued
+    // longer than the budget still gets the full wait once maintenance refuses it.
+    const holder = await bounded.admitInTurn();
+    const boundedAdmit = bounded.admit.bind(bounded);
+    vi.spyOn(bounded, 'admit')
+      .mockImplementationOnce(() => {
+        throw new BuilderMaintenanceError('builder maintenance is in progress');
+      })
+      .mockImplementation(boundedAdmit);
+    const late = bounded.admitInTurn();
+    await setTimeout(150);
+    holder.dispose();
+    (await late).dispose();
   });
   it('fails closed on partial provisioning, pending recovery and held maintenance', async () => {
     const { spawn } = await import('node:child_process');

@@ -584,7 +584,9 @@ export class BuildStorage {
     // the admission lock for minutes, not hours. Failing at once turned a Repair
     // issued during that window into a failed project with nothing wrong with it.
     // Wait for it, bounded, outside the queue so other builds are not held up.
-    const deadline = Date.now() + this.maintenanceWait.timeoutMs;
+    // The budget starts at the first refusal: time spent queued behind other
+    // builds is not maintenance, and the host's lock waits for those builds.
+    let deadline: number | undefined;
     let waitingSince: number | undefined;
     for (;;) {
       try {
@@ -595,7 +597,9 @@ export class BuildStorage {
           );
         return lease;
       } catch (error) {
-        if (!(error instanceof BuilderMaintenanceError) || Date.now() >= deadline) throw error;
+        if (!(error instanceof BuilderMaintenanceError)) throw error;
+        deadline ??= Date.now() + this.maintenanceWait.timeoutMs;
+        if (Date.now() >= deadline) throw error;
         if (waitingSince === undefined) {
           waitingSince = Date.now();
           console.warn(
