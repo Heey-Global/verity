@@ -25,7 +25,7 @@ const ignore = () => undefined;
 
 export type ConnectionState = 'updating' | 'unreachable' | 'reconnected';
 
-export const SAMPLE_DUMP =
+const SAMPLE_DUMP =
   'Uplink probe (Pinned TLS transport failed [NSURLErrorDomain:-1200:NO_AUTH_CHALLENGE:streamDomain:3:streamCode:-9816]; tunnel local=2, opened=2, received=2, last=remote_stream.reset, sentBytes=3060, receivedBytes=0, remoteResets=2, lastReset=remote_reset_upstream_error, age=160, pings=0/0) and direct Core request failed: Pinned TLS transport failed [NSURLErrorDomain:-1003:NO_AUTH_CHALLENGE:streamDomain:12:streamCode:8]';
 
 /**
@@ -137,7 +137,7 @@ export function ConnectionSheet() {
 }
 
 /** The session list on Home without the maintenance card it used to carry. */
-export function HomeSidebar() {
+function HomeSidebar() {
   return (
     <View style={styles.sidebar}>
       <ScrollView contentContainerStyle={styles.content}>

@@ -17,7 +17,7 @@ const getState = () => serverConnection.getState();
 
 export type ConnectionView = 'connected' | 'recovered' | 'maintenance' | 'unreachable';
 
-export function connectionView(state: ServerConnectionState, now: number): ConnectionView {
+function connectionView(state: ServerConnectionState, now: number): ConnectionView {
   if (state.kind !== 'connected') return state.kind;
   return state.recoveredAt !== undefined && now - state.recoveredAt < RECOVERED_NOTICE_MS
     ? 'recovered'

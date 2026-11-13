@@ -98,7 +98,7 @@ const CHECK_TIMED_OUT = 'Connection check timed out';
 const PROXY_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
 /** How long one automatic check may take before it counts as unreachable (ms). */
-export const CONNECTION_CHECK_TIMEOUT_MS = 10_000;
+const CONNECTION_CHECK_TIMEOUT_MS = 10_000;
 
 /**
  * Listeners run inside the request that changed the state; one that throws

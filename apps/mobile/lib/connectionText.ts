@@ -3,7 +3,7 @@ import type { ServerConnectionState } from '@verity/mobile';
 import type { ConnectionView } from '../hooks/useServerConnection';
 
 /** "1:24" — how long the server has been away. */
-export function formatElapsed(ms: number): string {
+function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes)}:${String(seconds % 60).padStart(2, '0')}`;
