@@ -83,7 +83,8 @@ whoever sets it. The edge therefore stores each application cookie in its own na
 
 - A `Set-Cookie` from the application is rewritten to `__Host-app-<name>`. `Domain` is removed,
   and `Path=/` and `Secure` are always set. `Max-Age`, `Expires`, `HttpOnly`, `SameSite`,
-  `Partitioned` and `Priority` are kept after validation. Other attributes are dropped. A
+  `Partitioned` and `Priority` are kept after validation; `Expires` must be an RFC 1123 or
+  RFC 850 date. Other attributes are dropped. A
   deletion (`Max-Age=0` or a past `Expires`) still clears the cookie that was set.
 - On requests, the edge forwards only cookies whose name starts with exactly `__Host-app-`, with
   that prefix removed and in the order the browser sent them. Everything else stays at the
@@ -105,8 +106,9 @@ whoever sets it. The edge therefore stores each application cookie in its own na
 - Only cookies set through `Set-Cookie` response headers work. Script in the page sees cookies under
   their `__Host-app-` names, and cookies it writes through `document.cookie` without that prefix
   never reach the application. Patterns where script reads a cookie by its original name, such as
-  double-submit CSRF tokens, need the application to send the token another way. An application
-  cookie that reuses Verity's own session cookie name `__Host-verity_session` is not forwarded.
+  double-submit CSRF tokens, need the application to send the token another way. The connector
+  also withholds an application cookie that reuses Verity's own session cookie name
+  `__Host-verity_session`.
 - Because all public shares are same-site with each other, `SameSite` does not stop a page on
   another share from sending requests with the application's cookies. The edge rejects requests
   other than `GET`, `HEAD` and `OPTIONS` whose `Origin` is not the share's own origin, or whose

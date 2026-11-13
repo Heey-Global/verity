@@ -38,6 +38,13 @@ describe('namespaceSetCookie', () => {
   });
 
   it('drops malformed attribute values instead of forwarding them', () => {
+    for (const expires of ['1', '0', '2037-10-21', 'Wed, 21 Oct 2037'])
+      expect(namespaceSetCookie(`a=b; Expires=${expires}`), expires).toBe(
+        `${APP_COOKIE_PREFIX}a=b; Path=/; Secure`,
+      );
+    expect(namespaceSetCookie('a=b; Expires=Sunday, 06-Nov-94 08:49:37 GMT')).toBe(
+      `${APP_COOKIE_PREFIX}a=b; Path=/; Secure; Expires=Sun, 06 Nov 1994 08:49:37 GMT`,
+    );
     expect(
       namespaceSetCookie('a=b; Max-Age=soon; Expires=never; SameSite=Sometimes; Priority=x'),
     ).toBe(`${APP_COOKIE_PREFIX}a=b; Path=/; Secure`);

@@ -41,7 +41,9 @@ const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const COOKIE_VALUE =
   /^(?:"[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*"|[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*)$/;
 const MAX_AGE = /^-?\d{1,20}$/;
-const HTTP_DATE = /^[A-Za-z0-9 ,:-]+$/;
+// RFC 1123 and RFC 850 dates. A looser value could parse to a different
+// instant than the browser reads, turning a session cookie into a deletion.
+const HTTP_DATE = /^[A-Za-z]{3,9}, \d{1,2}[ -][A-Za-z]{3}[ -]\d{2,4} \d{2}:\d{2}:\d{2} GMT$/;
 const SAME_SITE: Record<string, string> = { strict: 'Strict', lax: 'Lax', none: 'None' };
 const PRIORITY: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
 
