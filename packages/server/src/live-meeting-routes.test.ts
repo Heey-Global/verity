@@ -1360,3 +1360,45 @@ it('deletes nothing when cleanup fails, so discarding again can complete it', as
     await discardApp.close();
   }
 });
+
+// iOS stamps the native stop event with `Date().timeIntervalSince1970 * 1000`, which keeps
+// sub-millisecond digits. Rejecting it left every natively stopped meeting unsyncable (400).
+it('accepts the fractional end time the iOS recorder sends and stores whole milliseconds', async () => {
+  const endedAt = 1_794_556_575_123.456;
+  const response = await app.inject({
+    method: 'PUT',
+    url,
+    payload: { ...meeting, startedAt: 1_794_556_567_581.25, state: 'ended', endedAt },
+  });
+  expect(response.statusCode).toBe(200);
+  const listed = await app.inject({ method: 'GET', url: '/sessions/session-1/live-meetings' });
+  expect(listed.json().meetings[0]).toMatchObject({
+    startedAt: 1_794_556_567_581,
+    endedAt: 1_794_556_575_123,
+  });
+});
+
+// `1e400` is how an out-of-range number arrives in JSON: it parses to Infinity.
+it('refuses an end time beyond any date', async () => {
+  const response = await app.inject({
+    method: 'PUT',
+    url,
+    headers: { 'content-type': 'application/json' },
+    payload: JSON.stringify({ ...meeting, state: 'ended', endedAt: 0 }).replace(
+      '"endedAt":0',
+      '"endedAt":1e400',
+    ),
+  });
+  expect(response.statusCode).toBe(400);
+  expect(response.json().issues).toEqual([expect.objectContaining({ path: ['endedAt'] })]);
+});
+
+it.each([-1, '2026-11-13T07:56:15Z'])('still refuses an end time of %s', async (endedAt) => {
+  const response = await app.inject({
+    method: 'PUT',
+    url,
+    payload: { ...meeting, state: 'ended', endedAt },
+  });
+  expect(response.statusCode).toBe(400);
+  expect(response.json().issues).toEqual([expect.objectContaining({ path: ['endedAt'] })]);
+});

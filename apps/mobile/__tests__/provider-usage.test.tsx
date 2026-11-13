@@ -228,9 +228,9 @@ describe('overview placement', () => {
     ) as ts.IfStatement | undefined;
     expect(phoneReturn).toBeDefined();
     expect(jsxNamed(phoneReturn!.thenStatement, 'ProviderUsageStrip')).toHaveLength(1);
-    // `sidebar` holds Home and Projects; the strip must sit beside it, not in one tab.
+    // The gesture sidebar holds Home and Projects; the strip stays outside both the tabs and drag.
     expect(phoneReturn!.thenStatement.getText()).toMatch(
-      /<ProviderUsageStrip[^>]*\/>\s*\{sidebar\}/,
+      /<ProviderUsageStrip[^>]*\/>\s*\{gestureSidebar\}/,
     );
     expect(jsxNamed(source, 'ProviderUsageStrip')).toHaveLength(1);
   });

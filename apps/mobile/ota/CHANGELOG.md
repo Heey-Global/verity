@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.1](https://github.com/Heey-Global/verity/compare/mobile-v1.91.0...mobile-v1.91.1) (2026-11-12)
+
+
+### Bug Fixes
+
+* **mobile:** keep project reorder attached across tab switches ([#2540](https://github.com/Heey-Global/verity/issues/2540)) ([7f11985](https://github.com/Heey-Global/verity/commit/7f119853e500302bb2b3bed8c6a640426d0b61b6))
+
 ## [1.90.1](https://github.com/Heey-Global/verity/compare/mobile-v1.90.0...mobile-v1.90.1) (2026-11-12)
 
 

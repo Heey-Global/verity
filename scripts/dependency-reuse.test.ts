@@ -446,6 +446,33 @@ describe('shared dependency reuse', () => {
       readFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
   });
+  it('reuses a central inventory across sessions with private npm log directories', () => {
+    // Each session sets its own npm_config_logs_dir. If that path entered the
+    // identity, every session would prepare its own inventory: reuse would stop
+    // without any check failing, only npm ci would quietly run once per session.
+    const f = fixture();
+    const sibling = f.sibling();
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/private': { version: '2.0.0' } },
+    });
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock);
+    writeFileSync(join(sibling, 'package-lock.json'), lock);
+    expect(
+      f.run('install', { npm_config_logs_dir: join(f.root, 'home-a', 'cache', '_logs') }).status,
+    ).toBe(0);
+    const child = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        npm_config_logs_dir: join(f.root, 'home-b', 'cache', '_logs'),
+      },
+      encoding: 'utf8',
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
   it('rewires cached workspace links to the receiving session', () => {
     const f = fixture();
     const sibling = f.sibling();
@@ -1119,6 +1146,58 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(run('status').status).toBe(0);
     expect(run('install').status).toBe(0);
     expect(readFileSync(join(f.worktree, 'policy-prepared'), 'utf8')).toBe('prepare\n');
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
+  it('prepares centrally when invoked from a git hook that exports GIT_DIR', () => {
+    // pre-push runs the helper with GIT_DIR set. The shipped runtime resolves the
+    // staging state through `git -C <stage>`; an inherited GIT_DIR made that answer
+    // the session gitdir, so every hook-driven preparation was refused as if the
+    // sandbox tooling were outdated.
+    const f = fixture();
+    const trusted = join(f.root, 'bin', 'hook-policy');
+    mkdirSync(trusted);
+    cpSync(
+      'features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs',
+      join(trusted, 'verity-npm-preflight.mjs'),
+    );
+    writeFileSync(
+      join(trusted, 'verity-package-install.mjs'),
+      `import fs from 'node:fs';
+if (process.argv.slice(2).join(' ') === 'npm --verity-prepare-only') fs.writeFileSync('.npmrc','min-release-age=3\\n');
+else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') process.exit(2);
+`,
+    );
+    const instrumented = join(f.root, 'bin', 'hook-helper.mjs');
+    writeFileSync(
+      instrumented,
+      readFileSync(helper, 'utf8').replace(
+        "const directory = '/usr/local/lib/verity';",
+        `const directory = ${JSON.stringify(trusted)};`,
+      ),
+    );
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: f.worktree,
+      env,
+      encoding: 'utf8',
+    }).trim();
+    const installed = spawnSync(process.execPath, [instrumented, 'install'], {
+      cwd: f.worktree,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        VERITY_SESSION_ID: 'fixture-session',
+        GIT_DIR: gitDir,
+      },
+      encoding: 'utf8',
+    });
+    expect(installed.status, installed.stderr).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
   it.each(['missing', 'legacy'])(

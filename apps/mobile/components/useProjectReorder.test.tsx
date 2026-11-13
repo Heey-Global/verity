@@ -127,6 +127,19 @@ function setup(id = 'c', top = 280, initialOrder = order, visibleIds = initialOr
   return { hook, onDrop, start, move, end, scroll, style, unregister: () => act(unregister) };
 }
 
+it('disables native pickup while the project list is hidden and restores it on return', () => {
+  const { result, rerender } = renderHook(
+    ({ enabled }: { enabled: boolean }) =>
+      useProjectReorder({ order, sortable: ['a', 'b', 'c'], onDrop: jest.fn(), enabled }),
+    { initialProps: { enabled: false } },
+  );
+  expect(result.current.gesture.config.enabled).toBe(false);
+  rerender({ enabled: true });
+  expect(result.current.gesture.config.enabled).toBe(true);
+  rerender({ enabled: false });
+  expect(result.current.gesture.config.enabled).toBe(false);
+});
+
 it('keeps a bottom pickup at its screen position across collapse, recycling and continued movement', () => {
   const test = setup();
   test.scroll(900);

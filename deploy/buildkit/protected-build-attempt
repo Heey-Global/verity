@@ -48,7 +48,7 @@ def check():
                  Path('/usr/bin/dockerd'), Path('/usr/bin/mount')]:
         trusted(tool)
     config = load(CONFIG)
-    if set(config) != {'nodeFeature', 'additionalFeatures', 'nodeOptions', 'toolkitOptions'} or not isinstance(config['additionalFeatures'], list) or not config['additionalFeatures'] or config['nodeOptions'] != {'version': '26.13.0'} or config['toolkitOptions'] != {'installRunnerSupervisor': True}:
+    if set(config) != {'nodeFeature', 'additionalFeatures', 'nodeOptions', 'toolkitOptions'} or not isinstance(config['additionalFeatures'], list) or not config['additionalFeatures'] or config['nodeOptions'] != {'version': '26.13.1'} or config['toolkitOptions'] != {'installRunnerSupervisor': True}:
         raise ValueError('Invalid protected build release policy')
     for feature in [config['nodeFeature'], *config['additionalFeatures']]:
         if not isinstance(feature, str) or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}', feature):

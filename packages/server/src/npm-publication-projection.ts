@@ -1,7 +1,11 @@
 import type { IncomingMessage } from 'node:http';
+import { pipeline } from 'node:stream';
+import { createGunzip } from 'node:zlib';
 
 // Full packuments of long-lived packages can exceed 32 MiB. Keep a finite transfer
 // budget while the streaming parser bounds retained strings and nesting separately.
+// With gzip the budget applies to the compressed transfer and, separately, to the
+// decompressed document, so a small compressed body cannot expand without bound.
 export const MAX_NPM_PUBLICATION_BYTES = 128 * 1024 ** 2;
 
 interface Frame {
@@ -40,12 +44,23 @@ export async function projectNpmPublications(
     throw new Error('Invalid or oversized npm publication metadata.');
   }
   if (
-    (encoding !== undefined && encoding !== 'identity') ||
+    (encoding !== undefined && encoding !== 'identity' && encoding !== 'gzip') ||
     (length !== undefined && (!/^\d+$/u.test(length) || Number(length) > limit))
   ) {
     response.destroy();
     fail();
   }
+  let transferred = 0;
+  const gunzip = encoding === 'gzip' ? createGunzip() : undefined;
+  if (gunzip) {
+    response.on('data', (chunk: Buffer) => {
+      transferred += chunk.length;
+      if (transferred > limit) gunzip.destroy(new Error('Oversized npm publication metadata.'));
+    });
+    // Errors on either side end the decompressed stream the parser reads.
+    pipeline(response, gunzip, () => undefined);
+  }
+  const source: AsyncIterable<unknown> = gunzip ?? response;
   const versions = new Set<string>();
   const times = new Map<string, unknown>();
   const rootKeys = new Set<string>();
@@ -231,7 +246,7 @@ export async function projectNpmPublications(
   const decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0;
   try {
-    for await (const raw of response) {
+    for await (const raw of source) {
       const chunk = Buffer.from(raw as Uint8Array);
       bytes += chunk.length;
       if (bytes > limit || signal.aborted) fail();
@@ -242,6 +257,7 @@ export async function projectNpmPublications(
     if (mode !== 'normal' || !rootDone || actualName !== name || signal.aborted) fail();
     return { versions, times, ...(artifact ? { artifact } : {}) };
   } finally {
+    gunzip?.destroy();
     response.destroy();
   }
 }

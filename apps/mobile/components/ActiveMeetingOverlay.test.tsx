@@ -247,6 +247,62 @@ it('stops a followed online meeting on the server instead of commanding a record
   expect(requestLiveMeetingCommand).not.toHaveBeenCalled();
 });
 
+// While Verity waited in a lobby the card said "Online" and Stop could be sent again and again.
+it('shows a bot waiting to be let in and stops it once', async () => {
+  const meeting: MeetingRecord = {
+    id: 'online-1',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    title: 'Weekly sync',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'preparing',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  });
+  jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+    listener({ serverId: 'server-1', sessionId: 'session-1', meetingId: meeting.id });
+    return jest.fn();
+  });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const stopOnlineMeeting = jest.fn().mockResolvedValue(undefined);
+  jest.mocked(createVerityClient).mockReturnValue({
+    getActiveLiveMeetings: jest.fn().mockResolvedValue(
+      activeMeetings({
+        running: [
+          {
+            sessionId: 'session-1',
+            id: meeting.id,
+            title: 'Weekly sync',
+            engine: 'attendee',
+            startedAt: meeting.startedAt,
+            state: 'active',
+            captureStatus: 'preparing',
+            joinStatus: 'waiting',
+            sessionName: null,
+            projectId: null,
+          },
+        ],
+      }),
+    ),
+    getLiveMeetingCommands: jest.fn(),
+    stopOnlineMeeting,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<ActiveMeetingOverlay />);
+  expect(await screen.findByText(/^Waiting · /)).toBeOnTheScreen();
+  expect(screen.getByText('Ask the host to let Verity in')).toBeOnTheScreen();
+  await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
+  await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
+  expect(stopOnlineMeeting).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/^Ending · /)).toBeOnTheScreen();
+});
+
 // After a server switch the card can still show the old meeting for a moment; its ids mean
 // nothing to the new server.
 it('does not stop an online meeting of another server', async () => {

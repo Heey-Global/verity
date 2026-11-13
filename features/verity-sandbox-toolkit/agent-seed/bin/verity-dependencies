@@ -375,8 +375,15 @@ function identity(root, inputs = root) {
   });
   if (version.status !== 0)
     throw new Error('Cannot determine npm version for dependency compatibility.');
+  // Diagnostic output settings cannot change the installed tree. Sessions get a
+  // private npm log directory, so hashing it would give every session its own
+  // identity and silently defeat cross-session reuse of central inventories.
   const configuration = Object.entries(process.env)
-    .filter(([key]) => /^npm_config_/i.test(key))
+    .filter(
+      ([key]) =>
+        /^npm_config_/i.test(key) &&
+        !/^npm_config_(?:logs[_-]dir|logs[_-]max|loglevel|color|progress|timing)$/i.test(key),
+    )
     .sort(([left], [right]) => left.localeCompare(right));
   hash.update(
     JSON.stringify([
@@ -826,6 +833,22 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
   }
 }
 async function main() {
+  // Git hooks export repository-location variables such as GIT_DIR. Inherited by
+  // `git -C <staging directory>`, they make the npm runtime place central
+  // staging inside the session's gitdir, so preparation from pre-push always
+  // failed as if the sandbox tooling were outdated. Every repository below is
+  // addressed explicitly, so clear the location variables before the first git
+  // call. Index and configuration variables (GIT_INDEX_FILE, `git -c`) stay: the
+  // staging directory is not a repository and only `git rev-parse` runs there, while
+  // the helper's other git calls read the session checkout the hook belongs to.
+  for (const name of [
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+    'GIT_COMMON_DIR',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ])
+    delete process.env[name];
   const root = git('rev-parse', '--show-toplevel');
   const common = resolve(root, git('rev-parse', '--git-common-dir'));
   const base = dirname(common);

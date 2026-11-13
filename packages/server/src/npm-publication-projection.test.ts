@@ -1,4 +1,6 @@
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGzip, gzipSync } from 'node:zlib';
 import type { IncomingMessage } from 'node:http';
 import { expect, it } from 'vitest';
 import { MAX_NPM_PUBLICATION_BYTES, projectNpmPublications } from './npm-publication-projection.js';
@@ -109,6 +111,10 @@ it('bounds nesting, input bytes and content encodings and rejects invalid UTF-8'
     response(['{"name":"example","unused":' + '['.repeat(65) + '0' + ']'.repeat(65) + '}']),
     response(['{}'], { 'content-length': String(MAX_NPM_PUBLICATION_BYTES + 1) }),
     response(['{}'], { 'content-encoding': 'gzip' }),
+    // Valid JSON bodies: only the encoding check can reject these.
+    response([JSON.stringify(facts)], { 'content-encoding': 'br' }),
+    response([JSON.stringify(facts)], { 'content-encoding': 'deflate' }),
+    response([JSON.stringify(facts)], { 'content-encoding': 'gzip, gzip' }),
     response([Buffer.from([255])]),
   ])
     await expect(projectNpmPublications(input, 'example', new Set(), signal)).rejects.toThrow();
@@ -134,4 +140,51 @@ it('destroys the source when the generation is aborted', async () => {
     projectNpmPublications(input, 'example', new Set(['1.0.0']), controller.signal),
   ).rejects.toThrow();
   expect(input.destroyed).toBe(true);
+});
+
+it('projects facts from a gzip-compressed registry document', async () => {
+  const input = response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'gzip' });
+  const result = await projectNpmPublications(input, 'example', new Set(['1.0.0']), signal);
+  expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
+  expect(input.destroyed).toBe(true);
+});
+
+it('bounds the decompressed size of a small gzip body', async () => {
+  // A compressed body far below the transfer budget can expand past it. Only the
+  // decompressed count stops that; the compressed count never would. Compress in
+  // small chunks so the oversized document never sits in memory.
+  const chunk = Buffer.alloc(1024 ** 2, 97);
+  async function* document() {
+    yield Buffer.from('{"name":"example","description":"');
+    for (let i = 0; i < MAX_NPM_PUBLICATION_BYTES / chunk.length + 1; i++) yield chunk;
+    yield Buffer.from('"}');
+  }
+  const parts: Buffer[] = [];
+  await pipeline(Readable.from(document()), createGzip(), async (compressed) => {
+    for await (const part of compressed) parts.push(part as Buffer);
+  });
+  const compressed = Buffer.concat(parts);
+  expect(compressed.length).toBeLessThan(MAX_NPM_PUBLICATION_BYTES / 64);
+  await expect(
+    projectNpmPublications(
+      response([compressed], { 'content-encoding': 'gzip' }),
+      'example',
+      new Set(),
+      signal,
+    ),
+  ).rejects.toThrow();
+}, 60_000);
+
+it('rejects a corrupt gzip body', async () => {
+  const compressed = gzipSync(JSON.stringify(facts));
+  const corrupt = compressed.length - 6;
+  compressed[corrupt] = compressed[corrupt]! ^ 0xff;
+  await expect(
+    projectNpmPublications(
+      response([compressed], { 'content-encoding': 'gzip' }),
+      'example',
+      new Set(['1.0.0']),
+      signal,
+    ),
+  ).rejects.toThrow();
 });
