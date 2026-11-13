@@ -68,7 +68,7 @@ export function useInboxFeed({
   onOpenProject?: ((projectId: string) => void) | undefined;
   onRepairProject: (projectId: string) => void;
   /** After an answer or a dismissal is saved, for a screen that does not poll. */
-  onSaved?: (() => void) | undefined;
+  onSaved?: ((item: InboxItem) => void) | undefined;
 }) {
   const perform = useMemo(() => createPushReplyPerformer(client), [client]);
   const [settled, setSettled] = useState<ReadonlySet<string>>(() => new Set());
@@ -142,7 +142,7 @@ export function useInboxFeed({
         .then(save)
         .then(
           // Outside the failure branch: the save landed whatever the follow-up does.
-          () => onSaved?.(),
+          () => onSaved?.(item),
           () => {
             setOverrides((current) => {
               const next = new Map(current);
@@ -187,7 +187,7 @@ export function useInboxFeed({
         // `stale` means someone answered first; either way the item is done.
         replyIds.current.delete(replyKey);
         setSettled((current) => new Set(current).add(item.key));
-        onSaved?.();
+        onSaved?.(item);
       } finally {
         release(item.key);
       }
@@ -365,11 +365,17 @@ export function InboxCard({
             {line.text}
           </Text>
         ))}
-        {item.request === undefined ? null : (
+        {item.request === undefined ? null : item.requestOpen === true ? (
+          // The words leave part of the input unsaid (a file's content, a field no
+          // summary knows), so it is the thing to read and is shown whole; Allow
+          // must never stand next to text the operator cannot read in full.
+          <Text variant="code" testID="inbox-request" selectable>
+            {item.request}
+          </Text>
+        ) : (
           // Read in words first; the complete input stays one tap away, never
           // clipped, so Allow is never decided from a summary that could not be
-          // checked against it. Folded even without words: an overview that opens
-          // on a JSON dump is read past, not read.
+          // checked against it.
           <Disclosure title="Full request">
             <Text variant="code" testID="inbox-request" selectable>
               {item.request}

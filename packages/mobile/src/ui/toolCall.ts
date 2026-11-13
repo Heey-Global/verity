@@ -253,23 +253,21 @@ function basename(path: string): string {
 }
 
 /**
- * The field {@link summarizeInput} would headline, whole: every line, no clipping. For a
- * reader who decides on it, such as Home's permission card, where an 80-character squash of
- * a command could hide the part that matters. Bidi controls are spelled out like every other
- * line a card shows. Null when the call has no such field.
+ * The field a tool is known to be about (a command, a path, an address), whole: every line,
+ * no clipping, bidi controls spelled out. For a reader who decides on it, such as Home's
+ * permission card. Only fields mapped in {@link PRIMARY_FIELD}: the headline's fallback to
+ * the first string is agent-ordered, so it could present a harmless field as the call.
  */
-export function toolCallPrimaryInput(toolName: string, input: unknown): string | null {
-  const name = canonicalToolName(toolName);
-  if (typeof input === 'string') return spellOutBidiControls(input);
+export function toolCallPrimaryField(
+  toolName: string,
+  input: unknown,
+): { field: string; text: string } | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const obj = input as Record<string, unknown>;
-  const key = PRIMARY_FIELD[name];
-  if (key !== undefined && typeof obj[key] === 'string') return spellOutBidiControls(obj[key]);
-  if (ONLY_PRIMARY_FIELD.has(name)) return null;
-  for (const value of Object.values(obj)) {
-    if (typeof value === 'string') return spellOutBidiControls(value);
-  }
-  return null;
+  const key = PRIMARY_FIELD[canonicalToolName(toolName)];
+  const value = key !== undefined ? (input as Record<string, unknown>)[key] : undefined;
+  return key !== undefined && typeof value === 'string' && value.trim() !== ''
+    ? { field: key, text: spellOutBidiControls(value) }
+    : null;
 }
 
 function summarizeInput(name: string, input: unknown): string | null {

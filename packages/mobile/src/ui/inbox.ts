@@ -76,6 +76,9 @@ export interface InboxItem {
    *  with it, so the operator can always see what the tool will receive rather
    *  than only a summary of it. */
   request?: string;
+  /** The lines leave part of {@link request} unsaid, so it is shown open
+   *  rather than folded behind them. */
+  requestOpen?: boolean;
   sessionId?: string;
   projectId?: string;
   /** The screens of a mockup review, shown as thumbnails on the item. */
@@ -249,7 +252,12 @@ function sessionItems(
         : view.subtitle
           ? { message: view.subtitle }
           : {}),
-      ...(decidable ? { request: permissionInputText(request.input) } : {}),
+      ...(decidable
+        ? {
+            request: permissionInputText(request.input),
+            ...(summary.covered ? {} : { requestOpen: true }),
+          }
+        : {}),
       actions: decidable
         ? [
             {

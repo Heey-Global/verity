@@ -23,7 +23,7 @@ import {
   sessionHandoffTitle,
   sessionProgressSummary,
 } from './sessionHandoffSummary.js';
-import { toolCallPrimaryInput, toolCallView } from './toolCall.js';
+import { toolCallPrimaryField, toolCallView } from './toolCall.js';
 import {
   trustedCliInjectionSummary,
   trustedCliSecretLabel,
@@ -42,7 +42,17 @@ export interface PermissionSummary {
   /** What a reader needs to decide without opening the session. Empty when the
    *  tool has no summariser, or when its summariser could not read the input. */
   lines: PermissionLine[];
+  /** Whether {@link lines} carry everything the input asks, so an overview may
+   *  fold the raw input. False when a field the lines leave out could matter. */
+  covered: boolean;
 }
+
+/** Fields that only describe or pace a call, never change what it does. */
+const COMMENTARY_FIELDS: ReadonlySet<string> = new Set([
+  'description',
+  'timeout',
+  'run_in_background',
+]);
 
 function linkedMessage(input: unknown): { target: string; message: string } | null {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
@@ -90,6 +100,8 @@ export function permissionSummary(
   return {
     title: spellOutBidiControls(summary.title),
     lines: summary.lines.map((line) => ({ ...line, text: spellOutBidiControls(line.text) })),
+    // A tool's own summariser words its whole request; without lines nothing does.
+    covered: summary.covered ?? summary.lines.length > 0,
   };
 }
 
@@ -97,7 +109,7 @@ function summarize(
   tool: string,
   input: unknown,
   options: { approvedForDelivery?: boolean },
-): PermissionSummary {
+): Omit<PermissionSummary, 'covered'> & { covered?: boolean } {
   const packageInstall = tool === 'verity_package_install' ? packageInstallSummary(input) : null;
   if (packageInstall !== null)
     return {
@@ -217,9 +229,16 @@ function summarize(
   // server-controlled today, so this is consistency rather than exposure.
   // The field the call is about (a command, a path, an address), whole, so an
   // overview can show it instead of the raw input.
-  const primary = toolCallPrimaryInput(tool, input);
+  const primary = toolCallPrimaryField(tool, input);
   return {
     title: `Allow ${spellOutBidiControls(view.title)}?`,
-    lines: primary !== null && primary.trim() !== '' ? [{ kind: 'code', text: primary }] : [],
+    lines: primary !== null ? [{ kind: 'code', text: primary.text }] : [],
+    // Covered only when every other field merely describes the call (Bash's
+    // description); the content of a Write or an unknown field stays in view.
+    covered:
+      primary !== null &&
+      Object.keys(input as Record<string, unknown>).every(
+        (key) => key === primary.field || COMMENTARY_FIELDS.has(key),
+      ),
   };
 }
