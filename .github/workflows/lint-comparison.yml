@@ -2,13 +2,59 @@ name: Lint metadata comparison
 
 on:
   workflow_dispatch:
+    inputs:
+      server-heap-only:
+        description: Measure only server.ts with native GC traces and unchanged heap budget
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
   contents: read
 
 jobs:
+  server-heap:
+    if: github.event_name == 'workflow_dispatch' && inputs['server-heap-only']
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    concurrency:
+      group: lint-server-heap-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '26.13.0'
+      - run: npm ci --workspace packages --include-workspace-root --ignore-scripts --omit=optional
+      - name: Measure isolated server lint heap
+        shell: bash
+        env:
+          CI: 'true'
+          MEASUREMENT_DIR: ${{ runner.temp }}/lint-server-heap
+        run: |
+          set -euo pipefail
+          mkdir -p "$MEASUREMENT_DIR"
+          {
+            git rev-parse HEAD
+            node --version
+            npm --version
+            uname -sm
+          } > "$MEASUREMENT_DIR/environment.txt"
+          # GC traces report V8 live heap sizes. RSS also includes native memory.
+          /usr/bin/time --verbose --output="$MEASUREMENT_DIR/resources.txt" \
+            node scripts/lint-heap-probe.mjs "$MEASUREMENT_DIR"
+      - name: Upload isolated heap evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lint-server-heap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lint-server-heap
+          retention-days: 7
+          if-no-files-found: warn
   compare:
+    if: ${{ !inputs['server-heap-only'] }}
     runs-on: ubuntu-26.04
     timeout-minutes: 150
     strategy:
