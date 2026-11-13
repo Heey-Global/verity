@@ -82,8 +82,19 @@ export function hidesConnectionError(
   return state.recoveredAt !== undefined && now - state.recoveredAt < RECOVERY_GRACE_MS;
 }
 
+/**
+ * What hiding depends on, as a primitive: it changes when an outage starts or
+ * ends, not with every countdown step, so the large screens that hide their
+ * errors do not re-render at each check.
+ */
+function hidingKey(): string {
+  const state = serverConnection.getState();
+  return state.kind === 'connected' ? `connected:${String(state.recoveredAt ?? '')}` : 'disrupted';
+}
+
 export function useHidesConnectionError(error: unknown): boolean {
-  const state = useSyncExternalStore(subscribe, getState, getState);
+  useSyncExternalStore(subscribe, hidingKey, hidingKey);
+  const state = serverConnection.getState();
   const [now, setNow] = useState(() => Date.now());
   const recoveredAt = state.kind === 'connected' ? state.recoveredAt : undefined;
   // Re-render when the grace runs out: an error the reload did not clear must

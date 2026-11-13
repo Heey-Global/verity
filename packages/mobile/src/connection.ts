@@ -314,11 +314,11 @@ export class ConnectionMonitor implements ConnectionReporter {
     }
     let failure: unknown;
     let failed = false;
+    const outage = this.outage;
     const answer = probe();
     if (!confirming) {
       // A slow route (Remote Control) may answer only after the check gave up;
       // that answer still ends the outage the check was made during.
-      const outage = this.outage;
       answer.then(
         () => {
           if (outage === this.outage && !this.checking) this.recover();

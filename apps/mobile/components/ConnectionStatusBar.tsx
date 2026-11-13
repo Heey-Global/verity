@@ -1,10 +1,11 @@
 import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
-import { View } from 'react-native';
+import { AccessibilityInfo, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useServerConnection } from '../hooks/useServerConnection';
 import { getVerityBaseUrl } from '../lib/client';
+import { serverConnection } from '../lib/serverConnection';
 import {
   connectionBarText,
   failedRoutes,
@@ -33,11 +34,17 @@ export function ConnectionStatusBar() {
   useEffect(() => {
     if (!disrupted) setOpen(false);
   }, [disrupted]);
+  // Announce the change of state once. A live region around the bar would read
+  // its ticking countdown aloud every second for the whole outage.
+  useEffect(() => {
+    const title = connectionBarText(view, serverConnection.getState(), Date.now())?.title;
+    if (title !== undefined) AccessibilityInfo.announceForAccessibility(title);
+  }, [view]);
   const text = connectionBarText(view, state, now);
   if (text === null) return null;
   return (
     <>
-      <View accessibilityLiveRegion="polite">
+      <View>
         <SessionBar
           trailing={
             view === 'unreachable' ? (

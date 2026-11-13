@@ -1,4 +1,5 @@
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react-native';
+import { AccessibilityInfo } from 'react-native';
 import { SERVER_MAINTENANCE_MESSAGE, VerityApiError, type VerityClient } from '@verity/mobile';
 
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
@@ -88,6 +89,21 @@ describe('ConnectionStatusBar', () => {
     expect(screen.queryByText('Direct connection')).toBeNull();
   });
 
+  // A live region around the ticking countdown would read it aloud every second.
+  it('announces a change of state once, not every tick', () => {
+    const announce = jest
+      .spyOn(AccessibilityInfo, 'announceForAccessibility')
+      .mockImplementation(() => undefined);
+    render(<ConnectionStatusBar />);
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    expect(announce).toHaveBeenLastCalledWith('Server is updating');
+    const announced = announce.mock.calls.length;
+    act(() => jest.advanceTimersByTime(5_000));
+    expect(screen.getByText(/Reconnecting automatically · 0:05/)).toBeOnTheScreen();
+    expect(announce).toHaveBeenCalledTimes(announced);
+    announce.mockRestore();
+  });
+
   it('says "Connected" briefly when the server is back, then disappears', async () => {
     render(<ConnectionStatusBar />);
     act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
@@ -133,6 +149,21 @@ describe('hidesConnectionError', () => {
 });
 
 describe('useHidesConnectionError', () => {
+  // Session and Home screens use this hook: they must not re-render at every
+  // countdown step of an outage, only when it starts or ends.
+  it('does not re-render while the countdown moves on', () => {
+    let renders = 0;
+    renderHook(() => {
+      renders += 1;
+      return useHidesConnectionError(SERVER_MAINTENANCE_MESSAGE);
+    });
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    const afterOutage = renders;
+    act(() => serverConnection.retryNow());
+    act(() => jest.advanceTimersByTime(20_000));
+    expect(renders).toBe(afterOutage);
+  });
+
   // A connection error the reload did not clear must come back on screen when
   // the grace ends; nothing else may be needed to re-render the screen.
   it('shows a leftover error again once the grace after recovery ends', async () => {
