@@ -434,12 +434,12 @@ export function createBrokeredForgeProxy(options: {
               // A healthy stream is reconfirmed every tick; past the bound only an
               // attempted check — still pending, or failed — can be outstanding.
               if (now - confirmedAt > unconfirmedLimit) {
-                if (checking) {
-                  revoke('revocation-timeout');
-                  return;
-                }
                 if (lastFailure !== undefined) {
                   revoke('resolver-error', lastFailure.error);
+                  return;
+                }
+                if (checking) {
+                  revoke('revocation-timeout');
                   return;
                 }
               }
