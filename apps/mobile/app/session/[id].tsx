@@ -3,7 +3,7 @@ import { SessionRepositories } from '../../components/project/SessionRepositorie
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
-import { projectTitle } from '@verity/mobile';
+import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
@@ -792,7 +792,7 @@ export const SessionChat = memo(function SessionChat({
   const hidesStreamError = useHidesConnectionError(streamError);
   useConnectionRecovered(() => {
     refreshMetadata();
-    if (historyError) (loaded ? loadOlder : retryHistory)();
+    if (connectionFailureKind(historyError) !== undefined) (loaded ? loadOlder : retryHistory)();
   });
   const optionalWorkReady = useDeferredSessionWork(
     sessionId,

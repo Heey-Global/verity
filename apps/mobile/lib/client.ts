@@ -228,5 +228,12 @@ export function createVerityClient(): VerityClient | null {
 // While the server is away the connection bar checks it with the liveness probe;
 // that request reports through the monitor like any other, which ends the outage.
 serverConnection.setProbe(async () => {
-  await createVerityClient()?.getHealth();
+  const client = createVerityClient();
+  // No server is configured any more: there is nothing to be connected to,
+  // which is not the same as having reached it.
+  if (client === null) {
+    serverConnection.reset();
+    return;
+  }
+  await client.getHealth();
 });

@@ -165,6 +165,12 @@ export class ConnectionMonitor implements ConnectionReporter {
 
   reportSuccess(): void {
     const now = this.timers.now();
+    if (this.checking) {
+      // The server just answered: a check still running is out of date, and
+      // its late failure must not put the app back into an outage.
+      this.generation += 1;
+      this.checking = false;
+    }
     if (this.state.kind === 'connected') {
       this.state = { ...this.state, lastConnectedAt: now };
       // Not emitted: a successful request changes nothing anyone renders, and
@@ -232,6 +238,7 @@ export class ConnectionMonitor implements ConnectionReporter {
       return;
     }
     const generation = this.generation;
+    const confirming = this.state.kind === 'connected';
     this.checking = true;
     if (this.state.kind !== 'connected' && this.state.nextAttemptAt !== undefined) {
       this.state = { ...this.state, nextAttemptAt: undefined };
@@ -261,7 +268,12 @@ export class ConnectionMonitor implements ConnectionReporter {
     }
     const message = failure instanceof Error ? failure.message : details;
     if (this.state.kind === 'connected') this.enter(kind, message);
-    else {
+    else if (confirming) {
+      // The probe's own request already entered the outage and scheduled the
+      // first attempt; counting this check as a retry would skip that step.
+      this.state = { ...this.state, details: message };
+      this.emit();
+    } else {
       this.state = { ...this.state, kind, details: message };
       this.attempt += 1;
       this.schedule();

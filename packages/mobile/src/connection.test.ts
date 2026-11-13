@@ -185,6 +185,37 @@ describe('ConnectionMonitor robustness', () => {
     expect(clock.delays()).toEqual([2_000]);
   });
 
+  it('ignores a check that fails after the server has already answered', async () => {
+    const clock = fakeTimers();
+    const probe = vi.fn(() => new Promise<never>(() => undefined));
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers, checkTimeoutMs: 10_000 });
+    const recovered = vi.fn();
+    monitor.onRecovered(recovered);
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    monitor.reportSuccess();
+    expect(recovered).toHaveBeenCalledTimes(1);
+    // The hanging check times out only now; it must not reopen the outage.
+    clock.advance(10_000);
+    await flush();
+    expect(monitor.getState().kind).toBe('connected');
+    expect(recovered).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the backoff at its first step when the confirming check finds an update', async () => {
+    const clock = fakeTimers();
+    const monitor = new ConnectionMonitor({ timers: clock.timers });
+    // Like the app's probe: its own request reports before it rejects.
+    monitor.setProbe(() => {
+      monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+      return Promise.reject(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE));
+    });
+    monitor.reportFailure('unreachable', 'Network request failed');
+    await flush();
+    expect(monitor.getState().kind).toBe('maintenance');
+    expect(clock.delays()).toEqual([2_000]);
+  });
+
   it('keeps a throwing listener out of the request that reported', () => {
     const monitor = new ConnectionMonitor();
     const after = vi.fn();

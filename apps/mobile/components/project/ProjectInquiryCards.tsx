@@ -1,4 +1,4 @@
-import { type VerityClient } from '@verity/mobile';
+import { connectionFailureKind, type VerityClient } from '@verity/mobile';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import { View } from 'react-native';
@@ -21,7 +21,7 @@ export function ProjectInquiryCards({
   // reports failures that are its own, and asks again once the server is back.
   const hidesError = useHidesConnectionError(resource.error);
   useConnectionRecovered(() => {
-    if (resource.error) resource.reload();
+    if (connectionFailureKind(resource.error) !== undefined) resource.reload();
   });
   const [busy, setBusy] = useState<string>();
   const decide = async (targetSessionId: string, id: string, decision: 'approve' | 'reject') => {

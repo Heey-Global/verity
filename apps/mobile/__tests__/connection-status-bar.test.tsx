@@ -6,6 +6,7 @@ jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 
 import { ConnectionStatusBar } from '../components/ConnectionStatusBar';
+import { SettingsScaffold } from '../components/settings/SettingsChrome';
 import {
   hidesConnectionError,
   RECOVERED_NOTICE_MS,
@@ -125,5 +126,32 @@ describe('useHidesConnectionError', () => {
     expect(result.current).toBe(true);
     act(() => jest.advanceTimersByTime(RECOVERY_GRACE_MS));
     expect(result.current).toBe(false);
+  });
+});
+
+describe('SettingsScaffold after an outage', () => {
+  const scaffold = (error: string, onRetry: () => void) => (
+    <SettingsScaffold title="Settings" state={{ error, saving: false }} onRetry={onRetry}>
+      {null}
+    </SettingsScaffold>
+  );
+
+  it('hides the outage and retries the load it broke once the server is back', () => {
+    const onRetry = jest.fn();
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    render(scaffold(SERVER_MAINTENANCE_MESSAGE, onRetry));
+    expect(screen.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
+    act(() => serverConnection.reportSuccess());
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  // The banner's Retry may repeat a save: recovery must not replay it unasked.
+  it('leaves an error of its own to the person', () => {
+    const onRetry = jest.fn();
+    act(() => serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE));
+    render(scaffold('Save rejected: name already taken', onRetry));
+    expect(screen.getByText('Save rejected: name already taken')).toBeOnTheScreen();
+    act(() => serverConnection.reportSuccess());
+    expect(onRetry).not.toHaveBeenCalled();
   });
 });

@@ -8,6 +8,7 @@
 // a card, a row and a text field look and behave identically whichever of the
 // five screens they happen to be on, and the auto-save banner reports work
 // started on a screen that has since been popped.
+import { connectionFailureKind } from '@verity/mobile';
 import { type ReactNode } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { Stack } from 'expo-router';
@@ -72,7 +73,9 @@ export function SettingsScaffold({
   // the screen retries its failed load by itself as soon as the server is back.
   const hidesError = useHidesConnectionError(error);
   useConnectionRecovered(() => {
-    if (error !== undefined) onRetry?.();
+    // Only a load the outage broke: retrying anything else (a rejected save)
+    // would replay it without being asked.
+    if (connectionFailureKind(error) !== undefined) onRetry?.();
   });
 
   // A pinned footer sits outside the scroll view, so the frame itself has to
