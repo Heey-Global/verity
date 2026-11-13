@@ -24,13 +24,7 @@ import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { syncWatchInbox } from '../../lib/watchCapture';
 
 // The inbox mechanics live with every work list; kept importable from Home.
-export {
-  InboxCard,
-  RESUME_PROMPT,
-  replyFor,
-  useInboxFeed,
-  type InboxFeed,
-} from '../inbox/InboxFeed';
+export { InboxCard, RESUME_PROMPT, replyFor, useInboxFeed } from '../inbox/InboxFeed';
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
