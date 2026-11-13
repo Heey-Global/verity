@@ -162,4 +162,25 @@ export class UserProviderConnectionStore {
       )
       .execute();
   }
+
+  /** The model this person chose in a session, or null. */
+  async sessionModel(sessionId: string, userId: string): Promise<string | null> {
+    const row = await this.db
+      .selectFrom('session_user_models')
+      .select('model')
+      .where('session_id', '=', sessionId)
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return row?.model ?? null;
+  }
+
+  async setSessionModel(sessionId: string, userId: string, model: string): Promise<void> {
+    await this.db
+      .insertInto('session_user_models')
+      .values({ session_id: sessionId, user_id: userId, model })
+      .onConflict((conflict) =>
+        conflict.columns(['session_id', 'user_id']).doUpdateSet({ model, updated_at: sql`now()` }),
+      )
+      .execute();
+  }
 }

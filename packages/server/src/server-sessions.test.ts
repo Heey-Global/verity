@@ -1395,6 +1395,83 @@ describe('POST /sessions/:id/turns', () => {
     expect(dispatchTurn).toHaveBeenCalledWith('s1', 'keep going', expect.any(Object));
   });
 
+  // In a project several people work in, each person's turns run on their own
+  // model and account; choosing a model is theirs alone and interrupts nobody.
+  it("runs each person's turns on their own model in a shared session", async () => {
+    await ctx.store.updateVeritySettings({
+      claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
+    });
+    await ctx.store.upsertProject({
+      id: 'p-shared',
+      owner: 'heey-global',
+      repo: 'shared',
+      containerName: 'dev-heey-global-shared',
+      state: 'active',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    await ctx.db
+      .insertInto('project_memberships')
+      .values({
+        project_id: 'p-shared',
+        user_id: 'lena',
+        can_read: true,
+        can_execute: true,
+        can_manage: false,
+      })
+      .execute();
+    await ctx.store.createSession({
+      sessionId: 's-shared',
+      worktree: '/wt/s-shared',
+      model: 'claude-opus-5-5',
+      projectId: 'p-shared',
+    });
+    await ctx.store.userProviderConnections.set('lena', 'codex', { credential: '{}' });
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.5']),
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      dispatchTurn.mockResolvedValueOnce({ queued: false });
+      const turn = await asLena.inject({
+        method: 'POST',
+        url: '/sessions/s-shared/turns',
+        payload: { prompt: 'go' },
+      });
+      expect(turn.statusCode).toBe(202);
+      expect(dispatchTurn).toHaveBeenLastCalledWith(
+        's-shared',
+        'go',
+        expect.objectContaining({ model: 'codex/gpt-5.5' }),
+        expect.objectContaining({ initiatedBy: { userId: 'lena' } }),
+      );
+
+      runBackendHandoff.mockClear();
+      const chosen = await asLena.inject({
+        method: 'PATCH',
+        url: '/sessions/s-shared',
+        payload: { model: 'codex/gpt-5.5' },
+      });
+      expect(chosen.statusCode).toBe(200);
+      expect(runBackendHandoff).not.toHaveBeenCalled();
+      expect((await ctx.store.getSession('s-shared'))?.model).toBe('claude-opus-5-5');
+
+      const hers = await asLena.inject({ method: 'GET', url: '/sessions/s-shared' });
+      expect(hers.json<{ model: string }>().model).toBe('codex/gpt-5.5');
+      const admins = await app.inject({ method: 'GET', url: '/sessions/s-shared' });
+      expect(admins.json<{ model: string }>().model).toBe('claude-opus-5-5');
+    } finally {
+      await asLena.close();
+    }
+  });
+
   it('forwards optional turn options to the conductor', async () => {
     dispatchTurn.mockResolvedValueOnce({ queued: false });
     await app.inject({

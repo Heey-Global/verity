@@ -5922,3 +5922,20 @@ migrations['0216_user_project_last_model'] = {
     await sql`alter table user_project_preferences drop column last_model`.execute(db);
   },
 };
+
+migrations['0217_session_user_models'] = {
+  // In a shared session each person keeps their own model (ADR 0023 §3): their
+  // turns run on it, on their own account, whoever else writes in the session.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_user_models (
+      session_id text not null references sessions(session_id) on delete cascade,
+      user_id text not null references users(id) on delete cascade,
+      model text not null,
+      updated_at timestamptz not null default now(),
+      primary key (session_id, user_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_user_models`.execute(db);
+  },
+};

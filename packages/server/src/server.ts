@@ -281,7 +281,7 @@ import { registerServerUpdateRoutes, type ServerUpdateController } from './serve
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
-import { registerSessionCreateRoute } from './session-create-route.js';
+import { preselectModel, registerSessionCreateRoute } from './session-create-route.js';
 import {
   createSessionDeletionManager,
   type SessionDeletionPayload,
@@ -5225,6 +5225,45 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return (await modelAccounts(viewer)).openCode.includes(model.slice('verity/'.length));
   };
 
+  /** Whether anyone besides the administrator may work in the project. */
+  const sharedProject = async (projectId: string | null): Promise<boolean> =>
+    projectId !== null &&
+    (await deps.eventStore.listProjectUserIds(projectId, 'execute')).some(
+      (userId) => userId !== legacyAdministratorId,
+    );
+  /**
+   * The model `viewer`'s turns in a shared session run on (ADR 0023 §3): their
+   * own choice in this session, else the session's model when their accounts
+   * serve it, else their own project default, last model or first model.
+   * Undefined outside shared projects, where the session's model applies as
+   * before.
+   */
+  const personSessionModel = async (
+    session: { sessionId: string; projectId: string | null; model: string },
+    viewer: string,
+  ): Promise<string | undefined> => {
+    if (!(await sharedProject(session.projectId))) return undefined;
+    const projectId = session.projectId!;
+    const [available, settings] = await Promise.all([
+      availableModels({ allowLegacyCodexFallback: true, viewer }),
+      projectSettingsStore(deps.eventStore).getProjectSettings(projectId),
+    ]);
+    const usable = (model: string): boolean =>
+      available.models.includes(model) &&
+      isProjectSessionModel(model) &&
+      isModelAllowedForProject(model, settings);
+    const preferences = deps.eventStore.userProviderConnections;
+    return preselectModel(
+      [
+        await preferences.sessionModel(session.sessionId, viewer),
+        session.model,
+        await preferences.projectDefaultModel(viewer, projectId),
+        await preferences.lastModel(viewer, projectId),
+        available.default ?? null,
+      ],
+      usable,
+    );
+  };
   /** A person's own default model for a project, hidden while the agent rule excludes it. */
   const ownDefaultModel = async (
     viewer: string,
@@ -5302,8 +5341,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
               ? 'running'
               : 'completed'
             : projectedStatus;
+      const ownModel = await personSessionModel(session, viewer);
       return {
         ...session,
+        // In a shared session the composer shows the viewer's own model.
+        ...(ownModel === undefined ? {} : { model: ownModel }),
         ...(await deps.eventStore.viewState.sessionView(viewer, id)),
         googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
         status,
@@ -5670,6 +5712,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isModelAllowed: isProjectSessionModel,
     projectModelError: PROJECT_MODEL_ERROR,
     projectAgentRejection: (model, projectId) => projectAgentRejection(model, projectId),
+    // In a shared project a model switch is the person's own: it changes the model
+    // their turns run on, without interrupting anyone else's.
+    choosePersonModel: async (session, viewer, model) => {
+      if (!(await sharedProject(session.projectId))) return false;
+      await deps.eventStore.userProviderConnections.setSessionModel(
+        session.sessionId,
+        viewer,
+        model,
+      );
+      await deps.eventStore.userProviderConnections.setLastModel(viewer, session.projectId!, model);
+      return true;
+    },
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the
@@ -6477,16 +6531,25 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
         session = await deps.eventStore.getSession(id);
       }
+      const viewer = request.localUserId ?? legacyAdministratorId;
+      // In a shared session a turn runs on its sender's own model.
+      let turnModel = body.model;
+      if (session !== undefined) {
+        if (body.model !== undefined && (await sharedProject(session.projectId)))
+          await deps.eventStore.userProviderConnections.setSessionModel(id, viewer, body.model);
+        turnModel ??= await personSessionModel(session, viewer);
+        if (turnModel === session.model && body.model === undefined) turnModel = undefined;
+      }
       if (
-        !(await isConfiguredProjectSessionModel(body.model ?? session?.model)) &&
+        !(await isConfiguredProjectSessionModel(turnModel ?? session?.model, viewer)) &&
         session?.projectId != null
       ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
       // Existing sessions keep their model, but a turn override is new work on its chosen agent.
-      if (body.model !== undefined && body.model !== session?.model && session?.projectId != null) {
-        const rejection = await projectAgentRejection(body.model, session.projectId);
+      if (turnModel !== undefined && turnModel !== session?.model && session?.projectId != null) {
+        const rejection = await projectAgentRejection(turnModel, session.projectId);
         if (rejection !== undefined) {
           reply.code(400);
           return { error: rejection };
@@ -6533,7 +6596,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       }
       const opts: TurnOptions = {
         permissionMode: body.permissionMode,
-        model: body.model,
+        model: turnModel,
         timeoutMs: body.timeoutMs,
         allowedTools: body.allowedTools,
         disallowedTools: body.disallowedTools,

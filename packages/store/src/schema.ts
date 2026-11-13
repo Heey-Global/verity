@@ -827,6 +827,13 @@ interface UserProjectPreferencesTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
+interface SessionUserModelsTable {
+  session_id: string;
+  user_id: string;
+  model: string;
+  updated_at: ColumnType<Date, string | undefined, string | undefined>;
+}
+
 interface ProjectSandboxesTable {
   project_id: string;
   user_id: string;
@@ -1959,6 +1966,7 @@ export interface Database {
   user_provider_connections: UserProviderConnectionsTable;
   user_project_preferences: UserProjectPreferencesTable;
   project_memberships: ProjectMembershipsTable;
+  session_user_models: SessionUserModelsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;

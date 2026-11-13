@@ -1396,7 +1396,14 @@ export class Conductor {
       return (
         (await this.withWorkspaceOperation(
           session.sessionId,
-          () => this.deps.sessionBackend!(session, selected, preparation),
+          // The turn's own model: a person's turn may run on another provider than
+          // the session's, and the preparation checks that provider's account.
+          () =>
+            this.deps.sessionBackend!(
+              model === undefined ? session : { ...session, model },
+              selected,
+              preparation,
+            ),
           session.worktree,
         )) ?? selected
       );
