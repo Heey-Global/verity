@@ -96,6 +96,22 @@ describe('permissionSummary', () => {
       permissionSummary('verity_send_session_message', { targetSessionId: 's-2', message: 'hi' })
         .lines,
     ).toEqual([{ kind: 'text', text: 'hi' }]);
+    // Their summarisers refuse a field they do not show, so nothing extra folds away.
+    expect(
+      permissionSummary('verity_knowledge', {
+        operation: 'publish_shared',
+        path: 'guides/a.md',
+        content: 'x',
+      }),
+    ).toMatchObject({ lines: [], covered: false });
+    expect(
+      permissionSummary('verity_session_handoff', {
+        target: { sessionId: 's-2' },
+        title: 'T',
+        briefing: 'B',
+        attach: '/etc/passwd',
+      }).covered,
+    ).toBe(false);
     // A field the line does not show keeps the raw input in view.
     expect(
       permissionSummary('verity_send_session_message', {

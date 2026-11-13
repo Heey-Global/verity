@@ -125,6 +125,8 @@ function summarize(
       title: knowledge?.replacesExisting
         ? 'Save changes to Global Knowledge?'
         : 'Publish insight to Global Knowledge?',
+      // The schema is strict: a field beyond those shown fails it and leaves no lines.
+      covered: knowledge !== null,
       lines:
         knowledge === null
           ? []
@@ -162,6 +164,8 @@ function summarize(
   if (handoff !== null)
     return {
       title: sessionHandoffTitle(handoff),
+      // The summariser rejects any field beyond target, title and briefing.
+      covered: true,
       lines: [
         { kind: 'text', text: `To ${handoff.target}` },
         { kind: 'text', text: handoff.title },

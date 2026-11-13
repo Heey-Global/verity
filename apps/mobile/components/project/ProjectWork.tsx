@@ -668,15 +668,15 @@ export function ProjectWork({
       const { item } = entry;
       // Across projects the row is named by its project; on the project's own
       // page by what is wrong with it.
-      const open = item.actions.find((action) => action.kind === 'open_project');
+      const open = overview
+        ? item.actions.find((action) => action.kind === 'open_project')
+        : undefined;
       return (
         <Row
           key={item.key}
           title={overview ? item.title : item.context}
           subtitle={
-            overview
-              ? [item.context, item.message].filter((part) => part !== undefined).join(' · ')
-              : item.message
+            overview ? [item.context, item.message].filter(Boolean).join(' · ') : item.message
           }
           leading={{ icon: 'server', intent: 'needsSetup' }}
           tag={<StatusTag intent={TONE_INTENT[item.tone]} label={item.tag} />}
