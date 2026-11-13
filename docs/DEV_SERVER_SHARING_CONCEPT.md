@@ -102,6 +102,16 @@ whoever sets it. The edge therefore stores each application cookie in its own na
   paths become one cookie, and every request carries all application cookies.
 - WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are
   not relayed.
+- Only cookies set through `Set-Cookie` response headers work. Script in the page sees cookies under
+  their `__Host-app-` names, and cookies it writes through `document.cookie` without that prefix
+  never reach the application. Patterns where script reads a cookie by its original name, such as
+  double-submit CSRF tokens, need the application to send the token another way. An application
+  cookie that reuses Verity's own session cookie name `__Host-verity_session` is not forwarded.
+- Because all public shares are same-site with each other, `SameSite` does not stop a page on
+  another share from sending requests with the application's cookies. The edge rejects requests
+  other than `GET`, `HEAD` and `OPTIONS` whose `Origin` is not the share's own origin, or whose
+  `Sec-Fetch-Site` is `same-site` or `cross-site`, before they reach the application. Applications
+  should still keep `GET` requests free of side effects.
 
 The edge applies these rules. The connector, which runs inside the sandbox, only transports the
 cookies. An edge and a connector from before this behavior keep dropping application cookies,

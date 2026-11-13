@@ -137,7 +137,9 @@ export function boundedSetCookies(
   let bytes = 0;
   for (const line of lines) {
     if (line.length > MAX_RELAYED_SET_COOKIE_CHARACTERS) continue;
-    const cost = line.length + RELAYED_SET_COOKIE_OVERHEAD_BYTES;
+    // `Headers` decodes raw bytes as latin1 and the tunnel counts UTF-8 bytes,
+    // so a byte above 0x7F costs two.
+    const cost = Buffer.byteLength(line) + RELAYED_SET_COOKIE_OVERHEAD_BYTES;
     if (relayed.length >= maxCount || bytes + cost > maxBytes) break;
     relayed.push(line);
     bytes += cost;

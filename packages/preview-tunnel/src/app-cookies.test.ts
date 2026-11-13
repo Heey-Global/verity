@@ -116,6 +116,13 @@ describe('boundedSetCookies', () => {
     );
   });
 
+  it('counts the UTF-8 bytes the tunnel will measure', () => {
+    // A latin1-decoded byte above 0x7F encodes to two UTF-8 bytes.
+    const line = `c=${'\u00e9'.repeat(100)}`;
+    const cost = Buffer.byteLength(line) + RELAYED_SET_COOKIE_OVERHEAD_BYTES;
+    expect(boundedSetCookies([line, line], { headers: Infinity, bytes: cost })).toEqual([line]);
+  });
+
   it('stays within the room the other response headers leave', () => {
     const lines = Array.from({ length: 10 }, (_, index) => `c${index}=1`);
     expect(boundedSetCookies(lines, { headers: 3, bytes: Infinity })).toEqual(lines.slice(0, 3));
