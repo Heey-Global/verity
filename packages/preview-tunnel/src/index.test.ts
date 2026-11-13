@@ -3192,31 +3192,24 @@ describe('application cookies on online shares', () => {
     const { pinCookie, get } = await cookieBridge(
       'app-cookie-cache',
       (path) => (path === '/none' ? [] : ['sid=abc']),
-      (path) =>
-        path === '/private'
-          ? { 'cache-control': 'private, max-age=60' }
-          : path === '/quoted'
-            ? { 'cache-control': 'public, max-age=600, ext="no-store"' }
-            : {
-                'cache-control': 'public, max-age=600',
-                'cdn-cache-control': 'max-age=600',
-                'surrogate-control': 'max-age=600',
-              },
+      (path) => ({
+        // `private` qualified with field names still lets a shared cache store the rest.
+        'cache-control':
+          path === '/private' ? 'private="x-user", max-age=60' : 'public, max-age=600',
+        'cdn-cache-control': 'max-age=600',
+        'surrogate-control': 'max-age=600',
+      }),
     );
-    const publicResponse = await get('/public', pinCookie);
-    expect(publicResponse.headers.get('cache-control')).toBe('no-store');
-    expect(publicResponse.headers.get('cdn-cache-control')).toBeNull();
-    expect(publicResponse.headers.get('surrogate-control')).toBeNull();
+    for (const path of ['/public', '/private']) {
+      const response = await get(path, pinCookie);
+      expect(response.headers.get('cache-control'), path).toBe('no-store');
+      expect(response.headers.get('cdn-cache-control'), path).toBeNull();
+      expect(response.headers.get('surrogate-control'), path).toBeNull();
+    }
     // Without a cookie the application's caching stays its own decision.
-    expect((await get('/none', pinCookie)).headers.get('cdn-cache-control')).toBe('max-age=600');
-    expect((await get('/private', pinCookie)).headers.get('cache-control')).toBe(
-      'private, max-age=60',
-    );
-    expect((await get('/none', pinCookie)).headers.get('cache-control')).toBe(
-      'public, max-age=600',
-    );
-    // A directive name, not any occurrence of the word, marks a response private.
-    expect((await get('/quoted', pinCookie)).headers.get('cache-control')).toBe('no-store');
+    const none = await get('/none', pinCookie);
+    expect(none.headers.get('cache-control')).toBe('public, max-age=600');
+    expect(none.headers.get('cdn-cache-control')).toBe('max-age=600');
   });
 });
 

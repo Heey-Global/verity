@@ -2695,17 +2695,13 @@ function sanitizeResponseHeaders(
   if (cookies.length) {
     output['set-cookie'] = cookies;
     // A shared cache in front of an online share must never replay one
-    // visitor's session cookie to another. CDNs prefer their own cache headers
-    // over `Cache-Control`, so those go as well.
-    if (mode !== 'local-open') for (const name of SHARED_CACHE_HEADERS) delete output[name];
-    const directives = (result['cache-control'] ?? '')
-      .split(',')
-      .map((directive) => directive.split('=', 1)[0]!.trim().toLowerCase());
-    if (
-      mode !== 'local-open' &&
-      !directives.some((name) => name === 'private' || name === 'no-store')
-    )
+    // visitor's session cookie to another. Even `private` can be qualified to
+    // let a shared cache store the response, and CDNs prefer their own cache
+    // headers over `Cache-Control`, so all of them are replaced.
+    if (mode !== 'local-open') {
+      for (const name of SHARED_CACHE_HEADERS) delete output[name];
       output['cache-control'] = 'no-store';
+    }
   }
   output['cache-control'] ??= 'no-store';
   return output;
