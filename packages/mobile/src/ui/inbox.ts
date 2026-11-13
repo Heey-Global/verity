@@ -76,6 +76,9 @@ export interface InboxItem {
    *  with it, so the operator can always see what the tool will receive rather
    *  than only a summary of it. */
   request?: string;
+  /** The lines leave part of {@link request} unsaid, so it is shown open
+   *  rather than folded behind them. */
+  requestOpen?: boolean;
   sessionId?: string;
   projectId?: string;
   /** The screens of a mockup review, shown as thumbnails on the item. */
@@ -195,6 +198,12 @@ export function inboxSummary(items: readonly InboxItem[]): string {
   return parts.join(' · ');
 }
 
+/** "Also waiting: Merge ready": what else a session asks, named by its items' tags,
+ *  so an overview can keep one entry per session without hiding the rest. */
+export function alsoWaiting(items: readonly InboxItem[]): string {
+  return `Also waiting: ${[...new Set(items.map((item) => item.tag))].join(', ')}`;
+}
+
 function sessionItems(
   session: SessionSummary,
   projects: ReadonlyMap<string, ProjectRecord>,
@@ -243,7 +252,12 @@ function sessionItems(
         : view.subtitle
           ? { message: view.subtitle }
           : {}),
-      ...(decidable ? { request: permissionInputText(request.input) } : {}),
+      ...(decidable
+        ? {
+            request: permissionInputText(request.input),
+            ...(summary.covered ? {} : { requestOpen: true }),
+          }
+        : {}),
       actions: decidable
         ? [
             {

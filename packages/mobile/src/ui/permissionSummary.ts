@@ -8,7 +8,10 @@ import {
 } from './brokeredHttpSummary.js';
 import { calendarChangeSummary } from './calendarChangeSummary.js';
 import { gmailSendSummary } from './gmailSendSummary.js';
-import { knowledgePublishSummary } from './knowledgePublishSummary.js';
+import {
+  KNOWLEDGE_PUBLISH_EXPLANATION,
+  knowledgePublishSummary,
+} from './knowledgePublishSummary.js';
 import { matrixSendSummary } from './matrixSendSummary.js';
 import { packageInstallSummary } from './packageInstallSummary.js';
 import { schedulingApprovalSummary } from './schedulingSummary.js';
@@ -20,7 +23,7 @@ import {
   sessionHandoffTitle,
   sessionProgressSummary,
 } from './sessionHandoffSummary.js';
-import { toolCallView } from './toolCall.js';
+import { toolCallPrimaryField, toolCallView } from './toolCall.js';
 import {
   trustedCliInjectionSummary,
   trustedCliSecretLabel,
@@ -39,13 +42,23 @@ export interface PermissionSummary {
   /** What a reader needs to decide without opening the session. Empty when the
    *  tool has no summariser, or when its summariser could not read the input. */
   lines: PermissionLine[];
+  /** Whether {@link lines} carry everything the input asks, so an overview may
+   *  fold the raw input. False when a field the lines leave out could matter. */
+  covered: boolean;
 }
 
-function linkedMessageTarget(input: unknown): string | null {
+/** Fields that only describe or pace a call, never change what it does. */
+const COMMENTARY_FIELDS: ReadonlySet<string> = new Set([
+  'description',
+  'timeout',
+  'run_in_background',
+]);
+
+function linkedMessage(input: unknown): { target: string; message: string } | null {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return null;
   const fields = input as Record<string, unknown>;
   return typeof fields.targetSessionId === 'string' && typeof fields.message === 'string'
-    ? fields.targetSessionId
+    ? { target: fields.targetSessionId, message: fields.message }
     : null;
 }
 
@@ -87,6 +100,8 @@ export function permissionSummary(
   return {
     title: spellOutBidiControls(summary.title),
     lines: summary.lines.map((line) => ({ ...line, text: spellOutBidiControls(line.text) })),
+    // A tool's own summariser words its whole request; without lines nothing does.
+    covered: summary.covered ?? summary.lines.length > 0,
   };
 }
 
@@ -94,7 +109,7 @@ function summarize(
   tool: string,
   input: unknown,
   options: { approvedForDelivery?: boolean },
-): PermissionSummary {
+): Omit<PermissionSummary, 'covered'> & { covered?: boolean } {
   const packageInstall = tool === 'verity_package_install' ? packageInstallSummary(input) : null;
   if (packageInstall !== null)
     return {
@@ -104,13 +119,24 @@ function summarize(
         { kind: 'text', text: spellOutBidiControls(packageInstall.explanation) },
       ],
     };
-  if (tool === 'verity_knowledge')
+  if (tool === 'verity_knowledge') {
+    const knowledge = knowledgePublishSummary(input);
     return {
-      title: knowledgePublishSummary(input)?.replacesExisting
+      title: knowledge?.replacesExisting
         ? 'Save changes to Global Knowledge?'
         : 'Publish insight to Global Knowledge?',
-      lines: [],
+      // The schema is strict: a field beyond those shown fails it and leaves no lines.
+      covered: knowledge !== null,
+      lines:
+        knowledge === null
+          ? []
+          : [
+              { kind: 'text', text: `Source: ${knowledge.source}` },
+              { kind: 'text', text: `Destination: ${knowledge.destination}` },
+              { kind: 'text', text: KNOWLEDGE_PUBLISH_EXPLANATION },
+            ],
     };
+  }
   const http = tool === 'verity_http_request' ? brokeredHttpSummary(input) : null;
   if (http !== null)
     return {
@@ -133,14 +159,30 @@ function summarize(
       ],
     };
   const handoff = tool === 'verity_session_handoff' ? sessionHandoffSummary(input) : null;
-  if (handoff !== null) return { title: sessionHandoffTitle(handoff), lines: [] };
-  const target = tool === 'verity_send_session_message' ? linkedMessageTarget(input) : null;
-  if (target !== null)
+  // The briefing and the message are what approving turns into another session's
+  // prompt, so they are the lines to read, in full.
+  if (handoff !== null)
+    return {
+      title: sessionHandoffTitle(handoff),
+      // The summariser rejects any field beyond target, title and briefing.
+      covered: true,
+      lines: [
+        { kind: 'text', text: `To ${handoff.target}` },
+        { kind: 'text', text: handoff.title },
+        { kind: 'text', text: handoff.briefing },
+      ],
+    };
+  const linked = tool === 'verity_send_session_message' ? linkedMessage(input) : null;
+  if (linked !== null)
     return {
       title: options.approvedForDelivery
-        ? `Retry delivery to ${target}?`
-        : `Send to ${target} and continue the exchange?`,
-      lines: [],
+        ? `Retry delivery to ${linked.target}?`
+        : `Send to ${linked.target} and continue the exchange?`,
+      lines: [{ kind: 'text', text: linked.message }],
+      // The message is all it sends; any other field stays in view.
+      covered: Object.keys(input as Record<string, unknown>).every(
+        (key) => key === 'targetSessionId' || key === 'message',
+      ),
     };
   const listing = tool === 'verity_list_sessions' ? listSessionsSummary(input) : null;
   if (listing !== null) return { title: listSessionsTitle(listing), lines: [] };
@@ -193,5 +235,18 @@ function summarize(
   });
   // Spelled out like every other string on the card. Tool names are
   // server-controlled today, so this is consistency rather than exposure.
-  return { title: `Allow ${spellOutBidiControls(view.title)}?`, lines: [] };
+  // The field the call is about (a command, a path, an address), whole, so an
+  // overview can show it instead of the raw input.
+  const primary = toolCallPrimaryField(tool, input);
+  return {
+    title: `Allow ${spellOutBidiControls(view.title)}?`,
+    lines: primary !== null ? [{ kind: 'code', text: primary.text }] : [],
+    // Covered only when every other field merely describes the call (Bash's
+    // description); the content of a Write or an unknown field stays in view.
+    covered:
+      primary !== null &&
+      Object.keys(input as Record<string, unknown>).every(
+        (key) => key === primary.field || COMMENTARY_FIELDS.has(key),
+      ),
+  };
 }
