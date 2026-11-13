@@ -508,6 +508,19 @@ export interface ConductorDeps {
         initiatedBy?: { userId: string },
       ) => Promise<{ fingerprint: string; prompt: string; compact?: boolean }>)
     | undefined;
+  /**
+   * Whose backend thread a turn resumes (ADR 0023 §3–4): `undefined` for the
+   * project's original sandbox and turns without a person, otherwise a stable tag
+   * of the person. A native thread lives in one account and one sandbox, so each
+   * person resumes only their own and catches up on the others' turns from the
+   * transcript.
+   */
+  backendStateScope?:
+    | ((
+        session: SessionRecord,
+        initiatedBy: { userId: string } | undefined,
+      ) => Promise<string | undefined>)
+    | undefined;
   /** Project overview.md contents for a fresh backend context. */
   projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
   /** Bounded decision references refreshed on every turn, including resumed contexts. */
@@ -1323,6 +1336,17 @@ export class Conductor {
     return 'claude';
   }
 
+  /** The backend-state key of a turn: its backend, scoped to the turn's person. */
+  private async stateKey(
+    session: SessionRecord,
+    model: string | undefined,
+    initiatedBy: { userId: string } | undefined,
+  ): Promise<string> {
+    const backend = this.backendKey(model);
+    const scope = await this.deps.backendStateScope?.(session, initiatedBy);
+    return scope === undefined ? backend : `${backend}#${scope}`;
+  }
+
   private modelBackend(model: string | undefined): Backend {
     if (isCodexModel(model)) return this.codexBackend ?? this.backend;
     if (this.openCodeBackend !== undefined && model !== undefined && model.includes('/')) {
@@ -1593,7 +1617,8 @@ export class Conductor {
     const handle = this.turns.get(sessionId) ?? new SessionTurnHandle();
     this.turns.set(sessionId, handle);
     const selectedModel = opts.model ?? session.model;
-    const backendKey = this.backendKey(selectedModel);
+    const backendKind = this.backendKey(selectedModel);
+    const backendKey = await this.stateKey(session, selectedModel, handle.initiatedBy);
     const backend = await this.backendForSession(
       session,
       selectedModel,
@@ -1657,7 +1682,7 @@ export class Conductor {
       // start a fresh reviewer on the same backend/model family as this turn.
       env: {
         ...(builtRunOpts.env ?? this.deps.env ?? process.env),
-        VERITY_SESSION_BACKEND: backendKey,
+        VERITY_SESSION_BACKEND: backendKind,
         ...(selectedModel !== undefined ? { VERITY_SESSION_MODEL: selectedModel } : {}),
       },
       signal: handle.controller.signal,
@@ -1841,7 +1866,12 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
   ): Promise<RunResult> {
-    const backendKey = this.backendKey(opts.model ?? session.model);
+    const backendKind = this.backendKey(opts.model ?? session.model);
+    const backendKey = await this.stateKey(
+      session,
+      opts.model ?? session.model,
+      this.turns.get(sessionId)?.initiatedBy,
+    );
     // Fold any server-authored pending notes (e.g. the post-merge worktree reset)
     // into THIS turn's model prompt as provenance-labelled data and consume them. They ride the model input
     // only — the visible `prompt` event was already emitted by the caller with the
@@ -1859,6 +1889,8 @@ export class Conductor {
     }
     prompt = await withMeetingContext(session.worktree, prompt);
     const backendState = await this.deps.store.getSessionBackendState(sessionId, backendKey);
+    // Only the unscoped key names the canonical thread, which lives in the
+    // original sandbox; a person's own thread is never that one.
     const canResumeCanonicalClaudeSession =
       backendKey === 'claude' &&
       !session.worktree.split('/').includes('.verity-document-sessions') &&
@@ -1928,7 +1960,7 @@ export class Conductor {
       // retrying THAT would repeat its side effects. With the reason confirmed, the
       // backend provably never opened the conversation, so nothing can be repeated.
       if (
-        backendKey !== 'claude' ||
+        backendKind !== 'claude' ||
         resumeSessionId === undefined ||
         !this.isDeadClaudeResumeError(error, resumeSessionId)
       ) {
@@ -1947,7 +1979,7 @@ export class Conductor {
       return retry.result;
     }
     if (
-      backendKey === 'claude' &&
+      backendKind === 'claude' &&
       resumeSessionId !== undefined &&
       this.isStaleClaudeResume(first.result, resumeSessionId)
     ) {
@@ -1971,7 +2003,7 @@ export class Conductor {
     // happens not to match the phrasebook would otherwise skip straight to a cold
     // start and lose a conversation the second rung can still find.
     const codexStale =
-      backendKey === 'codex' &&
+      backendKind === 'codex' &&
       resumeSessionId !== undefined &&
       this.isStaleCodexResume(first.result, resumeSessionId);
 
@@ -3732,13 +3764,18 @@ export class Conductor {
       // A mode change needs a fresh turn; steering retains the live permissions.
       const runningPlanning = this.runningPlanning.get(sessionId);
       const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
+      // Steering joins the running turn, which runs on its person's account and in
+      // their sandbox. Another person's message waits for a turn of its own.
+      const running = this.turns.get(sessionId);
+      const otherPerson = running?.initiatedBy?.userId !== dispatchOpts.initiatedBy?.userId;
       const turn =
         hasFileAttachment ||
         postureChanged ||
+        otherPerson ||
         dispatchOpts.queueBehindActiveTurn === true ||
         dispatchOpts.planningRevision !== undefined
           ? undefined
-          : this.turns.get(sessionId);
+          : running;
       if (
         turn &&
         (await turn.steer({
@@ -5449,13 +5486,17 @@ export class Conductor {
                 handle.markerTurnId = turnId;
                 await this.bindTurnIdentity(publicSessionId, turnId, startCommandId);
               })
-              .then(() =>
-                this.persistBackendSessionState(
+              .then(async () => {
+                // Scoped to the person whose account and sandbox minted the thread.
+                const bound = await this.deps.store.getSession(publicSessionId);
+                return this.persistBackendSessionState(
                   publicSessionId,
-                  this.backendKey(opts.model),
+                  bound === undefined
+                    ? this.backendKey(opts.model)
+                    : await this.stateKey(bound, opts.model, handle.initiatedBy),
                   sessionId,
-                ),
-              )
+                );
+              })
               // Name from the prompt now — concurrently with the still-running spawn —
               // once it's on record, rather than waiting for the reply or the settle.
               .then(() => this.maybeAutoTitle(publicSessionId))

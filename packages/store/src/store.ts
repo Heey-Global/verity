@@ -1487,6 +1487,12 @@ function mergeSessionDeletionState(
 // through different EventStore wrappers. Keep physical cleanup exclusive there too.
 const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
 
+/** The person a backend-state key is scoped to, or '' for the unscoped key. */
+function backendStateScope(backend: string): string {
+  const separator = backend.indexOf('#');
+  return separator < 0 ? '' : backend.slice(separator + 1);
+}
+
 export class EventStore implements EventSink {
   listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
     return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
@@ -3701,24 +3707,34 @@ export class EventStore implements EventSink {
       // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
       // against both the Postgres and PGlite dialects, and the extra round trip inside
       // the transaction is cheaper than a dialect-specific surprise here.
-      const displaced = await tx
-        .selectFrom('session_backend_state')
-        .select([
-          'session_id',
-          'backend',
-          'backend_session_id',
-          'context_seq',
-          'updated_at',
-          'context_fingerprint',
-        ])
-        .where('session_id', '=', input.sessionId)
-        .where('backend', '!=', input.backend)
-        .execute();
-      await tx
-        .deleteFrom('session_backend_state')
-        .where('session_id', '=', input.sessionId)
-        .where('backend', '!=', input.backend)
-        .execute();
+      // A key `backend#person` is one person's own thread (ADR 0023 §3); a bind
+      // displaces only the same person's other backend, never someone else's.
+      const scope = backendStateScope(input.backend);
+      const displaced = (
+        await tx
+          .selectFrom('session_backend_state')
+          .select([
+            'session_id',
+            'backend',
+            'backend_session_id',
+            'context_seq',
+            'updated_at',
+            'context_fingerprint',
+          ])
+          .where('session_id', '=', input.sessionId)
+          .where('backend', '!=', input.backend)
+          .execute()
+      ).filter((row) => backendStateScope(row.backend) === scope);
+      if (displaced.length > 0)
+        await tx
+          .deleteFrom('session_backend_state')
+          .where('session_id', '=', input.sessionId)
+          .where(
+            'backend',
+            'in',
+            displaced.map((row) => row.backend),
+          )
+          .execute();
       await tx
         .insertInto('session_backend_state')
         .values({

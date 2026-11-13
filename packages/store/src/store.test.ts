@@ -1059,6 +1059,26 @@ describe('EventStore — sessions', () => {
     expect(ids).toEqual(['s1', 's2']);
   });
 
+  // A thread belongs to one person's account and sandbox. Another person's bind
+  // must not displace it, or every change of speaker would discard the thread
+  // and its files; a bind displaces only the same person's other backend.
+  it("keeps each person's backend thread beside the others'", async () => {
+    await ctx.store.createSession(session);
+    const bind = (backend: string, id: string) =>
+      ctx.store.upsertSessionBackendState({
+        sessionId: session.sessionId,
+        backend,
+        backendSessionId: id,
+        contextSeq: 0,
+      });
+    await bind('claude', 'admin-thread');
+    expect(await bind('codex#ulena', 'lena-codex')).toEqual([]);
+    const displaced = await bind('claude#ulena', 'lena-claude');
+    expect(displaced.map((row) => row.backend)).toEqual(['codex#ulena']);
+    const kept = await ctx.store.getSessionBackendStates(session.sessionId);
+    expect(kept.map((row) => row.backend).sort()).toEqual(['claude', 'claude#ulena']);
+  });
+
   it('stores one active backend resume state per session', async () => {
     await ctx.store.createSession(session);
     await ctx.store.upsertSessionBackendState({

@@ -7565,6 +7565,28 @@ describe('Conductor mid-turn steering (#101)', () => {
     }
   });
 
+  // A running turn runs on its person's account and in their sandbox. Another
+  // person's message must not join it; it waits for a turn of its own.
+  it("queues another person's message instead of steering it into the running turn", async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Admin work', {}, { initiatedBy: { userId: 'admin' } });
+    await waitFor(fake.ready);
+    await expect(
+      conductor.dispatchTurn('s1', 'Lena asks', {}, { initiatedBy: { userId: 'lena' } }),
+    ).resolves.toEqual({ queued: true });
+    expect(fake.steered).toHaveLength(0);
+    await expect(
+      conductor.dispatchTurn('s1', 'Admin adds', {}, { initiatedBy: { userId: 'admin' } }),
+    ).resolves.toEqual({ queued: false });
+    expect(fake.steered).toHaveLength(1);
+  });
+
   it('keeps chat consent revoked after delivered steering fails persistence', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.startSessionPlanning('s1');
@@ -7575,7 +7597,9 @@ describe('Conductor mid-turn steering (#101)', () => {
       backend: fake.backend,
       worktreeExists: async () => true,
     });
-    await conductor.dispatchTurn('s1', 'Implement plan');
+    // Every message is the same person's, so each one steers the running turn.
+    const u1 = { initiatedBy: { userId: 'u1' } };
+    await conductor.dispatchTurn('s1', 'Implement plan', {}, u1);
     await waitFor(fake.ready);
     const running = (await ctx.store.listRunningTurns())[0]!;
     const consent = {
@@ -7589,7 +7613,7 @@ describe('Conductor mid-turn steering (#101)', () => {
       return append(...args);
     });
     try {
-      await conductor.dispatchTurn('s1', 'Wait, do not implement');
+      await conductor.dispatchTurn('s1', 'Wait, do not implement', {}, u1);
       expect(fake.steered).toHaveLength(1);
       // Dispatch has finished, so no pending counter protects the old approval.
       expect(

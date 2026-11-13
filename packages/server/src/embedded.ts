@@ -1,7 +1,12 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { sweepPersonalSandboxes } from './personal-sandbox-sleep.js';
 import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
-import { sandboxIdentity, sandboxNetworkName, sandboxRunnerDir } from './sandbox-identity.js';
+import {
+  sandboxIdentity,
+  sandboxNetworkName,
+  sandboxPersonTag,
+  sandboxRunnerDir,
+} from './sandbox-identity.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
@@ -3339,6 +3344,8 @@ export async function buildEmbeddedServer(
           sessionId: string,
           bindings: readonly { backend: string; backendSessionId: string }[],
           scope: SessionArtifactScope,
+          /** A person's sandbox whose runtime holds these bindings' files. */
+          personTag?: string,
         ): Promise<void> => {
           try {
             // A delete runs even with no bindings at all: a cold-started claude thread
@@ -3369,11 +3376,13 @@ export async function buildEmbeddedServer(
                 ? (await eventStore.getProject(session.projectId))?.kind === 'control_plane'
                 : false;
             const runnerProjectIds = new Set(
-              candidateRunnerProjectIds({
-                projectId: session.projectId,
-                isControlPlaneProject,
-                controlPlaneRunner,
-              }),
+              personTag !== undefined && session.projectId !== null && scope !== 'session-delete'
+                ? [`${personTag}/${session.projectId}`]
+                : candidateRunnerProjectIds({
+                    projectId: session.projectId,
+                    isControlPlaneProject,
+                    controlPlaneRunner,
+                  }),
             );
             if (runnerProjectIds.size === 0) return;
 
@@ -3384,7 +3393,12 @@ export async function buildEmbeddedServer(
                 sessionId,
                 sandboxCwd,
                 runnerProjectIds: [...runnerProjectIds],
-                bindings: [...bindings],
+                // A person's own thread is named without its scope here; its files
+                // in that person's runtime are left to the per-sandbox cleanup.
+                bindings: bindings.map((binding) => ({
+                  ...binding,
+                  backend: binding.backend.split('#')[0] ?? binding.backend,
+                })),
               });
               return;
             }
@@ -4678,9 +4692,22 @@ export async function buildEmbeddedServer(
               sessionId: string,
               bindings: readonly { backend: string; backendSessionId: string }[],
             ): Promise<void> => {
-              await purgeRunnerArtifacts(sessionId, bindings, 'backend-switch');
+              // A person's own thread (`backend#tag`) lives in their sandbox's runtime.
+              const byPerson = new Map<string | undefined, typeof bindings>();
+              for (const binding of bindings) {
+                const [backend = binding.backend, tag] = binding.backend.split('#');
+                byPerson.set(tag, [...(byPerson.get(tag) ?? []), { ...binding, backend }]);
+              }
+              for (const [tag, scoped] of byPerson)
+                await purgeRunnerArtifacts(sessionId, scoped, 'backend-switch', tag);
             },
           }),
+      // Each person resumes only their own backend thread (ADR 0023 §3–4).
+      backendStateScope: async (session, initiatedBy) => {
+        if (session.projectId === null) return undefined;
+        const sandbox = await resolveTurnSandbox(eventStore, session.projectId, initiatedBy);
+        return sandbox.projectDefault ? undefined : sandboxPersonTag(sandbox.userId);
+      },
       ...buildRunnerConductorWiring({
         // The dedicated control-plane service is itself a supervisor transport;
         // never let its feature flag coexist with loopback conductor wiring.
