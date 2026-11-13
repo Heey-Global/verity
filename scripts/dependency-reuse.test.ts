@@ -446,6 +446,33 @@ describe('shared dependency reuse', () => {
       readFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
   });
+  it('reuses a central inventory across sessions with private npm log directories', () => {
+    // Each session sets its own npm_config_logs_dir. If that path entered the
+    // identity, every session would prepare its own inventory: reuse would stop
+    // without any check failing, only npm ci would quietly run once per session.
+    const f = fixture();
+    const sibling = f.sibling();
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/private': { version: '2.0.0' } },
+    });
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock);
+    writeFileSync(join(sibling, 'package-lock.json'), lock);
+    expect(
+      f.run('install', { npm_config_logs_dir: join(f.root, 'home-a', 'cache', '_logs') }).status,
+    ).toBe(0);
+    const child = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        npm_config_logs_dir: join(f.root, 'home-b', 'cache', '_logs'),
+      },
+      encoding: 'utf8',
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
   it('rewires cached workspace links to the receiving session', () => {
     const f = fixture();
     const sibling = f.sibling();

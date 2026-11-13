@@ -375,8 +375,15 @@ function identity(root, inputs = root) {
   });
   if (version.status !== 0)
     throw new Error('Cannot determine npm version for dependency compatibility.');
+  // Diagnostic output settings cannot change the installed tree. Sessions get a
+  // private npm log directory, so hashing it would give every session its own
+  // identity and silently defeat cross-session reuse of central inventories.
   const configuration = Object.entries(process.env)
-    .filter(([key]) => /^npm_config_/i.test(key))
+    .filter(
+      ([key]) =>
+        /^npm_config_/i.test(key) &&
+        !/^npm_config_(?:logs[_-]dir|logs[_-]max|loglevel|color|progress|timing)$/i.test(key),
+    )
     .sort(([left], [right]) => left.localeCompare(right));
   hash.update(
     JSON.stringify([
