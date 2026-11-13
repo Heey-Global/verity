@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SandboxUnavailableError } from './sandbox-git.js';
 import {
+  checkoutFailureReason,
   createSessionRepositories,
   describeCheckoutFailure,
   redactCheckoutOutput,
@@ -189,6 +190,13 @@ it('categorizes checkout failures so a stopped sandbox is not reported as a fail
   });
 });
 
+it('reports a stopped sandbox from an unwrapped git step as unavailable, not as a git failure', () => {
+  const stopped = new SandboxUnavailableError('sandbox');
+  expect(checkoutFailureReason(stopped)).toBe('project sandbox unavailable');
+  expect(describeCheckoutFailure(stopped)).toMatchObject({ reason: 'project sandbox unavailable' });
+  expect(checkoutFailureReason(new Error('git exited 1'))).toBe('checkout failed');
+});
+
 it('redacts credentials from logged git output and never logs the command line', () => {
   expect(
     redactCheckoutOutput(
@@ -203,7 +211,7 @@ it('redacts credentials from logged git output and never logs the command line',
       stderr: 'x'.repeat(5000),
     }),
   );
-  expect(detail).toMatchObject({ reason: 'unexpected', exitCode: 128, causeName: 'Error' });
+  expect(detail).toMatchObject({ reason: 'checkout failed', exitCode: 128, causeName: 'Error' });
   expect(String(detail.stderr)).toHaveLength(1000);
   expect(JSON.stringify(detail)).not.toContain('Command failed');
 });

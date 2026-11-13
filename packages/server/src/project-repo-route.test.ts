@@ -544,6 +544,6 @@ it('names an unexpected checkout failure without exposing its message', async ()
     error: 'repository checkout unavailable: checkout failed',
     reason: 'checkout failed',
   });
-  expect(log.join('')).toContain('"reason":"unexpected"');
+  expect(log.join('')).toContain('"reason":"checkout failed"');
   expect(log.join('')).not.toContain('/srv/private');
 });

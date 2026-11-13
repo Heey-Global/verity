@@ -10,7 +10,7 @@ import {
 } from './forge-provider.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { internalConnectionIdentity } from './internal-listener.js';
-import { RepositoryCheckoutError, describeCheckoutFailure } from './session-repositories.js';
+import { checkoutFailureReason, describeCheckoutFailure } from './session-repositories.js';
 
 /** The code host behind one project, with server-held credentials. */
 export interface ProjectRepository {
@@ -128,7 +128,7 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
           },
           'verity: repository checkout failed',
         );
-        const reason = error instanceof RepositoryCheckoutError ? error.reason : 'checkout failed';
+        const reason = checkoutFailureReason(error);
         return reply
           .code(409)
           .send({ error: `repository checkout unavailable: ${reason}`, reason });

@@ -48,11 +48,20 @@ export function redactCheckoutOutput(text: string): string {
     .replace(/[^\P{Cc}\n\t]/gu, '');
 }
 
+/** The category of any checkout failure, including git steps that are not
+ *  wrapped individually: a stopped sandbox is never reported as a git failure. */
+export function checkoutFailureReason(
+  error: unknown,
+): RepositoryCheckoutFailure | 'checkout failed' {
+  if (error instanceof RepositoryCheckoutError) return error.reason;
+  if (error instanceof SandboxUnavailableError) return 'project sandbox unavailable';
+  return 'checkout failed';
+}
+
 /** Log fields for a failed checkout. Never the error message: for a git step it
  *  is the full command line. The stderr tail is redacted and bounded. */
 export function describeCheckoutFailure(error: unknown): Record<string, unknown> {
-  const reason: RepositoryCheckoutFailure | 'unexpected' =
-    error instanceof RepositoryCheckoutError ? error.reason : 'unexpected';
+  const reason = checkoutFailureReason(error);
   const cause = error instanceof RepositoryCheckoutError ? error.cause : error;
   const detail: Record<string, unknown> = { reason };
   if (cause instanceof Error) detail.causeName = cause.name;
