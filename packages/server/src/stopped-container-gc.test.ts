@@ -61,7 +61,7 @@ function fixture() {
       exitCode: 0,
       labels: sandbox.labels,
     })),
-    removeStoppedContainer: vi.fn(async () => {}),
+    removeStoppedContainer: vi.fn(async (_id: string) => {}),
     removeContainer: vi.fn(),
   };
   const input = {
