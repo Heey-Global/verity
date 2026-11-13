@@ -498,10 +498,15 @@ it('stops waiting for a metadata slot when the request is aborted', async () => 
   const live = f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
   controller.abort();
   await expect(waiting).rejects.toMatchObject({ status: 401 });
-  await new Promise((done) => setTimeout(done, 5));
+  // Poll instead of sleeping once, so a slow runner cannot fail the ordering.
+  const until = async (condition: () => boolean) => {
+    for (let waited = 0; !condition() && waited < 5000; waited += 5)
+      await new Promise((done) => setTimeout(done, 5));
+  };
+  await until(() => releases.length === PUBLICATION_METADATA_SLOTS);
   releases.shift()!();
-  await new Promise((done) => setTimeout(done, 5));
   // The freed slot went to the live lookup, which is now waiting on the registry.
+  await until(() => releases.length === PUBLICATION_METADATA_SLOTS);
   expect(releases).toHaveLength(PUBLICATION_METADATA_SLOTS);
   releases.splice(0).forEach((release) => release());
   await Promise.all([...held, live]);

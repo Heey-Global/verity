@@ -282,7 +282,7 @@ export function registerPackageInstallRoute(
             const times = resolved.get(name)!;
             for (const version of versions) {
               const identity = npmPackageIdentity(name, version);
-              const eligibility = npmReleaseEligibility(times.get(version), body.minimumAgeDays);
+              const eligibility = npmReleaseEligibility(times.get(version), minimumAgeDays);
               if (!eligibility.availableAt)
                 return reply.code(409).send({
                   error: `Cannot verify ${identity}: publication time is missing or invalid.`,
@@ -311,11 +311,11 @@ export function registerPackageInstallRoute(
             toolUseId: `package-install-exception-${randomUUID()}`,
             toolName: 'verity_package_install',
             input: {
-              command: `${body.command}\nRelease-age exception for this installation only (${body.minimumAgeDays} days):\n${violations.join('\n')}`,
+              command: `${body.command}\nRelease-age exception for this installation only (${minimumAgeDays} days):\n${violations.join('\n')}`,
               manager: 'npm',
               supported: false,
               packages: [...exceptions],
-              minimumAgeDays: body.minimumAgeDays,
+              minimumAgeDays,
             },
             channel: 'acp',
             allowStandingGrant: false,
@@ -339,7 +339,7 @@ export function registerPackageInstallRoute(
           projectId,
           containerGeneration: binding.containerGeneration,
           sessionId: body.sessionId,
-          policy: { minimumAgeDays: body.minimumAgeDays, packages: identities, exceptions },
+          policy: { minimumAgeDays, packages: identities, exceptions },
         });
         return { action: 'continue', installToken };
       }

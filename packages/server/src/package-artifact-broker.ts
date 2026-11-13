@@ -257,11 +257,8 @@ export function createPackageArtifactBroker(
         reject();
       const release = await metadataSlots.acquire(signal);
       try {
-        const bounded = AbortSignal.any([
-          signal,
-          AbortSignal.timeout(PUBLICATION_LOOKUP_TIMEOUT_MS),
-        ]);
-        return await project(name, versions, bounded, authorized);
+        const timed = AbortSignal.any([signal, AbortSignal.timeout(PUBLICATION_LOOKUP_TIMEOUT_MS)]);
+        return await project(name, versions, timed, authorized);
       } finally {
         release();
       }
