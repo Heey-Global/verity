@@ -1029,7 +1029,8 @@ describe('preview tunnel', () => {
       path: '/hello?from=external',
       host: `127.0.0.1:${targetPort}`,
     });
-    expect(forwarded.headers.get('set-cookie')).toBeNull();
+    // Online shares relay application cookies only inside their own namespace.
+    expect(forwarded.headers.getSetCookie()).toEqual(['__Host-app-unsafe=value; Path=/; Secure']);
 
     const applicationPin = await fetch(`http://127.0.0.1:${edgePort}/hello?pin=app-value`, {
       headers: { cookie: cookie!.split(';')[0]! },
@@ -2991,6 +2992,123 @@ async function wsTarget(
 
 /** An edge with its connector already attached to `targetPort`, plus a logged-in
  * session cookie — the setup every tunnelling test starts from. */
+describe('application cookies on online shares', () => {
+  async function cookieBridge(shareId: string, setCookies: (path: string) => string[]) {
+    const received: Array<string | undefined> = [];
+    const target = createServer((request, response) => {
+      received.push(request.headers.cookie);
+      response.writeHead(200, {
+        'set-cookie': setCookies(request.url ?? '/'),
+        // An application header in the relay's own namespace must not become a cookie.
+        'x-verity-local-set-cookie-0': 'forged=1; Path=/',
+      });
+      response.end('ok');
+    });
+    const sockets = new WebSocketServer({ server: target });
+    sockets.on('connection', (socket, request) => socket.send(request.headers.cookie ?? 'none'));
+    const port = await listen(target);
+    cleanups.push(async () => {
+      for (const client of sockets.clients) client.terminate();
+      await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      await closeServer(target);
+    });
+    const { edgePort, cookie } = await bridge(shareId, port);
+    const get = (path: string, cookies: string) =>
+      fetch(`http://127.0.0.1:${edgePort}${path}`, {
+        redirect: 'manual',
+        headers: { cookie: cookies },
+      });
+    return { edgePort, pinCookie: cookie, received, get };
+  }
+
+  it('namespaces application sessions and keeps the PIN session out of reach', async () => {
+    const { pinCookie, received, get } = await cookieBridge('app-cookie-session', (path) =>
+      path === '/login'
+        ? [
+            'sid=abc; Path=/app; Domain=share.verity.build; HttpOnly; SameSite=Lax',
+            '__Host-verity-preview=forged; Path=/',
+          ]
+        : path === '/logout'
+          ? ['sid=; Path=/app; Max-Age=0']
+          : [],
+    );
+    const loginResponse = await get('/login', pinCookie);
+    expect(loginResponse.status).toBe(200);
+    expect(loginResponse.headers.get('x-verity-local-set-cookie-0')).toBeNull();
+    expect(loginResponse.headers.getSetCookie()).toEqual([
+      '__Host-app-sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax',
+      '__Host-app-__Host-verity-preview=forged; Path=/; Secure',
+    ]);
+    // The PIN session is the edge's credential, never the application's.
+    expect(received[0]).toBeUndefined();
+
+    const browserCookies = `${pinCookie}; __Host-app-sid=abc; __Host-app-__Host-verity-preview=forged`;
+    const signedIn = await get('/whoami', browserCookies);
+    expect(signedIn.status).toBe(200);
+    expect(received[1]).toBe('sid=abc; __Host-verity-preview=forged');
+
+    const loggedOut = await get('/logout', browserCookies);
+    expect(loggedOut.headers.getSetCookie()).toEqual([
+      '__Host-app-sid=; Path=/; Secure; Max-Age=0',
+    ]);
+  });
+
+  it('drops cookies a sibling share or the client could plant', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge('app-cookie-sibling', () => []);
+    // `sid` arrives as a parent-domain cookie tossed by a sibling would; the
+    // lower-case prefix is what an older browser lets a sibling set.
+    const response = await fetch(`http://127.0.0.1:${edgePort}/`, {
+      headers: {
+        cookie: `${pinCookie}; sid=evil; __host-app-sid=evil; __Host-verity_session=core`,
+        'x-verity-local-request-cookie-0': 'sid=forged',
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(received).toEqual([undefined]);
+  });
+
+  it('forwards namespaced cookies in WebSocket handshakes', async () => {
+    const { pinCookie, edgePort } = await cookieBridge('app-cookie-websocket', () => []);
+    for (const [cookie, expected] of [
+      [`${pinCookie}; __Host-app-sid=abc; sid=evil`, 'sid=abc'],
+      [pinCookie, 'none'],
+    ] as const) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, { headers: { cookie } });
+      cleanups.push(() => client.terminate());
+      const message = await new Promise<string>((resolve, reject) => {
+        client.once('message', (data: WebSocket.RawData) =>
+          resolve(
+            (Array.isArray(data)
+              ? Buffer.concat(data)
+              : Buffer.from(data as ArrayBuffer)
+            ).toString(),
+          ),
+        );
+        client.once('error', reject);
+      });
+      expect(message).toBe(expected);
+    }
+  });
+
+  it('bounds relayed cookies instead of failing the response', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => `c${index}=${'x'.repeat(100)}`);
+    const { pinCookie, get } = await cookieBridge('app-cookie-bounds', (path) =>
+      path === '/many' ? many : [`huge=${'x'.repeat(9000)}`, 'ok=1'],
+    );
+    const manyResponse = await get('/many', pinCookie);
+    expect(manyResponse.status).toBe(200);
+    const relayed = manyResponse.headers.getSetCookie();
+    expect(relayed.length).toBeGreaterThan(0);
+    expect(relayed.length).toBeLessThan(many.length);
+    expect(relayed).toEqual(
+      many.slice(0, relayed.length).map((cookie) => `__Host-app-${cookie}; Path=/; Secure`),
+    );
+    const huge = await get('/huge', pinCookie);
+    expect(huge.status).toBe(200);
+    expect(huge.headers.getSetCookie()).toEqual(['__Host-app-ok=1; Path=/; Secure']);
+  });
+});
+
 async function bridge(
   shareId: string,
   targetPort: number,

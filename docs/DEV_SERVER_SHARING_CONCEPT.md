@@ -73,6 +73,39 @@ header such as `X-Verity-Preview-Code`, stateless and with the verified result c
 cover scripts and service-to-service calls. It is noted as a separate improvement to the Uplink
 path. Expo Go through a public share remains unsupported.
 
+#### Application cookies in public shares
+
+Public shares carry application cookies, so an application can keep its own login session behind
+the PIN. Every public share is a sibling host under one parent domain, and SameSite does not
+separate siblings: script on one share can write a cookie for the parent domain that the browser
+then sends to every other share. Browsers never store a `__Host-` cookie that names a domain,
+whoever sets it. The edge therefore stores each application cookie in its own namespace:
+
+- A `Set-Cookie` from the application is rewritten to `__Host-app-<name>`. `Domain` is removed,
+  and `Path=/` and `Secure` are always set. `Max-Age`, `Expires`, `HttpOnly`, `SameSite`,
+  `Partitioned` and `Priority` are kept after validation. Other attributes are dropped. A
+  deletion (`Max-Age=0` or a past `Expires`) still clears the cookie that was set.
+- On requests, the edge forwards only cookies whose name starts with exactly `__Host-app-`, with
+  that prefix removed and in the order the browser sent them. Everything else stays at the
+  edge, including the edge's own `__Host-verity-preview` session and cookies a sibling share
+  planted. Every rewritten name starts with the prefix, so the application can't overwrite the
+  PIN session either.
+- Cookies with invalid names or values are dropped. A cookie whose name and value, including the
+  11-byte prefix, exceed 4096 bytes is dropped, because a browser would discard it anyway. The
+  connector relays at most 40 cookies or 16 KiB per response and skips any single line the tunnel
+  would refuse, so a response with too many cookies loses the rest rather than failing.
+- Because the path is always `/`, same-named cookies that an application scopes to different
+  paths become one cookie, and every request carries all application cookies.
+- WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are
+  not relayed.
+
+The edge applies these rules. The connector, which runs inside the sandbox, only transports the
+cookies. An edge and a connector from before this behavior keep dropping application cookies,
+whichever of the two is updated first. Open local shares (2.1) keep application cookie names
+unchanged, because they share the host with Verity and serve plain HTTP. Registering the
+public preview parent domain on the Public Suffix List would additionally stop browsers from
+accepting parent-domain cookies, but isolation does not depend on it.
+
 ### 2.3 Raw TCP is not provided
 
 Databases, Redis, SSH, and native gRPC are not forwarded, locally or publicly. The scanner cannot
