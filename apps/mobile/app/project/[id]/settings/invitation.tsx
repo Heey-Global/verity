@@ -78,7 +78,8 @@ export function InvitationView({
   useEffect(load, [load]);
   // Uplink creates the invitation in the background; until then there is no link.
   useEffect(() => {
-    if (fields !== null || invitation?.state === 'expired') return;
+    if (fields !== null || invitation?.state === 'expired' || invitation?.state === 'failed')
+      return;
     const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
   }, [fields, invitation?.state, load]);

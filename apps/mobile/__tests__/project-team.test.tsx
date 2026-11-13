@@ -191,3 +191,19 @@ it('revokes the invitation after confirming', async () => {
   await waitFor(() => expect(revoke).toHaveBeenCalledWith('p1', invitation.id));
   expect(done).toHaveBeenCalled();
 });
+
+it('offers to invite again where a join did not go through', async () => {
+  const client = {
+    getProjectTeam: jest.fn().mockResolvedValue({
+      members: [member({})],
+      invitations: [{ ...invitation, state: 'failed' }],
+    }),
+  } as unknown as VerityClient;
+  render(<ProjectTeamView client={client} projectId="p1" />);
+  expect(await screen.findByText('Invite again')).toBeOnTheScreen();
+  fireEvent.press(screen.getByText('Invitation for Mia'));
+  expect(mockRouter.push).toHaveBeenCalledWith({
+    pathname: '/project/[id]/settings/invite',
+    params: { id: 'p1' },
+  });
+});

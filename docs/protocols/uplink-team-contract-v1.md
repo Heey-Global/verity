@@ -1,8 +1,11 @@
 # Uplink team contract v1 — reconciled decisions and status
 
-**Status:** review contract, not frozen. No production route imports these
-schemas, and team sharing stays disabled until Core and the hosted Uplink
-service pass the same fixtures and the end-to-end join, turn and removal flow.
+**Status:** frozen for the control operations (`team.invite.create`,
+`team.invite.cancel`, `team.join.commit`, `team.membership.remove`, `team.error`,
+negotiation) and the bootstrap admission profile. Changes to these need a
+versioned revision and new shared fixtures. Grants, state reconciliation and
+enrollment recovery are not frozen. Team sharing stays disabled until the items
+under "Open before activation" are done.
 
 This document is the entry point for team sharing between a Verity installation
 and Uplink. It records the decisions that resolve conflicts between the earlier
@@ -163,13 +166,13 @@ Core can legitimately answer just after a deadline.
 | Part | Core | Hosted Uplink service |
 | --- | --- | --- |
 | Local users, project memberships, read/execute/manage checks | Implemented (ADR 0023) | Not applicable |
-| Display names on users | Missing | Not applicable |
+| Display names on users | Implemented | Not applicable |
 | Personal Remote Control admission and opaque TLS tunnel | Implemented | Implemented; production enablement is a separate release step |
-| Team control negotiation and `team.*` messages | Missing | Missing |
+| Team control negotiation and `team.*` messages | Implemented (durable outbox) | Implemented, validated against the mirrored schemas; staging only |
 | Grant verification (JWS profile) | Verifier implemented, not wired; no generation floor | Signer missing |
-| Join admission (`team.join.reserve` → `pending` → ticket) | Missing | Prototype only, not wired |
+| Join admission (`team.join.reserve` → `pending` → ticket) | Implemented: stored decision, connector tunnel, join bound to the accepted redemption | Implemented through the Remote Control session path with its own capability, feature and ticket scope; staging only |
 | Enrollment proof, recovery | Schemas and vectors only | Missing |
-| Invitation, redemption, removal state and outbox | Missing | Prototype only, not wired |
+| Invitation, redemption, removal state and outbox | Implemented; a join or invitation refused for good is marked failed | Implemented: single use, seat limit, idempotent operations, permanent tombstones |
 | Preview feature rename `sharing` → `preview-sharing` | Pending | Pending |
 
 ## Corrections to earlier documents
@@ -209,4 +212,8 @@ and pins their digest (`node scripts/team-control-contract/digest.ts`).
 - QR capacity of the join link on supported cameras.
 - The hosted service implementing D1–D10 and passing the mirrored fixtures.
 - An end-to-end run: invitation → join → personal connection → first turn →
-  removal.
+  removal, on staging with a native app build that accepts the
+  `team-bootstrap-v1` attachment.
+- Restricting a join tunnel to the enrollment route at Core's TLS ingress. Core
+  currently binds the join to the redemption of an accepted tunnel; other
+  routes on that tunnel still require their own credentials.

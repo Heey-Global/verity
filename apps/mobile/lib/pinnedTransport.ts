@@ -259,7 +259,15 @@ const DIRECT_GRACE_MS = 4_000;
 // waits out the native request timeout (60 s) on an address that is gone.
 const DIRECT_RECHECK_MS = 5_000;
 
-export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fetch {
+/**
+ * `fixedProxyPort` sends every request through that one local tunnel port and
+ * never the direct route; a team join uses it for the tunnel Uplink opened for it.
+ */
+export function createPinnedFetch(
+  tlsPin: string,
+  useRemote = false,
+  fixedProxyPort?: number,
+): typeof fetch {
   return (async (input: RequestInfo | URL, init: TransportRequestInit = {}) => {
     if (input instanceof Request)
       throw new Error('Request objects are not supported by the pinned transport.');
@@ -310,9 +318,9 @@ export function createPinnedFetch(tlsPin: string, useRemote = false): typeof fet
       markSwitchTransportRequest(diagnosticRequestId, 'body-encoded');
       const replayable =
         !fileUri && (init.method ?? 'GET').toUpperCase() === 'GET' && encodedBody === null;
-      let port = remoteEnabled
-        ? await remoteControlPortForUrl(url, replayable, diagnosticRequestId)
-        : 0;
+      let port =
+        fixedProxyPort ??
+        (remoteEnabled ? await remoteControlPortForUrl(url, replayable, diagnosticRequestId) : 0);
       markSwitchTransportRequest(diagnosticRequestId, 'route-ready', port > 0 ? 1 : 0);
       if (init.signal?.aborted) {
         throw new DOMException('The operation was aborted.', 'AbortError');

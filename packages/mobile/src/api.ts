@@ -1413,7 +1413,8 @@ export const projectInvitationSchema = z.object({
   id: z.string(),
   inviteeName: z.string(),
   canExecute: z.boolean(),
-  state: z.enum(['creating', 'open', 'redeemed', 'revoked', 'expired']),
+  /** `failed`: the join or the invitation did not go through; invite again. */
+  state: z.enum(['creating', 'open', 'redeemed', 'revoked', 'expired', 'failed']),
   expiresAt: z.string(),
   createdAt: z.string(),
 });

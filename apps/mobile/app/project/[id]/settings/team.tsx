@@ -147,22 +147,35 @@ export function ProjectTeamView({
                     leading={{ icon: 'link', quiet: true }}
                     title={`Invitation for ${invitation.inviteeName}`}
                     subtitle={`${invitation.canExecute ? 'Can edit' : 'Can read'} · ${
-                      invitation.state === 'expired'
-                        ? 'expired'
-                        : `valid until ${shortDate(invitation.expiresAt)}`
+                      invitation.state === 'failed'
+                        ? 'did not go through'
+                        : invitation.state === 'expired'
+                          ? 'expired'
+                          : `valid until ${shortDate(invitation.expiresAt)}`
                     }`}
                     trailing={
                       <StatusTag
-                        intent={invitation.state === 'expired' ? 'needsSetup' : 'optional'}
-                        label={invitation.state === 'expired' ? 'Expired' : 'Open'}
+                        intent={invitation.state === 'open' ? 'optional' : 'needsSetup'}
+                        label={
+                          invitation.state === 'failed'
+                            ? 'Invite again'
+                            : invitation.state === 'expired'
+                              ? 'Expired'
+                              : 'Open'
+                        }
                       />
                     }
                     navigates
                     onPress={() =>
-                      router.push({
-                        pathname: '/project/[id]/settings/invitation',
-                        params: { id: projectId, invitationId: invitation.id },
-                      })
+                      invitation.state === 'failed'
+                        ? router.push({
+                            pathname: '/project/[id]/settings/invite',
+                            params: { id: projectId },
+                          })
+                        : router.push({
+                            pathname: '/project/[id]/settings/invitation',
+                            params: { id: projectId, invitationId: invitation.id },
+                          })
                     }
                   />
                 ))}

@@ -1,6 +1,6 @@
 import { VerityApiError, VerityClient } from '@verity/mobile';
 import { CryptoDigestAlgorithm, digest, getRandomBytes } from 'expo-crypto';
-import * as SecureStore from 'expo-secure-store';
+import { requireNativeModule } from 'expo-modules-core';
 
 import { clearStoredAuthState, setAuthToken } from './authToken';
 import { setVerityBaseUrl } from './client';
@@ -13,8 +13,7 @@ import {
   type VerityServerProfile,
 } from './serverProfile';
 import { serverIdFor, TeamJoinLinkError, type TeamJoinLink } from './teamInvitationLink';
-
-const ATTEMPT_KEY = 'verity.teamJoinAttempt.v1';
+import { requestTeamJoinAdmission, TeamJoinAdmissionError } from './teamJoinAdmission';
 
 function randomId(): string {
   let binary = '';
@@ -22,26 +21,15 @@ function randomId(): string {
   return btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
 }
 
-/**
- * The redemption id of this invitation, kept across app restarts: once the
- * server redeemed it, only a retry with the same id pairs this device again.
- */
-async function redemptionIdFor(invitationId: string): Promise<string> {
-  try {
-    const stored = await SecureStore.getItemAsync(ATTEMPT_KEY);
-    if (stored !== null) {
-      const attempt = JSON.parse(stored) as { invitationId?: unknown; redemptionId?: unknown };
-      if (attempt.invitationId === invitationId && typeof attempt.redemptionId === 'string')
-        return attempt.redemptionId;
-    }
-  } catch {
-    // A corrupt record is replaced below.
-  }
-  const redemptionId = randomId();
-  await SecureStore.setItemAsync(ATTEMPT_KEY, JSON.stringify({ invitationId, redemptionId }), {
-    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-  });
-  return redemptionId;
+/** The native tunnel Remote Control uses; a join borrows it for one enrollment. */
+export interface JoinTunnel {
+  start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
+  stop(): Promise<void>;
+}
+
+export interface JoinTeamDeps {
+  admission?: typeof requestTeamJoinAdmission;
+  tunnel?: () => JoinTunnel;
 }
 
 export class TeamJoinError extends Error {
@@ -54,15 +42,17 @@ export class TeamJoinError extends Error {
 }
 
 /**
- * Join the project of an invitation (ADR 0023 §7). The server is reached only
- * at the link's address and trusted only through its pinned TLS key and signed
- * identity, exactly as pairing does; the link's own claims prove nothing. The
- * device token is stored before anything else changes, so a lost answer after
- * the redemption is retried as a replay.
+ * Join the project of an invitation (ADR 0023 §7). The app reserves the join at
+ * Uplink, which opens a tunnel to the server once the server accepted it, so
+ * the inviter's server is reachable from any network. The server is trusted
+ * only through the link's pinned TLS key and signed identity, exactly as
+ * pairing does; neither Uplink nor the link's own claims prove anything. The
+ * redemption is the one Uplink minted for this tunnel; the app never makes one.
  */
 export async function joinTeam(
   link: TeamJoinLink,
   displayName: string,
+  deps: JoinTeamDeps = {},
 ): Promise<{ projectId: string }> {
   if (link.expiresAt <= Date.now()) throw new TeamJoinLinkError('expired');
   // A server this app already uses keeps its own credential; a second one for
@@ -76,37 +66,75 @@ export async function joinTeam(
   );
   if (derived !== link.serverId) throw new TeamJoinLinkError('invalid');
 
-  const pinnedFetch = createPinnedFetch(link.tlsPin);
-  const client = new VerityClient({
-    baseUrl: link.coreOrigin,
-    fetch: pinnedFetch,
-    uploadFetch: pinnedFetch,
-  });
-  const challenge = randomId();
-  const identity = await client.fetchPairingIdentity(challenge);
-  if (identity.identityKey !== link.identityKey)
-    throw new TeamJoinError('identity', 'The server is not the one that sent this invitation.');
-  await verifyPairedIdentity({
-    identityKey: link.identityKey,
-    expectedServerId: link.serverId,
-    serverId: identity.serverId,
-    challenge,
-    signature: identity.signature,
-  });
+  let admission;
+  try {
+    admission = await (deps.admission ?? requestTeamJoinAdmission)({
+      uplinkOrigin: link.uplinkOrigin,
+      installationHandle: link.installationHandle,
+      invitationId: link.invitationId,
+    });
+  } catch (error) {
+    // Unknown, cancelled, expired and used invitations all read the same.
+    if (error instanceof TeamJoinAdmissionError && error.code === 'unavailable')
+      throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
+    throw error;
+  }
+  const tunnel = (
+    deps.tunnel ?? (() => requireNativeModule<JoinTunnel>('VerityRemoteControlTunnel'))
+  )();
+  const dataUrl = new URL(link.uplinkOrigin);
+  dataUrl.protocol = 'wss:';
+  dataUrl.pathname = '/data';
+  let port: number;
+  try {
+    port = await tunnel.start(dataUrl.href, admission.ticket, admission.sessionId, link.coreOrigin);
+  } finally {
+    admission.finish();
+  }
 
   let joined;
   try {
-    joined = await client.joinTeam({
+    if (!Number.isInteger(port) || port < 1 || port > 65_535)
+      throw new Error('The join tunnel did not open.');
+    const pinnedFetch = createPinnedFetch(link.tlsPin, false, port);
+    const client = new VerityClient({
+      baseUrl: link.coreOrigin,
+      fetch: pinnedFetch,
+      uploadFetch: pinnedFetch,
+    });
+    const challenge = randomId();
+    const identity = await client.fetchPairingIdentity(challenge);
+    if (identity.identityKey !== link.identityKey)
+      throw new TeamJoinError('identity', 'The server is not the one that sent this invitation.');
+    await verifyPairedIdentity({
+      identityKey: link.identityKey,
+      expectedServerId: link.serverId,
+      serverId: identity.serverId,
+      challenge,
+      signature: identity.signature,
+    });
+    const request = {
       invitationId: link.invitationId,
       secret: link.secret,
-      redemptionId: await redemptionIdFor(link.invitationId),
+      redemptionId: admission.redemptionId,
       displayName: displayName.trim(),
       deviceLabel: deviceLabel(),
-    });
-  } catch (error) {
-    if (error instanceof VerityApiError && error.status === 410)
-      throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
-    throw error;
+    };
+    try {
+      try {
+        joined = await client.joinTeam(request);
+      } catch (error) {
+        // A lost answer: the same redemption again is a replay, not a second join.
+        if (error instanceof VerityApiError) throw error;
+        joined = await client.joinTeam(request);
+      }
+    } catch (error) {
+      if (error instanceof VerityApiError && error.status === 410)
+        throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
+      throw error;
+    }
+  } finally {
+    await tunnel.stop().catch(() => undefined);
   }
 
   // A previous installation may have left credentials for this address behind.
@@ -130,6 +158,5 @@ export async function joinTeam(
   // The server used so far stays known, so the app can switch back to it.
   await activateServerProfile(profile);
   await setVerityBaseUrl(link.coreOrigin);
-  await SecureStore.deleteItemAsync(ATTEMPT_KEY).catch(() => undefined);
   return { projectId: joined.projectId };
 }

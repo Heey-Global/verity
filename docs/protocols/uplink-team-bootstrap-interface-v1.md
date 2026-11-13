@@ -1,6 +1,6 @@
 # Team bootstrap interface v1 — joint review candidate
 
-**Status:** Proposed for one Core/Uplink review. This document fixes the candidate wire shape for the first member join over an opaque TLS tunnel. It is not an implemented endpoint or a T0 freeze. The [team contract](uplink-team-sharing-v1.md) owns invitation creation, commit, removal, grants and recovery; the [remote transport contract](uplink-remote-control-v1.md) owns `/data` attachment and the version-2 Core connector preface. This document takes precedence over their earlier two-request team join sketch. Changes after joint approval require a versioned contract revision and shared vectors.
+**Status:** Frozen as the team v1 bootstrap admission profile and implemented on both sides; see the [team contract](uplink-team-contract-v1.md) for status and what remains before activation. The [team contract](uplink-team-sharing-v1.md) owns invitation creation, commit, removal, grants and recovery; the [remote transport contract](uplink-remote-control-v1.md) owns `/data` attachment. Changes require a versioned contract revision and shared vectors.
 
 **Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status — invitation ids are 32 random bytes (D4) and the join tunnel is routed by the accepted admission decision instead of a connector preface (D7); it takes precedence where the two differ.
 

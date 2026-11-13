@@ -1,12 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const mockSecure = new Map<string, string>();
-jest.mock('expo-secure-store', () => ({
-  AFTER_FIRST_UNLOCK: 0,
-  getItemAsync: async (key: string) => mockSecure.get(key) ?? null,
-  setItemAsync: async (key: string, value: string) => void mockSecure.set(key, value),
-  deleteItemAsync: async (key: string) => void mockSecure.delete(key),
+jest.mock('expo-modules-core', () => ({
+  requireNativeModule: () => {
+    throw new Error('the tests inject the tunnel');
+  },
 }));
 jest.mock('expo-crypto', () => {
   const { createHash, randomBytes } =
@@ -34,7 +32,7 @@ jest.mock('./client', () => ({ setVerityBaseUrl: (url: string) => mockSetBaseUrl
 jest.mock('./deviceLabel', () => ({ deviceLabel: () => 'Lena’s iPhone' }));
 const mockVerify = jest.fn(async (_input: unknown) => undefined);
 jest.mock('./pinnedTransport', () => ({
-  createPinnedFetch: (pin: string) => ({ pin }),
+  createPinnedFetch: (pin: string, useRemote: boolean, port?: number) => ({ pin, useRemote, port }),
   verifyPairedIdentity: (input: unknown) => mockVerify(input),
 }));
 const mockProfile = { current: null as unknown };
@@ -68,7 +66,8 @@ jest.mock('@verity/mobile', () => {
 import { VerityApiError } from '@verity/mobile';
 
 import { parseTeamJoinLink } from './teamInvitationLink';
-import { joinTeam, TeamJoinError } from './teamJoin';
+import { joinTeam, TeamJoinError, type JoinTeamDeps } from './teamJoin';
+import { TeamJoinAdmissionError } from './teamJoinAdmission';
 
 const fixture = (
   JSON.parse(
@@ -86,8 +85,13 @@ const linkFrom = (value: Record<string, unknown>) =>
   );
 const link = linkFrom(fixture);
 
+const PORT = 41_234;
+const admission = jest.fn();
+const tunnel = { start: jest.fn(), stop: jest.fn() };
+const deps: JoinTeamDeps = { admission, tunnel: () => tunnel };
+const finish = jest.fn();
+
 beforeEach(() => {
-  mockSecure.clear();
   mockCalls.length = 0;
   mockClients.length = 0;
   mockProfile.current = null;
@@ -102,22 +106,56 @@ beforeEach(() => {
     mockCalls.push('join');
     return { token: 'device-token', tokenId: 'tok-1', userId: 'u-lena', projectId: 'p1' };
   });
+  admission.mockImplementation(async () => {
+    mockCalls.push('admission');
+    return {
+      sessionId: 'session_1',
+      redemptionId: 'redemption_from_uplink',
+      ticket: 'app_ticket',
+      expiresAt: Date.now() + 60_000,
+      finish,
+    };
+  });
+  tunnel.start.mockImplementation(async () => {
+    mockCalls.push('tunnel');
+    return PORT;
+  });
+  tunnel.stop.mockImplementation(async () => void mockCalls.push('stop'));
 });
 
-it('joins over the pinned address and stores the credential before switching servers', async () => {
-  await expect(joinTeam(link, ' Lena ')).resolves.toEqual({ projectId: 'p1' });
-  // Only the link's address, only with the link's pin.
-  expect(mockClients).toEqual([
-    { baseUrl: link.coreOrigin, fetch: { pin: link.tlsPin }, uploadFetch: { pin: link.tlsPin } },
-  ]);
+it('joins through the tunnel Uplink opened, with the pin and redemption from the right side', async () => {
+  await expect(joinTeam(link, ' Lena ', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(admission).toHaveBeenCalledWith({
+    uplinkOrigin: link.uplinkOrigin,
+    installationHandle: link.installationHandle,
+    invitationId: link.invitationId,
+  });
+  const dataUrl = new URL(link.uplinkOrigin);
+  dataUrl.protocol = 'wss:';
+  dataUrl.pathname = '/data';
+  expect(tunnel.start).toHaveBeenCalledWith(
+    dataUrl.href,
+    'app_ticket',
+    'session_1',
+    link.coreOrigin,
+  );
+  expect(finish).toHaveBeenCalled();
+  // Only through that tunnel, only with the link's pin: never the direct route.
+  const pinned = { pin: link.tlsPin, useRemote: false, port: PORT };
+  expect(mockClients).toEqual([{ baseUrl: link.coreOrigin, fetch: pinned, uploadFetch: pinned }]);
   expect(mockVerify).toHaveBeenCalledWith(
     expect.objectContaining({ identityKey: link.identityKey, expectedServerId: link.serverId }),
   );
+  // The redemption is Uplink's; the app never makes one.
   expect(mockJoin).toHaveBeenCalledWith(
-    expect.objectContaining({ invitationId: link.invitationId, displayName: 'Lena' }),
+    expect.objectContaining({
+      invitationId: link.invitationId,
+      redemptionId: 'redemption_from_uplink',
+      displayName: 'Lena',
+    }),
   );
   expect(mockSetToken).toHaveBeenCalledWith(link.coreOrigin, 'device-token', 'tok-1');
-  expect(mockCalls).toEqual(['join', 'token', 'profile', 'baseUrl']);
+  expect(mockCalls).toEqual(['admission', 'tunnel', 'join', 'stop', 'token', 'profile', 'baseUrl']);
   expect(mockProfile.current).toMatchObject({
     serverId: link.serverId,
     activeUrl: link.coreOrigin,
@@ -127,37 +165,43 @@ it('joins over the pinned address and stores the credential before switching ser
 
 it('refuses a server whose key is not the one in the link, before redeeming', async () => {
   mockIdentity.mockResolvedValue({ serverId: link.serverId, identityKey: 'other', signature: 's' });
-  await expect(joinTeam(link, 'Lena')).rejects.toMatchObject({ reason: 'identity' });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'identity' });
   expect(mockJoin).not.toHaveBeenCalled();
   expect(mockProfile.current).toBeNull();
+  // The borrowed tunnel never outlives the attempt.
+  expect(tunnel.stop).toHaveBeenCalled();
 });
 
 it('refuses a link whose server id does not derive from its key, before connecting', async () => {
   const forged = { ...link, serverId: 'srv_AQEBAQEBAQEBAQEBAQEBAQ' };
-  await expect(joinTeam(forged, 'Lena')).rejects.toMatchObject({ reason: 'invalid' });
+  await expect(joinTeam(forged, 'Lena', deps)).rejects.toMatchObject({ reason: 'invalid' });
+  expect(admission).not.toHaveBeenCalled();
   expect(mockClients).toHaveLength(0);
 });
 
-it('retries a lost answer as a replay of the same redemption', async () => {
+it('retries a lost answer once in the same tunnel, as a replay of the same redemption', async () => {
   mockJoin.mockRejectedValueOnce(new Error('network lost'));
-  await expect(joinTeam(link, 'Lena')).rejects.toThrow('network lost');
-  await joinTeam(link, 'Lena');
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
   const [first, second] = mockJoin.mock.calls.map(
     ([body]) => (body as { redemptionId: string }).redemptionId,
   );
   expect(second).toBe(first);
+  expect(admission).toHaveBeenCalledTimes(1);
 });
 
-it('reports a used, revoked or expired invitation as unavailable', async () => {
+it('reports a used, revoked or expired invitation as unavailable, from Uplink or the server', async () => {
+  admission.mockRejectedValueOnce(new TeamJoinAdmissionError('unavailable'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'unavailable' });
+  expect(tunnel.start).not.toHaveBeenCalled();
   mockJoin.mockRejectedValue(new VerityApiError(410, 'gone'));
-  await expect(joinTeam(link, 'Lena')).rejects.toBeInstanceOf(TeamJoinError);
-  await expect(joinTeam(link, 'Lena')).rejects.toMatchObject({ reason: 'unavailable' });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toBeInstanceOf(TeamJoinError);
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'unavailable' });
   expect(mockSetToken).not.toHaveBeenCalled();
 });
 
 it('joins a second server next to the one the app already uses', async () => {
   mockProfile.current = { serverId: 'srv_mine', activeUrl: 'https://mine.example' };
-  await joinTeam(link, 'Lena');
+  await joinTeam(link, 'Lena', deps);
   // Activating keeps the previous server among the others (serverProfile.test).
   expect(mockSaveProfile).toHaveBeenCalledWith(
     expect.objectContaining({ serverId: link.serverId, sharedBy: 'Holger Teske' }),
@@ -166,7 +210,8 @@ it('joins a second server next to the one the app already uses', async () => {
 
 it('refuses to join a server this app already knows, without contacting it', async () => {
   mockOthers.current = [{ serverId: link.serverId, activeUrl: link.coreOrigin }];
-  await expect(joinTeam(link, 'Lena')).rejects.toMatchObject({ reason: 'known_server' });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'known_server' });
+  expect(admission).not.toHaveBeenCalled();
   expect(mockClients).toHaveLength(0);
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
 });
