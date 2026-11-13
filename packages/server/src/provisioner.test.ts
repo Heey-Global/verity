@@ -5,6 +5,7 @@ import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
 import { BuildStorage, BuilderMaintenanceError } from './build-storage.js';
+import { projectRelayContainerName } from './project-relay-docker.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID, X509Certificate } from 'node:crypto';
@@ -2185,7 +2186,10 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const relay = defaultProjectRelay();
     relay.reactivate = vi.fn(async () => {
-      throw new DockerError({ kind: 'container_not_found', id: 'verity-relay-gone' });
+      throw new DockerError({
+        kind: 'container_not_found',
+        id: projectRelayContainerName({ projectId: id, containerGeneration: 'generation-1' }),
+      });
     });
     const relayStart = vi.spyOn(relay, 'start');
     const fallback = vi.fn();
@@ -2207,7 +2211,14 @@ describe('ProvisionerImpl (#174)', () => {
     expect(calls.some((call) => call.method === 'createContainer')).toBe(true);
   });
 
-  it('keeps a sleeping Sandbox asleep when relay reactivation fails for another reason', async () => {
+  it.each([
+    [
+      'an unavailable Docker API',
+      new DockerError({ kind: 'network', cause: new Error('timeout') }),
+    ],
+    // Only the relay's own absence proves the generation unresumable.
+    ['another missing container', new DockerError({ kind: 'container_not_found', id: 'other' })],
+  ])('keeps a sleeping Sandbox asleep when relay reactivation hits %s', async (_case, failure) => {
     const id = await seedProject('active');
     const retained = {
       networks: { [projectNetworkName(id)]: {} },
@@ -2226,7 +2237,7 @@ describe('ProvisionerImpl (#174)', () => {
     });
     const relay = defaultProjectRelay();
     relay.reactivate = vi.fn(async () => {
-      throw new DockerError({ kind: 'network', cause: new Error('Docker API timeout') });
+      throw failure;
     });
     const fallback = vi.fn();
     const provisioner = createProvisioner({

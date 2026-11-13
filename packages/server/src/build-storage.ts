@@ -584,8 +584,9 @@ export class BuildStorage {
     // the admission lock for minutes, not hours. Failing at once turned a Repair
     // issued during that window into a failed project with nothing wrong with it.
     // Wait for it, bounded, outside the queue so other builds are not held up.
-    // The budget starts at the first refusal: time spent queued behind other
-    // builds is not maintenance, and the host's lock waits for those builds.
+    // The budget starts at the first maintenance refusal: queueing before it is
+    // not maintenance (the host's lock waits for running builds anyway). Later
+    // retries share that one budget, so the wait stays bounded overall.
     let deadline: number | undefined;
     let waitingSince: number | undefined;
     for (;;) {

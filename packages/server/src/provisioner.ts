@@ -157,6 +157,7 @@ import {
   type ContainerSpec,
   type CreateContainerResult,
 } from './docker.js';
+import { projectRelayContainerName } from './project-relay-docker.js';
 import {
   defaultContainerCommandRunner,
   NODE_MODULES_INSTALL_ENV,
@@ -3908,7 +3909,14 @@ export class ProvisionerImpl implements Provisioner {
               // The retained relay is adopted by its generation-derived name. When
               // it no longer exists (removed by host maintenance, a manual cleanup
               // or an older GC), this generation can never be resumed in place.
-              relayMissing = error instanceof DockerError && error.kind === 'container_not_found';
+              relayMissing =
+                error instanceof DockerError &&
+                error.kind === 'container_not_found' &&
+                error.id ===
+                  projectRelayContainerName({
+                    projectId: project.id,
+                    containerGeneration: generation,
+                  });
               throw error;
             });
             relayAwake = true;
