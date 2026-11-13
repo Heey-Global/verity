@@ -3062,7 +3062,8 @@ describe('application cookies on online shares', () => {
     // lower-case prefix is what an older browser lets a sibling set.
     const response = await fetch(`http://127.0.0.1:${edgePort}/`, {
       headers: {
-        cookie: `${pinCookie}; sid=evil; __host-app-sid=evil; __Host-verity_session=core`,
+        // The last one restores to Core's session name, which the connector withholds.
+        cookie: `${pinCookie}; sid=evil; __host-app-sid=evil; __Host-verity_session=core; __Host-app-__Host-verity_session=core`,
         'x-verity-local-request-cookie-0': 'sid=forged',
       },
     });
