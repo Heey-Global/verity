@@ -83,6 +83,9 @@ describe('connectionFailureKind', () => {
     ).toBeUndefined();
     expect(connectionFailureKind(new DOMException('aborted', 'AbortError'))).toBeUndefined();
     expect(connectionFailureKind('Could not save decision.')).toBeUndefined();
+    expect(
+      connectionFailureKind(new VerityApiError(409, 'blocked by server maintenance window')),
+    ).toBeUndefined();
     // The server's own words are an answer even when they read like a transport error.
     expect(
       connectionFailureKind(new VerityApiError(502, 'Failed to fetch upstream')),
@@ -231,6 +234,27 @@ describe('ConnectionMonitor robustness', () => {
     });
     expect(clock.delays()).toEqual([4_000]);
     monitor.reset();
+  });
+
+  it('never runs two checks at once when an update starts during a confirming check', async () => {
+    const clock = fakeTimers();
+    let settle: (() => void) | undefined;
+    const probe = vi.fn(
+      () =>
+        new Promise<never>((_, reject) => {
+          settle = () => reject(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE));
+        }),
+    );
+    const monitor = new ConnectionMonitor({ probe, timers: clock.timers });
+    monitor.reportFailure('unreachable', 'Network request failed');
+    // Another request meets the Gateway while the confirming check still runs.
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    expect(monitor.getState().kind).toBe('maintenance');
+    clock.advance(2_000);
+    expect(probe).toHaveBeenCalledTimes(1);
+    settle?.();
+    await flush();
+    expect(clock.delays()).toEqual([2_000]);
   });
 
   it('keeps a throwing listener out of the request that reported', () => {

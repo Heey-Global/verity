@@ -41,6 +41,7 @@ export function subscribeVerityBaseUrl(listener: () => void): () => void {
 function notifyBaseUrlChanged(): void {
   // Another server's outage is not this one's.
   serverConnection.reset();
+  probeClient = undefined;
   for (const listener of baseUrlListeners) listener();
 }
 let lastDescriptorToken: string | null = null;
@@ -227,8 +228,12 @@ export function createVerityClient(): VerityClient | null {
 
 // While the server is away the connection bar checks it with the liveness probe;
 // that request reports through the monitor like any other, which ends the outage.
+// One client for every check of an outage, rather than a new one every few
+// seconds; it is rebuilt when the app is pointed at another server.
+let probeClient: VerityClient | null | undefined;
 serverConnection.setProbe(async () => {
-  const client = createVerityClient();
+  probeClient ??= createVerityClient();
+  const client = probeClient;
   // No server is configured any more: there is nothing to be connected to,
   // which is not the same as having reached it.
   if (client === null) {

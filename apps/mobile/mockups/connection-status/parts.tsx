@@ -32,7 +32,7 @@ export const SAMPLE_DUMP =
  * Sample of the planned connection bar: the existing SessionBar frame (§ 5.9's
  * status vocabulary) once under the top bar for the whole app. Neutral surface,
  * the intent's mark and word; color only on the dot, never on the surface.
- * The spinner variant shows the planned `indicator` extension of SessionBarContent.
+ * The spinner variant stands in for SessionBarContent's `busy` spinner.
  */
 export function ConnectionStrip({ state }: { state: ConnectionState }) {
   const { theme } = useUnistyles();

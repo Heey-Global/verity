@@ -66,14 +66,30 @@ export function ConnectionStatusBar() {
           </SessionBarTarget>
         </SessionBar>
       </View>
-      {disrupted ? <ConnectionSheet visible={open} onClose={() => setOpen(false)} /> : null}
+      {disrupted ? (
+        <ConnectionSheet
+          visible={open}
+          onClose={() => setOpen(false)}
+          state={state}
+          now={now}
+          retryNow={retryNow}
+        />
+      ) : null}
     </>
   );
 }
 
 /** What a tap on the bar opens: the state in words, the remedy, raw output last. */
-function ConnectionSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
-  const { state, now, retryNow } = useServerConnection();
+function ConnectionSheet({
+  visible,
+  onClose,
+  state,
+  now,
+  retryNow,
+}: {
+  visible: boolean;
+  onClose: () => void;
+} & Pick<ReturnType<typeof useServerConnection>, 'state' | 'now' | 'retryNow'>) {
   if (state.kind === 'connected') return null;
   const updating = state.kind === 'maintenance';
   const routes = failedRoutes(state.details);

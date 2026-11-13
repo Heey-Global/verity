@@ -44,10 +44,16 @@ export function connectionFailureKind(error: unknown): ConnectionFailureKind | u
   // A caller that cancelled its own request learned nothing about the server.
   if (error instanceof Error && error.name === 'AbortError') return undefined;
   if (error instanceof Error && error.name === 'TimeoutError') return 'unreachable';
+  // An answer from the server is maintenance only as the Gateway words it,
+  // exactly as `VerityClient` reports it; any other answer is the server's own.
+  if (error instanceof Error && error.name === 'VerityApiError')
+    return (error as Error & { status?: number }).status === 503 &&
+      error.message === SERVER_MAINTENANCE_MESSAGE
+      ? 'maintenance'
+      : undefined;
   const message = messageOf(error);
   if (message === undefined) return undefined;
   if (message.includes(SERVER_MAINTENANCE_MESSAGE)) return 'maintenance';
-  if (error instanceof Error && error.name === 'VerityApiError') return undefined;
   return UNREACHABLE_PATTERNS.some((pattern) => pattern.test(message)) ? 'unreachable' : undefined;
 }
 
@@ -228,10 +234,15 @@ export class ConnectionMonitor implements ConnectionReporter {
       lastConnectedAt: this.state.lastConnectedAt,
     };
     this.attempt = 0;
-    this.schedule();
+    // A check already running schedules the first attempt when it settles;
+    // a second timer now would start a second, overlapping check.
+    if (this.checking) this.emit();
+    else this.schedule();
   }
 
   private async check(details: string): Promise<void> {
+    // One check at a time; the running one decides what happens next.
+    if (this.checking) return;
     const probe = this.probe;
     if (probe === undefined) {
       // Nothing to check with yet: keep counting down, so the bar never shows a
@@ -275,10 +286,10 @@ export class ConnectionMonitor implements ConnectionReporter {
     const message = failure instanceof Error ? failure.message : details;
     if (this.state.kind === 'connected') this.enter(kind, message);
     else if (confirming) {
-      // The probe's own request already entered the outage and scheduled the
-      // first attempt; counting this check as a retry would skip that step.
+      // The outage began during this check (its own request reported it):
+      // this was no retry yet, so the backoff starts at its first step.
       this.state = { ...this.state, details: message };
-      this.emit();
+      this.schedule();
     } else {
       this.state = { ...this.state, kind, details: message };
       this.attempt += 1;
