@@ -1,3 +1,4 @@
+import { aiAccountsSpec } from './ai-accounts';
 import { sessionStabilitySpec } from './session-stability';
 import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
@@ -15,6 +16,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  aiAccountsSpec,
   sessionStabilitySpec,
   sessionGroupsSpec,
   factorySpec,
