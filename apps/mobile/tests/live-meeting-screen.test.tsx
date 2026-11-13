@@ -2807,7 +2807,8 @@ describe('online meeting joining', () => {
     const end = await screen.findByLabelText('End meeting', {}, { timeout: 5000 });
     await act(async () => fireEvent.press(end));
     expect(await screen.findByText('Could not end')).toBeOnTheScreen();
-    expect(screen.getByText('Tap End to try again.')).toBeOnTheScreen();
+    // The reason comes first: some failures need a reconnect rather than another tap.
+    expect(screen.getByText('offline Tap End to try again.')).toBeOnTheScreen();
     await act(async () => fireEvent.press(screen.getByLabelText('End meeting')));
     expect(client.stopOnlineMeeting).toHaveBeenCalledTimes(2);
   });

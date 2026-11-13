@@ -72,7 +72,9 @@ export function joinProgress(bot: AttendeeBot, joinedBefore: boolean): JoinProgr
   if (bot.state === 'waiting_room') return { status: 'waiting', reason: null, ...diagnostics };
   // A state added by the provider later reads as still joining rather than as over.
   if (!DONE.has(bot.state)) return { status: 'joining', reason: null, ...diagnostics };
-  if (joinedBefore) return { status: 'ended', reason: null, ...diagnostics };
+  // The provider's own history counts too: a bot can join and fail between two polls.
+  if (joinedBefore || events.some((event) => event.type === 'joined_meeting'))
+    return { status: 'ended', reason: null, ...diagnostics };
   const failure = events.findLast((event) => FAILURE_EVENTS.has(event.type));
   const reason = providerCode(failure?.sub_type);
   if (reason !== null && CANCELLED.has(reason))

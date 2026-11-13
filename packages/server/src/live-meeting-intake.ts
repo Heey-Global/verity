@@ -87,7 +87,9 @@ export function registerLiveMeetingIntakeRoutes(
     const userId = request.localUserId;
     const running = [];
     const joinStatuses =
-      (await deps.meetings.joinStatuses?.()) ?? new Map<string, OnlineJoinStatus>();
+      // Join status only enriches the card; without it the running meetings still show.
+      (await deps.meetings.joinStatuses?.().catch(() => undefined)) ??
+      new Map<string, OnlineJoinStatus>();
     for (const meeting of await deps.store.liveMeetings.running()) {
       if (!(await deps.canReadSession(userId ?? undefined, meeting.sessionId))) continue;
       const session = await deps.store.getSession(meeting.sessionId);

@@ -70,3 +70,18 @@ it('drops provider codes that are not plain identifiers', () => {
     ),
   ).toMatchObject({ status: 'failed', reason: null, eventSubType: null });
 });
+
+it('never reports a failure for a bot the provider says had joined', () => {
+  expect(
+    joinProgress(
+      {
+        state: 'fatal_error',
+        events: [
+          { type: 'joined_meeting', created_at: at(1) },
+          { type: 'fatal_error', sub_type: 'heartbeat_timeout', created_at: at(5) },
+        ],
+      },
+      false,
+    ).status,
+  ).toBe('ended');
+});

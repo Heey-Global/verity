@@ -229,7 +229,11 @@ export default function MeetingScreen() {
   const [onlineStatusMissing, setOnlineStatusMissing] = useState<string | null>(null);
   // One End per meeting: repeated taps sent up to nine stop requests while a bot hung joining.
   const stopInFlight = useRef<string | null>(null);
-  const [stopping, setStopping] = useState<{ meetingId: string; failed: boolean } | null>(null);
+  const [stopping, setStopping] = useState<{
+    meetingId: string;
+    failed: boolean;
+    message?: string;
+  } | null>(null);
   const [confirm, confirmSheet] = useConfirm();
   const [meetingTitle, setMeetingTitle] = useState('');
   const titledEvent = useRef<string | null>(null);
@@ -1005,7 +1009,12 @@ export default function MeetingScreen() {
       setShowNewMeeting(false);
       await refresh();
     } catch (reason) {
-      if (reason instanceof VerityApiError && reason.code === 'unsupported_meeting_url')
+      // The link field holds the error only for a typed link; a calendar link says so here.
+      if (
+        reason instanceof VerityApiError &&
+        reason.code === 'unsupported_meeting_url' &&
+        !selectedEvent
+      )
         setMeetingUrlRefused(true);
       else setError(String(reason));
       await refresh();
@@ -1085,7 +1094,11 @@ export default function MeetingScreen() {
     } catch (reason) {
       // End stays available to retry; the header says it did not work.
       stopInFlight.current = null;
-      setStopping({ meetingId: stoppingId, failed: true });
+      setStopping({
+        meetingId: stoppingId,
+        failed: true,
+        ...(reason instanceof Error ? { message: reason.message } : {}),
+      });
       if (meeting.engine !== 'attendee') setError(String(reason));
     } finally {
       setBusy(false);
@@ -1232,10 +1245,8 @@ export default function MeetingScreen() {
       let again = true;
       try {
         // Asked of the meeting's own server only; another server knows nothing of it.
-        if (onlineServerId !== getActiveMeetingServerId()) {
-          again = false;
-          return;
-        }
+        // Paused, not given up: the meeting's server may be connected again.
+        if (onlineServerId !== getActiveMeetingServerId()) return;
         const value = await createVerityClient()?.getOnlineMeetingStatus?.(
           sessionId,
           onlineMeetingId,
@@ -2590,7 +2601,9 @@ export default function MeetingScreen() {
       : stateWord === 'Recording'
         ? { intent: 'ready', label: `Live · ${elapsed(meeting.startedAt, now)}` }
         : { intent: 'neutral', label: stateWord };
-  const problemLine = stopFailed ? 'Tap End to try again.' : liveProblem;
+  const problemLine = stopFailed
+    ? [stopping?.message, 'Tap End to try again.'].filter(Boolean).join(' ')
+    : liveProblem;
   const header = (
     <View style={styles.header}>
       <IconButton icon="chevron-down" accessibilityLabel="Minimize meeting" onPress={minimize} />
