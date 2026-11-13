@@ -6,6 +6,7 @@ import {
   currentMeeting,
   endMeeting,
   pauseMeeting,
+  releaseMeeting,
   resumeMeeting,
   recoverNativeMeetings,
   subscribeMeeting,
@@ -201,6 +202,8 @@ export async function discardFinishedMeeting(
     }
   }
   await deleteMeeting(meeting.id, meeting.serverId ?? null);
+  // Its server copy is gone: polling it would only answer 404 from now on.
+  releaseMeeting(meeting.id);
 }
 
 function flushMeetingOutbox(serverId: string): Promise<void> {
@@ -277,6 +280,10 @@ export async function syncMeetingSession(
     changes.notes,
     changes.deletedMeetingIds,
   );
+  // Discarded on another device: a finished meeting held here must not keep being polled.
+  for (const id of changes.deletedMeetingIds) {
+    if (currentMeeting()?.serverId === serverId) releaseMeeting(id);
+  }
   return { pending: pending || (await hasPendingMeetingSync(serverId, sessionId)) };
 }
 
@@ -292,8 +299,11 @@ async function flushOwnerMeeting(serverId: string, id: string): Promise<void> {
 async function handleOwnerCommands(suppliedClient?: VerityClient): Promise<void> {
   if (handlingCommand) return;
   const meeting = currentMeeting();
+  // Remote commands steer a running recorder; a finished one has nothing left to obey, and
+  // its server copy may already be deleted.
   if (
     !meeting ||
+    meeting.state !== 'active' ||
     !meeting.ownerToken ||
     !meeting.serverId ||
     meeting.serverId !== getActiveMeetingServerId()
@@ -393,12 +403,18 @@ export function startLiveMeetingSync(): () => void {
       meeting?.sessionId,
       meeting?.id,
       meeting?.ownerToken,
+      meeting?.state === 'active',
     ]);
     if (key !== watchedKey) {
       watchedKey = key;
       detach();
       detach = () => {};
-      if (client && meeting?.ownerToken && meeting.serverId === getActiveMeetingServerId()) {
+      if (
+        client &&
+        meeting?.state === 'active' &&
+        meeting.ownerToken &&
+        meeting.serverId === getActiveMeetingServerId()
+      ) {
         const path = `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}/commands`;
         detach = subscribeLiveRefresh(client, tick, (value) => value === path, [
           { path, ownerToken: meeting.ownerToken },

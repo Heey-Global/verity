@@ -15,6 +15,21 @@ export function isSupportedMeetingUrl(url: URL): boolean {
   );
 }
 
+export type MeetingPlatform = 'google_meet' | 'teams' | 'zoom';
+
+/** The platform of a supported meeting link, for display and diagnostics; null otherwise. */
+export function meetingPlatform(meetingUrl: string | undefined): MeetingPlatform | null {
+  if (!meetingUrl) return null;
+  try {
+    const url = new URL(meetingUrl);
+    if (!isSupportedMeetingUrl(url)) return null;
+    if (url.hostname === 'meet.google.com') return 'google_meet';
+    return url.hostname.startsWith('teams.') ? 'teams' : 'zoom';
+  } catch {
+    return null;
+  }
+}
+
 /** Identifies the call behind a link, so the same call reached through two calendars, a
  * Zoom subdomain or other query parameters is recognised as one. */
 export function meetingCallKey(meetingUrl: string): string {

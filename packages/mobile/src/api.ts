@@ -1067,6 +1067,18 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
+// `.catch` keeps a newer server's additional status readable as still joining.
+const onlineJoinStatusSchema = z
+  .enum(['joining', 'waiting', 'joined', 'failed', 'ended'])
+  .catch('joining');
+const onlineMeetingStatusSchema = z.object({
+  status: onlineJoinStatusSchema,
+  /** Provider reason code of a failed join, for example `login_required`. */
+  reason: z.string().nullable(),
+  platform: z.enum(['google_meet', 'teams', 'zoom']).nullable().catch(null),
+});
+export type OnlineMeetingStatus = z.infer<typeof onlineMeetingStatusSchema>;
+
 const activeLiveMeetingsSchema = z.object({
   running: z.array(
     z.object({
@@ -1077,6 +1089,8 @@ const activeLiveMeetingsSchema = z.object({
       startedAt: z.number(),
       state: z.enum(['active', 'interrupted']),
       captureStatus: z.string(),
+      /** Online meetings: how far Verity got into the call (newer servers only). */
+      joinStatus: onlineJoinStatusSchema.optional(),
       recorderLastSeenAt: z.number().nullable().optional(),
       sessionName: z.string().nullable(),
       projectId: z.string().nullable(),
@@ -2830,6 +2844,17 @@ export class VerityClient {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
+    );
+  }
+  /** How far Verity's bot got into an online meeting of the session. */
+  async getOnlineMeetingStatus(sessionId: string, meetingId: string): Promise<OnlineMeetingStatus> {
+    return onlineMeetingStatusSchema.parse(
+      await (
+        await this.request(
+          `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/status`,
+          { method: 'GET' },
+        )
+      ).json(),
     );
   }
   /** Running meetings of readable sessions and, for administrators, unassigned ones. */

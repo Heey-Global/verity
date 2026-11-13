@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { LiveMeetingResult } from '@verity/mobile';
+import { type LiveMeetingResult, VerityApiError } from '@verity/mobile';
 import { ActionMenu, type ActionMenuItem } from '../ActionMenu';
 import { Icon } from '../Icon';
 import { Button, Card, IconButton, Row, SectionHeader, Text } from '../ui';
@@ -55,6 +55,7 @@ export function MeetingResult(props: {
     let timer: ReturnType<typeof setTimeout>;
     setResult(null);
     const poll = async () => {
+      let gone = false;
       try {
         if (meeting.serverId && meeting.serverId !== getActiveMeetingServerId())
           throw new Error('Reconnect to this meeting’s server.');
@@ -66,10 +67,13 @@ export function MeetingResult(props: {
           setError(null);
         }
       } catch (reason) {
+        // Not on the server (deleted, or never uploaded): asking again cannot change that until
+        // the meeting itself changes, which restarts this effect with a new revision.
+        gone = reason instanceof VerityApiError && reason.status === 404;
         if (!disposed)
           setError(reason instanceof Error ? reason.message : 'Could not load the meeting result.');
       } finally {
-        if (!disposed)
+        if (!disposed && !gone)
           timer = setTimeout(() => {
             void poll();
           }, 3000);

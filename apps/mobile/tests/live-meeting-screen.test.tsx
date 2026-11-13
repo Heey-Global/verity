@@ -2706,3 +2706,127 @@ it('does not claim local transcript safety after a local save failure', async ()
   expect(screen.queryByText(/Your transcript is saved here/)).not.toBeOnTheScreen();
   expect(screen.getByText(/Check the local save error before leaving/)).toBeOnTheScreen();
 });
+
+describe('online meeting joining', () => {
+  const online = (fields: Partial<MeetingRecord> = {}): MeetingRecord => ({
+    id: 'online-1',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'attendee',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'preparing',
+    transcript: '',
+    error: null,
+    ...fields,
+  });
+  const serve = (status: string, reason: string | null = null, extra: object = {}) => {
+    const client = {
+      getOnlineMeetingStatus: jest.fn().mockResolvedValue({ status, reason, platform: 'teams' }),
+      stopOnlineMeeting: jest.fn().mockResolvedValue(undefined),
+      getAttendeeSettings: jest.fn().mockResolvedValue({ configured: true }),
+      getUpcomingMeetings: jest.fn().mockResolvedValue([]),
+      ...extra,
+    };
+    jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+    jest.mocked(createVerityClient).mockReturnValue(client as never);
+    return client;
+  };
+
+  // The bot sat in "joining" behind the full meeting screen, which also claimed to prepare
+  // the phone's microphone for a meeting the phone does not record.
+  it('waits on the joining screen instead of the meeting', async () => {
+    serve('joining');
+    jest.mocked(listMeetings).mockResolvedValue([online()]);
+    render(<MeetingScreen />);
+    expect(await screen.findByText('Joining the call')).toBeOnTheScreen();
+    expect(await screen.findByText('Microsoft Teams')).toBeOnTheScreen();
+    expect(screen.queryByLabelText('End meeting')).toBeNull();
+    expect(screen.queryByText(/Preparing microphone/)).toBeNull();
+  });
+
+  it('shows the waiting room the provider reports', async () => {
+    serve('waiting');
+    jest.mocked(listMeetings).mockResolvedValue([online()]);
+    render(<MeetingScreen />);
+    expect(await screen.findByText('Waiting to be let in')).toBeOnTheScreen();
+    expect(screen.getByText('Let in')).toBeOnTheScreen();
+  });
+
+  it('opens the meeting once Verity is in the call, without a pause it cannot honour', async () => {
+    serve('joined');
+    jest.mocked(listMeetings).mockResolvedValue([online()]);
+    render(<MeetingScreen />);
+    expect(await screen.findByLabelText('End meeting')).toBeOnTheScreen();
+    expect(await screen.findByText('Microsoft Teams')).toBeOnTheScreen();
+    expect(screen.getByText(/^Joining…$|^Live · /)).toBeOnTheScreen();
+    expect(screen.queryByLabelText('Pause meeting')).toBeNull();
+    expect(screen.queryByText('Joining the call')).toBeNull();
+  });
+
+  it('says why Verity could not join and offers to start again', async () => {
+    serve('failed', 'login_required');
+    jest
+      .mocked(listMeetings)
+      .mockResolvedValue([
+        online({ state: 'ended', endedAt: Date.now(), captureStatus: 'preparing' }),
+      ]);
+    jest
+      .mocked(useLocalSearchParams)
+      .mockReturnValue({ sessionId: 'session-1', meetingId: 'online-1' });
+    render(<MeetingScreen />);
+    expect(await screen.findByText('Could not join')).toBeOnTheScreen();
+    expect(screen.getByText('The meeting requires sign-in.')).toBeOnTheScreen();
+    fireEvent.press(screen.getByText('Try again'));
+    expect(await screen.findByLabelText('Start meeting')).toBeOnTheScreen();
+  });
+
+  // Each tap used to send another stop request while the bot was leaving.
+  it('ends an online meeting once however often End is tapped', async () => {
+    const client = serve('joined');
+    jest.mocked(listMeetings).mockResolvedValue([online({ transcript: 'Hello' })]);
+    render(<MeetingScreen />);
+    const end = await screen.findByLabelText('End meeting');
+    await act(async () => fireEvent.press(end));
+    await act(async () => fireEvent.press(screen.getByLabelText('End meeting')));
+    expect(client.stopOnlineMeeting).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText('Ending…').length).toBeGreaterThan(0);
+  });
+
+  it('keeps End available and says so when ending fails', async () => {
+    const client = serve('joined', null, {
+      stopOnlineMeeting: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('offline'))
+        .mockResolvedValue(undefined),
+    });
+    jest.mocked(listMeetings).mockResolvedValue([online({ transcript: 'Hello' })]);
+    render(<MeetingScreen />);
+    const end = await screen.findByLabelText('End meeting', {}, { timeout: 5000 });
+    await act(async () => fireEvent.press(end));
+    expect(await screen.findByText('Could not end')).toBeOnTheScreen();
+    expect(screen.getByText('Tap End to try again.')).toBeOnTheScreen();
+    await act(async () => fireEvent.press(screen.getByLabelText('End meeting')));
+    expect(client.stopOnlineMeeting).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a link Verity cannot join at the field, before starting anything', async () => {
+    const client = serve('joining', null, { startOnlineMeeting: jest.fn() });
+    render(<MeetingScreen />);
+    fireEvent.press(await screen.findByText('Online meeting'));
+    fireEvent.changeText(
+      await screen.findByLabelText('Online meeting link'),
+      'https://meet.example.com/product-planning',
+    );
+    await waitFor(() => expect(screen.getByLabelText('Start meeting')).toBeEnabled());
+    await act(async () => fireEvent.press(screen.getByLabelText('Start meeting')));
+    expect(await screen.findByText('Link not supported')).toBeOnTheScreen();
+    expect(client.startOnlineMeeting).not.toHaveBeenCalled();
+    fireEvent.changeText(
+      screen.getByLabelText('Online meeting link'),
+      'meet.google.com/abc-defg-hij',
+    );
+    expect(screen.queryByText('Link not supported')).toBeNull();
+  });
+});
