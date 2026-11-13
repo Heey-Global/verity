@@ -185,7 +185,7 @@ import {
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
@@ -313,6 +313,8 @@ import {
   devcontainerBuilderIdle,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
+  materializePersonalOpenCodeSettings,
+  personalOpenCodeSubdir,
   type ProjectRelayControl,
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
@@ -1761,6 +1763,38 @@ export async function buildEmbeddedServer(
       // Never include credential contents in this diagnostic.
       console.warn(`verity: a personal provider login could not be refreshed: ${String(error)}`);
     },
+  });
+  // A person's sandbox reads its OpenCode models from its own file; rewrite every
+  // person's file when anyone's logins change, so a connected, changed or removed
+  // provider reaches their running sandbox (the directory bind sees the swap).
+  personalProviderCredentials.onChanged(() => {
+    void (async () => {
+      const connections = await eventStore.userProviderConnections.listByProvider('opencode');
+      const written = new Set<string>();
+      for (const connection of connections) {
+        const tag = sandboxPersonTag(connection.userId);
+        materializePersonalOpenCodeSettings(
+          connection,
+          secretRoot,
+          tag,
+          config.claudeConnectorPort,
+        );
+        written.add(personalOpenCodeSubdir(tag));
+      }
+      const prefix = personalOpenCodeSubdir('');
+      for (const entry of existsSync(secretRoot) ? readdirSync(secretRoot) : []) {
+        if (entry.startsWith(prefix) && !written.has(entry))
+          materializePersonalOpenCodeSettings(
+            undefined,
+            secretRoot,
+            entry.slice(prefix.length),
+            config.claudeConnectorPort,
+          );
+      }
+    })().catch((error: unknown) => {
+      if (error instanceof SealedError) return;
+      console.warn(`verity: personal OpenCode configuration not refreshed: ${String(error)}`);
+    });
   });
   let agentGatewayPersonalClaudeTokens = new Map<string, string>();
   const { url: agentGatewayUrl } = validateAgentGatewayRoutingConfig({

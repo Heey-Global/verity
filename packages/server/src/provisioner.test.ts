@@ -7357,6 +7357,11 @@ describe('ProvisionerImpl (#174)', () => {
         .values({ id: 'lena', role: 'member', status: 'active' })
         .onConflict((conflict) => conflict.column('id').doNothing())
         .execute();
+      await ctx.store.userProviderConnections.set('lena', 'opencode', {
+        credential: 'lena-key',
+        baseUrl: 'https://lena-llm.example/v1',
+        models: 'lena-model',
+      });
       const { runner: git } = fakeGit([{ match: /\bclone\b/ }, { match: /remote set-url/ }]);
       const { client: docker, calls: dockerCalls } = fakeDocker({
         inspectContainer: vi.fn(async (container: string) => ({
@@ -7376,6 +7381,7 @@ describe('ProvisionerImpl (#174)', () => {
         defaultImageRef: 'default',
         hostCloneRoot: root,
         gitSecretRoot: secretRoot,
+        claudeConnectorPort: 47_821,
         ghTokenCapabilities: capabilities,
         projectRelay: {
           async start(binding) {
@@ -7437,6 +7443,12 @@ describe('ProvisionerImpl (#174)', () => {
       // Its own capability file; the original sandbox's stays as it was.
       const capPath = join(secretRoot, 'git', `gh_token_capability.${id}.${tag}`);
       expect(spec.binds).toContain(`${capPath}:/run/verity/gh-token-capability:ro`);
+      // Her own OpenCode models, never the instance's, and never her key.
+      const openCodeDir = join(secretRoot, `opencode-${tag}`);
+      expect(spec.binds).toContain(`${openCodeDir}:/run/verity/opencode-config:ro`);
+      const openCode = readFileSync(join(openCodeDir, 'opencode.json'), 'utf8');
+      expect(openCode).toContain('lena-model');
+      expect(openCode).not.toContain('lena-key');
       expect(relayStarts.at(-1)).toMatchObject({ userId: 'lena', projectDefault: false });
       expect(relayStops.at(-1)).toEqual({ projectId: id, userId: 'lena', projectDefault: false });
       // The original sandbox's container was not removed, and the project's own

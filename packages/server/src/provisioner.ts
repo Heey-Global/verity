@@ -2264,9 +2264,22 @@ function openCodeSettingsBind(
   settings: VeritySettingsRecord | undefined,
   secretRoot: string | undefined,
   connectorPort: number | undefined,
+  /** A person's own sandbox reads their own provider's models. */
+  personal?: {
+    personTag: string;
+    connection: { baseUrl: string | null; models: string | null } | undefined;
+  },
 ): string[] {
   if (secretRoot === undefined || connectorPort === undefined) return [];
-  const directory = materializeOpenCodeSettings(settings, secretRoot, connectorPort);
+  const directory =
+    personal === undefined
+      ? materializeOpenCodeSettings(settings, secretRoot, connectorPort)
+      : materializePersonalOpenCodeSettings(
+          personal.connection,
+          secretRoot,
+          personal.personTag,
+          connectorPort,
+        );
   // OpenCode writes its own .gitignore beside the ordinary XDG config on startup.
   // Keep that directory writable and load Verity's server-owned config from a
   // separate read-only directory through OPENCODE_CONFIG instead. The directory
@@ -2283,6 +2296,8 @@ export function materializeOpenCodeSettings(
   settings: VeritySettingsRecord | undefined,
   secretRoot: string,
   connectorPort = 47_821,
+  /** A person's own directory instead of the instance one (ADR 0023 §3). */
+  subdir: string = GATEWAY_MOUNTS.opencode.subdir,
 ): string {
   const config =
     openCodeSettingsConfig(settings, connectorPort) ??
@@ -2298,8 +2313,43 @@ export function materializeOpenCodeSettings(
   // This directory is mounted as the non-root agent's XDG config root. It holds
   // only the local gateway address, a fixed placeholder, and model names.
   const spec = GATEWAY_MOUNTS.opencode;
-  writeSecretFile(secretRoot, spec.filename, config, spec.subdir, spec.mode, 0o755);
-  return join(secretRoot, spec.subdir);
+  writeSecretFile(secretRoot, spec.filename, config, subdir, spec.mode, 0o755);
+  return join(secretRoot, subdir);
+}
+
+/** The directory, under the secret root, of one person's OpenCode configuration. */
+export function personalOpenCodeSubdir(personTag: string): string {
+  return `${GATEWAY_MOUNTS.opencode.subdir}-${personTag}`;
+}
+
+/**
+ * Write one person's OpenCode configuration (ADR 0023 §3): their own provider's
+ * models behind the gateway, which serves that person's sandbox with their own
+ * key. Like the instance file it names only the gateway, a fixed placeholder and
+ * models; without a connection it is the provider-free fallback.
+ */
+export function materializePersonalOpenCodeSettings(
+  connection: { baseUrl: string | null; models: string | null } | undefined,
+  secretRoot: string,
+  personTag: string,
+  connectorPort = 47_821,
+): string {
+  const settings =
+    connection?.baseUrl == null
+      ? undefined
+      : ({
+          opencodeBaseUrl: connection.baseUrl,
+          // Only checked for presence; the file carries the placeholder, and the
+          // gateway holds the person's real key.
+          opencodeApiKey: 'gateway',
+          opencodeModels: connection.models,
+        } as VeritySettingsRecord);
+  return materializeOpenCodeSettings(
+    settings,
+    secretRoot,
+    connectorPort,
+    personalOpenCodeSubdir(personTag),
+  );
 }
 
 /**
@@ -6505,6 +6555,14 @@ export class ProvisionerImpl implements Provisioner {
       veritySettings,
       this.opts.gitSecretRoot,
       this.opts.claudeConnectorPort,
+      sandbox.identity.projectDefault
+        ? undefined
+        : {
+            personTag: sandboxPersonTag(sandbox.identity.userId),
+            connection: (
+              await this.opts.store.userProviderConnections.status(sandbox.identity.userId)
+            ).find((connection) => connection.provider === 'opencode'),
+          },
     );
     const gitEnv = gitSettingsEnv(veritySettings);
     // The sandbox authenticates to the broker with a token derived from the signing
