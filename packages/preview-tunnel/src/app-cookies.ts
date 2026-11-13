@@ -118,8 +118,14 @@ export function namespaceSetCookie(line: string): string | undefined {
   ].join('; ');
 }
 
+/** Linear on purpose: an end-anchored regex backtracks quadratically over
+ * long whitespace runs, and the browser controls this input. */
 function trimCookieWhitespace(value: string): string {
-  return value.replace(/^[ \t]+|[ \t]+$/g, '');
+  let start = 0;
+  let end = value.length;
+  while (start < end && (value[start] === ' ' || value[start] === '\t')) start += 1;
+  while (end > start && (value[end - 1] === ' ' || value[end - 1] === '\t')) end -= 1;
+  return value.slice(start, end);
 }
 
 /**

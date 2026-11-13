@@ -114,6 +114,9 @@ describe('appRequestCookies', () => {
     // Only SP and HTAB separate cookies, so other whitespace can't complete the prefix.
     expect(appRequestCookies(`\u00a0${APP_COOKIE_PREFIX}a=1;\v${APP_COOKIE_PREFIX}b=2`)).toBe('');
     expect(appRequestCookies(`\t${APP_COOKIE_PREFIX}a=1 \t`)).toBe('a=1');
+    // Leading and trailing SP/HTAB go; the value between them stays intact.
+    const run = ' \t'.repeat(1_000);
+    expect(appRequestCookies(`${APP_COOKIE_PREFIX}a=${run}x${run}y${run}`)).toBe(`a=x${run}y`);
   });
 });
 
