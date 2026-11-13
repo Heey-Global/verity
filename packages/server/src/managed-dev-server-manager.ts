@@ -226,6 +226,13 @@ export class ManagedDevServerManager {
     return this.activeProjects.has(projectId);
   }
 
+  /** Whether a server should be running in this person's own sandbox (ADR 0023 §4). */
+  async hasRunningServersFor(projectId: string, userId: string): Promise<boolean> {
+    return (await this.servers.listInstances({ projectId, desired: 'running' })).some(
+      (instance) => instance.lastRunUserId === userId,
+    );
+  }
+
   /** Whether a server this session started should be running in its worktree. */
   hasRunningSessionServers(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);

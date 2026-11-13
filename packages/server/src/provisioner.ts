@@ -2031,6 +2031,9 @@ export interface Provisioner {
    * person's when they own it; that one is managed by provision and wake.
    */
   ensurePersonalSandbox?(projectId: string, userId: string): Promise<SandboxIdentity>;
+  /** Put a person's own idle sandbox to sleep: its relay and certificate lose
+   *  their authority and its container stops. The next ensure starts it again. */
+  sleepPersonalSandbox?(projectId: string, userId: string): Promise<void>;
   /** Reattach a verified retained relay without replacing its Sandbox. */
   resumeProjectRelay?(projectId: string): Promise<void>;
   /** Best-effort Stage 3 watchdog: re-probe/relaunch supervisors for active
@@ -5112,6 +5115,22 @@ export class ProvisionerImpl implements Provisioner {
       if (this.personalSandboxStarts.get(run.key) === start)
         this.personalSandboxStarts.delete(run.key);
     }
+  }
+
+  async sleepPersonalSandbox(projectId: string, userId: string): Promise<void> {
+    const project = await this.opts.store.getProject(projectId);
+    if (project === undefined) return;
+    if ((await projectDefaultSandboxUser(this.opts.store, projectId)) === userId) return;
+    const run = this.memberSandboxRun(project, userId);
+    // Never while it is being started; the start would race the stop.
+    if (this.personalSandboxStarts.has(run.key)) return;
+    await run.setState('sleeping_starting');
+    await this.opts.projectRelay.sleep?.(run.relaySandbox);
+    await this.opts.claudeEgressIdentity?.revokeSandbox({ projectId, userId });
+    await this.opts.docker.stopContainer(run.identity.containerName).catch((error: unknown) => {
+      if (!(error instanceof DockerError && error.kind === 'container_not_found')) throw error;
+    });
+    await run.setState('sleeping');
   }
 
   async recreateContainer(

@@ -7368,6 +7368,7 @@ describe('ProvisionerImpl (#174)', () => {
       const capabilities = createGhTokenCapabilityRegistry(ctx.db);
       const relayStarts: ProjectRelayBinding[] = [];
       const relayStops: unknown[] = [];
+      const relaySleeps: unknown[] = [];
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
@@ -7400,6 +7401,9 @@ describe('ProvisionerImpl (#174)', () => {
           },
           async stop(sandbox) {
             relayStops.push(sandbox);
+          },
+          async sleep(sandbox) {
+            relaySleeps.push(sandbox);
           },
           brokerUrl: () => 'http://relay:8080',
           claudeGatewayUrl: () => 'https://relay:8443',
@@ -7447,6 +7451,19 @@ describe('ProvisionerImpl (#174)', () => {
       expect(after.state).toBe('active');
       expect(after.containerName).toBe(project.containerName);
       expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('active');
+
+      // Asleep, only this sandbox's authority ends and only its container stops.
+      const callsBeforeSleep = dockerCalls.length;
+      await provisioner.sleepPersonalSandbox(id, 'lena');
+      expect(relaySleeps).toEqual([{ projectId: id, userId: 'lena', projectDefault: false }]);
+      expect(
+        dockerCalls
+          .slice(callsBeforeSleep)
+          .filter((c) => c.method === 'stopContainer')
+          .map((c) => c.payload),
+      ).toEqual([sandbox.containerName]);
+      expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('sleeping');
+      expect((await ctx.store.getProject(id))?.state).toBe('active');
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(secretRoot, { recursive: true, force: true });

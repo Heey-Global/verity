@@ -1,4 +1,5 @@
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { sweepPersonalSandboxes } from './personal-sandbox-sleep.js';
 import { PERSONAL_SANDBOX_LOGIN_REQUIRED, resolveTurnSandbox } from './turn-sandbox.js';
 import { gatewayServesSandbox } from './sandbox-identity.js';
 import { sandboxIdentity, sandboxNetworkName } from './sandbox-identity.js';
@@ -5207,6 +5208,51 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
+  // member's container uses memory only while that member works.
+  const personalSandboxIdle = new Map<string, number>();
+  let personalSandboxSweepRunning = false;
+  const personalSandboxSweep = setInterval(() => {
+    const sleepSandbox = provisioner?.sleepPersonalSandbox?.bind(provisioner);
+    if (personalSandboxSweepRunning || sleepSandbox === undefined) return;
+    personalSandboxSweepRunning = true;
+    void sweepPersonalSandboxes(
+      {
+        listActive: async () => {
+          const active: Array<{ projectId: string; userId: string }> = [];
+          for (const sandbox of await eventStore.projectSandboxes.list()) {
+            if (sandbox.projectDefault) continue;
+            const state = await eventStore.projectSandboxes.state(
+              sandbox.projectId,
+              sandbox.userId,
+            );
+            if (state?.state === 'active') active.push(sandbox);
+          }
+          return active;
+        },
+        isBusy: async (projectId, userId) => {
+          if (await managedDevServerManager?.hasRunningServersFor(projectId, userId)) return true;
+          for (const turn of await eventStore.listRunningTurns()) {
+            const session = await eventStore.getSession(turn.sessionId);
+            if (session?.projectId !== projectId) continue;
+            const initiator = await eventStore.promptInitiatorAt(turn.sessionId, turn.promptSeq);
+            if (initiator?.userId === userId) return true;
+          }
+          return false;
+        },
+        sleep: sleepSandbox,
+      },
+      personalSandboxIdle,
+    )
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, 'personal sandbox sleep sweep failed');
+      })
+      .finally(() => {
+        personalSandboxSweepRunning = false;
+      });
+  }, 60_000);
+  personalSandboxSweep.unref();
+  app.addHook('onClose', () => clearInterval(personalSandboxSweep));
   // An interrupted build must not hold build storage until someone reboots the host.
   // Ask at start and every five minutes whether earlier attempts provably ended.
   if (buildStorage !== undefined) {
