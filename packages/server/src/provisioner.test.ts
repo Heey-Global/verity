@@ -5,7 +5,7 @@ import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { ProjectEgressHost } from './project-egress-host.js';
 import { BuildStorage, BuilderMaintenanceError } from './build-storage.js';
-import { projectRelayContainerName } from './project-relay-docker.js';
+import { projectRelayContainerName } from './project-relay-identity.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { DerivedImageReferences } from './derived-image-references.js';
 import { randomUUID, X509Certificate } from 'node:crypto';

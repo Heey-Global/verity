@@ -157,7 +157,7 @@ import {
   type ContainerSpec,
   type CreateContainerResult,
 } from './docker.js';
-import { projectRelayContainerName } from './project-relay-docker.js';
+import { projectRelayContainerName } from './project-relay-identity.js';
 import {
   defaultContainerCommandRunner,
   NODE_MODULES_INSTALL_ENV,
