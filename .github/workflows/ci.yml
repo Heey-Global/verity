@@ -873,6 +873,7 @@ jobs:
         shell: bash
         env:
           CI: 'true'
+          VERITY_LINT_PROFILE: '1'
           LINT_MEASUREMENT_DIR: ${{ runner.temp }}/lint-measurement
         run: |
           set -euo pipefail
