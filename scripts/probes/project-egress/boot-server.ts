@@ -4,7 +4,10 @@ import { EventStore } from '../../../packages/store/src/store.js';
 import { createPostgresDb, migrateToLatest } from '../../../packages/store/src/db.js';
 import { migrationProvider } from '../../../packages/store/src/migrations.js';
 import { readFile, appendFile } from 'node:fs/promises';
-import { buildEmbeddedServer } from '../../../packages/server/src/embedded.js';
+import {
+  buildEmbeddedServer,
+  type EmbeddedServerConfig,
+} from '../../../packages/server/src/embedded.js';
 import { createDockerClient } from '../../../packages/server/src/docker.js';
 import { createProjectEgressHostClient } from '../../../packages/server/src/project-egress-host-client.js';
 import { ProjectEgressLifecycle } from '../../../packages/server/src/project-egress-lifecycle.js';
@@ -81,7 +84,7 @@ if (process.argv[2] === 'gateway') {
   const db = createPostgresDb(databaseUrl);
   await migrateToLatest(db, migrationProvider);
   await new EventStore(db).updateVeritySettings({ projectEgressEnabled: true });
-  const server = await buildEmbeddedServer({
+  const serverConfig: EmbeddedServerConfig = {
     openDatabase: () => db,
     logger: true,
     dataDir: `${root}/database`,
@@ -111,7 +114,8 @@ if (process.argv[2] === 'gateway') {
     agentGatewayUnsealKey: config.gatewayKey,
     dockerGc: false,
     transcriptSweep: 'off',
-  });
+  };
+  const server = await buildEmbeddedServer(serverConfig);
   // Observe completion of the actual authenticated handler, including a committed
   // request whose TCP response was lost. Client acknowledgements alone undercount.
   server.app.addHook('onResponse', async (request, reply) => {
