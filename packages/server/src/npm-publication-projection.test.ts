@@ -176,7 +176,8 @@ it('bounds the decompressed size of a small gzip body', async () => {
 
 it('rejects a corrupt gzip body', async () => {
   const compressed = gzipSync(JSON.stringify(facts));
-  compressed[compressed.length - 6] ^= 0xff;
+  const corrupt = compressed.length - 6;
+  compressed[corrupt] = compressed[corrupt]! ^ 0xff;
   await expect(
     projectNpmPublications(
       response([compressed], { 'content-encoding': 'gzip' }),
