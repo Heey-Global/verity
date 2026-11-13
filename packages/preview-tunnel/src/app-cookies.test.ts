@@ -38,7 +38,13 @@ describe('namespaceSetCookie', () => {
   });
 
   it('drops malformed attribute values instead of forwarding them', () => {
-    for (const expires of ['1', '0', '2037-10-21', 'Wed, 21 Oct 2037'])
+    for (const expires of [
+      '1',
+      '0',
+      '2037-10-21',
+      'Wed, 21 Oct 2037',
+      'Sat, 31 Feb 2037 00:00:00 GMT',
+    ])
       expect(namespaceSetCookie(`a=b; Expires=${expires}`), expires).toBe(
         `${APP_COOKIE_PREFIX}a=b; Path=/; Secure`,
       );
@@ -105,6 +111,14 @@ describe('appRequestCookies', () => {
         `${EDGE_COOKIE}=v1.1.s; __Host-verity_session=core; sid=evil; __host-app-sid=evil; __HOST-APP-sid=evil; ${APP_COOKIE_PREFIX}=empty; ${APP_COOKIE_PREFIX}a b=bad; ${APP_COOKIE_PREFIX}novalue`,
       ),
     ).toBe('');
+  });
+});
+
+describe('appRequestCookies budget', () => {
+  it('drops trailing cookies past the byte budget', () => {
+    const header = `${APP_COOKIE_PREFIX}a=1; ${APP_COOKIE_PREFIX}b=2; ${APP_COOKIE_PREFIX}c=3`;
+    expect(appRequestCookies(header, 'a=1; b=2'.length)).toBe('a=1; b=2');
+    expect(appRequestCookies(header, 0)).toBe('');
   });
 });
 

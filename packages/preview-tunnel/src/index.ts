@@ -2696,7 +2696,13 @@ function sanitizeResponseHeaders(
     output['set-cookie'] = cookies;
     // A shared cache in front of an online share must never replay one
     // visitor's session cookie to another.
-    if (mode !== 'local-open' && !/\b(?:private|no-store)\b/i.test(result['cache-control'] ?? ''))
+    const directives = (result['cache-control'] ?? '')
+      .split(',')
+      .map((directive) => directive.split('=', 1)[0]!.trim().toLowerCase());
+    if (
+      mode !== 'local-open' &&
+      !directives.some((name) => name === 'private' || name === 'no-store')
+    )
       output['cache-control'] = 'no-store';
   }
   output['cache-control'] ??= 'no-store';
@@ -2798,6 +2804,23 @@ function previewRequestCookies(cookie: string): string {
     .trim();
 }
 
+/** Chunk name (`x-verity-local-request-cookie-NN`) plus per-header framing. */
+const REQUEST_COOKIE_CHUNK_OVERHEAD_BYTES = 40;
+
+/**
+ * The cookie bytes that fit beside the request's other headers inside the
+ * tunnel limits. Each chunk carries up to 4096 characters, which can be up to
+ * twice as many UTF-8 bytes, so the budget assumes the worst case.
+ */
+function requestCookieRoom(headers: Record<string, string>): number {
+  const chunks = MAX_HEADER_COUNT - Object.keys(headers).length;
+  const bytes = MAX_TUNNEL_HEADER_BYTES - headerBytes(headers);
+  return Math.max(
+    0,
+    Math.min(chunks * 4096, bytes - Math.ceil(bytes / 4096) * REQUEST_COOKIE_CHUNK_OVERHEAD_BYTES),
+  );
+}
+
 /**
  * Carries the browser cookies the application may see to the connector.
  * Online shares forward only `__Host-app-` cookies under their original
@@ -2815,7 +2838,7 @@ function relayRequestCookies(
     const value =
       mode === 'local-open'
         ? previewRequestCookies(request.headers.cookie)
-        : appRequestCookies(request.headers.cookie);
+        : appRequestCookies(request.headers.cookie, requestCookieRoom(headers));
     for (let offset = 0; offset < value.length; offset += 4096)
       headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
         offset,

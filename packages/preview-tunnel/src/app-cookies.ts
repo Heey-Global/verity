@@ -60,6 +60,9 @@ function cookieDate(raw: string): string | undefined {
     const value = Number(year);
     date.setUTCFullYear(value + (value <= 69 ? 2000 : 1900));
   }
+  // `Date.parse` rolls an impossible day such as 31 Feb into the next month,
+  // where browsers reject the date and keep a session cookie.
+  if (date.getUTCDate() !== Number(/, (\d{1,2})[ -]/.exec(raw)?.[1])) return undefined;
   return date.toUTCString();
 }
 
@@ -117,13 +120,16 @@ export function namespaceSetCookie(line: string): string | undefined {
 
 /**
  * Selects the application's cookies from a browser `Cookie` header on an online
- * share and restores their original names. Order and duplicates are kept. The
+ * share and restores their original names. Order and duplicates are kept, and
+ * cookies past `maxBytes` (UTF-8) are dropped so that a browser holding too many
+ * application cookies still gets its requests through. The
  * prefix match is deliberately case-sensitive: older browsers enforce the
  * `__Host-` rules only for that exact spelling, so a sibling share could still
  * plant a `__host-app-` cookie there.
  */
-export function appRequestCookies(header: string): string {
+export function appRequestCookies(header: string, maxBytes = Infinity): string {
   const cookies: string[] = [];
+  let bytes = 0;
   for (const part of header.split(';')) {
     const separator = part.indexOf('=');
     if (separator < 0) continue;
@@ -131,7 +137,11 @@ export function appRequestCookies(header: string): string {
     if (!name.startsWith(APP_COOKIE_PREFIX)) continue;
     const original = name.slice(APP_COOKIE_PREFIX.length);
     if (!TOKEN.test(original)) continue;
-    cookies.push(`${original}=${part.slice(separator + 1).trim()}`);
+    const cookie = `${original}=${part.slice(separator + 1).trim()}`;
+    const cost = Buffer.byteLength(cookie) + (cookies.length ? 2 : 0);
+    if (bytes + cost > maxBytes) break;
+    cookies.push(cookie);
+    bytes += cost;
   }
   return cookies.join('; ');
 }

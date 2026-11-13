@@ -3090,6 +3090,46 @@ describe('application cookies on online shares', () => {
     expect(received).toEqual([]);
   });
 
+  it('rejects WebSocket upgrades from sibling shares before they carry app cookies', async () => {
+    const { pinCookie, edgePort } = await cookieBridge('app-cookie-cswsh', () => []);
+    for (const headers of [
+      { origin: 'https://sibling.preview.example.test' },
+      { 'sec-fetch-site': 'same-site' },
+    ]) {
+      const client = new WebSocket(`ws://127.0.0.1:${edgePort}/socket`, {
+        headers: { ...headers, cookie: `${pinCookie}; __Host-app-sid=abc` },
+      });
+      cleanups.push(() => client.terminate());
+      const status = await new Promise<number | undefined>((resolve) => {
+        client.once('unexpected-response', (_request, response) => resolve(response.statusCode));
+        client.once('open', () => resolve(101));
+        client.once('error', () => resolve(undefined));
+      });
+      expect(status).toBe(403);
+    }
+  });
+
+  // A browser holding more application cookies than fit beside the request's
+  // other headers would otherwise get a 431 on every request.
+  it('drops trailing request cookies that do not fit the tunnel', async () => {
+    const { pinCookie, received, edgePort } = await cookieBridge(
+      'app-cookie-request-room',
+      () => [],
+    );
+    const cookies = Array.from({ length: 4 }, (_, index) => `c${index}=${'x'.repeat(3000)}`);
+    const response = await fetch(`http://127.0.0.1:${edgePort}/`, {
+      headers: {
+        ...Object.fromEntries(Array.from({ length: 93 }, (_, index) => [`x-app-${index}`, '1'])),
+        cookie: [pinCookie, ...cookies.map((cookie) => `__Host-app-${cookie}`)].join('; '),
+      },
+    });
+    expect(response.status).toBe(200);
+    const forwarded = received[0]?.split('; ') ?? [];
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(forwarded).toEqual(cookies.slice(0, forwarded.length));
+    expect(forwarded.length).toBeLessThan(cookies.length);
+  });
+
   it('forwards namespaced cookies in WebSocket handshakes', async () => {
     const { pinCookie, edgePort } = await cookieBridge('app-cookie-websocket', () => []);
     for (const [cookie, expected] of [
@@ -3155,7 +3195,9 @@ describe('application cookies on online shares', () => {
       (path) =>
         path === '/private'
           ? { 'cache-control': 'private, max-age=60' }
-          : { 'cache-control': 'public, max-age=600' },
+          : path === '/quoted'
+            ? { 'cache-control': 'public, max-age=600, ext="no-store"' }
+            : { 'cache-control': 'public, max-age=600' },
     );
     expect((await get('/public', pinCookie)).headers.get('cache-control')).toBe('no-store');
     expect((await get('/private', pinCookie)).headers.get('cache-control')).toBe(
@@ -3164,6 +3206,8 @@ describe('application cookies on online shares', () => {
     expect((await get('/none', pinCookie)).headers.get('cache-control')).toBe(
       'public, max-age=600',
     );
+    // A directive name, not any occurrence of the word, marks a response private.
+    expect((await get('/quoted', pinCookie)).headers.get('cache-control')).toBe('no-store');
   });
 });
 
