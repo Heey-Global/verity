@@ -60,6 +60,9 @@ interface PendingEntry extends PendingMessage {
 /** The render state the chat screen consumes. */
 export interface SessionModelState {
   googleStatus?: SessionDetail['googleStatus'];
+  /** Names by user id in a session several people write in; absent otherwise. */
+  people?: SessionDetail['people'];
+  viewerUserId?: SessionDetail['viewerUserId'];
   detailLoaded?: boolean;
   /** Live transcript + status + usage (from the stream's reducer). */
   session: SessionState;
@@ -310,6 +313,8 @@ export class SessionModel {
   private _model: string | undefined;
   private _modelSwitched = false;
   private _googleStatus: SessionDetail['googleStatus'];
+  private _people: SessionDetail['people'];
+  private _viewerUserId: SessionDetail['viewerUserId'];
   private _detailLoaded = false;
   private detailRead: AbortController | undefined;
   private _projectId: string | null | undefined;
@@ -518,6 +523,8 @@ export class SessionModel {
       model: this._model,
       projectId: this._projectId,
       googleStatus: this._googleStatus,
+      people: this._people,
+      viewerUserId: this._viewerUserId,
       detailLoaded: this._detailLoaded,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
@@ -1166,6 +1173,8 @@ export class SessionModel {
       });
       if (controller.signal.aborted) return;
       this._googleStatus = detail.googleStatus;
+      this._people = detail.people;
+      this._viewerUserId = detail.viewerUserId;
       this._detailLoaded = true;
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);

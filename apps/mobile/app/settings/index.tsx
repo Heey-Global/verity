@@ -197,6 +197,12 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
             }
           />
+          <SettingsNavRow
+            icon="cpu"
+            title="My AI accounts"
+            subtitle="Claude, Codex and OpenCode for your turns"
+            onPress={() => router.push('/settings/ai-accounts')}
+          />
         </SettingsListPanel>
       </SettingsGroup>
       {/* The new design keeps Shared knowledge on Verity's page; until the stored

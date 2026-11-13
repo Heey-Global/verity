@@ -791,8 +791,6 @@ describe('project settings — agents', () => {
     const client = makeClient({ detail: before });
     const getProject = client.getProject as jest.Mock;
     let finishRefresh: (() => void) | undefined;
-    const updateProjectSettings = client.updateProjectSettings as jest.Mock;
-    updateProjectSettings.mockResolvedValue({ ...before.settings, defaultModel: 'codex/default' });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectModelScreen />);
 
@@ -833,30 +831,32 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeOnTheScreen();
   });
 
-  // The choice has to reach the server as the `defaultModel` key alone — a
-  // PATCH that also carried `defaultBranch` or `memory` would clear them.
-  it('PATCHes { defaultModel } when a model is picked and null for Automatic', async () => {
-    const updateProjectSettings = jest
+  // The default model is the signed-in person's own (ADR 0023 §3): it is saved
+  // through their own route, never as a project setting everyone shares.
+  it('saves the person’s own default model when picked and null for Automatic', async () => {
+    const updateProjectSettings = jest.fn();
+    const setOwnProjectDefaultModel = jest
       .fn()
-      .mockImplementation((_id: string, patch: object) =>
-        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      .mockImplementation((_id: string, model: string | null) =>
+        Promise.resolve({ defaultModel: model }),
       );
-    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ updateProjectSettings, setOwnProjectDefaultModel }),
+    );
     render(<ProjectModelScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/));
     await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { defaultModel: 'codex/default' }),
+      expect(setOwnProjectDefaultModel).toHaveBeenCalledWith('p/1', 'codex/default'),
     );
+    expect(updateProjectSettings).not.toHaveBeenCalled();
     expect(
       (await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/)).props
         .accessibilityState.checked,
     ).toBe(true);
 
     fireEvent.press(screen.getByLabelText(/^Use the first allowed model(,|$)/));
-    await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { defaultModel: null }),
-    );
+    await waitFor(() => expect(setOwnProjectDefaultModel).toHaveBeenLastCalledWith('p/1', null));
   });
 
   // The toggles PATCH the agent list alone; a list naming every agent is stored
@@ -1021,7 +1021,6 @@ describe('project settings — agents', () => {
     await act(async () => finishers[0]?.());
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
-        defaultModel: null,
         allowedAgents: ['claude'],
       }),
     );

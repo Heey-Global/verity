@@ -43,6 +43,8 @@ export type ProjectDetailState = {
   savedProfile: ProjectProfile | undefined;
   /** A settings PATCH returned the saved settings: adopt them in place. */
   onSettingsSaved: (settings: ProjectSettings) => void;
+  /** The signed-in person's own default model was saved (ADR 0023 §3). */
+  onOwnDefaultModelSaved: (model: string | null) => void;
 };
 
 // Projects whose `pending` setup status is being migrated right now. Module
@@ -79,6 +81,17 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     loadGeneration.current += 1;
     setLoading(false);
     setDetail((current) => (current ? { ...current, settings: next } : current));
+  }, []);
+
+  const onOwnDefaultModelSaved = useCallback((model: string | null) => {
+    // Like a settings save: an older detail request must not bring the old one back.
+    loadGeneration.current += 1;
+    setLoading(false);
+    setDetail((current) =>
+      current?.settings
+        ? { ...current, settings: { ...current.settings, defaultModel: model } }
+        : current,
+    );
   }, []);
 
   const onProfileSaved = useCallback((profile: ProjectProfile) => {
@@ -191,6 +204,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     load,
     onProjectUpdated,
     onSettingsSaved,
+    onOwnDefaultModelSaved,
     onProfileSaved,
     savedProfile,
   };

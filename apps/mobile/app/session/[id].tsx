@@ -658,6 +658,14 @@ interface SessionActions {
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
 
+// Who sent each message, in a session several people write in: names by user id
+// and the signed-in person. Absent (null) when one person works alone, whose
+// transcript stays unlabelled.
+const SessionPeopleContext = createContext<{
+  people: Readonly<Record<string, string>>;
+  viewerUserId: string | undefined;
+} | null>(null);
+
 // Bookmark state (#bookmarks), provided once by `SessionChat` so a deep transcript
 // row (`<AgentMarkdown>`) can toggle its own message's bookmark without threading a
 // callback through `renderRow`. Null outside a provider — the affordance renders
@@ -745,6 +753,8 @@ export const SessionChat = memo(function SessionChat({
     model: currentModel,
     projectId,
     googleStatus,
+    people,
+    viewerUserId,
     detailLoaded,
     switchingModel,
     modelSwitchPending,
@@ -3643,6 +3653,10 @@ export const SessionChat = memo(function SessionChat({
       },
     ]);
   }, [decidePermission, decidePlanning, planningRevision, session.pendingPermission]);
+  const peopleContext = useMemo(
+    () => (people === undefined ? null : { people, viewerUserId }),
+    [people, viewerUserId],
+  );
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -4649,42 +4663,44 @@ export const SessionChat = memo(function SessionChat({
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
-          <SessionFileOpenContext.Provider value={openSessionFile}>
-            <AppLinkOpenContext.Provider value={openAppLink}>
-              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-                <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveProvider
-                    client={client}
-                    sessionId={sessionId}
-                    projectId={projectId}
-                  >
-                    {transcriptList}
-                    {/* Keep intermediate history pages hidden while resolving a jump, and
+          <SessionPeopleContext.Provider value={peopleContext}>
+            <SessionFileOpenContext.Provider value={openSessionFile}>
+              <AppLinkOpenContext.Provider value={openAppLink}>
+                <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                  <BookmarksContext.Provider value={bookmarks}>
+                    <KnowledgeSaveProvider
+                      client={client}
+                      sessionId={sessionId}
+                      projectId={projectId}
+                    >
+                      {transcriptList}
+                      {/* Keep intermediate history pages hidden while resolving a jump, and
                 cover measurement correction while restoring a saved position. */}
-                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                      <View style={styles.restoreCover}>
-                        <ActivityIndicator
-                          color={theme.colors.textMuted}
-                          accessibilityLabel={
-                            pendingUserJump !== null || jumpTarget !== null
-                              ? 'Jumping to message or bookmark'
-                              : 'Restoring chat position'
-                          }
-                        />
-                        {pendingUserJump !== null || jumpTarget !== null ? (
-                          <Text style={styles.emptySubtitle}>
-                            {pendingUserJump !== null
-                              ? 'Finding previous message or bookmark…'
-                              : 'Jumping to message or bookmark…'}
-                          </Text>
-                        ) : null}
-                      </View>
-                    ) : null}
-                  </KnowledgeSaveProvider>
-                </BookmarksContext.Provider>
-              </SessionFileImageSourceContext.Provider>
-            </AppLinkOpenContext.Provider>
-          </SessionFileOpenContext.Provider>
+                      {restoring || pendingUserJump !== null || jumpTarget !== null ? (
+                        <View style={styles.restoreCover}>
+                          <ActivityIndicator
+                            color={theme.colors.textMuted}
+                            accessibilityLabel={
+                              pendingUserJump !== null || jumpTarget !== null
+                                ? 'Jumping to message or bookmark'
+                                : 'Restoring chat position'
+                            }
+                          />
+                          {pendingUserJump !== null || jumpTarget !== null ? (
+                            <Text style={styles.emptySubtitle}>
+                              {pendingUserJump !== null
+                                ? 'Finding previous message or bookmark…'
+                                : 'Jumping to message or bookmark…'}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : null}
+                    </KnowledgeSaveProvider>
+                  </BookmarksContext.Provider>
+                </SessionFileImageSourceContext.Provider>
+              </AppLinkOpenContext.Provider>
+            </SessionFileOpenContext.Provider>
+          </SessionPeopleContext.Provider>
         </SessionActionsContext.Provider>
       )}
       {messages.length > 0 ? (
@@ -6938,10 +6954,19 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   const pending = message.pending;
   const actions = useContext(SessionActionsContext);
   const recoverable = pending === 'failed' && actions !== null;
+  const shared = useContext(SessionPeopleContext);
+  // In a shared session every person's message names its sender; someone else's
+  // sits on the other side, like an agent's, so the reader can tell them apart.
+  const senderId = message.initiatedBy?.userId ?? (pending ? shared?.viewerUserId : undefined);
+  const sender =
+    shared !== null && !message.peer && senderId !== undefined
+      ? shared.people[senderId]
+      : undefined;
+  const fromOther = sender !== undefined && senderId !== shared?.viewerUserId;
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
-      <View style={[styles.userRow, message.peer ? styles.peerRow : null]}>
+      <View style={[styles.userRow, message.peer || fromOther ? styles.peerRow : null]}>
         <View
           style={[
             styles.userBubble,
@@ -6954,6 +6979,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
               Agent · {message.peer.label}
             </Text>
           ) : null}
+          {sender !== undefined ? <Text style={styles.peerSource}>{sender}</Text> : null}
           {attachments.length > 0 ? (
             <View style={styles.userImages}>
               {attachments.map((a, i) =>
@@ -7980,7 +8006,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
       ? actions.lastUserPrompt
       : RETRY_PROMPT;
   const recovery =
-    canRetry || descriptor.action === 'claude-login' ? (
+    canRetry || descriptor.action === 'claude-login' || descriptor.action === 'connect-account' ? (
       <>
         {canRetry ? (
           <Button
@@ -7994,6 +8020,13 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
                 ? 'Sends your last message again'
                 : 'Sends a new turn asking the agent to continue'
             }
+          />
+        ) : null}
+        {descriptor.action === 'connect-account' ? (
+          <Button
+            label="My AI accounts"
+            size="compact"
+            onPress={() => router.push('/settings/ai-accounts')}
           />
         ) : null}
         {descriptor.action === 'claude-login' ? (

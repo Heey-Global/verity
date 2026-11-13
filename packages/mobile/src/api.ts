@@ -503,6 +503,11 @@ export const sessionDetailSchema = sessionSummarySchema.safeExtend({
   busy: z.boolean().optional(),
   /** Turns queued behind the in-flight one (#90/#80), FIFO. Absent → none. */
   queued: z.array(queuedItemSchema).optional(),
+  /** In a session several people write in: each person's name by user id, so
+   *  messages can say who sent them. Absent when one person works alone. */
+  people: z.record(z.string(), z.string()).optional(),
+  /** The signed-in person, beside `people`. */
+  viewerUserId: z.string().optional(),
 });
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 
@@ -1392,6 +1397,28 @@ export const agentLoginSchema = z.object({
 });
 export type AgentLogin = z.infer<typeof agentLoginSchema>;
 const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
+
+/** A provider account of the signed-in person's own (ADR 0023 §3). */
+export const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
+export type ProviderConnectionKind = z.infer<typeof providerConnectionKindSchema>;
+export const providerConnectionSchema = z.object({
+  provider: providerConnectionKindSchema,
+  baseUrl: z.string().nullable(),
+  models: z.array(z.string()),
+  updatedAt: z.string(),
+});
+export type ProviderConnection = z.infer<typeof providerConnectionSchema>;
+export const providerConnectionsSchema = z.object({
+  connections: z.array(providerConnectionSchema),
+  /** The administrator's turns fall back to the instance logins. */
+  usesInstanceLogins: z.boolean(),
+});
+export type ProviderConnections = z.infer<typeof providerConnectionsSchema>;
+const openCodeConnectionSchema = z.object({
+  provider: z.literal('opencode'),
+  baseUrl: z.string(),
+  models: z.array(z.string()),
+});
 
 /** State of the at-rest secret store (master-password unlock). `uninitialized`
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
@@ -4072,6 +4099,70 @@ export class VerityClient {
       method: 'GET',
     });
     return agentLoginResponseSchema.parse(await res.json()).login;
+  }
+
+  /** The signed-in person's own provider accounts; never any credential. */
+  async listProviderConnections(): Promise<ProviderConnections> {
+    const res = await this.request('/me/provider-connections', { method: 'GET' });
+    return providerConnectionsSchema.parse(await res.json());
+  }
+
+  /** Starts a login whose result becomes the signed-in person's own account. */
+  async startProviderConnectionLogin(provider: AgentLoginProvider): Promise<AgentLogin> {
+    const res = await this.request(`/me/provider-connections/${provider}/login`, {
+      method: 'POST',
+    });
+    return agentLoginResponseSchema.parse(await res.json()).login;
+  }
+
+  async getProviderConnectionLogin(sessionId: string): Promise<AgentLogin> {
+    const res = await this.request(
+      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}`,
+      { method: 'GET' },
+    );
+    return agentLoginResponseSchema.parse(await res.json()).login;
+  }
+
+  async submitProviderConnectionLoginCode(sessionId: string, code: string): Promise<AgentLogin> {
+    const res = await this.request(
+      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}/code`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code }),
+      },
+    );
+    return agentLoginResponseSchema.parse(await res.json()).login;
+  }
+
+  /** Saves the person's own OpenCode provider after it answered with its models. */
+  async setOpenCodeConnection(input: {
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<z.infer<typeof openCodeConnectionSchema>> {
+    const res = await this.request('/me/provider-connections/opencode', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return openCodeConnectionSchema.parse(await res.json());
+  }
+
+  async disconnectProviderConnection(provider: ProviderConnectionKind): Promise<void> {
+    await this.request(`/me/provider-connections/${provider}`, { method: 'DELETE' });
+  }
+
+  /** Sets the signed-in person's own default model for a project. */
+  async setOwnProjectDefaultModel(
+    projectId: string,
+    model: string | null,
+  ): Promise<{ defaultModel: string | null }> {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/default-model`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    return z.object({ defaultModel: z.string().nullable() }).parse(await res.json());
   }
 
   async disconnectAgentLogin(provider: AgentLoginProvider): Promise<VeritySettings> {

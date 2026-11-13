@@ -528,6 +528,12 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export {
+  providerConnectionsSchema,
+  type ProviderConnection,
+  type ProviderConnectionKind,
+  type ProviderConnections,
+} from './api.js';
 export type {
   ActiveLiveMeetings,
   CalendarWatch,
