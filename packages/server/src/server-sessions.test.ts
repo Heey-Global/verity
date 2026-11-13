@@ -3398,7 +3398,13 @@ describe('POST /sessions with project field (#174)', () => {
       containerName: 'dev-heey-global-verity',
       state: 'active',
     });
-    await updateProjectSettings('p-default-model', { defaultModel: 'codex/default' });
+    // The person's own project default, used because they have a Codex account.
+    await ctx.store.updateVeritySettings({ codexAuthJson: '{"tokens":{"access_token":"codex"}}' });
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      '00000000-0000-4000-8000-000000000001',
+      'p-default-model',
+      'codex/default',
+    );
     const projectWorktrees = fakeProjectWorktrees();
     projectWorktrees.add.mockResolvedValueOnce(
       '/data/dev/heey-global-verity/.verity-sessions/agent-default-model',

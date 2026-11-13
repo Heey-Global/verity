@@ -13,7 +13,8 @@ const modelsQuery = z.object({ projectId: z.string().min(1).optional() });
 
 export interface SessionReadRouteDeps {
   /** Every usable model, narrowed to a project's allowed agents when one is named. */
-  listModels: (projectId?: string) => Promise<unknown>;
+  /** Narrowed to the accounts that serve `viewer`'s own turns. */
+  listModels: (projectId: string | undefined, viewer: string) => Promise<unknown>;
   /** The session as `viewer` sees it: read mark and dismissed Home items are theirs. */
   getSession: (sessionId: string, viewer: string) => Promise<unknown>;
   getGoogleStatus?: (sessionId: string, viewer: string | undefined) => Promise<unknown>;
@@ -23,7 +24,7 @@ export interface SessionReadRouteDeps {
 export function registerSessionReadRoutes(app: FastifyInstance, deps: SessionReadRouteDeps): void {
   app.get('/models', async (request): Promise<unknown> => {
     const { projectId } = modelsQuery.parse(request.query);
-    return deps.listModels(projectId);
+    return deps.listModels(projectId, viewerId(request));
   });
 
   if (deps.getGoogleStatus)

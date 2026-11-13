@@ -139,4 +139,27 @@ export class UserProviderConnectionStore {
       )
       .execute();
   }
+
+  /** The model the person last started work with in a project, or null. */
+  async lastModel(userId: string, projectId: string): Promise<string | null> {
+    const row = await this.db
+      .selectFrom('user_project_preferences')
+      .select('last_model')
+      .where('user_id', '=', userId)
+      .where('project_id', '=', projectId)
+      .executeTakeFirst();
+    return row?.last_model ?? null;
+  }
+
+  async setLastModel(userId: string, projectId: string, model: string): Promise<void> {
+    await this.db
+      .insertInto('user_project_preferences')
+      .values({ user_id: userId, project_id: projectId, last_model: model })
+      .onConflict((conflict) =>
+        conflict
+          .columns(['user_id', 'project_id'])
+          .doUpdateSet({ last_model: model, updated_at: sql`now()` }),
+      )
+      .execute();
+  }
 }

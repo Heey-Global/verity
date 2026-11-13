@@ -305,7 +305,7 @@ import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
-import { registerViewStateRoutes, viewerId } from './view-state-routes.js';
+import { legacyAdministratorId, registerViewStateRoutes, viewerId } from './view-state-routes.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
@@ -4276,7 +4276,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const [seen] = await projectsAsSeenBy(viewer, [presented]);
       return {
         project: seen ?? presented,
-        settings: publicProjectSettings(settings),
+        settings:
+          settings === null
+            ? publicProjectSettings(settings)
+            : {
+                ...publicProjectSettings(settings)!,
+                // The viewer's own default, not anyone else's.
+                defaultModel: await ownDefaultModel(viewer, id, settings),
+              },
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
@@ -4333,19 +4340,28 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return (await projectsAsSeenBy(viewer, await publicProjects([project])))[0];
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
-    updateSettings: async (id, patch) => {
+    updateSettings: async (id, patch, viewer) => {
       const store = projectSettingsStore(deps.eventStore);
+      // The default model is each person's own (ADR 0023 §3), never the project's.
+      const { defaultModel, ...projectPatch } = patch;
+      if (defaultModel !== undefined) await setOwnDefaultModel(id, viewer, defaultModel);
       let settings: ProjectSettingsRecord | undefined;
       try {
-        settings = await store.updateProjectSettings(id, patch);
+        settings = await store.updateProjectSettings(id, projectPatch);
       } catch (error) {
         if (error instanceof ProjectDefaultModelNotAllowedError) {
           throw new ProjectAgentNotAllowedError(error.model);
         }
         throw error;
       }
-      return settings === undefined ? undefined : publicProjectSettings(settings)!;
+      return settings === undefined
+        ? undefined
+        : {
+            ...publicProjectSettings(settings)!,
+            defaultModel: await ownDefaultModel(viewer, id, settings),
+          };
     },
+    setOwnDefaultModel: (id, viewer, model) => setOwnDefaultModel(id, viewer, model),
   });
 
   const veritySettingsBody = z.object({
@@ -5058,11 +5074,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSessionEverywhere,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
-    resolveProjectModel: async (projectId) => {
+    resolveProjectModel: async (projectId, viewer) => {
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
       const model =
         settings?.allowedAgents == null
-          ? (settings?.defaultModel ?? DEFAULT_MODEL)
+          ? ((await deps.eventStore.userProviderConnections.projectDefaultModel(
+              viewer,
+              projectId,
+            )) ?? DEFAULT_MODEL)
           : resolveProjectDefaultModel(
               await availableModels({ allowLegacyCodexFallback: true }),
               settings,
@@ -5076,12 +5095,42 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // subscription-backed and therefore appear only when their login exists in Verity
   // settings. OpenCode provider-qualified ids still come from the configured backend.
   // This keeps the UI from offering engines that would immediately fail at runtime.
-  const availableModels = async (
-    options: { allowLegacyCodexFallback?: boolean } = {},
-  ): Promise<ModelList> => {
+  /**
+   * Which provider accounts serve a person's turns (ADR 0023 §3): their own, and
+   * the instance logins only for the administrator they belonged to. Without a
+   * person — background work — the instance logins, as before.
+   */
+  const modelAccounts = async (viewer: string | undefined) => {
     const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    const claudeConfigured = (settings?.claudeCodeOauthCredentialsJson ?? '').trim().length > 0;
-    const codexConfigured = (settings?.codexAuthJson ?? '').trim().length > 0;
+    const usesInstance = viewer === undefined || viewer === legacyAdministratorId;
+    const own =
+      viewer === undefined ? [] : await deps.eventStore.userProviderConnections.status(viewer);
+    const owns = (provider: string) => own.some((connection) => connection.provider === provider);
+    const ownOpenCode = own.find((connection) => connection.provider === 'opencode');
+    const instanceOpenCode =
+      settings?.opencodeBaseUrl?.trim() && settings.opencodeApiKey?.trim()
+        ? selectedOpenCodeModels(settings)
+        : [];
+    return {
+      claude:
+        owns('claude') ||
+        (usesInstance && (settings?.claudeCodeOauthCredentialsJson ?? '').trim().length > 0),
+      codex: owns('codex') || (usesInstance && (settings?.codexAuthJson ?? '').trim().length > 0),
+      // A person's own OpenCode provider replaces the instance one for them.
+      openCode:
+        ownOpenCode !== undefined
+          ? (ownOpenCode.models ?? '').split('\n').filter(Boolean)
+          : usesInstance
+            ? instanceOpenCode
+            : [],
+    };
+  };
+  const availableModels = async (
+    options: { allowLegacyCodexFallback?: boolean; viewer?: string | undefined } = {},
+  ): Promise<ModelList> => {
+    const accounts = await modelAccounts(options.viewer);
+    const claudeConfigured = accounts.claude;
+    const codexConfigured = accounts.codex;
     let dynamicModels: string[] = [];
     if (deps.listModels) {
       try {
@@ -5090,6 +5139,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         app.log.error({ err: error }, 'verity: dynamic model list unavailable');
       }
     }
+    // OpenCode models are the person's own provider's, never the instance's for
+    // someone else.
+    dynamicModels = [
+      ...dynamicModels.filter((id) => !id.startsWith('verity/')),
+      ...accounts.openCode.map((model) => `verity/${model}`),
+    ];
     const seen = new Set<string>();
     const merged: string[] = [];
     const codexModels: string[] = [];
@@ -5161,22 +5216,53 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
     return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
   };
-  const isConfiguredProjectSessionModel = async (model: string | undefined): Promise<boolean> => {
+  const isConfiguredProjectSessionModel = async (
+    model: string | undefined,
+    viewer?: string,
+  ): Promise<boolean> => {
     if (!isProjectSessionModel(model)) return false;
     if (model === undefined || !model.startsWith('verity/')) return true;
-    const settings = await veritySettingsStore(deps.eventStore).getVeritySettingsRaw();
-    if (!settings?.opencodeBaseUrl?.trim() || !settings.opencodeApiKey?.trim()) return false;
-    const configured = selectedOpenCodeModels(settings);
-    return configured.includes(model.slice('verity/'.length));
+    return (await modelAccounts(viewer)).openCode.includes(model.slice('verity/'.length));
   };
 
+  /** A person's own default model for a project, hidden while the agent rule excludes it. */
+  const ownDefaultModel = async (
+    viewer: string,
+    projectId: string,
+    settings: Parameters<typeof isModelAllowedForProject>[1],
+  ): Promise<string | null> => {
+    const model = await deps.eventStore.userProviderConnections.projectDefaultModel(
+      viewer,
+      projectId,
+    );
+    return model !== null && isModelAllowedForProject(model, settings) ? model : null;
+  };
+  /** Sets a person's own default model for a project, within the project's agent rule. */
+  const setOwnDefaultModel = async (
+    projectId: string,
+    viewer: string,
+    model: string | null,
+  ): Promise<{ defaultModel: string | null }> => {
+    model = model?.trim() || null;
+    if (model !== null) {
+      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      if (!isModelAllowedForProject(model, settings)) throw new ProjectAgentNotAllowedError(model);
+    }
+    await deps.eventStore.userProviderConnections.setProjectDefaultModel(viewer, projectId, model);
+    // The project page reads the default from the project's settings, which a
+    // project nobody has configured yet does not have.
+    const settingsStore = projectSettingsStore(deps.eventStore);
+    if ((await settingsStore.getProjectSettingsRaw(projectId)) === undefined)
+      await settingsStore.updateProjectSettings(projectId, {});
+    return { defaultModel: model };
+  };
   registerSessionReadRoutes(app, {
     getGoogleStatus: async (id, viewer) =>
       (await deps.eventStore.getSession(id))
         ? sessionGoogleStatus(deps.eventStore, id, viewer)
         : undefined,
-    listModels: async (projectId) => {
-      const available = await availableModels();
+    listModels: async (projectId, viewer) => {
+      const available = await availableModels({ viewer });
       if (projectId === undefined) return available;
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
       return filterModelListForProject(available, settings, isProjectSessionModel);

@@ -823,6 +823,7 @@ interface UserProjectPreferencesTable {
   user_id: string;
   project_id: string;
   default_model: ColumnType<string | null, string | null | undefined, string | null>;
+  last_model: ColumnType<string | null, string | null | undefined, string | null>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 

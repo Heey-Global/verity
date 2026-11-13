@@ -991,6 +991,49 @@ describe('GET /models (#143)', () => {
     expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-5-5']);
   });
 
+  // A member's turns run only on their own accounts, so their model list must
+  // offer only what those accounts serve: never the instance logins, which are
+  // the administrator's, and their own OpenCode provider's models instead.
+  it("lists only the signed-in person's own accounts for a member", async () => {
+    await configureAgentLogins({ claude: true, codex: true });
+    await ctx.store.updateVeritySettings({
+      opencodeBaseUrl: 'https://admin-llm.example/v1',
+      opencodeApiKey: 'admin-key',
+      opencodeModels: 'admin-model',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.5', 'verity/admin-model']),
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const nothing = await asLena.inject({ method: 'GET', url: '/models' });
+      expect(nothing.json<{ models: string[] }>().models).toEqual([]);
+
+      await ctx.store.userProviderConnections.set('lena', 'codex', { credential: '{}' });
+      await ctx.store.userProviderConnections.set('lena', 'opencode', {
+        credential: 'lena-key',
+        baseUrl: 'https://lena-llm.example/v1',
+        models: 'lena-model',
+      });
+      const own = await asLena.inject({ method: 'GET', url: '/models' });
+      expect(own.json<{ models: string[] }>().models).toEqual([
+        'codex/gpt-5.5',
+        'verity/lena-model',
+      ]);
+    } finally {
+      await asLena.close();
+    }
+  });
+
   it('returns Codex only when only Codex is logged in', async () => {
     await configureAgentLogins({ codex: true });
     const withModels = buildServer({

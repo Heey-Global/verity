@@ -5907,3 +5907,18 @@ migrations['0215_user_provider_connections'] = {
     await sql`drop table user_provider_connections`.execute(db);
   },
 };
+
+migrations['0216_user_project_last_model'] = {
+  // The model a person last started work with in a project, so their next session
+  // preselects it when their own project default is not usable for them. Also
+  // retires the project-wide default, which each person now holds for themselves.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table user_project_preferences add column last_model text`.execute(db);
+    // 0215 copied the project default to the administrator, whose it was. Left in
+    // place it would keep choosing a model for everyone else in the project.
+    await sql`update project_settings set default_model = null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table user_project_preferences drop column last_model`.execute(db);
+  },
+};

@@ -67,6 +67,11 @@ it('keeps a default model per person and project', async () => {
   await connections.setProjectDefaultModel('lena', 'p1', 'gpt-5.5');
   expect(await connections.projectDefaultModel('lena', 'p1')).toBe('gpt-5.5');
   expect(await connections.projectDefaultModel(ADMIN, 'p1')).toBeNull();
+  // The last model is kept beside the default without replacing it.
+  await connections.setLastModel('lena', 'p1', 'claude-opus');
+  expect(await connections.lastModel('lena', 'p1')).toBe('claude-opus');
+  expect(await connections.projectDefaultModel('lena', 'p1')).toBe('gpt-5.5');
+  expect(await connections.lastModel(ADMIN, 'p1')).toBeNull();
 });
 
 // The project's default model so far was set by the administrator; it becomes
@@ -95,6 +100,10 @@ it("makes the existing project default model the administrator's own on upgrade"
     const rows = await sql<{ user_id: string; default_model: string }>`
       select user_id, default_model from user_project_preferences`.execute(raw.db);
     expect(rows.rows).toEqual([{ user_id: ADMIN, default_model: 'claude-opus' }]);
+    // Left on the project, it would keep choosing a model for everyone else.
+    const project = await sql<{ default_model: string | null }>`
+      select default_model from project_settings where project_id = 'p1'`.execute(raw.db);
+    expect(project.rows).toEqual([{ default_model: null }]);
   } finally {
     await raw.close();
   }

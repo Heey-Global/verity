@@ -10,6 +10,15 @@ import {
   CONTROL_PLANE_PROJECT_REPO,
 } from './control-plane-project.js';
 import { createGitWorktreeProvisioner, type WorktreeProvisioner } from './worktree.js';
+import { legacyAdministratorId } from './view-state-routes.js';
+
+/** The first candidate that is usable, or undefined. */
+export function preselectModel(
+  candidates: ReadonlyArray<string | null>,
+  usable: (model: string) => boolean,
+): string | undefined {
+  return candidates.find((model): model is string => model !== null && usable(model));
+}
 import { projectClonePath } from './provisioner.js';
 import {
   isModelAllowedForProject,
@@ -39,7 +48,8 @@ export interface SessionCreateRouteDeps extends Pick<
     getProjectSettings: (id: string) => Promise<ProjectSettingsRecord | undefined>;
   };
   worktrees: WorktreeProvisioner;
-  isConfiguredProjectSessionModel: (model: string | undefined) => Promise<boolean>;
+  /** Whether `model` is usable for a project session of `viewer`, on their own accounts. */
+  isConfiguredProjectSessionModel: (model: string | undefined, viewer?: string) => Promise<boolean>;
   advancedModeEnabled: () => Promise<boolean>;
   ensureVerityControlProject: () => Promise<ProjectRecord>;
   projectsBeingDeleted: ReadonlySet<string>;
@@ -53,6 +63,7 @@ export interface SessionCreateRouteDeps extends Pick<
   isProjectSessionModel: (model: string | undefined) => boolean;
   availableModels: (options: {
     allowLegacyCodexFallback?: boolean;
+    viewer?: string | undefined;
   }) => Promise<{ models: string[]; default?: string | undefined }>;
   deleteSessionEverywhere: (id: string) => Promise<boolean>;
   PROJECT_MODEL_ERROR: string;
@@ -63,7 +74,7 @@ export interface SessionCreateRouteDeps extends Pick<
 
 /** What the spawn logic needs from an HTTP request: only its logger. */
 interface SpawnRequest {
-  log: Pick<FastifyBaseLogger, 'error'>;
+  log: Pick<FastifyBaseLogger, 'error' | 'warn'>;
   /** The authenticated user, recorded as the initiator of any image build. */
   localUserId?: string | null;
 }
@@ -121,6 +132,8 @@ export function registerSessionCreateRoute(
     let projectSettings: ProjectSettingsRecord | undefined;
     let projectWorktrees: WorktreeProvisioner | undefined;
     let effectiveModel = body.model;
+    // Models come from the accounts that serve this person's own turns.
+    const viewer = request.localUserId ?? legacyAdministratorId;
     if (
       body.project === undefined &&
       body.projectId === undefined &&
@@ -130,7 +143,10 @@ export function registerSessionCreateRoute(
       return { error: 'OpenCode sessions require a project sandbox' };
     }
     if (body.project !== undefined || body.projectId !== undefined) {
-      if (body.model !== undefined && !(await deps.isConfiguredProjectSessionModel(body.model))) {
+      if (
+        body.model !== undefined &&
+        !(await deps.isConfiguredProjectSessionModel(body.model, viewer))
+      ) {
         reply.code(400);
         return { error: deps.PROJECT_MODEL_ERROR };
       }
@@ -162,7 +178,7 @@ export function registerSessionCreateRoute(
           effectiveModel =
             body.model ??
             resolveProjectDefaultModel(
-              await deps.availableModels({ allowLegacyCodexFallback: true }),
+              await deps.availableModels({ allowLegacyCodexFallback: true, viewer }),
               projectSettings,
               deps.isProjectSessionModel,
             );
@@ -171,7 +187,7 @@ export function registerSessionCreateRoute(
             return { error: new NoAllowedAgentError(allowedAgents).message };
           }
         }
-        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
+        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel, viewer))) {
           reply.code(400);
           return { error: deps.PROJECT_MODEL_ERROR };
         }
@@ -236,15 +252,28 @@ export function registerSessionCreateRoute(
         admitted.release = deps.beginProjectSpawn(project.id);
         const projectStore = deps.projectSettingsStore();
         projectSettings = await projectStore.getProjectSettings(project.id);
-        // A stored default the project's agent rule excludes falls through to the
-        // resolver below rather than failing every spawn.
-        const storedDefault = projectSettings?.defaultModel ?? undefined;
-        effectiveModel =
-          body.model ??
-          (storedDefault !== undefined && isModelAllowedForProject(storedDefault, projectSettings)
-            ? storedDefault
-            : undefined);
-        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel))) {
+        // The person's own project default, else the model they last started
+        // with, else the first their accounts offer. One they cannot use, or the
+        // project's agent rule excludes, falls through rather than failing.
+        if (body.model === undefined) {
+          const available = await deps.availableModels({
+            allowLegacyCodexFallback: true,
+            viewer,
+          });
+          const settings = projectSettings;
+          effectiveModel = preselectModel(
+            [
+              await deps.eventStore.userProviderConnections.projectDefaultModel(viewer, project.id),
+              await deps.eventStore.userProviderConnections.lastModel(viewer, project.id),
+              available.default ?? null,
+            ],
+            (model) =>
+              available.models.includes(model) &&
+              deps.isProjectSessionModel(model) &&
+              isModelAllowedForProject(model, settings),
+          );
+        }
+        if (!(await deps.isConfiguredProjectSessionModel(effectiveModel, viewer))) {
           reply.code(400);
           return { error: deps.PROJECT_MODEL_ERROR };
         }
@@ -260,7 +289,7 @@ export function registerSessionCreateRoute(
         // silently starting on an agent the operator excluded.
         const allowedAgents = projectSettings?.allowedAgents ?? null;
         if (effectiveModel === undefined && allowedAgents !== null) {
-          const available = await deps.availableModels({ allowLegacyCodexFallback: true });
+          const available = await deps.availableModels({ allowLegacyCodexFallback: true, viewer });
           const remembered = await deps.eventStore.getLastCreatedSessionModel(project.id);
           effectiveModel =
             remembered !== undefined &&
@@ -375,7 +404,7 @@ export function registerSessionCreateRoute(
       allocatedWorktree = projectWorktrees;
     }
     if (effectiveModel === undefined) {
-      const available = await deps.availableModels({ allowLegacyCodexFallback: true });
+      const available = await deps.availableModels({ allowLegacyCodexFallback: true, viewer });
       const remembered = await deps.eventStore.getLastCreatedSessionModel(projectId ?? null);
       const lastUsed =
         remembered !== undefined && available.models.includes(remembered) ? remembered : undefined;
@@ -400,6 +429,12 @@ export function registerSessionCreateRoute(
         ...(displayName ? { name: displayName } : {}),
         ...(projectId !== undefined ? { projectId } : {}),
       });
+      if (projectId !== undefined)
+        await deps.eventStore.userProviderConnections
+          .setLastModel(viewer, projectId, effectiveModel ?? deps.defaultModel)
+          .catch((error: unknown) =>
+            request.log.warn({ err: error }, 'verity: could not remember the last model'),
+          );
     } catch (error) {
       await deps.deleteSessionEverywhere(sessionId).catch(() => false);
       if (

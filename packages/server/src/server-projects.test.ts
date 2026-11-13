@@ -1764,8 +1764,13 @@ describe('GET /projects/:id (#174)', () => {
     await ctx.store.updateProjectSettings('p-detail', {
       dopplerTokenRef: 'doppler://verity/prod',
       defaultBranch: 'main',
-      defaultModel: 'claude-sonnet-4-6',
     });
+    // The default model is each person's own; this request is the administrator's.
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      '00000000-0000-4000-8000-000000000001',
+      'p-detail',
+      'claude-sonnet-4-6',
+    );
     await ctx.store.appendEvent('s-project', { t: 'status', state: 'running' });
     await ctx.store.createSession({
       sessionId: 's-other',
@@ -1801,6 +1806,46 @@ describe('GET /projects/:id (#174)', () => {
       ],
     });
     expect(JSON.stringify(res.json())).not.toContain('doppler://verity/prod');
+  });
+
+  // Each person keeps their own default model for a project; setting it needs no
+  // management right, and nobody else's view of the project changes.
+  it("keeps each person's own project default model", async () => {
+    await ctx.store.upsertProject({
+      id: 'p-own-default',
+      owner: 'heey-global',
+      repo: 'own-default',
+      containerName: 'dev-heey-global-own-default',
+      state: 'active',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const asLena = buildServer({ eventStore: ctx.store, bus, conductor });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const set = await asLena.inject({
+        method: 'PUT',
+        url: '/projects/p-own-default/default-model',
+        payload: { model: 'codex/gpt-5.5' },
+      });
+      expect(set.statusCode).toBe(200);
+      expect(set.json()).toEqual({ defaultModel: 'codex/gpt-5.5' });
+      const hers = await asLena.inject({ method: 'GET', url: '/projects/p-own-default' });
+      expect(
+        hers.json<{ settings: { defaultModel: string | null } | null }>().settings,
+      ).toMatchObject({ defaultModel: 'codex/gpt-5.5' });
+      const admins = await app.inject({ method: 'GET', url: '/projects/p-own-default' });
+      expect(
+        admins.json<{ settings: { defaultModel?: string | null } | null }>().settings
+          ?.defaultModel ?? null,
+      ).toBeNull();
+    } finally {
+      await asLena.close();
+    }
   });
 
   it('returns null settings before a project has saved settings', async () => {
