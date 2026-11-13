@@ -13,6 +13,10 @@ import {
 } from './brokered-http-stream.js';
 
 const PREFIX = '/internal/package-artifacts/';
+/** Concurrent registry metadata lookups across all verifications; others wait. */
+export const PUBLICATION_METADATA_SLOTS = 6;
+/** Time one metadata lookup may take once it holds a slot; queueing does not count. */
+export const PUBLICATION_LOOKUP_TIMEOUT_MS = 30_000;
 const METADATA_LIMIT = 2 * 1024 ** 2;
 const ARTIFACT_LIMIT = 32 * 1024 ** 2;
 interface Artifact {
@@ -127,6 +131,39 @@ export function createPackageArtifactBroker(
 ) {
   const transport = options.transport ?? brokeredHttpStreamTransport;
   let inFlight = 0;
+  // Verification fans out across many names, so it queues for a slot instead of
+  // failing with 429 like interactive artifact requests.
+  let metadataInFlight = 0;
+  const metadataWaiters: (() => void)[] = [];
+  const acquireMetadataSlot = async (signal: AbortSignal): Promise<() => void> => {
+    while (metadataInFlight >= PUBLICATION_METADATA_SLOTS) {
+      if (signal.aborted) reject(401);
+      await new Promise<void>((wake) => {
+        // Remove the queued entry itself on abort; a stale entry would later absorb
+        // the wake-up of a free slot and leave a live waiter parked.
+        const entry = (): void => {
+          signal.removeEventListener('abort', onAbort);
+          wake();
+        };
+        const onAbort = (): void => {
+          const index = metadataWaiters.indexOf(entry);
+          if (index >= 0) metadataWaiters.splice(index, 1);
+          wake();
+        };
+        metadataWaiters.push(entry);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+    if (signal.aborted) reject(401);
+    metadataInFlight++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      metadataInFlight--;
+      metadataWaiters.shift()?.();
+    };
+  };
   const selectorFor = (
     ecosystem: 'npm' | 'pypi',
     name: string,
@@ -152,7 +189,8 @@ export function createPackageArtifactBroker(
         hostname: url.hostname,
         path: url.pathname,
         method: 'GET',
-        headers: { accept: 'application/json', 'accept-encoding': 'identity' },
+        // Full packuments compress about eightfold; the projection bounds both sizes.
+        headers: { accept: 'application/json', 'accept-encoding': 'gzip' },
         body: Buffer.alloc(0),
         signal,
       });
@@ -196,14 +234,15 @@ export function createPackageArtifactBroker(
         versions.some((version) => !/^[0-9A-Za-z.+_-]{1,128}$/u.test(version))
       )
         reject();
-      if (++inFlight > 2) {
-        inFlight--;
-        reject(429);
-      }
+      const release = await acquireMetadataSlot(signal);
       try {
-        return await project(name, versions, signal, authorized);
+        const bounded = AbortSignal.any([
+          signal,
+          AbortSignal.timeout(PUBLICATION_LOOKUP_TIMEOUT_MS),
+        ]);
+        return await project(name, versions, bounded, authorized);
       } finally {
-        inFlight--;
+        release();
       }
     },
     async advisories(

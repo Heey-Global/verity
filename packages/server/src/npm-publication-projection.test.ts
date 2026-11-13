@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
 import type { IncomingMessage } from 'node:http';
 import { expect, it } from 'vitest';
 import { MAX_NPM_PUBLICATION_BYTES, projectNpmPublications } from './npm-publication-projection.js';
@@ -109,6 +110,9 @@ it('bounds nesting, input bytes and content encodings and rejects invalid UTF-8'
     response(['{"name":"example","unused":' + '['.repeat(65) + '0' + ']'.repeat(65) + '}']),
     response(['{}'], { 'content-length': String(MAX_NPM_PUBLICATION_BYTES + 1) }),
     response(['{}'], { 'content-encoding': 'gzip' }),
+    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'br' }),
+    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'deflate' }),
+    response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'gzip, gzip' }),
     response([Buffer.from([255])]),
   ])
     await expect(projectNpmPublications(input, 'example', new Set(), signal)).rejects.toThrow();
@@ -134,4 +138,44 @@ it('destroys the source when the generation is aborted', async () => {
     projectNpmPublications(input, 'example', new Set(['1.0.0']), controller.signal),
   ).rejects.toThrow();
   expect(input.destroyed).toBe(true);
+});
+
+it('projects facts from a gzip-compressed registry document', async () => {
+  const input = response([gzipSync(JSON.stringify(facts))], { 'content-encoding': 'gzip' });
+  const result = await projectNpmPublications(input, 'example', new Set(['1.0.0']), signal);
+  expect(result.times).toEqual(new Map([['1.0.0', '2020-01-01T00:00:00Z']]));
+  expect(input.destroyed).toBe(true);
+});
+
+it('bounds the decompressed size of a small gzip body', async () => {
+  // A compressed body far below the transfer budget can expand past it. Only the
+  // decompressed count stops that; the compressed count never would.
+  const document = Buffer.concat([
+    Buffer.from('{"name":"example","description":"'),
+    Buffer.alloc(MAX_NPM_PUBLICATION_BYTES + 1024, 97),
+    Buffer.from('"}'),
+  ]);
+  const compressed = gzipSync(document);
+  expect(compressed.length).toBeLessThan(MAX_NPM_PUBLICATION_BYTES / 64);
+  await expect(
+    projectNpmPublications(
+      response([compressed], { 'content-encoding': 'gzip' }),
+      'example',
+      new Set(),
+      signal,
+    ),
+  ).rejects.toThrow();
+}, 60_000);
+
+it('rejects a corrupt gzip body', async () => {
+  const compressed = gzipSync(JSON.stringify(facts));
+  compressed[compressed.length - 6] ^= 0xff;
+  await expect(
+    projectNpmPublications(
+      response([compressed], { 'content-encoding': 'gzip' }),
+      'example',
+      new Set(['1.0.0']),
+      signal,
+    ),
+  ).rejects.toThrow();
 });

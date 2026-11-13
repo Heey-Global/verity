@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import {
   createPackageArtifactBroker,
   PACKAGE_ARTIFACT_BASE_URL,
+  PUBLICATION_METADATA_SLOTS,
 } from './package-artifact-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
@@ -403,4 +404,65 @@ it('keeps npm audit on a fixed schema-validated endpoint without publishing or r
   await expect(
     f.broker.advisories({ example: ['1.0.0'] }, f.signal, f.authorized),
   ).rejects.toMatchObject({ status: 502 });
+});
+
+it('requests compressed publication metadata', async () => {
+  const f = fixture();
+  await f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  expect(f.transport.mock.calls[0]![0].headers['accept-encoding']).toBe('gzip');
+});
+
+it('queues publication lookups beyond the metadata slots instead of rejecting them', async () => {
+  // Verification fans out over many names. Rejecting the overflow with 429 would
+  // fail an install whenever two projects verify at the same time.
+  const f = fixture();
+  let active = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  f.transport.mockImplementation(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((done) => releases.push(done));
+    active--;
+    return response(manifest());
+  });
+  const lookups = Array.from({ length: PUBLICATION_METADATA_SLOTS + 3 }, () =>
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  );
+  let settled = false;
+  const all = Promise.all(lookups).finally(() => {
+    settled = true;
+  });
+  while (!settled) {
+    await new Promise((done) => setTimeout(done, 5));
+    releases.splice(0).forEach((release) => release());
+  }
+  const results = await all;
+  expect(results.every((result) => result.versions.has('1.0.0'))).toBe(true);
+  expect(peak).toBe(PUBLICATION_METADATA_SLOTS);
+});
+
+it('stops waiting for a metadata slot when the request is aborted', async () => {
+  const f = fixture();
+  const releases: (() => void)[] = [];
+  f.transport.mockImplementation(async () => {
+    await new Promise<void>((done) => releases.push(done));
+    return response(manifest());
+  });
+  const held = Array.from({ length: PUBLICATION_METADATA_SLOTS }, () =>
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  );
+  const controller = new AbortController();
+  const waiting = f.broker.publicationTimes('example', ['1.0.0'], controller.signal, f.authorized);
+  // A live lookup queued behind the aborted one must get the next free slot.
+  const live = f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  controller.abort();
+  await expect(waiting).rejects.toMatchObject({ status: 401 });
+  await new Promise((done) => setTimeout(done, 5));
+  releases.shift()!();
+  await new Promise((done) => setTimeout(done, 5));
+  // The freed slot went to the live lookup, which is now waiting on the registry.
+  expect(releases).toHaveLength(PUBLICATION_METADATA_SLOTS);
+  releases.splice(0).forEach((release) => release());
+  await Promise.all([...held, live]);
 });
