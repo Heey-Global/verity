@@ -335,6 +335,30 @@ describe('ConnectionMonitor robustness', () => {
     monitor.reset();
   });
 
+  it('takes a 502 from a relay in front of the server for the server still away', async () => {
+    const clock = fakeTimers();
+    const monitor = new ConnectionMonitor({
+      probe: () => Promise.reject(new VerityApiError(502, 'Bad Gateway')),
+      timers: clock.timers,
+    });
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    clock.advance(2_000);
+    await flush();
+    expect(monitor.getState().kind).toBe('unreachable');
+    monitor.reset();
+  });
+
+  it('does not turn an update into an outage on a request failing on its way', () => {
+    const monitor = new ConnectionMonitor();
+    monitor.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+    monitor.reportFailure('unreachable', 'Network request failed');
+    expect(monitor.getState()).toMatchObject({
+      kind: 'maintenance',
+      details: SERVER_MAINTENANCE_MESSAGE,
+    });
+    monitor.reset();
+  });
+
   it('keeps a throwing listener from stopping the others', async () => {
     const monitor = new ConnectionMonitor({ probe: () => Promise.resolve() });
     const after = vi.fn();

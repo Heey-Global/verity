@@ -38,10 +38,16 @@ export function ProjectInquiryCards({
   const items = (resource.data ?? []).filter(
     (item) => projectId === undefined || item.targetProjectId === projectId,
   );
-  // A failed permissions query must remain visible: otherwise a pending request looks absent.
+  // A failed permissions query must remain visible: otherwise a pending request
+  // looks absent. While the header's bar shows an outage, it says so quietly,
+  // without the raw error or a retry the bar already offers.
   return (
     <>
-      {resource.error && !hidesError ? (
+      {resource.error && hidesError ? (
+        <Card stacked>
+          <Text variant="subtitle">Project requests load once the server is back.</Text>
+        </Card>
+      ) : resource.error ? (
         <Card stacked>
           <Text tone="attention">{resource.error}</Text>
           <Button label="Retry project requests" variant="text" onPress={resource.reload} />

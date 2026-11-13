@@ -106,3 +106,25 @@ it('requests pending approvals within the displayed project before the server li
     expect(listProjectInquiries).toHaveBeenCalledWith(undefined, 'target-project'),
   );
 });
+
+// A failed query must stay visible, or a pending approval looks absent. During
+// an outage the header's bar owns the error, but the card still says the
+// requests are missing — just without the raw 503 and a second retry.
+it('still says requests are missing while the server is away', async () => {
+  const { SERVER_MAINTENANCE_MESSAGE, VerityApiError } =
+    jest.requireActual<typeof import('@verity/mobile')>('@verity/mobile');
+  const { serverConnection } =
+    jest.requireActual<typeof import('../lib/serverConnection')>('../lib/serverConnection');
+  serverConnection.reportFailure('maintenance', SERVER_MAINTENANCE_MESSAGE);
+  const client = {
+    listProjectInquiries: jest
+      .fn()
+      .mockRejectedValue(new VerityApiError(503, SERVER_MAINTENANCE_MESSAGE)),
+  } as unknown as VerityClient;
+  const view = render(<ProjectInquiryCards client={client} sessionId="target" />);
+  await waitFor(() =>
+    expect(view.getByText('Project requests load once the server is back.')).toBeTruthy(),
+  );
+  expect(view.queryByText(SERVER_MAINTENANCE_MESSAGE)).toBeNull();
+  serverConnection.reset();
+});

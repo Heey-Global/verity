@@ -376,6 +376,6 @@ serverConnection.onRecovered(() => {
   if (!settingsFailed && !secretStatusFailed) return;
   const client = loadClient;
   if (client === undefined) return;
-  if (settingsFailed) void loadVeritySettings(client);
+  if (veritySettingsLoadFailed()) void loadVeritySettings(client);
   if (secretStatusFailed) void refreshSecretStatus(client);
 });

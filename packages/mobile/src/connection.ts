@@ -94,6 +94,8 @@ export type ServerConnectionState =
 export const CONNECTION_RETRY_DELAYS: readonly number[] = [2_000, 4_000, 8_000, 15_000];
 
 const CHECK_TIMED_OUT = 'Connection check timed out';
+/** Statuses a check receives from a hop in front of the server, not from it. */
+const PROXY_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
 /** How long one automatic check may take before it counts as unreachable (ms). */
 export const CONNECTION_CHECK_TIMEOUT_MS = 10_000;
@@ -242,7 +244,10 @@ export class ConnectionMonitor implements ConnectionReporter {
       this.enter(kind, details);
       return;
     }
-    // Already disrupted: keep the schedule, refresh what is shown.
+    // Already disrupted: keep the schedule, refresh what is shown. A request
+    // failing on its way does not turn an update into an outage; the next
+    // check says which it is.
+    if (this.state.kind === 'maintenance' && kind === 'unreachable') return;
     if (this.state.kind !== kind || this.state.details !== details) {
       this.state = { ...this.state, kind, details };
       this.emit();
@@ -317,9 +322,15 @@ export class ConnectionMonitor implements ConnectionReporter {
       this.recover();
       return;
     }
-    // Only an answer from the server proves it is there; any other rejection —
-    // whatever its wording — is the transport failing, as `VerityClient` reports it.
-    const answered = failure instanceof Error && failure.name === 'VerityApiError';
+    // Only an answer from the server proves it is there; any other rejection,
+    // whatever its wording, is the transport failing, as `VerityClient` reports
+    // it. The liveness route never answers 502/504 itself (those are its
+    // upstream routes' words), so there they come from a relay in front of a
+    // server still away.
+    const answered =
+      failure instanceof Error &&
+      failure.name === 'VerityApiError' &&
+      !PROXY_STATUSES.has((failure as Error & { status?: number }).status ?? 0);
     const kind = answered ? connectionFailureKind(failure) : 'unreachable';
     if (kind === undefined) {
       // The server answered, just not with what the probe wanted: it is there.
