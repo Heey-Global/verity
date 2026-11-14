@@ -1256,7 +1256,6 @@ export async function runAcpTurn(
                 phase: 'started',
                 description: 'Waiting for background work',
               });
-              acceptingSteering = false;
               sendHeldPrompt = (message) => {
                 background.beginPrompt();
                 void agent

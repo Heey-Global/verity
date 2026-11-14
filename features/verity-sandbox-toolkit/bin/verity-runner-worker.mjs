@@ -30570,6 +30570,9 @@ var BackgroundWork = class {
   lastActivity = Date.now();
   notify;
   wakeExplicit;
+  // A wake that arrived while no wait was registered — for example between a
+  // wait resolving and the caller's next one. Kept until a wait consumes it.
+  wakePending = false;
   /** Record the lifecycle facts carried by one session update's `_meta`. */
   observe(meta) {
     for (const signal of lifecycleSignalsFromMeta(meta))
@@ -30616,6 +30619,7 @@ var BackgroundWork = class {
   }
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
   wake() {
+    this.wakePending = true;
     this.changed(true);
   }
   /**
@@ -30624,6 +30628,10 @@ var BackgroundWork = class {
    */
   async waitUntilQuiet(quietMs, deadline) {
     for (; ; ) {
+      if (this.wakePending) {
+        this.wakePending = false;
+        return "woken";
+      }
       const now = Date.now();
       if (now >= deadline)
         return "deadline";
@@ -30636,14 +30644,16 @@ var BackgroundWork = class {
         const finish = (explicit) => {
           clearTimeout(timer);
           this.notify = void 0;
+          this.wakeExplicit = void 0;
           resolve4(explicit);
         };
         this.notify = () => finish(false);
         this.wakeExplicit = () => finish(true);
       });
-      this.wakeExplicit = void 0;
-      if (woken)
+      if (woken) {
+        this.wakePending = false;
         return "woken";
+      }
     }
   }
   changed(explicit = false) {
@@ -31637,7 +31647,6 @@ async function runAcpTurn(opts, profile) {
             phase: "started",
             description: "Waiting for background work"
           });
-          acceptingSteering = false;
           sendHeldPrompt = (message) => {
             background.beginPrompt();
             void agent.request(methods.agent.session.prompt, {

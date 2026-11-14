@@ -297,17 +297,18 @@ source = replaceOnce(
                                 await asyncTasks.backgroundTasksChanged(message.tasks);`,
   `                            case "background_tasks_changed": {
                                 await asyncTasks.backgroundTasksChanged(message.tasks);
-                                if (Array.isArray(message.tasks)) {
+                                // Sent whole or not at all: a level replaces Verity's
+                                // task set, so dropping an entry it cannot read would
+                                // end a held turn under work that is still running.
+                                const verityLive = Array.isArray(message.tasks)
+                                    ? message.tasks.map((task) => task?.task_id)
+                                    : undefined;
+                                if (verityLive?.every((id) => typeof id === "string" && id.length > 0)) {
                                     await sendUpdate({
                                         sessionId: message.session_id,
                                         update: {
                                             sessionUpdate: "session_info_update",
-                                            _meta: { verity: { lifecycle: {
-                                                type: "background",
-                                                live: message.tasks
-                                                    .map((task) => task?.task_id)
-                                                    .filter((id) => typeof id === "string" && id.length > 0),
-                                            } } },
+                                            _meta: { verity: { lifecycle: { type: "background", live: verityLive } } },
                                         },
                                     });
                                 }`,

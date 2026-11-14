@@ -4508,11 +4508,16 @@ export class Conductor {
       outcome.status === 'live' && !awaitingOperator && !lifecycleChange
         ? (seen?.liveProbes ?? 0) + 1
         : 0;
-    const stalled =
+    // Read once, and only when the ordinary bound is reached: a held turn is
+    // legitimately silent until its backend's hold limit.
+    const held =
       outcome.status === 'live' &&
       liveProbes >= TURN_LIVENESS_STALLED_WINDOWS &&
-      (liveProbes >= TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS ||
-        !(await this.turnHeldForBackgroundWork(marker)));
+      (await this.turnHeldForBackgroundWork(marker));
+    const stalled =
+      outcome.status === 'live' &&
+      liveProbes >=
+        (held ? TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS : TURN_LIVENESS_STALLED_WINDOWS);
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });
       return;
@@ -4534,11 +4539,7 @@ export class Conductor {
       const stalledNotice: AgentEvent = {
         t: 'notice',
         role: 'agent',
-        text:
-          liveProbes >= TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS &&
-          (await this.turnHeldForBackgroundWork(marker))
-            ? STALLED_HELD_RUNNER_NOTICE
-            : STALLED_RUNNER_NOTICE,
+        text: held ? STALLED_HELD_RUNNER_NOTICE : STALLED_RUNNER_NOTICE,
       };
       // Atomically claim the still-silent transcript and close its frame stream,
       // but do not publish yet: every abort path removes exactly this fence+notice.

@@ -43,6 +43,9 @@ export class BackgroundWork {
   private lastActivity = Date.now();
   private notify: (() => void) | undefined;
   private wakeExplicit: (() => void) | undefined;
+  // A wake that arrived while no wait was registered — for example between a
+  // wait resolving and the caller's next one. Kept until a wait consumes it.
+  private wakePending = false;
 
   /** Record the lifecycle facts carried by one session update's `_meta`. */
   observe(meta: { [key: string]: unknown } | null | undefined): void {
@@ -94,6 +97,7 @@ export class BackgroundWork {
 
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
   wake(): void {
+    this.wakePending = true;
     this.changed(true);
   }
 
@@ -103,6 +107,10 @@ export class BackgroundWork {
    */
   async waitUntilQuiet(quietMs: number, deadline: number): Promise<BackgroundHoldOutcome> {
     for (;;) {
+      if (this.wakePending) {
+        this.wakePending = false;
+        return 'woken';
+      }
       const now = Date.now();
       if (now >= deadline) return 'deadline';
       const quietLeft = this.lastActivity + quietMs - now;
@@ -113,13 +121,16 @@ export class BackgroundWork {
         const finish = (explicit: boolean): void => {
           clearTimeout(timer);
           this.notify = undefined;
+          this.wakeExplicit = undefined;
           resolve(explicit);
         };
         this.notify = () => finish(false);
         this.wakeExplicit = () => finish(true);
       });
-      this.wakeExplicit = undefined;
-      if (woken) return 'woken';
+      if (woken) {
+        this.wakePending = false;
+        return 'woken';
+      }
     }
   }
 

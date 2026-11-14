@@ -104,10 +104,55 @@ describe('Claude ACP structured lifecycle feature patch', () => {
     expect(end.slice(0, end.indexOf('\n    }'))).toMatch(
       /this\.foregroundWork\.delete\(sessionId\);\s+if \(owner === AUTONOMOUS_CYCLE\)\s+void this\.client\.sessionUpdate\(\{[\s\S]*type: "cycle", phase: "ended"/,
     );
-    const level = patched.slice(patched.indexOf('case "background_tasks_changed":'));
-    expect(level.slice(0, level.indexOf('break;'))).toMatch(
-      /type: "background",\s+live: message\.tasks\s+\.map\(\(task\) => task\?\.task_id\)/,
+    // The level is executed, not matched: run the patched case against recorded
+    // collaborators with the task shape the SDK sends.
+    const caseStart = patched.indexOf('case "background_tasks_changed": {');
+    const caseEnd = patched.indexOf('break;', caseStart);
+    const levelDir = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-level-'));
+    const levelPath = path.join(levelDir, 'level.mjs');
+    await writeFile(
+      levelPath,
+      `export default async (asyncTasks, sendUpdate, message) => {\nswitch (message.type) {\n${patched.slice(caseStart, caseEnd)}break;\n}\n}\n}\n`,
     );
+    const { default: runLevel } = (await import(pathToFileURL(levelPath).href)) as {
+      default: (
+        asyncTasks: { backgroundTasksChanged(tasks: unknown): Promise<void> },
+        sendUpdate: (notification: unknown) => Promise<void>,
+        message: { type: string; session_id: string; tasks: unknown },
+      ) => Promise<void>;
+    };
+    const levels: unknown[] = [];
+    const level = async (tasks: unknown): Promise<void> => {
+      await runLevel(
+        { backgroundTasksChanged: async () => undefined },
+        async (notification) => {
+          levels.push(notification);
+        },
+        { type: 'background_tasks_changed', session_id: 'sdk-session', tasks },
+      );
+    };
+    await level([{ task_id: 'bash-1', task_type: 'local_bash' }, { task_id: 'agent-2' }]);
+    await level([]);
+    // Unreadable entries withhold the level whole: a shortened list would read
+    // as "that work ended" and release a held turn under running work.
+    await level([{ task_id: 'bash-1' }, { id: 'renamed-field' }]);
+    await level(undefined);
+    expect(levels).toEqual([
+      {
+        sessionId: 'sdk-session',
+        update: {
+          sessionUpdate: 'session_info_update',
+          _meta: { verity: { lifecycle: { type: 'background', live: ['bash-1', 'agent-2'] } } },
+        },
+      },
+      {
+        sessionId: 'sdk-session',
+        update: {
+          sessionUpdate: 'session_info_update',
+          _meta: { verity: { lifecycle: { type: 'background', live: [] } } },
+        },
+      },
+    ]);
     // The emitted code has to run, not just match: evaluate the patched methods
     // against a recording client and check the signals they send.
     const sent: unknown[] = [];
