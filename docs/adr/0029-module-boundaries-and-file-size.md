@@ -83,6 +83,10 @@ raised entries, so a file cannot grow together with its entry. CI's lint job
 uses a shallow checkout without that base; there, a raised or added entry is
 visible as a diff to `scripts/file-size-debt.json` and is rejected in review.
 
+Entries are keyed by path. Moving or renaming a recorded file without splitting
+it reads as a new file above the limit, so a recorded file keeps its path
+until it is split; the parts then move, and its entry is lowered or removed.
+
 ## Consequences
 
 - A change that needs to add code to a recorded file must move at least as

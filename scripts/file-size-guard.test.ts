@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DEBT_FILE,
@@ -21,9 +21,25 @@ const ROOT = resolve(__dirname, '..');
 const GUARD = join(ROOT, 'scripts/file-size-guard.mjs');
 
 const fixtures: string[] = [];
+beforeEach(() => {
+  // The guard's own in-process git calls inherit this environment as well.
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith('GIT_')) vi.stubEnv(name, undefined);
+  }
+});
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+
+// Fixture git runs must not reach the real repository through an inherited
+// GIT_DIR or GIT_INDEX_FILE (set inside hooks), nor stall on a developer's global
+// commit signing or hooks path.
+const gitEnv = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
 
 /** A throwaway repository with the bundle script the guard reads its exclusion from. */
 function fixture(files: Record<string, number>, debt: Record<string, number> = {}) {
@@ -36,14 +52,14 @@ function fixture(files: Record<string, number>, debt: Record<string, number> = {
   write('scripts/build-runner-worker.mjs', "const outfile = 'bin/bundle.mjs';\n");
   write(DEBT_FILE, `${JSON.stringify(debt, null, 2)}\n`);
   for (const [file, lines] of Object.entries(files)) write(file, 'x\n'.repeat(lines));
-  execFileSync('git', ['init', '-q'], { cwd: root });
-  execFileSync('git', ['add', '-A'], { cwd: root });
+  execFileSync('git', ['init', '-q'], { cwd: root, env: gitEnv });
+  execFileSync('git', ['add', '-A'], { cwd: root, env: gitEnv });
   return root;
 }
 
 /** Commits the fixture as `main`, the base the guard compares the record with. */
 function commitBase(root: string) {
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: root });
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env: gitEnv });
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'base');
   git('branch', '-M', 'main');
@@ -56,7 +72,7 @@ function runGuard(root: string, ...args: string[]) {
   return spawnSync(process.execPath, ['scripts/file-size-guard.mjs', ...args], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, FILE_SIZE_BASE: 'main' },
+    env: { ...gitEnv, FILE_SIZE_BASE: 'main' },
   });
 }
 
