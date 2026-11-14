@@ -92,6 +92,7 @@ import { createDockerClient, type ContainerInspect, type DockerClient } from './
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
   sealDeploymentSpec,
+  type ServerDeploymentSpec,
   type ServerDeploymentSpecBody,
 } from './self-update/deployment-spec.js';
 import {
@@ -101,7 +102,7 @@ import {
 } from './self-update/managed-deployment.js';
 import {
   admitProjectEgressProvision,
-  PROJECT_EGRESS_PROVISION_LABEL,
+  projectEgressProvisionSupported,
   type ProvisionProjectEgressHostOptions,
 } from './self-update/project-egress-provisioning.js';
 import {
@@ -439,17 +440,20 @@ async function admitEgressProvisioning(
 
 /**
  * Whether this operation's images carry the project egress provisioning contract,
- * read from the images themselves rather than assumed: a predecessor released
- * before the contract legitimately skips provisioning, any later one must not.
+ * decided by the product's own rule: a predecessor released before the contract
+ * legitimately skips provisioning, any later one must not. A client that cannot
+ * read labels would make every image look contract-less and the guard vacuous.
  */
-async function egressProvisioningExpected(journal: UpdateJournal): Promise<boolean> {
+async function egressProvisioningExpected(
+  journal: UpdateJournal,
+  spec: ServerDeploymentSpec,
+): Promise<boolean> {
   const client = docker();
-  const target = await client.inspectImageLabels?.(journal.targetDigest);
-  const installed = await client.inspectImageLabels?.(journal.previousDigest);
-  return (
-    target?.[PROJECT_EGRESS_PROVISION_LABEL] !== undefined &&
-    installed?.['org.verity.project-egress-deployment'] === '1'
+  expect(
+    client.inspectImageLabels !== undefined,
+    'the Docker client cannot read image labels, so egress admission cannot be checked',
   );
+  return projectEgressProvisionSupported(client, journal, spec);
 }
 
 function preparationOptions(managedRoot: string, databaseUrl: string, deploymentId: string) {
@@ -669,7 +673,7 @@ async function prepare(managedRoot: string): Promise<void> {
   expect((candidate.mounts ?? []).length > 0, 'standby lacks production mounts');
   // Without this, an admission that started skipping again would leave every
   // stage above green while network protection never reached a standby.
-  if (await egressProvisioningExpected(journal)) {
+  if (await egressProvisioningExpected(journal, state.spec)) {
     expect(
       admittedEgressOperations.has(journal.updateId),
       'project egress provisioning was not admitted for an update whose images require it',

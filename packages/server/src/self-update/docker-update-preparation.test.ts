@@ -403,11 +403,12 @@ describe('Docker update preparation', () => {
       phase: 'standby',
     });
     const state = await readManagedDeployment(root);
+    if (!state.managed) throw new Error(state.reason);
     expect(provisionProjectEgressHost).toHaveBeenCalledOnce();
     expect(provisionProjectEgressHost).toHaveBeenCalledWith(
       expect.objectContaining({
         journal: expect.objectContaining({ updateId: journal.updateId }),
-        spec: state.managed ? expect.objectContaining({ image: state.spec.image }) : undefined,
+        spec: expect.objectContaining({ image: state.spec.image }),
         managedRoot: root,
       }),
     );
