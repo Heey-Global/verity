@@ -658,6 +658,9 @@ async function begin(managedRoot: string, targetDigest: string): Promise<UpdateJ
 async function prepare(managedRoot: string): Promise<void> {
   const targetDigest = required('VERITY_SMOKE_TARGET_DIGEST');
   const databaseUrl = required('VERITY_SMOKE_DATABASE_URL');
+  // Rollbacks reuse the target digest of the commit they precede; a plan left
+  // from that earlier operation must not satisfy this one's assertions.
+  plannedBackups.delete(targetDigest);
   const started = await begin(managedRoot, targetDigest);
   const state = await readManagedDeployment(managedRoot);
   if (!state.managed) fail('managed authority disappeared mid-preparation');
@@ -700,6 +703,10 @@ async function prepare(managedRoot: string): Promise<void> {
   // simulated provisioning above would hide a migration that never happened.
   // Expected from the target's own contract label, so a preparation that stopped
   // planning, or stopped routing through the stand-in, fails instead of skipping.
+  expect(
+    client.inspectImageLabels !== undefined,
+    'the Docker client cannot read image labels, so host provisioning cannot be checked',
+  );
   const backupContract = (await client.inspectImageLabels!(targetDigest))?.[BACKUP_PROVISION_LABEL];
   const backup = plannedBackups.get(targetDigest);
   expect(
