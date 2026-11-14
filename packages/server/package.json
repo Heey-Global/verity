@@ -33,7 +33,7 @@
     "fflate": "0.8.3",
     "graphql": "17.1.0",
     "ipaddr.js": "2.5.0",
-    "minimatch": "11.0.5",
+    "minimatch": "11.0.7",
     "pdfjs-dist": "6.5.438",
     "pg": "8.23.1",
     "pg-copy-streams": "7.0.0",
