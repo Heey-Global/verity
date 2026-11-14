@@ -109,10 +109,8 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   renameSync,
   statSync,
-  type Stats,
   rmSync,
   writeFileSync,
 } from 'node:fs';
