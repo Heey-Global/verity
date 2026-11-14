@@ -203,7 +203,14 @@ describe('the check', () => {
     expect(runGuard(root).status).toBe(0);
     expect(baseDebt(root, 'main')).toEqual({ 'big.ts': limit + 10 });
     // A shallow checkout cannot resolve the base; the exact comparison still runs.
-    expect(baseDebt(root, 'no-such-ref')).toBeUndefined();
+    expect(baseDebt(root, 'no-such-ref')).toBeNull();
+    const unresolved = spawnSync(process.execPath, ['scripts/file-size-guard.mjs'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...gitEnv, FILE_SIZE_BASE: 'no-such-ref' },
+    });
+    expect(unresolved.status).toBe(0);
+    expect(unresolved.stderr).toContain('no merge base with no-such-ref');
     expect(compareWithBase({ 'a.ts': 1 }, { 'a.ts': 2 })).toEqual([]);
   });
 

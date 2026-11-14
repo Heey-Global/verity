@@ -160,8 +160,8 @@ export function writeDebt(root, debt) {
 }
 
 /**
- * The record at the merge base with `ref`, or undefined when the base cannot be
- * resolved (a shallow checkout) or predates the record.
+ * The record at the merge base with `ref`; null when the base cannot be
+ * resolved (a shallow checkout), undefined when the base predates the record.
  * @param {string} root
  * @param {string} ref
  */
@@ -169,7 +169,7 @@ export function baseDebt(root, ref) {
   /** @param {string[]} args */
   const git = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
   const base = git(['merge-base', 'HEAD', ref]);
-  if (base.status !== 0) return undefined;
+  if (base.status !== 0) return null;
   const recorded = git(['show', `${base.stdout.trim()}:${DEBT_FILE}`]);
   return recorded.status === 0 ? parseDebt(recorded.stdout) : undefined;
 }
@@ -201,7 +201,15 @@ function main() {
   const found = oversizedFiles(root);
   if (process.argv.includes('--update')) writeDebt(root, loweredDebt(found, readDebt(root)));
   const debt = readDebt(root);
-  const base = baseDebt(root, process.env.FILE_SIZE_BASE || 'origin/main');
+  const ref = process.env.FILE_SIZE_BASE || 'origin/main';
+  const base = baseDebt(root, ref);
+  // Say so when the shrink-only rule against the base cannot run, so a skipped
+  // comparison is not mistaken for a passed one.
+  if (base === null) {
+    process.stderr.write(
+      `File size check: no merge base with ${ref}; entries added or raised since the base are not checked.\n`,
+    );
+  }
   const problems = [...compareWithDebt(found, debt), ...(base ? compareWithBase(debt, base) : [])];
   if (problems.length === 0) return 0;
   process.stderr.write(
