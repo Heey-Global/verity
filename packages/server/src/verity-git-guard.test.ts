@@ -328,6 +328,19 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
     expect(readFileSync(sharedConfig(), 'utf8')).toMatch(/worktree = .*agent-test/);
   });
 
+  it('refuses git init with only the hook GIT_DIR, which would make the repository bare', async () => {
+    const before = readFileSync(sharedConfig(), 'utf8');
+    const { code } = await runWrapper(['init', '-q'], session(), { GIT_DIR: hookGitDir() });
+    expect(code).toBe(1);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+    // Real git, same call: the shared repository turns bare under every session.
+    await execFileAsync(REAL_GIT, ['init', '-q'], {
+      cwd: session(),
+      env: { ...process.env, ...GIT_ENV, GIT_DIR: hookGitDir() },
+    });
+    expect(readFileSync(sharedConfig(), 'utf8')).toMatch(/bare = true/);
+  });
+
   it('refuses the --git-dir / --work-tree option spelling as well', async () => {
     const { code } = await runWrapper(
       [`--git-dir=${hookGitDir()}`, '--work-tree', session(), 'init', '-q'],
@@ -364,6 +377,8 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
       ['config', 'set', 'core.worktree', '/elsewhere'],
       ['config', '--add', 'core.worktree', '/elsewhere'],
       ['config', '--type', 'path', 'core.worktree', '/elsewhere'],
+      // Without extensions.worktreeConfig, --worktree writes the shared config like --local.
+      ['config', '--worktree', 'core.worktree', '/elsewhere'],
     ]) {
       const { code, stderr } = await runWrapper(args, session());
       expect(code, args.join(' ')).toBe(1);

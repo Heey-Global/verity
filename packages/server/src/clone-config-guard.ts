@@ -32,8 +32,10 @@ import { promisify } from 'node:util';
  * - `unknown` — any other value, several values, or a config that is not a plain file
  *   inside the clone. Nothing is changed; Repair stops with the location to inspect.
  *
- * Reading uses `git config --file`, which performs no repository setup (the setup is what
- * fails on the bad value) and does not follow `include.path`.
+ * Reading uses `git config --file`, which does not follow `include.path` and, run from a
+ * directory that is not the clone (the server's own cwd, or `/` for
+ * {@link defaultCloneConfigGit}), never opens the clone's repository setup — the setup is
+ * what fails on the bad value.
  */
 
 /** Where the Sandbox mounts the clone. */

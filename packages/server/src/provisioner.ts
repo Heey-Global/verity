@@ -8209,8 +8209,6 @@ export class ProvisionerImpl implements Provisioner {
   }
 }
 
-/** Wraps a provisioning failure with the surfaced message plus the original
- *  cause (never exposed to the client — the body is logged server-side). */
 /** A git step of the clone phase failed; `step` names it in the project's failure. Carries
  *  only the redacted output, never the raw error: that can include Authorization headers. */
 class CloneStepError extends Error {
@@ -8223,6 +8221,8 @@ class CloneStepError extends Error {
   }
 }
 
+/** Wraps a provisioning failure with the surfaced message plus the original
+ *  cause (never exposed to the client — the body is logged server-side). */
 export class ProvisioningError extends Error {
   constructor(
     message: string,
