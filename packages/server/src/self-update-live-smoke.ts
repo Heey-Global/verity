@@ -88,6 +88,7 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { BackupProvisionPlan } from './self-update/backup-provisioning.js';
 import { createDockerClient, type ContainerInspect, type DockerClient } from './docker.js';
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
@@ -456,9 +457,30 @@ async function egressProvisioningExpected(
   return projectEgressProvisionSupported(client, journal, spec);
 }
 
+/** Backup host plans the real planner produced, by the target image they were made with. */
+const plannedBackups = new Map<string, BackupProvisionPlan>();
+
+/**
+ * Stands in for backup host provisioning after the real plan. The planner ran
+ * in the target image against the sealed installer state; what is skipped is
+ * the installer that writes systemd units and the PostgreSQL dump service, which
+ * this daemon has neither of. The sealed mount migration that follows is real.
+ */
+function planBackupProvisioning(
+  _docker: unknown,
+  _spec: unknown,
+  image: string,
+  plan: BackupProvisionPlan,
+): Promise<void> {
+  plannedBackups.set(image, plan);
+  process.stdout.write('smoke: backup host provisioning simulated after planning\n');
+  return Promise.resolve();
+}
+
 function preparationOptions(managedRoot: string, databaseUrl: string, deploymentId: string) {
   return {
     provisionProjectEgressHost: admitEgressProvisioning,
+    provisionBackupHost: planBackupProvisioning,
     managedRoot,
     docker: docker(),
     hostRuntimeDir: required('VERITY_SMOKE_HOST_RUNTIME_DIR'),
@@ -671,6 +693,31 @@ async function prepare(managedRoot: string): Promise<void> {
     'standby lacks its production database source',
   );
   expect((candidate.mounts ?? []).length > 0, 'standby lacks production mounts');
+  // A planned backup host must reach the standby as sealed mounts; otherwise the
+  // simulated provisioning above would hide a migration that never happened.
+  const backup = plannedBackups.get(targetDigest);
+  if (backup !== undefined) {
+    const sealed = await readManagedDeployment(managedRoot);
+    const bind = (target: string) =>
+      sealed.managed
+        ? sealed.spec.mounts.find((mount) => mount.target === target)?.source
+        : undefined;
+    const backups = bind('/run/verity-backups');
+    const identity = bind('/run/verity-backup-identity');
+    expect(
+      backups?.kind === 'bind' &&
+        backups.path === backup.backupPath &&
+        identity?.kind === 'bind' &&
+        identity.path === backup.identityPath,
+      'the sealed deployment lacks the planned backup mounts',
+    );
+    expect(
+      ['/run/verity-backups', '/run/verity-backup-identity'].every((target) =>
+        (candidate.mounts ?? []).some((mount) => mount.destination === target),
+      ),
+      'standby started without the backup mounts',
+    );
+  }
   // Without this, an admission that started skipping again would leave every
   // stage above green while network protection never reached a standby.
   if (await egressProvisioningExpected(journal, state.spec)) {
