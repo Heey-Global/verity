@@ -24587,6 +24587,30 @@ function parseLenientJson(body) {
     return void 0;
   }
 }
+function keepFirstRecommendation(value) {
+  if (typeof value !== "object" || value === null)
+    return value;
+  const options = value.options;
+  if (!Array.isArray(options))
+    return value;
+  let seen = false;
+  return {
+    ...value,
+    options: options.map((option) => {
+      if (typeof option !== "object" || option === null)
+        return option;
+      if (option.recommended !== true)
+        return option;
+      if (!seen) {
+        seen = true;
+        return option;
+      }
+      const cleared = { ...option };
+      delete cleared.recommended;
+      return cleared;
+    })
+  };
+}
 function parseChoicesBlock(input) {
   const matches = [...input.matchAll(CHOICES_FENCE_RE)];
   if (matches.length === 0)
@@ -24596,7 +24620,7 @@ function parseChoicesBlock(input) {
     const parsedJson = parseLenientJson(matches[i][1] ?? "");
     if (parsedJson === void 0)
       continue;
-    const result3 = choicesPayloadSchema.safeParse(parsedJson);
+    const result3 = choicesPayloadSchema.safeParse(keepFirstRecommendation(parsedJson));
     if (result3.success)
       choices = result3.data;
   }
