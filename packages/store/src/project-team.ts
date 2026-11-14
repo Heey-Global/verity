@@ -333,6 +333,16 @@ export class ProjectTeamStore {
         .forUpdate()
         .executeTakeFirst();
       if (row === undefined) return false;
+      // A person Uplink already confirmed is a member; removing them is
+      // removeMember's job, which tells Uplink. A late refusal changes nothing.
+      if (row.redeemed_by_user_id !== null) {
+        const person = await tx
+          .selectFrom('users')
+          .select('status')
+          .where('id', '=', row.redeemed_by_user_id)
+          .executeTakeFirst();
+        if (person?.status === 'active') return false;
+      }
       await tx
         .updateTable('project_invitations')
         .set({ state: 'failed' })
@@ -482,20 +492,24 @@ export class ProjectTeamStore {
 
   /** Uplink confirmed the join: the person becomes an active member. */
   async confirmJoin(redemptionId: string): Promise<boolean> {
-    const row = await this.db
-      .selectFrom('project_invitations')
-      .select('redeemed_by_user_id')
-      .where('redemption_id', '=', redemptionId)
+    // Under the invitation's row lock, like failJoin: a confirmation racing a
+    // fence must never activate the fenced person.
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('project_invitations')
+        .select(['redeemed_by_user_id', 'state'])
+        .where('redemption_id', '=', redemptionId)
+        .forUpdate()
+        .executeTakeFirst();
       // A join fenced as failed stays fenced, whatever arrives late.
-      .where('state', '=', 'redeemed')
-      .executeTakeFirst();
-    if (row?.redeemed_by_user_id == null) return false;
-    await this.db
-      .updateTable('users')
-      .set({ status: 'active' })
-      .where('id', '=', row.redeemed_by_user_id)
-      .execute();
-    return true;
+      if (row?.state !== 'redeemed' || row.redeemed_by_user_id == null) return false;
+      await tx
+        .updateTable('users')
+        .set({ status: 'active' })
+        .where('id', '=', row.redeemed_by_user_id)
+        .execute();
+      return true;
+    });
   }
 
   async listMembers(projectId: string, db: Kysely<Database> = this.db): Promise<ProjectMember[]> {

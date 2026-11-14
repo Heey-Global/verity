@@ -79,6 +79,9 @@ export function registerProjectTeamRoutes(
   };
   const linkFields = async (invitation: ProjectInvitation, projectId: string, viewer: string) => {
     if (invitation.state !== 'open' || invitation.invitationId === null) return null;
+    // The secret is for the one who invited: another manager sees the
+    // invitation, but cannot send it on in the inviter's name.
+    if (invitation.inviterUserId !== viewer) return null;
     const identity = deps.linkIdentity?.();
     if (identity === undefined) return null;
     const secret = await team().invitationSecret(projectId, invitation.id);

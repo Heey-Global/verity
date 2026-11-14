@@ -117,27 +117,22 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         // provisioner uses to derive the sandbox token, so the two agree on the key.
         const instanceKey = resolveSigningPrivateKey(settings);
         // A turn's badge names the person the commit is for: sign with their own
-        // key. The instance key was the administrator's and stays their fallback
-        // (ADR 0023 §3); a member without a key gets a refusal, never someone
-        // else's signature. The container capability names no person and keeps
-        // the project default, which is the instance key.
-        // The person is the badge's, else the sandbox's own (ADR 0023 §4), also
-        // in the project's original sandbox: whoever owns it signs as themselves,
-        // and the instance key serves only an active administrator.
+        // key, else the instance key, which was the administrator's and serves
+        // only an active administrator (ADR 0023 §3). A member without a key
+        // gets a refusal, never someone else's signature. Without a badge the
+        // person is the sandbox's own (§4), also in the project's original
+        // sandbox, which need not belong to the administrator.
         const person = turn?.userId ?? socketIdentity.userId;
-        let privateKey: string | null = instanceKey;
-        {
-          const personal = (await deps.eventStore.userGitIdentities.get(person))?.sshPrivateKey;
-          privateKey =
-            personal !== undefined && personal !== null && personal.trim().length > 0
-              ? personal
-              : (await deps.eventStore.isActiveAdministrator(person))
-                ? instanceKey
-                : null;
-          if (privateKey === null) {
-            reply.code(409);
-            return { error: 'no personal signing key; connect GitHub to sign commits' };
-          }
+        const personal = (await deps.eventStore.userGitIdentities.get(person))?.sshPrivateKey;
+        const privateKey =
+          personal !== undefined && personal !== null && personal.trim().length > 0
+            ? personal
+            : (await deps.eventStore.isActiveAdministrator(person))
+              ? instanceKey
+              : null;
+        if (privateKey === null) {
+          reply.code(409);
+          return { error: 'no personal signing key; connect GitHub to sign commits' };
         }
         if (privateKey === null || privateKey.trim().length === 0) {
           reply.code(409);

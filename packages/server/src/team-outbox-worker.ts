@@ -100,8 +100,13 @@ export function createTeamOutboxWorker(deps: {
         new Date(Number(answer.expiresAt) * 1000),
       );
     }
-    if (operation.kind === 'team.join.commit' && typeof answer.redemptionId === 'string')
-      await deps.team.confirmJoin(answer.redemptionId);
+    // Only the redemption this operation committed; an answer naming another
+    // one confirms nothing.
+    if (operation.kind === 'team.join.commit') {
+      if (answer.redemptionId !== payload.redemptionId)
+        throw new Error('Uplink confirmed another redemption');
+      await deps.team.confirmJoin(String(payload.redemptionId));
+    }
     await deps.team.completeOperation(operation.operationId);
   };
 

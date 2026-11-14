@@ -117,6 +117,18 @@ describe('parseTeamJoinLink', () => {
     });
   });
 
+  it('refuses display names with format controls the contract would let through', () => {
+    const valid = fixtures.find((fixture) => fixture.valid && 'display' in fixture.value)!.value;
+    const spoofed = {
+      ...valid,
+      // U+202E reverses what follows on the join screen.
+      display: { inviterName: 'Holger \u202e', projectName: 'verity' },
+    };
+    expect(() => parseTeamJoinLink(encode(spoofed), before)).toThrow(
+      expect.objectContaining({ reason: 'invalid' }),
+    );
+  });
+
   it('tells an expired invitation apart from a broken link', () => {
     const valid = fixtures.find((fixture) => fixture.valid)!.value;
     const after = new Date((valid.expiresAt as number) + 1);

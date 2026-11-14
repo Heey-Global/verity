@@ -102,7 +102,11 @@ function fromBase64Url(value: string): string {
 }
 
 const displayText = (value: unknown): value is string =>
-  typeof value === 'string' && value.length <= 80 && /^[^\p{Cc}\u2028\u2029]+$/u.test(value);
+  typeof value === 'string' &&
+  value.length <= 80 &&
+  // Stricter than the contract: no format controls either, so a link cannot
+  // reorder or hide what the join screen shows with bidi marks.
+  /^[^\p{Cc}\p{Cf}\u2028\u2029]+$/u.test(value);
 
 /**
  * Decode `https://verity.build/join#…` (Uplink team contract D5). Only the

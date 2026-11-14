@@ -322,3 +322,38 @@ it('marks an invitation Uplink refused to create as failed', async () => {
   expect(listed).toMatchObject({ state: 'failed' });
   await expect(team().invitationSecret('p1', created.invitation.id)).resolves.toBeUndefined();
 });
+
+it('never fences a person Uplink already confirmed, nor confirms one it fenced', async () => {
+  const { secret } = await invite();
+  const joined = await redeem(secret);
+  await team().confirmJoin('r1');
+  await expect(team().failJoin('r1')).resolves.toBe(false);
+  expect((await team().listMembers('p1')).map((member) => member.userId)).toContain(joined.userId);
+
+  const second = await team().createInvitation({
+    projectId: 'p1',
+    inviterUserId: ADMIN,
+    inviteeName: 'Mia',
+    canExecute: false,
+  });
+  await team().markInvitationCreated(second.invitation.id, 'inv-2', second.invitation.expiresAt);
+  await admit('r2', 'inv-2');
+  const mia = await team().redeemInvitation({
+    invitationId: 'inv-2',
+    secret: second.secret,
+    redemptionId: 'r2',
+    displayName: 'Mia',
+  });
+  // Fence and confirmation race; whichever runs second must not undo the fence.
+  await Promise.all([team().failJoin('r2'), team().confirmJoin('r2')]);
+  const status = await ctx.db
+    .selectFrom('users')
+    .select('status')
+    .where('id', '=', mia.userId)
+    .executeTakeFirst();
+  const fenced = (await team().listInvitations('p1')).some(
+    (invitation) => invitation.id === second.invitation.id && invitation.state === 'failed',
+  );
+  // Either the fence won (still disabled) or the confirmation won (active, not failed).
+  expect(fenced ? status?.status === 'disabled' : status?.status === 'active').toBe(true);
+});

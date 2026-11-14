@@ -182,5 +182,16 @@ describe('project team routes', () => {
         .sort(),
     );
     expect(fields).toMatchObject({ purpose: 'team-member', display: { projectName: 'app' } });
+
+    // Another manager sees the invitation, but not its secret: the link speaks
+    // in the inviter's name, and only the inviter sends it.
+    await ctx.db
+      .updateTable('project_memberships')
+      .set({ can_execute: true, can_manage: true })
+      .where('user_id', '=', 'reader')
+      .execute();
+    const other = await as(app, 'reader', 'GET', `/projects/p1/invitations/${id}`);
+    expect(other.statusCode).toBe(200);
+    expect(other.json<{ linkFields: unknown }>().linkFields).toBeNull();
   });
 });

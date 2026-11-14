@@ -215,3 +215,16 @@ it('refuses to join a server this app already knows, without contacting it', asy
   expect(mockClients).toHaveLength(0);
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
 });
+
+it('refuses a link naming the address of another server this app uses', async () => {
+  mockOthers.current = [
+    {
+      serverId: 'srv_other',
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin, transport: 'direct', tlsPin: 'sha256-x' }],
+    },
+  ];
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'invalid' });
+  expect(admission).not.toHaveBeenCalled();
+  expect(mockSetToken).not.toHaveBeenCalled();
+});

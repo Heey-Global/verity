@@ -61,6 +61,15 @@ export async function joinTeam(
   if (known.some((profile) => profile?.serverId === link.serverId)) {
     throw new TeamJoinError('known_server', 'This app is already connected to this server.');
   }
+  // Credentials are kept per address: a link naming the address of another
+  // server this app uses would overwrite that server's credential.
+  if (
+    known.some((profile) =>
+      profile?.endpoints?.some((endpoint) => endpoint.url === link.coreOrigin),
+    )
+  ) {
+    throw new TeamJoinLinkError('invalid');
+  }
   const derived = await serverIdFor(link.identityKey, (bytes) =>
     digest(CryptoDigestAlgorithm.SHA256, bytes),
   );
