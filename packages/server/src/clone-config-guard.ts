@@ -65,12 +65,17 @@ export interface CloneWorktreeRepair {
 /** The finding as a sentence an operator can act on. */
 export function describeCloneWorktreeFinding(
   finding: Exclude<CloneWorktreeFinding, { kind: 'clean' }>,
+  canRemove = true,
 ): string {
   if (finding.kind === 'session-contamination') {
+    const prefix = canRemove ? '' : 'repository config invalid: ';
+    const remedy = canRemove
+      ? 'Repair saves a backup of the file and removes only this key.'
+      : 'No backup directory is configured, so Repair does not remove it; remove the key ' +
+        'from that file, then repair again.';
     return (
-      `${finding.file} sets core.worktree to the session worktree "${finding.value}", which ` +
-      're-points the shared main checkout. Repair saves a backup of the file and removes ' +
-      'only this key.'
+      `${prefix}${finding.file} sets core.worktree to the session worktree ` +
+      `"${finding.value}", which re-points the shared main checkout. ${remedy}`
     );
   }
   const values = finding.values.length > 0 ? ` (${finding.values.join(', ')})` : '';

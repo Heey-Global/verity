@@ -210,24 +210,41 @@ refuse_core_worktree() {
 }
 
 if [ "$subcmd" = "config" ]; then
-  names_key=""
+  # Refuse only a WRITE of the key: `git config core.worktree` alone (and any
+  # read spelling) is a read and stays allowed.
   scoped=""
+  adds=""
+  positional=()
   j=$((subidx + 1))
   while [ "$j" -lt "$n" ]; do
     a="${args[$j]}"
     case "${a,,}" in
-      core.worktree) names_key=1 ;;
       # Reads, removals and writes that do not land in the shared config.
       --get | --get-all | --get-regexp | --get-urlmatch | -l | --list | \
         --unset | --unset-all | --worktree | --global | --system | \
         -f | --file | --file=* | --blob | --blob=* | -e | --edit | \
-        get | list | unset)
+        --rename-section | --remove-section | --get-color | --get-colorbool)
         scoped=1
         ;;
+      --add | --replace-all) adds=1 ;;
+      # Options whose value is the next argument, not a key or value.
+      --type | --default | --comment | --value) j=$((j + 1)) ;;
+      -*) ;;
+      *) positional+=("$a") ;;
     esac
     j=$((j + 1))
   done
-  if [ -n "$names_key" ] && [ -z "$scoped" ]; then
+  key="${positional[0]:-}"
+  values=$((${#positional[@]} - 1))
+  case "${key,,}" in
+    set)
+      key="${positional[1]:-}"
+      values=1
+      ;;
+    get | list | unset | rename-section | remove-section | edit) scoped=1 ;;
+  esac
+  if [ -z "$scoped" ] && [ "${key,,}" = "core.worktree" ] &&
+    { [ "$values" -gt 0 ] || [ -n "$adds" ]; }; then
     refuse_core_worktree "'git config core.worktree' in the shared repository config"
   fi
   exec "$REAL_GIT" "$@"

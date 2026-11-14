@@ -7523,6 +7523,64 @@ describe('ProvisionerImpl (#174)', () => {
       }
     });
 
+    it('clears the shared and the per-worktree config in one Repair', async () => {
+      const f = cloneWithSession();
+      try {
+        run('config', '--file', f.config, 'core.worktree', '/work/.verity-sessions/agent-x');
+        run('config', '--file', f.config, 'extensions.worktreeConfig', 'true');
+        const perWorktree = join(f.clone, '.git', 'config.worktree');
+        run('config', '--file', perWorktree, 'core.worktree', '/work/.verity-sessions/agent-y');
+        const id = await seedProject('failed');
+        const repaired: unknown[] = [];
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker: fakeDocker().client,
+          defaultImageRef: 'default',
+          hostCloneRoot: f.root,
+          projectTokenMint: async () => 'tok',
+          git: f.git,
+          cloneConfigBackupDirectory: join(f.root, 'backups'),
+          onCloneConfigRepaired: (event) => repaired.push(event),
+        });
+
+        expect((await provisioner.provision(id)).state).toBe('active');
+        expect(repaired).toHaveLength(2);
+        expect(readdirSync(join(f.root, 'backups'))).toHaveLength(2);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('names the config check when the backup cannot be written, and keeps the key', async () => {
+      const f = cloneWithSession();
+      try {
+        run('config', '--file', f.config, 'core.worktree', '/work/.verity-sessions/agent-x');
+        const blocked = join(f.root, 'not-a-directory');
+        writeFileSync(blocked, '');
+        const id = await seedProject('failed');
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker: fakeDocker().client,
+          defaultImageRef: 'default',
+          hostCloneRoot: f.root,
+          projectTokenMint: async () => 'tok',
+          git: f.git,
+          cloneConfigBackupDirectory: join(blocked, 'backups'),
+        });
+
+        await expect(provisioner.provision(id)).rejects.toThrow(
+          /^repository config check failed: /,
+        );
+        expect(run('config', '--file', f.config, '--get', 'core.worktree').trim()).toBe(
+          '/work/.verity-sessions/agent-x',
+        );
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
     it('lists the finding as a Repair warning before anything changes', async () => {
       const f = cloneWithSession();
       try {

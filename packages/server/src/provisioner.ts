@@ -5585,7 +5585,9 @@ export class ProvisionerImpl implements Provisioner {
     if (!this.isRepoDir(clonePath)) return null;
     try {
       const finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
-      return finding.kind === 'clean' ? null : describeCloneWorktreeFinding(finding);
+      if (finding.kind === 'clean') return null;
+      const backupRoot = this.opts.cloneConfigBackupDirectory;
+      return describeCloneWorktreeFinding(finding, backupRoot !== undefined && backupRoot !== '');
     } catch {
       return null; // a warning probe never blocks Repair; the repair path inspects again
     }
@@ -5604,32 +5606,36 @@ export class ProvisionerImpl implements Provisioner {
     project: ProjectRecord,
     clonePath: string,
   ): Promise<void> {
-    const finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
-    if (finding.kind === 'clean') return;
-    if (finding.kind === 'unknown') {
-      throw new ProvisioningError(describeCloneWorktreeFinding(finding));
-    }
     const backupRoot = this.opts.cloneConfigBackupDirectory;
-    if (backupRoot === undefined || backupRoot.length === 0) {
-      throw new ProvisioningError(
-        `repository config invalid: ${finding.file} sets core.worktree to the session ` +
-          `worktree "${finding.value}" and no backup directory is configured, so Repair ` +
-          'does not remove it. Remove the key from that file, then repair again.',
-      );
+    const canRemove = backupRoot !== undefined && backupRoot.length > 0;
+    // One pass per file that can carry the key (`config`, `config.worktree`), plus the
+    // inspection that has to come back clean.
+    for (let pass = 0; pass < 3; pass++) {
+      let finding: Awaited<ReturnType<typeof inspectCloneWorktreeConfig>>;
+      let repair: CloneWorktreeRepair | undefined;
+      try {
+        finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
+        if (finding.kind === 'clean') return;
+        if (finding.kind === 'unknown' || !canRemove || pass === 2) {
+          throw new ProvisioningError(describeCloneWorktreeFinding(finding, canRemove));
+        }
+        repair = await removeSessionWorktreeConfig(
+          finding,
+          backupRoot,
+          project.id,
+          this.cloneConfigGit,
+        );
+      } catch (cause) {
+        if (cause instanceof ProvisioningError) throw cause;
+        // An unreadable file, a failed backup, or a value that changed under the removal.
+        throw new CloneStepError('repository config check', failureMessage(cause));
+      }
+      try {
+        this.opts.onCloneConfigRepaired?.({ projectId: project.id, ...repair });
+      } catch {
+        // Observability never changes the repair.
+      }
     }
-    const repair = await removeSessionWorktreeConfig(
-      finding,
-      backupRoot,
-      project.id,
-      this.cloneConfigGit,
-    );
-    try {
-      this.opts.onCloneConfigRepaired?.({ projectId: project.id, ...repair });
-    } catch {
-      // Observability never changes the repair.
-    }
-    const after = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
-    if (after.kind !== 'clean') throw new ProvisioningError(describeCloneWorktreeFinding(after));
   }
 
   /** Lock the project row, read its state, decide what to do next:

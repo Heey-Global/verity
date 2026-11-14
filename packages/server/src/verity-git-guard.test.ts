@@ -352,6 +352,8 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
       ['config', 'core.worktree', '/work/.verity-sessions/agent-test'],
       ['config', '--local', 'Core.WorkTree', '/elsewhere'],
       ['config', 'set', 'core.worktree', '/elsewhere'],
+      ['config', '--add', 'core.worktree', '/elsewhere'],
+      ['config', '--type', 'path', 'core.worktree', '/elsewhere'],
     ]) {
       const { code, stderr } = await runWrapper(args, session());
       expect(code, args.join(' ')).toBe(1);
@@ -371,6 +373,19 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
       0,
     );
     expect((await runWrapper(['config', 'user.name', 'n'], session())).code).toBe(0);
+    await realGit(main, 'config', '--file', sharedConfig(), 'core.worktree', '/tmp/y');
+    // Bare and decorated reads are reads, whatever flags they carry.
+    for (const args of [
+      ['config', 'core.worktree'],
+      ['config', '--show-origin', 'core.worktree'],
+      ['config', '--type', 'path', 'core.worktree'],
+      ['config', '--null', 'core.worktree'],
+      ['config', 'get', 'core.worktree'],
+    ]) {
+      const { code, stderr } = await runWrapper(args, main);
+      expect(stderr, args.join(' ')).not.toContain('verity git guard');
+      expect(code, `${args.join(' ')}: ${stderr}`).not.toBe(1);
+    }
   });
 
   it('is transparent with VERITY_GIT_GUARD_DISABLE=1 (operator escape hatch)', async () => {
