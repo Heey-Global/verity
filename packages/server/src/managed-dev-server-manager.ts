@@ -233,6 +233,22 @@ export class ManagedDevServerManager {
     );
   }
 
+  /**
+   * Stop every server a person last ran in a project, when their access ends
+   * (ADR 0023 §6). Each is marked stopped, so supervision never restarts it in
+   * their sandbox; a later start by someone else runs it as that person.
+   */
+  async stopForPerson(projectId: string, userId: string): Promise<void> {
+    const project = await this.options.store.getProject(projectId);
+    if (!project) return;
+    await this.locked(projectId, async () => {
+      for (const instance of await this.servers.listInstances({ projectId, desired: 'running' })) {
+        if (instance.lastRunUserId === userId) await this.stopInstance(project, instance, null);
+      }
+    });
+    await this.refreshReserved();
+  }
+
   /** Whether a server this session started should be running in its worktree. */
   hasRunningSessionServers(sessionId: string): boolean {
     return this.activeSessions.has(sessionId);

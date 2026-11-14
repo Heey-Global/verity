@@ -23,6 +23,8 @@ export function createMemberRevocation(deps: {
   dequeue: (sessionId: string, queuedTurnId: string) => Promise<unknown>;
   cancelTurn: (sessionId: string) => Promise<unknown>;
   sleepSandbox?: ((projectId: string, userId: string) => Promise<void>) | undefined;
+  /** Stops the dev servers the person last ran, so supervision does not wake them again. */
+  stopDevServers?: ((projectId: string, userId: string) => Promise<void>) | undefined;
   onError?: (step: string, error: unknown) => void;
 }) {
   return async (projectId: string, userId: string): Promise<void> => {
@@ -59,6 +61,8 @@ export function createMemberRevocation(deps: {
       deps.store.userDopplerConnections.delete(userId, projectId),
     );
     await step('standing grants', () => deps.store.deleteUserProjectGrants(projectId, userId));
+    // Before the sandbox sleeps: a running server would otherwise wake it again.
+    await step('dev servers', async () => deps.stopDevServers?.(projectId, userId));
     await step('sandbox', async () => deps.sleepSandbox?.(projectId, userId));
   };
 }

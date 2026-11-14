@@ -123,6 +123,13 @@ describe('project team routes', () => {
       canManage: false,
     });
     expect(raised.json()).toMatchObject({ member: { canExecute: true, canManage: false } });
+    expect(onMemberRemoved).not.toHaveBeenCalled();
+    // Down to reading ends what they had running, as removal does.
+    await as(app, ADMIN, 'PATCH', '/projects/p1/members/reader', {
+      canExecute: false,
+      canManage: false,
+    });
+    expect(onMemberRemoved).toHaveBeenCalledTimes(1);
     expect(
       (
         await as(app, ADMIN, 'PATCH', `/projects/p1/members/${ADMIN}`, {
@@ -133,6 +140,9 @@ describe('project team routes', () => {
     ).toBe(409);
     expect((await as(app, ADMIN, 'DELETE', '/projects/p1/members/reader')).statusCode).toBe(204);
     expect(onMemberRemoved).toHaveBeenCalledWith('p1', 'reader');
+    // A retry still ends access, in case the first attempt failed after removing them.
+    expect((await as(app, ADMIN, 'DELETE', '/projects/p1/members/reader')).statusCode).toBe(404);
+    expect(onMemberRemoved).toHaveBeenCalledTimes(3);
 
     const created = await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
       inviteeName: 'Lena',

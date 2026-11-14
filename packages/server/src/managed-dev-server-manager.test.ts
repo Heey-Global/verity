@@ -188,6 +188,35 @@ describe('managed dev servers', () => {
     expect(containers(starts.mock.calls).at(-1)).toBe('sandbox');
   });
 
+  // ADR 0023 §6: a removed member's servers must not keep running, nor be woken
+  // again by supervision, which restarts every server still marked running.
+  it('stops the servers a removed person ran, and only theirs', async () => {
+    await manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      canSupervise: () => supervisionReady,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
+        worktree.replace('/clone', '/work'),
+      now: () => now,
+      sandboxContainer: async (_project: ProjectRecord, userId: string | null) =>
+        userId === 'lena' ? 'sandbox--lena' : 'sandbox',
+    });
+    const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+    await manager.start('s1', 'Demo', 'operator', { person: 'lena' });
+    expect(await manager.hasRunningServersFor('p1', 'lena')).toBe(true);
+    const stops = vi.spyOn(sandbox.runtime, 'stopManagedServer');
+
+    await manager.stopForPerson('p1', 'admin');
+    expect(stops).not.toHaveBeenCalled();
+    await manager.stopForPerson('p1', 'lena');
+    expect(stops).toHaveBeenCalledTimes(1);
+    expect(await manager.hasRunningServersFor('p1', 'lena')).toBe(false);
+  });
+
   it('defers supervision until preview ownership is ready', async () => {
     const readListeners = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });

@@ -3761,6 +3761,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     dequeue: (sessionId, id) => conductor.dequeue(sessionId, id),
     cancelTurn: (sessionId) => conductor.cancelTurn(sessionId),
     sleepSandbox: deps.provisioner?.sleepPersonalSandbox?.bind(deps.provisioner),
+    stopDevServers: (projectId, userId) =>
+      deps.managedDevServerManager?.stopForPerson(projectId, userId) ?? Promise.resolve(),
     onError: (step, error) =>
       app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
   });

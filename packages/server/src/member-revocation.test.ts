@@ -10,7 +10,9 @@ describe('member revocation', () => {
     const initiators: Record<string, string> = { a: 'lena', b: 'admin', c: 'lena' };
     const dequeue = vi.fn(async () => undefined);
     const cancelTurn = vi.fn(async () => undefined);
-    const sleepSandbox = vi.fn(async () => undefined);
+    const order: string[] = [];
+    const sleepSandbox = vi.fn(async () => void order.push('sleep'));
+    const stopDevServers = vi.fn(async () => void order.push('servers'));
     const deleteDoppler = vi.fn(async () => {
       throw new Error('store unavailable');
     });
@@ -36,6 +38,7 @@ describe('member revocation', () => {
       dequeue,
       cancelTurn,
       sleepSandbox,
+      stopDevServers,
       onError,
     });
     await revoke('p1', 'lena');
@@ -43,6 +46,9 @@ describe('member revocation', () => {
     expect(cancelTurn.mock.calls).toEqual([['a']]);
     expect(deleteGrants).toHaveBeenCalledWith('p1', 'lena');
     expect(sleepSandbox).toHaveBeenCalledWith('p1', 'lena');
+    // Servers stop first: a running one would wake the sandbox again.
+    expect(stopDevServers).toHaveBeenCalledWith('p1', 'lena');
+    expect(order).toEqual(['servers', 'sleep']);
     expect(onError).toHaveBeenCalledWith('Doppler connection', expect.any(Error));
   });
 });

@@ -154,12 +154,16 @@ export function registerProjectTeamRoutes(
   app.patch('/projects/:id/members/:userId', async (request, reply) => {
     const { id, userId } = memberParams.parse(request.params);
     const rights = rightsBody.parse(request.body);
+    let member: ProjectMember;
     try {
-      return { member: publicMember(await team().setMemberRights(id, userId, rights)) };
+      member = await team().setMemberRights(id, userId, rights);
     } catch (error) {
       const { status, body } = refusal(error);
       return reply.code(status).send(body);
     }
+    // Down to reading: whatever they started to run ends now, as on removal.
+    if (!member.canExecute) await deps.onMemberRemoved?.(id, userId);
+    return { member: publicMember(member) };
   });
 
   app.delete('/projects/:id/members/:userId', async (request, reply) => {
@@ -168,6 +172,10 @@ export function registerProjectTeamRoutes(
       await team().removeMember(id, userId);
     } catch (error) {
       const { status, body } = refusal(error);
+      // A retry after the membership was already gone still ends their access:
+      // the first attempt may have failed after removing it.
+      if (error instanceof ProjectTeamError && error.code === 'member_not_found')
+        await deps.onMemberRemoved?.(id, userId);
       return reply.code(status).send(body);
     }
     await deps.onMemberRemoved?.(id, userId);
