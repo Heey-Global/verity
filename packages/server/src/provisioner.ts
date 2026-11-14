@@ -2732,6 +2732,22 @@ export class ProvisionerImpl implements Provisioner {
    *  `provision` calls now coalesce onto the running attempt's promise. */
   private readonly inFlightProvisions = new Map<string, Promise<ProjectRecord>>();
   private readonly personalSandboxStarts = new Map<string, Promise<SandboxIdentity>>();
+  /** Start and sleep of one personal sandbox run one after the other, never interleaved. */
+  private readonly personalSandboxQueue = new Map<string, Promise<unknown>>();
+
+  private personalSandboxSerial<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.personalSandboxQueue.get(key) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.personalSandboxQueue.set(key, tail);
+    void tail.then(() => {
+      if (this.personalSandboxQueue.get(key) === tail) this.personalSandboxQueue.delete(key);
+    });
+    return run;
+  }
   private readonly retiringSandboxes = new Set<string>();
   private readonly sandboxReplacementGenerations = new Map<string, number>();
   private readonly supervisorReconciliations = new Map<
@@ -5140,7 +5156,7 @@ export class ProvisionerImpl implements Provisioner {
     const run = this.memberSandboxRun(project, userId);
     const pending = this.personalSandboxStarts.get(run.key);
     if (pending !== undefined) return pending;
-    const start = (async (): Promise<SandboxIdentity> => {
+    const start = this.personalSandboxSerial(run.key, async (): Promise<SandboxIdentity> => {
       // A person's sandbox reuses what the original sandbox prepared: the clone
       // and the project image. It never provisions the project itself.
       if (project.state !== 'active') {
@@ -5171,7 +5187,7 @@ export class ProvisionerImpl implements Provisioner {
       // The project owner already confirmed the project's devcontainer warnings.
       await this.runContainerPhase(project, false, { confirmWarnings: true }, undefined, run);
       return run.identity;
-    })();
+    });
     this.personalSandboxStarts.set(run.key, start);
     try {
       return await start;
@@ -5188,13 +5204,16 @@ export class ProvisionerImpl implements Provisioner {
     const run = this.memberSandboxRun(project, userId);
     // Never while it is being started; the start would race the stop.
     if (this.personalSandboxStarts.has(run.key)) return;
-    await run.setState('sleeping_starting');
-    await this.opts.projectRelay.sleep?.(run.relaySandbox);
-    await this.opts.claudeEgressIdentity?.revokeSandbox({ projectId, userId });
-    await this.opts.docker.stopContainer(run.identity.containerName).catch((error: unknown) => {
-      if (!(error instanceof DockerError && error.kind === 'container_not_found')) throw error;
+    // A start that arrives while it sleeps waits, and then starts it afresh.
+    await this.personalSandboxSerial(run.key, async () => {
+      await run.setState('sleeping_starting');
+      await this.opts.projectRelay.sleep?.(run.relaySandbox);
+      await this.opts.claudeEgressIdentity?.revokeSandbox({ projectId, userId });
+      await this.opts.docker.stopContainer(run.identity.containerName).catch((error: unknown) => {
+        if (!(error instanceof DockerError && error.kind === 'container_not_found')) throw error;
+      });
+      await run.setState('sleeping');
     });
-    await run.setState('sleeping');
   }
 
   async recreateContainer(

@@ -28,3 +28,32 @@ describe('sweepPersonalSandboxes', () => {
     expect(sleep).toHaveBeenCalledExactlyOnceWith('p1', 'lena');
   });
 });
+
+it('keeps sweeping when one sandbox fails to sleep', async () => {
+  const slept: string[] = [];
+  const errors: string[] = [];
+  const idleSince = new Map([
+    ['p1\0lena', 0],
+    ['p1\0mia', 0],
+  ]);
+  await sweepPersonalSandboxes(
+    {
+      listActive: async () => [
+        { projectId: 'p1', userId: 'lena' },
+        { projectId: 'p1', userId: 'mia' },
+      ],
+      isBusy: async () => false,
+      sleep: async (_projectId, userId) => {
+        if (userId === 'lena') throw new Error('docker unavailable');
+        slept.push(userId);
+      },
+      onError: (_error, _projectId, userId) => errors.push(userId),
+      now: () => 10 * 60 * 60_000,
+    },
+    idleSince,
+  );
+  expect(slept).toEqual(['mia']);
+  expect(errors).toEqual(['lena']);
+  // Still counted idle, so the next sweep tries again.
+  expect(idleSince.has('p1\0lena')).toBe(true);
+});

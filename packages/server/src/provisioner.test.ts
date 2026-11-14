@@ -7374,6 +7374,8 @@ describe('ProvisionerImpl (#174)', () => {
       const relayStarts: ProjectRelayBinding[] = [];
       const relayStops: unknown[] = [];
       const relaySleeps: unknown[] = [];
+      // Holds a sleep half-way, so a start can arrive in the middle of it.
+      let sleepGate: { promise: Promise<void>; open: () => void } | undefined;
       const provisioner = createProvisioner({
         store: ctx.store,
         db: ctx.db,
@@ -7411,6 +7413,7 @@ describe('ProvisionerImpl (#174)', () => {
           },
           async sleep(sandbox) {
             relaySleeps.push(sandbox);
+            await sleepGate?.promise;
           },
           brokerUrl: () => 'http://relay:8080',
           claudeGatewayUrl: () => 'https://relay:8443',
@@ -7483,6 +7486,20 @@ describe('ProvisionerImpl (#174)', () => {
       ).toEqual([sandbox.containerName]);
       expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('sleeping');
       expect((await ctx.store.getProject(id))?.state).toBe('active');
+
+      // A start arriving while the sweep puts it to sleep must win: it waits for
+      // the sleep and starts afresh, instead of being stopped half-way.
+      await provisioner.ensurePersonalSandbox(id, 'lena');
+      let open!: () => void;
+      sleepGate = { promise: new Promise<void>((resolve) => (open = resolve)), open };
+      const sleeping = provisioner.sleepPersonalSandbox(id, 'lena');
+      while (relaySleeps.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+      const waking = provisioner.ensurePersonalSandbox(id, 'lena');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      sleepGate.open();
+      sleepGate = undefined;
+      await Promise.all([sleeping, waking]);
+      expect((await ctx.store.projectSandboxes.state(id, 'lena'))?.state).toBe('active');
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(secretRoot, { recursive: true, force: true });

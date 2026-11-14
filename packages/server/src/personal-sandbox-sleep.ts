@@ -7,6 +7,8 @@ export interface PersonalSandboxSleepDeps {
   /** Whether anything still needs the sandbox: a running turn, a server, a preview. */
   isBusy(projectId: string, userId: string): Promise<boolean>;
   sleep(projectId: string, userId: string): Promise<void>;
+  /** A sandbox that failed to sleep; the sweep goes on with the others. */
+  onError?: (error: unknown, projectId: string, userId: string) => void;
   now?: () => number;
   idleMs?: number;
 }
@@ -38,8 +40,13 @@ export async function sweepPersonalSandboxes(
       continue;
     }
     if (now - since < idleMs) continue;
-    await deps.sleep(sandbox.projectId, sandbox.userId);
-    idleSince.delete(key);
+    // One sandbox that fails to sleep must not keep the others awake.
+    try {
+      await deps.sleep(sandbox.projectId, sandbox.userId);
+      idleSince.delete(key);
+    } catch (error) {
+      deps.onError?.(error, sandbox.projectId, sandbox.userId);
+    }
   }
   for (const key of [...idleSince.keys()]) if (!seen.has(key)) idleSince.delete(key);
 }

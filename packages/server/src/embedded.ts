@@ -5450,6 +5450,8 @@ export async function buildEmbeddedServer(
           return false;
         },
         sleep: sleepSandbox,
+        onError: (error, projectId, userId) =>
+          app.log.warn({ err: error, projectId, userId }, 'personal sandbox failed to sleep'),
       },
       personalSandboxIdle,
     )
