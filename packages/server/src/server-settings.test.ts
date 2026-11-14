@@ -1,3 +1,4 @@
+import { legacyAdministratorId } from './view-state-routes.js';
 import { InMemoryEventBus } from '@verity/session';
 import { createSealableSecretCipher } from '@verity/store';
 import { readdirSync } from 'node:fs';
@@ -848,6 +849,35 @@ describe('project allowed agents', () => {
         default: 'codex/gpt-5.6-sol',
         allowedAgents: ['codex'],
       });
+    } finally {
+      await withModels.close();
+    }
+  });
+
+  // Migration 0216 retired the project-wide default: each person keeps their own,
+  // and a project that restricts agents must still offer it, not its first model.
+  it("offers the person's own default model in a project that restricts agents", async () => {
+    await project('p-agents-own');
+    await ctx.store.updateVeritySettings({
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await patchSettings('p-agents-own', { allowedAgents: ['codex'] });
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      legacyAdministratorId,
+      'p-agents-own',
+      'codex/gpt-5.5',
+    );
+    const withModels = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.6-sol', 'codex/gpt-5.5']),
+    });
+    try {
+      const res = await withModels.inject('/models?projectId=p-agents-own');
+      const body = res.json<{ models: string[]; default: string }>();
+      expect(body.models).toContain('codex/gpt-5.5');
+      expect(body.default).toBe('codex/gpt-5.5');
     } finally {
       await withModels.close();
     }

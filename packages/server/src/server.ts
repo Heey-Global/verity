@@ -5134,15 +5134,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ensureControlProject: ensureVerityControlProject,
     resolveProjectModel: async (projectId, viewer) => {
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
+      // Each person's own default (migration 0216 retired the project-wide one);
+      // a project that restricts agents still decides which of them it allows.
+      const own = await deps.eventStore.userProviderConnections.projectDefaultModel(
+        viewer,
+        projectId,
+      );
       const model =
         settings?.allowedAgents == null
-          ? ((await deps.eventStore.userProviderConnections.projectDefaultModel(
-              viewer,
-              projectId,
-            )) ?? DEFAULT_MODEL)
+          ? (own ?? DEFAULT_MODEL)
           : resolveProjectDefaultModel(
               await availableModels({ allowLegacyCodexFallback: true }),
-              settings,
+              { ...settings, defaultModel: own },
               isProjectSessionModel,
             );
       return (await isConfiguredProjectSessionModel(model)) ? model : undefined;
@@ -5386,7 +5389,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const available = await availableModels({ viewer });
       if (projectId === undefined) return available;
       const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-      return filterModelListForProject(available, settings, isProjectSessionModel);
+      // The default offered is the person's own for this project, within its agent rule.
+      const own =
+        viewer === undefined
+          ? null
+          : await deps.eventStore.userProviderConnections.projectDefaultModel(viewer, projectId);
+      return filterModelListForProject(
+        available,
+        settings === undefined || settings === null ? settings : { ...settings, defaultModel: own },
+        isProjectSessionModel,
+      );
     },
     getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
@@ -5585,7 +5597,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             ? session.model
             : resolveProjectDefaultModel(
                 await availableModels({ viewer: person }),
-                settings,
+                settings === undefined || settings === null || person === undefined
+                  ? settings
+                  : {
+                      ...settings,
+                      defaultModel:
+                        await deps.eventStore.userProviderConnections.projectDefaultModel(
+                          person,
+                          session.projectId ?? '',
+                        ),
+                    },
                 isProjectSessionModel,
               );
       if (model === undefined) return undefined;
