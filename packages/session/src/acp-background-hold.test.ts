@@ -284,6 +284,12 @@ describe('ACP turns held open for background work', () => {
     const list = await events('held-stop');
     expect(list.filter((event) => event.t === 'status' && event.state !== 'running')).toEqual([]);
     expect(list.filter((event) => event.t === 'error')).toEqual([]);
+    expect(
+      list.filter((event) => event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID),
+    ).toEqual([
+      expect.objectContaining({ phase: 'started' }),
+      expect.objectContaining({ phase: 'ended', status: 'stopped' }),
+    ]);
   });
 
   it('sends a message written during the hold to the live agent as a prompt', async () => {
@@ -376,6 +382,12 @@ describe('ACP turns held open for background work', () => {
     const list = await events('held-crash');
     expect(list.some((event) => event.t === 'error')).toBe(true);
     expect(terminal(list).at(-1)).toEqual({ t: 'status', state: 'crashed' });
+    expect(
+      list.filter((event) => event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID),
+    ).toEqual([
+      expect.objectContaining({ phase: 'started' }),
+      expect.objectContaining({ phase: 'ended', status: 'failed' }),
+    ]);
   });
 
   it('does not hold Codex turns, whose profile does not opt in', async () => {

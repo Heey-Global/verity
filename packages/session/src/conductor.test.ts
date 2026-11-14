@@ -4071,6 +4071,10 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
       expect(conductor.isBusy('s1')).toBe(false);
       const events = await ctx.store.getEvents('s1');
       expect(events).toContainEqual(expect.objectContaining({ t: 'interrupted' }));
+      const notices = events.flatMap((event) => (event.t === 'notice' ? [event.text] : []));
+      expect(notices).toEqual([
+        expect.stringMatching(/beyond the hold limit[\s\S]*Background work/),
+      ]);
     } finally {
       vi.useRealTimers();
     }

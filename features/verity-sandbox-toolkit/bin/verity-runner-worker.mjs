@@ -31674,10 +31674,17 @@ async function runAcpTurn(opts, profile) {
             outcome = await background.waitUntilQuiet(quietMs, deadline);
           }
           sendHeldPrompt = void 0;
-          if (stopped)
-            throw new Error("ACP turn cancelled");
-          if (agentExited)
+          if (stopped || agentExited) {
+            await writer.write({
+              t: "task",
+              id: BACKGROUND_HOLD_TASK_ID,
+              phase: "ended",
+              status: stopped ? "stopped" : "failed"
+            }).catch(() => void 0);
+            if (stopped)
+              throw new Error("ACP turn cancelled");
             throw new Error("ACP agent exited while background work was running");
+          }
           await drainUpdates();
           await writeAll(writer, topLevelText.flush());
           await writer.write({

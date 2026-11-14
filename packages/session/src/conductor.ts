@@ -150,6 +150,12 @@ const BACKGROUND_WORK_LOST_NOTICE =
   'Background work this turn was still running (commands or monitors the agent was ' +
   'waiting for) ended with it; its results and any follow-up the agent announced will ' +
   'not arrive.';
+/** The stall release for a turn its backend held for background work: it already
+ * outlived the hold limit, so "half an hour" would misstate what happened. */
+const STALLED_HELD_RUNNER_NOTICE =
+  'The Runner executing this turn kept it open for background work beyond the hold ' +
+  'limit and then stopped responding — Verity stopped waiting and released the session. ' +
+  BACKGROUND_WORK_LOST_NOTICE;
 const STALLED_RUNNER_NOTICE =
   'The Runner executing this turn is still alive but has produced nothing for half ' +
   'an hour — Verity stopped waiting and released the session. Send the message ' +
@@ -4528,7 +4534,11 @@ export class Conductor {
       const stalledNotice: AgentEvent = {
         t: 'notice',
         role: 'agent',
-        text: STALLED_RUNNER_NOTICE,
+        text:
+          liveProbes >= TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS &&
+          (await this.turnHeldForBackgroundWork(marker))
+            ? STALLED_HELD_RUNNER_NOTICE
+            : STALLED_RUNNER_NOTICE,
       };
       // Atomically claim the still-silent transcript and close its frame stream,
       // but do not publish yet: every abort path removes exactly this fence+notice.
