@@ -7469,12 +7469,12 @@ describe('ProvisionerImpl (#174)', () => {
       }
     });
 
-    it('pins the reset even when the value resolves, so it cannot land in a session', async () => {
+    it('relies on --work-tree beating a resolvable core.worktree (git behaviour pin)', async () => {
       const f = cloneWithSession();
       try {
-        // Without the guard in the way: a value that resolves on this host, and a runner
-        // that skips straight to the reset path. A plain `reset --hard` would overwrite
-        // the session's edit with the remote's file.
+        // The provisioner's reset carries `--work-tree` (asserted above). This pins the git
+        // behaviour that makes it safe: with a value that resolves on this host, the pinned
+        // reset leaves the session alone, while an unpinned one overwrites its edit.
         run('config', '--file', f.config, 'core.worktree', f.session);
         run('-C', f.clone, `--work-tree=${f.clone}`, 'reset', '--hard', 'origin/main');
         expect(readFileSync(join(f.session, 'file.txt'), 'utf8')).toBe(

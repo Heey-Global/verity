@@ -359,6 +359,13 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
     expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
   });
 
+  it('still lets an unrelated existing repository be re-initialized', async () => {
+    const cache = join(base, 'cache.git');
+    await realGit(base, 'init', '-q', '--bare', cache);
+    const { code } = await runWrapper([`--git-dir=${cache}`, 'init', '-q', '--bare'], base);
+    expect(code).toBe(0);
+  });
+
   it('still lets a separate repository be created with both set', async () => {
     const fresh = join(base, 'fresh');
     mkdirSync(fresh);
