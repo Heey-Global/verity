@@ -251,6 +251,12 @@ source = replaceOnce(
 // turn open while either says the agent is still working (background-work.ts in
 // the Session package); without them it would end the agent process — and every
 // background shell, monitor and subagent in it — at the first prompt response.
+// The emitted code names the adapter's own owner constant. The method seams
+// below do not mention it, so check it separately: a renamed constant would
+// otherwise throw on every prompt.
+if (!/^const AUTONOMOUS_CYCLE = "autonomous-cycle";$/m.test(source)) {
+  fail('AUTONOMOUS_CYCLE seam is missing; re-derive against the pinned adapter');
+}
 const cycleSignal = (phase) => `void this.client.sessionUpdate({
             sessionId,
             update: {

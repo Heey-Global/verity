@@ -15,7 +15,8 @@ const SCRIPT = fileURLToPath(
 );
 
 /** Exact 0.81.2 seams, reduced to the statements the build-time patch owns. */
-const PINNED_ADAPTER = `update: attachUsageModel({
+const PINNED_ADAPTER = `const AUTONOMOUS_CYCLE = "autonomous-cycle";
+update: attachUsageModel({
                                         sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
                                         size: session.contextWindowSize,
@@ -259,6 +260,20 @@ describe('Claude ACP structured lifecycle feature patch', () => {
       }),
     ).rejects.toMatchObject({ code: 1 });
     expect(await readFile(path.join(root, 'dist', 'acp-agent.js'), 'utf8')).toBe(PINNED_ADAPTER);
+  });
+
+  it('fails closed when the self-started cycle constant is renamed', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-cycle-'));
+    await mkdir(path.join(root, 'dist'));
+    await writeFile(
+      path.join(root, 'dist', 'acp-agent.js'),
+      PINNED_ADAPTER.replace('const AUTONOMOUS_CYCLE =', 'const SELF_STARTED_CYCLE ='),
+    );
+    await expect(
+      execFileAsync(process.execPath, [SCRIPT, root], {
+        env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
   });
 
   it('fails closed when a pinned adapter seam moves', async () => {
