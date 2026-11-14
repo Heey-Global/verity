@@ -917,7 +917,9 @@ async function main() {
   const cacheRoot = join(inventoryCommon, 'verity-dependencies');
   if (action === 'status') {
     console.error(`Dependencies are not ready: ${readinessReason(root, currentIdentity)}.`);
-    console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
+    // A module checkout is its own repository; the project's installation is not its.
+    if (moduleProject === undefined)
+      console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
     console.error(
       cachedReady(root, join(cacheRoot, currentIdentity), currentIdentity)
         ? 'A complete central inventory is available; run verity dependencies install to activate it.'

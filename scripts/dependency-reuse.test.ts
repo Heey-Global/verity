@@ -1336,6 +1336,7 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(unmarked.stderr).toContain('requires a session worktree');
     expect(existsSync(f.called)).toBe(false);
 
+    const projectModules = readdirSync(join(f.root, 'node_modules')).sort();
     const first = module('d');
     const prepared = install(first);
     expect(prepared.status, prepared.stderr).toBe(0);
@@ -1351,6 +1352,9 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(reused.status, reused.stderr).toBe(0);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
     expect(existsSync(join(second, 'node_modules', 'private', 'package.json'))).toBe(true);
+    // The project clone's own installation is what the shared-clone refusal protects.
+    expect(readdirSync(join(f.root, 'node_modules')).sort()).toEqual(projectModules);
+    expect(existsSync(join(f.root, 'node_modules', 'private'))).toBe(false);
   });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(
