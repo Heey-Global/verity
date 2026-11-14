@@ -243,7 +243,8 @@ export async function inspectCloneWorktreeConfig(
  * Remove a session-worktree `core.worktree` from the file {@link inspectCloneWorktreeConfig}
  * named, after a private backup of that file.
  *
- * The value is removed with `--fixed-value`, so a file rewritten in between keeps
+ * The value is removed with `--fixed-value` (git 2.30+; the server image ships Debian
+ * bookworm's 2.39), so a file rewritten in between keeps
  * whatever it now holds; the follow-up inspection then reports it instead. Only this one
  * key changes: worktrees, indexes, refs and files are never touched.
  */

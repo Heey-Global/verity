@@ -1291,6 +1291,7 @@ export async function buildEmbeddedServer(
 
   // Durable server storage for the clone-config backups Repair keeps. Without it Repair
   // reports the key instead of removing it, rather than keep the only copy in a temp dir.
+  // Dot-prefixed: no `owner-repo` clone directory can carry that name.
   const durableServerRoot = config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir;
   const secretRoot =
     config.secretMaterializationRoot ??
@@ -2682,7 +2683,7 @@ export async function buildEmbeddedServer(
       gitSecretRoot: secretRoot,
       ...(durableServerRoot === undefined
         ? {}
-        : { cloneConfigBackupDirectory: join(durableServerRoot, 'clone-config-backups') }),
+        : { cloneConfigBackupDirectory: join(durableServerRoot, '.clone-config-backups') }),
       onCloneConfigRepaired: (event) => {
         app.log.warn(event, 'verity: removed a session-worktree core.worktree from a clone config');
       },
