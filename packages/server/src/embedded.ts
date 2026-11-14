@@ -4858,8 +4858,12 @@ export async function buildEmbeddedServer(
     // "Invalid path", or points server-side git at a session's files. Report it at
     // startup, before an update recreates the Sandbox; Repair is what removes it.
     const cloneRoot = config.hostCloneRoot;
-    void reportCloneWorktreeConfigs(cloneRoot, defaultCloneConfigGit, (clonePath, message) =>
-      app.log.warn({ clonePath }, `verity: project clone config needs repair: ${message}`),
+    void reportCloneWorktreeConfigs(
+      cloneRoot,
+      defaultCloneConfigGit,
+      (clonePath, message) =>
+        app.log.warn({ clonePath }, `verity: project clone config needs repair: ${message}`),
+      durableServerRoot !== undefined,
     ).catch(() => undefined);
   }
   if (managedMatrixControl) {

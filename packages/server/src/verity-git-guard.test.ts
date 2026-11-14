@@ -368,6 +368,19 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
     expect((await runWrapper(['init', '-q'], main, { GIT_DIR: '.git' })).code).toBe(1);
   });
 
+  it('needs no rule for a work tree alone: git itself refuses init without a git dir', async () => {
+    // Why the wrapper only inspects GIT_DIR / --git-dir. Should git ever accept this, the
+    // session's gitfile would lead it into the shared repository and this has to change.
+    const before = readFileSync(sharedConfig(), 'utf8');
+    await expect(
+      execFileAsync(REAL_GIT, ['init', '-q'], {
+        cwd: session(),
+        env: { ...process.env, ...GIT_ENV, GIT_WORK_TREE: join(base, 'elsewhere') },
+      }),
+    ).rejects.toThrow(/not allowed without specifying GIT_DIR/);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+  });
+
   it('still lets an unrelated existing repository be re-initialized', async () => {
     const cache = join(base, 'cache.git');
     await realGit(base, 'init', '-q', '--bare', cache);
