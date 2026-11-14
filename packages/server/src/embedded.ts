@@ -202,6 +202,7 @@ import {
   repairProjectAdminGitdirs,
 } from './worktree.js';
 import { createGitBranchService } from './branches.js';
+import { defaultCloneConfigGit, reportCloneWorktreeConfigs } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
@@ -2676,6 +2677,13 @@ export async function buildEmbeddedServer(
         return provider.openPullRequest(target, token, pr);
       },
       gitSecretRoot: secretRoot,
+      cloneConfigBackupDirectory: join(
+        config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'),
+        'clone-config-backups',
+      ),
+      onCloneConfigRepaired: (event) => {
+        app.log.warn(event, 'verity: removed a session-worktree core.worktree from a clone config');
+      },
       // GitHub-token broker: the SAME registry the /internal/github/token endpoint
       // resolves against. The provisioner issues a per-container capability into it
       // instead of writing a gh-token file, so the sandbox mints tokens on demand.
@@ -4842,6 +4850,15 @@ export async function buildEmbeddedServer(
       },
     },
   });
+  if (config.hostCloneRoot) {
+    // Read-only: a `core.worktree` in a shared clone config fails every later Repair with
+    // "Invalid path", or points server-side git at a session's files. Report it at
+    // startup, before an update recreates the Sandbox; Repair is what removes it.
+    const cloneRoot = config.hostCloneRoot;
+    void reportCloneWorktreeConfigs(cloneRoot, defaultCloneConfigGit, (clonePath, message) =>
+      app.log.warn({ clonePath }, `verity: project clone config needs repair: ${message}`),
+    ).catch(() => undefined);
+  }
   if (managedMatrixControl) {
     const retryMatrixActivation = async (): Promise<void> => {
       try {
