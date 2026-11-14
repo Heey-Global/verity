@@ -1291,6 +1291,67 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(result.stderr).toContain('Dependency inputs changed during installation');
     expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
   });
+  it('prepares a repository opened into a session through the project inventory', () => {
+    // An opened repository is a standalone clone: its root is its own common
+    // directory, like the project clone. Treated as that shared clone, every
+    // pre-push dependency preparation in it was refused, so no push could leave.
+    const f = fixture();
+    writeFileSync(
+      join(f.root, '.gitignore'),
+      'node_modules/\n.verity-sessions/\nbin/\n.verity-repositories/\n',
+    );
+    const gitIn = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args],
+        {
+          cwd,
+          env,
+          stdio: 'ignore',
+        },
+      );
+    const module = (session: string, marked = true) => {
+      const checkout = join(f.root, '.verity-repositories', session.repeat(20), 'b'.repeat(20));
+      gitIn(f.root, 'clone', '-q', f.worktree, checkout);
+      writeFileSync(
+        join(checkout, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: { 'node_modules/private': { version: '3.0.0' } },
+        }),
+      );
+      if (marked) gitIn(checkout, 'config', 'verity.repositoryId', 'module-repository');
+      return checkout;
+    };
+    const install = (cwd: string) =>
+      spawnSync(process.execPath, [helper, 'install'], {
+        cwd,
+        env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+
+    // Without the server's marker a standalone clone keeps the shared-clone refusal.
+    const unmarked = install(module('c', false));
+    expect(unmarked.status).toBe(1);
+    expect(unmarked.stderr).toContain('requires a session worktree');
+    expect(existsSync(f.called)).toBe(false);
+
+    const first = module('d');
+    const prepared = install(first);
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(readFileSync(join(first, 'node_modules', 'private', 'package.json'), 'utf8')).toContain(
+      '3.0.0',
+    );
+    // Published in the project's inventory, where other sessions find it.
+    expect(readdirSync(join(f.root, '.git', 'verity-dependencies')).length).toBeGreaterThan(0);
+    expect(existsSync(join(first, '.git', 'verity-dependencies'))).toBe(false);
+
+    const second = module('e');
+    const reused = install(second);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(existsSync(join(second, 'node_modules', 'private', 'package.json'))).toBe(true);
+  });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(
       readFileSync('features/verity-sandbox-toolkit/agent-seed/bin/verity-dependencies', 'utf8'),
