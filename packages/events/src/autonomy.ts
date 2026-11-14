@@ -1,6 +1,6 @@
 /** Full wait contract; the resumed form below keeps it within its per-turn budget. */
 const WORK_COMPLETION_DIRECTIVE =
-  'Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. A background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.';
+  'Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. Unless your runtime instructions say Verity holds the turn for background work, a background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.';
 
 /**
  * Shared outcome and decision-boundary guidance for every agent backend.
