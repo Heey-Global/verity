@@ -376,6 +376,20 @@ describe('Google accounts belong to the person who connected them', () => {
     expect(
       (await accounts.effectiveAccess('google-member-session', 'calendar', BOB))?.account.id,
     ).toBe(bob.id);
+
+    // The administrator pins their own account on the shared session: their
+    // turns use it, Bob's keep his own project choice instead of losing Google.
+    await accounts.setSessionAccess('google-member-session', 'calendar', {
+      mode: 'account',
+      accountId: admin.id,
+    });
+    expect(
+      await accounts.effectiveAccess('google-member-session', 'calendar', ADMIN),
+    ).toMatchObject({ account: { id: admin.id }, source: 'session' });
+    expect(await accounts.effectiveAccess('google-member-session', 'calendar', BOB)).toMatchObject({
+      account: { id: bob.id },
+      source: 'project',
+    });
   });
 });
 

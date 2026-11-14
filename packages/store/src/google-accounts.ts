@@ -316,6 +316,8 @@ export class GoogleAccountStore {
    * The account a turn run for `userId` uses in this session: the session's
    * explicit account when that person owns it, otherwise their own project
    * choice. Another member's account never applies, and no person means none.
+   * A session pinned to someone else's account falls through to this person's
+   * own choice, so one member's pin never leaves the others without Google.
    */
   async effectiveAccess(sessionId: string, service: GoogleService, userId: string | undefined) {
     if (userId === undefined) return undefined;
@@ -323,7 +325,7 @@ export class GoogleAccountStore {
     if (access.mode === 'disabled') return undefined;
     if (access.mode === 'account') {
       const account = await this.getOwned(access.accountId, userId);
-      return account ? { account, source: 'session' as const } : undefined;
+      if (account) return { account, source: 'session' as const };
     }
     const session = await this.db
       .selectFrom('sessions')
