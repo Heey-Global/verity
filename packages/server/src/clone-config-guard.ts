@@ -22,11 +22,13 @@ import { promisify } from 'node:util';
  *
  * Classification is deliberately narrow:
  *
- * - `clean` — no `core.worktree`, or one naming the clone root itself (server or Sandbox
- *   view), which is what git would assume anyway.
- * - `session-contamination` — exactly one value, naming one direct child of a
- *   `.verity-sessions` directory under the clone root. The main checkout never lives
- *   there, so the value is wrong by construction and is the only one Repair removes.
+ * - `clean` — no `core.worktree`.
+ * - `session-contamination` — exactly one value, naming either one direct child of a
+ *   `.verity-sessions` directory under the clone root (`target: 'session'`; the main
+ *   checkout never lives there), or the clone root itself (`target: 'clone-root'`). The
+ *   latter only restates git's default, but as a path that exists on one side alone:
+ *   `/work` is missing on the server and the host path inside the Sandbox. Neither is
+ *   ever needed, so these are the values Repair removes.
  * - `unknown` — any other value, several values, or a config that is not a plain file
  *   inside the clone. Nothing is changed; Repair stops with the location to inspect.
  *
@@ -53,7 +55,12 @@ export const defaultCloneConfigGit: CloneConfigGit = async (args) => {
 
 export type CloneWorktreeFinding =
   | { kind: 'clean' }
-  | { kind: 'session-contamination'; file: string; value: string }
+  | {
+      kind: 'session-contamination';
+      file: string;
+      value: string;
+      target: 'session' | 'clone-root';
+    }
   | { kind: 'unknown'; file: string; reason: string; values: string[] };
 
 export interface CloneWorktreeRepair {
@@ -73,10 +80,12 @@ export function describeCloneWorktreeFinding(
       ? 'Repair saves a backup of the file and removes only this key.'
       : 'No backup directory is configured, so Repair does not remove it; remove the key ' +
         'from that file, then repair again.';
-    return (
-      `${prefix}${finding.file} sets core.worktree to the session worktree ` +
-      `"${finding.value}", which re-points the shared main checkout. ${remedy}`
-    );
+    const what =
+      finding.target === 'session'
+        ? `the session worktree "${finding.value}", which re-points the shared main checkout`
+        : `the clone root as "${finding.value}", a path that exists only on one side ` +
+          '(server or Sandbox) and breaks git on the other';
+    return `${prefix}${finding.file} sets core.worktree to ${what}. ${remedy}`;
   }
   const values = finding.values.length > 0 ? ` (${finding.values.join(', ')})` : '';
   return (
@@ -143,11 +152,11 @@ function classifyValue(
   value: string,
   gitDir: string,
   roots: readonly string[],
-): 'clean' | 'session' | 'unknown' {
+): 'clone-root' | 'session' | 'unknown' {
   // git resolves a relative core.worktree against the git directory.
   const target = normalized(isAbsolute(value) ? value : resolve(gitDir, value));
   for (const root of roots) {
-    if (target === root) return 'clean';
+    if (target === root) return 'clone-root';
     const prefix = `${root}/${SESSION_ROOT}/`;
     if (target.startsWith(prefix)) {
       const rest = target.slice(prefix.length);
@@ -223,7 +232,7 @@ export async function inspectCloneWorktreeConfig(
         values,
       };
     }
-    if (verdict === 'session') contamination ??= { kind: 'session-contamination', file, value };
+    contamination ??= { kind: 'session-contamination', file, value, target: verdict };
   }
   return contamination ?? { kind: 'clean' };
 }
