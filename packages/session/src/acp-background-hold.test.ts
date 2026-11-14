@@ -177,6 +177,7 @@ describe('ACP turns held open for background work', () => {
       first = id;
       a.emit(chunk('Started the review in the background; I will wait for it.'));
       a.emit(lifecycle({ type: 'task', id: 'review', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['review'] }));
       a.answer(id);
     });
     const run = new AcpClaudeBackend().run(turn(spawner, 'held-follow-up'));
@@ -224,6 +225,7 @@ describe('ACP turns held open for background work', () => {
   it('holds for a cycle that starts just after the prompt answered', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'tests', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['tests'] }));
       a.emit(lifecycle({ type: 'task', id: 'tests', phase: 'ended' }));
       a.answer(id);
       setTimeout(() => {
@@ -259,9 +261,24 @@ describe('ACP turns held open for background work', () => {
     expect(agent.kill).toHaveBeenCalled();
   });
 
+  it('does not hold on a task edge the runtime never confirmed with a level', async () => {
+    const { spawner, agent } = scriptedAgent((a, id) => {
+      a.emit(lifecycle({ type: 'task', id: 'unconfirmed', phase: 'started' }));
+      a.answer(id);
+    });
+    await new AcpClaudeBackend().run(
+      turn(spawner, 'held-edge-only', { backgroundHoldMaxMs: 60_000 }),
+    );
+    const list = await events('held-edge-only');
+    expect(terminal(list).at(-1)).toEqual({ t: 'status', state: 'completed' });
+    expect(list.some((event) => event.t === 'notice')).toBe(false);
+    expect(agent.kill).toHaveBeenCalled();
+  });
+
   it('drops a task whose end was lost once the live background level omits it', async () => {
     const { spawner } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'lost-end', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['lost-end'] }));
       a.answer(id);
       a.emit(lifecycle({ type: 'background', live: [] }));
     });
@@ -275,9 +292,10 @@ describe('ACP turns held open for background work', () => {
   it('ends background work at the hold limit with a visible notice, not a crash', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'monitor', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['monitor'] }));
       a.answer(id);
     });
-    await new AcpClaudeBackend().run(turn(spawner, 'held-limit', { backgroundHoldMaxMs: 150 }));
+    await new AcpClaudeBackend().run(turn(spawner, 'held-limit', { backgroundHoldMaxMs: 1_000 }));
     const list = await events('held-limit');
     expect(list).toContainEqual({
       t: 'notice',
@@ -293,6 +311,7 @@ describe('ACP turns held open for background work', () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(chunk('Waiting for the monitor.'));
       a.emit(lifecycle({ type: 'task', id: 'monitor', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['monitor'] }));
       a.answer(id);
     });
     const run = new AcpClaudeBackend().run(
@@ -321,6 +340,7 @@ describe('ACP turns held open for background work', () => {
       if (index === 0) {
         a.emit(chunk('Waiting for the tests.'));
         a.emit(lifecycle({ type: 'task', id: 'tests', phase: 'started' }));
+        a.emit(lifecycle({ type: 'background', live: ['tests'] }));
         a.answer(id);
         return;
       }
@@ -360,6 +380,7 @@ describe('ACP turns held open for background work', () => {
       if (index === 0) {
         a.emit(chunk('Waiting for the build.'));
         a.emit(lifecycle({ type: 'task', id: 'build', phase: 'started' }));
+        a.emit(lifecycle({ type: 'background', live: ['build'] }));
         a.answer(id);
         return;
       }
@@ -392,6 +413,7 @@ describe('ACP turns held open for background work', () => {
   it('records a crash when the agent dies while the turn is held', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'review', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['review'] }));
       a.answer(id);
     });
     const run = new AcpClaudeBackend().run(turn(spawner, 'held-crash'));
@@ -416,6 +438,7 @@ describe('ACP turns held open for background work', () => {
   it('does not hold Codex turns, whose profile does not opt in', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'background', phase: 'started' }));
+      a.emit(lifecycle({ type: 'background', live: ['background'] }));
       a.answer(id);
     });
     const codexTurn = turn(spawner, 'held-codex');

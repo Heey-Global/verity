@@ -41,6 +41,11 @@ export class BackgroundWork {
   private cycle = false;
   private prompts = 0;
   private sawWork = false;
+  // Whether the runtime has sent a complete background-task level this turn.
+  // Edges alone never hold a turn: an `ended` edge can be lost, and without a
+  // level to correct it the turn would sit out the whole hold limit. Without
+  // levels the turn ends at its prompt response, exactly as before.
+  private levelSeen = false;
   private lastActivity = Date.now();
   private notify: (() => void) | undefined;
   private wakeExplicit: (() => void) | undefined;
@@ -64,6 +69,7 @@ export class BackgroundWork {
         else if (signal.phase === 'ended') this.tasks.delete(signal.id);
         break;
       case 'background':
+        this.levelSeen = true;
         // A level replaces the edges: a task whose end was lost is dropped, and
         // one whose start has not arrived yet is already counted.
         this.tasks.clear();
@@ -103,7 +109,7 @@ export class BackgroundWork {
   }
 
   get busy(): boolean {
-    return this.cycle || this.tasks.size > 0 || this.prompts > 0;
+    return this.cycle || this.prompts > 0 || (this.levelSeen && this.tasks.size > 0);
   }
 
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */

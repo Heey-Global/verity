@@ -30568,6 +30568,11 @@ var BackgroundWork = class {
   cycle = false;
   prompts = 0;
   sawWork = false;
+  // Whether the runtime has sent a complete background-task level this turn.
+  // Edges alone never hold a turn: an `ended` edge can be lost, and without a
+  // level to correct it the turn would sit out the whole hold limit. Without
+  // levels the turn ends at its prompt response, exactly as before.
+  levelSeen = false;
   lastActivity = Date.now();
   notify;
   wakeExplicit;
@@ -30592,6 +30597,7 @@ var BackgroundWork = class {
           this.tasks.delete(signal.id);
         break;
       case "background":
+        this.levelSeen = true;
         this.tasks.clear();
         for (const id4 of signal.live)
           this.tasks.add(id4);
@@ -30625,7 +30631,7 @@ var BackgroundWork = class {
     return this.sawWork;
   }
   get busy() {
-    return this.cycle || this.tasks.size > 0 || this.prompts > 0;
+    return this.cycle || this.prompts > 0 || this.levelSeen && this.tasks.size > 0;
   }
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
   wake() {

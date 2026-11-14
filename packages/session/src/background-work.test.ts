@@ -7,17 +7,30 @@ describe('BackgroundWork', () => {
   // Lost, it left a crashed agent's turn held until the two-hour limit.
   it('keeps a wake that arrives while no wait is registered', async () => {
     const work = new BackgroundWork();
-    work.signal({ type: 'task', id: 'review', phase: 'started' });
+    work.signal({ type: 'background', live: ['review'] });
     work.wake();
     expect(await work.waitUntilQuiet(10, Date.now() + 60_000)).toBe('woken');
   });
 
   it('settles once nothing is live and the quiet window has passed', async () => {
     const work = new BackgroundWork();
-    work.signal({ type: 'task', id: 'review', phase: 'started' });
+    work.signal({ type: 'background', live: ['review'] });
     const waiting = work.waitUntilQuiet(10, Date.now() + 60_000);
     work.signal({ type: 'task', id: 'review', phase: 'ended' });
     expect(await waiting).toBe('quiet');
+  });
+
+  // An `ended` edge can be lost; with no level to correct it, an edge-only hold
+  // would sit out the whole limit. Without levels a turn ends as it always did.
+  it('does not hold on task edges until the runtime has sent a level', () => {
+    const work = new BackgroundWork();
+    work.signal({ type: 'task', id: 'lost-end', phase: 'started' });
+    expect(work.busy).toBe(false);
+    work.signal({ type: 'background', live: [] });
+    work.signal({ type: 'task', id: 'later', phase: 'started' });
+    expect(work.busy).toBe(true);
+    work.signal({ type: 'task', id: 'later', phase: 'ended' });
+    expect(work.busy).toBe(false);
   });
 
   it('counts a self-started cycle and a level as live work', () => {
