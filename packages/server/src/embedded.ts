@@ -1263,7 +1263,7 @@ export async function buildEmbeddedServer(
     : undefined;
 
   // Durable server storage for clone-config backups; without it Repair only reports the key.
-  const durableServerRoot = config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir;
+  const durableServerRoot = config.dataVolumeRoot || config.dataDir || config.workspacesDir;
   const secretRoot =
     config.secretMaterializationRoot ??
     join(config.dataDir ?? config.workspacesDir ?? join(tmpdir(), 'verity'), 'secrets');
@@ -4819,7 +4819,7 @@ export async function buildEmbeddedServer(
       },
     },
   });
-  startCloneConfigSweep(config.hostCloneRoot, durableServerRoot !== undefined, (event, msg) =>
+  startCloneConfigSweep(config.hostCloneRoot, Boolean(durableServerRoot), (event, msg) =>
     app.log.warn(event, msg),
   );
   if (managedMatrixControl) {

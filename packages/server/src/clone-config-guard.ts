@@ -281,6 +281,11 @@ export async function removeSessionWorktreeConfig(
   } finally {
     await source.close();
   }
+  // `git config --file` follows a symlink and would rewrite its target as the server's
+  // user; the file must still be the regular one inspected, not a link swapped in since.
+  if (!(await lstat(finding.file)).isFile()) {
+    throw new Error(`${finding.file} is no longer a regular file`);
+  }
   await git([
     'config',
     '--file',
@@ -421,7 +426,7 @@ export function cloneConfigRepairOptions(
 } {
   return {
     // Dot-prefixed: no `owner-repo` clone directory can carry that name.
-    ...(durableRoot === undefined
+    ...(!durableRoot
       ? {}
       : { cloneConfigBackupDirectory: join(durableRoot, '.clone-config-backups') }),
     onCloneConfigRepaired: (event) =>
