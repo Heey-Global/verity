@@ -24772,7 +24772,7 @@ var COMPLETE = `\`${COMPLETE_MOCKUPS_FOCUSED_TOOL}\` (\`${COMPLETE_MOCKUPS_TOOL}
 var MOCKUPS_FIRST_PROMPT = `The plan lists mockups. Build only those first, without implementing the rest of the plan: render each listed screen as its own PNG or JPEG file in this worktree (one screen per image, composed from the app's real components and design tokens; use the project's own mockup tooling where it has one), then call ${PRESENT} with a short name and the relative path of each image, and end your turn. The user marks each screen as approved or discarded and tells you in the chat what to change. A revision replaces the round: present every screen again with ${PRESENT}, not as images in the chat. Continue with the rest of the plan only after the user tells you in the chat to implement; then call ${COMPLETE} first.`;
 
 // node_modules/@verity/events/dist/autonomy.js
-var WORK_COMPLETION_DIRECTIVE = "Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. A background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.";
+var WORK_COMPLETION_DIRECTIVE = "Wait for required reviews and tests to finish before ending the turn. For asynchronous tool calls, wait or poll until completion, inspect the result and exit status, and report the concrete failure if interrupted. Unless your runtime instructions say Verity holds the turn for background work, a background shell command is not a managed continuation: turn completion can terminate its processes. Never promise a later automatic report unless a managed continuation has actually been established. Keep giving progress updates while waiting.";
 var AUTONOMY_SYSTEM_PROMPT = `# Outcome ownership and decision boundaries (Verity)
 
 ${WORK_COMPLETION_DIRECTIVE}
@@ -29963,6 +29963,22 @@ function lifecycleSignalsFromMeta(meta) {
           signals.push({ type: "skill", text });
         break;
       }
+      case "cycle": {
+        const phase = value["phase"];
+        if (phase === "started" || phase === "ended")
+          signals.push({ type: "cycle", phase });
+        break;
+      }
+      case "background": {
+        const live = value["live"];
+        if (!Array.isArray(live) || live.length > 1e3)
+          break;
+        const ids = live.filter((id4) => nonEmptyString(id4) !== void 0);
+        if (ids.length !== live.length)
+          break;
+        signals.push({ type: "background", live: ids });
+        break;
+      }
     }
   }
   return signals;
@@ -29973,6 +29989,8 @@ var StructuredLifecycleMapper = class {
   consume(signal) {
     if (signal.type === "skill")
       return [{ t: "skill", text: signal.text }];
+    if (signal.type === "cycle" || signal.type === "background")
+      return [];
     if (signal.type === "compaction") {
       if (signal.id !== void 0) {
         if (this.compactions.has(signal.id))
@@ -30565,6 +30583,127 @@ var SessionWriter = class {
   }
 };
 
+// packages/session/dist/background-work.js
+var BACKGROUND_HOLD_MAX_MS = 2 * 60 * 6e4;
+var BACKGROUND_QUIET_MS = 3e3;
+var BACKGROUND_HOLD_TASK_ID = "verity-background-hold";
+var BackgroundWork = class {
+  tasks = /* @__PURE__ */ new Set();
+  cycle = false;
+  prompts = 0;
+  sawWork = false;
+  // Whether the runtime has sent a complete background-task level this turn.
+  // Edges alone never hold a turn: an `ended` edge can be lost, and without a
+  // level to correct it the turn would sit out the whole hold limit. Without
+  // levels the turn ends at its prompt response, exactly as before.
+  levelSeen = false;
+  lastActivity = Date.now();
+  notify;
+  wakeExplicit;
+  // A wake that arrived while no wait was registered — for example between a
+  // wait resolving and the caller's next one. Kept until a wait consumes it.
+  wakePending = false;
+  /** Record the lifecycle facts carried by one session update's `_meta`. */
+  observe(meta) {
+    for (const signal of lifecycleSignalsFromMeta(meta))
+      this.signal(signal);
+    this.touch();
+  }
+  signal(signal) {
+    if (signal.type === "background" || signal.type === "cycle" || signal.type === "task" && this.levelSeen) {
+      this.sawWork = true;
+    }
+    switch (signal.type) {
+      case "task":
+        if (signal.phase === "started")
+          this.tasks.add(signal.id);
+        else if (signal.phase === "ended")
+          this.tasks.delete(signal.id);
+        break;
+      case "background":
+        this.levelSeen = true;
+        this.tasks.clear();
+        for (const id4 of signal.live)
+          this.tasks.add(id4);
+        break;
+      case "cycle":
+        this.cycle = signal.phase === "started";
+        break;
+      default:
+        return;
+    }
+    this.changed();
+  }
+  /** Any agent output: a reaction may follow, so the quiet window restarts. */
+  touch() {
+    this.lastActivity = Date.now();
+    this.changed();
+  }
+  /** A prompt sent into the held turn is outstanding until its response. */
+  beginPrompt() {
+    this.prompts += 1;
+    this.touch();
+  }
+  endPrompt() {
+    this.prompts = Math.max(0, this.prompts - 1);
+    this.touch();
+  }
+  /** Whether the agent reported any background work or self-started cycle at
+   * all. A task that ends during the prompt can still provoke a cycle that only
+   * starts after the prompt answers. */
+  get observedWork() {
+    return this.sawWork;
+  }
+  get busy() {
+    return this.cycle || this.prompts > 0 || this.levelSeen && this.tasks.size > 0;
+  }
+  /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
+  wake() {
+    this.wakePending = true;
+    this.changed(true);
+  }
+  /**
+   * Resolve once the agent has been idle for `quietMs`, at `deadline` (epoch ms),
+   * or as soon as {@link wake} is called.
+   */
+  async waitUntilQuiet(quietMs, deadline) {
+    for (; ; ) {
+      if (this.wakePending) {
+        this.wakePending = false;
+        return "woken";
+      }
+      const now = Date.now();
+      if (now >= deadline)
+        return "deadline";
+      const quietLeft = this.lastActivity + quietMs - now;
+      if (!this.busy && quietLeft <= 0)
+        return "quiet";
+      const wait = this.busy ? deadline - now : Math.min(quietLeft, deadline - now);
+      const woken = await new Promise((resolve4) => {
+        const timer = setTimeout(() => finish(false), wait);
+        const finish = (explicit) => {
+          clearTimeout(timer);
+          this.notify = void 0;
+          this.wakeExplicit = void 0;
+          resolve4(explicit);
+        };
+        this.notify = () => finish(false);
+        this.wakeExplicit = () => finish(true);
+      });
+      if (woken) {
+        this.wakePending = false;
+        return "woken";
+      }
+    }
+  }
+  changed(explicit = false) {
+    if (explicit)
+      this.wakeExplicit?.();
+    else
+      this.notify?.();
+  }
+};
+
 // packages/session/dist/runner.js
 import { spawn } from "node:child_process";
 
@@ -31124,6 +31263,13 @@ function permissionRequest(request2, name2) {
     input: recordInput(request2.toolCall.rawInput)
   };
 }
+function formatHoldLimit(ms) {
+  if (ms % 36e5 === 0)
+    return `${ms / 36e5} h`;
+  if (ms % 6e4 === 0)
+    return `${ms / 6e4} min`;
+  return `${Math.ceil(ms / 1e3)} s`;
+}
 async function writeAll(writer, events) {
   for (const event of events)
     await writer.write(event);
@@ -31198,7 +31344,13 @@ async function runAcpTurn(opts, profile) {
   let sendSteering;
   let turnHasAgentContent = false;
   let executionObserved = false;
+  const background = profile.holdsForBackgroundWork === true ? new BackgroundWork() : void 0;
+  let sendHeldPrompt;
   opts.onSteer?.((message) => {
+    if (sendHeldPrompt !== void 0 && !stopped) {
+      sendHeldPrompt(message);
+      return true;
+    }
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === void 0)
       return false;
     sendSteering(message);
@@ -31207,7 +31359,9 @@ async function runAcpTurn(opts, profile) {
   const stop = (operatorCancel) => {
     stopped = true;
     acceptingSteering = false;
+    sendHeldPrompt = void 0;
     wakeRetry?.();
+    background?.wake();
     if (operatorCancel)
       aborted = true;
     if (cancelSession === void 0) {
@@ -31323,6 +31477,7 @@ async function runAcpTurn(opts, profile) {
     const connect = () => client({ name: "verity" }).onRequest(methods.client.session.requestPermission, ({ params }) => onPermission(params)).onNotification(methods.client.session.update, ({ params }) => {
       if (loadingSession || stopped)
         return Promise.resolve();
+      background?.observe(params.update._meta);
       if (isAgentContent(params.update))
         executionObserved = true;
       if (profile.telemetryBackend === "codex-acp") {
@@ -31520,6 +31675,88 @@ async function runAcpTurn(opts, profile) {
         if (stopped)
           throw new Error("ACP turn stopped during capacity retry");
         acceptingSteering = true;
+      }
+      if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
+        acceptingSteering = false;
+        let agentExited = false;
+        sendHeldPrompt = (message) => {
+          background.beginPrompt();
+          void agent.request(methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: [
+              { type: "text", text: message.text },
+              ...imageBlocks(message.attachments)
+            ]
+          }).then((answer) => {
+            const answerUsage = usage(answer.usage);
+            promptUsage.inputTokens += answerUsage.inputTokens;
+            promptUsage.outputTokens += answerUsage.outputTokens;
+            promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
+            promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
+          }).catch(() => {
+            if (stopped || closedOut || agentExited)
+              return;
+            updateTail = updateTail.then(() => writer.write({
+              t: "notice",
+              text: "Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended."
+            })).catch(() => void 0);
+          }).finally(() => background.endPrompt());
+        };
+        await drainUpdates();
+        const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
+        if (!background.busy && background.observedWork) {
+          await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
+          await drainUpdates();
+        }
+        if (!background.busy || stopped) {
+          sendHeldPrompt = void 0;
+        } else {
+          await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "started",
+            description: "Waiting for background work"
+          });
+          const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
+          const onAgentExit = () => {
+            agentExited = true;
+            sendHeldPrompt = void 0;
+            background.wake();
+          };
+          void child.exited.then(onAgentExit, onAgentExit);
+          let outcome = "woken";
+          while (outcome === "woken" && !stopped && !agentExited) {
+            outcome = await background.waitUntilQuiet(quietMs, deadline);
+          }
+          sendHeldPrompt = void 0;
+          if (stopped || agentExited) {
+            await writer.write({
+              t: "task",
+              id: BACKGROUND_HOLD_TASK_ID,
+              phase: "ended",
+              status: stopped ? "stopped" : "failed"
+            }).catch(() => void 0);
+            if (stopped)
+              throw new Error("ACP turn cancelled");
+            throw new Error("ACP agent exited while background work was running");
+          }
+          await drainUpdates();
+          await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "ended",
+            status: outcome === "deadline" ? "stopped" : "completed"
+          });
+          if (outcome === "deadline") {
+            cancelSession?.();
+            await writer.write({
+              t: "notice",
+              text: `Background work was still running after ${formatHoldLimit(opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS)}; Verity ended it with this turn.`
+            });
+          }
+        }
       }
       acceptingSteering = false;
       if (aborted)
@@ -31728,9 +31965,21 @@ ${crashMessage}`;
 
 // packages/session/dist/acp-claude-backend.js
 var UNREADABLE_AGENTS_MD_DIRECTIVE = "Repository instructions: this worktree has an AGENTS.md that Verity could not import. Read AGENTS.md at the worktree root before you start and follow it.";
+var CLAUDE_SCHEDULING_TOOLS = [
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "RemoteTrigger"
+];
+var HOLD_HOURS = BACKGROUND_HOLD_MAX_MS / 36e5;
+var BACKGROUND_HOLD_DIRECTIVE = `## Background work (Verity)
+
+Verity holds this turn \u2014 and the agent process \u2014 open while background commands (\`run_in_background\`), Monitor watches or background subagents you started are still running, for at most ${HOLD_HOURS} hours. When one reports back you continue in the same turn, so you may start such work, say that you are waiting, end your reply and act on the result when it arrives. For a delayed check, run a background command such as \`sleep 300\`. Scheduling tools (wakeups, cron, remote triggers) are unavailable; recurring work needs a Verity automation. Never promise anything after the ${HOLD_HOURS}-hour limit or after the turn has ended, and never detach work with \`nohup\`, \`&\` or \`disown\`: Verity cannot see detached processes.`;
 var CLAUDE_ACP_PROFILE = {
   defaultCommand: "claude-agent-acp",
   telemetryBackend: "claude-acp",
+  holdsForBackgroundWork: true,
   httpMcpWhenUnspecified: true,
   enforcesToolless: true,
   enforcesGatewayToolsOnly: true,
@@ -31771,19 +32020,22 @@ ${text}`
         }
       }
     }
+    const append = opts.toolless === true || opts.gatewayToolsOnly === true ? opts.appendSystemPrompt : [opts.appendSystemPrompt, BACKGROUND_HOLD_DIRECTIVE].filter(Boolean).join("\n\n");
     return {
-      ...opts.appendSystemPrompt ? {
+      ...append ? {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: opts.appendSystemPrompt
+          append
         }
       } : {},
       claudeCode: {
         options: {
           ...opts.model !== void 0 ? { model: opts.model } : {},
           ...opts.allowedTools !== void 0 ? { allowedTools: [...opts.allowedTools] } : {},
-          ...opts.disallowedTools !== void 0 ? { disallowedTools: [...opts.disallowedTools] } : {},
+          disallowedTools: [
+            .../* @__PURE__ */ new Set([...opts.disallowedTools ?? [], ...CLAUDE_SCHEDULING_TOOLS])
+          ],
           // Project settings and extensions cannot add another provider or MCP
           // server. Toolless queries additionally disable the built-in tool set.
           settingSources: [],

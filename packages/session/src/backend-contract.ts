@@ -225,6 +225,13 @@ export interface RunTurnOptions {
   /** Wall-clock ceiling for the whole session; on expiry the process is killed. */
   timeoutMs?: number;
   /**
+   * Overrides of the background hold bounds (`background-work.ts`) for a backend
+   * whose profile holds turns open for background work. Not part of the Runner
+   * protocol: production turns use the defaults.
+   */
+  backgroundHoldMaxMs?: number;
+  backgroundQuietMs?: number;
+  /**
    * Operator-cancel signal (issue #79). When it aborts, the spawned agent is
    * killed immediately with SIGKILL; the run then settles normally (partial output already
    * persisted), so the caller distinguishes a cancel from a crash by checking

@@ -382,6 +382,72 @@ describe('Docker update preparation', () => {
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
   });
 
+  // The live smoke replaces host provisioning through this option. If the
+  // preparation stopped routing through it, the smoke would silently run the real
+  // installer again; if it stopped treating its failure as fatal, a refused
+  // admission would no longer stop the update.
+  it('routes project egress provisioning through an injected replacement', async () => {
+    const { root, journal } = await setup({ pairing: true });
+    const docker = fakeDocker();
+    const log = vi.fn();
+    const provisionProjectEgressHost = vi.fn(async () => true);
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker,
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      provisionProjectEgressHost,
+      log,
+    });
+    await expect(resumeUpdatePreparation(root, actions)).resolves.toMatchObject({
+      phase: 'standby',
+    });
+    const state = await readManagedDeployment(root);
+    if (!state.managed) throw new Error(state.reason);
+    expect(provisionProjectEgressHost).toHaveBeenCalledOnce();
+    expect(provisionProjectEgressHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        journal: expect.objectContaining({ updateId: journal.updateId }),
+        spec: expect.objectContaining({ image: state.spec.image }),
+        managedRoot: root,
+      }),
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Network protection: host provisioning completed; authenticated readiness is checked separately.',
+    );
+    expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
+      'ready',
+    );
+  });
+
+  it('marks recovery as required when the injected provisioning refuses', async () => {
+    const { root } = await setup();
+    const docker = fakeDocker();
+    const log = vi.fn();
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker,
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      provisionProjectEgressHost: async () => {
+        throw new Error('Project egress provisioning requires installer state authority');
+      },
+      log,
+    });
+    await expect(resumeUpdatePreparation(root, actions)).rejects.toThrow(
+      'Project egress provisioning requires installer state authority',
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Network protection: automatic host provisioning failed; recovery is required.',
+    );
+    expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
+      'recovery-required',
+    );
+    expect(docker.createContainer.mock.calls.map((call) => call[0].name)).not.toContain(
+      'verity-managed-server-g1',
+    );
+  });
+
   /**
    * The host runtimes a release declares (ADR 0008 Amendment 2), read off the label every build
    * of deploy/Dockerfile carries. Without this wiring the reconciliation exists and is tested, and
@@ -1542,6 +1608,48 @@ describe('backup preparation before standby activation', () => {
       expect(docker.removeContainer.mock.calls.every(([id]) => id === 'a'.repeat(64))).toBe(true);
     },
   );
+  // The live smoke replaces only the host installation through this option and
+  // relies on the real plan and mount migration around it. A preparation that
+  // bypassed the option would run the systemd installer there; one that dropped
+  // the plan or the migration would leave the smoke's mount assertions vacuous.
+  it('routes backup host provisioning through an injected replacement', async () => {
+    const { root, journal } = await setup({ pairing: true });
+    const docker = fakeDocker();
+    docker.inspectImageLabels.mockResolvedValue({ 'org.verity.backup-provisioning': '1' });
+    const plan = {
+      version: 1 as const,
+      statePath: '/etc/verity',
+      backupPath: '/srv/archives',
+      identityPath: '/var/lib/verity/backup-identity',
+      provisioned: false,
+    };
+    docker.containerLogs.mockResolvedValue(JSON.stringify(plan));
+    const provisionBackupHost = vi.fn(async () => undefined);
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker,
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      provisionBackupHost,
+    });
+    await actions.prepareStandby!(journal);
+    await actions.ensureStandby(journal);
+    expect(provisionBackupHost).toHaveBeenCalledOnce();
+    expect(provisionBackupHost).toHaveBeenCalledWith(
+      docker,
+      expect.objectContaining({ deploymentId: 'deployment-1' }),
+      journal.targetDigest,
+      plan,
+    );
+    expect(
+      docker.createContainer.mock.calls.some(([request]) =>
+        request.command?.includes('/opt/verity-install/deploy/host/verity-backup-provision'),
+      ),
+    ).toBe(false);
+    expect(docker.createContainer.mock.calls.at(-1)?.[0].binds).toContain(
+      '/srv/archives:/run/verity-backups',
+    );
+  });
 });
 
 it.each(['single', 'ambiguous'])(
