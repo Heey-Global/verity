@@ -328,8 +328,9 @@ case "$COMMAND" in
       git diff --no-ext-diff --quiet "$MERGE_BASE"..HEAD || DIFF_STATUS=$?
       if [ "$DIFF_STATUS" -eq 0 ]; then
         rm -f "$DIFF_FILE"
+        # Nothing was reviewed, so nothing is recorded: otherwise `run HEAD`
+        # would credit any HEAD without a review. An unchanged branch needs no marker.
         echo "verity-code-review: no changes vs $BASE — nothing to review" >&2
-        record_reviewed_head
         exit 0
       fi
       if [ "$DIFF_STATUS" -ne 1 ]; then

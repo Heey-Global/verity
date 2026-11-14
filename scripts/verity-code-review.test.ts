@@ -686,6 +686,25 @@ describe('verity-code-review session backend', () => {
       expect(existsSync(marker(repo))).toBe(false);
     });
 
+    it('does not credit a review of an empty diff against a chosen base', () => {
+      // `run HEAD` reviews nothing; recording it would let any HEAD be marked.
+      const { bin, repo } = fixture();
+      const empty = spawnSync(review, ['run', 'HEAD'], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          VERITY_SESSION_BACKEND: 'codex',
+          CODEX_HOME: join(repo, '.codex'),
+        },
+      });
+      expect(empty.status, empty.stderr).toBe(0);
+      expect(empty.stderr).toContain('nothing to review');
+      expect(mark(repo).status).toBe(1);
+      expect(existsSync(marker(repo))).toBe(false);
+    });
+
     it('refuses to mark without a completed review', () => {
       const { repo } = fixture();
       const result = mark(repo);
@@ -698,6 +717,7 @@ describe('verity-code-review session backend', () => {
       // The diff is taken when the review starts; a commit landing mid-review
       // was never part of it.
       const repo = reviewed(true);
+      expect(existsSync(join(repo, '.agents', '.last-code-review-run'))).toBe(false);
       const result = mark(repo);
       expect(result.status).toBe(1);
       expect(existsSync(marker(repo))).toBe(false);
