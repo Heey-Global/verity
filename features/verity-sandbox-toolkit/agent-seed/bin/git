@@ -202,8 +202,10 @@ refuse_core_worktree() {
     echo
     echo "The repository config is shared by every Verity session worktree; a"
     echo "core.worktree there re-points the main checkout for all of them and breaks"
-    echo "Sandbox Repair. Use a separate repository (unset GIT_DIR / GIT_WORK_TREE"
-    echo "first), or 'git config --worktree' with extensions.worktreeConfig."
+    echo "Sandbox Repair. For a repository of your own, unset GIT_DIR / GIT_WORK_TREE"
+    echo "and name its config explicitly ('git config --file <repo>/.git/config ...');"
+    echo "for this worktree only, use 'git config --worktree' with"
+    echo "extensions.worktreeConfig."
     echo "If this is an operator-directed change, re-run with VERITY_GIT_GUARD_DISABLE=1."
   } >&2
   exit 1
@@ -258,6 +260,16 @@ if [ "$subcmd" = "init" ]; then
       /*) ;;
       *) init_git_dir="$effective_cwd/$init_git_dir" ;;
     esac
+    # A session worktree's `.git` is a gitfile naming the shared repository's
+    # admin directory; follow it rather than reading it as "no repository".
+    if [ -f "$init_git_dir" ]; then
+      gitfile_line=""
+      IFS= read -r gitfile_line <"$init_git_dir" || true
+      case "$gitfile_line" in
+        "gitdir: "/*) init_git_dir="${gitfile_line#gitdir: }" ;;
+        "gitdir: "*) init_git_dir="${init_git_dir%/*}/${gitfile_line#gitdir: }" ;;
+      esac
+    fi
     # Only re-initializing an EXISTING repository writes into a config someone
     # else uses; a fresh separate git dir stays allowed.
     if [ -f "$init_git_dir/HEAD" ]; then

@@ -336,6 +336,16 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
     expect(code).toBe(1);
   });
 
+  it('follows the gitfile of a session worktree to the shared repository', async () => {
+    const before = readFileSync(sharedConfig(), 'utf8');
+    const { code } = await runWrapper(['init', '-q'], session(), {
+      GIT_DIR: join(session(), '.git'),
+      GIT_WORK_TREE: session(),
+    });
+    expect(code).toBe(1);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+  });
+
   it('still lets a separate repository be created with both set', async () => {
     const fresh = join(base, 'fresh');
     mkdirSync(fresh);

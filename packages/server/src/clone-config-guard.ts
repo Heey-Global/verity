@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, mkdir, open, readdir, readFile, realpath } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, posix, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
@@ -253,6 +253,8 @@ export async function removeSessionWorktreeConfig(
   now: () => Date = () => new Date(),
 ): Promise<CloneWorktreeRepair> {
   await mkdir(backupRoot, { recursive: true, mode: 0o700 });
+  // `mode` only applies to a directory mkdir creates; the copies hold the whole config.
+  await chmod(backupRoot, 0o700);
   const stamp = now().toISOString().replace(/[:.]/g, '-');
   const safeLabel = label.replace(/[^A-Za-z0-9._-]/g, '_');
   const backupPath = join(backupRoot, `${safeLabel}-${stamp}-${posix.basename(finding.file)}`);
