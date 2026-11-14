@@ -257,6 +257,36 @@ source = replaceOnce(
 if (!/^const AUTONOMOUS_CYCLE = "autonomous-cycle";$/m.test(source)) {
   fail('AUTONOMOUS_CYCLE seam is missing; re-derive against the pinned adapter');
 }
+// The cycle signal calls `this.client` from the foreground methods, so they have
+// to be members of the agent class that sets it, with no other class between.
+{
+  const agentClass = source.indexOf('export class ClaudeAcpAgent {');
+  const client = source.indexOf('this.client = new ChangedMetaClient(', agentClass);
+  const foreground = source.indexOf('    startForeground(sessionId, owner) {', client);
+  if (
+    agentClass === -1 ||
+    client === -1 ||
+    foreground === -1 ||
+    /^(?:export )?class /m.test(source.slice(agentClass + 1, foreground))
+  ) {
+    fail('agent client seam is missing; re-derive against the pinned adapter');
+  }
+}
+// The level is sent with the same `sendUpdate` and `message` the task_* cases use,
+// so its case has to sit in the same message switch: no member boundary between.
+{
+  const taskCase = source.indexOf('case "task_started":');
+  const levelCase = source.indexOf('case "background_tasks_changed": {');
+  if (
+    taskCase === -1 ||
+    levelCase === -1 ||
+    /^ {4}(?:async )?[A-Za-z_$][\w$]*\([^)]*\) \{$/m.test(
+      source.slice(Math.min(taskCase, levelCase), Math.max(taskCase, levelCase)),
+    )
+  ) {
+    fail('background level seam is missing; re-derive against the pinned adapter');
+  }
+}
 const cycleSignal = (phase) => `void this.client.sessionUpdate({
             sessionId,
             update: {

@@ -16,6 +16,8 @@ const SCRIPT = fileURLToPath(
 
 /** Exact 0.81.2 seams, reduced to the statements the build-time patch owns. */
 const PINNED_ADAPTER = `const AUTONOMOUS_CYCLE = "autonomous-cycle";
+export class ClaudeAcpAgent {
+        this.client = new ChangedMetaClient(client, () => false);
 update: attachUsageModel({
                                         sessionUpdate: "usage_update",
                                         used: lastAssistantTotalUsage,
@@ -269,6 +271,29 @@ describe('Claude ACP structured lifecycle feature patch', () => {
       path.join(root, 'dist', 'acp-agent.js'),
       PINNED_ADAPTER.replace('const AUTONOMOUS_CYCLE =', 'const SELF_STARTED_CYCLE ='),
     );
+    await expect(
+      execFileAsync(process.execPath, [SCRIPT, root], {
+        env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
+      }),
+    ).rejects.toMatchObject({ code: 1 });
+  });
+
+  it.each([
+    [
+      'the foreground methods leave the agent class',
+      '    startForeground(',
+      'class Helper {\n    startForeground(',
+    ],
+    [
+      'the level leaves the message switch',
+      // The case keeps its indentation, so only the scope check can refuse it.
+      '                            case "background_tasks_changed": {',
+      '    handleLevel(message) {\n                            case "background_tasks_changed": {',
+    ],
+  ])('fails closed when %s', async (_name, from, to) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'verity-claude-lifecycle-scope-'));
+    await mkdir(path.join(root, 'dist'));
+    await writeFile(path.join(root, 'dist', 'acp-agent.js'), PINNED_ADAPTER.replace(from, to));
     await expect(
       execFileAsync(process.execPath, [SCRIPT, root], {
         env: { ...process.env, VERITY_PATCH_FIXTURE: '1' },
