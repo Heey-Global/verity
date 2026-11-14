@@ -25930,6 +25930,7 @@ var AGENT_METHODS = {
   session_archive: "session/archive",
   session_unarchive: "session/unarchive",
   session_status: "session/status",
+  session_options: "session/options",
   session_set_title: "session/set_title",
   session_resume: "session/resume",
   session_close: "session/close",
@@ -26171,6 +26172,10 @@ var zTerminal = z21.object({
   terminalId: zTerminalId,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionReference = z21.object({
+  sessionId: zSessionId,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zToolCallContent = z21.union([
   zContent.and(z21.object({
     type: z21.literal("content")
@@ -26180,6 +26185,9 @@ var zToolCallContent = z21.union([
   })),
   zTerminal.and(z21.object({
     type: z21.literal("terminal")
+  })),
+  zSessionReference.and(z21.object({
+    type: z21.literal("session")
   }))
 ]);
 var zToolCallLocation = z21.object({
@@ -26457,6 +26465,9 @@ var zSessionArchiveCapabilities = z21.object({
 var zSessionStatusCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSessionTitleCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
@@ -26474,6 +26485,7 @@ var zSessionCapabilities = z21.object({
   fork: defaultOnError(zSessionForkCapabilities.nullish(), () => void 0),
   archive: defaultOnError(zSessionArchiveCapabilities.nullish(), () => void 0),
   status: defaultOnError(zSessionStatusCapabilities.nullish(), () => void 0),
+  options: defaultOnError(zSessionOptionsCapabilities.nullish(), () => void 0),
   title: defaultOnError(zSessionTitleCapabilities.nullish(), () => void 0),
   resume: defaultOnError(zSessionResumeCapabilities.nullish(), () => void 0),
   close: defaultOnError(zSessionCloseCapabilities.nullish(), () => void 0),
@@ -26626,6 +26638,7 @@ var zAuthState = z21.union([
 ]);
 var zAuthAccount = z21.object({
   label: z21.string(),
+  description: defaultOnError(z21.string().nullish(), () => void 0),
   active: defaultOnError(z21.boolean().nullish(), () => void 0),
   name: defaultOnError(z21.string().nullish(), () => void 0),
   email: defaultOnError(z21.string().nullish(), () => void 0),
@@ -26745,6 +26758,11 @@ var zSessionStatusResponse = z21.object({
   status: zSessionStatus,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsResponse = z21.object({
+  modes: defaultOnError(zSessionModeState.nullish(), () => void 0),
+  configOptions: defaultOnError(vecSkipError(zSessionConfigOption).nullish(), () => void 0),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSetSessionTitleResponse = z21.object({
   title: z21.string(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
@@ -26825,6 +26843,7 @@ var zAgentResponse = z21.union([
       zArchiveSessionResponse,
       zUnarchiveSessionResponse,
       zSessionStatusResponse,
+      zSessionOptionsResponse,
       zSetSessionTitleResponse,
       zResumeSessionResponse,
       zCloseSessionResponse,
@@ -27310,11 +27329,24 @@ var zSystemPrompt = z21.object({
   content: z21.array(zContentBlock),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zInitialSessionConfigOption = z21.intersection(z21.union([
+  z21.object({
+    type: z21.literal("boolean"),
+    value: z21.boolean()
+  }),
+  z21.object({
+    value: zSessionConfigValueId
+  })
+]), z21.object({
+  configId: zSessionConfigId,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+}));
 var zNewSessionRequest = z21.object({
   cwd: z21.string(),
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zLoadSessionRequest = z21.object({
@@ -27323,6 +27355,7 @@ var zLoadSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   sessionId: zSessionId,
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSessionArchiveFilter = z21.union([
@@ -27361,6 +27394,12 @@ var zSessionStatusRequest = z21.object({
   sessionId: zSessionId,
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
+var zSessionOptionsRequest = z21.object({
+  cwd: z21.string(),
+  additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
+  sessionId: zSessionId.nullish(),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zSetSessionTitleRequest = z21.object({
   sessionId: zSessionId,
   title: z21.string(),
@@ -27372,6 +27411,7 @@ var zResumeSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zCloseSessionRequest = z21.object({
@@ -27420,6 +27460,7 @@ var zClientRequest = z21.object({
     zArchiveSessionRequest,
     zUnarchiveSessionRequest,
     zSessionStatusRequest,
+    zSessionOptionsRequest,
     zSetSessionTitleRequest,
     zResumeSessionRequest,
     zCloseSessionRequest,
@@ -28884,6 +28925,7 @@ var methods = {
       archive: AGENT_METHODS.session_archive,
       unarchive: AGENT_METHODS.session_unarchive,
       status: AGENT_METHODS.session_status,
+      options: AGENT_METHODS.session_options,
       setTitle: AGENT_METHODS.session_set_title,
       resume: AGENT_METHODS.session_resume,
       close: AGENT_METHODS.session_close,
@@ -29379,6 +29421,7 @@ var agentRequestSpecs = {
   unstable_archiveSession: requestSpec(AGENT_METHODS.session_archive, zArchiveSessionRequest, emptyObjectResponse),
   unstable_unarchiveSession: requestSpec(AGENT_METHODS.session_unarchive, zUnarchiveSessionRequest, emptyObjectResponse),
   unstable_sessionStatus: requestSpec(AGENT_METHODS.session_status, zSessionStatusRequest),
+  unstable_sessionOptions: requestSpec(AGENT_METHODS.session_options, zSessionOptionsRequest),
   unstable_setSessionTitle: requestSpec(AGENT_METHODS.session_set_title, zSetSessionTitleRequest),
   resumeSession: requestSpec(AGENT_METHODS.session_resume, zResumeSessionRequest),
   closeSession: requestSpec(AGENT_METHODS.session_close, zCloseSessionRequest, emptyObjectResponse),
