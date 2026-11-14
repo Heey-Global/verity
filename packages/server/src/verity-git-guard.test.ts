@@ -359,6 +359,15 @@ describe('agent-seed/bin/git guard (core.worktree in the shared repository confi
     expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
   });
 
+  it('resolves a relative GIT_DIR inside the directory git init creates', async () => {
+    // A hook in the main checkout carries GIT_DIR=.git; `git init <dir>` reads it from <dir>.
+    const fixture = join(base, 'fixture');
+    const { code } = await runWrapper(['init', '-q', fixture], main, { GIT_DIR: '.git' });
+    expect(code).toBe(0);
+    expect(existsSync(join(fixture, '.git', 'HEAD'))).toBe(true);
+    expect((await runWrapper(['init', '-q'], main, { GIT_DIR: '.git' })).code).toBe(1);
+  });
+
   it('still lets an unrelated existing repository be re-initialized', async () => {
     const cache = join(base, 'cache.git');
     await realGit(base, 'init', '-q', '--bare', cache);
