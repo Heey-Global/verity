@@ -8,6 +8,7 @@ import {
 } from './acp-claude-backend.js';
 import { AcpCodexBackend } from './acp-codex-backend.js';
 import type { RunTurnOptions, SpawnedProcess, Spawner } from './backend-contract.js';
+import { BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 
 let ctx: TestDb;
 beforeAll(async () => {
@@ -65,12 +66,15 @@ function scriptedAgent(onPrompt: (agent: ScriptedAgent, id: unknown, index: numb
   let prompts = 0;
   const agent: ScriptedAgent = {
     writes: [],
-    kill: vi.fn((_signal?: NodeJS.Signals) => close()),
+    kill: vi.fn<(signal?: NodeJS.Signals) => void>(() => close()),
     emit(update) {
       push({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: SESSION, update } });
     },
     answer(id, stopReason = 'end_turn') {
       push({ jsonrpc: '2.0', id, result: { stopReason } });
+    },
+    fail(id) {
+      push({ jsonrpc: '2.0', id, error: { code: -32603, message: 'Internal error' } });
     },
     crash: close,
     get closed() {
@@ -132,6 +136,7 @@ interface ScriptedAgent {
   kill: ReturnType<typeof vi.fn<(signal?: NodeJS.Signals) => void>>;
   emit(update: Record<string, unknown>): void;
   answer(id: unknown, stopReason?: string): void;
+  fail(id: unknown): void;
   crash(): void;
   readonly closed: boolean;
 }
@@ -204,6 +209,14 @@ describe('ACP turns held open for background work', () => {
     expect(result).toBeGreaterThan(followUp);
     expect(list.at(-2)).toMatchObject({ t: 'status', state: 'completed' });
     expect(agent.kill).toHaveBeenCalled();
+    // The hold is durable in the transcript: the Conductor reads this marker to
+    // tell a held, legitimately silent turn from a stalled one.
+    const hold = list.filter((event) => event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID);
+    expect(hold).toEqual([
+      expect.objectContaining({ phase: 'started' }),
+      expect.objectContaining({ phase: 'ended', status: 'completed' }),
+    ]);
+    expect(list.findIndex((event) => event === hold[1])).toBeLessThan(result);
   });
 
   it('ends a turn without background work at its prompt response, as before', async () => {
@@ -215,6 +228,7 @@ describe('ACP turns held open for background work', () => {
     await new AcpClaudeBackend().run(turn(spawner, 'held-none', { backgroundQuietMs: 10_000 }));
     // No quiet window either: nothing was ever running in the background.
     expect(Date.now() - started).toBeLessThan(5_000);
+    expect((await events('held-none')).filter((event) => event.t === 'task')).toEqual([]);
     expect(terminal(await events('held-none')).at(-1)).toEqual({
       t: 'status',
       state: 'completed',
@@ -310,6 +324,42 @@ describe('ACP turns held open for background work', () => {
     expect(text).toContain('update the changelog');
   });
 
+  it('says so when a message sent during the hold does not reach the agent', async () => {
+    let steer: ((message: { text: string }) => boolean) | undefined;
+    let held: unknown;
+    const { spawner, agent } = scriptedAgent((a, id, index) => {
+      if (index === 0) {
+        a.emit(chunk('Waiting for the build.'));
+        a.emit(lifecycle({ type: 'task', id: 'build', phase: 'started' }));
+        a.answer(id);
+        return;
+      }
+      held = id;
+      a.fail(id);
+    });
+    const run = new AcpClaudeBackend().run(
+      turn(spawner, 'held-steer-fails', {
+        onSteer: (inject) => {
+          steer = inject;
+        },
+      }),
+    );
+    await vi.waitFor(async () => {
+      expect((await events('held-steer-fails')).some((event) => event.t === 'text')).toBe(true);
+    });
+    await vi.waitFor(() => expect(steer?.({ text: 'Also run lint' })).toBe(true));
+    await vi.waitFor(() => expect(held).toBeDefined());
+    await vi.waitFor(async () => {
+      expect(
+        (await events('held-steer-fails')).some(
+          (event) => event.t === 'notice' && event.text.includes('could not be delivered'),
+        ),
+      ).toBe(true);
+    });
+    agent.emit(lifecycle({ type: 'task', id: 'build', phase: 'ended' }));
+    await run;
+  });
+
   it('records a crash when the agent dies while the turn is held', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(lifecycle({ type: 'task', id: 'review', phase: 'started' }));
@@ -333,7 +383,8 @@ describe('ACP turns held open for background work', () => {
       a.emit(lifecycle({ type: 'task', id: 'background', phase: 'started' }));
       a.answer(id);
     });
-    const { backgroundQuietMs: _quiet, ...codexTurn } = turn(spawner, 'held-codex');
+    const codexTurn = turn(spawner, 'held-codex');
+    delete codexTurn.backgroundQuietMs;
     await new AcpCodexBackend().run(codexTurn);
     expect(terminal(await events('held-codex')).at(-1)).toEqual({
       t: 'status',

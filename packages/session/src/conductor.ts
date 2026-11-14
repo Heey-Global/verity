@@ -48,7 +48,7 @@ import type {
 } from '@verity/store';
 import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
-import { BACKGROUND_HOLD_MAX_MS } from './background-work.js';
+import { BACKGROUND_HOLD_MAX_MS, BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
 import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
@@ -132,11 +132,11 @@ const TURN_LIVENESS_IDLE_SWEEPS = 10;
  * bound also covers a worker that is alive but no longer scheduling its turn.
  * 6 × 5 minutes = 30 minutes. An uncertain probe never contributes. */
 const TURN_LIVENESS_STALLED_WINDOWS = 6;
-/** The same bound for a turn whose transcript still has background tasks open.
- * Such a turn is held by its backend while a background command or monitor runs
- * (`background-work.ts`) and is legitimately silent for as long as that work
- * takes, up to the hold limit; two more windows let the backend's own limit fire
- * first, so this only catches a backend that failed to end its hold. */
+/** The same bound for a turn its backend holds open for background work (the
+ * hold marker in `background-work.ts`). Such a turn is legitimately silent while
+ * a background command or monitor runs, up to the hold limit; two more windows
+ * let the backend's own limit fire first, so this only catches a backend that
+ * failed to end its hold. */
 const TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS =
   Math.ceil(BACKGROUND_HOLD_MAX_MS / (TURN_LIVENESS_SWEEP_MS * TURN_LIVENESS_IDLE_SWEEPS)) + 2;
 /** Transcript wording when the probe confirms an in-flight turn's Runner is gone. */
@@ -4293,7 +4293,7 @@ export class Conductor {
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
         await this.settleDocumentsById(marker.sessionId);
         await this.cleanupRecoveredImageAttachments(marker);
-        if (await this.turnHasOpenBackgroundTasks(marker)) {
+        if (await this.turnHeldForBackgroundWork(marker)) {
           await this.emitEvent(marker.sessionId, {
             t: 'notice',
             role: 'agent',
@@ -4438,20 +4438,22 @@ export class Conductor {
     }
   }
 
-  /** Whether the turn's transcript has background tasks started and not ended.
-   * Read only when a silent turn is about to be declared stalled, so a long log
-   * is read at most once per idle window. */
-  private async turnHasOpenBackgroundTasks(marker: RunningTurnRecord): Promise<boolean> {
-    const open = new Set<string>();
+  /** Whether the turn's backend is holding it open for background work: its hold
+   * marker started and not ended. Only the backend's own marker counts — agent
+   * task edges are also emitted by backends that never hold, and their ends can
+   * be lost. Read only when a silent or dead turn is about to be settled, so a
+   * long log is read at most once per idle window. */
+  private async turnHeldForBackgroundWork(marker: RunningTurnRecord): Promise<boolean> {
+    let held = false;
     for (const { event } of await this.deps.store.getEventsAfter(
       marker.sessionId,
       marker.promptSeq,
     )) {
-      if (event.t !== 'task') continue;
-      if (event.phase === 'started') open.add(event.id);
-      else if (event.phase === 'ended') open.delete(event.id);
+      if (event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID) {
+        held = event.phase !== 'ended';
+      }
     }
-    return open.size > 0;
+    return held;
   }
 
   /**
@@ -4504,7 +4506,7 @@ export class Conductor {
       outcome.status === 'live' &&
       liveProbes >= TURN_LIVENESS_STALLED_WINDOWS &&
       (liveProbes >= TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS ||
-        !(await this.turnHasOpenBackgroundTasks(marker)));
+        !(await this.turnHeldForBackgroundWork(marker)));
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });
       return;
@@ -4597,7 +4599,7 @@ export class Conductor {
       {
         t: 'notice',
         role: 'agent',
-        text: (await this.turnHasOpenBackgroundTasks(marker))
+        text: (await this.turnHeldForBackgroundWork(marker))
           ? `${DEAD_RUNNER_NOTICE} ${BACKGROUND_WORK_LOST_NOTICE}`
           : DEAD_RUNNER_NOTICE,
       },

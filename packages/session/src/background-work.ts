@@ -19,6 +19,14 @@ export const BACKGROUND_HOLD_MAX_MS = 2 * 60 * 60_000;
  */
 export const BACKGROUND_QUIET_MS = 3_000;
 
+/**
+ * Task id of the transcript marker a backend writes while it holds a turn for
+ * background work. It is the durable statement that the turn is held — the
+ * Conductor reads it rather than the agent's own task edges, which a backend
+ * that never holds also emits and whose ends can be lost.
+ */
+export const BACKGROUND_HOLD_TASK_ID = 'verity-background-hold';
+
 export type BackgroundHoldOutcome = 'quiet' | 'deadline' | 'woken';
 
 /**
@@ -82,10 +90,6 @@ export class BackgroundWork {
 
   get busy(): boolean {
     return this.cycle || this.tasks.size > 0 || this.prompts > 0;
-  }
-
-  get liveTasks(): number {
-    return this.tasks.size;
   }
 
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */

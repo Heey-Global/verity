@@ -31,6 +31,7 @@ import { redactProcessStderr } from '@verity/store';
 import { SessionWriter } from './ingest.js';
 import {
   BACKGROUND_HOLD_MAX_MS,
+  BACKGROUND_HOLD_TASK_ID,
   BACKGROUND_QUIET_MS,
   BackgroundWork,
   type BackgroundHoldOutcome,
@@ -1246,6 +1247,12 @@ export async function runAcpTurn(
               // The agent's answer so far is complete prose: publish it now, so the
               // operator reads it while the work it started keeps running.
               await writeAll(writer, topLevelText.flush());
+              await writer.write({
+                t: 'task',
+                id: BACKGROUND_HOLD_TASK_ID,
+                phase: 'started',
+                description: 'Waiting for background work',
+              });
               acceptingSteering = false;
               sendHeldPrompt = (message) => {
                 background.beginPrompt();
@@ -1264,23 +1271,33 @@ export async function runAcpTurn(
                     promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
                     promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
                   })
-                  .catch(() => undefined)
+                  .catch(() => {
+                    // onSteer already accepted the message; say that it did not
+                    // arrive rather than let it vanish. Queued with the session's
+                    // other events so the note lands in wire order.
+                    if (stopped || closedOut) return;
+                    updateTail = updateTail
+                      .then(() =>
+                        writer.write({
+                          t: 'notice',
+                          text: 'Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended.',
+                        }),
+                      )
+                      .catch(() => undefined);
+                  })
                   .finally(() => background.endPrompt());
               };
               const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
               const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
               // An agent that dies while held has nothing left to wait for.
               let agentExited = false;
-              void child.exited.then(
-                () => {
-                  agentExited = true;
-                  background.wake();
-                },
-                () => {
-                  agentExited = true;
-                  background.wake();
-                },
-              );
+              const onAgentExit = (): void => {
+                agentExited = true;
+                // No agent is left to receive a message: let the Conductor queue it.
+                sendHeldPrompt = undefined;
+                background.wake();
+              };
+              void child.exited.then(onAgentExit, onAgentExit);
               // Checked before every wait: a Stop during the awaits above has already
               // fired its wake, and waiting after it would sit out the whole limit.
               let outcome: BackgroundHoldOutcome = 'woken';
@@ -1293,6 +1310,12 @@ export async function runAcpTurn(
                 throw new Error('ACP agent exited while background work was running');
               await drainUpdates();
               await writeAll(writer, topLevelText.flush());
+              await writer.write({
+                t: 'task',
+                id: BACKGROUND_HOLD_TASK_ID,
+                phase: 'ended',
+                status: outcome === 'deadline' ? 'stopped' : 'completed',
+              });
               if (outcome === 'deadline') {
                 // Interrupt a cycle that is still running; the teardown below then
                 // ends the background tasks along with the agent process.

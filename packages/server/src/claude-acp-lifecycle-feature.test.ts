@@ -45,6 +45,7 @@ const PINNED_ADAPTER = `update: attachUsageModel({
                                 }
                                 break;
                             case "worker_shutting_down":
+                                break;
                             case "background_tasks_changed": {
                                 await asyncTasks.backgroundTasksChanged(message.tasks);
                                 break;

@@ -30562,6 +30562,7 @@ var SessionWriter = class {
 // packages/session/dist/background-work.js
 var BACKGROUND_HOLD_MAX_MS = 2 * 60 * 6e4;
 var BACKGROUND_QUIET_MS = 3e3;
+var BACKGROUND_HOLD_TASK_ID = "verity-background-hold";
 var BackgroundWork = class {
   tasks = /* @__PURE__ */ new Set();
   cycle = false;
@@ -30612,9 +30613,6 @@ var BackgroundWork = class {
   }
   get busy() {
     return this.cycle || this.tasks.size > 0 || this.prompts > 0;
-  }
-  get liveTasks() {
-    return this.tasks.size;
   }
   /** Wake a pending {@link waitUntilQuiet} so its caller re-checks its own state. */
   wake() {
@@ -31632,6 +31630,12 @@ async function runAcpTurn(opts, profile) {
         await drainUpdates();
         if (background.busy) {
           await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "started",
+            description: "Waiting for background work"
+          });
           acceptingSteering = false;
           sendHeldPrompt = (message) => {
             background.beginPrompt();
@@ -31647,18 +31651,24 @@ async function runAcpTurn(opts, profile) {
               promptUsage.outputTokens += answerUsage.outputTokens;
               promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
               promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
-            }).catch(() => void 0).finally(() => background.endPrompt());
+            }).catch(() => {
+              if (stopped || closedOut)
+                return;
+              updateTail = updateTail.then(() => writer.write({
+                t: "notice",
+                text: "Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended."
+              })).catch(() => void 0);
+            }).finally(() => background.endPrompt());
           };
           const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
           const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
           let agentExited = false;
-          void child.exited.then(() => {
+          const onAgentExit = () => {
             agentExited = true;
+            sendHeldPrompt = void 0;
             background.wake();
-          }, () => {
-            agentExited = true;
-            background.wake();
-          });
+          };
+          void child.exited.then(onAgentExit, onAgentExit);
           let outcome = "woken";
           while (outcome === "woken" && !stopped && !agentExited) {
             outcome = await background.waitUntilQuiet(quietMs, deadline);
@@ -31670,6 +31680,12 @@ async function runAcpTurn(opts, profile) {
             throw new Error("ACP agent exited while background work was running");
           await drainUpdates();
           await writeAll(writer, topLevelText.flush());
+          await writer.write({
+            t: "task",
+            id: BACKGROUND_HOLD_TASK_ID,
+            phase: "ended",
+            status: outcome === "deadline" ? "stopped" : "completed"
+          });
           if (outcome === "deadline") {
             cancelSession?.();
             await writer.write({

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
@@ -4037,7 +4038,11 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     vi.useFakeTimers();
     try {
       await seedMarker('turn-held');
-      await ctx.store.appendEvent('s1', { t: 'task', id: 'monitor-1', phase: 'started' });
+      await ctx.store.appendEvent('s1', {
+        t: 'task',
+        id: BACKGROUND_HOLD_TASK_ID,
+        phase: 'started',
+      });
       const target = {
         turnId: 'turn-held',
         sessionId: 's1',
@@ -4066,6 +4071,41 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
       expect(conductor.isBusy('s1')).toBe(false);
       const events = await ctx.store.getEvents('s1');
       expect(events).toContainEqual(expect.objectContaining({ t: 'interrupted' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Agent task edges are also emitted by backends that never hold, and an `ended`
+  // edge can be lost; neither may buy a stalled turn two more hours.
+  it('keeps the ordinary stall bound for a turn with open agent tasks but no hold', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-task-no-hold');
+      await ctx.store.appendEvent('s1', { t: 'task', id: 'lost-end', phase: 'started' });
+      const target = {
+        turnId: 'turn-task-no-hold',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined), true);
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => ({ status: 'live', target }) },
+      });
+      await conductor.recover();
+      for (let i = 0; i < 80 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const notices = (await ctx.store.getEvents('s1')).flatMap((event) =>
+        event.t === 'notice' ? [event.text] : [],
+      );
+      expect(notices).toEqual([expect.stringContaining('half an hour')]);
     } finally {
       vi.useRealTimers();
     }
@@ -4209,7 +4249,11 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     vi.useFakeTimers();
     try {
       await seedMarker('turn-held-dies');
-      await ctx.store.appendEvent('s1', { t: 'task', id: 'review', phase: 'started' });
+      await ctx.store.appendEvent('s1', {
+        t: 'task',
+        id: BACKGROUND_HOLD_TASK_ID,
+        phase: 'started',
+      });
       let outcome: RunnerRecoveryOutcome = {
         status: 'live',
         target: {
@@ -4247,7 +4291,7 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
 
   it('says that background work was lost when a restart finds the held turn’s Runner dead', async () => {
     await seedMarker('turn-held-restart');
-    await ctx.store.appendEvent('s1', { t: 'task', id: 'monitor', phase: 'started' });
+    await ctx.store.appendEvent('s1', { t: 'task', id: BACKGROUND_HOLD_TASK_ID, phase: 'started' });
     const conductor = new Conductor({
       store: ctx.store,
       backend: inertBackend,
