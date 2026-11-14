@@ -31654,13 +31654,38 @@ async function runAcpTurn(opts, profile) {
       }
       if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
         acceptingSteering = false;
+        sendHeldPrompt = (message) => {
+          background.beginPrompt();
+          void agent.request(methods.agent.session.prompt, {
+            sessionId: session.sessionId,
+            prompt: [
+              { type: "text", text: message.text },
+              ...imageBlocks(message.attachments)
+            ]
+          }).then((answer) => {
+            const answerUsage = usage(answer.usage);
+            promptUsage.inputTokens += answerUsage.inputTokens;
+            promptUsage.outputTokens += answerUsage.outputTokens;
+            promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
+            promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
+          }).catch(() => {
+            if (stopped || closedOut)
+              return;
+            updateTail = updateTail.then(() => writer.write({
+              t: "notice",
+              text: "Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended."
+            })).catch(() => void 0);
+          }).finally(() => background.endPrompt());
+        };
         await drainUpdates();
         const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
         if (!background.busy && background.observedWork) {
           await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
           await drainUpdates();
         }
-        if (background.busy && !stopped) {
+        if (!background.busy || stopped) {
+          sendHeldPrompt = void 0;
+        } else {
           await writeAll(writer, topLevelText.flush());
           await writer.write({
             t: "task",
@@ -31668,29 +31693,6 @@ async function runAcpTurn(opts, profile) {
             phase: "started",
             description: "Waiting for background work"
           });
-          sendHeldPrompt = (message) => {
-            background.beginPrompt();
-            void agent.request(methods.agent.session.prompt, {
-              sessionId: session.sessionId,
-              prompt: [
-                { type: "text", text: message.text },
-                ...imageBlocks(message.attachments)
-              ]
-            }).then((answer) => {
-              const answerUsage = usage(answer.usage);
-              promptUsage.inputTokens += answerUsage.inputTokens;
-              promptUsage.outputTokens += answerUsage.outputTokens;
-              promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
-              promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
-            }).catch(() => {
-              if (stopped || closedOut)
-                return;
-              updateTail = updateTail.then(() => writer.write({
-                t: "notice",
-                text: "Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended."
-              })).catch(() => void 0);
-            }).finally(() => background.endPrompt());
-          };
           const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
           let agentExited = false;
           const onAgentExit = () => {

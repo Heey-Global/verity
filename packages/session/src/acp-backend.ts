@@ -1243,8 +1243,44 @@ export async function runAcpTurn(
             prompt.stopReason !== 'cancelled'
           ) {
             // The prompt has answered: a steer now would land in a finished prompt.
-            // Refuse it (the Conductor queues it) until the hold decides below.
+            // Send a message from here on as a prompt of its own instead. An
+            // outstanding one counts as live work, so a message that arrives while
+            // the hold is still being decided holds the turn until it is answered,
+            // rather than waiting in the queue behind a hold that then engages.
             acceptingSteering = false;
+            sendHeldPrompt = (message) => {
+              background.beginPrompt();
+              void agent
+                .request(acp.methods.agent.session.prompt, {
+                  sessionId: session.sessionId,
+                  prompt: [
+                    { type: 'text', text: message.text },
+                    ...imageBlocks(message.attachments),
+                  ],
+                })
+                .then((answer) => {
+                  const answerUsage = usage(answer.usage);
+                  promptUsage.inputTokens += answerUsage.inputTokens;
+                  promptUsage.outputTokens += answerUsage.outputTokens;
+                  promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
+                  promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
+                })
+                .catch(() => {
+                  // onSteer already accepted the message; say that it did not
+                  // arrive rather than let it vanish. Queued with the session's
+                  // other events so the note lands in wire order.
+                  if (stopped || closedOut) return;
+                  updateTail = updateTail
+                    .then(() =>
+                      writer.write({
+                        t: 'notice',
+                        text: 'Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended.',
+                      }),
+                    )
+                    .catch(() => undefined);
+                })
+                .finally(() => background.endPrompt());
+            };
             await drainUpdates();
             const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
             if (!background.busy && background.observedWork) {
@@ -1253,7 +1289,10 @@ export async function runAcpTurn(
               await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
               await drainUpdates();
             }
-            if (background.busy && !stopped) {
+            if (!background.busy || stopped) {
+              // Decided synchronously with the check: no message can slip in between.
+              sendHeldPrompt = undefined;
+            } else {
               // The agent's answer so far is complete prose: publish it now, so the
               // operator reads it while the work it started keeps running.
               await writeAll(writer, topLevelText.flush());
@@ -1263,39 +1302,6 @@ export async function runAcpTurn(
                 phase: 'started',
                 description: 'Waiting for background work',
               });
-              sendHeldPrompt = (message) => {
-                background.beginPrompt();
-                void agent
-                  .request(acp.methods.agent.session.prompt, {
-                    sessionId: session.sessionId,
-                    prompt: [
-                      { type: 'text', text: message.text },
-                      ...imageBlocks(message.attachments),
-                    ],
-                  })
-                  .then((answer) => {
-                    const answerUsage = usage(answer.usage);
-                    promptUsage.inputTokens += answerUsage.inputTokens;
-                    promptUsage.outputTokens += answerUsage.outputTokens;
-                    promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
-                    promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
-                  })
-                  .catch(() => {
-                    // onSteer already accepted the message; say that it did not
-                    // arrive rather than let it vanish. Queued with the session's
-                    // other events so the note lands in wire order.
-                    if (stopped || closedOut) return;
-                    updateTail = updateTail
-                      .then(() =>
-                        writer.write({
-                          t: 'notice',
-                          text: 'Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended.',
-                        }),
-                      )
-                      .catch(() => undefined);
-                  })
-                  .finally(() => background.endPrompt());
-              };
               const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
               // An agent that dies while held has nothing left to wait for.
               let agentExited = false;

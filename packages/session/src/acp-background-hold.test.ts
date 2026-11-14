@@ -373,6 +373,43 @@ describe('ACP turns held open for background work', () => {
     expect(text).toContain('update the changelog');
   });
 
+  // Refused here, the message waited in the Conductor's queue behind a hold that
+  // then engaged — up to the whole limit — while a message a moment later went
+  // straight through.
+  it('delivers a message that arrives while the hold is still being decided', async () => {
+    let steer: ((message: { text: string }) => boolean) | undefined;
+    const { spawner, agent } = scriptedAgent((a, id, index) => {
+      if (index === 0) {
+        a.emit(chunk('Tests finished.'));
+        a.emit(lifecycle({ type: 'background', live: ['tests'] }));
+        a.emit(lifecycle({ type: 'background', live: [] }));
+        a.answer(id);
+        return;
+      }
+      a.emit(chunk('Sure, adding the changelog entry.'));
+      a.answer(id);
+    });
+    const run = new AcpClaudeBackend().run(
+      turn(spawner, 'held-deciding', {
+        backgroundQuietMs: 300,
+        onSteer: (inject) => {
+          steer = inject;
+        },
+      }),
+    );
+    // The first prompt has answered; nothing is live, and the quiet window runs.
+    await vi.waitFor(async () => {
+      expect((await events('held-deciding')).some((event) => event.t === 'text')).toBe(true);
+    });
+    await vi.waitFor(() => expect(steer?.({ text: 'Add a changelog entry' })).toBe(true));
+    await run;
+    expect(agent.writes.filter((write) => write['method'] === 'session/prompt')).toHaveLength(2);
+    const text = (await events('held-deciding'))
+      .flatMap((event) => (event.t === 'text' ? [event.delta] : []))
+      .join('');
+    expect(text).toContain('adding the changelog entry');
+  });
+
   it('says so when a message sent during the hold does not reach the agent', async () => {
     let steer: ((message: { text: string }) => boolean) | undefined;
     let held: unknown;
