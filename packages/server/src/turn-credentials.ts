@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 
 /**
  * Per-turn sandbox credentials ("the turn's badge").
@@ -51,6 +52,13 @@ export function createTurnCredentials(options?: {
   now?: () => number;
   ttlMs?: number;
   capacity?: number;
+  /**
+   * Where the registry keeps its digests across a restart. Supervised turns
+   * outlive a Server restart (the conductor reattaches them); without this their
+   * badges would be unknown afterwards and signing or pushing would fail for
+   * the rest of the turn. Only digests are written, never a badge.
+   */
+  persistPath?: string;
 }): TurnCredentials {
   const now = options?.now ?? (() => Date.now());
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
@@ -66,6 +74,40 @@ export function createTurnCredentials(options?: {
   const purgeExpired = (instant: number): void => {
     for (const [digest, entry] of byDigest) if (entry.expiresAt <= instant) byDigest.delete(digest);
   };
+  const path = options?.persistPath;
+  if (path !== undefined) {
+    try {
+      const saved = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+      if (Array.isArray(saved))
+        for (const item of saved as Array<[string, Entry]>) {
+          const [digest, entry] = item;
+          if (
+            typeof digest === 'string' &&
+            /^[a-f0-9]{64}$/u.test(digest) &&
+            typeof entry?.projectId === 'string' &&
+            typeof entry.sessionId === 'string' &&
+            typeof entry.turnId === 'string' &&
+            (entry.userId === null || typeof entry.userId === 'string') &&
+            Number.isSafeInteger(entry.expiresAt) &&
+            entry.expiresAt > now() &&
+            byDigest.size < capacity
+          )
+            byDigest.set(digest, entry);
+        }
+    } catch {
+      // No or unreadable state: start empty, as before persistence.
+    }
+  }
+  const save = (): void => {
+    if (path === undefined) return;
+    try {
+      const temp = `${path}.${process.pid}.tmp`;
+      writeFileSync(temp, JSON.stringify([...byDigest]), { mode: 0o600 });
+      renameSync(temp, path);
+    } catch {
+      // Persistence is best effort: a failed write costs badges only on restart.
+    }
+  };
 
   return {
     issue(binding) {
@@ -80,6 +122,7 @@ export function createTurnCredentials(options?: {
         userId: binding.userId,
         expiresAt: instant + ttlMs,
       });
+      save();
       return token;
     },
     resolve({ projectId, token }) {
@@ -101,11 +144,13 @@ export function createTurnCredentials(options?: {
       };
     },
     release(token) {
-      if (TURN_CAPABILITY_PATTERN.test(token)) byDigest.delete(tokenDigest(token));
+      if (TURN_CAPABILITY_PATTERN.test(token) && byDigest.delete(tokenDigest(token))) save();
     },
     revokeProject(projectId) {
+      let changed = false;
       for (const [digest, entry] of byDigest)
-        if (entry.projectId === projectId) byDigest.delete(digest);
+        if (entry.projectId === projectId) changed = byDigest.delete(digest) || changed;
+      if (changed) save();
     },
   };
 }

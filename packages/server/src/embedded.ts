@@ -619,7 +619,11 @@ export async function buildEmbeddedServer(
   const secretAuditLog = createPostgresSecretAuditLog(db);
   const gatewayRequestMacKeys = createGatewayRequestMacKeyring(db, secretCipher);
   // The turn's badge: names the person a supervised turn runs for to sandbox routes.
-  const turnCredentials = createTurnCredentials();
+  const turnCredentials = createTurnCredentials(
+    config.turnCredentialStatePath === undefined
+      ? undefined
+      : { persistPath: config.turnCredentialStatePath },
+  );
   // Each person's own GitHub App authorization; one instance so a token renews once.
   const githubUserAuthorization = createGitHubUserAuthorization({ store: eventStore });
   const mcpGatewayTokens = createMcpGatewayTokens({

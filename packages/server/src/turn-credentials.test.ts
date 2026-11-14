@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -16,7 +19,9 @@ describe('turn credentials', () => {
     expect(token).toMatch(TURN_CAPABILITY_PATTERN);
     expect(turns.resolve({ projectId: 'p1', token })).toEqual(binding);
     expect(turns.resolve({ projectId: 'p2', token })).toBeUndefined();
-    expect(turns.resolve({ projectId: 'p1', token: `${token.slice(0, 42)}A` })).toBeUndefined();
+    // A different last character, whatever the random one was.
+    const altered = `${token.slice(0, 42)}${token.endsWith('A') ? 'B' : 'A'}`;
+    expect(turns.resolve({ projectId: 'p1', token: altered })).toBeUndefined();
   });
 
   it('keeps a turn without an initiator personless', () => {
@@ -64,5 +69,31 @@ describe('turnFitsSandbox', () => {
     expect(turnFitsSandbox({ userId: 'lena' }, original)).toBe(false);
     expect(turnFitsSandbox({ userId: null }, original)).toBe(true);
     expect(turnFitsSandbox({ userId: null }, own)).toBe(false);
+  });
+});
+
+describe('turn credentials across a Server restart', () => {
+  // Supervised turns survive a restart; their badges must too, or every
+  // recovered turn loses signing and pushing for the rest of its run.
+  it('resolves a live badge after a restart, and never stores the badge itself', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verity-turn-badges-'));
+    const persistPath = join(dir, 'badges.json');
+    try {
+      const before = createTurnCredentials({ persistPath });
+      const binding = { projectId: 'p1', sessionId: 's1', turnId: 't1', userId: 'lena' };
+      const token = before.issue(binding);
+      const released = before.issue({ ...binding, turnId: 't2' });
+      before.release(released);
+      expect(readFileSync(persistPath, 'utf8')).not.toContain(token);
+
+      const after = createTurnCredentials({ persistPath });
+      expect(after.resolve({ projectId: 'p1', token })).toEqual(binding);
+      expect(after.resolve({ projectId: 'p1', token: released })).toBeUndefined();
+      // Expired badges do not come back either.
+      const later = createTurnCredentials({ persistPath, now: () => Date.now() + 26 * 3_600_000 });
+      expect(later.resolve({ projectId: 'p1', token })).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

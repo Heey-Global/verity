@@ -37,6 +37,8 @@ export interface EmbeddedServerConfig {
   /** Where the release notifier remembers what it last announced. Absent = no
    *  notification; see the same field on `ServerDeps` for why that is the default. */
   serverUpdateNotifierStatePath?: string | undefined;
+  /** Where turn badges' digests survive a Server restart. */
+  turnCredentialStatePath?: string | undefined;
   /** A real Postgres connection string. Postgres is the only runtime database,
    * so the production entrypoint (main.ts) always sets this and
    * {@link buildEmbeddedServer} refuses to start without it — unless the caller
