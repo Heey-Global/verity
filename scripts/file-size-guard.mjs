@@ -10,6 +10,10 @@
 // block at a time until type-aware lint no longer fits its memory budget, which
 // is how packages/server/src/server.ts grew back after it was first split up.
 //
+// Where the base branch is available (FILE_SIZE_BASE, default origin/main), the
+// record is also compared with its version at the merge base, so a change cannot
+// pass by raising an entry or recording a new file alongside the code.
+//
 // Usage: node scripts/file-size-guard.mjs [--update]
 //   --update lowers or removes debt entries for files that shrank. It never
 //   raises an entry or records a new file.
@@ -128,9 +132,14 @@ function sortedRecord(record) {
   return Object.fromEntries(Object.entries(record).sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
-/** @param {string} root @returns {Record<string, number>} */
+/** @param {string} root */
 export function readDebt(root) {
-  const parsed = /** @type {unknown} */ (JSON.parse(readFileSync(join(root, DEBT_FILE), 'utf8')));
+  return parseDebt(readFileSync(join(root, DEBT_FILE), 'utf8'));
+}
+
+/** @param {string} text @returns {Record<string, number>} */
+function parseDebt(text) {
+  const parsed = /** @type {unknown} */ (JSON.parse(text));
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error(`${DEBT_FILE} must map file paths to line counts`);
   }
@@ -150,11 +159,50 @@ export function writeDebt(root, debt) {
   writeFileSync(join(root, DEBT_FILE), `${JSON.stringify(sortedRecord(debt), null, 2)}\n`);
 }
 
+/**
+ * The record at the merge base with `ref`, or undefined when the base cannot be
+ * resolved (a shallow checkout) or predates the record.
+ * @param {string} root
+ * @param {string} ref
+ */
+export function baseDebt(root, ref) {
+  /** @param {string[]} args */
+  const git = (args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' });
+  const base = git(['merge-base', 'HEAD', ref]);
+  if (base.status !== 0) return undefined;
+  const recorded = git(['show', `${base.stdout.trim()}:${DEBT_FILE}`]);
+  return recorded.status === 0 ? parseDebt(recorded.stdout) : undefined;
+}
+
+/**
+ * Entries added or raised since the base: the record may only shrink.
+ * @param {Record<string, number>} debt
+ * @param {Record<string, number>} base
+ */
+export function compareWithBase(debt, base) {
+  const problems = [];
+  for (const [file, lines] of Object.entries(debt)) {
+    const before = base[file];
+    if (before === undefined) {
+      problems.push(
+        `${file}: added to ${DEBT_FILE}. New entries are not allowed; split the file instead.`,
+      );
+    } else if (lines > before) {
+      problems.push(
+        `${file}: entry raised from ${before} to ${lines} in ${DEBT_FILE}. Entries may only be lowered.`,
+      );
+    }
+  }
+  return problems.sort();
+}
+
 function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const found = oversizedFiles(root);
   if (process.argv.includes('--update')) writeDebt(root, loweredDebt(found, readDebt(root)));
-  const problems = compareWithDebt(found, readDebt(root));
+  const debt = readDebt(root);
+  const base = baseDebt(root, process.env.FILE_SIZE_BASE || 'origin/main');
+  const problems = [...compareWithDebt(found, debt), ...(base ? compareWithBase(debt, base) : [])];
   if (problems.length === 0) return 0;
   process.stderr.write(
     `File size check failed (limit ${FILE_LINE_LIMIT} lines, docs/adr/0029-module-boundaries-and-file-size.md):\n`,

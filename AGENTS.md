@@ -144,7 +144,8 @@ was introduced, and it may only shrink. `npm run lint` and `npm run
 lint:changed` fail when a file crosses the limit, a recorded file grows, or a
 recorded file shrank without lowering its entry. After shrinking a recorded file,
 run `node scripts/file-size-guard.mjs --update`; never add or raise an entry by
-hand.
+hand. Where `origin/main` is available, the check also rejects entries added or
+raised since the merge base.
 
 ## Public communication
 

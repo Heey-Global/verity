@@ -7,15 +7,15 @@
 A handful of source files keep growing because each holds one function or
 class that everything new is added to:
 
-| File                                | Construct             | Lines (approx.) |
-| ----------------------------------- | --------------------- | --------------: |
-| `packages/store/src/store.ts`       | `EventStore`          |           8,700 |
-| `packages/server/src/server.ts`     | `buildServer`         |           5,600 |
-| `packages/session/src/conductor.ts` | `Conductor`           |           5,500 |
-| `packages/server/src/provisioner.ts`| `ProvisionerImpl`     |           5,500 |
-| `packages/server/src/embedded.ts`   | `buildEmbeddedServer` |           5,100 |
-| `packages/mobile/src/api.ts`        | `VerityClient`        |           4,500 |
-| `apps/mobile/app/session/[id].tsx`  | `SessionChat`         |           4,300 |
+| File                                 | Construct             | Construct lines (approx.) |
+| ------------------------------------ | --------------------- | ------------------------: |
+| `packages/store/src/store.ts`        | `EventStore`          |                     8,700 |
+| `packages/server/src/server.ts`      | `buildServer`         |                     5,600 |
+| `packages/session/src/conductor.ts`  | `Conductor`           |                     5,500 |
+| `packages/server/src/provisioner.ts` | `ProvisionerImpl`     |                     5,500 |
+| `packages/server/src/embedded.ts`    | `buildEmbeddedServer` |                     5,100 |
+| `packages/mobile/src/api.ts`         | `VerityClient`        |                     4,500 |
+| `apps/mobile/app/session/[id].tsx`   | `SessionChat`         |                     4,300 |
 
 `server.ts` has already been decomposed once. Its route handlers and domain
 logic live in `*-routes.ts` and other modules. What grew back is the wiring:
@@ -57,7 +57,8 @@ is already too large to fix quickly.
 ### Size limit
 
 Every TypeScript and JavaScript source file, including tests, stays at or
-below **1,500 lines**. Declaration files, vendored code under `vendor/` and
+below **1,500 lines**. Declaration files, vendored code under the top-level
+`vendor/` directory and
 the generated runner bundle (named by `scripts/build-runner-worker.mjs`) are
 excluded.
 
@@ -74,6 +75,13 @@ counts in `scripts/file-size-debt.json`. That record may only shrink:
 every source area and the local pre-push gate. `node
 scripts/file-size-guard.mjs --update` lowers and removes entries after a file
 shrank; it never raises or adds one.
+
+The guard compares the working tree with the record exactly. Where the base
+branch can be resolved (`FILE_SIZE_BASE`, default `origin/main`), it also
+compares the record with its version at the merge base and rejects added or
+raised entries, so a file cannot grow together with its entry. CI's lint job
+uses a shallow checkout without that base; there, a raised or added entry is
+visible as a diff to `scripts/file-size-debt.json` and is rejected in review.
 
 ## Consequences
 

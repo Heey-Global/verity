@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   DEBT_FILE,
+  baseDebt,
+  compareWithBase,
   FILE_LINE_LIMIT,
   compareWithDebt,
   generatedFiles,
@@ -39,6 +41,14 @@ function fixture(files: Record<string, number>, debt: Record<string, number> = {
   return root;
 }
 
+/** Commits the fixture as `main`, the base the guard compares the record with. */
+function commitBase(root: string) {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root });
+  git('add', '-A');
+  git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'base');
+  git('branch', '-M', 'main');
+}
+
 function runGuard(root: string, ...args: string[]) {
   // A copy inside the fixture, so the guard resolves the fixture as its root.
   mkdirSync(join(root, 'scripts'), { recursive: true });
@@ -46,6 +56,7 @@ function runGuard(root: string, ...args: string[]) {
   return spawnSync(process.execPath, ['scripts/file-size-guard.mjs', ...args], {
     cwd: root,
     encoding: 'utf8',
+    env: { ...process.env, FILE_SIZE_BASE: 'main' },
   });
 }
 
@@ -150,6 +161,34 @@ describe('the check', () => {
       writeFileSync(join(root, DEBT_FILE), invalid);
       expect(() => readDebt(root)).toThrow(DEBT_FILE);
     }
+  });
+
+  it('rejects a record that was raised or extended since the base', () => {
+    // Growing a file and its entry together would satisfy the exact comparison.
+    const root = fixture({ 'big.ts': limit + 10 }, { 'big.ts': limit + 10 });
+    commitBase(root);
+    writeFileSync(join(root, 'big.ts'), 'x\n'.repeat(limit + 20));
+    writeFileSync(join(root, 'new.ts'), 'x\n'.repeat(limit + 1));
+    writeFileSync(
+      join(root, DEBT_FILE),
+      JSON.stringify({ 'big.ts': limit + 20, 'new.ts': limit + 1 }),
+    );
+    const result = runGuard(root);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('big.ts: entry raised from 1510 to 1520');
+    expect(result.stderr).toContain('new.ts: added to scripts/file-size-debt.json');
+  });
+
+  it('accepts a lowered record and skips the base comparison without a base', () => {
+    const root = fixture({ 'big.ts': limit + 10 }, { 'big.ts': limit + 10 });
+    commitBase(root);
+    writeFileSync(join(root, 'big.ts'), 'x\n'.repeat(limit + 5));
+    writeFileSync(join(root, DEBT_FILE), JSON.stringify({ 'big.ts': limit + 5 }));
+    expect(runGuard(root).status).toBe(0);
+    expect(baseDebt(root, 'main')).toEqual({ 'big.ts': limit + 10 });
+    // A shallow checkout cannot resolve the base; the exact comparison still runs.
+    expect(baseDebt(root, 'no-such-ref')).toBeUndefined();
+    expect(compareWithBase({ 'a.ts': 1 }, { 'a.ts': 2 })).toEqual([]);
   });
 
   it('counts lines as an editor numbers them', () => {
