@@ -5616,10 +5616,10 @@ export class ProvisionerImpl implements Provisioner {
       try {
         finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
         if (finding.kind === 'clean') return;
-        if (pass === 2) {
+        if (pass === 2 && finding.kind === 'session-contamination') {
           throw new ProvisioningError(
             `repository config invalid: ${finding.file} still sets core.worktree ` +
-              `("${'value' in finding ? finding.value : finding.values.join(', ')}") after ` +
+              `("${finding.value}") after ` +
               'Repair removed it; something is writing it back. Stop the Sandbox, remove the ' +
               'key from that file, then repair again.',
           );

@@ -246,7 +246,35 @@ if [ "$subcmd" = "init" ]; then
   if [ -n "$init_git_dir" ]; then
     case "$init_git_dir" in
       /*) ;;
-      *) init_git_dir="$effective_cwd/$init_git_dir" ;;
+      *)
+        # `git init <directory>` changes into <directory> before it reads a
+        # relative git dir, so resolve against it rather than the cwd.
+        init_base="$effective_cwd"
+        j=$((subidx + 1))
+        while [ "$j" -lt "$n" ]; do
+          a="${args[$j]}"
+          case "$a" in
+            --template | --separate-git-dir | -b | --initial-branch | --object-format | --ref-format)
+              j=$((j + 2))
+              continue
+              ;;
+            --)
+              a="${args[$((j + 1))]:-}"
+              [ -n "$a" ] || break
+              ;;
+            -*)
+              j=$((j + 1))
+              continue
+              ;;
+          esac
+          case "$a" in
+            /*) init_base="$a" ;;
+            *) init_base="$effective_cwd/$a" ;;
+          esac
+          break
+        done
+        init_git_dir="$init_base/$init_git_dir"
+        ;;
     esac
     # A session worktree's `.git` is a gitfile naming the shared repository's
     # admin directory; follow it rather than reading it as "no repository".
