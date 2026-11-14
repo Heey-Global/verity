@@ -1,3 +1,4 @@
+import { normalizeDisplayName } from './user-profile.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import { sql, type Kysely, type Transaction } from 'kysely';
@@ -432,7 +433,9 @@ export class ProjectTeamStore {
           id: userId,
           role: 'member',
           status: 'disabled',
-          display_name: input.displayName.trim() || null,
+          // The same rule as every display name: no bidi or line controls in
+          // other members' lists and transcripts, and a bounded length.
+          display_name: normalizeDisplayName(input.displayName),
           team_membership_ref: membershipRef,
         })
         .execute();
@@ -503,6 +506,16 @@ export class ProjectTeamStore {
         .executeTakeFirst();
       // A join fenced as failed stays fenced, whatever arrives late.
       if (row?.state !== 'redeemed' || row.redeemed_by_user_id == null) return false;
+      // A replayed confirmation must not bring back someone removed since:
+      // only a person still pending, and still a member, becomes active.
+      const pending = await tx
+        .selectFrom('users as u')
+        .innerJoin('project_memberships as m', 'm.user_id', 'u.id')
+        .select('u.id')
+        .where('u.id', '=', row.redeemed_by_user_id)
+        .where('u.status', '=', 'disabled')
+        .executeTakeFirst();
+      if (pending === undefined) return false;
       await tx
         .updateTable('users')
         .set({ status: 'active' })

@@ -1509,10 +1509,16 @@ describe('managed servers with secret bindings', () => {
       (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!.lastRunUserId,
     ).toBe('lena');
 
-    // Lena's approval does not let the administrator run it with his secrets.
+    // Lena's approval does not let the administrator run it with his secrets,
+    // and refusing must not stop the server Lena runs.
+    const stopsBefore = (sandbox.runtime.stopManagedServer as unknown as { mock?: unknown })
+      ? vi.spyOn(sandbox.runtime, 'stopManagedServer')
+      : undefined;
     await expect(manager.restart('s1', 'api', 'operator', 'admin')).rejects.toThrow(
       'approve this server yourself',
     );
+    expect(stopsBefore).not.toHaveBeenCalled();
+    stopsBefore?.mockRestore();
     await manager.approve(
       's1',
       'api',

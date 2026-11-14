@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { ProjectTeamError, type EventStore } from '@verity/store';
+import { normalizeDisplayName, ProjectTeamError, type EventStore } from '@verity/store';
 import { z } from 'zod';
 
 import type { AuthTokenRegistry } from './auth.js';
@@ -33,6 +33,11 @@ export function registerTeamJoinRoutes(
     const parsed = joinBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid invitation' });
     const body = parsed.data;
+    try {
+      normalizeDisplayName(body.displayName);
+    } catch {
+      return reply.code(400).send({ error: 'invalid name' });
+    }
     let joined: Awaited<ReturnType<EventStore['projectTeam']['redeemInvitation']>>;
     try {
       joined = await deps.store.projectTeam.redeemInvitation({

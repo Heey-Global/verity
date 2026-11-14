@@ -357,3 +357,35 @@ it('never fences a person Uplink already confirmed, nor confirms one it fenced',
   // Either the fence won (still disabled) or the confirmation won (active, not failed).
   expect(fenced ? status?.status === 'disabled' : status?.status === 'active').toBe(true);
 });
+
+it('never brings a removed person back with a replayed confirmation', async () => {
+  const { secret } = await invite();
+  const joined = await redeem(secret);
+  await team().confirmJoin('r1');
+  await team().removeMember('p1', joined.userId);
+  await ctx.db
+    .updateTable('users')
+    .set({ status: 'disabled' })
+    .where('id', '=', joined.userId)
+    .execute();
+  await expect(team().confirmJoin('r1')).resolves.toBe(false);
+  const user = await ctx.db
+    .selectFrom('users')
+    .select('status')
+    .where('id', '=', joined.userId)
+    .executeTakeFirst();
+  expect(user?.status).toBe('disabled');
+});
+
+it("keeps a joiner's name free of controls that would reorder other people's lists", async () => {
+  const { secret } = await invite();
+  await admit('r-bidi');
+  await expect(
+    team().redeemInvitation({
+      invitationId: 'inv-1',
+      secret,
+      redemptionId: 'r-bidi',
+      displayName: 'Lena \u202e',
+    }),
+  ).rejects.toThrow();
+});

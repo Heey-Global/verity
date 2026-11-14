@@ -730,6 +730,8 @@ export class ManagedDevServerManager {
       (!entry.approved || !(await this.providerApproved(entry)))
     )
       throw new ManagedDevServerError('Review and approve the command first', 409);
+    // Also before stopping: someone else's approval must not cost the running server.
+    this.assertOwnApproval(entry, by, person);
     await this.locked(context.project.id, async () => {
       const instance = (await this.servers.listInstances({ serverId: entry.id, sessionId }))[0];
       if (instance) await this.stopInstance(context.project, instance, null);
@@ -888,19 +890,17 @@ export class ManagedDevServerManager {
     return person;
   }
 
-  private async startEntry(
-    context: SessionContext,
+  /**
+   * Secrets resolve through the starter's own connection (ADR 0023 §3): they
+   * start it only on a command they approved themselves, never on another
+   * person's approval. An approval from before projects had people was the
+   * administrator's.
+   */
+  private assertOwnApproval(
     entry: ManagedDevServerRecord,
     by: StartedBy,
-    local?: boolean,
-    person: string | null = null,
-  ): Promise<void> {
-    const { project, sessionId } = context;
-    await this.assertStartAllowed(sessionId);
-    // Secrets resolve through the starter's own connection (ADR 0023 §3): they
-    // start it only on a command they approved themselves, never on another
-    // person's approval. An approval from before projects had people was the
-    // administrator's.
+    person: string | null,
+  ): void {
     if (
       by !== 'recovery' &&
       person !== null &&
@@ -911,6 +911,18 @@ export class ManagedDevServerManager {
         'Review and approve this server yourself before starting it with its secrets.',
         409,
       );
+  }
+
+  private async startEntry(
+    context: SessionContext,
+    entry: ManagedDevServerRecord,
+    by: StartedBy,
+    local?: boolean,
+    person: string | null = null,
+  ): Promise<void> {
+    const { project, sessionId } = context;
+    await this.assertStartAllowed(sessionId);
+    this.assertOwnApproval(entry, by, person);
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.
