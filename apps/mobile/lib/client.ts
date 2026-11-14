@@ -15,6 +15,7 @@ import {
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
+import { serverConnection } from './serverConnection';
 import { DEMO_BASE_URL, demoFetch } from './demoTransport';
 
 // The control-plane base URL (e.g. a Tailscale address of the server). It is
@@ -38,6 +39,8 @@ export function subscribeVerityBaseUrl(listener: () => void): () => void {
 }
 
 function notifyBaseUrlChanged(): void {
+  // Another server's outage is not this one's.
+  serverConnection.reset();
   for (const listener of baseUrlListeners) listener();
 }
 let lastDescriptorToken: string | null = null;
@@ -153,6 +156,8 @@ export function createVerityClient(): VerityClient | null {
       fetch: browserFetch,
       uploadFetch: browserFetch,
       allowBackgroundUpload: false,
+      // Bound to this server: after a switch, its late answers are ignored.
+      connection: serverConnection.reporter(),
     });
     registerBranchesClientScope(
       client,
@@ -182,6 +187,7 @@ export function createVerityClient(): VerityClient | null {
     onUnauthorized: () => {
       void clearAuthToken(serverUrl);
     },
+    connection: serverConnection.reporter(),
   });
   registerBranchesClientScope(client, () => `${serverUrl}:${getAuthTokenId(serverUrl) ?? 'guest'}`);
   const token = getAuthToken(serverUrl);
@@ -219,3 +225,24 @@ export function createVerityClient(): VerityClient | null {
   }
   return client;
 }
+
+// While the server is away the connection bar checks it with the liveness probe;
+// that request reports through the monitor like any other, which ends the outage.
+serverConnection.setProbe(async () => {
+  // The demo talks to no server: nothing to check, and a demo client must
+  // never end a real outage.
+  if (isDemoMode()) {
+    serverConnection.reset();
+    return;
+  }
+  // Built per check, so it takes the route and token as they are now; a client
+  // kept from the start of the outage could keep probing a stale route.
+  const client = createVerityClient();
+  // No server is configured any more: there is nothing to be connected to,
+  // which is not the same as having reached it.
+  if (client === null) {
+    serverConnection.reset();
+    return;
+  }
+  await client.getHealth();
+});

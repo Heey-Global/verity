@@ -3,7 +3,7 @@ import { SessionRepositories } from '../../components/project/SessionRepositorie
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
-import { projectTitle } from '@verity/mobile';
+import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
@@ -17,6 +17,7 @@ import {
 } from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
+import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
@@ -785,6 +786,14 @@ export const SessionChat = memo(function SessionChat({
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  // A server update or outage is the header's connection bar's to show; the
+  // stream reconnects by itself, history and metadata reload once it is back.
+  const hidesHistoryError = useHidesConnectionError(historyError);
+  const hidesStreamError = useHidesConnectionError(streamError);
+  useConnectionRecovered(() => {
+    refreshMetadata();
+    if (connectionFailureKind(historyError) !== undefined) (loaded ? loadOlder : retryHistory)();
+  });
   const optionalWorkReady = useDeferredSessionWork(
     sessionId,
     initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
@@ -4547,7 +4556,7 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
-      {historyError ? (
+      {historyError && !hidesHistoryError ? (
         <>
           <Banner tone="attention" text={historyError} />
           <Button
@@ -4559,7 +4568,9 @@ export const SessionChat = memo(function SessionChat({
           />
         </>
       ) : null}
-      {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
+      {streamError && !hidesStreamError ? (
+        <Banner tone="attention" text={`Stream: ${streamError}`} />
+      ) : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
         <Banner tone="danger" text={`Model switch failed: ${switchModelError}`} />

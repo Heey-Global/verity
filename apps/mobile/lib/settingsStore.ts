@@ -23,6 +23,7 @@ import {
   type VerityClient,
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
+import { serverConnection } from './serverConnection';
 import { useCallback, useSyncExternalStore } from 'react';
 
 export type ApplyRun =
@@ -78,6 +79,8 @@ let secretStatusFailed = false;
 // Kept outside the public snapshot so write-only credentials never render or
 // leak through React state. It survives route unmounts until Retry succeeds.
 let failedPatches: { patch: VeritySettingsPatch; error: string }[] = [];
+// The client of the newest load, so the store can reload by itself after an outage.
+let loadClient: VerityClient | undefined;
 // Saves run one at a time, in the order the screens asked for them.
 let saveChain: Promise<unknown> = Promise.resolve();
 
@@ -129,6 +132,7 @@ function discardSupersededFailedKeys(replacement: VeritySettingsPatch): void {
  * to an empty screen while the operator is looking at a form.
  */
 export function loadVeritySettings(client: VerityClient): Promise<void> {
+  loadClient = client;
   const generation = ++loadGeneration;
   settingsFailed = false;
   publish({ loading: state.settings === null, failed: secretStatusFailed });
@@ -336,6 +340,14 @@ export function setApplyRun(applyRun: ApplyRun, scope = storeGeneration): void {
   publish({ applyRun });
 }
 
+/**
+ * Whether the store's banner is a failed load, which the app reloads by itself
+ * after an outage, rather than a save the person still has to repeat.
+ */
+export function veritySettingsLoadFailed(): boolean {
+  return settingsFailed && failedPatches.length === 0;
+}
+
 /** Show a settings-wide error (e.g. a sealed store discovered by a sub-panel). */
 export function setVeritySettingsError(message: string | undefined): void {
   publish({ error: message });
@@ -352,6 +364,18 @@ export function resetVeritySettingsStore(): void {
   settingsFailed = false;
   secretStatusFailed = false;
   failedPatches = [];
+  loadClient = undefined;
   saveChain = Promise.resolve();
   publish(INITIAL);
 }
+
+// After a server update or outage, reload settings whose LOAD failed. A failed
+// save is left alone: replaying it unasked could repeat a write the server had
+// already applied before the answer was lost; its banner and Retry come back.
+serverConnection.onRecovered(() => {
+  if (!settingsFailed && !secretStatusFailed) return;
+  const client = loadClient;
+  if (client === undefined) return;
+  if (veritySettingsLoadFailed()) void loadVeritySettings(client);
+  if (secretStatusFailed) void refreshSecretStatus(client);
+});

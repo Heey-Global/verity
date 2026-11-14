@@ -106,6 +106,7 @@ import {
 } from '../components/useProjectReorder';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
+import { useConnectionRecovered, useHidesConnectionError } from '../hooks/useServerConnection';
 import { UnreadDot } from '../components/UnreadDot';
 import { WorkingDot } from '../components/WorkingDot';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -990,6 +991,13 @@ function SessionList({ client }: { client: VerityClient }) {
       setRefreshingOverview(false);
     }
   }, [refresh, refreshProjects]);
+  // The header's connection bar owns a server update or outage: the lists say
+  // nothing of their own about it and reload as soon as the server is back.
+  useConnectionRecovered(() => {
+    void Promise.allSettled([refresh({ silent: true }), refreshProjects()]);
+  });
+  const hidesSessionsError = useHidesConnectionError(error);
+  const hidesProjectsError = useHidesConnectionError(projectsError);
 
   // Delete is destructive + irreversible (drops history, removes the worktree),
   // so confirm with a native alert before firing. The optimistic removal + any
@@ -1054,8 +1062,10 @@ function SessionList({ client }: { client: VerityClient }) {
       {/* Above the stale banner on purpose: a poll that failed is a symptom, and
           this is the Server telling us the cause. */}
       {serverAttention ? <ServerAttentionBanner notice={serverAttention} /> : null}
-      {error && sessions.length > 0 ? <StaleBanner message={error} onRetry={refresh} /> : null}
-      {projectsError ? (
+      {error && sessions.length > 0 && !hidesSessionsError ? (
+        <StaleBanner message={error} onRetry={refresh} />
+      ) : null}
+      {projectsError && !hidesProjectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
       <Reanimated.View

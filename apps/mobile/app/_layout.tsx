@@ -27,6 +27,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { ActiveMeetingOverlay } from '../components/ActiveMeetingOverlay';
 import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { ConnectionStatusBar } from '../components/ConnectionStatusBar';
 import { DemoBanner } from '../components/DemoBanner';
 import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
@@ -538,6 +539,8 @@ function AppHeader({
           onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
         />
       ) : null}
+      {/* Every screen with a header shows the server's reachability here, once. */}
+      <ConnectionStatusBar />
     </View>
   );
 }
