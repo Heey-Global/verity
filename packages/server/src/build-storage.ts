@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -73,6 +74,24 @@ const remoteRecordSchema = z.object({
   estimateBytes: z.number().int().nonnegative().optional(),
 });
 type RemoteOperation = z.infer<typeof remoteRecordSchema>['operation'];
+
+/** Bounds for waiting out host builder maintenance before refusing a build. A
+ *  builder update restarts BuildKit in a few minutes; this leaves headroom for a
+ *  slow image pull without turning a stuck maintenance run into a hung build. */
+const BUILDER_MAINTENANCE_WAIT_MS = 10 * 60_000;
+const BUILDER_MAINTENANCE_POLL_MS = 5_000;
+const BUILDER_MAINTENANCE_REASON = 'builder maintenance is in progress';
+/** `flock --nonblock` exit status when another holder has the lock. */
+const FLOCK_HELD = 1;
+
+/** The host holds the admission lock exclusively for maintenance: transient, so
+ *  admission waits for it, unlike every other refusal. */
+export class BuilderMaintenanceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'BuilderMaintenanceError';
+  }
+}
 
 /**
  * An attempt from another PID namespace (the previous Server container) has no
@@ -405,6 +424,10 @@ export class BuildStorage {
       return { availableBytes: stats.bavail * stats.bsize, freeInodes: stats.ffree };
     },
     private readonly admissionDirectory?: string,
+    private readonly maintenanceWait: { timeoutMs: number; pollMs: number } = {
+      timeoutMs: BUILDER_MAINTENANCE_WAIT_MS,
+      pollMs: BUILDER_MAINTENANCE_POLL_MS,
+    },
   ) {}
 
   /** Markers carry recovery evidence independently of the artifact directory. */
@@ -557,6 +580,42 @@ export class BuildStorage {
     onQueued?: (ahead: number, holder?: { label: string; since: number }) => void,
     owner: { label: string; projectId?: string } = { label: 'unnamed build' },
   ): Promise<BuildStorageLease> {
+    // Host builder maintenance (a builder update or snapshotter migration) holds
+    // the admission lock for minutes, not hours. Failing at once turned a Repair
+    // issued during that window into a failed project with nothing wrong with it.
+    // Wait for it, bounded, outside the queue so other builds are not held up.
+    // The budget starts at the first maintenance refusal: queueing before it is
+    // not maintenance (the host's lock waits for running builds anyway). Later
+    // retries share that one budget, so the wait stays bounded overall.
+    let deadline: number | undefined;
+    let waitingSince: number | undefined;
+    for (;;) {
+      try {
+        const lease = await this.admitInTurnOnce(onQueued, owner);
+        if (waitingSince !== undefined)
+          console.log(
+            `Builder maintenance ended; ${owner.label} admitted after waiting ${String(Math.round((Date.now() - waitingSince) / 1000))}s.`,
+          );
+        return lease;
+      } catch (error) {
+        if (!(error instanceof BuilderMaintenanceError)) throw error;
+        deadline ??= Date.now() + this.maintenanceWait.timeoutMs;
+        if (Date.now() >= deadline) throw error;
+        if (waitingSince === undefined) {
+          waitingSince = Date.now();
+          console.warn(
+            `Builder maintenance is in progress; ${owner.label} waits up to ${String(Math.round(this.maintenanceWait.timeoutMs / 1000))}s for it to finish.`,
+          );
+        }
+        await delay(Math.min(this.maintenanceWait.pollMs, Math.max(0, deadline - Date.now())));
+      }
+    }
+  }
+
+  private async admitInTurnOnce(
+    onQueued: ((ahead: number, holder?: { label: string; since: number }) => void) | undefined,
+    owner: { label: string; projectId?: string },
+  ): Promise<BuildStorageLease> {
     if (this.held || this.handingOver || this.waiting.length > 0) {
       // A refusal that does not depend on the lease answers now, not after the wait;
       // admit() checks everything again once the turn comes.
@@ -633,16 +692,21 @@ export class BuildStorage {
         stdio: ['ignore', 'ignore', 'pipe', fd],
         timeout: 5000,
       });
-      if (locked.status !== 0) reason = 'builder maintenance is in progress';
+      // Only "lock held" (exit 1 under --nonblock) is maintenance; a timeout or a
+      // failed spawn is a broken check, which must not be waited out as one.
+      if (locked.status === FLOCK_HELD) reason = BUILDER_MAINTENANCE_REASON;
+      else if (locked.status !== 0) reason = 'the builder admission lock could not be checked';
       else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
         reason = 'builder migration recovery is pending';
     } finally {
       closeSync(fd);
     }
-    if (reason !== undefined)
-      throw new Error(
-        `Builder admission unavailable: ${reason}; retry after managed maintenance completes`,
-      );
+    if (reason !== undefined) {
+      const message = `Builder admission unavailable: ${reason}; retry after managed maintenance completes`;
+      throw reason === BUILDER_MAINTENANCE_REASON
+        ? new BuilderMaintenanceError(message)
+        : new Error(message);
+    }
   }
 
   private wakeNext(): void {
@@ -815,7 +879,9 @@ export class BuildStorage {
           stdio: ['ignore', 'ignore', 'pipe', admissionFd],
           timeout: 5000,
         });
-        if (locked.status !== 0) throw new Error('builder maintenance is in progress');
+        if (locked.status === FLOCK_HELD)
+          throw new BuilderMaintenanceError(BUILDER_MAINTENANCE_REASON);
+        if (locked.status !== 0) throw new Error('the builder admission lock could not be checked');
         if (existsSync(join(this.admissionDirectory, 'migration-pending')))
           throw new Error('builder migration recovery is pending');
         // The shared descriptor fences the check/create race with the host's exclusive lock.
@@ -823,10 +889,10 @@ export class BuildStorage {
         admissionMarker = this.createAdmissionMarker(this.admissionDirectory);
       } catch (cause) {
         if (admissionFd !== undefined) closeSync(admissionFd);
-        throw new Error(
-          `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`,
-          { cause },
-        );
+        const message = `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`;
+        throw cause instanceof BuilderMaintenanceError
+          ? new BuilderMaintenanceError(message, { cause })
+          : new Error(message, { cause });
       }
     }
     try {
@@ -1052,6 +1118,9 @@ export class BuildStorage {
   ): Promise<UnresolvedBuildAttempt[]> {
     const namespace = readlinkSync('/proc/self/ns/pid');
     const identity = this.hostIdentity();
+    // Fixed diagnostic text only: probe errors can contain credentials or paths.
+    const retainedReasons = new Map<string, string>();
+    const protectedReasons = new Map<string, string>();
     let idle: boolean | undefined;
     let asked = false;
     // The worker's answer covers only operations that began before it was asked.
@@ -1088,6 +1157,25 @@ export class BuildStorage {
       const reference = record.protectedBuild;
       try {
         const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));
+        if (!reply.success || !('record' in reply.data)) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote status check did not return a valid receipt',
+          );
+        } else if (
+          reply.data.record.request.projectId !== reference.projectId ||
+          reply.data.record.request.attemptId !== reference.attemptId
+        ) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote receipt identity does not match the reserved attempt',
+          );
+        } else {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote builder has not confirmed the attempt ended',
+          );
+        }
         return (
           reply.success &&
           'record' in reply.data &&
@@ -1097,6 +1185,10 @@ export class BuildStorage {
           reply.data.record.request.attemptId === reference.attemptId
         );
       } catch (error) {
+        protectedReasons.set(
+          reference.attemptId,
+          'remote status check failed; termination is not confirmed',
+        );
         // The host holds neither this attempt nor a receipt for it: its begin was
         // refused or never arrived (hosts before refusal receipts), or its receipt
         // aged out. A begin that a dead client wrote may still be unread by the
@@ -1179,7 +1271,10 @@ export class BuildStorage {
       }
       const sameNamespace = owner?.namespace === namespace;
       const record = this.readRemoteRecord(directory);
-      if (record === 'invalid') continue;
+      if (record === 'invalid') {
+        retainedReasons.set(entry.name, 'remote operation identity record could not be verified');
+        continue;
+      }
       if (record !== undefined) {
         const rebooted =
           identity !== undefined &&
@@ -1209,18 +1304,42 @@ export class BuildStorage {
           reason = 'the protected builder confirmed the attempt ended';
         else if (record.operation === 'image-import' && clientGone())
           reason = 'the image import client has exited';
-        if (reason === undefined) continue;
+        if (reason === undefined) {
+          retainedReasons.set(
+            entry.name,
+            !clientGone()
+              ? 'build client may still submit or own remote work'
+              : record.operation === 'protected-build'
+                ? (record.protectedBuild &&
+                    protectedReasons.get(record.protectedBuild.attemptId)) ||
+                  'remote termination is not confirmed'
+                : idle === false
+                  ? 'builder reports remote work is still running'
+                  : idle === undefined
+                    ? 'builder status is unavailable; termination is not confirmed'
+                    : 'operation began after the builder status observation',
+          );
+          continue;
+        }
         // A lease may have been taken, a client started, or this record rewritten,
         // while the worker was asked.
-        if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
-        if (!rebooted && !clientGone()) continue;
+        if (directory === this.currentDirectory || activeDirectories.has(directory)) {
+          retainedReasons.set(entry.name, 'a live owner acquired the attempt during verification');
+          continue;
+        }
+        if (!rebooted && !clientGone()) {
+          retainedReasons.set(entry.name, 'build client may still submit or own remote work');
+          continue;
+        }
         const current = this.readRemoteRecord(directory);
         if (
           current === undefined ||
           current === 'invalid' ||
           JSON.stringify(current) !== JSON.stringify(record)
-        )
+        ) {
+          retainedReasons.set(entry.name, 'remote operation identity changed during verification');
           continue;
+        }
         this.releaseRemoteRecord(directory, reason);
       }
       if (owner === undefined) continue;
@@ -1252,6 +1371,10 @@ export class BuildStorage {
           return attempt.operation === 'local' || this.readRemoteRecord(directory) !== undefined;
         })
       : this.survey(namespace);
+    this.unresolved = this.unresolved.map((attempt) => ({
+      ...attempt,
+      reason: retainedReasons.get(attempt.attempt) ?? attempt.reason,
+    }));
     return this.unresolvedAttempts();
   }
 

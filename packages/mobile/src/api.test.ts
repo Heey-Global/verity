@@ -21,6 +21,17 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+it('finalizes a meeting through the server-only endpoint without sending recorder data', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({ finalized: true, recordingStopped: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.finalizeLiveMeeting('session/one', 'meeting/one');
+  expect(calls[0]?.url).toBe(
+    'http://host/sessions/session%2Fone/live-meetings/meeting%2Fone/finalize',
+  );
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBeUndefined();
+});
+
 it('round-trips revisioned personal and project context through their scoped endpoints', async () => {
   const personal = { instructions: 'Rules', memory: 'Fact', revision: 3 };
   const memory = { memory: 'Project fact', revision: 'memory-revision' };
@@ -4745,6 +4756,7 @@ describe('VerityClient calendar meetings', () => {
     'calendar-meeting-routes.ts',
     'calendar-watch-routes.ts',
     'live-meeting-routes.ts',
+    'attendee-routes.ts',
   ]
     .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
     .join('\n');
@@ -4807,6 +4819,27 @@ describe('VerityClient calendar meetings', () => {
     ]);
     registered('GET', '/live-meetings/active');
     registered('GET', '/live-meetings/upcoming');
+  });
+
+  it('reads the join status of an online meeting', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ status: 'failed', reason: 'login_required', platform: 'teams' }),
+      json({ status: 'lobby', reason: null, platform: 'webex' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getOnlineMeetingStatus('s 1', 'm1')).toEqual({
+      status: 'failed',
+      reason: 'login_required',
+      platform: 'teams',
+    });
+    // A status or platform added by a newer server reads as still joining, not as an error.
+    expect(await client.getOnlineMeetingStatus('s 1', 'm1')).toEqual({
+      status: 'joining',
+      reason: null,
+      platform: null,
+    });
+    expect(calls[0]?.url).toBe('http://host/sessions/s%201/live-meetings/m1/online/status');
+    registered('GET', '/sessions/:id/live-meetings/:meetingId/online/status');
   });
 
   it('joins with or without a session, skips, assigns and discards', async () => {

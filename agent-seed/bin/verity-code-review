@@ -14,7 +14,8 @@ reviewer using agent-seed/code-review-prompt.md — never inline in the main
 chat, and without improvising a backend-specific sub-agent or slash command.
 After the findings are fixed or declined with a brief reason, use
 "verity-code-review mark" to record the current HEAD as reviewed for the
-pre-push hook. Re-run first when a fix changed HEAD.
+pre-push hook. Re-run first when a fix changed HEAD: "mark" accepts only the
+HEAD that the last completed "run" in this checkout reviewed.
 EOF
 }
 
@@ -129,6 +130,9 @@ REVIEW_BASE_HELPER="$(cd -- "${0%/*}" && pwd)/verity-review-base.sh"
 cd "$REPO_ROOT"
 BASE="${2:-origin/main}"
 MARKER="${VERITY_CODE_REVIEW_MARKER:-$REPO_ROOT/.agents/.last-code-review-sha}"
+# The HEAD the last completed `run` reviewed. `mark` used to record whatever HEAD
+# was current, so a commit made after the review was released with it unseen.
+RUN_RECORD="${VERITY_CODE_REVIEW_RUN_RECORD:-$REPO_ROOT/.agents/.last-code-review-run}"
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 HEAD_SHA=$(git rev-parse HEAD)
 
@@ -138,6 +142,19 @@ if [ ! -f "$REVIEW_BASE_HELPER" ]; then
   exit 2
 fi
 source "$REVIEW_BASE_HELPER"
+
+# Record a completed review of HEAD_SHA, unless HEAD moved while it ran: the diff
+# was taken at the start, so a later HEAD was not what the reviewer saw.
+record_reviewed_head() {
+  local current
+  current=$(git rev-parse HEAD)
+  if [ "$current" != "$HEAD_SHA" ]; then
+    echo "verity-code-review: HEAD moved to $current during the review of $HEAD_SHA — run the review again before marking" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$RUN_RECORD")"
+  printf '%s\n' "$HEAD_SHA" >"$RUN_RECORD"
+}
 
 if [ "$COMMAND" = run ] || [ "$COMMAND" = status ]; then
   if ! verity_resolve_review_base "$BASE" HEAD; then
@@ -311,6 +328,8 @@ case "$COMMAND" in
       git diff --no-ext-diff --quiet "$MERGE_BASE"..HEAD || DIFF_STATUS=$?
       if [ "$DIFF_STATUS" -eq 0 ]; then
         rm -f "$DIFF_FILE"
+        # Nothing was reviewed, so nothing is recorded: otherwise `run HEAD`
+        # would credit any HEAD without a review. An unchanged branch needs no marker.
         echo "verity-code-review: no changes vs $BASE — nothing to review" >&2
         exit 0
       fi
@@ -872,6 +891,7 @@ NODE
       printf '\n' >>"$REVIEW_OUT"
     fi
     cat "$REVIEW_OUT"
+    record_reviewed_head
     ;;
   mark)
     case "$BRANCH" in
@@ -880,6 +900,20 @@ NODE
         exit 0
         ;;
     esac
+    REVIEWED=""
+    [ -f "$RUN_RECORD" ] && REVIEWED=$(head -n1 "$RUN_RECORD" | tr -d '[:space:]')
+    if [ -z "$REVIEWED" ]; then
+      echo "verity-code-review: no completed review in this checkout — run 'verity-code-review run' first" >&2
+      exit 1
+    fi
+    if [ "$REVIEWED" != "$HEAD_SHA" ]; then
+      {
+        echo "verity-code-review: refusing to mark $HEAD_SHA as reviewed"
+        echo "The last completed review saw $REVIEWED; HEAD has changed since."
+        echo "Run 'verity-code-review run' again, triage its findings, then mark."
+      } >&2
+      exit 1
+    fi
     mkdir -p "$(dirname "$MARKER")"
     printf '%s\n' "$HEAD_SHA" > "$MARKER"
     echo "verity-code-review: marked $HEAD_SHA as reviewed"

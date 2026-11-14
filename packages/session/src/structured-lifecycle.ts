@@ -15,7 +15,15 @@ export type StructuredLifecycleSignal =
       description?: string | undefined;
       status?: string | undefined;
     }
-  | { type: 'skill'; text: string };
+  | { type: 'skill'; text: string }
+  /** A model cycle the agent started on its own, with no prompt open — for
+   *  example after a background task it launched reported back. Not transcript
+   *  content: it only tells the turn loop that the agent is still working. */
+  | { type: 'cycle'; phase: 'started' | 'ended' }
+  /** The complete set of background tasks that are live now (a level, not an
+   *  edge). Replaces whatever task edges said before, so an `ended` edge the
+   *  runtime lost cannot keep a turn waiting for a task that is already gone. */
+  | { type: 'background'; live: readonly string[] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -68,6 +76,21 @@ export function lifecycleSignalsFromMeta(
         if (text !== undefined) signals.push({ type: 'skill', text });
         break;
       }
+      case 'cycle': {
+        const phase = value['phase'];
+        if (phase === 'started' || phase === 'ended') signals.push({ type: 'cycle', phase });
+        break;
+      }
+      case 'background': {
+        const live = value['live'];
+        // A malformed level is dropped whole: reading it as "nothing is live"
+        // would end a turn under work that is still running.
+        if (!Array.isArray(live) || live.length > 1_000) break;
+        const ids = live.filter((id): id is string => nonEmptyString(id) !== undefined);
+        if (ids.length !== live.length) break;
+        signals.push({ type: 'background', live: ids });
+        break;
+      }
     }
   }
   return signals;
@@ -80,6 +103,8 @@ export class StructuredLifecycleMapper {
 
   consume(signal: StructuredLifecycleSignal): AgentEvent[] {
     if (signal.type === 'skill') return [{ t: 'skill', text: signal.text }];
+    // Turn-loop bookkeeping only (see BackgroundWork); nothing to show.
+    if (signal.type === 'cycle' || signal.type === 'background') return [];
     if (signal.type === 'compaction') {
       if (signal.id !== undefined) {
         if (this.compactions.has(signal.id)) return [];

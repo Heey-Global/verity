@@ -59,7 +59,7 @@ current file content and the TypeScript/classifier version; this metadata is bou
 to 4 MiB under `.cache/lint-ambient` and never stores ASTs or type programs. Use
 `npm run lint -- --no-cache` or `npm run lint:changed -- --no-cache <files>` to
 bypass both caches and force a fresh check. Workers run sequentially under a conservative heap
-budget, limit both file count and source bytes per group, and retry smaller groups
+budget (512 MiB in sandboxes; up to 2 GiB on CI runners, which own their machine), limit both file count and source bytes per group (16 files in sandboxes; up to 192 sharing one type program on CI runners), and retry smaller groups
 after memory exhaustion; the heap budget never grows automatically. Full local lint
 includes new unignored files and skips files deleted from the working tree.
 
@@ -129,6 +129,23 @@ tests for changed behavior, and run verification proportional to the change.
 
 Never push directly to the protected default branch. Work on a branch and open
 a review-ready pull request.
+
+## Module boundaries and file size
+
+Keep every source file, tests included, at or below 1,500 lines, as decided in
+`docs/adr/0029-module-boundaries-and-file-size.md`. Composition roots such as
+`buildServer` only wire: put new domain wiring, routes and their dependency
+closures in a module of their own with an `install<Area>(app, ctx)` entry point,
+and new persistence in an `EventStore` sub-store. Never import a composition
+root from the modules it assembles.
+
+`scripts/file-size-debt.json` records the files that were larger when the limit
+was introduced, and it may only shrink. `npm run lint` and `npm run
+lint:changed` fail when a file crosses the limit, a recorded file grows, or a
+recorded file shrank without lowering its entry. After shrinking a recorded file,
+run `node scripts/file-size-guard.mjs --update`; never add or raise an entry by
+hand. Where `origin/main` is available, the check also rejects entries added or
+raised since the merge base.
 
 ## Public communication
 

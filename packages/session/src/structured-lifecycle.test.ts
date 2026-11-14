@@ -80,4 +80,40 @@ describe('StructuredLifecycleMapper', () => {
     ).toEqual([]);
     expect(mapper.consume({ type: 'task', id: 'task-1', phase: 'progress' })).toEqual([]);
   });
+
+  it('parses cycle and background-level signals without turning them into transcript rows', () => {
+    const signals = lifecycleSignalsFromMeta({
+      verity: {
+        lifecycle: [
+          { type: 'cycle', phase: 'started' },
+          { type: 'cycle', phase: 'paused' },
+          { type: 'background', live: ['bash-1', 'monitor-2'] },
+          { type: 'background', live: [] },
+        ],
+      },
+    });
+    expect(signals).toEqual([
+      { type: 'cycle', phase: 'started' },
+      { type: 'background', live: ['bash-1', 'monitor-2'] },
+      { type: 'background', live: [] },
+    ]);
+    expect(new StructuredLifecycleMapper().consumeAll(signals)).toEqual([]);
+  });
+
+  // A level replaces what the edges said. Reading a malformed one as "nothing is
+  // live" would end a held turn under background work that is still running.
+  it('drops a malformed background level whole instead of reading it as empty', () => {
+    expect(
+      lifecycleSignalsFromMeta({
+        verity: {
+          lifecycle: [
+            { type: 'background', live: ['bash-1', ''] },
+            { type: 'background', live: ['bash-1', 7] },
+            { type: 'background', live: 'bash-1' },
+            { type: 'background' },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
 });

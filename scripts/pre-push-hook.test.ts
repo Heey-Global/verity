@@ -497,7 +497,7 @@ describe('pre-push review gate message', () => {
     expect(result.stderr).toContain('verity-code-review run <other-base-ref>');
   });
 
-  it('names run, rules out the improvised alternatives, and says mark verifies nothing', () => {
+  it('names run, rules out the improvised alternatives, and limits what mark accepts', () => {
     const repo = emptyRepo();
     commit(repo, 'base');
     git(['-C', repo, 'branch', 'review-base']);
@@ -527,7 +527,8 @@ describe('pre-push review gate message', () => {
     // early is not a shortcut but a defeat of the gate.
     expect(result.stderr).toContain('code_review');
     expect(result.stderr).toMatch(/not inline in the chat/i);
-    expect(result.stderr).toMatch(/without verifying anything/i);
+    expect(result.stderr).toMatch(/accepts only the HEAD the last completed 'run' reviewed/i);
+    expect(result.stderr).toMatch(/cannot\s+check the triage/i);
     expect(result.stderr).toMatch(/fixed or declined with a brief reason/i);
     expect(result.stderr).toMatch(/Re-run the review first if a fix changed HEAD/i);
   });

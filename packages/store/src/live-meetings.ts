@@ -2,6 +2,7 @@ import { TaskStore } from './tasks.js';
 import { createPassthroughCipher, type SecretCipher } from './crypto.js';
 import { sql, type Kysely } from 'kysely';
 import type { Database } from './schema.js';
+import { randomUUID } from 'node:crypto';
 
 export interface LiveMeetingSyncRecord {
   title?: string | null | undefined;
@@ -594,6 +595,23 @@ export class LiveMeetingStore {
       // The clock row lock serializes this upload against a concurrent deletion.
       const sequence = await this.nextUpdateSequence(trx);
       if (await this.tombstoned(trx, meeting.id)) return false;
+      // A delayed recorder upload cannot reopen a meeting ended from another device.
+      // Keep the owner revision unchanged at finalization so its final transcript can follow.
+      if (meeting.engine !== 'attendee') {
+        const current = await trx
+          .selectFrom('live_meetings')
+          .select(['state', 'ended_at'])
+          .where('id', '=', meeting.id)
+          .executeTakeFirst();
+        if (current?.state === 'ended') {
+          if (meeting.state === 'active') return false;
+          meeting = {
+            ...meeting,
+            state: 'ended',
+            endedAt: meeting.endedAt ?? Number(current.ended_at),
+          };
+        }
+      }
       await trx
         .insertInto('live_meetings')
         .values({
@@ -708,6 +726,80 @@ export class LiveMeetingStore {
           .execute();
       }
       return accepted;
+    });
+  }
+
+  /** Ends server discovery without claiming that a remote microphone has stopped. */
+  async finalizeMeeting(
+    sessionId: string,
+    meetingId: string,
+  ): Promise<'finalized' | 'not_found' | 'provider_managed'> {
+    return this.db.transaction().execute(async (trx) => {
+      const sequence = await this.nextUpdateSequence(trx);
+      const meeting = await trx
+        .selectFrom('live_meetings')
+        .select(['session_id', 'engine', 'state', 'revision', 'started_at'])
+        .where('id', '=', meetingId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (meeting?.session_id !== sessionId) return 'not_found';
+      if (meeting.engine === 'attendee') return 'provider_managed';
+      if (meeting.state === 'ended') return 'finalized';
+      const now = Date.now();
+      await trx
+        .updateTable('live_meetings')
+        .set({
+          state: 'ended',
+          ended_at: Math.max(now, Number(meeting.started_at)),
+          updated_seq: sequence,
+        })
+        .where('id', '=', meetingId)
+        .execute();
+      await trx
+        .insertInto('live_meeting_results')
+        .values({
+          meeting_id: meetingId,
+          revision: Number(meeting.revision),
+          status: 'working',
+          filed_revision: null,
+          title: null,
+          summary: null,
+          decisions_json: '[]',
+          tasks_json: '[]',
+          open_questions_json: '[]',
+          model: null,
+          created_at: now,
+          updated_at: now,
+        })
+        .onConflict((conflict) => conflict.column('meeting_id').doNothing())
+        .execute();
+      await trx
+        .updateTable('live_meeting_commands')
+        .set({
+          state: 'failed',
+          error: 'Meeting finalized on server.',
+          acknowledged_at: now,
+        })
+        .where('meeting_id', '=', meetingId)
+        .where('state', '=', 'pending')
+        .where('action', '!=', 'stop')
+        .execute();
+      // Server finalization cannot confirm a microphone stopped. A recorder with blocked
+      // uploads still receives this command and acknowledges it after stopping locally.
+      await trx
+        .insertInto('live_meeting_commands')
+        .values({
+          id: randomUUID(),
+          meeting_id: meetingId,
+          action: 'stop',
+          state: 'pending',
+          error: null,
+          requested_at: now,
+          acknowledged_at: null,
+        })
+        .onConflict((conflict) => conflict.doNothing())
+        .execute();
+      return 'finalized';
     });
   }
 
@@ -876,7 +968,18 @@ export class LiveMeetingStore {
       )
       .returning('id')
       .executeTakeFirst();
-    return !!updated;
+    if (updated) return true;
+    // Terminal uploads and server finalization can resolve stop before its recorder acks it.
+    const existing = await this.db
+      .selectFrom('live_meeting_commands as command')
+      .innerJoin('live_meetings as meeting', 'meeting.id', 'command.meeting_id')
+      .select(['command.state', 'command.error'])
+      .where('command.id', '=', id)
+      .where('meeting.id', '=', meetingId)
+      .where('meeting.session_id', '=', sessionId)
+      .where('meeting.owner_token_hash', '=', ownerTokenHash)
+      .executeTakeFirst();
+    return existing?.state === state && existing.error === error;
   }
 
   async ownerCommands(

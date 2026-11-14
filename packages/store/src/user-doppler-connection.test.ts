@@ -64,7 +64,7 @@ it('assigns existing brokered-prompt grants to the administrator on upgrade', as
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0208_user_github_authorizations');
+    const before = await migrator.migrateTo('0209_user_github_authorizations');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
     await sql`insert into users (id, role, status) values ('lena', 'member', 'active')`.execute(
       raw.db,

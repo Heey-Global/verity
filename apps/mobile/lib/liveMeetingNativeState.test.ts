@@ -143,4 +143,15 @@ describe('durable native meeting event state', () => {
       ).toThrow('Invalid native sequence');
     },
   );
+
+  // A fractional stop time made the server refuse the meeting (400 on endedAt) for good.
+  it('keeps the native stop time in whole milliseconds', () => {
+    const stopped = reduceNativeMeetingEvent(emptyNativeMeetingState, 1, {
+      kind: 'status',
+      state: 'stopped',
+      recordedAt: 1_794_556_575_123.456,
+    } as STTEvent);
+    expect(stopped.endedAt).toBe(1_794_556_575_123);
+    expect(Number.isInteger(stopped.recordedAt)).toBe(true);
+  });
 });

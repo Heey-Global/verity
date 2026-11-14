@@ -985,7 +985,7 @@ it('frees build capacity without waiting for a stalled maintenance pass', async 
     const report = await first;
     expect(docker.removedImages).toEqual(['verity-devc-acme-web:b']);
     expect(report.buildCacheBytes).toBe(1234);
-    // Capacity steps only: no helper, worktree, relay or volume work.
+    // Full retirement, worktree, relay and volume maintenance remain outside capacity passes.
     expect(beforeSweep).toHaveBeenCalledOnce();
     expect(retireContainers).not.toHaveBeenCalled();
     expect(docker.removedVolumes).toEqual([]);
@@ -1026,4 +1026,39 @@ it('reports unique managed image pins from stopped containers without counting f
   const report = await runDockerGc(deps(docker));
   expect(report.stoppedContainerPins).toEqual({ images: 1, containers: 2, estimatedBytes: 123 });
   expect(report.keptImageReasons[0]?.containers).toEqual(['one', 'two']);
+});
+
+it('retires cache helpers before capacity image inventory without full maintenance', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:a'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:b'], created: 100 }),
+    ],
+    containers: [{ id: 'helper', imageId: 'old', state: 'exited', labels: {} }],
+  };
+  const docker = fakeDocker(state);
+  const retireCacheHelpers = vi.fn(async () => {
+    state.containers = [];
+    return { removed: ['helper'], errors: [] };
+  });
+  const beforeSweep = vi.fn(async () => {});
+  const retireContainers = vi.fn(async () => ({ removed: [], errors: [] }));
+  const scheduler = startDockerGcScheduler(
+    deps(docker, {
+      retireCacheHelpers,
+      beforeSweep,
+      retireContainers,
+      policy: { keepImagesPerRepo: 1 },
+    }),
+  );
+  try {
+    const report = await scheduler.reclaimBuildCapacity();
+    expect(retireCacheHelpers).toHaveBeenCalledOnce();
+    expect(docker.removedImages).toEqual(['verity-devc-example:b']);
+    expect(report.containersRemoved).toEqual(['helper']);
+    expect(beforeSweep).not.toHaveBeenCalled();
+    expect(retireContainers).not.toHaveBeenCalled();
+  } finally {
+    scheduler.stop();
+  }
 });

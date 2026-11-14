@@ -3,8 +3,12 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import { mkdtemp, mkdir, writeFile, access, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SandboxUnavailableError } from './sandbox-git.js';
 import {
+  checkoutFailureReason,
   createSessionRepositories,
+  describeCheckoutFailure,
+  redactCheckoutOutput,
   sessionRepositoryRoot,
   removeSessionRepositoryWorkspaces,
 } from './session-repositories.js';
@@ -152,7 +156,72 @@ it('never treats parent repository discovery as a reusable module checkout', asy
     if (args.includes('clone')) throw new Error('partial checkout is not empty');
     return original(args);
   });
-  await expect(h.service.open('s', 'r')).rejects.toThrow('partial checkout');
+  await expect(h.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'clone failed',
+    cause: expect.objectContaining({ message: 'partial checkout is not empty' }),
+  });
   expect(h.git.mock.calls.some(([args]) => args.includes('checkout'))).toBe(false);
   expect(h.save).not.toHaveBeenCalled();
+});
+
+it('categorizes checkout failures so a stopped sandbox is not reported as a failed clone', async () => {
+  const h = harness();
+  const original = h.git.getMockImplementation()!;
+  h.git.mockImplementation(async (args) => {
+    if (args.includes('clone')) throw new SandboxUnavailableError('sandbox');
+    return original(args);
+  });
+  await expect(h.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'project sandbox unavailable',
+  });
+  const noProxy = harness();
+  noProxy.git.mockImplementation(async (args) => {
+    if (args.includes('--get-regexp')) throw Object.assign(new Error('exit 1'), { code: 1 });
+    return '';
+  });
+  await expect(noProxy.service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'forge proxy transport unavailable',
+  });
+  // Only exit 1 means "no proxy configured"; a broken session worktree is not.
+  const broken = harness();
+  broken.git.mockImplementation(async () => {
+    throw Object.assign(new Error('not a git repository'), { code: 128 });
+  });
+  const failure = await broken.service.open('s', 'r').catch((caught: unknown) => caught);
+  expect(describeCheckoutFailure(failure)).toMatchObject({
+    reason: 'checkout failed',
+    exitCode: 128,
+  });
+  await expect(harness(true).service.open('s', 'r')).rejects.toMatchObject({
+    reason: 'planning active',
+  });
+  await expect(h.service.open('s', 'foreign')).rejects.toMatchObject({
+    reason: 'repository not connected',
+  });
+});
+
+it('reports a stopped sandbox from an unwrapped git step as unavailable, not as a git failure', () => {
+  const stopped = new SandboxUnavailableError('sandbox');
+  expect(checkoutFailureReason(stopped)).toBe('project sandbox unavailable');
+  expect(describeCheckoutFailure(stopped)).toMatchObject({ reason: 'project sandbox unavailable' });
+  expect(checkoutFailureReason(new Error('git exited 1'))).toBe('checkout failed');
+});
+
+it('redacts credentials from logged git output and never logs the command line', () => {
+  expect(
+    redactCheckoutOutput(
+      'fatal: https://user:ghp_abc123@github.com/x.git\nAuthorization: Basic Zm9v\nverity-broker-capvalue ghs_tok github_pat_11AB',
+    ),
+  ).toBe(
+    'fatal: https://[redacted]@github.com/x.git\nAuthorization: [redacted]\nverity-broker-[redacted] [redacted] [redacted]',
+  );
+  const detail = describeCheckoutFailure(
+    Object.assign(new Error('Command failed: git clone --config secret'), {
+      code: 128,
+      stderr: 'x'.repeat(5000),
+    }),
+  );
+  expect(detail).toMatchObject({ reason: 'checkout failed', exitCode: 128, causeName: 'Error' });
+  expect(String(detail.stderr)).toHaveLength(1000);
+  expect(JSON.stringify(detail)).not.toContain('Command failed');
 });

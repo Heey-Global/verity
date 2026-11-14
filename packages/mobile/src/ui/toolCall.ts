@@ -252,6 +252,24 @@ function basename(path: string): string {
   return segments[segments.length - 1] || path;
 }
 
+/**
+ * The field a tool is known to be about (a command, a path, an address), whole: every line,
+ * no clipping, bidi controls spelled out. For a reader who decides on it, such as Home's
+ * permission card. Only fields mapped in {@link PRIMARY_FIELD}: the headline's fallback to
+ * the first string is agent-ordered, so it could present a harmless field as the call.
+ */
+export function toolCallPrimaryField(
+  toolName: string,
+  input: unknown,
+): { field: string; text: string } | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const key = PRIMARY_FIELD[canonicalToolName(toolName)];
+  const value = key !== undefined ? (input as Record<string, unknown>)[key] : undefined;
+  return key !== undefined && typeof value === 'string' && value.trim() !== ''
+    ? { field: key, text: spellOutBidiControls(value) }
+    : null;
+}
+
 function summarizeInput(name: string, input: unknown): string | null {
   if (typeof input === 'string') return oneLine(input, MAX_LEN);
   if (!input || typeof input !== 'object') return null;

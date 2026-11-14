@@ -456,7 +456,7 @@ describe('Google account migration', () => {
     const legacy = await createIsolatedTestDb();
     try {
       const migrator = new Migrator({ db: legacy.db, provider: migrationProvider });
-      expect((await migrator.migrateTo('0205_user_display_name')).error).toBeUndefined();
+      expect((await migrator.migrateTo('0206_user_display_name')).error).toBeUndefined();
       await sql`insert into google_accounts(id, email, client_id, refresh_token)
         values ('existing-google', 'existing@example.test', 'client', 'sealed')`.execute(legacy.db);
       await sql`insert into projects(id, owner, repo, container_name, state)

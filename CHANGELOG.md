@@ -6,6 +6,57 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.94.0](https://github.com/Heey-Global/verity/compare/v4.93.0...v4.94.0) (2026-11-14)
+
+
+### Features
+
+* **preview-tunnel:** relay namespaced app cookies through online shares ([#2559](https://github.com/Heey-Global/verity/issues/2559)) ([9843b62](https://github.com/Heey-Global/verity/commit/9843b6264ecc9a178431b9c8f2615112409f2e70))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2566](https://github.com/Heey-Global/verity/issues/2566)) ([eff01ad](https://github.com/Heey-Global/verity/commit/eff01ad4802b2c875c4a71bd889528bba939b7cd))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.6.0 ([#2567](https://github.com/Heey-Global/verity/issues/2567)) ([62fc99b](https://github.com/Heey-Global/verity/commit/62fc99b88ba3c4f31b7c292119b73cd390780d97))
+* **deps:** update dependency minimatch to v11.0.7 ([#2564](https://github.com/Heey-Global/verity/issues/2564)) ([d69ce10](https://github.com/Heey-Global/verity/commit/d69ce10cadd200a05d387b17e4f11e7b0d90f6d3))
+* **events:** render choices when several options are recommended ([#2570](https://github.com/Heey-Global/verity/issues/2570)) ([649d61f](https://github.com/Heey-Global/verity/commit/649d61fafaddf3689ae7648ca221511159ad3c43))
+* **sandbox:** prepare dependencies in repositories opened into a session ([#2572](https://github.com/Heey-Global/verity/issues/2572)) ([e0cb8a3](https://github.com/Heey-Global/verity/commit/e0cb8a31fcd2639e416a8c0e7aa7e12dbcb4dc68))
+* **self-update:** exercise project egress admission in the live smoke ([#2569](https://github.com/Heey-Global/verity/issues/2569)) ([946eecf](https://github.com/Heey-Global/verity/commit/946eecfad0333e894982ccfee06d54f9db132405))
+* **server:** keep module clones alive through slow broker re-checks ([#2561](https://github.com/Heey-Global/verity/issues/2561)) ([e619d2d](https://github.com/Heey-Global/verity/commit/e619d2d14d469f2cc712fee50dacc3862a416789))
+* **session:** keep Claude turns open while background work runs ([#2571](https://github.com/Heey-Global/verity/issues/2571)) ([4eb7026](https://github.com/Heey-Global/verity/commit/4eb7026ea62e14fa376d258fc4eee94a45df24e3))
+
+## [4.93.0](https://github.com/Heey-Global/verity/compare/v4.92.0...v4.93.0) (2026-11-13)
+
+
+### Features
+
+* **meetings:** show online join progress and fix stale meeting state ([#2554](https://github.com/Heey-Global/verity/issues/2554)) ([539d90d](https://github.com/Heey-Global/verity/commit/539d90d2112effb8f8aa5e43e06509230ca48f1a))
+
+
+### Bug Fixes
+
+* reuse dependency inventories, speed up release-age verification and size CI lint workers ([#2549](https://github.com/Heey-Global/verity/issues/2549)) ([9476702](https://github.com/Heey-Global/verity/commit/9476702cc4e3e17a2834ee38df47952195a98f70))
+* **server:** keep sleeping projects wakeable when their relay is gone ([#2550](https://github.com/Heey-Global/verity/issues/2550)) ([da10f7f](https://github.com/Heey-Global/verity/commit/da10f7f781f842ca6b3b2380f269d6f8d59c5144))
+
+
+### Performance Improvements
+
+* **lint:** lint CI groups of up to 192 files with one shared type program ([#2557](https://github.com/Heey-Global/verity/issues/2557)) ([4b44d9d](https://github.com/Heey-Global/verity/commit/4b44d9dfec8cd9ae9bd78630a7b64ab626400da0))
+
+## [4.92.0](https://github.com/Heey-Global/verity/compare/v4.91.1...v4.92.0) (2026-11-12)
+
+
+### Features
+
+* **mobile:** unify project card states and agent marks ([#2534](https://github.com/Heey-Global/verity/issues/2534)) ([1e9ee51](https://github.com/Heey-Global/verity/commit/1e9ee51c65d48ea344b5d351bd98e112e77cfebf))
+
+
+### Bug Fixes
+
+* **deps:** update dependency ws to v8.22.2 ([#2530](https://github.com/Heey-Global/verity/issues/2530)) ([15ea612](https://github.com/Heey-Global/verity/commit/15ea612851349bf21dfc67e9d88298d8b651e6ee))
+* **meetings:** recover stalled finalization and serialize model loading ([#2535](https://github.com/Heey-Global/verity/issues/2535)) ([e657b61](https://github.com/Heey-Global/verity/commit/e657b61a4ec4c4a53df84673c86b06604e43460a))
+* **sandbox:** resume automatic repairs without interrupting active work ([#2536](https://github.com/Heey-Global/verity/issues/2536)) ([1711810](https://github.com/Heey-Global/verity/commit/171181013a97c4b3d410906e698bc33f5fa6c90e))
+
 ## [4.91.1](https://github.com/Heey-Global/verity/compare/v4.91.0...v4.91.1) (2026-11-12)
 
 

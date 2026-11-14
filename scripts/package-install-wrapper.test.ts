@@ -209,6 +209,7 @@ describe('package install wrapper', () => {
     const result = await f.start(['ci', '--min-release-age=0']).exited;
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('installation remains blocked');
+    expect(result.stderr).toContain('release-age exception was cancelled in the Verity app');
     expect(existsSync(f.marker)).toBe(false);
     expect(existsSync(join(f.root, 'resolved.json'))).toBe(false);
   });
@@ -449,6 +450,36 @@ describe('package install wrapper', () => {
       'verify',
       'complete',
     ]);
+  });
+
+  it('reports progress while the broker holds a decision and names a cancellation', async () => {
+    // The broker answers only after verification and any human decision. A silent
+    // wait reads as a hang, and an agent that kills it discards the pending approval.
+    const previous = process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS;
+    process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS = '50';
+    try {
+      const f = await fixture((_body, reply) => {
+        setTimeout(() => answer(reply, 'cancel'), 400);
+      });
+      const result = await f.start(['install', 'express']).exited;
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(
+        /still waiting for the package installation decision \(\d+ s\)/u,
+      );
+      expect(result.stderr).toContain('approve or cancel it in the Verity app');
+      expect(result.stderr).toContain('cancelled in the Verity app');
+      expect(existsSync(f.marker)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS;
+      else process.env.VERITY_PACKAGE_BROKER_HEARTBEAT_MS = previous;
+    }
+  });
+
+  it('stays quiet when the broker answers before the first progress interval', async () => {
+    const f = await fixture((_body, reply) => answer(reply, 'continue'));
+    const result = await f.start(['install', 'express']).exited;
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toContain('still waiting');
   });
 
   it.each(['cancel', 'unknown'])('keeps the real install blocked after %s', async (action) => {

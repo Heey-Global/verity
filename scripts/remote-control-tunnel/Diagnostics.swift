@@ -168,10 +168,13 @@ struct DiagnosticsTest {
     precondition(restored.allSatisfy { $0.contains("failure") })
     // Restart restores evidence only; capture intent never persists.
     precondition(RemoteDataCaptureWindow().remaining == 0)
-    try Data("incomplete{".utf8).write(to: file)
-    precondition(RemoteDataRecordingStore(file: file).snapshots().isEmpty)
-    try Data(repeating: 65, count: RemoteDataRecordingStore.maximumBytes + 1).write(to: file)
-    precondition(RemoteDataRecordingStore(file: file).snapshots().isEmpty)
+    // A file of its own: `store` may still be finishing a write it queued during the last
+    // flush, which would replace a corrupt fixture with valid JSON before it is read.
+    let damaged = directory.appendingPathComponent("damaged.json")
+    try Data("incomplete{".utf8).write(to: damaged)
+    precondition(RemoteDataRecordingStore(file: damaged).snapshots().isEmpty)
+    try Data(repeating: 65, count: RemoteDataRecordingStore.maximumBytes + 1).write(to: damaged)
+    precondition(RemoteDataRecordingStore(file: damaged).snapshots().isEmpty)
     print("DATA diagnostic recorder tests passed")
   }
 }

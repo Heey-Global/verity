@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   BuildStorage,
   buildStoragePolicy,
+  BuilderMaintenanceError,
   estimateBuildStorageBytes,
   isBuildStorageCapacityRefusal,
   remoteOperationEnded,
@@ -980,6 +981,91 @@ describe('host maintenance admission', () => {
     expect(spawnSync('flock', ['-xn', lock, 'true']).status).toBe(0);
     expect(readdirSync(join(gate, 'leases'))).toHaveLength(0);
   });
+  // A Repair issued during a short builder update used to fail at once and leave
+  // the project `failed`. Maintenance is transient: a queued build waits it out.
+  it('waits for host maintenance to finish before admitting a build, within a bound', async () => {
+    const { spawn } = await import('node:child_process');
+    const f = fixture();
+    const gate = join(f.directory, 'gate');
+    mkdirSync(join(gate, 'leases'), { recursive: true });
+    writeFileSync(join(gate, 'build-admission.lock'), '');
+    const holdMaintenance = async () => {
+      const maintenance = spawn('flock', [
+        '--no-fork',
+        '-x',
+        join(gate, 'build-admission.lock'),
+        process.execPath,
+        '-e',
+        "process.stdin.resume(); process.stdout.write('locked');",
+      ]);
+      await once(maintenance.stdout, 'data');
+      return async () => {
+        const exited = once(maintenance, 'exit');
+        maintenance.stdin.end();
+        await exited;
+      };
+    };
+
+    const patient = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate, {
+      timeoutMs: 30_000,
+      pollMs: 20,
+    });
+    // Queued behind another build, the turn arrives while maintenance holds the
+    // lock: the refusal must hand the turn on and the waiter retry, not deadlock.
+    // (The host's exclusive lock waits for running builds, so the refusal is
+    // injected at the queued turn rather than raced against a real holder.)
+    const first = await patient.admitInTurn();
+    const realAdmit = patient.admit.bind(patient);
+    const admit = vi
+      .spyOn(patient, 'admit')
+      .mockImplementationOnce(() => {
+        throw new BuilderMaintenanceError('builder maintenance is in progress');
+      })
+      .mockImplementation(realAdmit);
+    const queued = patient.admitInTurn();
+    first.dispose();
+    (await queued).dispose();
+    expect(admit).toHaveBeenCalledTimes(2);
+    admit.mockRestore();
+
+    const release = await holdMaintenance();
+    let admitted = false;
+    const waiting = patient.admitInTurn().then((lease) => {
+      admitted = true;
+      return lease;
+    });
+    await setTimeout(150);
+    expect(admitted).toBe(false);
+    await release();
+    (await waiting).dispose();
+
+    const bounded = new BuildStorage(f.root, f.report, f.policy, () => f.local, gate, {
+      timeoutMs: 100,
+      pollMs: 20,
+    });
+    const releaseAgain = await holdMaintenance();
+    try {
+      await expect(bounded.admitInTurn()).rejects.toBeInstanceOf(BuilderMaintenanceError);
+    } finally {
+      await releaseAgain();
+    }
+    // The refused request left no place in the queue behind.
+    (await bounded.admitInTurn()).dispose();
+
+    // Time queued behind another build is not maintenance: a build that queued
+    // longer than the budget still gets the full wait once maintenance refuses it.
+    const holder = await bounded.admitInTurn();
+    const boundedAdmit = bounded.admit.bind(bounded);
+    vi.spyOn(bounded, 'admit')
+      .mockImplementationOnce(() => {
+        throw new BuilderMaintenanceError('builder maintenance is in progress');
+      })
+      .mockImplementation(boundedAdmit);
+    const late = bounded.admitInTurn();
+    await setTimeout(150);
+    holder.dispose();
+    (await late).dispose();
+  });
   it('fails closed on partial provisioning, pending recovery and held maintenance', async () => {
     const { spawn } = await import('node:child_process');
     const partial = admission();
@@ -1264,6 +1350,14 @@ describe('build storage reconciliation', () => {
     manager.setReleaseListener(released);
     const warn = quiet();
     try {
+      const left = await manager.reconcile({
+        protectedBuildStatus: async () => {
+          throw new Error('secret-canary-in-probe-error');
+        },
+      });
+      expect(left[0]?.reason).toBe('remote status check failed; termination is not confirmed');
+      expect(JSON.stringify(left)).not.toContain('secret-canary');
+      expect(released).not.toHaveBeenCalled();
       const status = vi.fn(async () => protectedReceipt);
       await manager.reconcile({ protectedBuildStatus: status });
       const signalled = released.mock.calls.length;
@@ -1411,6 +1505,48 @@ describe('build storage reconciliation', () => {
     ).toHaveLength(1);
     expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
   });
+  it.each([
+    ['invalid proof', undefined, 'remote status check did not return a valid receipt'],
+    [
+      'running work',
+      {
+        ...protectedReceipt,
+        record: { ...protectedReceipt.record, ended: false, phase: 'running' },
+      },
+      'remote builder has not confirmed the attempt ended',
+    ],
+    [
+      'identity conflict',
+      {
+        ...protectedReceipt,
+        record: {
+          ...protectedReceipt.record,
+          request: { ...protectedRequest, projectId: 'other' },
+        },
+      },
+      'remote receipt identity does not match the reserved attempt',
+    ],
+  ] as const)(
+    'explains retained storage for %s without releasing it',
+    async (_label, reply, reason) => {
+      const f = fixture();
+      const directory = attempt(
+        f,
+        'attempt-diagnostic',
+        {},
+        { operation: 'protected-build', protectedBuild: protectedReference },
+      );
+      const manager = f.manager();
+      const released = vi.fn();
+      manager.setReleaseListener(released);
+      const left = await manager.reconcile({ protectedBuildStatus: async () => reply });
+      expect(left).toHaveLength(1);
+      expect(left[0]?.reason).toBe(reason);
+      expect(existsSync(join(directory, 'remote-operation.json'))).toBe(true);
+      expect(released).not.toHaveBeenCalled();
+    },
+  );
+
   it('retains legacy protected records and unreachable host outcomes even after client age bounds', async () => {
     const f = fixture();
     attempt(f, 'attempt-legacy', {}, { operation: 'protected-build' });
@@ -1471,8 +1607,12 @@ describe('build storage reconciliation', () => {
     const warn = quiet();
     try {
       // An unanswered question keeps the reservation.
-      expect(await storage.reconcile({ buildkitIdle: async () => undefined })).toHaveLength(1);
-      expect(await storage.reconcile({ buildkitIdle: async () => false })).toHaveLength(1);
+      expect((await storage.reconcile({ buildkitIdle: async () => undefined }))[0]?.reason).toBe(
+        'builder status is unavailable; termination is not confirmed',
+      );
+      expect((await storage.reconcile({ buildkitIdle: async () => false }))[0]?.reason).toBe(
+        'builder reports remote work is still running',
+      );
       expect(existsSync(directory)).toBe(true);
       expect(await storage.reconcile({ buildkitIdle: async () => true })).toEqual([]);
     } finally {

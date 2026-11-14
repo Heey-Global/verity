@@ -1,3 +1,4 @@
+import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   projectRepositorySchema,
   projectInquirySchema,
@@ -597,6 +598,10 @@ const sandboxUpdateSchema = z.object({
   // Defaulted for the same reason as `selfRepair`: a Server one release behind
   // this app does not send it, and `false` is exactly what that Server means.
   turnBlocked: z.boolean().default(false),
+  // What holds a `turnBlocked` update off — `turn`, `dev_server` or `preview` —
+  // so the app names the right remedy. Read as plain strings: members a newer
+  // Server adds are ignored by the helpers rather than failing the project list.
+  blockedBy: z.array(z.string()).default([]),
   // The most recent failed automatic recreate, with its time, so an earlier
   // failure cannot read as the outcome of the attempt running now. Defaulted for
   // the same reason as the fields above.
@@ -1068,6 +1073,18 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
+// `.catch` keeps a newer server's additional status readable as still joining.
+const onlineJoinStatusSchema = z
+  .enum(['joining', 'waiting', 'joined', 'failed', 'ended'])
+  .catch('joining');
+const onlineMeetingStatusSchema = z.object({
+  status: onlineJoinStatusSchema,
+  /** Provider reason code of a failed join, for example `login_required`. */
+  reason: z.string().nullable().catch(null),
+  platform: z.enum(['google_meet', 'teams', 'zoom']).nullable().catch(null),
+});
+export type OnlineMeetingStatus = z.infer<typeof onlineMeetingStatusSchema>;
+
 const activeLiveMeetingsSchema = z.object({
   running: z.array(
     z.object({
@@ -1078,6 +1095,8 @@ const activeLiveMeetingsSchema = z.object({
       startedAt: z.number(),
       state: z.enum(['active', 'interrupted']),
       captureStatus: z.string(),
+      /** Online meetings: how far Verity got into the call (newer servers only). */
+      joinStatus: onlineJoinStatusSchema.optional(),
       recorderLastSeenAt: z.number().nullable().optional(),
       sessionName: z.string().nullable(),
       projectId: z.string().nullable(),
@@ -2490,6 +2509,9 @@ export interface VerityClientOptions {
    *  screen. NOT fired for the `/secret/*` on-ramp, whose 401 is a wrong-password
    *  signal the unlock UI handles inline. */
   onUnauthorized?: () => void;
+  /** Receives every request's outcome, so the app can show one connection state
+   *  instead of each screen rendering the same transport failure. */
+  connection?: ConnectionReporter;
 }
 
 function uploadBodyWithMimeType(data: Blob): Blob {
@@ -2908,6 +2930,17 @@ export class VerityClient {
       { method: 'POST' },
     );
   }
+  /** How far Verity's bot got into an online meeting of the session. */
+  async getOnlineMeetingStatus(sessionId: string, meetingId: string): Promise<OnlineMeetingStatus> {
+    return onlineMeetingStatusSchema.parse(
+      await (
+        await this.request(
+          `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/status`,
+          { method: 'GET' },
+        )
+      ).json(),
+    );
+  }
   /** Running meetings of readable sessions and, for administrators, unassigned ones. */
   async getActiveLiveMeetings(): Promise<ActiveLiveMeetings> {
     return activeLiveMeetingsSchema.parse(
@@ -3151,6 +3184,14 @@ export class VerityClient {
     );
   }
 
+  /** End server discovery, retaining received content; does not stop a remote microphone. */
+  async finalizeLiveMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/finalize`,
+      { method: 'POST' },
+    );
+  }
+
   async putLiveMeetingNote(sessionId: string, note: LiveMeetingNote): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(note.meetingId)}/notes/${encodeURIComponent(note.id)}`,
@@ -3301,6 +3342,7 @@ export class VerityClient {
   private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
+  private readonly connection: ConnectionReporter | undefined;
 
   constructor(opts: VerityClientOptions) {
     this.recordingDigest = opts.recordingDigest ?? recordingDigest;
@@ -3314,6 +3356,7 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
+    this.connection = opts.connection;
   }
 
   private async knowledgeRequest(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -7480,6 +7523,13 @@ export class VerityClient {
     } catch (error) {
       finishRuntimeRequest(true);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      // Only a transport failure reaches here; one the caller cancelled says
+      // nothing about the server and is not reported.
+      if (this.connection !== undefined && !isAbortError(error))
+        this.connection.reportFailure(
+          'unreachable',
+          error instanceof Error ? error.message : String(error),
+        );
       throw error;
     }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
@@ -7493,12 +7543,20 @@ export class VerityClient {
       // on-ramp is always exempt (its 401 is a wrong-password shown inline).
       if (res.status === 401 && sentToken && !path.startsWith('/secret/')) this.onUnauthorized?.();
       const payload = await errorPayload(res);
+      // The Gateway answers every request with this while the server updates;
+      // any other answer, error or not, proves the server is there.
+      if (res.status === 503 && payload.message === SERVER_MAINTENANCE_MESSAGE)
+        this.connection?.reportFailure('maintenance', payload.message);
+      // 502/504 may be the server about an upstream service or a relay in front
+      // of a server that is away: neither proof of the server nor of an outage.
+      else if (res.status !== 502 && res.status !== 504) this.connection?.reportSuccess();
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
         code: payload.code,
       });
     }
+    this.connection?.reportSuccess();
     return res;
   }
 }

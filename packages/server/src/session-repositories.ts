@@ -8,6 +8,87 @@ import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
+import { SandboxUnavailableError } from './sandbox-git.js';
+
+/** Why a module checkout could not be opened. A closed set, so the category can
+ *  reach the sandbox and the log without carrying git output, URLs or paths. */
+export type RepositoryCheckoutFailure =
+  | 'project session required'
+  | 'planning active'
+  | 'repository not connected'
+  | 'project sandbox unavailable'
+  | 'code host connection unavailable'
+  | 'forge proxy transport unavailable'
+  | 'clone failed'
+  | 'branch checkout failed'
+  | 'repository connection revoked';
+
+export class RepositoryCheckoutError extends Error {
+  constructor(
+    readonly reason: RepositoryCheckoutFailure,
+    message: string,
+    cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'RepositoryCheckoutError';
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+const STDERR_LOG_LIMIT = 1000;
+
+/** Remove what git output can carry besides the failure itself: URL userinfo,
+ *  broker capability placeholders, provider tokens and authorization headers. */
+export function redactCheckoutOutput(text: string): string {
+  return text
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/giu, '$1[redacted]@')
+    .replace(/verity-broker-[^\s'"]*/gu, 'verity-broker-[redacted]')
+    .replace(/\b(?:gh[pousr]_|github_pat_|glpat-)[A-Za-z0-9_-]+/gu, '[redacted]')
+    .replace(/(authorization:\s*)[^\r\n]*/giu, '$1[redacted]')
+    .replace(/[^\P{Cc}\n\t]/gu, '');
+}
+
+/** The category of any checkout failure, including git steps that are not
+ *  wrapped individually: a stopped sandbox is never reported as a git failure. */
+export function checkoutFailureReason(
+  error: unknown,
+): RepositoryCheckoutFailure | 'checkout failed' {
+  if (error instanceof RepositoryCheckoutError) return error.reason;
+  if (error instanceof SandboxUnavailableError) return 'project sandbox unavailable';
+  return 'checkout failed';
+}
+
+/** Log fields for a failed checkout. Never the error message: for a git step it
+ *  is the full command line. The stderr tail is redacted and bounded. */
+export function describeCheckoutFailure(error: unknown): Record<string, unknown> {
+  const reason = checkoutFailureReason(error);
+  const cause = error instanceof RepositoryCheckoutError ? error.cause : error;
+  const detail: Record<string, unknown> = { reason };
+  if (cause instanceof Error) detail.causeName = cause.name;
+  if (typeof cause === 'object' && cause !== null) {
+    const { code, signal, killed, stderr } = cause as {
+      code?: unknown;
+      signal?: unknown;
+      killed?: unknown;
+      stderr?: unknown;
+    };
+    if (typeof code === 'number') detail.exitCode = code;
+    else if (typeof code === 'string' && /^[A-Z0-9_]{1,40}$/u.test(code)) detail.code = code;
+    if (typeof signal === 'string') detail.signal = signal;
+    if (killed === true) detail.killed = true;
+    if (typeof stderr === 'string' && stderr.trim() !== '')
+      detail.stderr = redactCheckoutOutput(stderr.trim()).slice(-STDERR_LOG_LIMIT);
+  }
+  return detail;
+}
+
+/** A git step failed: keep the sandbox's own absence distinguishable from a git
+ *  failure, which a stopped container would otherwise be reported as. */
+function gitStepFailed(reason: RepositoryCheckoutFailure, error: unknown): RepositoryCheckoutError {
+  return error instanceof SandboxUnavailableError
+    ? new RepositoryCheckoutError('project sandbox unavailable', error.message, error)
+    : new RepositoryCheckoutError(reason, `repository ${reason}`, error);
+}
 
 export function sessionRepositoryRoot(projectRoot: string, sessionId: string): string {
   return join(
@@ -72,12 +153,20 @@ export function createSessionRepositories(deps: {
     if (running) return running;
     const operation = (async () => {
       const session = await deps.store.getSession(sessionId);
-      if (!session?.projectId) throw new Error('project session required');
+      if (!session?.projectId)
+        throw new RepositoryCheckoutError('project session required', 'project session required');
       if (session.planning === 'active')
-        throw new Error('repository checkout is unavailable while planning');
+        throw new RepositoryCheckoutError(
+          'planning active',
+          'repository checkout is unavailable while planning',
+        );
       const project = await deps.store.getProject(session.projectId);
       const repository = await deps.store.getProjectRepository(session.projectId, repositoryId);
-      if (!project || !repository) throw new Error('repository is not connected to this project');
+      if (!project || !repository)
+        throw new RepositoryCheckoutError(
+          'repository not connected',
+          'repository is not connected to this project',
+        );
       if (repository.isDefault)
         return {
           workspace: {
@@ -92,31 +181,65 @@ export function createSessionRepositories(deps: {
         (workspace) => workspace.repositoryId === repositoryId,
       );
       if (existing) return { workspace: existing };
-      if (!deps.cloneRoot || !deps.git) throw new Error('project sandbox unavailable');
+      if (!deps.cloneRoot || !deps.git)
+        throw new RepositoryCheckoutError(
+          'project sandbox unavailable',
+          'project sandbox unavailable',
+        );
       const root = projectClonePath(deps.cloneRoot, project);
       const git = deps.git(project, root);
       const slot = createHash('sha256').update(repositoryId).digest('hex').slice(0, 20);
       const worktree = join(sessionRepositoryRoot(root, sessionId), slot);
-      const target = projectForRepository(project, repository);
+      let target: ProjectRecord;
+      try {
+        target = projectForRepository(project, repository);
+      } catch (error) {
+        throw new RepositoryCheckoutError(
+          'repository not connected',
+          'repository is not connected to this project',
+          error,
+        );
+      }
       let origin = 'https://github.com';
       if (target.kind === 'forgejo') {
         const connection = target.forgeConnectionId
           ? await deps.store.forgeConnections.get(target.forgeConnectionId)
           : undefined;
-        if (!connection) throw new Error('code host connection unavailable');
+        if (!connection)
+          throw new RepositoryCheckoutError(
+            'code host connection unavailable',
+            'code host connection unavailable',
+          );
         origin = connection.baseUrl.replace(/\/$/u, '');
       }
       // Copy the existing broker transport into the module checkout. Runtime
       // environment config is scoped to the default forge origin, so another host
       // needs its own settings before the initial fetch as well as later agent git.
-      const proxy = (
-        await git(['-C', session.worktree, 'config', '--get-regexp', '^http\\..*\\.proxy$'])
-      )
+      let proxyConfig: string;
+      try {
+        proxyConfig = await git([
+          '-C',
+          session.worktree,
+          'config',
+          '--get-regexp',
+          '^http\\..*\\.proxy$',
+        ]);
+      } catch (error) {
+        // `git config --get-regexp` exits 1 when nothing matches. Any other
+        // failure is not a missing proxy and keeps its own classification.
+        if ((error as { code?: unknown } | null)?.code !== 1) throw error;
+        proxyConfig = '';
+      }
+      const proxy = proxyConfig
         .trim()
         .split('\n')
         .map((line) => line.slice(line.indexOf(' ') + 1))
         .find(Boolean);
-      if (!proxy) throw new Error('forge proxy transport unavailable');
+      if (!proxy)
+        throw new RepositoryCheckoutError(
+          'forge proxy transport unavailable',
+          'forge proxy transport unavailable',
+        );
       const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
       const transport = [
         `http.${origin}.proxy=${proxy}`,
@@ -144,17 +267,28 @@ export function createSessionRepositories(deps: {
           '--',
           url,
           path,
-        ]);
+        ]).catch((error: unknown) => {
+          throw gitStepFailed('clone failed', error);
+        });
       }
       try {
         await git(['-C', worktree, 'show-ref', '--verify', `refs/heads/${branch}`]);
         await git(['-C', worktree, 'checkout', branch]);
       } catch {
-        await git(['-C', worktree, 'checkout', '-b', branch]);
+        await git(['-C', worktree, 'checkout', '-b', branch]).catch((error: unknown) => {
+          throw gitStepFailed('branch checkout failed', error);
+        });
       }
-      await git(['-C', worktree, 'config', 'verity.repositoryId', repository.id]);
+      await git(['-C', worktree, 'config', 'verity.repositoryId', repository.id]).catch(
+        (error: unknown) => {
+          throw gitStepFailed('branch checkout failed', error);
+        },
+      );
       if (!(await deps.store.getProjectRepository(project.id, repositoryId)))
-        throw new Error('repository connection was revoked');
+        throw new RepositoryCheckoutError(
+          'repository connection revoked',
+          'repository connection was revoked',
+        );
       const workspace = await deps.store.upsertSessionRepositoryWorkspace({
         sessionId,
         repositoryId,
@@ -205,7 +339,11 @@ export function createSessionRepositories(deps: {
       .parse(await open(sessionId, repositoryId));
     const session = await deps.store.getSession(sessionId);
     const project = session?.projectId ? await deps.store.getProject(session.projectId) : undefined;
-    if (!project || !deps.cloneRoot) throw new Error('project sandbox unavailable');
+    if (!project || !deps.cloneRoot)
+      throw new RepositoryCheckoutError(
+        'project sandbox unavailable',
+        'project sandbox unavailable',
+      );
     const root = projectClonePath(deps.cloneRoot, project);
     const worktree = containerPathFor(result.workspace.worktree, root);
     // The session backend loads only the AGENTS.md of the worktree it starts in.

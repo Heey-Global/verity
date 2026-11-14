@@ -6,6 +6,7 @@ import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/te
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AcpClaudeBackend,
+  BACKGROUND_HOLD_DIRECTIVE,
   CLAUDE_ACP_PROFILE,
   UNREADABLE_AGENTS_MD_DIRECTIVE,
 } from './acp-claude-backend.js';
@@ -698,7 +699,7 @@ describe('AcpClaudeBackend', () => {
         cwd: '/work/project',
         mcpServers: [],
         _meta: {
-          systemPrompt: { append: 'Verity runtime policy' },
+          systemPrompt: { append: `Verity runtime policy\n\n${BACKGROUND_HOLD_DIRECTIVE}` },
         },
       },
     });
@@ -2186,7 +2187,9 @@ it('does not import repository guidance through a symlink', async () => {
       prompt: 'Read',
       appendSystemPrompt: 'Managed policy',
     });
-    expect(metadata).toMatchObject({ systemPrompt: { append: 'Managed policy' } });
+    expect(metadata).toMatchObject({
+      systemPrompt: { append: `Managed policy\n\n${BACKGROUND_HOLD_DIRECTIVE}` },
+    });
     expect(JSON.stringify(metadata)).not.toContain('Do not import this symlink target.');
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -2218,7 +2221,9 @@ it('starts the turn when the Runner uid cannot read AGENTS.md', async () => {
     });
     // The guidance must still reach the agent, which owns the file and can read it.
     expect(metadata).toMatchObject({
-      systemPrompt: { append: `Managed policy\n\n${UNREADABLE_AGENTS_MD_DIRECTIVE}` },
+      systemPrompt: {
+        append: `Managed policy\n\n${UNREADABLE_AGENTS_MD_DIRECTIVE}\n\n${BACKGROUND_HOLD_DIRECTIVE}`,
+      },
     });
     expect(JSON.stringify(metadata)).not.toContain('Agent-owned guidance');
   } finally {

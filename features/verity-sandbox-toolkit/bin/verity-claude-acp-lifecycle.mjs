@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Preserve structured Claude lifecycle messages across claude-agent-acp 0.66.0.
+ * Preserve structured Claude lifecycle messages across claude-agent-acp.
  *
- * The upstream adapter receives compact_boundary, task_* and synthetic skill
- * messages from the Claude Agent SDK, but either turns them into prose or drops
- * them before ACP. Verity patches the pinned adapter to carry those facts in
+ * The upstream adapter receives compact_boundary, task_*, background_tasks_changed
+ * and synthetic skill messages from the Claude Agent SDK, and tracks the model
+ * cycles Claude Code starts on its own, but either turns them into prose or
+ * keeps them to itself. Verity patches the pinned adapter to carry those facts in
  * ACP's reserved `_meta` extension point. The Session package maps the same
  * vendor-neutral shape for every ACP backend.
  */
@@ -244,6 +245,110 @@ source = replaceOnce(
                             break;
                         }`,
   'synthetic user message',
+);
+
+// Self-started model cycles and the live background-task level. Verity holds a
+// turn open while either says the agent is still working (background-work.ts in
+// the Session package); without them it would end the agent process — and every
+// background shell, monitor and subagent in it — at the first prompt response.
+// The emitted code names the adapter's own owner constant. The method seams
+// below do not mention it, so check it separately: a renamed constant would
+// otherwise throw on every prompt.
+if (!/^const AUTONOMOUS_CYCLE = "autonomous-cycle";$/m.test(source)) {
+  fail('AUTONOMOUS_CYCLE seam is missing; re-derive against the pinned adapter');
+}
+// The cycle signal calls `this.client` from the foreground methods, so they have
+// to be members of the agent class that sets it, with no other class between.
+{
+  const agentClass = source.indexOf('export class ClaudeAcpAgent {');
+  const client = source.indexOf('this.client = new ChangedMetaClient(', agentClass);
+  const foreground = source.indexOf('    startForeground(sessionId, owner) {', client);
+  if (
+    agentClass === -1 ||
+    client === -1 ||
+    foreground === -1 ||
+    /^(?:export )?class /m.test(source.slice(agentClass + 1, foreground))
+  ) {
+    fail('agent client seam is missing; re-derive against the pinned adapter');
+  }
+}
+// The level is sent with the same `sendUpdate` and `message` the task_* cases use,
+// so its case has to sit in the same message switch: no member boundary between.
+{
+  const taskCase = source.indexOf('case "task_started":');
+  const levelCase = source.indexOf('case "background_tasks_changed": {');
+  if (
+    taskCase === -1 ||
+    levelCase === -1 ||
+    /^ {4}(?:async )?[A-Za-z_$][\w$]*\([^)]*\) \{$/m.test(
+      source.slice(Math.min(taskCase, levelCase), Math.max(taskCase, levelCase)),
+    )
+  ) {
+    fail('background level seam is missing; re-derive against the pinned adapter');
+  }
+}
+const cycleSignal = (phase) => `void this.client.sessionUpdate({
+            sessionId,
+            update: {
+                sessionUpdate: "session_info_update",
+                _meta: { verity: { lifecycle: { type: "cycle", phase: "${phase}" } } },
+            },
+        })?.catch?.(() => undefined);`;
+
+source = replaceOnce(
+  source,
+  `    startForeground(sessionId, owner) {
+        this.foregroundWork.set(sessionId, owner);
+    }`,
+  `    startForeground(sessionId, owner) {
+        const previous = this.foregroundWork.get(sessionId);
+        this.foregroundWork.set(sessionId, owner);
+        if (owner === AUTONOMOUS_CYCLE && previous !== AUTONOMOUS_CYCLE)
+            ${cycleSignal('started')}
+        else if (owner !== AUTONOMOUS_CYCLE && previous === AUTONOMOUS_CYCLE)
+            ${cycleSignal('ended')}
+    }`,
+  'startForeground',
+);
+
+source = replaceOnce(
+  source,
+  `    endForeground(sessionId, owner) {
+        if (this.foregroundWork.get(sessionId) === owner)
+            this.foregroundWork.delete(sessionId);
+    }`,
+  `    endForeground(sessionId, owner) {
+        if (this.foregroundWork.get(sessionId) === owner) {
+            this.foregroundWork.delete(sessionId);
+            if (owner === AUTONOMOUS_CYCLE)
+                ${cycleSignal('ended')}
+        }
+    }`,
+  'endForeground',
+);
+
+source = replaceOnce(
+  source,
+  `                            case "background_tasks_changed": {
+                                await asyncTasks.backgroundTasksChanged(message.tasks);`,
+  `                            case "background_tasks_changed": {
+                                await asyncTasks.backgroundTasksChanged(message.tasks);
+                                // Sent whole or not at all: a level replaces Verity's
+                                // task set, so dropping an entry it cannot read would
+                                // end a held turn under work that is still running.
+                                const verityLive = Array.isArray(message.tasks)
+                                    ? message.tasks.map((task) => task?.task_id)
+                                    : undefined;
+                                if (verityLive?.every((id) => typeof id === "string" && id.length > 0)) {
+                                    await sendUpdate({
+                                        sessionId: message.session_id,
+                                        update: {
+                                            sessionUpdate: "session_info_update",
+                                            _meta: { verity: { lifecycle: { type: "background", live: verityLive } } },
+                                        },
+                                    });
+                                }`,
+  'background_tasks_changed',
 );
 
 const temporary = `${file}.verity-${String(process.pid)}.tmp`;

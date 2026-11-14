@@ -80,7 +80,7 @@ it("makes the existing project default model the administrator's own on upgrade"
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0214_project_sandbox_state');
+    const before = await migrator.migrateTo('0215_project_sandbox_state');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
     await sql`insert into users (id, role, status) values (${ADMIN}, 'administrator', 'active')
       on conflict (id) do nothing`.execute(raw.db);

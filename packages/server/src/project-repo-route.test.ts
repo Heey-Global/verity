@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 
-import type { ProjectRecord } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +18,7 @@ import {
   type ProjectRepository,
   type ProjectRepoRouteDeps,
 } from './project-repo-route.js';
+import { createSessionRepositories } from './session-repositories.js';
 
 const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
@@ -69,8 +70,13 @@ function setup(options: {
   ops?: ForgeRepositoryOperations;
   socket?: InternalConnectionIdentity | 'external';
   repository?: ProjectRepository | undefined | null;
+  openRepository?: ProjectRepoRouteDeps['openRepository'];
+  log?: string[];
 }) {
-  app = Fastify();
+  const log = options.log;
+  app = log
+    ? Fastify({ logger: { level: 'warn', stream: { write: (line: string) => log.push(line) } } })
+    : Fastify();
   const socket = options.socket ?? {
     projectId: 'p',
     userId: SANDBOX_USER,
@@ -102,6 +108,7 @@ function setup(options: {
     repositoryFor,
     ...(options.store ? { store: options.store } : {}),
     ...(options.getSession ? { getSession: options.getSession } : {}),
+    ...(options.openRepository ? { openRepository: options.openRepository } : {}),
     ...(options.currentRepositoryBranch
       ? { currentRepositoryBranch: options.currentRepositoryBranch }
       : {}),
@@ -476,4 +483,98 @@ it('shares default-repository PR creation while recording each calling session',
       { ...pull, dependsOn: ['https://github.com/team/api/pull/1'] },
       session,
     );
+});
+
+it('reports why a module checkout failed: a bounded category to the sandbox, redacted detail to the log', async () => {
+  // A bare catch once turned every failed clone into the same opaque 409, so
+  // a broker abort could not be told apart from planning or a missing proxy.
+  const secret = 'ghs_leakedTokenValue123';
+  const store = {
+    getSession: vi.fn(async () => ({
+      projectId: 'p',
+      planning: 'implemented',
+      worktree: '/clones/project/sessions/s',
+    })),
+    getProject: vi.fn(async () => ({
+      id: 'p',
+      kind: 'github',
+      owner: 'team',
+      repo: 'site',
+      cloneDir: 'project',
+    })),
+    getProjectRepository: vi.fn(async () => ({
+      id: 'r',
+      projectId: 'p',
+      kind: 'github',
+      owner: 'team',
+      repo: 'infra',
+      forgeConnectionId: 'legacy-github',
+      defaultBranch: 'main',
+      isDefault: false,
+      removedAt: null,
+    })),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({
+    store,
+    cloneRoot: '/clones',
+    git: () => async (args) => {
+      if (args.includes('--get-regexp')) return 'http.https://github.com.proxy http://broker:8080';
+      if (args.includes('rev-parse')) throw new Error('not a repository');
+      if (args.includes('clone'))
+        throw Object.assign(
+          new Error(`Command failed: git clone https://x:${secret}@github.com/team/infra.git`),
+          {
+            code: 128,
+            stderr: `Cloning into '/work/x'...\nerror: RPC failed; curl 56 https://x:${secret}@github.com\nfatal: early EOF\n`,
+          },
+        );
+      return '';
+    },
+  });
+  const log: string[] = [];
+  const { call } = setup({
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    openRepository: service.openForSandbox,
+    log,
+  });
+  const response = await call({ action: 'repository.open', repositoryId: 'r', sessionId: 's' });
+  expect(response.statusCode).toBe(409);
+  expect(response.json()).toEqual({
+    error: 'repository checkout unavailable: clone failed',
+    reason: 'clone failed',
+  });
+  const entries = log
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.msg === 'verity: repository checkout failed');
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    projectId: 'p',
+    sessionId: 's',
+    repositoryId: 'r',
+    reason: 'clone failed',
+    exitCode: 128,
+  });
+  expect(entries[0]!.stderr).toContain('RPC failed; curl 56');
+  expect(log.join('')).not.toContain(secret);
+  expect(log.join('')).not.toContain('Command failed');
+});
+
+it('names an unexpected checkout failure without exposing its message', async () => {
+  const log: string[] = [];
+  const { call } = setup({
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    openRepository: async () => {
+      throw new Error('internal detail /srv/private');
+    },
+    log,
+  });
+  const response = await call({ action: 'repository.open', repositoryId: 'r', sessionId: 's' });
+  expect(response.statusCode).toBe(409);
+  expect(response.json()).toEqual({
+    error: 'repository checkout unavailable: checkout failed',
+    reason: 'checkout failed',
+  });
+  expect(log.join('')).toContain('"reason":"checkout failed"');
+  expect(log.join('')).not.toContain('/srv/private');
 });

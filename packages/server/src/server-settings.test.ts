@@ -854,7 +854,7 @@ describe('project allowed agents', () => {
     }
   });
 
-  // Migration 0216 retired the project-wide default: each person keeps their own,
+  // Migration 0217 retired the project-wide default: each person keeps their own,
   // and a project that restricts agents must still offer it, not its first model.
   it("offers the person's own default model in a project that restricts agents", async () => {
     await project('p-agents-own');

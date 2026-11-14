@@ -60,7 +60,7 @@ it("makes each existing project's container the administrator's sandbox on upgra
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0211_per_person_brokered_grants');
+    const before = await migrator.migrateTo('0212_per_person_brokered_grants');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
     await sql`insert into users (id, role, status) values (${ADMIN}, 'administrator', 'active')
       on conflict (id) do nothing`.execute(raw.db);
@@ -88,7 +88,7 @@ it("assigns existing sandbox credentials to the administrator's sandbox on upgra
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0212_project_sandboxes');
+    const before = await migrator.migrateTo('0213_project_sandboxes');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
     await sql`insert into users (id, role, status) values (${ADMIN}, 'administrator', 'active')
       on conflict (id) do nothing`.execute(raw.db);

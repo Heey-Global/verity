@@ -8,8 +8,10 @@ import {
   projectBadge,
   REBUILDING_PROJECT_BADGE,
   isSecuritySandboxUpdate,
+  sandboxUpdateBlockedDetail,
   sandboxUpdateLastFailure,
   sandboxUpdateSummary,
+  sandboxUpdateWaitingLabel,
   usesDevcontainerImage,
   type ProjectRecord,
   type VerityClient,
@@ -349,17 +351,14 @@ function SandboxSection({
 
   const runUpdate = useCallback(() => {
     if (!updateSummary || working !== undefined) return;
-    const blocked = update?.turnBlocked === true;
+
     // No Update button while a turn holds the update off, and not out of
     // caution: the Server refuses this recreate for as long as the turn runs
     // (SBX-1), so the button could only ever produce the 409 the message just
     // explained. An action that cannot be taken is worse than none — it invites
     // the operator to read the refusal as a fault.
-    if (blocked) {
-      Alert.alert(
-        'Update waiting for a turn',
-        'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.',
-      );
+    if (update?.turnBlocked === true) {
+      Alert.alert(sandboxUpdateWaitingLabel(update), sandboxUpdateBlockedDetail(update));
       return;
     }
     confirm({

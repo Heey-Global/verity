@@ -73,7 +73,7 @@ it("makes the existing instance identity the administrator's own on upgrade", as
   const raw = createRawDb();
   try {
     const migrator = new Migrator({ db: raw.db, provider: migrationProvider });
-    const before = await migrator.migrateTo('0206_google_account_owners');
+    const before = await migrator.migrateTo('0207_google_account_owners');
     if (before.error) throw new Error('Migration failed', { cause: before.error });
     await sql`insert into verity_settings (id, git_user_name, git_user_email, git_ssh_private_key, git_ssh_public_key)
       values ('global', 'Holger', 'holger@example.org', 'enc:instance-key', 'ssh-ed25519 AAAA holger')

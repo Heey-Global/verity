@@ -1,10 +1,12 @@
 import { aiAccountsSpec } from './ai-accounts';
+import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
 import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
 import { mockupReviewSpec } from './mockup-review';
+import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
 import { projectNamesSpec } from './project-names';
 import { repositoriesSpec } from './repositories';
@@ -18,10 +20,12 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
   aiAccountsSpec,
   sessionStabilitySpec,
+  connectionStatusSpec,
   sessionGroupsSpec,
   factorySpec,
   homeAnswersSpec,
   mockupReviewSpec,
+  meetingRecoverySpec,
   instructionSourcesSpec,
   planCardSpec,
   projectNamesSpec,

@@ -5582,7 +5582,31 @@ migrations['0204_project_name'] = {
   },
 };
 
-migrations['0205_user_display_name'] = {
+migrations['0205_sandbox_repair_intents'] = {
+  // An automatic Sandbox repair the Server still owes a project after one of its
+  // own recreates failed. Process memory alone forgot it on restart, leaving a
+  // `failed` project waiting for a manual Repair.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table sandbox_repair_intents (
+      project_id text primary key references projects(id) on delete cascade,
+      version integer not null check (version = 1),
+      attempt_id text not null,
+      status text not null check (status in ('running','waiting')),
+      source_generation text,
+      target_image_ref text,
+      failures integer not null check (failures >= 0),
+      retry_at timestamptz not null,
+      storage_refused boolean not null,
+      last_failure_at timestamptz not null,
+      last_failure_message text not null check (char_length(last_failure_message) <= 500)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table sandbox_repair_intents`.execute(db);
+  },
+};
+
+migrations['0206_user_display_name'] = {
   // The name other people see for a person in shared projects: turn authors,
   // the Team page and invitations. Optional, because the administrator is asked
   // for it only when first inviting someone; a member sets it when joining.
@@ -5595,7 +5619,7 @@ migrations['0205_user_display_name'] = {
   },
 };
 
-migrations['0206_google_account_owners'] = {
+migrations['0207_google_account_owners'] = {
   // A Google account belongs to the person who connected it (ADR 0023 §3). The
   // existing accounts were connected by the installation's administrator. Email
   // and Google subject become unique per person, so a second member connecting
@@ -5649,7 +5673,7 @@ migrations['0206_google_account_owners'] = {
   },
 };
 
-migrations['0207_user_git_identities'] = {
+migrations['0208_user_git_identities'] = {
   // Author, committer and commit signature belong to the person whose turn makes
   // the commit (ADR 0023 §3). The installation's existing git identity and
   // signing key were the administrator's, so they become the administrator's
@@ -5682,7 +5706,7 @@ migrations['0207_user_git_identities'] = {
   },
 };
 
-migrations['0208_user_github_authorizations'] = {
+migrations['0209_user_github_authorizations'] = {
   // Each person authorizes the instance's GitHub App for themselves; GitHub then
   // limits their token to their own repository permissions (ADR 0023 §3). The
   // App's OAuth client is kept beside its private key, the secret encrypted.
@@ -5707,7 +5731,7 @@ migrations['0208_user_github_authorizations'] = {
   },
 };
 
-migrations['0209_user_doppler_connections'] = {
+migrations['0210_user_doppler_connections'] = {
   // Doppler access goes through the turn's person, per project (ADR 0023 §3):
   // each member connects their own token, the instance token stays the
   // administrator's. Standing grants become a person's own consent; the existing
@@ -5735,7 +5759,7 @@ migrations['0209_user_doppler_connections'] = {
   },
 };
 
-migrations['0210_managed_dev_server_run_user'] = {
+migrations['0211_managed_dev_server_run_user'] = {
   // A dev server's secrets resolve through the Doppler connection of the person
   // who started it, also when it is recovered later (ADR 0023 §3). Deliberately
   // no foreign key: clearing it on user deletion would turn a deleted person's
@@ -5751,7 +5775,7 @@ migrations['0210_managed_dev_server_run_user'] = {
   },
 };
 
-migrations['0211_per_person_brokered_grants'] = {
+migrations['0212_per_person_brokered_grants'] = {
   // A standing grant is one person's consent (ADR 0023 §3), so two people may each
   // hold the same grant; the single-live-grant fence becomes per person.
   async up(db: Kysely<unknown>): Promise<void> {
@@ -5787,7 +5811,7 @@ migrations['0211_per_person_brokered_grants'] = {
   },
 };
 
-migrations['0212_project_sandboxes'] = {
+migrations['0213_project_sandboxes'] = {
   // One sandbox per person and project (ADR 0023 §4): the container is the
   // credential boundary. A row says that a person has a sandbox in a project;
   // container, network, volume and runtime names derive from it. The project's
@@ -5814,7 +5838,7 @@ migrations['0212_project_sandboxes'] = {
   },
 };
 
-migrations['0213_per_sandbox_capabilities'] = {
+migrations['0214_per_sandbox_capabilities'] = {
   // A sandbox's credentials are per person (ADR 0023 §4): its gateway client
   // certificate, signing capability and GitHub capability name the person as well
   // as the project. Every existing row belongs to the project's original container,
@@ -5857,7 +5881,7 @@ migrations['0213_per_sandbox_capabilities'] = {
   },
 };
 
-migrations['0214_project_sandbox_state'] = {
+migrations['0215_project_sandbox_state'] = {
   // A person's sandbox has its own container lifecycle (ADR 0023 §4). The
   // project's original sandbox keeps reporting through the project row.
   async up(db: Kysely<unknown>): Promise<void> {
@@ -5872,7 +5896,7 @@ migrations['0214_project_sandbox_state'] = {
   },
 };
 
-migrations['0215_user_provider_connections'] = {
+migrations['0216_user_provider_connections'] = {
   // A person's own Claude, Codex and OpenCode accounts (ADR 0023 §3): their
   // turns run only on these. The instance login stays the administrator's
   // fallback in the instance settings. A project's default model becomes each
@@ -5908,13 +5932,13 @@ migrations['0215_user_provider_connections'] = {
   },
 };
 
-migrations['0216_user_project_last_model'] = {
+migrations['0217_user_project_last_model'] = {
   // The model a person last started work with in a project, so their next session
   // preselects it when their own project default is not usable for them. Also
   // retires the project-wide default, which each person now holds for themselves.
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table user_project_preferences add column last_model text`.execute(db);
-    // 0215 copied the project default to the administrator, whose it was. Left in
+    // 0216 copied the project default to the administrator, whose it was. Left in
     // place it would keep choosing a model for everyone else in the project.
     await sql`update project_settings set default_model = null`.execute(db);
   },
@@ -5923,7 +5947,7 @@ migrations['0216_user_project_last_model'] = {
   },
 };
 
-migrations['0217_session_user_models'] = {
+migrations['0218_session_user_models'] = {
   // In a shared session each person keeps their own model (ADR 0023 §3): their
   // turns run on it, on their own account, whoever else writes in the session.
   async up(db: Kysely<unknown>): Promise<void> {
@@ -5940,7 +5964,7 @@ migrations['0217_session_user_models'] = {
   },
 };
 
-migrations['0218_project_team'] = {
+migrations['0219_project_team'] = {
   // Project team invitations, their single redemption and the Uplink outbox
   // (ADR 0023 §1, §7; Uplink team contract D8: Core is the source of truth).
   async up(db: Kysely<unknown>): Promise<void> {
@@ -5984,7 +6008,7 @@ migrations['0218_project_team'] = {
   },
 };
 
-migrations['0219_team_join_admissions'] = {
+migrations['0220_team_join_admissions'] = {
   // Core's decision on one team join's tunnel (team bootstrap interface v1):
   // stored before session.accept, so a repeated team.join.pending gets the
   // same answer, and the join itself accepts only the redemption Uplink
@@ -6014,7 +6038,7 @@ migrations['0219_team_join_admissions'] = {
   },
 };
 
-migrations['0220_managed_dev_server_approver'] = {
+migrations['0221_managed_dev_server_approver'] = {
   // A secret-bearing dev server runs with the secrets of whoever starts it
   // (ADR 0023 §3). The approval records who reviewed the command, so another
   // person's start needs their own approval rather than borrowing one.

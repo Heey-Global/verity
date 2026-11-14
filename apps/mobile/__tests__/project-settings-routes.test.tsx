@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 // The project settings routes (app/project/[id]/settings/*): the index that
 // routes to them, and each screen's own behaviour. They mirror the Verity
 // settings routes — same scaffold, same row furniture, same module mocks — so
@@ -53,6 +54,24 @@ beforeEach(() => {
 afterEach(() => {
   resetSettingsHarness();
   jest.restoreAllMocks();
+});
+
+it('cleans up the previous focus effect before refocusing and unmounting', () => {
+  // A refocus that drops the previous cleanup leaves polling intervals alive
+  // after unmount, so every assertion passes while Jest never exits.
+  const cleanup = jest.fn();
+  const effect = jest.fn(() => cleanup);
+  function FocusedScreen() {
+    useFocusEffect(effect);
+    return null;
+  }
+  const view = render(<FocusedScreen />);
+  expect(effect).toHaveBeenCalledTimes(1);
+  act(() => refocus());
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(effect).toHaveBeenCalledTimes(2);
+  view.unmount();
+  expect(cleanup).toHaveBeenCalledTimes(2);
 });
 
 describe('project settings index — destinations', () => {
@@ -256,6 +275,7 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'converging',
           turnBlocked: false,
+          blockedBy: [],
           lastRepairFailure: null,
         },
       },
@@ -302,6 +322,7 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'converging',
           turnBlocked: false,
+          blockedBy: [],
           lastRepairFailure: {
             at: '2026-11-10T14:41:24.000Z',
             message: 'Build storage admission rejected',
@@ -348,6 +369,7 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'stalled',
           turnBlocked: true,
+          blockedBy: ['turn'],
           lastRepairFailure: null,
         },
       },

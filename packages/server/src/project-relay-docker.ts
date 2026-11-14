@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
@@ -8,11 +7,14 @@ import {
   type InternalConnectionIdentity,
   type SandboxGenerationRef,
 } from './internal-listener.js';
+import { projectRelayContainerName } from './project-relay-identity.js';
 import {
   ProjectRelayStartError,
   type ProjectRelayRuntime,
   type ProjectRelayStartContext,
 } from './project-relay-lifecycle.js';
+
+export { projectRelayContainerName } from './project-relay-identity.js';
 
 const RELAY_BROKER_TARGET = '/run/verity-relay/broker';
 const RELAY_CLAUDE_TARGET = '/run/verity-relay/claude';
@@ -74,15 +76,6 @@ interface SocketTreeValidation {
  *  component label. */
 function isRelayComponent(component: string | undefined): boolean {
   return component === RELAY_COMPONENT || component === LEGACY_RELAY_COMPONENT;
-}
-
-/** Build the fixed, generation-labelled name without exposing project slugs. */
-export function projectRelayContainerName(identity: SandboxGenerationRef): string {
-  const digest = createHash('sha256')
-    .update(`verity-relay:${identity.projectId}\0${identity.containerGeneration}`)
-    .digest('hex')
-    .slice(0, 24);
-  return `verity-relay-${digest}`;
 }
 
 /**
