@@ -130,6 +130,23 @@ tests for changed behavior, and run verification proportional to the change.
 Never push directly to the protected default branch. Work on a branch and open
 a review-ready pull request.
 
+## Module boundaries and file size
+
+Keep every source file, tests included, at or below 1,500 lines, as decided in
+`docs/adr/0029-module-boundaries-and-file-size.md`. Composition roots such as
+`buildServer` only wire: put new domain wiring, routes and their dependency
+closures in a module of their own with an `install<Area>(app, ctx)` entry point,
+and new persistence in an `EventStore` sub-store. Never import a composition
+root from the modules it assembles.
+
+`scripts/file-size-debt.json` records the files that were larger when the limit
+was introduced, and it may only shrink. `npm run lint` and `npm run
+lint:changed` fail when a file crosses the limit, a recorded file grows, or a
+recorded file shrank without lowering its entry. After shrinking a recorded file,
+run `node scripts/file-size-guard.mjs --update`; never add or raise an entry by
+hand. Where `origin/main` is available, the check also rejects entries added or
+raised since the merge base.
+
 ## Public communication
 
 Verity is an open-source project. Write repository artifacts and GitHub content

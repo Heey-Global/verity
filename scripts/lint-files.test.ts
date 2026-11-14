@@ -228,9 +228,14 @@ it('refreshes global types and project includes between invocations', async () =
 it('covers current tracked and new files exactly once per package and stops on failure', () => {
   const { root, write } = fixture();
   const capture = join(root, 'arguments');
+  const guardCapture = join(root, 'guard');
   write(
     'bin/node',
     String.raw`#!/bin/sh
+if [ "$1" = scripts/file-size-guard.mjs ]; then
+  echo guard >> "$GUARD_CAPTURE"
+  exit "$GUARD_EXIT"
+fi
 printf '%s\0' "$@" >> "$LINT_CAPTURE"
 printf '\0' >> "$LINT_CAPTURE"
 exit "$LINT_EXIT"
@@ -242,8 +247,12 @@ exit "$LINT_EXIT"
     PATH: `${join(root, 'bin')}:${process.env.PATH}`,
     LINT_CAPTURE: capture,
     LINT_EXIT: '0',
+    GUARD_CAPTURE: guardCapture,
+    GUARD_EXIT: '0',
   };
   execFileSync('bash', ['scripts/lint.sh'], { env });
+  // The file-size check runs once over the whole tree, not per lint group.
+  expect(readFileSync(guardCapture, 'utf8')).toBe('guard\n');
   const batches = readFileSync(capture, 'utf8')
     .split('\0\0')
     .filter(Boolean)
@@ -282,6 +291,12 @@ exit "$LINT_EXIT"
     7,
   );
   expect(readFileSync(capture, 'utf8').split('\0\0').filter(Boolean)).toHaveLength(1);
+  // A file-size failure stops the run before any lint group starts.
+  writeFileSync(capture, '');
+  expect(spawnSync('bash', ['scripts/lint.sh'], { env: { ...env, GUARD_EXIT: '1' } }).status).toBe(
+    1,
+  );
+  expect(readFileSync(capture, 'utf8')).toBe('');
 });
 
 it('retains Fastify request types without rooting the server runtime', () => {

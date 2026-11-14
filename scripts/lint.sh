@@ -3,6 +3,9 @@
 set -euo pipefail
 lint_options=("$@")
 exts=('*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' '*.mts' '*.cts')
+# Whole-tree line limit (docs/adr/0029-module-boundaries-and-file-size.md); cheap,
+# so it runs ahead of the type-aware groups.
+node scripts/file-size-guard.mjs
 # CI disables result reuse; local snapshots validate current type dependencies.
 # lint-runner.mjs groups the files and recycles a worker per group, releasing the
 # complete type graph and parser state; group size depends on the environment.
