@@ -394,6 +394,50 @@ describe('agent-seed/bin/git (re-signing on push)', () => {
     expect(readFileSync(join(main, 'a.txt'), 'utf8')).toBe('uncommitted');
   });
 
+  // Only a push of the checked-out branch may rewrite it: a dry run, a deletion
+  // or a push of another ref must leave HEAD exactly as it is.
+  it('leaves HEAD alone on a dry run, a deletion and a push of another ref', async () => {
+    const memberCommit = await commitAs(member, 'c.txt', 'mia', false);
+    await gitAs({}, 'branch', 'other');
+    for (const args of [
+      ['push', '--dry-run', 'origin', 'HEAD:refs/heads/main'],
+      ['push', 'origin', '--delete', 'nothing-here'],
+      ['push', 'origin', 'other:refs/heads/other'],
+    ]) {
+      await runWrapper(args, main, developer);
+      expect(await gitAs({}, 'rev-parse', 'HEAD'), args.join(' ')).toBe(memberCommit);
+    }
+  });
+
+  // A commit merged in from the remote is already published; rewriting the
+  // range around it would give it a new hash that diverges from everyone's.
+  it('does not rewrite a range that holds a published commit', async () => {
+    const memberCommit = await commitAs(member, 'c.txt', 'mia', false);
+    // Someone else publishes to main, which is then merged into this branch.
+    const start = await gitAs({}, 'rev-parse', 'HEAD');
+    await gitAs({}, 'checkout', '-q', '-b', 'upstream', 'origin/main');
+    await commitAs(developer, 'u.txt', 'up', true);
+    await gitAs({}, 'push', '-q', 'origin', 'HEAD:refs/heads/main');
+    await gitAs({}, 'fetch', '-q', 'origin');
+    const published = await gitAs({}, 'rev-parse', 'HEAD');
+    await gitAs({}, 'checkout', '-q', '-');
+    expect(await gitAs({}, 'rev-parse', 'HEAD')).toBe(start);
+    await gitAs(developer, '-c', 'commit.gpgsign=true', 'merge', '-q', '--no-edit', 'upstream');
+    const before = await gitAs({}, 'rev-parse', 'HEAD');
+
+    const { stderr } = await runWrapper(
+      ['push', 'origin', 'HEAD:refs/heads/side'],
+      main,
+      developer,
+    );
+    expect(stderr).toContain('not re-signing: published commits');
+    expect(await gitAs({}, 'rev-parse', 'HEAD')).toBe(before);
+    expect(await gitAs({}, 'merge-base', '--is-ancestor', published, 'HEAD').then(() => true)).toBe(
+      true,
+    );
+    expect(memberCommit).not.toBe(before);
+  });
+
   it('keeps merge commits when it re-signs them', async () => {
     const start = await gitAs({}, 'rev-parse', 'HEAD');
     await gitAs({}, 'checkout', '-q', '-b', 'side');

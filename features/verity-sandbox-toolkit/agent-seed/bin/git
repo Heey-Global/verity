@@ -181,6 +181,14 @@ resign_unpublished() {
     base_short="--root"
   fi
   count="$("${g[@]}" rev-list --count "$range")"
+  # Rewriting must never touch a published commit, such as one merged in from
+  # the remote after the first unsigned commit: its new hash would diverge from
+  # what others already have. Leave such a range to the pre-push hook, which
+  # refuses the unsigned commits and says how to re-sign them.
+  if [ "$count" != "$("${g[@]}" rev-list --count "$range" --not --remotes)" ]; then
+    echo "verity git guard: not re-signing: published commits lie between the unsigned ones" >&2
+    return 0
+  fi
   authors="$("${g[@]}" log --format='%an' "$range" | sort -u | paste -sd, - | sed 's/,/, /g')"
 
   local tree_before
@@ -220,6 +228,36 @@ resign_unpublished() {
   return 0
 }
 
+# Whether this push publishes the checked-out branch: no dry run, deletion or
+# mirror, and either no refspec (the current branch's upstream) or one whose
+# source is HEAD or the branch itself. Anything else must not rewrite HEAD.
+push_targets_head() {
+  local branch k a positional=() refs=()
+  branch="$("$REAL_GIT" -C "$effective_cwd" symbolic-ref -q --short HEAD 2>/dev/null)" || return 1
+  k=$((subidx + 1))
+  while [ "$k" -lt "$n" ]; do
+    a="${args[$k]}"
+    case "$a" in
+      --) k=$((k + 1)); while [ "$k" -lt "$n" ]; do positional+=("${args[$k]}"); k=$((k + 1)); done; break ;;
+      -n | --dry-run | -d | --delete | --mirror | --all | --tags | --prune) return 1 ;;
+      --repo=* | --push-option=* | -o) ;;
+      -*) ;;
+      *) positional+=("$a") ;;
+    esac
+    k=$((k + 1))
+  done
+  [ "${#positional[@]}" -le 1 ] && return 0
+  refs=("${positional[@]:1}")
+  for a in "${refs[@]}"; do
+    a="${a#+}"
+    case "${a%%:*}" in
+      HEAD | "$branch" | "refs/heads/$branch") ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # --- push: the pre-push gate is not optional ---------------------------------
 # A push without the flag passes untouched, dry run or not. git accepts any
 # unambiguous abbreviation of a long option, and `--no-veri` is the shortest
@@ -253,7 +291,9 @@ if [ "$subcmd" = "push" ]; then
     } >&2
     exit 1
   fi
-  resign_unpublished || exit 1
+  if push_targets_head; then
+    resign_unpublished || exit 1
+  fi
   exec "$REAL_GIT" "$@"
 fi
 
