@@ -130,6 +130,34 @@ describe('several servers', () => {
     expect(getOtherServerProfiles().map((profile) => profile.serverId)).toEqual([other.serverId]);
   });
 
+  it('keeps both servers stored at every step of a switch', async () => {
+    const mine = profileFromPairing(pairing, pairing.suggestedUrl);
+    await saveServerProfile(mine);
+    await activateServerProfile(other);
+    await activateServerProfile(getOtherServerProfiles()[0]!);
+    // Replay every intermediate state of the second switch: no write may leave
+    // one of the two servers in neither the active slot nor the others.
+    const writes = (SecureStore.setItemAsync as jest.Mock).mock.calls.slice(-3);
+    const state = new Map<string, string>();
+    for (const [key, value] of writes.slice(0, -3)) state.set(key as string, value as string);
+    const known = () => {
+      const ids = new Set<string>();
+      const active = state.get('verity.serverProfile.v1');
+      if (active) ids.add((JSON.parse(active) as { serverId: string }).serverId);
+      for (const profile of JSON.parse(state.get('verity.serverProfiles.others.v1') ?? '[]') as {
+        serverId: string;
+      }[])
+        ids.add(profile.serverId);
+      return ids;
+    };
+    state.set('verity.serverProfile.v1', JSON.stringify(other));
+    state.set('verity.serverProfiles.others.v1', JSON.stringify([mine]));
+    for (const [key, value] of writes) {
+      state.set(key as string, value as string);
+      expect([...known()].sort()).toEqual([mine.serverId, other.serverId].sort());
+    }
+  });
+
   it('forgets a server that is not the active one', async () => {
     await saveServerProfile(profileFromPairing(pairing, pairing.suggestedUrl));
     await activateServerProfile(other);

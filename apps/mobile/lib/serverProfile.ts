@@ -244,9 +244,12 @@ export async function activateServerProfile(profile: VerityServerProfile): Promi
   const others = otherProfiles.filter((entry) => entry.serverId !== next.serverId);
   if (previous !== null && previous.serverId !== next.serverId) others.unshift(previous);
   if (others.length >= MAX_PROFILES) throw new Error('This app knows too many servers.');
-  // Write the others first: an interruption leaves a duplicate, never a lost server.
-  await writeOthers(others);
+  // Three writes, each leaving both servers stored somewhere: first the others
+  // with the new one still among them, then the new active one, then the
+  // others without it. An interruption leaves a duplicate, never a lost server.
+  await writeOthers([...others, next]);
   await saveServerProfile(next);
+  await writeOthers(others);
 }
 
 /** Forget a server that is not the active one. */
