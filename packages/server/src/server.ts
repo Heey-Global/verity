@@ -61,7 +61,6 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { z, ZodError } from 'zod';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
@@ -249,6 +248,8 @@ import {
 } from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
+import { createServerLifecycle, type ServerContext } from './server-context.js';
+import { createSessionDeletion } from './server-session-deletion.js';
 import type {
   ModelList,
   ProjectDeleteOutcome,
@@ -446,102 +447,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // releasing a newer request's reservation.
   const localIdentityLinkReservations = new Map<string, symbol>();
   const githubTargetLinkReservations = new Map<string, symbol>();
-  /**
-   * Delete a session everywhere it exists, not just in the store.
-   *
-   * Every `deleteSession` in this file goes through here. The store delete removes
-   * the row and cascades to the durable transcript, but the backend's own transcript
-   * file on the runner runtime is nobody's child and used to survive — so a deleted
-   * session's prompts and replies stayed readable on disk indefinitely. The purge
-   * runs FIRST because it needs `session_backend_state` to know which files are the
-   * session's, and the cascade is about to delete exactly that.
-   *
-   * Managed runners persist cleanup ownership through `queueSessionArtifacts` before
-   * the cascade, then wake a background worker after deletion. That durable write must
-   * succeed; supervisor calls and filesystem purges never run in the request.
-   *
-   * A purge failure never blocks the delete: leaving the row behind because a file
-   * could not be unlinked would strand the session in the UI, which is strictly
-   * worse than the leak it is trying to prevent. A purge that neither succeeds nor
-   * fails is bounded for the same reason — see `SESSION_ARTIFACT_PURGE_TIMEOUT_MS`.
-   *
-   * `budget` shares one such bound across a run of deletes. Per call it would be a
-   * per-call bound, and a project with fifty sessions on a wedged volume would spend
-   * fifty times ten seconds inside one request — the stall the bound exists to prevent,
-   * arrived at by arithmetic.
-   */
-  const deleteSessionEverywhereUnqueued = async (
-    sessionId: string,
-    budget?: SessionArtifactPurgeBudget,
-  ): Promise<boolean> => {
-    const session = await deps.eventStore.getSession(sessionId);
-    const release = session?.projectId
-      ? await deps.localPreviewManager?.beginSessionMove(session.projectId)
-      : undefined;
-    try {
-      // Processes started for this session must not outlive its worktree.
-      try {
-        await deps.managedDevServerManager?.stopSession(sessionId);
-      } catch (error) {
-        // The delete goes on; the orphan sweep stops tagged processes left behind.
-        app.log.warn({ err: error, sessionId }, 'verity: could not stop managed dev servers');
-      }
-      await deps.localPreviewManager?.stopSession(sessionId);
-      await deps.queueSessionArtifacts?.(sessionId);
-      // `.catch()` alone would only cover a REJECTED promise; an implementation that
-      // throws before returning one would escape and fail the delete — the outcome the
-      // paragraph above says must never happen. try/catch covers both.
-      try {
-        const purge = deps.purgeSessionArtifacts?.(sessionId);
-        // `Promise.race` attaches its own handler to `purge` immediately, so a purge
-        // that rejects after the timer won is already handled, not an unhandled
-        // rejection. The timer is unref'd: losing the race must not hold the process.
-        if (purge !== undefined) {
-          const allowance = budget?.remainingMs ?? SESSION_ARTIFACT_PURGE_TIMEOUT_MS;
-          const startedAt = Date.now();
-          await Promise.race([purge, sleep(allowance, undefined, { ref: false })]);
-          // Only time spent WAITING is charged, so a healthy volume — where each purge
-          // returns in milliseconds — never runs the budget down and every session in the
-          // loop gets its transcripts removed. It is a wedged volume the budget is for.
-          if (budget !== undefined) {
-            budget.remainingMs = Math.max(0, budget.remainingMs - (Date.now() - startedAt));
-          }
-        }
-      } catch {
-        // Logged by the implementation; never fatal here.
-      }
-      const deleted = await deps.eventStore.deleteSession(sessionId);
-      if (deleted) deps.scheduleSessionCleanup?.();
-      return deleted;
-    } finally {
-      release?.();
-    }
-  };
-  // The preview fence is project-wide, even when deleting different sessions.
-  // Optimistic clients can send the next delete before the first cleanup settles.
-  const projectSessionDeletes = new Map<string, Promise<void>>();
-  const deleteSessionEverywhere = async (
-    sessionId: string,
-    budget?: SessionArtifactPurgeBudget,
-  ): Promise<boolean> => {
-    const session = await deps.eventStore.getSession(sessionId);
-    const projectId = session?.projectId;
-    if (!projectId || !deps.localPreviewManager)
-      return deleteSessionEverywhereUnqueued(sessionId, budget);
-    const previous = projectSessionDeletes.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    projectSessionDeletes.set(projectId, current);
-    await previous;
-    try {
-      return await deleteSessionEverywhereUnqueued(sessionId, budget);
-    } finally {
-      release();
-      if (projectSessionDeletes.get(projectId) === current) projectSessionDeletes.delete(projectId);
-    }
-  };
   // Search projection is an eventually-consistent read model. Start/resume its
   // bounded backfill independently of requests; live event appends schedule it too.
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
@@ -601,6 +506,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         } satisfies FastifyHttpsOptions<HttpsServer>);
   if (deps.logger) registerRequestLatencyDiagnostics(app);
   app.decorateRequest('localUserId', null);
+  const lifecycle = createServerLifecycle(app);
   // Derives the auth gate's pre-auth exception set from the routes this instance
   // actually registers; the gate that consumes it is far below, next to the rest
   // of the auth logic. It is attached HERE, in the same statement group as the
@@ -874,13 +780,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return session ? describePushSession(session) : {};
   };
   const resources = new ResourceObserver();
-  app.addHook('onClose', () => resources.close());
+  lifecycle.onClose(() => resources.close());
   const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
     deps.bus,
     deps.eventStore,
     app.log,
   );
-  app.addHook('onClose', () => unsubscribeAgentProcessLogging());
+  lifecycle.onClose(() => unsubscribeAgentProcessLogging());
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&
@@ -955,10 +861,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       topics: change === 'name' ? ['session'] : ['activity', 'status'],
     });
   });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     unsubscribeSessionChanges?.();
     liveHub.close();
   });
+  const ctx: ServerContext = {
+    app,
+    deps,
+    lifecycle,
+    conductor,
+    liveHub,
+    resources,
+    pushSender,
+    projectsBeingDeleted,
+    sessionsBeingReaped,
+    deleteSession: createSessionDeletion({ app, deps }),
+  };
   const deletedSessionProjects = new WeakMap<object, string | null>();
   app.addHook('preHandler', async (request) => {
     if (request.method !== 'DELETE' || request.routeOptions.url !== '/sessions/:id') return;
@@ -1013,7 +931,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           logger: app.log,
           ...(deps.pushEscalationMs === undefined ? {} : { escalationMs: deps.pushEscalationMs }),
         });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     pushRouter?.close();
   });
   const pushFirePoints: PushFirePoints | undefined =
@@ -1110,7 +1028,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       log: app.log,
     });
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     await schedulingScheduler?.stop();
     schedulingService.close();
     await schedulingPages.close();
@@ -1156,12 +1074,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     liveHub.revokeDevice(deviceId);
   });
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     detachStreamRevocation?.();
-    done();
   });
 
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     unsubscribePushFirePoints?.();
     // Awaited, and before the sender it pushes through: a check still in flight
     // would otherwise resolve the channel and send into a closing PushSender.
@@ -1177,7 +1094,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // like `recover` below: a conductor implementation (or test double) without
   // the method is simply skipped, and returning the promise lets Fastify await
   // the drain before teardown continues.
-  app.addHook('onClose', () =>
+  lifecycle.onClose(() =>
     (conductor as { drainOnShutdown?: () => Promise<void> }).drainOnShutdown?.(),
   );
 
@@ -1331,7 +1248,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     run: (automation) => automationExecutor.run(automation),
     log: app.log,
   });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     automationScheduler.stop();
   });
 
@@ -1430,7 +1347,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       void vulnerabilitySessions.rebuild();
     },
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     vulnerabilityScheduler.stop();
     unsubscribeVulnerabilityTurns();
     await vulnerabilitySessions.stop();
@@ -1466,7 +1383,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     app.log,
     projectActivity,
   );
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     stopProjectRelayMigrationScheduler();
   });
   const idleSleepScheduler =
@@ -1502,7 +1419,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   deps.projectSandboxLifecycleTelemetry?.attachSink((event) => {
     app.log.info(event, 'project Sandbox lifecycle transition');
   });
-  app.addHook('onClose', () => idleSleepScheduler?.stop());
+  lifecycle.onClose(() => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
@@ -1519,7 +1436,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     createProcessAgentLoginService({
       updateSettings: storeAgentCredentials,
     });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     agentLogin.close();
   });
   // The self-repair turns Verity dispatches from a session's own PR status. Each one
@@ -2120,9 +2037,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.authRegistry?.dispose?.();
-    done();
   });
 
   // Record activity after the response, outside the authorization hook. `touch`
@@ -2152,7 +2068,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   if (deps.backup) {
-    app.addHook('onClose', () => deps.backup!.close());
+    lifecycle.onClose(() => deps.backup!.close());
     deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
     app.addHook('onReady', (done) => {
       deps.backup!.service?.start();
@@ -2223,9 +2139,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deps.returnPathActivation!.stop();
     return deps.returnPathActivation!.status();
   });
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.returnPathActivation?.dispose();
-    done();
   });
   const recordingRequest = async (
     request: FastifyRequest,
@@ -2309,9 +2224,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ),
     ),
   );
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.coordinatedRecording?.dispose();
-    done();
   });
   app.get('/api/remote-control/descriptor', async (request, reply) => {
     // This route is only for an authenticated paired device. Headless deployments
@@ -3600,7 +3514,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // are the O(sessions x rollouts) case `session-artifacts.ts` names the fix for;
         // neither is on the ordinary path, which is why it has not been paid for yet.
         await bestEffort(sessionId, 'delete-session', () =>
-          deleteSessionEverywhere(sessionId, purgeBudget),
+          ctx.deleteSession(sessionId, purgeBudget),
         );
       }
       return { code: 200, body: { projectId: id } };
@@ -4061,7 +3975,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     eventStore: deps.eventStore,
     worktrees,
     makeBranch,
-    deleteSessionEverywhere,
+    deleteSessionEverywhere: ctx.deleteSession,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
     resolveProjectModel: async (projectId) => {
@@ -4390,7 +4304,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     // Before the meetings close: a pass in flight may still be starting a bot.
     await calendarMeetingWatcher?.stop();
     await attendeeMeetings.close();
@@ -4744,14 +4658,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
     },
   });
-  const deletionRetryTimer = setInterval(() => {
+  lifecycle.every(30_000, () => {
     void sessionDeletions
       .resume()
       .catch((error: unknown) =>
         app.log.warn({ err: error }, 'verity: session deletion retry failed'),
       );
-  }, 30_000);
-  deletionRetryTimer.unref();
+  });
   app.addHook('onReady', () => {
     void sessionDeletions
       .resume()
@@ -4759,10 +4672,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         app.log.warn({ err: error }, 'verity: session deletion recovery failed'),
       );
   });
-  app.addHook('onClose', () => {
-    clearInterval(deletionRetryTimer);
-    sessionDeletions.close();
-  });
+  lifecycle.onClose(() => sessionDeletions.close());
 
   registerSessionDeleteRoute(app, {
     remove: async (request, reply, id, force, options) => {
@@ -4879,7 +4789,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     makeBranch,
     isProjectSessionModel,
     availableModels,
-    deleteSessionEverywhere,
+    deleteSessionEverywhere: ctx.deleteSession,
     PROJECT_MODEL_ERROR,
     isSleepLifecycleState,
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
@@ -5078,7 +4988,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         // process, is removed again: a durable origin pointing at it would turn
         // every later tap into "already fixing", and a duplicate helps no one.
         const discard = () =>
-          deleteSessionEverywhere(sessionId).catch((error: unknown) => {
+          ctx.deleteSession(sessionId).catch((error: unknown) => {
             app.log.warn({ err: error, sessionId }, 'could not remove an unused fix session');
             return false;
           });
@@ -5245,18 +5155,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       },
       delegate: supervisor.delegate,
     });
-    let timer: ReturnType<typeof setInterval> | undefined;
-    app.addHook('onReady', () => {
-      timer = setInterval(() => {
+    lifecycle.every(
+      120_000,
+      () => {
         void supervisor
           .sweep()
           .then(() => qa.tick())
           .catch((error) => app.log.warn({ error }, 'repair supervision failed'));
-      }, 120_000);
-      timer.unref();
-    });
-    app.addHook('onClose', async () => {
-      if (timer) clearInterval(timer);
+      },
+      { startWhenReady: true },
+    );
+    lifecycle.onClose(async () => {
       await qa.stop();
       await supervisor.stop();
     });
@@ -5316,7 +5225,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
           } catch (err) {
             // Unrecorded, it would show up in lists after a restart and never be reused.
-            await deleteSessionEverywhere(sessionId).catch(() => false);
+            await ctx.deleteSession(sessionId).catch(() => false);
             throw err;
           }
           return sessionId;
@@ -5337,7 +5246,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         log: app.log,
       });
     });
-    app.addHook('onClose', async () => {
+    lifecycle.onClose(async () => {
       await wikiMaintenance?.stop();
     });
   }
