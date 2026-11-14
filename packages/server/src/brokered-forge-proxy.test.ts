@@ -11,6 +11,7 @@ import {
   type Server,
   type IncomingMessage,
   type RequestListener,
+  type ServerResponse,
 } from 'node:http';
 import { connect, TLSSocket } from 'node:tls';
 import { tmpdir } from 'node:os';
@@ -112,6 +113,7 @@ async function harness(
     resolveRepository?: Parameters<typeof createBrokeredForgeProxy>[0]['resolveRepository'];
     transport?: BrokeredHttpStreamTransport;
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
+    authorizationRecheck?: { intervalMs?: number; unconfirmedLimitMs?: number };
   } = {},
 ) {
   const upstreamPort = await listen(
@@ -175,6 +177,7 @@ async function harness(
     transport: options.transport ?? transport,
     ...(options.certificateFor ? { certificateFor: options.certificateFor } : {}),
     ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
+    ...(options.authorizationRecheck ? { authorizationRecheck: options.authorizationRecheck } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
   });
@@ -1255,11 +1258,142 @@ it('closes an existing Forge stream when its exact capability is revoked', async
     },
     { capabilities: { ...capabilities, resolve: async () => (valid ? binding : undefined) } },
   );
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const result = call(h.port, '/repos/acme/app/issues').catch(() => ({ status: 0, body: '' }));
   await admitted;
   valid = false;
   await result;
   expect(h.received).toHaveLength(1);
+  expect(warning).toHaveBeenCalledWith(
+    'Forge broker connection failed',
+    expect.objectContaining({ phase: 'authorization', reason: 'binding-mismatch' }),
+  );
+});
+
+/** An upstream that streams `frames` chunks over `durationMs`, like a first clone. */
+function slowStream(frames: number, durationMs: number) {
+  return (_req: IncomingMessage, res: ServerResponse) => {
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(`frame${sent}\n`);
+      if (++sent === frames) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, durationMs / frames);
+    res.once('close', () => clearInterval(timer));
+  };
+}
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+it('keeps a live Forge stream when revocation re-checks are slower than one poll', async () => {
+  // Event-loop stalls or a slow store made each re-check exceed the old 1 s
+  // deadline, which cut every long first clone with an opaque authorization error.
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(slowStream(10, 2500), {
+    capabilities: {
+      ...capabilities,
+      resolve: async (value) => {
+        // Admission and the pre-dispatch check stay fast; live re-checks are slow.
+        if (++calls > 2) await delay(1200);
+        return value === cap ? binding : undefined;
+      },
+    },
+    authorizationRecheck: { intervalMs: 100, unconfirmedLimitMs: 5000 },
+  });
+  const result = await call(h.port, '/repos/acme/app/issues');
+  expect(result.status).toBe(200);
+  expect(result.body.split('\n').filter(Boolean)).toHaveLength(10);
+  expect(calls).toBeGreaterThan(2);
+  expect(warning).not.toHaveBeenCalled();
+});
+
+it('does not count an event-loop stall against a live Forge stream', async () => {
+  // A blocked loop delays every re-check at once; counted as store latency,
+  // a stall longer than the bound would revoke a healthy clone.
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(
+    (_req, res) => {
+      let sent = 0;
+      const timer = setInterval(() => {
+        res.write(`frame${sent}\n`);
+        if (sent === 3) {
+          const until = Date.now() + 2000;
+          while (Date.now() < until);
+        }
+        if (++sent === 8) {
+          clearInterval(timer);
+          res.end();
+        }
+      }, 100);
+      res.once('close', () => clearInterval(timer));
+    },
+    {
+      capabilities: {
+        ...capabilities,
+        resolve: async (value) => {
+          if (++calls > 2) await delay(100);
+          return value === cap ? binding : undefined;
+        },
+      },
+      authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 1500 },
+    },
+  );
+  const result = await call(h.port, '/repos/acme/app/issues');
+  expect(result.status).toBe(200);
+  expect(result.body.split('\n').filter(Boolean)).toHaveLength(8);
+  expect(warning).not.toHaveBeenCalled();
+});
+
+it('closes a live Forge stream that no re-check confirms within the bound', async () => {
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(slowStream(20, 4000), {
+    capabilities: {
+      ...capabilities,
+      // A wedged store: live re-checks never settle.
+      resolve: (value) =>
+        ++calls > 2 ? new Promise(() => {}) : Promise.resolve(value === cap ? binding : undefined),
+    },
+    authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 400 },
+  });
+  const result = await call(h.port, '/repos/acme/app/issues').catch(() => ({
+    status: 0,
+    body: '',
+  }));
+  expect(result.body.split('\n').filter(Boolean).length).toBeLessThan(20);
+  expect(warning).toHaveBeenCalledWith(
+    'Forge broker connection failed',
+    expect.objectContaining({ phase: 'authorization', reason: 'revocation-timeout' }),
+  );
+});
+
+it('closes a live Forge stream whose re-checks keep failing, naming the resolver', async () => {
+  let calls = 0;
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const h = await harness(slowStream(20, 4000), {
+    capabilities: {
+      ...capabilities,
+      resolve: async (value) => {
+        if (++calls > 2) throw new Error(`store failed for ${token}`);
+        return value === cap ? binding : undefined;
+      },
+    },
+    authorizationRecheck: { intervalMs: 50, unconfirmedLimitMs: 400 },
+  });
+  const result = await call(h.port, '/repos/acme/app/issues').catch(() => ({
+    status: 0,
+    body: '',
+  }));
+  expect(result.body.split('\n').filter(Boolean).length).toBeLessThan(20);
+  expect(warning).toHaveBeenCalledWith('Forge broker connection failed', {
+    connectionId: expect.any(String),
+    phase: 'authorization',
+    code: 'UNKNOWN',
+    reason: 'resolver-error',
+  });
 });
 
 it('validates GraphQL against additional current assignments and rechecks revocation', async () => {

@@ -10,6 +10,7 @@ import {
 } from './forge-provider.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { internalConnectionIdentity } from './internal-listener.js';
+import { checkoutFailureReason, describeCheckoutFailure } from './session-repositories.js';
 
 /** The code host behind one project, with server-held credentials. */
 export interface ProjectRepository {
@@ -115,8 +116,22 @@ export function registerProjectRepoRoute(app: FastifyInstance, deps: ProjectRepo
         return reply.code(503).send({ error: 'repository checkout unavailable' });
       try {
         return await deps.openRepository(parsed.data.sessionId, parsed.data.repositoryId);
-      } catch {
-        return reply.code(409).send({ error: 'repository checkout unavailable' });
+      } catch (error) {
+        // The sandbox sees only the bounded category; the redacted git detail
+        // goes to the server log, where the failure can be diagnosed.
+        request.log.warn(
+          {
+            projectId: project.id,
+            sessionId: parsed.data.sessionId,
+            repositoryId: parsed.data.repositoryId,
+            ...describeCheckoutFailure(error),
+          },
+          'verity: repository checkout failed',
+        );
+        const reason = checkoutFailureReason(error);
+        return reply
+          .code(409)
+          .send({ error: `repository checkout unavailable: ${reason}`, reason });
       }
     }
     const repositoryId = z
