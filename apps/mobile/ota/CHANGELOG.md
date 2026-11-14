@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.92.1](https://github.com/Heey-Global/verity/compare/mobile-v1.92.0...mobile-v1.92.1) (2026-11-14)
+
+
+### Features
+
+* **mobile:** show server updates and outages once, in a central connection bar ([#2562](https://github.com/Heey-Global/verity/issues/2562)) ([7c1dc2b](https://github.com/Heey-Global/verity/commit/7c1dc2bf60b0d7bba178a50a023481182c017473))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2566](https://github.com/Heey-Global/verity/issues/2566)) ([eff01ad](https://github.com/Heey-Global/verity/commit/eff01ad4802b2c875c4a71bd889528bba939b7cd))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.6.0 ([#2567](https://github.com/Heey-Global/verity/issues/2567)) ([62fc99b](https://github.com/Heey-Global/verity/commit/62fc99b88ba3c4f31b7c292119b73cd390780d97))
+* **deps:** update dependency minimatch to v11.0.7 ([#2564](https://github.com/Heey-Global/verity/issues/2564)) ([d69ce10](https://github.com/Heey-Global/verity/commit/d69ce10cadd200a05d387b17e4f11e7b0d90f6d3))
+* **events:** render choices when several options are recommended ([#2570](https://github.com/Heey-Global/verity/issues/2570)) ([649d61f](https://github.com/Heey-Global/verity/commit/649d61fafaddf3689ae7648ca221511159ad3c43))
+* **sandbox:** prepare dependencies in repositories opened into a session ([#2572](https://github.com/Heey-Global/verity/issues/2572)) ([e0cb8a3](https://github.com/Heey-Global/verity/commit/e0cb8a31fcd2639e416a8c0e7aa7e12dbcb4dc68))
+* **session:** keep Claude turns open while background work runs ([#2571](https://github.com/Heey-Global/verity/issues/2571)) ([4eb7026](https://github.com/Heey-Global/verity/commit/4eb7026ea62e14fa376d258fc4eee94a45df24e3))
+
 ## [1.91.1](https://github.com/Heey-Global/verity/compare/mobile-v1.91.0...mobile-v1.91.1) (2026-11-12)
 
 
