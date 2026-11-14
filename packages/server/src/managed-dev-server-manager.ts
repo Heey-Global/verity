@@ -1,3 +1,4 @@
+import { legacyAdministratorId } from './view-state-routes.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
@@ -522,7 +523,7 @@ export class ManagedDevServerManager {
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
     },
-    options: { local?: boolean | undefined } = {},
+    options: { local?: boolean | undefined; approvedBy?: string | null | undefined } = {},
   ): Promise<ManagedServerView[]> {
     const { project } = await this.context(sessionId);
     const entry = await this.entry(project.id, idOrName);
@@ -547,6 +548,7 @@ export class ManagedDevServerManager {
       const approved = await this.servers.approve(entry.id, {
         ...seen,
         ...(providerAuthority === undefined ? {} : { providerAuthority }),
+        approvedBy: options.approvedBy ?? null,
       });
       if (!approved)
         throw new ManagedDevServerError(
@@ -895,6 +897,20 @@ export class ManagedDevServerManager {
   ): Promise<void> {
     const { project, sessionId } = context;
     await this.assertStartAllowed(sessionId);
+    // Secrets resolve through the starter's own connection (ADR 0023 §3): they
+    // start it only on a command they approved themselves, never on another
+    // person's approval. An approval from before projects had people was the
+    // administrator's.
+    if (
+      by !== 'recovery' &&
+      person !== null &&
+      entry.secretBindings.length > 0 &&
+      (entry.approvedBy ?? legacyAdministratorId) !== person
+    )
+      throw new ManagedDevServerError(
+        'Review and approve this server yourself before starting it with its secrets.',
+        409,
+      );
     if ((project.state === 'sleeping' || project.state === 'waking') && this.options.wakeSandbox) {
       // Record the intent, wake the sandbox, and let supervision start the server
       // once it is up: an instance that should run but has no process is started.

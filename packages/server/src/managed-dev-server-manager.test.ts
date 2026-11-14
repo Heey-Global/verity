@@ -1485,12 +1485,17 @@ describe('managed servers with secret bindings', () => {
       command: 'node server.mjs',
       secretBindings,
     });
-    await manager.approve('s1', 'api', {
-      command: entry.command,
-      workdir: '.',
-      secretBindings,
-      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-    });
+    await manager.approve(
+      's1',
+      'api',
+      {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      },
+      { approvedBy: 'lena' },
+    );
     await manager.start('s1', 'api', 'agent');
     const run = sandbox.started[0]!;
     sandbox.listen(run.instanceId, Number(run.env.PORT));
@@ -1504,6 +1509,21 @@ describe('managed servers with secret bindings', () => {
       (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!.lastRunUserId,
     ).toBe('lena');
 
+    // Lena's approval does not let the administrator run it with his secrets.
+    await expect(manager.restart('s1', 'api', 'operator', 'admin')).rejects.toThrow(
+      'approve this server yourself',
+    );
+    await manager.approve(
+      's1',
+      'api',
+      {
+        command: entry.command,
+        workdir: '.',
+        secretBindings,
+        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+      },
+      { approvedBy: 'admin' },
+    );
     await manager.restart('s1', 'api', 'operator', 'admin');
     expect(resolveSecrets.mock.calls.at(-1)?.[3]).toBe('admin');
 

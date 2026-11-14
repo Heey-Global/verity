@@ -57,6 +57,8 @@ export interface ManagedDevServerRecord {
   workdir: string;
   /** True when the operator approved exactly this command and subdirectory. */
   approved: boolean;
+  /** Who approved it; null for an approval made before projects had people. */
+  approvedBy: string | null;
   secretBindings: ManagedDevServerSecretBinding[];
   createdAt: Date;
   updatedAt: Date;
@@ -176,6 +178,7 @@ function serverRecord(row: Selectable<ManagedDevServersTable>): ManagedDevServer
       row.approved_command === row.command &&
       row.approved_workdir === row.workdir &&
       managedDevServerBindingsEqual(row.approved_secret_bindings ?? [], row.secret_bindings),
+    approvedBy: row.approved_by_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -357,12 +360,15 @@ export class ManagedDevServerStore {
       command: string;
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
+      /** The person approving; their approval admits their own secret-bearing starts. */
+      approvedBy?: string | null | undefined;
     },
   ): Promise<ManagedDevServerRecord | undefined> {
     const row = await this.db
       .updateTable('managed_dev_servers')
       .set({
         approved_provider_authority: seen.providerAuthority ?? null,
+        approved_by_user_id: seen.approvedBy ?? null,
         approved_command: seen.command,
         approved_workdir: seen.workdir,
         approved_secret_bindings: JSON.stringify(

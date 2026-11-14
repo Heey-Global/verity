@@ -251,7 +251,7 @@ describe('Preview sheet routes', () => {
       's1',
       'srv',
       { command: 'node server.mjs', workdir: '.' },
-      { local: undefined },
+      { local: undefined, approvedBy: legacyAdministratorId },
     );
   });
 });
@@ -266,6 +266,7 @@ it('forwards alias-only registration metadata and rejects accidental value field
     command: 'node server.mjs',
     workdir: '.',
     approved: false,
+    approvedBy: null,
     secretBindings,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -316,7 +317,10 @@ it('passes the exact displayed secret mapping through Preview approval', async (
     payload: seen,
   });
   expect(response.statusCode).toBe(200);
-  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, {
+    local: undefined,
+    approvedBy: legacyAdministratorId,
+  });
 });
 
 it('forwards the displayed provider snapshot and reports stale approval conflicts', async () => {
@@ -343,7 +347,10 @@ it('forwards the displayed provider snapshot and reports stale approval conflict
     payload: seen,
   });
   expect(response.statusCode).toBe(409);
-  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, {
+    local: undefined,
+    approvedBy: legacyAdministratorId,
+  });
   const invalid = await app.inject({
     method: 'POST',
     url: '/sessions/s1/managed-dev-servers/srv/approve',

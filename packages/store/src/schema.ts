@@ -1417,6 +1417,8 @@ export interface ManagedDevServersTable {
     string
   >;
   approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Who approved the current command; null for approvals before people (ADR 0023). */
+  approved_by_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,

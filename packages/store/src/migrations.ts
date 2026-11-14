@@ -6013,3 +6013,15 @@ migrations['0219_team_join_admissions'] = {
     await sql`drop table team_join_admissions`.execute(db);
   },
 };
+
+migrations['0220_managed_dev_server_approver'] = {
+  // A secret-bearing dev server runs with the secrets of whoever starts it
+  // (ADR 0023 §3). The approval records who reviewed the command, so another
+  // person's start needs their own approval rather than borrowing one.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_servers add column approved_by_user_id text`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table managed_dev_servers drop column approved_by_user_id`.execute(db);
+  },
+};

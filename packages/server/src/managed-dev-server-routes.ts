@@ -111,7 +111,12 @@ export function registerManagedDevServerRoutes(
         })
         .strict()
         .parse(request.body);
-      return { servers: await m.approve(sessionId, serverId, seen, { local }) };
+      return {
+        servers: await m.approve(sessionId, serverId, seen, {
+          local,
+          approvedBy: viewerId(request),
+        }),
+      };
     });
   });
   app.get('/sessions/:sessionId/managed-dev-servers/:serverId/logs', async (request, reply) => {
