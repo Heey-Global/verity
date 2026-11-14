@@ -196,13 +196,9 @@ import { createGmailTool } from './gmail-tool.js';
 import { createGoogleSheetsTool } from './google-sheets-tool.js';
 import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
-import {
-  createGitWorktreeProvisioner,
-  repairAdminGitdirs,
-  repairProjectAdminGitdirs,
-} from './worktree.js';
+import { createGitWorktreeProvisioner, healAdminGitdirsAtStartup } from './worktree.js';
 import { createGitBranchService } from './branches.js';
-import { defaultCloneConfigGit, reportCloneWorktreeConfigs } from './clone-config-guard.js';
+import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
@@ -799,32 +795,9 @@ export async function buildEmbeddedServer(
   // through the app — never from deployment env or mounted files. The identity in
   // particular is derived from the GitHub App installation during signing-key
   // onboarding (resolveGitHubAppIdentity), so there is nothing to seed here.
-  // One-time heal: worktrees whose admin `gitdir` git cannot follow — left
-  // relative by an earlier version, or absolute with a container-side `/work`
-  // prefix — are `prunable`, so a `prune`/gc silently deregisters a still-live
-  // session. Rewrite those to the path git expects at startup. Best-effort: a
-  // heal failure must never block server boot.
-  //
-  // The multi-project runner deliberately leaves `repoDir` EMPTY (see the branch
-  // switcher below) and keeps one clone per project under `hostCloneRoot`, so
-  // gating the heal on `repoDir` alone silently disabled it for every project on
-  // exactly the deployment that spawns the most sessions. Heal per project clone
-  // there too — deliberately a second `if`, not an `else`: a deployment that
-  // configures both a server repo AND project clones must heal both.
-  if (config.repoDir) {
-    try {
-      repairAdminGitdirs(config.repoDir);
-    } catch {
-      // ignore — new spawns are unaffected; only pre-existing landmines stay
-    }
-  }
-  if (config.hostCloneRoot) {
-    try {
-      repairProjectAdminGitdirs(config.hostCloneRoot);
-    } catch {
-      // ignore — new spawns are unaffected; only pre-existing landmines stay
-    }
-  }
+  // One-time, best-effort heal of admin `gitdir` links git cannot follow (see
+  // healAdminGitdirsAtStartup): a heal failure must never block server boot.
+  healAdminGitdirsAtStartup(config.repoDir, config.hostCloneRoot);
   // Branch switcher for each session's worktree (#91). A dev checkout may provide
   // one global repo root; the multi-project runner deliberately sets VERITY_REPO_DIR=''
   // and instead resolves repo-wide git operations through each session worktree.
@@ -1289,8 +1262,7 @@ export async function buildEmbeddedServer(
       })
     : undefined;
 
-  // Durable server storage for the clone-config backups Repair keeps. Without it Repair
-  // reports the key instead of removing it, rather than keep the only copy in a temp dir.
+  // Durable server storage for clone-config backups; without it Repair only reports the key.
   const durableServerRoot = config.dataVolumeRoot ?? config.dataDir ?? config.workspacesDir;
   const secretRoot =
     config.secretMaterializationRoot ??
@@ -2680,13 +2652,7 @@ export async function buildEmbeddedServer(
         return provider.openPullRequest(target, token, pr);
       },
       gitSecretRoot: secretRoot,
-      ...(durableServerRoot === undefined
-        ? {}
-        : // Dot-prefixed: no `owner-repo` clone directory can carry that name.
-          { cloneConfigBackupDirectory: join(durableServerRoot, '.clone-config-backups') }),
-      onCloneConfigRepaired: (event) => {
-        app.log.warn(event, 'verity: removed a session-worktree core.worktree from a clone config');
-      },
+      ...cloneConfigRepairOptions(durableServerRoot, (event, msg) => app.log.warn(event, msg)),
       // GitHub-token broker: the SAME registry the /internal/github/token endpoint
       // resolves against. The provisioner issues a per-container capability into it
       // instead of writing a gh-token file, so the sandbox mints tokens on demand.
@@ -4853,19 +4819,9 @@ export async function buildEmbeddedServer(
       },
     },
   });
-  if (config.hostCloneRoot) {
-    // Read-only: a `core.worktree` in a shared clone config fails every later Repair with
-    // "Invalid path", or points server-side git at a session's files. Report it at
-    // startup, before an update recreates the Sandbox; Repair is what removes it.
-    const cloneRoot = config.hostCloneRoot;
-    void reportCloneWorktreeConfigs(
-      cloneRoot,
-      defaultCloneConfigGit,
-      (clonePath, message) =>
-        app.log.warn({ clonePath }, `verity: project clone config needs repair: ${message}`),
-      durableServerRoot !== undefined,
-    ).catch(() => undefined);
-  }
+  startCloneConfigSweep(config.hostCloneRoot, durableServerRoot !== undefined, (event, msg) =>
+    app.log.warn(event, msg),
+  );
   if (managedMatrixControl) {
     const retryMatrixActivation = async (): Promise<void> => {
       try {

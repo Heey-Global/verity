@@ -39,7 +39,7 @@ import { promisify } from 'node:util';
  */
 
 /** Where the Sandbox mounts the clone. */
-export const SANDBOX_CLONE_ROOT = '/work';
+const SANDBOX_CLONE_ROOT = '/work';
 
 /** Directory under a clone that holds the session worktrees. */
 const SESSION_ROOT = '.verity-sessions';
@@ -147,7 +147,9 @@ async function configValues(
 }
 
 function normalized(path: string): string {
-  return posix.normalize(path).replace(/(.)\/+$/, '$1');
+  // normalize() already collapses repeated slashes, so at most one trailing slash is left.
+  const result = posix.normalize(path);
+  return result.length > 1 && result.endsWith('/') ? result.slice(0, -1) : result;
 }
 
 function classifyValue(
@@ -320,4 +322,130 @@ export async function reportCloneWorktreeConfigs(
       // ignore — a probe that cannot run reports nothing rather than a guess
     }
   }
+}
+
+/** A git step of the clone phase failed; `step` names it in the project's failure. Carries
+ *  only the redacted output, never the raw error: that can include Authorization headers. */
+export class CloneStepError extends Error {
+  constructor(
+    readonly step: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CloneStepError';
+  }
+}
+
+/** Read-only: what Repair would find in the clone config, before the operator confirms. */
+export async function cloneWorktreeWarning(
+  clonePath: string,
+  git: CloneConfigGit,
+  backupRoot: string | undefined,
+): Promise<string | null> {
+  try {
+    const finding = await inspectCloneWorktreeConfig(clonePath, git);
+    if (finding.kind === 'clean') return null;
+    return describeCloneWorktreeFinding(finding, backupRoot !== undefined && backupRoot !== '');
+  } catch {
+    return null; // a warning probe never blocks Repair; the repair path inspects again
+  }
+}
+
+/**
+ * Make the shared clone config safe to open before the server runs git against it.
+ *
+ * A removable `core.worktree` is taken out after a private backup; anything else
+ * unexpected stops the provision (through `fail`) with the file and value to inspect.
+ * Local projects are not handled here: their config is reduced to an allowlist that
+ * already drops the key.
+ */
+export async function ensureCloneWorktreeConfig(options: {
+  clonePath: string;
+  projectId: string;
+  backupRoot: string | undefined;
+  git: CloneConfigGit;
+  onRepaired?: ((event: { projectId: string } & CloneWorktreeRepair) => void) | undefined;
+  /** Builds the provisioning error that carries an operator-facing message. */
+  fail: (message: string) => Error;
+}): Promise<void> {
+  const { clonePath, projectId, backupRoot, git, fail } = options;
+  const canRemove = backupRoot !== undefined && backupRoot.length > 0;
+  // One pass per file that can carry the key (`config`, `config.worktree`), plus the
+  // inspection that has to come back clean.
+  for (let pass = 0; pass < 3; pass++) {
+    let repair: CloneWorktreeRepair;
+    let stop: Error | undefined;
+    try {
+      const finding = await inspectCloneWorktreeConfig(clonePath, git);
+      if (finding.kind === 'clean') return;
+      if (pass === 2 && finding.kind === 'session-contamination') {
+        stop = fail(
+          `repository config invalid: ${finding.file} still sets core.worktree ` +
+            `("${finding.value}") after Repair removed it; something is writing it back. ` +
+            'Stop the Sandbox, remove the key from that file, then repair again.',
+        );
+      } else if (finding.kind === 'unknown' || !canRemove) {
+        stop = fail(describeCloneWorktreeFinding(finding, canRemove));
+      }
+      if (stop !== undefined) throw stop;
+      repair = await removeSessionWorktreeConfig(
+        finding as Extract<CloneWorktreeFinding, { kind: 'session-contamination' }>,
+        backupRoot!,
+        projectId,
+        git,
+      );
+    } catch (cause) {
+      if (cause === stop) throw cause;
+      // An unreadable file, a failed backup, or a value that changed under the removal.
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new CloneStepError('repository config check', message.split('\n')[0]!.slice(0, 200));
+    }
+    try {
+      options.onRepaired?.({ projectId, ...repair });
+    } catch {
+      // Observability never changes the repair.
+    }
+  }
+}
+
+type Warn = (event: object, message: string) => void;
+
+/** Provisioner options for Repair's clone-config handling, given durable server storage
+ *  (absent → Repair reports a removable key instead of removing it). */
+export function cloneConfigRepairOptions(
+  durableRoot: string | undefined,
+  warn: Warn,
+): {
+  cloneConfigBackupDirectory?: string;
+  onCloneConfigRepaired: (event: { projectId: string } & CloneWorktreeRepair) => void;
+} {
+  return {
+    // Dot-prefixed: no `owner-repo` clone directory can carry that name.
+    ...(durableRoot === undefined
+      ? {}
+      : { cloneConfigBackupDirectory: join(durableRoot, '.clone-config-backups') }),
+    onCloneConfigRepaired: (event) =>
+      warn(event, 'verity: removed a core.worktree from a clone config'),
+  };
+}
+
+/**
+ * Start the read-only startup sweep ({@link reportCloneWorktreeConfigs}) without waiting
+ * for it. A `core.worktree` in a shared clone config fails every later Repair with
+ * "Invalid path", or points server-side git at a session's files; reporting it at startup
+ * makes it visible before an update recreates the Sandbox. Repair is what removes it.
+ */
+export function startCloneConfigSweep(
+  cloneRoot: string | undefined,
+  canRemove: boolean,
+  warn: Warn,
+): void {
+  if (!cloneRoot) return;
+  void reportCloneWorktreeConfigs(
+    cloneRoot,
+    defaultCloneConfigGit,
+    (clonePath, message) =>
+      warn({ clonePath }, `verity: project clone config needs repair: ${message}`),
+    canRemove,
+  ).catch(() => undefined);
 }
