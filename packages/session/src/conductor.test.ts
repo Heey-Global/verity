@@ -4030,6 +4030,47 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     }
   });
 
+  // A turn held for a background command or monitor is silent for as long as that
+  // work takes. Releasing it after half an hour would kill the work the agent is
+  // waiting for; only a hold that outlives its own limit is a stall.
+  it('waits out a silent turn held for open background tasks up to the hold limit', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-held');
+      await ctx.store.appendEvent('s1', { t: 'task', id: 'monitor-1', phase: 'started' });
+      const target = {
+        turnId: 'turn-held',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined), true);
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => ({ status: 'live', target }) },
+      });
+
+      await conductor.recover();
+      // An hour of silence: twice the ordinary bound, still inside the hold.
+      for (let i = 0; i < 120; i += 1) await vi.advanceTimersByTimeAsync(30_000);
+      expect(conductor.isBusy('s1')).toBe(true);
+      expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+
+      // Past the hold limit plus its grace, the same silence is a stall.
+      for (let i = 0; i < 400 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const events = await ctx.store.getEvents('s1');
+      expect(events).toContainEqual(expect.objectContaining({ t: 'interrupted' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never settles a silent turn when the Runner seam stays unreachable', async () => {
     vi.useFakeTimers();
     try {
@@ -4160,6 +4201,65 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Without the note the operator reads "send the message again" and keeps waiting
+  // for the review or monitor result the agent announced — which died with it.
+  it('says that background work was lost when a held turn’s Runner dies', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-held-dies');
+      await ctx.store.appendEvent('s1', { t: 'task', id: 'review', phase: 'started' });
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          turnId: 'turn-held-dies',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined));
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => outcome },
+      });
+
+      await conductor.recover();
+      outcome = { status: 'dead' };
+      for (let i = 0; i < 12 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const notices = (await ctx.store.getEvents('s1')).flatMap((event) =>
+        event.t === 'notice' ? [event.text] : [],
+      );
+      expect(notices).toEqual([
+        expect.stringMatching(/Runner executing this turn is gone[\s\S]*Background work/),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says that background work was lost when a restart finds the held turn’s Runner dead', async () => {
+    await seedMarker('turn-held-restart');
+    await ctx.store.appendEvent('s1', { t: 'task', id: 'monitor', phase: 'started' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      worktreeExists: async () => true,
+      runnerRecovery: { discover: async () => ({ status: 'dead' }) },
+    });
+    await conductor.recover();
+    const events = await ctx.store.getEvents('s1');
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({ t: 'notice', text: expect.stringContaining('Background work') }),
+      { t: 'interrupted' },
+    ]);
   });
 
   it('settles a dead Runner even while its permission card is still open', async () => {

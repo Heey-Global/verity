@@ -48,6 +48,7 @@ import type {
 } from '@verity/store';
 import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { BACKGROUND_HOLD_MAX_MS } from './background-work.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
 import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
@@ -131,10 +132,24 @@ const TURN_LIVENESS_IDLE_SWEEPS = 10;
  * bound also covers a worker that is alive but no longer scheduling its turn.
  * 6 × 5 minutes = 30 minutes. An uncertain probe never contributes. */
 const TURN_LIVENESS_STALLED_WINDOWS = 6;
+/** The same bound for a turn whose transcript still has background tasks open.
+ * Such a turn is held by its backend while a background command or monitor runs
+ * (`background-work.ts`) and is legitimately silent for as long as that work
+ * takes, up to the hold limit; two more windows let the backend's own limit fire
+ * first, so this only catches a backend that failed to end its hold. */
+const TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS =
+  Math.ceil(BACKGROUND_HOLD_MAX_MS / (TURN_LIVENESS_SWEEP_MS * TURN_LIVENESS_IDLE_SWEEPS)) + 2;
 /** Transcript wording when the probe confirms an in-flight turn's Runner is gone. */
 const DEAD_RUNNER_NOTICE =
   'The Runner executing this turn is gone — Verity stopped waiting and released the ' +
   'session. Any work it had already reported is above; send the message again to continue.';
+/** Added when the lost turn still had background tasks open: the commands or
+ * monitors the agent was waiting for ended with its Runner, so their results and
+ * the follow-up the agent announced will not arrive. */
+const BACKGROUND_WORK_LOST_NOTICE =
+  'Background work this turn was still running (commands or monitors the agent was ' +
+  'waiting for) ended with it; its results and any follow-up the agent announced will ' +
+  'not arrive.';
 const STALLED_RUNNER_NOTICE =
   'The Runner executing this turn is still alive but has produced nothing for half ' +
   'an hour — Verity stopped waiting and released the session. Send the message ' +
@@ -4278,6 +4293,13 @@ export class Conductor {
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
         await this.settleDocumentsById(marker.sessionId);
         await this.cleanupRecoveredImageAttachments(marker);
+        if (await this.turnHasOpenBackgroundTasks(marker)) {
+          await this.emitEvent(marker.sessionId, {
+            t: 'notice',
+            role: 'agent',
+            text: BACKGROUND_WORK_LOST_NOTICE,
+          });
+        }
         await this.emitInterrupted(marker.sessionId);
         await this.deps.store.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         if (this.leaveUncertainRecovery(marker.sessionId)) {
@@ -4416,6 +4438,22 @@ export class Conductor {
     }
   }
 
+  /** Whether the turn's transcript has background tasks started and not ended.
+   * Read only when a silent turn is about to be declared stalled, so a long log
+   * is read at most once per idle window. */
+  private async turnHasOpenBackgroundTasks(marker: RunningTurnRecord): Promise<boolean> {
+    const open = new Set<string>();
+    for (const { event } of await this.deps.store.getEventsAfter(
+      marker.sessionId,
+      marker.promptSeq,
+    )) {
+      if (event.t !== 'task') continue;
+      if (event.phase === 'started') open.add(event.id);
+      else if (event.phase === 'ended') open.delete(event.id);
+    }
+    return open.size > 0;
+  }
+
   /**
    * Advance one marker's idle window, and probe its Runner once the window is full.
    * The event log is the activity signal rather than an in-memory frame counter: it
@@ -4462,7 +4500,11 @@ export class Conductor {
       outcome.status === 'live' && !awaitingOperator && !lifecycleChange
         ? (seen?.liveProbes ?? 0) + 1
         : 0;
-    const stalled = outcome.status === 'live' && liveProbes >= TURN_LIVENESS_STALLED_WINDOWS;
+    const stalled =
+      outcome.status === 'live' &&
+      liveProbes >= TURN_LIVENESS_STALLED_WINDOWS &&
+      (liveProbes >= TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS ||
+        !(await this.turnHasOpenBackgroundTasks(marker)));
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });
       return;
@@ -4555,7 +4597,9 @@ export class Conductor {
       {
         t: 'notice',
         role: 'agent',
-        text: DEAD_RUNNER_NOTICE,
+        text: (await this.turnHasOpenBackgroundTasks(marker))
+          ? `${DEAD_RUNNER_NOTICE} ${BACKGROUND_WORK_LOST_NOTICE}`
+          : DEAD_RUNNER_NOTICE,
       },
     );
     if (noticeSeq === null) return;
