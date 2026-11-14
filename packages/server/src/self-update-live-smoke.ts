@@ -88,7 +88,10 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { BackupProvisionPlan } from './self-update/backup-provisioning.js';
+import {
+  BACKUP_PROVISION_LABEL,
+  type BackupProvisionPlan,
+} from './self-update/backup-provisioning.js';
 import { createDockerClient, type ContainerInspect, type DockerClient } from './docker.js';
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
@@ -695,7 +698,14 @@ async function prepare(managedRoot: string): Promise<void> {
   expect((candidate.mounts ?? []).length > 0, 'standby lacks production mounts');
   // A planned backup host must reach the standby as sealed mounts; otherwise the
   // simulated provisioning above would hide a migration that never happened.
+  // Expected from the target's own contract label, so a preparation that stopped
+  // planning, or stopped routing through the stand-in, fails instead of skipping.
+  const backupContract = (await client.inspectImageLabels!(targetDigest))?.[BACKUP_PROVISION_LABEL];
   const backup = plannedBackups.get(targetDigest);
+  expect(
+    (backupContract === '1') === (backup !== undefined),
+    `backup provisioning was ${backup === undefined ? 'not ' : ''}planned for a target whose contract is ${String(backupContract)}`,
+  );
   if (backup !== undefined) {
     const sealed = await readManagedDeployment(managedRoot);
     const bind = (target: string) =>
