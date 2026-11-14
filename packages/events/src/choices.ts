@@ -81,6 +81,31 @@ function parseLenientJson(body: string): unknown {
 }
 
 /**
+ * Agents sometimes flag several options `recommended` (observed live on a
+ * multi-select block) although the contract allows one. The schema rejects
+ * that, which would surface the whole block as a raw-JSON code card; instead
+ * keep the first recommendation and clear the rest so the chips still render.
+ */
+function keepFirstRecommendation(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  const options = (value as { options?: unknown }).options;
+  if (!Array.isArray(options)) return value;
+  let seen = false;
+  return {
+    ...value,
+    options: options.map((option: unknown) => {
+      if (typeof option !== 'object' || option === null) return option;
+      if ((option as { recommended?: unknown }).recommended !== true) return option;
+      if (!seen) {
+        seen = true;
+        return option;
+      }
+      return { ...option, recommended: undefined };
+    }),
+  };
+}
+
+/**
  * Lift a {@link ChoicesPayload} off the contract block(s) in an agent text block,
  * returning the prose (block(s) removed, surrounding text rejoined) plus the
  * parsed choices. The contract instructs the agent to emit ONE block, last — but
@@ -108,7 +133,7 @@ export function parseChoicesBlock(input: string): ParsedChoices {
   for (let i = matches.length - 1; i >= 0 && choices === undefined; i--) {
     const parsedJson = parseLenientJson(matches[i]![1] ?? '');
     if (parsedJson === undefined) continue;
-    const result = choicesPayloadSchema.safeParse(parsedJson);
+    const result = choicesPayloadSchema.safeParse(keepFirstRecommendation(parsedJson));
     if (result.success) choices = result.data;
   }
 

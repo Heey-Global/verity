@@ -86,6 +86,21 @@ describe('parseChoicesBlock', () => {
     });
   });
 
+  it('renders chips when several options are flagged recommended, keeping only the first', () => {
+    // Without normalization the schema rejects the block and the whole thing
+    // leaks to the chat as a raw-JSON code card.
+    const input = `Prose.\n\n${fence(
+      '{"question":"Wie weiter?","options":[{"label":"A","recommended":true},{"label":"B","recommended":true},{"label":"C"}],"multiSelect":true}',
+    )}`;
+    const { text, choices } = parseChoicesBlock(input);
+    expect(text).toBe('Prose.');
+    expect(choices).toEqual({
+      question: 'Wie weiter?',
+      options: [{ label: 'A', recommended: true }, { label: 'B' }, { label: 'C' }],
+      multiSelect: true,
+    });
+  });
+
   it('yields an empty text when the block is the whole message', () => {
     const { text, choices } = parseChoicesBlock(fence('{"options":[{"label":"Go"}]}'));
     expect(text).toBe('');
