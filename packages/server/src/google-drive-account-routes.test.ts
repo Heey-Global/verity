@@ -451,4 +451,50 @@ describe("another person's Google Drive account (ADR 0023 §3)", () => {
       await ctx.store.googleAccounts.remove(bobs.id);
     }
   });
+  // The administrator's account is mirrored into the instance settings, which
+  // the mail, calendar and contacts tools fall back to. Disconnecting it while
+  // others keep theirs must end that copy, not leave it serving them.
+  it("disconnecting the mirrored account ends the instance copy, others' accounts stay", async () => {
+    const scopes = ['gmail.readonly', 'drive'].map(
+      (scope) => `https://www.googleapis.com/auth/${scope}`,
+    );
+    const bobs = await ctx.store.googleAccounts.save({
+      ownerUserId: BOB,
+      email: 'bob-keeps@example.test',
+      clientId: 'client',
+      refreshToken: 'bob-keeps-refresh',
+      scopes,
+    });
+    const carols = await ctx.store.googleAccounts.save({
+      ownerUserId: CAROL,
+      email: 'carol-mirrored@example.test',
+      clientId: 'client',
+      refreshToken: 'carol-mirrored-refresh',
+      scopes,
+    });
+    await ctx.store.updateVeritySettings({
+      googleDriveClientId: 'client',
+      googleDriveRefreshToken: 'carol-mirrored-refresh',
+      googleDriveAccountEmail: 'carol-mirrored@example.test',
+    });
+    // The mirror must be in place, or the assertion below proves nothing.
+    expect((await ctx.store.getVeritySettings())?.googleDriveRefreshToken).toBe(
+      'carol-mirrored-refresh',
+    );
+    const app = await driveApp();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/google-drive/disconnect',
+        headers: { 'x-test-user': CAROL },
+      });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(await ctx.store.googleAccounts.get(carols.id)).toBeUndefined();
+      expect((await ctx.store.getVeritySettings())?.googleDriveRefreshToken ?? null).toBeNull();
+      expect(await ctx.store.googleAccounts.get(bobs.id)).toBeDefined();
+    } finally {
+      await app.close();
+      await ctx.store.googleAccounts.remove(bobs.id);
+    }
+  });
 });
