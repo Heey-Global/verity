@@ -72,7 +72,7 @@ export interface CloneWorktreeRepair {
 }
 
 /** The finding as a sentence an operator can act on. */
-export function describeCloneWorktreeFinding(
+function describeCloneWorktreeFinding(
   finding: Exclude<CloneWorktreeFinding, { kind: 'clean' }>,
   canRemove = true,
 ): string {

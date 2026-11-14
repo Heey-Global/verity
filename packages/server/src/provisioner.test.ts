@@ -46,7 +46,6 @@ import {
   type ImageFileEvidence,
 } from './runner-boundary-attestation.js';
 import {
-  ProvisionerImpl,
   DeprovisionerImpl,
   ProvisioningError,
   gitAuthHeader,
