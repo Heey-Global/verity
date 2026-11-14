@@ -31627,6 +31627,7 @@ async function runAcpTurn(opts, profile) {
         acceptingSteering = true;
       }
       if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
+        acceptingSteering = false;
         await drainUpdates();
         if (background.busy) {
           await writeAll(writer, topLevelText.flush());

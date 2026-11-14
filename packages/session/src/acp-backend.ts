@@ -1242,6 +1242,9 @@ export async function runAcpTurn(
             !capacityFailure &&
             prompt.stopReason !== 'cancelled'
           ) {
+            // The prompt has answered: a steer now would land in a finished prompt.
+            // Refuse it (the Conductor queues it) until the hold decides below.
+            acceptingSteering = false;
             await drainUpdates();
             if (background.busy) {
               // The agent's answer so far is complete prose: publish it now, so the
