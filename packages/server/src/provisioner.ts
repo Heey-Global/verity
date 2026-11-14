@@ -14,6 +14,13 @@ import {
   FALLBACK_SANDBOX_MEMORY_BYTES,
 } from './sandbox-memory-policy.js';
 import { stripTrailingSlashes } from './path-text.js';
+import {
+  type CloneConfigGit,
+  type CloneWorktreeRepair,
+  describeCloneWorktreeFinding,
+  inspectCloneWorktreeConfig,
+  removeSessionWorktreeConfig,
+} from './clone-config-guard.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import {
@@ -866,6 +873,13 @@ export interface ProvisionerOptions {
     | undefined;
   /** Server-owned root for ephemeral files materialized from DB-backed secrets. */
   gitSecretRoot?: string | undefined;
+  /** Private directory, never mounted into a Sandbox, for the copy of a clone config
+   *  taken before Repair removes a session-worktree `core.worktree` from it. Absent →
+   *  Repair reports the key instead of removing it. */
+  cloneConfigBackupDirectory?: string | undefined;
+  /** Record of a `core.worktree` Repair removed from a clone config. Must not throw. */
+  onCloneConfigRepaired?:
+    ((event: { projectId: string } & CloneWorktreeRepair) => void) | undefined;
   /** Named data volume + its in-server mount root (security review, M16). When set,
    *  every per-project mount whose host path lives under {@link dataVolumeRoot}
    *  (the `/work` clone + the materialized secrets) is emitted as a NAMED-VOLUME
@@ -5264,9 +5278,14 @@ export class ProvisionerImpl implements Provisioner {
     try {
       await this.serializeProjectCheckoutOperation(project.id, () => this.doClone(project));
     } catch (cause) {
-      if (cause instanceof ProvisioningError) throw cause;
-      const message = `git clone failed: ${failureMessage(cause)}`;
+      // Every failure leaves `cloning`: a row stuck there reads as an update that never
+      // ends, and Repair would have nothing to show for why.
+      const message =
+        cause instanceof ProvisioningError
+          ? cause.message
+          : `${cause instanceof CloneStepError ? cause.step : 'git clone'} failed: ${failureMessage(cause)}`;
       await this.opts.store.updateProjectState(project.id, 'failed', message);
+      if (cause instanceof ProvisioningError) throw cause;
       throw new ProvisioningError(message, cause);
     }
 
@@ -5551,8 +5570,80 @@ export class ProvisionerImpl implements Provisioner {
   async provisionWarnings(projectId: string): Promise<string[]> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return [];
+    const warnings: string[] = [];
+    const cloneConfig = await this.cloneWorktreeWarning(project);
+    if (cloneConfig !== null) warnings.push(cloneConfig);
     const warning = await this.devcontainerWarningForProject(project);
-    return warning === null ? [] : [warning];
+    if (warning !== null) warnings.push(warning);
+    return warnings;
+  }
+
+  /** Read-only: what Repair would find in the clone config, before the operator confirms. */
+  private async cloneWorktreeWarning(project: ProjectRecord): Promise<string | null> {
+    if (isLocalProject(project)) return null; // the local allowlist already drops the key
+    const { clonePath } = projectDirs(this.opts.hostCloneRoot, project);
+    if (!this.isRepoDir(clonePath)) return null;
+    try {
+      const finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
+      if (finding.kind === 'clean') return null;
+      const backupRoot = this.opts.cloneConfigBackupDirectory;
+      return describeCloneWorktreeFinding(finding, backupRoot !== undefined && backupRoot !== '');
+    } catch {
+      return null; // a warning probe never blocks Repair; the repair path inspects again
+    }
+  }
+
+  private readonly cloneConfigGit: CloneConfigGit = (args) => this.git(args);
+
+  /**
+   * Make the shared clone config safe to open before the server runs git against it.
+   *
+   * A session-worktree `core.worktree` is removed after a private backup; anything else
+   * unexpected stops the provision with the file and value to inspect. Local projects are
+   * not handled here: their config is reduced to an allowlist that already drops the key.
+   */
+  private async ensureCloneWorktreeConfig(
+    project: ProjectRecord,
+    clonePath: string,
+  ): Promise<void> {
+    const backupRoot = this.opts.cloneConfigBackupDirectory;
+    const canRemove = backupRoot !== undefined && backupRoot.length > 0;
+    // One pass per file that can carry the key (`config`, `config.worktree`), plus the
+    // inspection that has to come back clean.
+    for (let pass = 0; pass < 3; pass++) {
+      let finding: Awaited<ReturnType<typeof inspectCloneWorktreeConfig>>;
+      let repair: CloneWorktreeRepair | undefined;
+      try {
+        finding = await inspectCloneWorktreeConfig(clonePath, this.cloneConfigGit);
+        if (finding.kind === 'clean') return;
+        if (pass === 2 && finding.kind === 'session-contamination') {
+          throw new ProvisioningError(
+            `repository config invalid: ${finding.file} still sets core.worktree ` +
+              `("${finding.value}") after ` +
+              'Repair removed it; something is writing it back. Stop the Sandbox, remove the ' +
+              'key from that file, then repair again.',
+          );
+        }
+        if (finding.kind === 'unknown' || !canRemove) {
+          throw new ProvisioningError(describeCloneWorktreeFinding(finding, canRemove));
+        }
+        repair = await removeSessionWorktreeConfig(
+          finding,
+          backupRoot,
+          project.id,
+          this.cloneConfigGit,
+        );
+      } catch (cause) {
+        if (cause instanceof ProvisioningError) throw cause;
+        // An unreadable file, a failed backup, or a value that changed under the removal.
+        throw new CloneStepError('repository config check', failureMessage(cause));
+      }
+      try {
+        this.opts.onCloneConfigRepaired?.({ projectId: project.id, ...repair });
+      } catch {
+        // Observability never changes the repair.
+      }
+    }
   }
 
   /** Lock the project row, read its state, decide what to do next:
@@ -5633,13 +5724,15 @@ export class ProvisionerImpl implements Provisioner {
       ]);
       remoteIsEmpty = remoteHeads.stdout.trim().length === 0;
     } catch (cause) {
-      const safeCause = new Error(
+      throw new CloneStepError(
+        'git ls-remote',
         redactSensitive(commandFailureMessage(cause), [token, authHeader]),
       );
-      // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
-      throw new Error(safeCause.message, { cause: safeCause });
     }
     if (this.isDir(dirs.clonePath) && this.isRepoDir(dirs.clonePath)) {
+      // Before any git command opens the clone: those all run repository setup, which
+      // resolves `core.worktree` — and `reset --hard` would write wherever it points.
+      await this.ensureCloneWorktreeConfig(project, dirs.clonePath);
       // The minted token is used for THIS server-side fetch only — it is never
       // written into the sandbox (the sandbox redeems its capability at the token
       // broker instead), so nothing is persisted to a `.gh-token` file.
@@ -5676,19 +5769,36 @@ export class ProvisionerImpl implements Provisioner {
         await git([
           '-C',
           dirs.clonePath,
+          `--work-tree=${dirs.clonePath}`,
           '-c',
           `http.extraheader=${authHeader}`,
           'fetch',
           'origin',
         ]);
       } catch (cause) {
-        const safeCause = new Error(
+        throw new CloneStepError(
+          'git fetch',
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
         );
-        // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
-        throw new Error(safeCause.message, { cause: safeCause });
       }
-      await git(['-C', dirs.clonePath, 'reset', '--hard', `origin/${defaultBranch}`]);
+      try {
+        // `--work-tree` pins the reset to the main checkout whatever the shared config
+        // says (see `untrustedRepo` in branches.ts): a `core.worktree` naming a session
+        // worktree must never turn this into a reset of that session's files.
+        await git([
+          '-C',
+          dirs.clonePath,
+          `--work-tree=${dirs.clonePath}`,
+          'reset',
+          '--hard',
+          `origin/${defaultBranch}`,
+        ]);
+      } catch (cause) {
+        throw new CloneStepError(
+          'git reset',
+          redactSensitive(commandFailureMessage(cause), [token, authHeader]),
+        );
+      }
     } else {
       try {
         const cloneArgs = [
@@ -5703,11 +5813,10 @@ export class ProvisionerImpl implements Provisioner {
         ];
         await git(cloneArgs);
       } catch (cause) {
-        const safeCause = new Error(
+        throw new CloneStepError(
+          'git clone',
           redactSensitive(commandFailureMessage(cause), [token, authHeader]),
         );
-        // eslint-disable-next-line preserve-caught-error -- raw git errors can include Authorization headers.
-        throw new Error(safeCause.message, { cause: safeCause });
       }
       await git(['-C', dirs.clonePath, 'remote', 'set-url', 'origin', url]);
       if (remoteIsEmpty) {
@@ -8105,6 +8214,18 @@ export class ProvisionerImpl implements Provisioner {
     } catch {
       return false;
     }
+  }
+}
+
+/** A git step of the clone phase failed; `step` names it in the project's failure. Carries
+ *  only the redacted output, never the raw error: that can include Authorization headers. */
+class CloneStepError extends Error {
+  constructor(
+    readonly step: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CloneStepError';
   }
 }
 

@@ -38,6 +38,7 @@ args=("$@")
 n=${#args[@]}
 effective_cwd="$PWD"
 hooks_override=""
+opt_git_dir=""
 
 # A `core.hooksPath` given on the command line displaces the installed seed
 # hooks for this one invocation. Keys are case-insensitive in git, so compare
@@ -105,7 +106,17 @@ while [ "$i" -lt "$n" ]; do
       i=$((i + 1))
       continue
       ;;
-    --git-dir | --work-tree | --namespace | --super-prefix)
+    --git-dir)
+      opt_git_dir="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      continue
+      ;;
+    --git-dir=*)
+      opt_git_dir="${a#--git-dir=}"
+      i=$((i + 1))
+      continue
+      ;;
+    --work-tree | --namespace | --super-prefix)
       i=$((i + 2))
       continue
       ;;
@@ -161,6 +172,133 @@ if [ "$subcmd" = "push" ]; then
       echo "If this is an operator-directed push, re-run with VERITY_GIT_GUARD_DISABLE=1."
     } >&2
     exit 1
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- core.worktree: one session must not re-point every session's checkout ---
+# Every linked worktree shares the repository's config. A `core.worktree` written
+# there re-points the MAIN checkout for every git process that opens the
+# repository, including Verity's own Repair, which then fails on a path that
+# only exists inside this container. Two ways write it:
+#   - `git config core.worktree <path>` (also with --worktree: without
+#     extensions.worktreeConfig that writes the shared config, and with it the
+#     main checkout's config.worktree, which server-side git reads as well);
+#   - `git init` against an existing repository named by GIT_DIR/--git-dir: a
+#     hook running here already carries GIT_DIR pointing into the shared one.
+#     With a work tree as well, git records it as core.worktree; without one,
+#     git takes the admin dir for a bare repository and writes core.bare = true.
+#     Either breaks the main checkout for every session.
+refuse_core_worktree() {
+  {
+    echo "verity git guard: refusing $1"
+    echo
+    echo "The repository config is shared by every Verity session worktree; a"
+    echo "core.worktree there re-points the main checkout for all of them and breaks"
+    echo "Sandbox Repair. For a repository of your own, unset GIT_DIR / GIT_WORK_TREE"
+    echo "and name its config explicitly ('git config --file <repo>/.git/config ...')."
+    echo "If this is an operator-directed change, re-run with VERITY_GIT_GUARD_DISABLE=1."
+  } >&2
+  exit 1
+}
+
+if [ "$subcmd" = "config" ]; then
+  # Refuse only a WRITE of the key: `git config core.worktree` alone (and any
+  # read spelling) is a read and stays allowed.
+  scoped=""
+  adds=""
+  positional=()
+  j=$((subidx + 1))
+  while [ "$j" -lt "$n" ]; do
+    a="${args[$j]}"
+    case "${a,,}" in
+      # Reads, removals and writes that do not land in the shared config.
+      --get | --get-all | --get-regexp | --get-urlmatch | -l | --list | \
+        --unset | --unset-all | --global | --system | \
+        -f | --file | --file=* | --blob | --blob=* | -e | --edit | \
+        --rename-section | --remove-section | --get-color | --get-colorbool)
+        scoped=1
+        ;;
+      --add | --replace-all) adds=1 ;;
+      # Options whose value is the next argument, not a key or value.
+      --type | --default | --comment | --value) j=$((j + 1)) ;;
+      -*) ;;
+      *) positional+=("$a") ;;
+    esac
+    j=$((j + 1))
+  done
+  key="${positional[0]:-}"
+  values=$((${#positional[@]} - 1))
+  case "${key,,}" in
+    set)
+      key="${positional[1]:-}"
+      values=1
+      ;;
+    get | list | unset | rename-section | remove-section | edit) scoped=1 ;;
+  esac
+  if [ -z "$scoped" ] && [ "${key,,}" = "core.worktree" ] &&
+    { [ "$values" -gt 0 ] || [ -n "$adds" ]; }; then
+    refuse_core_worktree "'git config core.worktree' in the shared repository config"
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+if [ "$subcmd" = "init" ]; then
+  init_git_dir="${opt_git_dir:-${GIT_DIR:-}}"
+  if [ -n "$init_git_dir" ]; then
+    case "$init_git_dir" in
+      /*) ;;
+      *)
+        # `git init <directory>` changes into <directory> before it reads a
+        # relative git dir, so resolve against it rather than the cwd.
+        init_base="$effective_cwd"
+        j=$((subidx + 1))
+        while [ "$j" -lt "$n" ]; do
+          a="${args[$j]}"
+          case "$a" in
+            --template | --separate-git-dir | -b | --initial-branch | --object-format | --ref-format)
+              j=$((j + 2))
+              continue
+              ;;
+            --)
+              a="${args[$((j + 1))]:-}"
+              [ -n "$a" ] || break
+              ;;
+            -*)
+              j=$((j + 1))
+              continue
+              ;;
+          esac
+          case "$a" in
+            /*) init_base="$a" ;;
+            *) init_base="$effective_cwd/$a" ;;
+          esac
+          break
+        done
+        init_git_dir="$init_base/$init_git_dir"
+        ;;
+    esac
+    # A session worktree's `.git` is a gitfile naming the shared repository's
+    # admin directory; follow it rather than reading it as "no repository".
+    if [ -f "$init_git_dir" ]; then
+      gitfile_line=""
+      IFS= read -r gitfile_line <"$init_git_dir" || true
+      case "$gitfile_line" in
+        "gitdir: "/*) init_git_dir="${gitfile_line#gitdir: }" ;;
+        "gitdir: "*) init_git_dir="${init_git_dir%/*}/${gitfile_line#gitdir: }" ;;
+      esac
+    fi
+    # Only a repository someone else uses: one shared with linked worktrees
+    # (an admin dir with `commondir`, or the repository holding `worktrees/`),
+    # or the managed clone mounted at /work, which the server opens on Repair
+    # even after its last session worktree is gone. Fresh git dirs and
+    # unrelated repositories (a tool cache re-running `init --bare`) stay allowed.
+    init_real="$(realpath -m -- "$init_git_dir" 2>/dev/null || printf '%s' "$init_git_dir")"
+    if [ -f "$init_git_dir/HEAD" ] &&
+      { [ -f "$init_git_dir/commondir" ] || [ -d "$init_git_dir/worktrees" ] ||
+        [ "$init_real" = "/work/.git" ]; }; then
+      refuse_core_worktree "'git init' on the existing repository named by GIT_DIR / --git-dir"
+    fi
   fi
   exec "$REAL_GIT" "$@"
 fi

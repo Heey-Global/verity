@@ -229,6 +229,26 @@ describe('pre-push lint gate', () => {
     expect(result.stderr).not.toContain('dependencies are not installed');
   });
 
+  it('starts its helpers without the GIT_DIR git exports to hooks in a session worktree', () => {
+    // In a linked worktree that GIT_DIR points into the repository every session shares.
+    // A helper that inherits it and runs `git init` with a work tree of its own writes
+    // core.worktree into the shared config, re-pointing the main checkout for everyone.
+    const repo = repoWithPendingReview();
+    const session = join(repo, '.verity-sessions', 'agent-hook');
+    git(['-C', repo, 'worktree', 'add', '-q', '-b', 'hook-session', session]);
+    writeFileSync(
+      join(session, 'package.json'),
+      '{"scripts":{"lint":"echo \\"helper GIT_DIR=${GIT_DIR:-unset} index=${GIT_INDEX_FILE:-unset}\\" >&2"}}',
+    );
+    const adminDir = git(['-C', session, 'rev-parse', '--absolute-git-dir']).trim();
+    const result = runHook(session, {
+      env: { ...reviewEnv(), GIT_DIR: adminDir, GIT_INDEX_FILE: join(adminDir, 'index') },
+    });
+    expect(result.stderr).toContain('helper GIT_DIR=unset index=unset');
+    // Still the session's own repository: the review gate saw the session branch.
+    expect(result.stderr).toContain('pre-push code review required');
+  });
+
   it('automatically installs once and runs checks before the review gate', () => {
     const repo = repoWithPendingReview('{"scripts":{"lint":"echo checked >&2"}}');
     const result = runHook(repo, { env: reviewEnv() });
