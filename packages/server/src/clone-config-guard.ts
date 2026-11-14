@@ -200,7 +200,8 @@ export async function inspectCloneWorktreeConfig(
     };
   }
   const extension = await configValues(git, join(gitDir, 'config'), 'extensions.worktreeConfig');
-  if (extension?.some((value) => /^(true|yes|on|1)$/i.test(value.trim()))) {
+  // git's boolean: everything but these (and any integer 0) is true.
+  if (extension?.some((value) => !/^(false|no|off|0+|)$/i.test(value.trim()))) {
     files.push('config.worktree');
   }
   let contamination: CloneWorktreeFinding | undefined;
