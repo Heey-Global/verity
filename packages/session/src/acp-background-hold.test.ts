@@ -219,6 +219,29 @@ describe('ACP turns held open for background work', () => {
     expect(list.findIndex((event) => event === hold[1])).toBeLessThan(result);
   });
 
+  // The task finished while the prompt still ran; the cycle reacting to it only
+  // starts after the prompt answered. Deciding at the first idle instant killed it.
+  it('holds for a cycle that starts just after the prompt answered', async () => {
+    const { spawner, agent } = scriptedAgent((a, id) => {
+      a.emit(lifecycle({ type: 'task', id: 'tests', phase: 'started' }));
+      a.emit(lifecycle({ type: 'task', id: 'tests', phase: 'ended' }));
+      a.answer(id);
+      setTimeout(() => {
+        a.emit(lifecycle({ type: 'cycle', phase: 'started' }));
+        a.emit(chunk('Tests passed; continuing.'));
+        a.emit(lifecycle({ type: 'cycle', phase: 'ended' }));
+      }, 100);
+    });
+    await new AcpClaudeBackend().run(turn(spawner, 'held-late-cycle', { backgroundQuietMs: 200 }));
+    const list = await events('held-late-cycle');
+    const followUp = list.findIndex(
+      (event) => event.t === 'text' && event.delta.includes('Tests passed'),
+    );
+    expect(followUp).toBeGreaterThan(-1);
+    expect(list.findIndex((event) => event.t === 'result')).toBeGreaterThan(followUp);
+    expect(agent.kill).toHaveBeenCalled();
+  });
+
   it('ends a turn without background work at its prompt response, as before', async () => {
     const { spawner, agent } = scriptedAgent((a, id) => {
       a.emit(chunk('Done.'));

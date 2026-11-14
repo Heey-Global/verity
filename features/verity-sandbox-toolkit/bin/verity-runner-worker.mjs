@@ -30567,6 +30567,7 @@ var BackgroundWork = class {
   tasks = /* @__PURE__ */ new Set();
   cycle = false;
   prompts = 0;
+  sawWork = false;
   lastActivity = Date.now();
   notify;
   wakeExplicit;
@@ -30580,6 +30581,9 @@ var BackgroundWork = class {
     this.touch();
   }
   signal(signal) {
+    if (signal.type === "task" || signal.type === "background" || signal.type === "cycle") {
+      this.sawWork = true;
+    }
     switch (signal.type) {
       case "task":
         if (signal.phase === "started")
@@ -30613,6 +30617,12 @@ var BackgroundWork = class {
   endPrompt() {
     this.prompts = Math.max(0, this.prompts - 1);
     this.touch();
+  }
+  /** Whether the agent reported any background work or self-started cycle at
+   * all. A task that ends during the prompt can still provoke a cycle that only
+   * starts after the prompt answers. */
+  get observedWork() {
+    return this.sawWork;
   }
   get busy() {
     return this.cycle || this.tasks.size > 0 || this.prompts > 0;
@@ -31639,7 +31649,12 @@ async function runAcpTurn(opts, profile) {
       if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
         acceptingSteering = false;
         await drainUpdates();
-        if (background.busy) {
+        const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
+        if (!background.busy && background.observedWork) {
+          await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
+          await drainUpdates();
+        }
+        if (background.busy && !stopped) {
           await writeAll(writer, topLevelText.flush());
           await writer.write({
             t: "task",
@@ -31671,7 +31686,6 @@ async function runAcpTurn(opts, profile) {
             }).finally(() => background.endPrompt());
           };
           const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
-          const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
           let agentExited = false;
           const onAgentExit = () => {
             agentExited = true;

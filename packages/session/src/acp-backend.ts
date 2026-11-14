@@ -1246,7 +1246,14 @@ export async function runAcpTurn(
             // Refuse it (the Conductor queues it) until the hold decides below.
             acceptingSteering = false;
             await drainUpdates();
-            if (background.busy) {
+            const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
+            if (!background.busy && background.observedWork) {
+              // Work ended during the prompt: the cycle that reacts to it may only
+              // start after the prompt answered, so give it one quiet window.
+              await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
+              await drainUpdates();
+            }
+            if (background.busy && !stopped) {
               // The agent's answer so far is complete prose: publish it now, so the
               // operator reads it while the work it started keeps running.
               await writeAll(writer, topLevelText.flush());
@@ -1290,7 +1297,6 @@ export async function runAcpTurn(
                   .finally(() => background.endPrompt());
               };
               const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
-              const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
               // An agent that dies while held has nothing left to wait for.
               let agentExited = false;
               const onAgentExit = (): void => {

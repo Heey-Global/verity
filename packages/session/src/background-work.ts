@@ -40,6 +40,7 @@ export class BackgroundWork {
   private readonly tasks = new Set<string>();
   private cycle = false;
   private prompts = 0;
+  private sawWork = false;
   private lastActivity = Date.now();
   private notify: (() => void) | undefined;
   private wakeExplicit: (() => void) | undefined;
@@ -54,6 +55,9 @@ export class BackgroundWork {
   }
 
   signal(signal: StructuredLifecycleSignal): void {
+    if (signal.type === 'task' || signal.type === 'background' || signal.type === 'cycle') {
+      this.sawWork = true;
+    }
     switch (signal.type) {
       case 'task':
         if (signal.phase === 'started') this.tasks.add(signal.id);
@@ -89,6 +93,13 @@ export class BackgroundWork {
   endPrompt(): void {
     this.prompts = Math.max(0, this.prompts - 1);
     this.touch();
+  }
+
+  /** Whether the agent reported any background work or self-started cycle at
+   * all. A task that ends during the prompt can still provoke a cycle that only
+   * starts after the prompt answers. */
+  get observedWork(): boolean {
+    return this.sawWork;
   }
 
   get busy(): boolean {
