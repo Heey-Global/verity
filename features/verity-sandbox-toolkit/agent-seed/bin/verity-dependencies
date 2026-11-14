@@ -832,6 +832,23 @@ async function packagePolicy(root, rootLockFd, prepare = false) {
     handlers.forEach(([signal, handler]) => process.removeListener(signal, handler));
   }
 }
+/** The project clone that owns a repository opened into a session, if `root` is
+ *  one. Such a module checkout is a standalone clone, so its root is also its own
+ *  common directory, like the project clone whose shared installation must never
+ *  be replaced. It belongs to one session, though, exactly like a session
+ *  worktree. Recognize it by the location and repository marker the server
+ *  writes, and confirm that the owning project clone is a repository. */
+function moduleCheckoutProject(root) {
+  const match = /^(.+)\/\.verity-repositories\/[0-9a-f]{20}\/[0-9a-f]{20}$/u.exec(root);
+  if (!match) return undefined;
+  try {
+    if (!git('-C', root, 'config', '--local', '--get', 'verity.repositoryId')) return undefined;
+    if (git('-C', match[1], 'rev-parse', '--show-toplevel') !== match[1]) return undefined;
+  } catch {
+    return undefined;
+  }
+  return match[1];
+}
 async function main() {
   // Git hooks export repository-location variables such as GIT_DIR. Inherited by
   // `git -C <staging directory>`, they make the npm runtime place central
@@ -852,6 +869,12 @@ async function main() {
   const root = git('rev-parse', '--show-toplevel');
   const common = resolve(root, git('rev-parse', '--git-common-dir'));
   const base = dirname(common);
+  const moduleProject = moduleCheckoutProject(root);
+  // Inventories are keyed by content identity, so a module checkout shares the
+  // project's central inventory with the session worktrees instead of keeping one.
+  const inventoryCommon = moduleProject
+    ? resolve(moduleProject, git('-C', moduleProject, 'rev-parse', '--git-common-dir'))
+    : common;
   const action = process.argv[2] ?? 'status';
   if (!['status', 'install'].includes(action))
     throw new Error('Usage: verity-dependencies status|install');
@@ -891,10 +914,12 @@ async function main() {
       console.log('Using compatible shared project dependencies; no private install needed.');
     return;
   }
-  const cacheRoot = join(common, 'verity-dependencies');
+  const cacheRoot = join(inventoryCommon, 'verity-dependencies');
   if (action === 'status') {
     console.error(`Dependencies are not ready: ${readinessReason(root, currentIdentity)}.`);
-    console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
+    // A module checkout is its own repository; the project's installation is not its.
+    if (moduleProject === undefined)
+      console.error(`Shared project: ${readinessReason(base, currentIdentity)}.`);
     console.error(
       cachedReady(root, join(cacheRoot, currentIdentity), currentIdentity)
         ? 'A complete central inventory is available; run verity dependencies install to activate it.'
@@ -903,7 +928,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  if (root === base)
+  if (root === base && moduleProject === undefined)
     throw new Error(
       'Dependency preparation requires a session worktree; the shared project installation is preserved.',
     );

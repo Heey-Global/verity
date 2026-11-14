@@ -472,8 +472,8 @@ this same base:
     # Fix findings or decline them with a reason; re-run after a fix changes HEAD.
     verity-code-review mark
 
-Do not reach for 'mark' on its own — it records the marker without
-reviewing anything.
+Do not reach for 'mark' on its own — it accepts only a HEAD that a completed
+'run' in this checkout reviewed.
 ============================================================
 EOF
   exit 2
@@ -514,8 +514,9 @@ reviewed HEAD. Re-run the review first if a fix changed HEAD:
 
     verity-code-review mark
 
-'mark' writes the marker without verifying anything, so marking without running
-the review turns this gate green on a diff nobody read.
+'mark' accepts only the HEAD the last completed 'run' reviewed, but it cannot
+check the triage: marking without reading the findings turns this gate green on
+a diff nobody assessed.
 
 The marker is ${MARKER}. See AGENTS.md "Commits And PRs" for the
 runtime-neutral review contract.

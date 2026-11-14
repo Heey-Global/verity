@@ -2097,9 +2097,14 @@ export async function materializeManagedAgentHome(request, options, connectorUrl
     }
     const gitValue = (value) => JSON.stringify(value);
     const gitIgnore = join(home, 'config', 'git-ignore');
-    await policyWrite(gitIgnore, '.gh-token\n.env\n.agents/.last-code-review-sha\n', {
-      mode: 0o644,
-    });
+    // Per-checkout gate state. Repositories opened into a session are standalone
+    // clones without Verity's info/exclude, so this file is all that keeps these
+    // markers out of their commits.
+    await policyWrite(
+      gitIgnore,
+      '.gh-token\n.env\n.agents/.last-code-review-sha\n.agents/.last-code-review-run\n.agents/.local-checks-skip\n',
+      { mode: 0o644 },
+    );
     const gitIdentity = options.env ?? {};
     await policyWrite(
       join(home, '.gitconfig'),

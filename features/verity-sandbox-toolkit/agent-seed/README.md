@@ -40,7 +40,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   transcript; the parent should only receive concise findings.
 - `bin/verity-code-review` runs the gate: `run` hands the branch diff to an
   isolated reviewer and prints only its findings, `mark` then records the
-  reviewed HEAD in `.agents/.last-code-review-sha`. The reviewer starts a fresh
+  reviewed HEAD in `.agents/.last-code-review-sha`. A completed `run` notes the
+  HEAD it reviewed in `.agents/.last-code-review-run`, and `mark` refuses any
+  other HEAD, so a commit made after the review needs another run. The reviewer starts a fresh
   context on the current session backend (Claude Opus or the prioritized Codex
   default). Codex may inspect the repository through its read-only sandbox;
   Claude receives the fenced diff without filesystem tools. Agents must not improvise
