@@ -193,9 +193,11 @@ fi
 # repository, including Verity's own Repair, which then fails on a path that
 # only exists inside this container. Two ways write it:
 #   - `git config core.worktree <path>` without a per-worktree scope;
-#   - `git init` with both a git dir and a work tree given (env or option): git
-#     records the work tree in the config of the repository it re-initializes,
-#     and a hook running here already carries GIT_DIR pointing into it.
+#   - `git init` against an existing repository named by GIT_DIR/--git-dir: a
+#     hook running here already carries GIT_DIR pointing into the shared one.
+#     With a work tree as well, git records it as core.worktree; without one,
+#     git takes the admin dir for a bare repository and writes core.bare = true.
+#     Either breaks the main checkout for every session.
 refuse_core_worktree() {
   {
     echo "verity git guard: refusing $1"
@@ -203,9 +205,7 @@ refuse_core_worktree() {
     echo "The repository config is shared by every Verity session worktree; a"
     echo "core.worktree there re-points the main checkout for all of them and breaks"
     echo "Sandbox Repair. For a repository of your own, unset GIT_DIR / GIT_WORK_TREE"
-    echo "and name its config explicitly ('git config --file <repo>/.git/config ...');"
-    echo "for this worktree only, use 'git config --worktree' with"
-    echo "extensions.worktreeConfig."
+    echo "and name its config explicitly ('git config --file <repo>/.git/config ...')."
     echo "If this is an operator-directed change, re-run with VERITY_GIT_GUARD_DISABLE=1."
   } >&2
   exit 1
@@ -223,7 +223,7 @@ if [ "$subcmd" = "config" ]; then
     case "${a,,}" in
       # Reads, removals and writes that do not land in the shared config.
       --get | --get-all | --get-regexp | --get-urlmatch | -l | --list | \
-        --unset | --unset-all | --worktree | --global | --system | \
+        --unset | --unset-all | --global | --system | \
         -f | --file | --file=* | --blob | --blob=* | -e | --edit | \
         --rename-section | --remove-section | --get-color | --get-colorbool)
         scoped=1
@@ -254,8 +254,7 @@ fi
 
 if [ "$subcmd" = "init" ]; then
   init_git_dir="${opt_git_dir:-${GIT_DIR:-}}"
-  init_work_tree="${opt_work_tree:-${GIT_WORK_TREE:-}}"
-  if [ -n "$init_git_dir" ] && [ -n "$init_work_tree" ]; then
+  if [ -n "$init_git_dir" ]; then
     case "$init_git_dir" in
       /*) ;;
       *) init_git_dir="$effective_cwd/$init_git_dir" ;;
@@ -273,7 +272,7 @@ if [ "$subcmd" = "init" ]; then
     # Only re-initializing an EXISTING repository writes into a config someone
     # else uses; a fresh separate git dir stays allowed.
     if [ -f "$init_git_dir/HEAD" ]; then
-      refuse_core_worktree "'git init' with both a git dir and a work tree on an existing repository"
+      refuse_core_worktree "'git init' on the existing repository named by GIT_DIR / --git-dir"
     fi
   fi
   exec "$REAL_GIT" "$@"
