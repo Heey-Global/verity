@@ -7372,6 +7372,205 @@ describe('ProvisionerImpl (#174)', () => {
     expect(dockerCalls.filter((c) => c.method === 'createContainer')).toHaveLength(1);
   });
 
+  describe('Repair of a clone whose shared config names a session worktree', () => {
+    const hermetic = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@t',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@t',
+    };
+    const run = (...args: string[]): string =>
+      execFileSync('git', ['-c', 'commit.gpgsign=false', ...args], {
+        encoding: 'utf8',
+        env: hermetic,
+        cwd: '/',
+      });
+
+    /** A real clone of a real remote, with one live session worktree holding uncommitted
+     *  work, and the server's git runner: real git for everything but the network probe. */
+    function cloneWithSession(): {
+      root: string;
+      clone: string;
+      session: string;
+      config: string;
+      git: GitRunner;
+      calls: string[][];
+    } {
+      const root = mkdtempSync(join(tmpdir(), 'verity-worktree-config-'));
+      const remote = join(root, 'remote');
+      run('init', '-q', '-b', 'main', remote);
+      writeFileSync(join(remote, 'file.txt'), 'remote\n');
+      run('-C', remote, 'add', 'file.txt');
+      run('-C', remote, 'commit', '-qm', 'initial');
+      const clone = join(root, 'example-org-example-repo');
+      run('clone', '-q', remote, clone);
+      run('-C', clone, 'worktree', 'add', '-q', '.verity-sessions/agent-x', '-b', 'agent-x');
+      const session = join(clone, '.verity-sessions', 'agent-x');
+      writeFileSync(join(session, 'file.txt'), 'uncommitted session edit\n');
+      writeFileSync(join(session, 'wip.txt'), 'untracked session work\n');
+      const calls: string[][] = [];
+      const git: GitRunner = async (args) => {
+        calls.push([...args]);
+        if (args.includes('ls-remote'))
+          return { stdout: `${'a'.repeat(40)}\trefs/heads/main\n`, stderr: '' };
+        return { stdout: run(...args), stderr: '' };
+      };
+      return { root, clone, session, config: join(clone, '.git', 'config'), git, calls };
+    }
+
+    it('removes only the session-worktree core.worktree, keeps a backup and leaves the session untouched', async () => {
+      const f = cloneWithSession();
+      try {
+        // The incident shape: the value names a session as the Sandbox mounts it.
+        run('config', '--file', f.config, 'core.worktree', '/work/.verity-sessions/agent-x');
+        const contaminated = readFileSync(f.config);
+        const sessionHead = run('-C', f.session, 'rev-parse', 'HEAD');
+        const id = await seedProject('failed');
+        const repaired: unknown[] = [];
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker: fakeDocker().client,
+          defaultImageRef: 'default',
+          hostCloneRoot: f.root,
+          projectTokenMint: async () => 'tok',
+          git: f.git,
+          cloneConfigBackupDirectory: join(f.root, 'backups'),
+          onCloneConfigRepaired: (event) => repaired.push(event),
+        });
+
+        const result = await provisioner.provision(id);
+
+        expect(result.state).toBe('active');
+        expect(() => run('config', '--file', f.config, '--get', 'core.worktree')).toThrow();
+        expect(repaired).toEqual([
+          expect.objectContaining({
+            projectId: id,
+            file: f.config,
+            previousValue: '/work/.verity-sessions/agent-x',
+          }),
+        ]);
+        const [backup] = readdirSync(join(f.root, 'backups'));
+        expect(readFileSync(join(f.root, 'backups', backup!))).toEqual(contaminated);
+        // The session's working tree, its untracked work and its branch are exactly as before.
+        expect(readFileSync(join(f.session, 'file.txt'), 'utf8')).toBe(
+          'uncommitted session edit\n',
+        );
+        expect(readFileSync(join(f.session, 'wip.txt'), 'utf8')).toBe('untracked session work\n');
+        expect(run('-C', f.session, 'rev-parse', 'HEAD')).toBe(sessionHead);
+        // The reset that followed was pinned to the main checkout.
+        const reset = f.calls.find((call) => call.includes('reset'));
+        expect(reset).toContain(`--work-tree=${f.clone}`);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('pins the reset even when the value resolves, so it cannot land in a session', async () => {
+      const f = cloneWithSession();
+      try {
+        // Without the guard in the way: a value that resolves on this host, and a runner
+        // that skips straight to the reset path. A plain `reset --hard` would overwrite
+        // the session's edit with the remote's file.
+        run('config', '--file', f.config, 'core.worktree', f.session);
+        run('-C', f.clone, `--work-tree=${f.clone}`, 'reset', '--hard', 'origin/main');
+        expect(readFileSync(join(f.session, 'file.txt'), 'utf8')).toBe(
+          'uncommitted session edit\n',
+        );
+        // ...whereas git without the pin really would write there.
+        run('-C', f.clone, 'reset', '--hard', 'origin/main');
+        expect(readFileSync(join(f.session, 'file.txt'), 'utf8')).toBe('remote\n');
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('stops with the file and value, and changes nothing, for a core.worktree it cannot place', async () => {
+      const f = cloneWithSession();
+      try {
+        run('config', '--file', f.config, 'core.worktree', '/srv/somewhere-else');
+        const before = readFileSync(f.config);
+        const id = await seedProject('failed');
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker: fakeDocker().client,
+          defaultImageRef: 'default',
+          hostCloneRoot: f.root,
+          projectTokenMint: async () => 'tok',
+          git: f.git,
+          cloneConfigBackupDirectory: join(f.root, 'backups'),
+        });
+
+        await expect(provisioner.provision(id)).rejects.toThrow(
+          /repository config invalid: .*\.git\/config sets core\.worktree outside the clone root \(\/srv\/somewhere-else\)/,
+        );
+
+        expect(readFileSync(f.config)).toEqual(before);
+        expect(existsSync(join(f.root, 'backups'))).toBe(false);
+        expect(f.calls.some((call) => call.includes('fetch') || call.includes('reset'))).toBe(
+          false,
+        );
+        // The row records why, instead of staying in `cloning` as an update that never ends.
+        const project = await ctx.store.getProject(id);
+        expect(project?.state).toBe('failed');
+        expect(project?.provisionError).toMatch(/^repository config invalid: /);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('lists the finding as a Repair warning before anything changes', async () => {
+      const f = cloneWithSession();
+      try {
+        run('config', '--file', f.config, 'core.worktree', '/work/.verity-sessions/agent-x');
+        const before = readFileSync(f.config);
+        const id = await seedProject('failed');
+        const provisioner = createProvisioner({
+          store: ctx.store,
+          db: ctx.db,
+          docker: fakeDocker().client,
+          defaultImageRef: 'default',
+          hostCloneRoot: f.root,
+          git: f.git,
+        });
+
+        const warnings = await provisioner.provisionWarnings(id);
+
+        expect(warnings).toEqual([expect.stringContaining('/work/.verity-sessions/agent-x')]);
+        expect(readFileSync(f.config)).toEqual(before);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('names the git step that failed instead of calling every clone-phase failure a clone', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'verity-clone-step-'));
+    try {
+      mkdirSync(join(root, 'example-org-example-repo', '.git'), { recursive: true });
+      const id = await seedProject('absent');
+      const { runner: git } = fakeGit([{ match: /fetch origin/, reject: true }]);
+      const provisioner = createProvisioner({
+        store: ctx.store,
+        db: ctx.db,
+        docker: fakeDocker().client,
+        defaultImageRef: 'default',
+        hostCloneRoot: root,
+        projectTokenMint: async () => 'tok',
+        git,
+      });
+
+      await expect(provisioner.provision(id)).rejects.toThrow(/^git fetch failed: /);
+      expect((await ctx.store.getProject(id))?.provisionError).toMatch(/^git fetch failed: /);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('mints a fresh token for the server-side clone/fetch WITHOUT writing a .gh-token file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'verity-project-minted-token-'));
     try {

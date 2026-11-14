@@ -38,6 +38,8 @@ args=("$@")
 n=${#args[@]}
 effective_cwd="$PWD"
 hooks_override=""
+opt_git_dir=""
+opt_work_tree=""
 
 # A `core.hooksPath` given on the command line displaces the installed seed
 # hooks for this one invocation. Keys are case-insensitive in git, so compare
@@ -105,7 +107,27 @@ while [ "$i" -lt "$n" ]; do
       i=$((i + 1))
       continue
       ;;
-    --git-dir | --work-tree | --namespace | --super-prefix)
+    --git-dir)
+      opt_git_dir="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      continue
+      ;;
+    --git-dir=*)
+      opt_git_dir="${a#--git-dir=}"
+      i=$((i + 1))
+      continue
+      ;;
+    --work-tree)
+      opt_work_tree="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      continue
+      ;;
+    --work-tree=*)
+      opt_work_tree="${a#--work-tree=}"
+      i=$((i + 1))
+      continue
+      ;;
+    --namespace | --super-prefix)
       i=$((i + 2))
       continue
       ;;
@@ -161,6 +183,69 @@ if [ "$subcmd" = "push" ]; then
       echo "If this is an operator-directed push, re-run with VERITY_GIT_GUARD_DISABLE=1."
     } >&2
     exit 1
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- core.worktree: one session must not re-point every session's checkout ---
+# Every linked worktree shares the repository's config. A `core.worktree` written
+# there re-points the MAIN checkout for every git process that opens the
+# repository, including Verity's own Repair, which then fails on a path that
+# only exists inside this container. Two ways write it:
+#   - `git config core.worktree <path>` without a per-worktree scope;
+#   - `git init` with both a git dir and a work tree given (env or option): git
+#     records the work tree in the config of the repository it re-initializes,
+#     and a hook running here already carries GIT_DIR pointing into it.
+refuse_core_worktree() {
+  {
+    echo "verity git guard: refusing $1"
+    echo
+    echo "The repository config is shared by every Verity session worktree; a"
+    echo "core.worktree there re-points the main checkout for all of them and breaks"
+    echo "Sandbox Repair. Use a separate repository (unset GIT_DIR / GIT_WORK_TREE"
+    echo "first), or 'git config --worktree' with extensions.worktreeConfig."
+    echo "If this is an operator-directed change, re-run with VERITY_GIT_GUARD_DISABLE=1."
+  } >&2
+  exit 1
+}
+
+if [ "$subcmd" = "config" ]; then
+  names_key=""
+  scoped=""
+  j=$((subidx + 1))
+  while [ "$j" -lt "$n" ]; do
+    a="${args[$j]}"
+    case "${a,,}" in
+      core.worktree) names_key=1 ;;
+      # Reads, removals and writes that do not land in the shared config.
+      --get | --get-all | --get-regexp | --get-urlmatch | -l | --list | \
+        --unset | --unset-all | --worktree | --global | --system | \
+        -f | --file | --file=* | --blob | --blob=* | -e | --edit | \
+        get | list | unset)
+        scoped=1
+        ;;
+    esac
+    j=$((j + 1))
+  done
+  if [ -n "$names_key" ] && [ -z "$scoped" ]; then
+    refuse_core_worktree "'git config core.worktree' in the shared repository config"
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+if [ "$subcmd" = "init" ]; then
+  init_git_dir="${opt_git_dir:-${GIT_DIR:-}}"
+  init_work_tree="${opt_work_tree:-${GIT_WORK_TREE:-}}"
+  if [ -n "$init_git_dir" ] && [ -n "$init_work_tree" ]; then
+    case "$init_git_dir" in
+      /*) ;;
+      *) init_git_dir="$effective_cwd/$init_git_dir" ;;
+    esac
+    # Only re-initializing an EXISTING repository writes into a config someone
+    # else uses; a fresh separate git dir stays allowed.
+    if [ -f "$init_git_dir/HEAD" ]; then
+      refuse_core_worktree "'git init' with both a git dir and a work tree on an existing repository"
+    fi
   fi
   exec "$REAL_GIT" "$@"
 fi
