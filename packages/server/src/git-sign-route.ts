@@ -121,16 +121,12 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         // (ADR 0023 §3); a member without a key gets a refusal, never someone
         // else's signature. The container capability names no person and keeps
         // the project default, which is the instance key.
-        // The person is the badge's, else the sandbox's own (ADR 0023 §4); the
-        // project's original sandbox keeps the project default without a badge.
-        const person =
-          turn !== undefined
-            ? turn.userId
-            : socketIdentity.projectDefault
-              ? null
-              : socketIdentity.userId;
-        let privateKey = instanceKey;
-        if (person !== null) {
+        // The person is the badge's, else the sandbox's own (ADR 0023 §4), also
+        // in the project's original sandbox: whoever owns it signs as themselves,
+        // and the instance key serves only an active administrator.
+        const person = turn?.userId ?? socketIdentity.userId;
+        let privateKey: string | null = instanceKey;
+        {
           const personal = (await deps.eventStore.userGitIdentities.get(person))?.sshPrivateKey;
           privateKey =
             personal !== undefined && personal !== null && personal.trim().length > 0

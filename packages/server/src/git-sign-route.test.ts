@@ -294,6 +294,49 @@ describe('POST /internal/git/sign (commit-signing broker)', () => {
     }
   });
 
+  // The project's original sandbox belongs to its creator, who need not be the
+  // administrator. Without a badge, its container capability must sign as that
+  // owner, never fall back to the administrator's instance key.
+  it("signs in the project's original sandbox as its owner, not the administrator", async () => {
+    const cipher = createSealableSecretCipher();
+    const capabilities = createSigningCapabilityRegistry(ctx.db);
+    const { app, store } = build(cipher, undefined, capabilities);
+    const root = mkdtempSync(join(tmpdir(), 'verity-sign-owner-'));
+    await app.ready();
+    await app.inject({ method: 'POST', url: '/secret/init', payload: { password: PASSWORD } });
+    await store.updateVeritySettings({ gitSshPrivateKey: SIGNING_KEY });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'mia', role: 'member', status: 'active' })
+      .execute();
+    const listener = await startProjectInternalUnixListener(app, {
+      socketRoot: root,
+      identity: {
+        projectId: 'p1',
+        userId: 'mia',
+        projectDefault: true,
+        containerGeneration: 'generation-mia',
+      },
+      ownerUid: process.getuid?.() ?? 0,
+      relayGid: process.getgid?.() ?? 0,
+    });
+    try {
+      signedWith.length = 0;
+      const capability = await capabilities.issue({
+        projectId: 'p1',
+        userId: 'mia',
+        containerGeneration: 'generation-mia',
+      });
+      const refused = await postUnix(listener.socketPath, capability);
+      expect(refused.status).toBe(409);
+      expect(signedWith).toEqual([]);
+    } finally {
+      await listener.close();
+      await app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('supports a project socket without enabling the legacy TCP bearer', async () => {
     const cipher = createSealableSecretCipher();
     const capabilities = createSigningCapabilityRegistry(ctx.db);
