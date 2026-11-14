@@ -299,6 +299,7 @@ export async function reportCloneWorktreeConfigs(
   cloneRoot: string,
   git: CloneConfigGit,
   report: (clonePath: string, message: string) => void,
+  canRemove = true,
 ): Promise<void> {
   let entries: string[];
   try {
@@ -312,7 +313,8 @@ export async function reportCloneWorktreeConfigs(
     const clonePath = join(cloneRoot, name);
     try {
       const finding = await inspectCloneWorktreeConfig(clonePath, git);
-      if (finding.kind !== 'clean') report(clonePath, describeCloneWorktreeFinding(finding));
+      if (finding.kind !== 'clean')
+        report(clonePath, describeCloneWorktreeFinding(finding, canRemove));
     } catch {
       // ignore — a probe that cannot run reports nothing rather than a guess
     }
