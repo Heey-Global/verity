@@ -6,6 +6,25 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.94.0](https://github.com/Heey-Global/verity/compare/v4.93.0...v4.94.0) (2026-11-14)
+
+
+### Features
+
+* **preview-tunnel:** relay namespaced app cookies through online shares ([#2559](https://github.com/Heey-Global/verity/issues/2559)) ([9843b62](https://github.com/Heey-Global/verity/commit/9843b6264ecc9a178431b9c8f2615112409f2e70))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2566](https://github.com/Heey-Global/verity/issues/2566)) ([eff01ad](https://github.com/Heey-Global/verity/commit/eff01ad4802b2c875c4a71bd889528bba939b7cd))
+* **deps:** update dependency @agentclientprotocol/sdk to v2.6.0 ([#2567](https://github.com/Heey-Global/verity/issues/2567)) ([62fc99b](https://github.com/Heey-Global/verity/commit/62fc99b88ba3c4f31b7c292119b73cd390780d97))
+* **deps:** update dependency minimatch to v11.0.7 ([#2564](https://github.com/Heey-Global/verity/issues/2564)) ([d69ce10](https://github.com/Heey-Global/verity/commit/d69ce10cadd200a05d387b17e4f11e7b0d90f6d3))
+* **events:** render choices when several options are recommended ([#2570](https://github.com/Heey-Global/verity/issues/2570)) ([649d61f](https://github.com/Heey-Global/verity/commit/649d61fafaddf3689ae7648ca221511159ad3c43))
+* **sandbox:** prepare dependencies in repositories opened into a session ([#2572](https://github.com/Heey-Global/verity/issues/2572)) ([e0cb8a3](https://github.com/Heey-Global/verity/commit/e0cb8a31fcd2639e416a8c0e7aa7e12dbcb4dc68))
+* **self-update:** exercise project egress admission in the live smoke ([#2569](https://github.com/Heey-Global/verity/issues/2569)) ([946eecf](https://github.com/Heey-Global/verity/commit/946eecfad0333e894982ccfee06d54f9db132405))
+* **server:** keep module clones alive through slow broker re-checks ([#2561](https://github.com/Heey-Global/verity/issues/2561)) ([e619d2d](https://github.com/Heey-Global/verity/commit/e619d2d14d469f2cc712fee50dacc3862a416789))
+* **session:** keep Claude turns open while background work runs ([#2571](https://github.com/Heey-Global/verity/issues/2571)) ([4eb7026](https://github.com/Heey-Global/verity/commit/4eb7026ea62e14fa376d258fc4eee94a45df24e3))
+
 ## [4.93.0](https://github.com/Heey-Global/verity/compare/v4.92.0...v4.93.0) (2026-11-13)
 
 
