@@ -44,14 +44,26 @@ const setWorktree = (value: string, file = config): void => {
 };
 
 describe('inspectCloneWorktreeConfig', () => {
-  it('is clean without the key, for the clone root itself, and for the Sandbox mount root', async () => {
+  it('is clean without the key', async () => {
     expect(await inspectCloneWorktreeConfig(clone, defaultCloneConfigGit)).toEqual({
       kind: 'clean',
     });
+  });
+
+  // Each spelling of the root works on one side only: `/work` fails on the server with the
+  // same "Invalid path" as the incident, the host path fails inside the Sandbox.
+  it('reports the clone root, in either view, as removable', async () => {
     setWorktree(clone);
-    expect((await inspectCloneWorktreeConfig(clone, defaultCloneConfigGit)).kind).toBe('clean');
+    expect(await inspectCloneWorktreeConfig(clone, defaultCloneConfigGit)).toMatchObject({
+      kind: 'session-contamination',
+      target: 'clone-root',
+    });
     git('config', '--file', config, 'core.worktree', '/work');
-    expect((await inspectCloneWorktreeConfig(clone, defaultCloneConfigGit)).kind).toBe('clean');
+    expect(await inspectCloneWorktreeConfig(clone, defaultCloneConfigGit)).toMatchObject({
+      kind: 'session-contamination',
+      value: '/work',
+      target: 'clone-root',
+    });
   });
 
   // The incident value: a session worktree as the Sandbox sees it.
@@ -65,6 +77,7 @@ describe('inspectCloneWorktreeConfig', () => {
       kind: 'session-contamination',
       file: config,
       value,
+      target: 'session',
     });
   });
 
@@ -118,6 +131,7 @@ describe('inspectCloneWorktreeConfig', () => {
       kind: 'session-contamination',
       file: perWorktree,
       value: '/work/.verity-sessions/agent-x',
+      target: 'session',
     });
   });
 
