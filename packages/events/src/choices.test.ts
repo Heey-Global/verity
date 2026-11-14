@@ -94,7 +94,7 @@ describe('parseChoicesBlock', () => {
     )}`;
     const { text, choices } = parseChoicesBlock(input);
     expect(text).toBe('Prose.');
-    expect(choices).toEqual({
+    expect(choices).toStrictEqual({
       question: 'Wie weiter?',
       options: [{ label: 'A', recommended: true }, { label: 'B' }, { label: 'C' }],
       multiSelect: true,

@@ -100,7 +100,9 @@ function keepFirstRecommendation(value: unknown): unknown {
         seen = true;
         return option;
       }
-      return { ...option, recommended: undefined };
+      const cleared: Record<string, unknown> = { ...option };
+      delete cleared.recommended;
+      return cleared;
     }),
   };
 }
