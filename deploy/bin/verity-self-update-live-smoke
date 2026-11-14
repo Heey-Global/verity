@@ -1175,7 +1175,11 @@ restart_isolated_daemon() {
   }
   # Startup reconciliation must keep the restored generation, not recreate the base name.
   node packages/server/dist/self-update-live-smoke.js updater-restarts
-  [[ "$(docker ps -aq --filter label=verity.managed-role=server | wc -l)" -eq 1 ]]
+  [[ "$(docker ps -aq --filter label=verity.managed-role=server | wc -l)" -eq 1 ]] || return 1
+  # That stage removes the Server and lets the Updater rebuild it, so the caller
+  # would otherwise query a container whose process has not bound its port yet.
+  wait_for_healthy "$server" 'the Server rebuilt after the Docker daemon restart never became healthy'
+  expect_gateway_serving 'the Gateway did not follow the Server rebuilt after the Docker daemon restart'
 }
 
 if [[ "$smoke_profile" == 'release' || "${VERITY_SMOKE_ALLOW_NO_ROLLBACK:-false}" == 'true' ]]; then

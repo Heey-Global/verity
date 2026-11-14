@@ -38,8 +38,8 @@ esac
       '-c',
       `set -euo pipefail
 server=verity-managed-server-g1
-wait_for_healthy() { :; }
-expect_gateway_serving() { :; }
+wait_for_healthy() { printf 'wait_for_healthy %s\\n' "$1" >> "$COMMAND_LOG"; }
+expect_gateway_serving() { printf 'expect_gateway_serving\\n' >> "$COMMAND_LOG"; }
 ${restart}
 restart_isolated_daemon
 `,
@@ -72,6 +72,18 @@ describe('isolated self-update daemon restart', () => {
       'node packages/server/dist/self-update-live-smoke.js updater-restarts',
     );
     expect(commands).not.toContain('update --restart unless-stopped verity-managed-server-g1');
+  });
+  // `updater-restarts` removes the Server and lets the Updater rebuild it. Every
+  // caller queries the Server next, so returning before it serves again turns
+  // the step after this helper into a race against the container's startup.
+  it('waits for the rebuilt Server before returning', () => {
+    const { result, commands } = run();
+    expect(result.status, result.stderr).toBe(0);
+    const after = commands.slice(
+      commands.lastIndexOf('node packages/server/dist/self-update-live-smoke.js updater-restarts'),
+    );
+    expect(after).toContain('wait_for_healthy verity-managed-server-g1');
+    expect(after).toContain('expect_gateway_serving');
   });
   it('refuses to mutate a daemon whose identity differs', () => {
     const { result, commands } = run('another-daemon');
