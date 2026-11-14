@@ -632,6 +632,78 @@ describe('verity-code-review session backend', () => {
     expect(prompt).toMatch(/LOW.*must never be the sole\s+reason.*another review pass/s);
   });
 
+  describe('mark', () => {
+    const mark = (repo: string) =>
+      spawnSync(review, ['mark'], { cwd: repo, encoding: 'utf8', env: process.env });
+    const marker = (repo: string) => join(repo, '.agents', '.last-code-review-sha');
+    const head = (repo: string) =>
+      execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const reviewed = (moveHead = false) => {
+      const { bin, repo } = fixture();
+      executable(
+        join(bin, 'codex'),
+        (moveHead
+          ? `git -C ${JSON.stringify(repo)} -c commit.gpgsign=false commit --allow-empty -qm moved\n`
+          : '') +
+          'while [ "$#" -gt 0 ]; do\n' +
+          '  if [ "$1" = "-o" ]; then printf "No findings.\\n" >"$2"; exit 0; fi\n' +
+          '  shift\n' +
+          'done\nexit 2',
+      );
+      const result = run(repo, bin, {
+        VERITY_SESSION_BACKEND: 'codex',
+        CODEX_HOME: join(repo, '.codex'),
+      });
+      expect(result.status, result.stderr).toBe(0);
+      return repo;
+    };
+
+    it('records the HEAD a completed review saw', () => {
+      const repo = reviewed();
+      const result = mark(repo);
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(marker(repo), 'utf8').trim()).toBe(head(repo));
+    });
+
+    it('refuses a HEAD committed after the review', () => {
+      // `mark` used to record whatever HEAD was current, so a commit made after
+      // the review passed the pre-push gate without any reviewer seeing it.
+      const repo = reviewed();
+      const seen = head(repo);
+      execFileSync('git', [
+        '-C',
+        repo,
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '--allow-empty',
+        '-qm',
+        'later',
+      ]);
+      const result = mark(repo);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`The last completed review saw ${seen}`);
+      expect(existsSync(marker(repo))).toBe(false);
+    });
+
+    it('refuses to mark without a completed review', () => {
+      const { repo } = fixture();
+      const result = mark(repo);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("run 'verity-code-review run' first");
+      expect(existsSync(marker(repo))).toBe(false);
+    });
+
+    it('does not credit a review with a HEAD that moved while it ran', () => {
+      // The diff is taken when the review starts; a commit landing mid-review
+      // was never part of it.
+      const repo = reviewed(true);
+      const result = mark(repo);
+      expect(result.status).toBe(1);
+      expect(existsSync(marker(repo))).toBe(false);
+    });
+  });
+
   it('documents the same triage before marking the reviewed HEAD', () => {
     const helper = readFileSync(review, 'utf8');
     expect(helper).toMatch(/fixed or declined with a brief reason/i);
