@@ -30586,7 +30586,7 @@ var BackgroundWork = class {
     this.touch();
   }
   signal(signal) {
-    if (signal.type === "task" || signal.type === "background" || signal.type === "cycle") {
+    if (signal.type === "background" || signal.type === "cycle" || signal.type === "task" && this.levelSeen) {
       this.sawWork = true;
     }
     switch (signal.type) {
@@ -31654,6 +31654,7 @@ async function runAcpTurn(opts, profile) {
       }
       if (background !== void 0 && !stopped && !capacityFailure && prompt.stopReason !== "cancelled") {
         acceptingSteering = false;
+        let agentExited = false;
         sendHeldPrompt = (message) => {
           background.beginPrompt();
           void agent.request(methods.agent.session.prompt, {
@@ -31669,7 +31670,7 @@ async function runAcpTurn(opts, profile) {
             promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
             promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
           }).catch(() => {
-            if (stopped || closedOut)
+            if (stopped || closedOut || agentExited)
               return;
             updateTail = updateTail.then(() => writer.write({
               t: "notice",
@@ -31694,7 +31695,6 @@ async function runAcpTurn(opts, profile) {
             description: "Waiting for background work"
           });
           const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
-          let agentExited = false;
           const onAgentExit = () => {
             agentExited = true;
             sendHeldPrompt = void 0;

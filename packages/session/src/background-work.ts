@@ -60,7 +60,13 @@ export class BackgroundWork {
   }
 
   signal(signal: StructuredLifecycleSignal): void {
-    if (signal.type === 'task' || signal.type === 'background' || signal.type === 'cycle') {
+    // Bare edges do not count, for the same reason they do not hold a turn:
+    // without levels the turn ends at its prompt response, exactly as before.
+    if (
+      signal.type === 'background' ||
+      signal.type === 'cycle' ||
+      (signal.type === 'task' && this.levelSeen)
+    ) {
       this.sawWork = true;
     }
     switch (signal.type) {

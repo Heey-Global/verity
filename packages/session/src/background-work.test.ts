@@ -33,6 +33,20 @@ describe('BackgroundWork', () => {
     expect(work.busy).toBe(false);
   });
 
+  // Bare edges must not cost a turn without levels the extra quiet window either.
+  it('reports observed work only from levels, cycles and confirmed edges', () => {
+    const edgesOnly = new BackgroundWork();
+    edgesOnly.signal({ type: 'task', id: 'subagent', phase: 'started' });
+    edgesOnly.signal({ type: 'task', id: 'subagent', phase: 'ended' });
+    expect(edgesOnly.observedWork).toBe(false);
+    const withLevel = new BackgroundWork();
+    withLevel.signal({ type: 'background', live: [] });
+    expect(withLevel.observedWork).toBe(true);
+    const withCycle = new BackgroundWork();
+    withCycle.signal({ type: 'cycle', phase: 'ended' });
+    expect(withCycle.observedWork).toBe(true);
+  });
+
   it('counts a self-started cycle and a level as live work', () => {
     const work = new BackgroundWork();
     work.signal({ type: 'cycle', phase: 'started' });

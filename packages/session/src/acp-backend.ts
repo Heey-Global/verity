@@ -1248,6 +1248,8 @@ export async function runAcpTurn(
             // the hold is still being decided holds the turn until it is answered,
             // rather than waiting in the queue behind a hold that then engages.
             acceptingSteering = false;
+            // Set once the agent process ends; it explains a lost message itself.
+            let agentExited = false;
             sendHeldPrompt = (message) => {
               background.beginPrompt();
               void agent
@@ -1269,7 +1271,7 @@ export async function runAcpTurn(
                   // onSteer already accepted the message; say that it did not
                   // arrive rather than let it vanish. Queued with the session's
                   // other events so the note lands in wire order.
-                  if (stopped || closedOut) return;
+                  if (stopped || closedOut || agentExited) return;
                   updateTail = updateTail
                     .then(() =>
                       writer.write({
@@ -1304,7 +1306,6 @@ export async function runAcpTurn(
               });
               const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
               // An agent that dies while held has nothing left to wait for.
-              let agentExited = false;
               const onAgentExit = (): void => {
                 agentExited = true;
                 // No agent is left to receive a message: let the Conductor queue it.
