@@ -1,6 +1,7 @@
 import {
   provisionProjectEgressHost,
   projectEgressProvisionSupported,
+  type ProvisionProjectEgressHostOptions,
   PROJECT_EGRESS_CONTROL_GID,
 } from './project-egress-provisioning.js';
 import { readFile } from 'node:fs/promises';
@@ -81,6 +82,14 @@ export interface DockerUpdatePreparationOptions {
   readonly readFile?: (path: string) => Promise<string>;
   /** Revalidate the signed release metadata that authorized this exact digest. */
   readonly verifyImage: (journal: UpdateJournal) => Promise<void>;
+  /**
+   * Replaces project egress host provisioning; tests only. The live smoke has no
+   * systemd host or signed registry, so it runs the real admission instead and
+   * skips the privileged host installation. Defaults to the real provisioning.
+   */
+  readonly provisionProjectEgressHost?: (
+    options: ProvisionProjectEgressHostOptions,
+  ) => Promise<boolean>;
   /** The host runtime request directory as the Updater sees it; tests only. */
   readonly hostRuntimeDir?: string;
   readonly log?: (message: string) => void;
@@ -538,7 +547,8 @@ export async function dockerUpdatePreparation(
       await writeHostPreparation(options.managedRoot, journal, 'renewing');
       try {
         (options.log ?? console.warn)('Network protection: checking automatic host provisioning.');
-        const provisioned = await provisionProjectEgressHost({
+        const provision = options.provisionProjectEgressHost ?? provisionProjectEgressHost;
+        const provisioned = await provision({
           managedRoot: options.managedRoot,
           docker,
           journal,

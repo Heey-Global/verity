@@ -96,8 +96,14 @@ import {
 } from './self-update/deployment-spec.js';
 import {
   initializeManagedDeployment,
+  PROJECT_EGRESS_MOUNTS,
   readManagedDeployment,
 } from './self-update/managed-deployment.js';
+import {
+  admitProjectEgressProvision,
+  PROJECT_EGRESS_PROVISION_LABEL,
+  type ProvisionProjectEgressHostOptions,
+} from './self-update/project-egress-provisioning.js';
 import {
   MANAGED_SERVER_NAME,
   managedContainerMatchesSpec,
@@ -374,6 +380,14 @@ function deploymentSpec(
         target: '/var/run/docker.sock',
         readOnly: false,
       },
+      // Bootstrap seals the installer state exactly like this, and project egress
+      // provisioning refuses any deployment that lacks it. Without it every update
+      // between images carrying the provisioning contract stops before standby.
+      {
+        source: { kind: 'bind', path: '/etc/verity' },
+        target: '/run/verity-pairing',
+        readOnly: true,
+      },
     ],
     user: { uid: 1000, gid: 1000, supplementaryGids: [65532] },
     restart: 'unless-stopped',
@@ -395,8 +409,52 @@ function readSecret(path: string): Promise<string> {
   return Promise.resolve(`${SECRET_VALUE}\n`);
 }
 
+/** Update operations whose project egress provisioning passed the real admission. */
+const admittedEgressOperations = new Set<string>();
+
+/**
+ * Stands in for project egress host provisioning after its real admission.
+ *
+ * Admission is everything that decides whether an update may provision the host:
+ * both image contracts, the installed sealed deployment and the installer state
+ * mount. What it skips is the execution — a cosign check against the public
+ * Sigstore instance, which this registry's unsigned images cannot pass, and a
+ * privileged installer that writes systemd units on a host this daemon does not
+ * have. Those run on disposable systemd hosts instead.
+ */
+async function admitEgressProvisioning(
+  options: ProvisionProjectEgressHostOptions,
+): Promise<boolean> {
+  const request = await admitProjectEgressProvision(
+    options.docker,
+    options.journal,
+    options.spec,
+    options.onSkip,
+  );
+  if (request === false) return false;
+  admittedEgressOperations.add(request.operationId);
+  process.stdout.write('smoke: project egress host provisioning simulated after admission\n');
+  return true;
+}
+
+/**
+ * Whether this operation's images carry the project egress provisioning contract,
+ * read from the images themselves rather than assumed: a predecessor released
+ * before the contract legitimately skips provisioning, any later one must not.
+ */
+async function egressProvisioningExpected(journal: UpdateJournal): Promise<boolean> {
+  const client = docker();
+  const target = await client.inspectImageLabels?.(journal.targetDigest);
+  const installed = await client.inspectImageLabels?.(journal.previousDigest);
+  return (
+    target?.[PROJECT_EGRESS_PROVISION_LABEL] !== undefined &&
+    installed?.['org.verity.project-egress-deployment'] === '1'
+  );
+}
+
 function preparationOptions(managedRoot: string, databaseUrl: string, deploymentId: string) {
   return {
+    provisionProjectEgressHost: admitEgressProvisioning,
     managedRoot,
     docker: docker(),
     hostRuntimeDir: required('VERITY_SMOKE_HOST_RUNTIME_DIR'),
@@ -609,6 +667,28 @@ async function prepare(managedRoot: string): Promise<void> {
     'standby lacks its production database source',
   );
   expect((candidate.mounts ?? []).length > 0, 'standby lacks production mounts');
+  // Without this, an admission that started skipping again would leave every
+  // stage above green while network protection never reached a standby.
+  if (await egressProvisioningExpected(journal)) {
+    expect(
+      admittedEgressOperations.has(journal.updateId),
+      'project egress provisioning was not admitted for an update whose images require it',
+    );
+    const sealed = await readManagedDeployment(managedRoot);
+    expect(
+      sealed.managed &&
+        PROJECT_EGRESS_MOUNTS.every((expected) =>
+          sealed.spec.mounts.some((mount) => JSON.stringify(mount) === JSON.stringify(expected)),
+        ),
+      'the sealed deployment lacks the project egress mounts after admission',
+    );
+    expect(
+      PROJECT_EGRESS_MOUNTS.every((expected) =>
+        (candidate.mounts ?? []).some((mount) => mount.destination === expected.target),
+      ),
+      'standby started without the project egress mounts',
+    );
+  }
 
   // The preflight container is a throwaway: it must not survive its own run,
   // or the next generation inherits a stale name.

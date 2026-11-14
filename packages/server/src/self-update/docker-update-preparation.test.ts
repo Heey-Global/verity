@@ -382,6 +382,71 @@ describe('Docker update preparation', () => {
     expect(docker.startContainer).toHaveBeenCalledTimes(2);
   });
 
+  // The live smoke replaces host provisioning through this option. If the
+  // preparation stopped routing through it, the smoke would silently run the real
+  // installer again; if it stopped treating its failure as fatal, a refused
+  // admission would no longer stop the update.
+  it('routes project egress provisioning through an injected replacement', async () => {
+    const { root, journal } = await setup({ pairing: true });
+    const docker = fakeDocker();
+    const log = vi.fn();
+    const provisionProjectEgressHost = vi.fn(async () => true);
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker,
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      provisionProjectEgressHost,
+      log,
+    });
+    await expect(resumeUpdatePreparation(root, actions)).resolves.toMatchObject({
+      phase: 'standby',
+    });
+    const state = await readManagedDeployment(root);
+    expect(provisionProjectEgressHost).toHaveBeenCalledOnce();
+    expect(provisionProjectEgressHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        journal: expect.objectContaining({ updateId: journal.updateId }),
+        spec: state.managed ? expect.objectContaining({ image: state.spec.image }) : undefined,
+        managedRoot: root,
+      }),
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Network protection: host provisioning completed; authenticated readiness is checked separately.',
+    );
+    expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
+      'ready',
+    );
+  });
+
+  it('marks recovery as required when the injected provisioning refuses', async () => {
+    const { root } = await setup();
+    const docker = fakeDocker();
+    const log = vi.fn();
+    const actions = await dockerUpdatePreparation({
+      managedRoot: root,
+      docker,
+      environment: { DATABASE_URL: 'postgres://db', DEPLOYMENT_ID: 'deployment-1' },
+      verifyImage: async () => undefined,
+      provisionProjectEgressHost: async () => {
+        throw new Error('Project egress provisioning requires installer state authority');
+      },
+      log,
+    });
+    await expect(resumeUpdatePreparation(root, actions)).rejects.toThrow(
+      'Project egress provisioning requires installer state authority',
+    );
+    expect(log).toHaveBeenCalledWith(
+      'Network protection: automatic host provisioning failed; recovery is required.',
+    );
+    expect(JSON.parse(await readFile(join(root, 'host-preparation.json'), 'utf8')).stage).toBe(
+      'recovery-required',
+    );
+    expect(docker.createContainer.mock.calls.map((call) => call[0].name)).not.toContain(
+      'verity-managed-server-g1',
+    );
+  });
+
   /**
    * The host runtimes a release declares (ADR 0008 Amendment 2), read off the label every build
    * of deploy/Dockerfile carries. Without this wiring the reconciliation exists and is tested, and
