@@ -41,7 +41,7 @@
   "packages/server/src/server-mcp-routes.ts": 2301,
   "packages/server/src/server-projects.test.ts": 3958,
   "packages/server/src/server-sessions.test.ts": 3716,
-  "packages/server/src/server.ts": 3731,
+  "packages/server/src/server.ts": 3650,
   "packages/server/src/uplink-control-client.test.ts": 3380,
   "packages/server/src/uplink-control-client.ts": 2123,
   "packages/server/src/worktree.test.ts": 1761,
