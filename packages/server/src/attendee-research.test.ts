@@ -27,7 +27,7 @@ it('persists addressed requests as hints for the existing Research action', asyn
 });
 
 it('binds audio to the hint writer instead of silently restoring automatic agent turns', () => {
-  const source = readFileSync(new URL('./server.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('./server-meetings.ts', import.meta.url), 'utf8');
   const start = source.indexOf('const attendeeMeetings = new AttendeeMeetings(');
   const end = source.indexOf('registerAttendeeRoutes(', start);
   const binding = source.slice(start, end);
