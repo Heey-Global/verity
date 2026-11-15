@@ -146,8 +146,8 @@ describe('native shared CoreML loading guards', () => {
       /await LiveModelLoadGate.shared.acquire\(\)[\s\S]*defer \{ Task \{ await LiveModelLoadGate.shared.release\(\)/,
     );
     for (const [method, loader] of [
-      ['startNemotron', 'downloadAndPreloadShared('],
-      ['startParakeet', 'downloadAndLoad('],
+      ['startNemotron', 'StreamingNemotronMultilingualAsrManager.preloadShared('],
+      ['startParakeet', 'AsrModels.load('],
     ]) {
       const body = nativeMethod(source, method!);
       const permit = body.indexOf('await LiveModelLoadGate.shared.acquire()');
