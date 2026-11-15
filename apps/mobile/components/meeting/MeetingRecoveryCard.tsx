@@ -13,18 +13,17 @@ import { Button, Text, useConfirm } from '../ui';
 import { NoticedCard } from './MeetingUI';
 
 type Confirm = ReturnType<typeof useConfirm>[0];
-type PendingCommand = 'pause' | 'resume' | 'stop' | null;
 
 /**
  * Whether a device that is not recording should offer to end the meeting without its
- * recorder: the recorder stopped reporting, or a stop is waiting for it. Only that
- * recorder can acknowledge a stop, so without this the meeting stays running everywhere.
+ * recorder. Only that recorder can acknowledge a stop, so once it stops reporting a stop
+ * stays pending and the meeting keeps running everywhere. A recorder that still reports
+ * applies or refuses a stop by itself.
  */
 export function canEndWithoutRecorder(
   meeting: Pick<MeetingRecord, 'engine' | 'serverId' | 'state'>,
   recordingHere: boolean,
   recorderUnreachable: boolean,
-  pendingCommand: PendingCommand,
 ): boolean {
   return (
     meeting.state === 'active' &&
@@ -32,7 +31,7 @@ export function canEndWithoutRecorder(
     !recordingHere &&
     meeting.serverId != null &&
     meeting.serverId === getActiveMeetingServerId() &&
-    (recorderUnreachable || pendingCommand === 'stop')
+    recorderUnreachable
   );
 }
 
@@ -74,7 +73,6 @@ export function MeetingRecoveryCard({
   live,
   recordingHere,
   recorderOnline,
-  pendingCommand,
   syncFailure,
   onRecovered,
   onError,
@@ -83,7 +81,6 @@ export function MeetingRecoveryCard({
   live: boolean;
   recordingHere: boolean;
   recorderOnline: boolean;
-  pendingCommand: PendingCommand;
   syncFailure: MeetingSyncFailure | null;
   onRecovered: () => Promise<void>;
   onError: (message: string | null) => void;
@@ -112,19 +109,14 @@ export function MeetingRecoveryCard({
   };
 
   if (!syncFailure) {
-    if (!canEndWithoutRecorder(meeting, recordingHere, !recorderOnline, pendingCommand))
-      return null;
+    if (!canEndWithoutRecorder(meeting, recordingHere, !recorderOnline)) return null;
     return (
       <>
         <NoticedCard
           tone={theme.colors.attention}
           label="Recording device"
-          title={recorderOnline ? 'Stop not confirmed yet' : 'Recorder not reporting'}
-          body={
-            recorderOnline
-              ? 'The device that records this meeting has not confirmed the stop yet. If it no longer records, end the meeting here.'
-              : 'The device that records this meeting has stopped reporting. Open Verity there, or end the meeting with the transcript received so far.'
-          }
+          title="Recorder not reporting"
+          body="The device that records this meeting has stopped reporting. Open Verity there, or end the meeting with the transcript received so far."
         >
           <Button
             label="End without recording device"

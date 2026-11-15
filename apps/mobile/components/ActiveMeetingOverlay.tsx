@@ -505,12 +505,7 @@ export function ActiveMeetingOverlay() {
   };
 
   // A stop only its recorder can confirm: without it, offer to end the meeting on the server.
-  const endWithoutRecorder = canEndWithoutRecorder(
-    meeting,
-    !remote,
-    recorderUnreachable,
-    activePendingCommand,
-  )
+  const endWithoutRecorder = canEndWithoutRecorder(meeting, !remote, recorderUnreachable)
     ? () => {
         const target = { id: meeting.id, sessionId: meeting.sessionId };
         confirmEndWithoutRecorder(confirm, target, {

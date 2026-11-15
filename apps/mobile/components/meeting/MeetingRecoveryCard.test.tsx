@@ -29,7 +29,6 @@ const props = {
   live: true,
   recordingHere: false,
   recorderOnline: false,
-  pendingCommand: null,
   syncFailure: null,
   onRecovered: jest.fn().mockResolvedValue(undefined),
   onError: jest.fn(),
@@ -47,11 +46,6 @@ it('ends a meeting with an unreachable recorder on the server only after confirm
   await act(async () => fireEvent.press(screen.getByText('End meeting')));
   expect(finalizeMeetingOnServer).toHaveBeenCalledWith('session-1', 'meeting-1');
   expect(props.onRecovered).toHaveBeenCalled();
-});
-
-it('also offers it while a stop waits for a recorder that still reports', () => {
-  render(<MeetingRecoveryCard {...props} recorderOnline pendingCommand="stop" />);
-  expect(screen.getByText(endLabel)).toBeOnTheScreen();
 });
 
 it('reports a failed server end instead of claiming the meeting ended', async () => {

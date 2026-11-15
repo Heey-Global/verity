@@ -1708,7 +1708,6 @@ export default function MeetingScreen() {
       live={live}
       recordingHere={active || Boolean(meeting?.ownerToken)}
       recorderOnline={recorderOnline}
-      pendingCommand={pendingCommand}
       syncFailure={syncFailure}
       onRecovered={async () => {
         await syncMeetingSession(sessionId).catch(() => undefined);
