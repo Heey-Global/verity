@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { lstat, mkdir, readdir } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   MAX_CONCURRENT_STARTS,
   MAX_QUEUED_STARTS,

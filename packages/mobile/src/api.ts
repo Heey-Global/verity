@@ -1,7 +1,7 @@
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
-  peopleClientMethods,
+  peopleClient,
   type AgentLogin,
   type AgentLoginProvider,
 } from './people-api.js';
@@ -2755,22 +2755,22 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
-  // Team and personal connection calls, defined in people-api.ts.
-  readonly getProjectTeam = peopleClientMethods.getProjectTeam;
-  readonly createProjectInvitation = peopleClientMethods.createProjectInvitation;
-  readonly getProjectInvitation = peopleClientMethods.getProjectInvitation;
-  readonly revokeProjectInvitation = peopleClientMethods.revokeProjectInvitation;
-  readonly setProjectMemberRights = peopleClientMethods.setProjectMemberRights;
-  readonly removeProjectMember = peopleClientMethods.removeProjectMember;
-  readonly listProviderConnections = peopleClientMethods.listProviderConnections;
-  readonly startProviderConnectionLogin = peopleClientMethods.startProviderConnectionLogin;
-  readonly getProviderConnectionLogin = peopleClientMethods.getProviderConnectionLogin;
-  readonly submitProviderConnectionLoginCode =
-    peopleClientMethods.submitProviderConnectionLoginCode;
-  readonly setOpenCodeConnection = peopleClientMethods.setOpenCodeConnection;
-  readonly disconnectProviderConnection = peopleClientMethods.disconnectProviderConnection;
-  readonly setOwnProjectDefaultModel = peopleClientMethods.setOwnProjectDefaultModel;
-  readonly joinTeam = peopleClientMethods.joinTeam;
+  // Team and personal connection calls (people-api.ts); set before the fields below.
+  private readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly getProjectTeam = this.people.getProjectTeam;
+  readonly createProjectInvitation = this.people.createProjectInvitation;
+  readonly getProjectInvitation = this.people.getProjectInvitation;
+  readonly revokeProjectInvitation = this.people.revokeProjectInvitation;
+  readonly setProjectMemberRights = this.people.setProjectMemberRights;
+  readonly removeProjectMember = this.people.removeProjectMember;
+  readonly listProviderConnections = this.people.listProviderConnections;
+  readonly startProviderConnectionLogin = this.people.startProviderConnectionLogin;
+  readonly getProviderConnectionLogin = this.people.getProviderConnectionLogin;
+  readonly submitProviderConnectionLoginCode = this.people.submitProviderConnectionLoginCode;
+  readonly setOpenCodeConnection = this.people.setOpenCodeConnection;
+  readonly disconnectProviderConnection = this.people.disconnectProviderConnection;
+  readonly setOwnProjectDefaultModel = this.people.setOwnProjectDefaultModel;
+  readonly joinTeam = this.people.joinTeam;
 
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(

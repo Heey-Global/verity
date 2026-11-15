@@ -97,182 +97,158 @@ const teamJoinedSchema = z.object({
 });
 export type TeamJoined = z.infer<typeof teamJoinedSchema>;
 
-interface RequestHost {
-  request(path: string, init: TransportRequestInit): Promise<Response>;
-}
-/** The client these methods are called on; its `request` is private to it. */
-const host = (client: unknown): RequestHost => client as RequestHost;
+/** The client's own request, which these calls go through. */
+type Request = (path: string, init: TransportRequestInit) => Promise<Response>;
 
-export const peopleClientMethods = {
-  async getProjectTeam(this: unknown, projectId: string): Promise<ProjectTeam> {
-    const res = await host(this).request(`/projects/${encodeURIComponent(projectId)}/team`, {
-      method: 'GET',
-    });
-    return projectTeamSchema.parse(await res.json());
-  },
+/** The team and personal connection calls, bound to the client's `request`. */
+export function peopleClient(request: Request) {
+  return {
+    getProjectTeam: async (projectId: string): Promise<ProjectTeam> => {
+      const res = await request(`/projects/${encodeURIComponent(projectId)}/team`, {
+        method: 'GET',
+      });
+      return projectTeamSchema.parse(await res.json());
+    },
 
-  /** Invite a person to read, or to read and send messages ("Can edit"). */
-  async createProjectInvitation(
-    this: unknown,
-    projectId: string,
-    input: { inviteeName: string; canExecute: boolean; inviterName?: string },
-  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
-    const res = await host(this).request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    return invitationResponseSchema.parse(await res.json());
-  },
-
-  async getProjectInvitation(
-    this: unknown,
-    projectId: string,
-    invitationId: string,
-  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
-    const res = await host(this).request(
-      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
-      { method: 'GET' },
-    );
-    return invitationResponseSchema.parse(await res.json());
-  },
-
-  async revokeProjectInvitation(
-    this: unknown,
-    projectId: string,
-    invitationId: string,
-  ): Promise<void> {
-    await host(this).request(
-      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
-      { method: 'DELETE' },
-    );
-  },
-
-  async setProjectMemberRights(
-    this: unknown,
-    projectId: string,
-    userId: string,
-    rights: { canExecute: boolean; canManage: boolean },
-  ): Promise<ProjectMember> {
-    const res = await host(this).request(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
-      {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(rights),
-      },
-    );
-    return z.object({ member: projectMemberSchema }).parse(await res.json()).member;
-  },
-
-  async removeProjectMember(this: unknown, projectId: string, userId: string): Promise<void> {
-    await host(this).request(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
-      { method: 'DELETE' },
-    );
-  },
-
-  /** The signed-in person's own provider accounts; never any credential. */
-  async listProviderConnections(this: unknown): Promise<ProviderConnections> {
-    const res = await host(this).request('/me/provider-connections', { method: 'GET' });
-    return providerConnectionsSchema.parse(await res.json());
-  },
-
-  /** Starts a login whose result becomes the signed-in person's own account. */
-  async startProviderConnectionLogin(
-    this: unknown,
-    provider: AgentLoginProvider,
-  ): Promise<AgentLogin> {
-    const res = await host(this).request(`/me/provider-connections/${provider}/login`, {
-      method: 'POST',
-    });
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  },
-
-  async getProviderConnectionLogin(this: unknown, sessionId: string): Promise<AgentLogin> {
-    const res = await host(this).request(
-      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}`,
-      { method: 'GET' },
-    );
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  },
-
-  async submitProviderConnectionLoginCode(
-    this: unknown,
-    sessionId: string,
-    code: string,
-  ): Promise<AgentLogin> {
-    const res = await host(this).request(
-      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}/code`,
-      {
+    /** Invite a person to read, or to read and send messages ("Can edit"). */
+    createProjectInvitation: async (
+      projectId: string,
+      input: { inviteeName: string; canExecute: boolean; inviterName?: string },
+    ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> => {
+      const res = await request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code }),
-      },
-    );
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  },
+        body: JSON.stringify(input),
+      });
+      return invitationResponseSchema.parse(await res.json());
+    },
 
-  /** Saves the person's own OpenCode provider after it answered with its models. */
-  async setOpenCodeConnection(
-    this: unknown,
-    input: {
+    getProjectInvitation: async (
+      projectId: string,
+      invitationId: string,
+    ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> => {
+      const res = await request(
+        `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
+        { method: 'GET' },
+      );
+      return invitationResponseSchema.parse(await res.json());
+    },
+
+    revokeProjectInvitation: async (projectId: string, invitationId: string): Promise<void> => {
+      await request(
+        `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
+        { method: 'DELETE' },
+      );
+    },
+
+    setProjectMemberRights: async (
+      projectId: string,
+      userId: string,
+      rights: { canExecute: boolean; canManage: boolean },
+    ): Promise<ProjectMember> => {
+      const res = await request(
+        `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(rights),
+        },
+      );
+      return z.object({ member: projectMemberSchema }).parse(await res.json()).member;
+    },
+
+    removeProjectMember: async (projectId: string, userId: string): Promise<void> => {
+      await request(
+        `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      );
+    },
+
+    /** The signed-in person's own provider accounts; never any credential. */
+    listProviderConnections: async (): Promise<ProviderConnections> => {
+      const res = await request('/me/provider-connections', { method: 'GET' });
+      return providerConnectionsSchema.parse(await res.json());
+    },
+
+    /** Starts a login whose result becomes the signed-in person's own account. */
+    startProviderConnectionLogin: async (provider: AgentLoginProvider): Promise<AgentLogin> => {
+      const res = await request(`/me/provider-connections/${provider}/login`, {
+        method: 'POST',
+      });
+      return agentLoginResponseSchema.parse(await res.json()).login;
+    },
+
+    getProviderConnectionLogin: async (sessionId: string): Promise<AgentLogin> => {
+      const res = await request(
+        `/me/provider-connections/logins/${encodeURIComponent(sessionId)}`,
+        { method: 'GET' },
+      );
+      return agentLoginResponseSchema.parse(await res.json()).login;
+    },
+
+    submitProviderConnectionLoginCode: async (
+      sessionId: string,
+      code: string,
+    ): Promise<AgentLogin> => {
+      const res = await request(
+        `/me/provider-connections/logins/${encodeURIComponent(sessionId)}/code`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code }),
+        },
+      );
+      return agentLoginResponseSchema.parse(await res.json()).login;
+    },
+
+    /** Saves the person's own OpenCode provider after it answered with its models. */
+    setOpenCodeConnection: async (input: {
       baseUrl: string;
       apiKey: string;
+    }): Promise<z.infer<typeof openCodeConnectionSchema>> => {
+      const res = await request('/me/provider-connections/opencode', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      return openCodeConnectionSchema.parse(await res.json());
     },
-  ): Promise<z.infer<typeof openCodeConnectionSchema>> {
-    const res = await host(this).request('/me/provider-connections/opencode', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    return openCodeConnectionSchema.parse(await res.json());
-  },
 
-  async disconnectProviderConnection(
-    this: unknown,
-    provider: ProviderConnectionKind,
-  ): Promise<void> {
-    await host(this).request(`/me/provider-connections/${provider}`, { method: 'DELETE' });
-  },
+    disconnectProviderConnection: async (provider: ProviderConnectionKind): Promise<void> => {
+      await request(`/me/provider-connections/${provider}`, { method: 'DELETE' });
+    },
 
-  /** Sets the signed-in person's own default model for a project. */
-  async setOwnProjectDefaultModel(
-    this: unknown,
-    projectId: string,
-    model: string | null,
-  ): Promise<{ defaultModel: string | null }> {
-    const res = await host(this).request(
-      `/projects/${encodeURIComponent(projectId)}/default-model`,
-      {
+    /** Sets the signed-in person's own default model for a project. */
+    setOwnProjectDefaultModel: async (
+      projectId: string,
+      model: string | null,
+    ): Promise<{ defaultModel: string | null }> => {
+      const res = await request(`/projects/${encodeURIComponent(projectId)}/default-model`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model }),
-      },
-    );
-    return z.object({ defaultModel: z.string().nullable() }).parse(await res.json());
-  },
+      });
+      return z.object({ defaultModel: z.string().nullable() }).parse(await res.json());
+    },
 
-  /**
-   * Join a project with a team invitation, pairing this device to the invited
-   * person (ADR 0023 §7). Unauthenticated: the invitation secret is the
-   * credential. A retry with the same `redemptionId` is a replay.
-   */
-  async joinTeam(
-    this: unknown,
-    body: {
+    /**
+     * Join a project with a team invitation, pairing this device to the invited
+     * person (ADR 0023 §7). Unauthenticated: the invitation secret is the
+     * credential. A retry with the same `redemptionId` is a replay.
+     */
+    joinTeam: async (body: {
       invitationId: string;
       secret: string;
       redemptionId: string;
       displayName: string;
       deviceLabel?: string;
+    }): Promise<TeamJoined> => {
+      const res = await request('/team/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return teamJoinedSchema.parse(await res.json());
     },
-  ): Promise<TeamJoined> {
-    const res = await host(this).request('/team/join', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return teamJoinedSchema.parse(await res.json());
-  },
-};
+  };
+}

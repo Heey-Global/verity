@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // features/verity-sandbox-toolkit/src/runner-supervisor/main.mjs
-import { resolve as resolve3 } from "node:path";
+import { resolve as resolve2 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // features/verity-sandbox-toolkit/src/runner-supervisor/protocol.mjs
@@ -1305,7 +1305,7 @@ async function cancelExplainsSettlement(runtimeDir, turnId) {
 import { spawn as spawn3 } from "node:child_process";
 import { createConnection as createConnection3 } from "node:net";
 import { lstat as lstat3, mkdir as mkdir2, readdir } from "node:fs/promises";
-import { join as join4, resolve as resolve2 } from "node:path";
+import { join as join4 } from "node:path";
 
 // features/verity-sandbox-toolkit/src/runner-supervisor/requests.mjs
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -1620,7 +1620,7 @@ async function runSupervisor(options = {}) {
       outputAbort.abort();
       outputAck?.reject(new Error("trusted CLI output connection closed"));
     });
-    const onOutput = (stream, bytes) => new Promise((resolve4, reject) => {
+    const onOutput = (stream, bytes) => new Promise((resolve3, reject) => {
       if (socket.destroyed) {
         reject(new Error("trusted CLI output connection closed"));
         return;
@@ -1634,7 +1634,7 @@ async function runSupervisor(options = {}) {
         sequence,
         resolve: () => {
           clearTimeout(timer);
-          resolve4();
+          resolve3();
         },
         reject: (error) => {
           clearTimeout(timer);
@@ -1713,7 +1713,7 @@ async function runSupervisor(options = {}) {
         respond(responseForError(new Error("supervisor accepts exactly one request")));
         return;
       }
-      void new Promise((resolve4) => setImmediate(resolve4)).then(() => {
+      void new Promise((resolve3) => setImmediate(resolve3)).then(() => {
         processingStarted = true;
         if (pipelinedAfterNewline) {
           throw new Error("supervisor accepts exactly one request");
@@ -1752,9 +1752,9 @@ async function runSupervisor(options = {}) {
     });
   });
   try {
-    await new Promise((resolve4, reject) => {
+    await new Promise((resolve3, reject) => {
       server.once("error", reject);
-      server.listen(socketPath, resolve4);
+      server.listen(socketPath, resolve3);
     });
     await chmod2(socketPath, 432);
     await writeJsonAtomic(readyPath, {
@@ -1776,7 +1776,7 @@ async function runSupervisor(options = {}) {
     await turnAdopter.close();
     await turnStarter.close();
     for (const socket of connections) socket.destroy();
-    await new Promise((resolve4) => server.close(resolve4));
+    await new Promise((resolve3) => server.close(resolve3));
     await rm3(socketPath, { force: true });
     await rm3(readyPath, { force: true });
     await singleton.release();
@@ -1785,17 +1785,17 @@ async function runSupervisor(options = {}) {
 }
 async function probeSupervisor(runtimeDir = DEFAULT_RUNTIME_DIR, timeoutMs = 1e3) {
   const socketPath = join3(runtimeDir, "supervisor.sock");
-  return await new Promise((resolve4) => {
+  return await new Promise((resolve3) => {
     const socket = createConnection2(socketPath);
     let response = "";
     const timeout = setTimeout(() => {
       socket.destroy();
-      resolve4(false);
+      resolve3(false);
     }, timeoutMs);
     const finish = (live) => {
       clearTimeout(timeout);
       socket.destroy();
-      resolve4(live);
+      resolve3(live);
     };
     socket.once("error", () => finish(false));
     socket.on("data", (chunk) => {
@@ -1908,8 +1908,8 @@ function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
     let workerErrorDone = Promise.resolve("");
     let exited = false;
     let resolveExit;
-    const exitInfo = new Promise((resolve4) => {
-      resolveExit = resolve4;
+    const exitInfo = new Promise((resolve3) => {
+      resolveExit = resolve3;
     });
     try {
       await writeJsonAtomic(requestPath, request, 384);
@@ -1984,7 +1984,7 @@ function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         if (!exited) {
           await Promise.race([
             exitInfo,
-            new Promise((resolve4) => setTimeout(resolve4, REJECTED_WORKER_EXIT_WAIT_MS).unref?.())
+            new Promise((resolve3) => setTimeout(resolve3, REJECTED_WORKER_EXIT_WAIT_MS).unref?.())
           ]);
         }
         reaped = exited;
@@ -2350,7 +2350,7 @@ async function sessionHomeRequest(kind, sessionId, migration = {}) {
   });
 }
 async function brokerStorageRequest(request) {
-  return await new Promise((resolve4, reject) => {
+  return await new Promise((resolve3, reject) => {
     const socket = createConnection3(
       process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ?? "/run/verity-runner-broker/agent-spawn-broker.sock"
     );
@@ -2361,7 +2361,7 @@ async function brokerStorageRequest(request) {
       settled = true;
       socket.destroy();
       if (error) reject(error);
-      else resolve4(response ?? { ok: true });
+      else resolve3(response ?? { ok: true });
     };
     socket.setTimeout(3e4, () => finish(new Error("runner storage request timed out")));
     socket.once("error", finish);
@@ -2447,7 +2447,7 @@ async function withFinalCacheAdmission(runtimeDir, scan, run) {
 }
 
 // features/verity-sandbox-toolkit/src/runner-supervisor/main.mjs
-var invokedPath = process.argv[1] === void 0 ? void 0 : resolve3(process.argv[1]);
+var invokedPath = process.argv[1] === void 0 ? void 0 : resolve2(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const runtimeDir = process.env.VERITY_RUNNER_RUNTIME ?? DEFAULT_RUNTIME_DIR;
   const command = process.argv[2];
