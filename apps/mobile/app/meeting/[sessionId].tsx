@@ -1706,7 +1706,7 @@ export default function MeetingScreen() {
     <MeetingRecoveryCard
       meeting={meeting}
       live={live}
-      recordingHere={active}
+      recordingHere={active || Boolean(meeting?.ownerToken)}
       recorderOnline={recorderOnline}
       pendingCommand={pendingCommand}
       syncFailure={syncFailure}
