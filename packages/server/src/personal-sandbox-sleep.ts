@@ -1,3 +1,5 @@
+import type { EventStore } from '@verity/store';
+
 /** How long a person's own sandbox may sit idle before it is put to sleep. */
 export const PERSONAL_SANDBOX_IDLE_MS = 30 * 60_000;
 
@@ -49,4 +51,68 @@ export async function sweepPersonalSandboxes(
     }
   }
   for (const key of [...idleSince.keys()]) if (!seen.has(key)) idleSince.delete(key);
+}
+
+/**
+ * Sweep people's own sandboxes every minute and put idle ones to sleep. A sandbox
+ * is busy while its person has a running turn in its project or a dev server in it.
+ */
+export function installPersonalSandboxSleep(
+  app: {
+    addHook(name: 'onClose', hook: () => void): unknown;
+    log: { warn(fields: Record<string, unknown>, message: string): void };
+  },
+  deps: {
+    store: Pick<
+      EventStore,
+      'projectSandboxes' | 'listRunningTurns' | 'getSession' | 'promptInitiatorAt'
+    >;
+    hasRunningServersFor: (projectId: string, userId: string) => Promise<boolean | undefined>;
+    /** Resolved on every sweep: the provisioner may not exist yet at install time. */
+    sleepSandbox: () => ((projectId: string, userId: string) => Promise<void>) | undefined;
+  },
+): void {
+  const { store } = deps;
+  const idleSince = new Map<string, number>();
+  let running = false;
+  const timer = setInterval(() => {
+    const sleep = deps.sleepSandbox();
+    if (running || sleep === undefined) return;
+    running = true;
+    void sweepPersonalSandboxes(
+      {
+        listActive: async () => {
+          const active: Array<{ projectId: string; userId: string }> = [];
+          for (const sandbox of await store.projectSandboxes.list()) {
+            if (sandbox.projectDefault) continue;
+            const state = await store.projectSandboxes.state(sandbox.projectId, sandbox.userId);
+            if (state?.state === 'active') active.push(sandbox);
+          }
+          return active;
+        },
+        isBusy: async (projectId, userId) => {
+          if (await deps.hasRunningServersFor(projectId, userId)) return true;
+          for (const turn of await store.listRunningTurns()) {
+            const session = await store.getSession(turn.sessionId);
+            if (session?.projectId !== projectId) continue;
+            const initiator = await store.promptInitiatorAt(turn.sessionId, turn.promptSeq);
+            if (initiator?.userId === userId) return true;
+          }
+          return false;
+        },
+        sleep,
+        onError: (error, projectId, userId) =>
+          app.log.warn({ err: error, projectId, userId }, 'personal sandbox failed to sleep'),
+      },
+      idleSince,
+    )
+      .catch((error: unknown) => {
+        app.log.warn({ err: error }, 'personal sandbox sleep sweep failed');
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, 60_000);
+  timer.unref();
+  app.addHook('onClose', () => clearInterval(timer));
 }

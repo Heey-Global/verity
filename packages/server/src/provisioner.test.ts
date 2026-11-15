@@ -1,4 +1,5 @@
 import { retainLatestCacheHelper } from './cache-helper-retention.js';
+import { DeprovisionerImpl } from './deprovisioner.js';
 import { generationNetworkIdentity } from './project-network-cleanup.js';
 import { execFileSync } from 'node:child_process';
 import { verifyEgressHostContainer } from './project-egress-host-runtime.js';
@@ -40,7 +41,6 @@ import {
   type ImageFileEvidence,
 } from './runner-boundary-attestation.js';
 import {
-  DeprovisionerImpl,
   ProvisioningError,
   gitAuthHeader,
   resolveImage,

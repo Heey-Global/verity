@@ -51,7 +51,8 @@ import type { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telem
 import type { ProjectRepository } from './project-repo-route.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
-import type { Deprovisioner, Provisioner } from './provisioner.js';
+import type { Deprovisioner } from './deprovisioner.js';
+import type { Provisioner } from './provisioner.js';
 import type { PushSender } from './push-sender.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';

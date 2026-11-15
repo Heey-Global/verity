@@ -1,5 +1,21 @@
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
+  agentLoginResponseSchema,
+  peopleClientMethods,
+  type AgentLogin,
+  type AgentLoginProvider,
+} from './people-api.js';
+export * from './people-api.js';
+export * from './backup-api.js';
+import {
+  backupProbeJobSchema,
+  backupStatusSchema,
+  backupKeyOfferSchema,
+  type BackupKeyOffer,
+  type BackupProbeJob,
+  type BackupStatus,
+} from './backup-api.js';
+import {
   projectRepositorySchema,
   projectInquirySchema,
   repositoryInstructionsSchema,
@@ -1402,89 +1418,6 @@ export type VeritySettingsPatch = {
   opencodeDisabledModels?: string | null | undefined;
 };
 
-export const agentLoginProviderSchema = z.enum(['claude', 'codex']);
-export type AgentLoginProvider = z.infer<typeof agentLoginProviderSchema>;
-export const agentLoginSchema = z.object({
-  sessionId: z.string().min(1),
-  provider: agentLoginProviderSchema,
-  status: z.enum(['starting', 'ready', 'waiting', 'complete', 'failed']),
-  verificationUri: z.string().nullable(),
-  userCode: z.string().nullable(),
-  needsCode: z.boolean(),
-  configured: z.boolean(),
-  message: z.string().nullable(),
-});
-export type AgentLogin = z.infer<typeof agentLoginSchema>;
-const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
-
-/** A project's team (ADR 0023 §1): members and open invitations. */
-export const projectMemberSchema = z.object({
-  userId: z.string(),
-  displayName: z.string().nullable(),
-  canRead: z.boolean(),
-  canExecute: z.boolean(),
-  canManage: z.boolean(),
-  creator: z.boolean(),
-  joinedAt: z.string(),
-});
-export type ProjectMember = z.infer<typeof projectMemberSchema>;
-export const projectInvitationSchema = z.object({
-  id: z.string(),
-  inviteeName: z.string(),
-  canExecute: z.boolean(),
-  /** `failed`: the join or the invitation did not go through; invite again. */
-  state: z.enum(['creating', 'open', 'redeemed', 'revoked', 'expired', 'failed']),
-  expiresAt: z.string(),
-  createdAt: z.string(),
-});
-export type ProjectInvitation = z.infer<typeof projectInvitationSchema>;
-export const projectTeamSchema = z.object({
-  members: z.array(projectMemberSchema),
-  invitations: z.array(projectInvitationSchema),
-});
-export type ProjectTeam = z.infer<typeof projectTeamSchema>;
-/** What the server holds of a join link; the inviter's app adds pin and address. */
-export const invitationLinkFieldsSchema = z.object({
-  version: z.literal(1),
-  purpose: z.literal('team-member'),
-  invitationId: z.string(),
-  secret: z.string(),
-  expiresAt: z.number(),
-  serverId: z.string(),
-  identityKey: z.string(),
-  uplinkOrigin: z.string(),
-  installationId: z.string(),
-  installationHandle: z.string(),
-  display: z.object({ inviterName: z.string(), projectName: z.string() }).optional(),
-});
-export type InvitationLinkFields = z.infer<typeof invitationLinkFieldsSchema>;
-const invitationResponseSchema = z.object({
-  invitation: projectInvitationSchema,
-  linkFields: invitationLinkFieldsSchema.nullable(),
-});
-
-/** A provider account of the signed-in person's own (ADR 0023 §3). */
-export const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
-export type ProviderConnectionKind = z.infer<typeof providerConnectionKindSchema>;
-export const providerConnectionSchema = z.object({
-  provider: providerConnectionKindSchema,
-  baseUrl: z.string().nullable(),
-  models: z.array(z.string()),
-  updatedAt: z.string(),
-});
-export type ProviderConnection = z.infer<typeof providerConnectionSchema>;
-export const providerConnectionsSchema = z.object({
-  connections: z.array(providerConnectionSchema),
-  /** The administrator's turns fall back to the instance logins. */
-  usesInstanceLogins: z.boolean(),
-});
-export type ProviderConnections = z.infer<typeof providerConnectionsSchema>;
-const openCodeConnectionSchema = z.object({
-  provider: z.literal('opencode'),
-  baseUrl: z.string(),
-  models: z.array(z.string()),
-});
-
 /** State of the at-rest secret store (master-password unlock). `uninitialized`
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
@@ -1493,47 +1426,6 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
-/** A restore probe as the server reports it. The server keeps no key in it.
- *  `status` and `phase` stay plain strings so a newer server's values do not
- *  make the whole backup status unreadable. */
-export const backupProbeJobSchema = z.object({
-  id: z.string().uuid(),
-  status: z.string(),
-  phase: z.string(),
-  startedAt: z.number(),
-  finishedAt: z.number().nullable(),
-  snapshot: z.unknown(),
-  error: z.string().nullable(),
-});
-export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
-
-/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
- *  older servers report reasons this app does not know. */
-export const backupStatusSchema = z.discriminatedUnion('available', [
-  z.object({ available: z.literal(false), reason: z.string() }),
-  z.object({
-    available: z.literal(true),
-    configured: z.boolean(),
-    paused: z.boolean().optional(),
-    intervalMs: z.number().optional(),
-    lastSuccess: z.number().nullable().optional(),
-    capturing: z.boolean().optional(),
-    keyGeneration: z.number().optional(),
-    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
-    probe: backupProbeJobSchema.nullable().optional(),
-    alerts: z.array(z.string()),
-  }),
-]);
-export type BackupStatus = z.infer<typeof backupStatusSchema>;
-
-/** A newly generated recovery key, shown once. It becomes active on confirmation. */
-const backupKeyOfferSchema = z.object({
-  id: z.string().uuid(),
-  recoveryKey: z.string().min(1),
-  expiresAt: z.number(),
-});
-export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -2582,13 +2474,6 @@ const pairedDeviceSchema = z.object({
 });
 export type PairedDevice = z.infer<typeof pairedDeviceSchema>;
 
-const teamJoinedSchema = z.object({
-  token: z.string().min(1),
-  tokenId: z.string().min(1),
-  userId: z.string().min(1),
-  projectId: z.string().min(1),
-});
-export type TeamJoined = z.infer<typeof teamJoinedSchema>;
 const deviceEnrolledSchema = z.object({
   token: z.string().min(1),
   tokenId: z.string().min(1),
@@ -2870,6 +2755,23 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  // Team and personal connection calls, defined in people-api.ts.
+  readonly getProjectTeam = peopleClientMethods.getProjectTeam;
+  readonly createProjectInvitation = peopleClientMethods.createProjectInvitation;
+  readonly getProjectInvitation = peopleClientMethods.getProjectInvitation;
+  readonly revokeProjectInvitation = peopleClientMethods.revokeProjectInvitation;
+  readonly setProjectMemberRights = peopleClientMethods.setProjectMemberRights;
+  readonly removeProjectMember = peopleClientMethods.removeProjectMember;
+  readonly listProviderConnections = peopleClientMethods.listProviderConnections;
+  readonly startProviderConnectionLogin = peopleClientMethods.startProviderConnectionLogin;
+  readonly getProviderConnectionLogin = peopleClientMethods.getProviderConnectionLogin;
+  readonly submitProviderConnectionLoginCode =
+    peopleClientMethods.submitProviderConnectionLoginCode;
+  readonly setOpenCodeConnection = peopleClientMethods.setOpenCodeConnection;
+  readonly disconnectProviderConnection = peopleClientMethods.disconnectProviderConnection;
+  readonly setOwnProjectDefaultModel = peopleClientMethods.setOwnProjectDefaultModel;
+  readonly joinTeam = peopleClientMethods.joinTeam;
+
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
@@ -4197,131 +4099,6 @@ export class VerityClient {
     return agentLoginResponseSchema.parse(await res.json()).login;
   }
 
-  async getProjectTeam(projectId: string): Promise<ProjectTeam> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/team`, {
-      method: 'GET',
-    });
-    return projectTeamSchema.parse(await res.json());
-  }
-
-  /** Invite a person to read, or to read and send messages ("Can edit"). */
-  async createProjectInvitation(
-    projectId: string,
-    input: { inviteeName: string; canExecute: boolean; inviterName?: string },
-  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    return invitationResponseSchema.parse(await res.json());
-  }
-
-  async getProjectInvitation(
-    projectId: string,
-    invitationId: string,
-  ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
-      { method: 'GET' },
-    );
-    return invitationResponseSchema.parse(await res.json());
-  }
-
-  async revokeProjectInvitation(projectId: string, invitationId: string): Promise<void> {
-    await this.request(
-      `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
-      { method: 'DELETE' },
-    );
-  }
-
-  async setProjectMemberRights(
-    projectId: string,
-    userId: string,
-    rights: { canExecute: boolean; canManage: boolean },
-  ): Promise<ProjectMember> {
-    const res = await this.request(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
-      {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(rights),
-      },
-    );
-    return z.object({ member: projectMemberSchema }).parse(await res.json()).member;
-  }
-
-  async removeProjectMember(projectId: string, userId: string): Promise<void> {
-    await this.request(
-      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`,
-      { method: 'DELETE' },
-    );
-  }
-
-  /** The signed-in person's own provider accounts; never any credential. */
-  async listProviderConnections(): Promise<ProviderConnections> {
-    const res = await this.request('/me/provider-connections', { method: 'GET' });
-    return providerConnectionsSchema.parse(await res.json());
-  }
-
-  /** Starts a login whose result becomes the signed-in person's own account. */
-  async startProviderConnectionLogin(provider: AgentLoginProvider): Promise<AgentLogin> {
-    const res = await this.request(`/me/provider-connections/${provider}/login`, {
-      method: 'POST',
-    });
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  }
-
-  async getProviderConnectionLogin(sessionId: string): Promise<AgentLogin> {
-    const res = await this.request(
-      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}`,
-      { method: 'GET' },
-    );
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  }
-
-  async submitProviderConnectionLoginCode(sessionId: string, code: string): Promise<AgentLogin> {
-    const res = await this.request(
-      `/me/provider-connections/logins/${encodeURIComponent(sessionId)}/code`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code }),
-      },
-    );
-    return agentLoginResponseSchema.parse(await res.json()).login;
-  }
-
-  /** Saves the person's own OpenCode provider after it answered with its models. */
-  async setOpenCodeConnection(input: {
-    baseUrl: string;
-    apiKey: string;
-  }): Promise<z.infer<typeof openCodeConnectionSchema>> {
-    const res = await this.request('/me/provider-connections/opencode', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    return openCodeConnectionSchema.parse(await res.json());
-  }
-
-  async disconnectProviderConnection(provider: ProviderConnectionKind): Promise<void> {
-    await this.request(`/me/provider-connections/${provider}`, { method: 'DELETE' });
-  }
-
-  /** Sets the signed-in person's own default model for a project. */
-  async setOwnProjectDefaultModel(
-    projectId: string,
-    model: string | null,
-  ): Promise<{ defaultModel: string | null }> {
-    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/default-model`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model }),
-    });
-    return z.object({ defaultModel: z.string().nullable() }).parse(await res.json());
-  }
-
   async disconnectAgentLogin(provider: AgentLoginProvider): Promise<VeritySettings> {
     const res = await this.request('/settings/agent-logins/' + provider, { method: 'DELETE' });
     return veritySettingsSavedResponseSchema.parse(await res.json()).settings;
@@ -5111,26 +4888,6 @@ export class VerityClient {
       body: JSON.stringify({ code }),
     });
     return pairingRedeemedSchema.parse(await res.json());
-  }
-
-  /**
-   * Join a project with a team invitation, pairing this device to the invited
-   * person (ADR 0023 §7). Unauthenticated: the invitation secret is the
-   * credential. A retry with the same `redemptionId` is a replay.
-   */
-  async joinTeam(body: {
-    invitationId: string;
-    secret: string;
-    redemptionId: string;
-    displayName: string;
-    deviceLabel?: string;
-  }): Promise<TeamJoined> {
-    const res = await this.request('/team/join', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return teamJoinedSchema.parse(await res.json());
   }
 
   async enrollPairingInvitation(

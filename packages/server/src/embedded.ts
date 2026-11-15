@@ -1,6 +1,7 @@
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
+import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
-import { sweepPersonalSandboxes } from './personal-sandbox-sleep.js';
+import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
 import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
 import {
   sandboxIdentity,
@@ -96,7 +97,8 @@ import {
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
 import type { GitOutput } from './branches.js';
-import { SessionStorage, storageHold } from './session-storage.js';
+import { SessionStorage } from './session-storage.js';
+import { sessionStorageAccess } from './session-storage-access.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
   RunnerCacheMaintenance,
@@ -164,7 +166,6 @@ import {
   requestRunnerSupervisor,
   brokeredGrantTarget,
   brokeredGrantToolName,
-  encodeCwd,
   runnerSupervisorBackendLabel,
   type Backend,
   type RunnerSupervisorBackend,
@@ -284,8 +285,9 @@ import {
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 
-import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
 import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
+import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
+import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
 import {
   purgeSessionArtifacts as purgeSessionArtifactFiles,
   type SessionArtifactScope,
@@ -308,7 +310,6 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
 import {
   ProvisionerImpl,
-  DeprovisionerImpl,
   projectClonePath,
   gitAuthHeader,
   devcontainerBuilderIdle,
@@ -378,7 +379,7 @@ import {
   type AgentGatewayPerson,
 } from './agent-gateway-control.js';
 import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
-import { createTeamOutboxWorker } from './team-outbox-worker.js';
+import { installTeamOutbox } from './team-outbox-worker.js';
 import {
   startAgentGatewaySynchronizer,
   type AgentGatewaySynchronizer,
@@ -3411,186 +3412,13 @@ export async function buildEmbeddedServer(
   const purgeRunnerArtifacts =
     dataVolumeRoot === undefined
       ? undefined
-      : async (
-          sessionId: string,
-          bindings: readonly { backend: string; backendSessionId: string }[],
-          scope: SessionArtifactScope,
-          /** A person's sandbox whose runtime holds these bindings' files. */
-          personTag?: string,
-        ): Promise<void> => {
-          try {
-            // A delete runs even with no bindings at all: a cold-started claude thread
-            // writes `<veritySessionId>.jsonl` before the binding row naming it lands, so
-            // a session deleted in that window has a transcript nothing points at. A
-            // switch, by contrast, is only ever called with the rows it displaced.
-            if (bindings.length === 0 && scope !== 'session-delete') return;
-            const session = await eventStore.getSession(sessionId);
-            if (session === undefined) {
-              // The row is what names the worktree, and without it there is no directory
-              // to look in. Reachable rather than defensive: a delete that gave up on a
-              // slow purge (`SESSION_ARTIFACT_PURGE_TIMEOUT_MS`) removes the row while
-              // this call is still in flight, and the files it was going to take are then
-              // left for the startup sweep. Logged because a leak nobody hears about is
-              // how the whole class of bug this module fixes went unnoticed for months.
-              app.log.warn(
-                { sessionId, scope },
-                'verity: transcript purge found no session row — leaving its files to the startup sweep',
-              );
-              return;
-            }
-            const controlPlaneRunner = config.controlPlaneRunner === true;
-            // Only asked when it can change the answer — this runs once per session in the
-            // project-delete loop, and the lookup is pure overhead in every deployment
-            // without the dedicated control-plane runner.
-            const isControlPlaneProject =
-              controlPlaneRunner && session.projectId !== null
-                ? (await eventStore.getProject(session.projectId))?.kind === 'control_plane'
-                : false;
-            const runnerProjectIds = new Set(
-              personTag !== undefined && session.projectId !== null && scope !== 'session-delete'
-                ? [`${personTag}/${session.projectId}`]
-                : candidateRunnerProjectIds({
-                    projectId: session.projectId,
-                    isControlPlaneProject,
-                    controlPlaneRunner,
-                  }),
-            );
-            if (runnerProjectIds.size === 0) return;
-
-            const sandboxCwd = sessionSandboxCwd(session.worktree);
-            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-            if (scope === 'session-delete' && session.projectId !== null) {
-              // Every person who worked in the session may hold its files in their
-              // own sandbox's runtime (ADR 0023 §4).
-              for (const sandbox of await eventStore.projectSandboxes.list(session.projectId))
-                if (!sandbox.projectDefault)
-                  runnerProjectIds.add(`${sandboxPersonTag(sandbox.userId)}/${session.projectId}`);
-            }
-            if (scope === 'session-delete') {
-              await queueSessionCleanup(cleanupRoot, {
-                sessionId,
-                sandboxCwd,
-                runnerProjectIds: [...runnerProjectIds],
-                // A person's own thread is named without its scope here; its files
-                // in that person's runtime are left to the per-sandbox cleanup.
-                bindings: bindings.map((binding) => ({
-                  ...binding,
-                  backend: binding.backend.split('#')[0] ?? binding.backend,
-                })),
-              });
-              return;
-            }
-
-            const removed: string[] = [];
-            const absent: string[] = [];
-            const absentBound: string[] = [];
-            const failed: string[] = [];
-            const outsideRuntime: string[] = [];
-            const unresolved: string[] = [];
-            const unknownBackends = new Set<string>();
-            let runtimeSeen = false;
-            for (const runnerProjectId of runnerProjectIds) {
-              const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              // Control sessions may name a historical project with no runner runtime.
-              if (!existsSync(runtimeDir)) continue;
-              try {
-                const purge = await purgeSessionArtifactFiles({
-                  runtimeDir,
-                  sandboxCwd,
-                  bindings,
-                  sessionId,
-                  scope,
-                });
-                removed.push(...purge.removed);
-                absent.push(...purge.absent);
-                absentBound.push(...purge.absentBound);
-                failed.push(...purge.failed);
-                outsideRuntime.push(...purge.outsideRuntime);
-                if (!purge.runtimeMissing) runtimeSeen = true;
-                if (purge.unresolved) unresolved.push(runtimeDir);
-                for (const backend of purge.unknownBackends) unknownBackends.add(backend);
-              } catch (error) {
-                unresolved.push(runtimeDir);
-                app.log.warn(
-                  { err: error, sessionId, runnerProjectId },
-                  'verity: runner session cleanup remains pending',
-                );
-              }
-            }
-            // A path that resolved OUT of the runtime means something planted a symlink in
-            // a directory the Sandbox can write. Nothing was deleted — but this is not a
-            // cleanup problem, so it gets its own message rather than being read as one.
-            if (outsideRuntime.length > 0) {
-              app.log.error(
-                { sessionId, scope, outsideRuntime },
-                'verity: refused a transcript path that resolved outside the runner runtime',
-              );
-            }
-            // All three mean a transcript outlived the row naming it, which is the exact
-            // failure this code was written to end — so say so rather than counting a
-            // partial purge as a clean one. `unresolved` is the runtime whose file list
-            // could not even be built, which returns the same empty result as a session
-            // that had nothing there. `absent` rides along for context and does not gate:
-            // a session that never ran a claude subagent legitimately produces one, and
-            // searching a second candidate runtime produces a full set. It is only worth
-            // reading when NOTHING was removed, which is what a wrong `sandboxCwd` or a
-            // wrong runtime looks like.
-            if (failed.length > 0 || unknownBackends.size > 0 || unresolved.length > 0) {
-              app.log.warn(
-                {
-                  sessionId,
-                  scope,
-                  runnerProjectIds: [...runnerProjectIds],
-                  removed: removed.length,
-                  absent: absent.length,
-                  failed,
-                  unresolved,
-                  unknownBackends: [...unknownBackends],
-                },
-                'verity: backend transcripts outlived the session state naming them',
-              );
-            }
-            // Nothing removed, nothing failed, and every path a BINDING named came back
-            // absent — from a runtime that is actually there. That is the shape of a
-            // `sandboxCwd` or a runtime directory derived wrongly: it deletes nothing,
-            // reports no error, and would otherwise be indistinguishable from a clean
-            // purge. It is also the shape of a session whose files an earlier sweep already
-            // collected, which is why it warns rather than errors — but without it the most
-            // likely systemic failure in this path is silent.
-            //
-            // `absentBound`, not `absent`, and only with a runtime present: a delete always
-            // resolves the two speculative claude paths, and a project delete tears the
-            // runtime down before purging its sessions. Gating on the wider signal would put
-            // this line on every OpenCode session delete and every session in a project
-            // delete — routine events, both — and a warning that fires on the routine case
-            // is not read when the real one arrives.
-            if (
-              runtimeSeen &&
-              absentBound.length > 0 &&
-              removed.length === 0 &&
-              failed.length === 0
-            ) {
-              app.log.warn(
-                {
-                  sessionId,
-                  scope,
-                  runnerProjectIds: [...runnerProjectIds],
-                  sandboxCwd,
-                  absent: absentBound.length,
-                },
-                'verity: found none of a session’s backend transcripts where they should be',
-              );
-            }
-          } catch (error) {
-            // Backend switches remain best effort. Deletion must retain the session
-            // if its durable cleanup ownership could not be recorded.
-            app.log.error(
-              { err: error, sessionId, scope },
-              'verity: could not purge the backend transcripts of a session',
-            );
-            if (scope === 'session-delete') throw error;
-          }
-        };
+      : createRunnerArtifactPurge({
+          dataVolumeRoot,
+          store: eventStore,
+          log: () => app.log,
+          controlPlaneRunner: config.controlPlaneRunner === true,
+          sessionSandboxCwd,
+        });
 
   const usesClaudeBackend = (model: string | undefined): boolean =>
     !isCodexModel(model) && !model?.includes('/');
@@ -3669,126 +3497,22 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: async (projectId, sessionId, operation, signal) => {
-            const run = (imageId?: string, recheck?: () => Promise<void>) =>
-              // Wait for the project owner before taking preview locks: that owner
-              // may itself need preview teardown in order to finish.
-              provisioner.withProjectExclusiveMutation(
-                projectId,
-                () =>
-                  withStorageProjectMutation(projectId, async () => {
-                    const hold = storageHold({
-                      projectId,
-                      sessionId,
-                      devServers: managedDevServerManager,
-                      localPreviews: localPreviewManager,
-                      publicShares: await eventStore.listPublicPreviewShares(projectId),
-                    });
-                    if (hold) throw new Error(hold);
-                    await recheck?.();
-                    if (imageId) preparedWorktreeImages.set(projectId, imageId);
-                    try {
-                      await operation();
-                    } finally {
-                      preparedWorktreeImages.delete(projectId);
-                    }
-                  }),
-                sessionId ? new Set([sessionId]) : undefined,
-                signal,
-              );
-            const project = await eventStore.getProject(projectId);
-            if (project?.state === 'sleeping') {
-              const parent = await projectDocker
-                .inspectContainer(project.containerName)
-                .catch((error: unknown) => {
-                  if (error instanceof DockerError && error.kind === 'container_not_found')
-                    return undefined;
-                  throw error;
-                });
-              if (!parent) {
-                const selected =
-                  typeof defaultProjectImage === 'function'
-                    ? await defaultProjectImage()
-                    : defaultProjectImage;
-                if (!selected || !maintenanceImages)
-                  throw new MaintenanceImageError('image-unavailable');
-                return maintenanceImages.withImage(
-                  selected,
-                  (image, recheck) => run(image.id, recheck),
-                  signal,
-                );
-              }
-            }
-            return run();
-          },
-          withGit: async (project, operation) => {
-            if (config.dataVolume && !dataVolumeRoot)
-              throw new Error('Data volume root is unavailable');
-            const containerName = project.containerName;
-            const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-            const inspect = await projectDocker
-              .inspectContainer(containerName)
-              .catch((error: unknown) => {
-                if (error instanceof DockerError && error.kind === 'container_not_found')
-                  return null;
-                throw error;
-              });
-            const authenticated = async (git: GitOutput) =>
-              operation(async (args) => {
-                if (!args.includes('fetch')) return git(args);
-                // Keep provider credentials out of persistent Git config and cleanup reports.
-                if (project.kind === 'forgejo')
-                  throw new Error('Forgejo retirement fetch is unavailable; worktree retained');
-                const token =
-                  project.kind === 'local' ? undefined : await cachedProjectTokenMint(project);
-                try {
-                  return await git([
-                    ...(token
-                      ? ['-c', `http.https://github.com/.extraHeader=${gitAuthHeader(token)}`]
-                      : []),
-                    ...args,
-                  ]);
-                } catch {
-                  throw new Error('Retirement remote verification failed; worktree retained');
-                }
-              });
-            if (!inspect?.running)
-              return withSleepingSessionGit(
-                {
-                  docker: projectDocker,
-                  templateContainer: containerName,
-                  projectId: project.id,
-                  hostRoot,
-                  dockerBaseUrl: config.dockerBaseUrl!,
-                  maintenance: {
-                    ...(preparedWorktreeImages.has(project.id)
-                      ? {
-                          fallback: {
-                            imageId: preparedWorktreeImages.get(project.id)!,
-                            runtime: PROJECT_RUNSC_RUNTIME,
-                            memoryBytes: 512 * 1024 ** 2,
-                            nanoCpus: 1_000_000_000,
-                            pidsLimit: 128,
-                          },
-                        }
-                      : {}),
-                  },
-                  ...(config.dataVolume && dataVolumeRoot
-                    ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
-                    : {}),
-                },
-                authenticated,
-              );
-            return authenticated(
-              createSandboxGit({
-                containerName,
-                hostRoot,
-                dockerBaseUrl: config.dockerBaseUrl!,
-                inspect: () => projectDocker.inspectContainer(containerName),
-                timeoutMs: 15_000,
-              }),
-            );
-          },
+          ...sessionStorageAccess({
+            store: eventStore,
+            docker: projectDocker,
+            provisioner,
+            withStorageProjectMutation,
+            devServers: () => managedDevServerManager,
+            localPreviews: localPreviewManager,
+            preparedWorktreeImages,
+            defaultProjectImage,
+            maintenanceImages,
+            projectTokenMint: cachedProjectTokenMint,
+            hostCloneRoot: config.hostCloneRoot,
+            dockerBaseUrl: config.dockerBaseUrl!,
+            dataVolume: config.dataVolume,
+            dataVolumeRoot,
+          }),
           wake: async (project, sessionId) => {
             if (project.state === 'sleeping')
               await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
@@ -5237,104 +4961,16 @@ export async function buildEmbeddedServer(
    */
   const startTranscriptSweep = (): void => {
     if (dataVolumeRoot === undefined || sweepMode === 'off') return;
-    const runnersRoot = join(dataVolumeRoot, 'runners');
-    const dryRun = sweepMode === 'dry';
-    let storeReadsDone!: () => void;
-    const storeReads = new Promise<void>((resolve) => {
-      storeReadsDone = resolve;
+    const sweep = startOrphanTranscriptSweep({
+      runnersRoot: join(dataVolumeRoot, 'runners'),
+      dryRun: sweepMode === 'dry',
+      store: eventStore,
+      sessionSandboxCwd,
+      signal: sweepAbort.signal,
+      log: app.log,
     });
-    transcriptSweep = storeReads;
-    transcriptSweepWalk = (async () => {
-      let liveIds: string[];
-      let worktrees: string[];
-      try {
-        [liveIds, worktrees] = await Promise.all([
-          eventStore.listLiveBackendSessionIds(),
-          eventStore.listSessionWorktrees(),
-        ]);
-      } finally {
-        storeReadsDone();
-      }
-      const result = await sweepOrphanArtifacts({
-        runnersRoot,
-        liveIds: new Set(liveIds),
-        // The claude directory name of every session that still exists. `encodeCwd` is
-        // claude's own naming rule, applied to the cwd as the SANDBOX saw it — the same
-        // derivation the delete path uses, so the two agree on which directory belongs
-        // to which session.
-        liveCwdDirs: new Set(worktrees.map((worktree) => encodeCwd(sessionSandboxCwd(worktree)))),
-        dryRun,
-        signal: sweepAbort.signal,
-      });
-      // Logged unconditionally, at info: this deletes conversations, so what it did on
-      // a given boot has to be answerable afterwards — including "nothing".
-      const summary = {
-        dryRun,
-        scanned: result.scanned,
-        // Under `dry` nothing was deleted, so the count goes out under a name that
-        // says so: a dashboard summing `removed` must not be fed files that are still
-        // there by a run whose whole point was not to touch them.
-        ...(dryRun ? { wouldRemove: result.removed } : { removed: result.removed }),
-        megabytes: Number((result.bytes / 1024 / 1024).toFixed(1)),
-        liveKept: result.liveKept,
-        graceKept: result.graceKept,
-        liveCwdSkipped: result.liveCwdSkipped,
-        claudeCwdDirsSeen: result.claudeCwdDirsSeen,
-        failed: result.failed,
-      };
-      if (result.aborted) {
-        // Shutdown reached the walk before the walk was done. Its own line rather than the
-        // ordinary one, because every count in the summary is a partial and the ordinary
-        // line is what someone reads to answer "what did this boot delete".
-        app.log.info(
-          { ...summary, aborted: true },
-          'verity: orphaned backend transcript sweep stopped by shutdown',
-        );
-        return result;
-      }
-      if (result.storeReportedNoSession) {
-        // The bluntest of the two refusals, and the one that catches a server pointed at
-        // the wrong control-plane database: the store named no session at all, the volume
-        // was full of transcripts, and both readings of that — a deployment with no
-        // sessions, or a database that is not this volume's — end with nothing deleted.
-        // If the store really is this volume's and really is empty, the held files are
-        // dead and can be removed from the volume directly; the sweep will not do it on a
-        // store it cannot corroborate.
-        app.log.error(
-          { ...summary, held: result.held },
-          'verity: orphaned transcript sweep removed nothing — the store knows of no session at all',
-        );
-        return result;
-      }
-      if (result.claudeGuardUnproven !== undefined) {
-        // Either way the sweep collected no claude file this boot, and either way the count
-        // it did NOT take goes out with it. The level splits on how much the sweep actually
-        // knows. A contradiction means one live backend id appeared under multiple cwd
-        // directories, so no legacy mapping is unique; this line is then the only warning
-        // before a session's unreproducible `subagents/` tree would have gone. The weaker check only
-        // says nothing matched, which a deployment whose live sessions have never run claude
-        // sits in legitimately and indefinitely — an error line that never clears teaches
-        // people to ignore error lines.
-        const level = result.claudeGuardUnproven === 'contradiction' ? 'error' : 'warn';
-        app.log[level](
-          { ...summary, held: result.held, signal: result.claudeGuardUnproven },
-          'verity: orphaned transcript sweep kept every claude file — live-worktree guard unproven',
-        );
-        return result;
-      }
-      app.log.info(
-        summary,
-        dryRun
-          ? 'verity: orphaned backend transcript sweep (dry run, nothing removed)'
-          : 'verity: orphaned backend transcript sweep',
-      );
-      return result;
-    })().catch((error: unknown) => {
-      // Covers the store reads too, which is why `storeReadsDone` resolves from a
-      // `finally` — a close waiting on that promise must not hang on a failed query.
-      app.log.warn({ err: error }, 'verity: orphaned transcript sweep failed');
-      return undefined;
-    });
+    transcriptSweep = sweep.storeReads;
+    transcriptSweepWalk = sweep.walk;
   };
 
   app.addHook('onClose', async () => {
@@ -5446,51 +5082,12 @@ export async function buildEmbeddedServer(
   app.addHook('onClose', () => clearInterval(outputSweep));
   // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
   // member's container uses memory only while that member works.
-  const personalSandboxIdle = new Map<string, number>();
-  let personalSandboxSweepRunning = false;
-  const personalSandboxSweep = setInterval(() => {
-    const sleepSandbox = provisioner?.sleepPersonalSandbox?.bind(provisioner);
-    if (personalSandboxSweepRunning || sleepSandbox === undefined) return;
-    personalSandboxSweepRunning = true;
-    void sweepPersonalSandboxes(
-      {
-        listActive: async () => {
-          const active: Array<{ projectId: string; userId: string }> = [];
-          for (const sandbox of await eventStore.projectSandboxes.list()) {
-            if (sandbox.projectDefault) continue;
-            const state = await eventStore.projectSandboxes.state(
-              sandbox.projectId,
-              sandbox.userId,
-            );
-            if (state?.state === 'active') active.push(sandbox);
-          }
-          return active;
-        },
-        isBusy: async (projectId, userId) => {
-          if (await managedDevServerManager?.hasRunningServersFor(projectId, userId)) return true;
-          for (const turn of await eventStore.listRunningTurns()) {
-            const session = await eventStore.getSession(turn.sessionId);
-            if (session?.projectId !== projectId) continue;
-            const initiator = await eventStore.promptInitiatorAt(turn.sessionId, turn.promptSeq);
-            if (initiator?.userId === userId) return true;
-          }
-          return false;
-        },
-        sleep: sleepSandbox,
-        onError: (error, projectId, userId) =>
-          app.log.warn({ err: error, projectId, userId }, 'personal sandbox failed to sleep'),
-      },
-      personalSandboxIdle,
-    )
-      .catch((error: unknown) => {
-        app.log.warn({ err: error }, 'personal sandbox sleep sweep failed');
-      })
-      .finally(() => {
-        personalSandboxSweepRunning = false;
-      });
-  }, 60_000);
-  personalSandboxSweep.unref();
-  app.addHook('onClose', () => clearInterval(personalSandboxSweep));
+  installPersonalSandboxSleep(app, {
+    store: eventStore,
+    hasRunningServersFor: async (projectId, userId) =>
+      managedDevServerManager?.hasRunningServersFor(projectId, userId),
+    sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
+  });
   // An interrupted build must not hold build storage until someone reboots the host.
   // Ask at start and every five minutes whether earlier attempts provably ended.
   if (buildStorage !== undefined) {
@@ -5577,24 +5174,13 @@ export async function buildEmbeddedServer(
   app.addHook('onClose', () => claudeCredentialSync.close());
   if (uplinkControl !== undefined) {
     // Deliver queued team changes to Uplink once it negotiated team v1.
-    const teamOutbox = createTeamOutboxWorker({
+    installTeamOutbox(app, {
       team: eventStore.projectTeam,
       uplink: uplinkControl,
       identityKey: () => config.devicePairing?.identity().identityKey,
       log: app.log,
+      isSealed: (error) => error instanceof SealedError,
     });
-    const teamTimer = setInterval(() => {
-      void (async () => {
-        // Hold the Uplink connection while someone may join or a change is queued.
-        uplinkControl.setTeamDemand(await eventStore.projectTeam.hasTeamWork());
-        await teamOutbox.run();
-      })().catch((error: unknown) => {
-        if (!(error instanceof SealedError))
-          app.log.warn({ err: error }, 'verity: team outbox delivery failed');
-      });
-    }, 10_000);
-    teamTimer.unref();
-    app.addHook('onClose', () => clearInterval(teamTimer));
   }
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>

@@ -139,3 +139,38 @@ export function createTeamOutboxWorker(deps: {
     },
   };
 }
+
+/**
+ * Deliver queued team changes every ten seconds while Uplink negotiated team v1,
+ * holding the Uplink connection while someone may join or a change is queued.
+ * One pass at a time: a slow store or Uplink must not start a second delivery
+ * of the same change beside the first.
+ */
+export function installTeamOutbox(
+  app: { addHook(name: 'onClose', hook: () => void): unknown },
+  deps: Parameters<typeof createTeamOutboxWorker>[0] & {
+    team: Team & { hasTeamWork(): Promise<boolean> };
+    uplink: TeamUplink & { setTeamDemand(wanted: boolean): void };
+    isSealed: (error: unknown) => boolean;
+  },
+): void {
+  const outbox = createTeamOutboxWorker(deps);
+  let busy = false;
+  const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
+    void (async () => {
+      deps.uplink.setTeamDemand(await deps.team.hasTeamWork());
+      await outbox.run();
+    })()
+      .catch((error: unknown) => {
+        if (!deps.isSealed(error))
+          deps.log?.warn({ err: error }, 'verity: team outbox delivery failed');
+      })
+      .finally(() => {
+        busy = false;
+      });
+  }, 10_000);
+  timer.unref();
+  app.addHook('onClose', () => clearInterval(timer));
+}
