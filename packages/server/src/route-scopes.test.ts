@@ -519,25 +519,43 @@ describe('the onRoute hook in buildServer', () => {
     // that for the exemptions nobody can recover from; the conditional ones —
     // the signing broker, the container capabilities, the MCP gateway — would
     // just start answering 401 to their own callers, with no test failing. This
-    // covers all of them at once, where the ordering actually has to hold. The
-    // route modules are covered by the same fact: they are called from
-    // `buildServer`, which is below this hook.
-    const source = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
-    const hook = source.indexOf("addHook('onRoute'");
-    expect(hook, 'server.ts must attach an onRoute hook').toBeGreaterThan(-1);
+    // covers all of them at once, where the ordering actually has to hold.
+    //
+    // The hook lives in `createServerApp` (server-http.ts), right after the
+    // Fastify constructor, and `buildServer` calls that before it registers
+    // anything. The route modules are covered by the same fact: they are called
+    // from `buildServer`, below that call.
+    const expectFirst = (file: string, marker: string, what: string): void => {
+      const source = readFileSync(join(REPO_ROOT, 'packages/server/src', file), 'utf8');
+      const at = source.indexOf(marker);
+      expect(at, `${file} must contain ${what}`).toBeGreaterThan(-1);
+      ANY_ROUTE_PATTERN.lastIndex = 0;
+      const firstRoute = ANY_ROUTE_PATTERN.exec(source);
+      if (firstRoute !== null) {
+        expect(firstRoute.index, `a route is registered above ${what} in ${file}`).toBeGreaterThan(
+          at,
+        );
+      }
+      // A plugin gets its own encapsulated context, which inherits the hooks that
+      // existed when it was created — and only those.
+      PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+      const firstRegister = PLUGIN_REGISTER_PATTERN.exec(source);
+      if (firstRegister !== null) {
+        expect(
+          firstRegister.index,
+          `a plugin is registered above ${what} in ${file}`,
+        ).toBeGreaterThan(at);
+      }
+    };
+    expectFirst('server-http.ts', "addHook('onRoute'", 'the onRoute hook');
+    expectFirst('server.ts', 'createServerApp(deps)', 'the createServerApp call');
+    // Something to order against, or the scan itself broke.
+    const server = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
     ANY_ROUTE_PATTERN.lastIndex = 0;
-    const firstRoute = ANY_ROUTE_PATTERN.exec(source);
-    expect(firstRoute, 'nothing to order the hook against — the scan broke').not.toBeNull();
-    expect(firstRoute!.index, 'a route is registered above the onRoute hook').toBeGreaterThan(hook);
-    // A plugin gets its own encapsulated context, which inherits the hooks that
-    // existed when it was created — and only those.
-    PLUGIN_REGISTER_PATTERN.lastIndex = 0;
-    const firstRegister = PLUGIN_REGISTER_PATTERN.exec(source);
-    if (firstRegister !== null) {
-      expect(firstRegister.index, 'a plugin is registered above the onRoute hook').toBeGreaterThan(
-        hook,
-      );
-    }
+    expect(
+      ANY_ROUTE_PATTERN.exec(server),
+      'nothing to order against — the scan broke',
+    ).not.toBeNull();
   });
 
   it('refuses to register a declared exception under a parameterised url', () => {
