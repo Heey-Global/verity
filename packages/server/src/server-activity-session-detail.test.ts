@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { app, ctx, pendingPermissions, ZERO_USAGE } from './server-fixture.test-helper.js';
+import { app, ctx, ZERO_USAGE } from './server-fixture.test-helper.js';
 import { sessionGoogleStatus } from './session-google-status.js';
 
 describe('GET /sessions/:id', () => {

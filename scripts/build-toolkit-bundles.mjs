@@ -1,4 +1,5 @@
 import { build } from 'esbuild';
+import { Buffer } from 'node:buffer';
 import { readFile, rm } from 'node:fs/promises';
 import { basename } from 'node:path';
 
@@ -29,6 +30,7 @@ const bundles = [
 // the sources moved: they ship and install on their own, and some of them start
 // themselves from `import.meta.url` (verity-memory-guard.mjs re-execs itself), so
 // inlining them would run their entry inside the broker.
+/** @type {import('esbuild').Plugin} */
 const siblingExecutables = {
   name: 'toolkit-sibling-executables',
   setup(build) {

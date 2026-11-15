@@ -1,4 +1,3 @@
-import { resolve } from 'node:path';
 import { type AgentEvent } from '@verity/events';
 import { type Kysely, type Transaction } from 'kysely';
 import type { Database } from './schema.js';

@@ -42,7 +42,6 @@ import {
   repeatedVerityInstructions,
   runBackendHandoff,
   startSession,
-  stopSession,
   tryRunExclusive,
   worktreeRoot,
 } from './server-fixture.test-helper.js';

@@ -28,20 +28,6 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function serve(path: string, reply: unknown): Promise<void> {
-  await mkdir(join(path, '..'), { recursive: true });
-  const server = createServer((socket) => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-    socket.once('data', () => socket.end(`${JSON.stringify(reply)}\n`));
-  });
-  servers.push(server);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(path, resolve);
-  });
-}
-
 const state = (status: 'claimed' | 'running' | 'settled' = 'running') => ({
   protocolVersion: 1,
   turnId: 'turn-1',

@@ -1,53 +1,10 @@
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  agentLaunchSpec,
-  trustedCliLaunchSpec,
-} from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { createBrokerSpawner } from './broker-spawner.js';
-
-/**
- * Every argv the broker drops privileges for — each agent command and the
- * trusted-CLI arm — paired with the executable that ends its flag prefix and
- * with the name the failure message should blame.
- *
- * The boundary tests below run the whole set rather than one launch path: a
- * flag that survives in `agentLaunchSpec` but is dropped from
- * `trustedCliLaunchSpec` is exactly the asymmetric drift they exist to catch,
- * and a trusted CLI is reached through an agent turn, so it is the same
- * boundary either way.
- */
-function privilegeDropLaunches(
-  extra: { dockerGid?: string } = {},
-): { path: string; args: string[]; executable: string }[] {
-  const identity = { agentUid: 1000, agentGid: 1000, runnerUid: 1101, runnerGid: 1101, ...extra };
-  const agent = (
-    command: 'claude-agent-acp' | 'codex-acp' | 'opencode-acp',
-    executable: string,
-  ) => ({
-    path: `agentLaunchSpec(${command})`,
-    args: agentLaunchSpec({ command, args: [], cwd: '/work' }, identity).args,
-    executable,
-  });
-  return [
-    agent('claude-agent-acp', '/usr/local/bin/claude-agent-acp'),
-    agent('codex-acp', '/usr/local/bin/codex-acp'),
-    agent('opencode-acp', '/usr/local/bin/opencode-acp'),
-    {
-      path: 'trustedCliLaunchSpec',
-      args: trustedCliLaunchSpec(
-        { kind: 'trusted-cli', command: '/usr/bin/gh', args: [], cwd: '/work', secrets: [] },
-        identity,
-      ).args,
-      executable: '/usr/bin/gh',
-    },
-  ];
-}
 
 let runtimeDir: string;
 

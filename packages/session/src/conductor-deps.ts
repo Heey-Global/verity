@@ -1,15 +1,9 @@
-import type { stat } from 'node:fs/promises';
 import type { EventStore, SessionRecord, TranscriptStore } from '@verity/store';
 import type { EventBus } from './bus.js';
-import type { AcpClaudeBackend } from './acp-claude-backend.js';
 import type { Backend, BrokeredGrantChannel } from './backend.js';
 import type { BrokeredGrantToolName } from './brokered-grants.js';
 import type { Spawner } from './backend-contract.js';
-import type {
-  LoopbackRunnerClient,
-  RunnerClientFactory,
-  RunnerRecovery,
-} from './runner-contract.js';
+import type { RunnerClientFactory, RunnerRecovery } from './runner-contract.js';
 import type { TurnPreparationContext } from './conductor.js';
 
 export interface ConductorDeps {

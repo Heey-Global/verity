@@ -41,14 +41,11 @@ const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
   'EnterPlanMode',
 ] as const;
 import type {
-  EventStore,
   PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
-  TranscriptStore,
 } from '@verity/store';
-import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { BACKGROUND_HOLD_MAX_MS, BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
@@ -64,11 +61,7 @@ import {
   sanitizeTitle,
 } from './session-title.js';
 import { buildVisibleMediaRepairEvent } from './visible-media-repair.js';
-import {
-  brokeredGrantTarget,
-  brokeredGrantToolName,
-  type BrokeredGrantToolName,
-} from './brokered-grants.js';
+import { brokeredGrantTarget, brokeredGrantToolName } from './brokered-grants.js';
 export {
   brokeredGrantTarget,
   brokeredGrantToolName,
@@ -79,14 +72,12 @@ import {
   isUsageLimitError,
   type RunResult,
   type RunTurnOptions,
-  type Spawner,
   type SteerMessage,
 } from './backend-contract.js';
 import {
   LoopbackRunnerClient,
   type RunnerAttachTarget,
   type RunnerClientFactory,
-  type RunnerRecovery,
   type RunnerRecoveryOutcome,
   type RunnerTurn,
 } from './runner-contract.js';

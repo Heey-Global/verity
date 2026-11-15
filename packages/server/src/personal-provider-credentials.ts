@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
-
 import type { EventStore, ProviderConnectionKind } from '@verity/store';
-
 import type { AgentGatewayPerson, CodexCredentialUpdate } from './agent-gateway-control.js';
 import {
   ClaudeOAuthResolutionError,
@@ -188,5 +186,3 @@ export function createPersonalProviderCredentials(options: {
     },
   };
 }
-
-type PersonalProviderCredentials = ReturnType<typeof createPersonalProviderCredentials>;

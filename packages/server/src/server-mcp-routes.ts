@@ -37,10 +37,8 @@ import {
 import { PermissionDecisionInProgressError } from '@verity/session';
 import { presentMockupsRequestSchema, type SessionMockupActions } from './mockups.js';
 import type { EventStore, SessionRecord } from '@verity/store';
-import { httpMcpConnectionUsableBy, isLocalProject, type ProjectRecord } from '@verity/store';
+import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 import {
   assistantToolRefusal,
   executeAssistantTool,
@@ -101,8 +99,6 @@ import {
   openPlanDecisions,
   trustedPlanInstructionConsent,
 } from './planning.js';
-import { resolveProjectDefaultModel } from './project-agent-policy.js';
-import { projectClonePath } from './provisioner.js';
 import type { ServerDeps } from './server-deps.js';
 import type {
   ModelList,
@@ -130,7 +126,6 @@ import { type SessionStatus } from './status.js';
 import { executeTasksTool } from './tasks-routes.js';
 import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
 import type { WikiProposals } from './wiki-proposals.js';
 export interface ServerMcpRouteDeps {
   deps: ServerDeps;

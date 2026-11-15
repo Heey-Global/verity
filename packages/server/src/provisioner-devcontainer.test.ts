@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import {
   devcontainerBuildInputsConfined,
@@ -9,150 +9,11 @@ import {
   defaultDevcontainerBuildSpawner,
   DEVCONTAINER_NODE_FEATURE_REF,
 } from './provisioner.js';
-import { DockerError } from './docker.js';
-import { type ClaudeEgressIdentityService } from './claude-egress-identity.js';
-
-const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
-
-/** Recreates the relay reconciler and turn repair start, with the initiator each records. */
-const RECONCILE = {
-  confirmWarnings: true,
-  initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
-};
-
-const TURN_REPAIR = {
-  confirmWarnings: true,
-  initiator: { kind: 'session', sessionId: 'requesting-session' },
-};
 
 const verifiedNodeVersion = readFileSync(
   new URL('../../../.nvmrc', import.meta.url),
   'utf8',
 ).trim();
-
-/** The start failure runsc reports for a filestore left by an unclean teardown,
- *  as worded in runsc/container/container.go (createGoferFilestoreInSelf) of the
- *  release pinned in deploy/gvisor/versions.env, wrapped the way dockerd relays it. */
-function staleFilestoreError(containerId: string, docker29 = false): DockerError {
-  const filestore = `/proc/4242/root/var/lib/docker/overlay2/layer/merged/.gvisor.filestore.${containerId}`;
-  return new DockerError({
-    kind: 'other',
-    status: 500,
-    message: docker29
-      ? `OCI runtime create failed: creating container: cannot create gofer process: creating gofer filestore files: "/var/lib/docker/rootfs/overlayfs/layer" mount source already has a filestore file ".gvisor.filestore.${containerId}"; repeated submounts are not supported with overlay optimizations`
-      : `failed to create task for container: OCI runtime create failed: runsc-project: ` +
-        `"/var/lib/docker/overlay2/layer/merged" mount source already has a filestore file at ` +
-        `"${filestore}"; repeated submounts are not supported with overlay optimizations`,
-  });
-}
-
-/**
- * Decode a container spec's `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
- * `GIT_CONFIG_VALUE_n` triples the way git itself does, into `key -> value`.
- *
- * Reading the entries through the count is the point. git stops at
- * `GIT_CONFIG_COUNT` and ignores every pair beyond it, so a spec that carries
- * the right keys under a count that does not reach them configures nothing —
- * and an assertion that looked the variables up by name directly would still be
- * green. A later entry wins, matching git's last-one-wins precedence.
- */
-/** A fixed wall-clock start for the deferral-report tests. Any value does; a
- *  round one keeps a failure message readable. */
-const START_MS = Date.parse('2026-09-17T12:00:00.000Z');
-
-/** `cpu.weight` a cgroup v2 container gets when Docker sends no `CpuShares` —
- *  what every Verity container other than a sandbox runs at. */
-const CGROUP_V2_DEFAULT_CPU_WEIGHT = 100;
-
-/**
- * runc's `CpuShares` -> cgroup v2 `cpu.weight` conversion
- * (`ConvertCPUSharesToCgroupV2Value`), so a test can assert the weight a sandbox
- * actually ends up scheduled at instead of the Docker-API number that produces
- * it. The two do not rank alike, which is the whole reason to convert: shares
- * 1024 — Docker's nominal default, and the obvious "reset to neutral" value —
- * converts to 39, well under the 100 an unweighted container gets.
- */
-function cgroupV2CpuWeight(shares: number | undefined): number {
-  // `trunc`, not `floor`: Go divides integers toward zero, and the two disagree
-  // for `shares === 1` — the one legal-looking input that makes the numerator
-  // negative. No value this repository produces reaches that input, but a helper
-  // documented as mirroring runc should not diverge from it anywhere it can be
-  // read back as evidence of what the kernel will see.
-  return shares === undefined || shares === 0
-    ? CGROUP_V2_DEFAULT_CPU_WEIGHT
-    : 1 + Math.trunc(((shares - 2) * 9999) / 262142);
-}
-
-/**
- * Run `body` against a controllable `Date.now()`, starting at `from`.
- *
- * Stub only the clock read: database socket I/O must retain real timers.
- */
-async function withClockFrom(
-  from: number,
-  body: (advanceTo: (at: number) => void) => Promise<void>,
-): Promise<void> {
-  const now = vi.spyOn(Date, 'now').mockReturnValue(from);
-  try {
-    await body((at) => void now.mockReturnValue(at));
-  } finally {
-    now.mockRestore();
-  }
-}
-
-function gitConfigEnv(env: string[]): Record<string, string> {
-  const byName = new Map(
-    env
-      .filter((entry) => entry.includes('='))
-      .map((entry) => {
-        const separator = entry.indexOf('=');
-        return [entry.slice(0, separator), entry.slice(separator + 1)] as const;
-      }),
-  );
-  const count = Number.parseInt(byName.get('GIT_CONFIG_COUNT') ?? '0', 10);
-  const config: Record<string, string> = {};
-  for (let index = 0; index < count; index += 1) {
-    const key = byName.get(`GIT_CONFIG_KEY_${String(index)}`);
-    const value = byName.get(`GIT_CONFIG_VALUE_${String(index)}`);
-    if (key === undefined || value === undefined) {
-      throw new Error(`GIT_CONFIG_COUNT=${String(count)} but entry ${String(index)} is missing`);
-    }
-    config[key] = value;
-  }
-  return config;
-}
-
-/** Fake {@link ClaudeEgressIdentityService} returning fixed sandbox material and
- *  recording revocations. `gatewayMaterial` is never used by the provisioner. */
-function fakeEgressIdentity(): {
-  service: ClaudeEgressIdentityService;
-  revoked: string[];
-  revokedSandboxes: Array<{ projectId: string; userId: string }>;
-} {
-  const revoked: string[] = [];
-  const revokedSandboxes: Array<{ projectId: string; userId: string }> = [];
-  const service: ClaudeEgressIdentityService = {
-    async gatewayMaterial() {
-      throw new Error('gatewayMaterial is not used by the provisioner');
-    },
-    async sandboxMaterial({ projectId }) {
-      return {
-        projectId,
-        fingerprint256: 'ab'.repeat(32),
-        caCertPem: 'CA-CERT-PEM',
-        clientCertPem: 'CLIENT-CERT-PEM',
-        clientKeyPem: 'CLIENT-KEY-PEM',
-      };
-    },
-    async revokeSandbox(sandbox) {
-      revokedSandboxes.push(sandbox);
-    },
-    async revokeProject(projectId: string) {
-      revoked.push(projectId);
-    },
-  };
-  return { service, revoked, revokedSandboxes };
-}
 
 let ctx: TestDb;
 

@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { VERITY_CONTROL_SYSTEM_PROMPT } from './server.js';
 
-const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
-
 // The control-plane system prompt is a set of claims about a deployment the agent cannot
 // inspect. It promised server-provided git and GitHub credentials — true only while
 // control-plane turns ran in-process on the Server host. In the sealed-runner deployment the

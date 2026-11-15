@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { type AgentEvent } from '@verity/events';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { backfillToolResultText, EventStore } from './store.js';
+import { backfillToolResultText } from './store.js';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 
 let ctx: TestDb;
@@ -18,21 +18,7 @@ beforeEach(async () => {
   await truncateAll(ctx.db);
 });
 
-const ADMIN = '00000000-0000-4000-8000-000000000001';
-
 const session = { sessionId: 's1', worktree: '/wt/agent-s1', model: 'claude-opus-4-8' };
-
-const sampleEvents: AgentEvent[] = [
-  { t: 'session', id: 's1', model: 'claude-opus-4-8', worktree: '/wt/agent-s1' },
-  { t: 'text', delta: 'hello' },
-  { t: 'tool_call', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } },
-  { t: 'raw', backend: 'claude-code', payload: { nested: { a: 1 }, list: [1, 2] } },
-];
-
-/** Comfortably longer than any log the fact tests write, so the tail IS the whole
- *  slice and they keep asking what they were written to ask. The tail bound
- *  itself is exercised against a log built to exceed it. */
-const WHOLE_LOG = 1_000;
 
 describe('EventStore — large text tool results', () => {
   const bigText = 'x'.repeat(5000); // > TOOL_TEXT_EXTERNALIZE_THRESHOLD (4096)

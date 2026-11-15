@@ -1,7 +1,4 @@
-import {
-  removeLegacyProjectNetwork,
-  removePersonalSandboxNetwork,
-} from './project-network-cleanup.js';
+import { removeLegacyProjectNetwork } from './project-network-cleanup.js';
 import {
   activityObservations,
   activityReasons,
@@ -18,7 +15,6 @@ import {
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import {
   projectNetworkName,
-  projectNodeModulesVolumeName,
   sandboxIdentity,
   sandboxKey,
   sandboxPersonTag,
@@ -51,7 +47,6 @@ import {
   type LocalConfigState,
 } from './local-clone-config.js';
 import type { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
-import { backupLifecycle } from './backup/lifecycle.js';
 import {
   isBuildStorageCapacityRefusal,
   type BuildStorage,
@@ -174,7 +169,6 @@ import {
   AGENT_GATEWAY_PEER_FINGERPRINT_LABEL,
   recordAgentGatewayProjection,
 } from './agent-gateway-projection.js';
-import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type {
   VeritySettingsRecord,
   Database,

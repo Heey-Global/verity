@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { app, ctx } from './server-fixture.test-helper.js';
 
-/** Without the auth gate every request acts as the seeded administrator. */
-const IMPLICIT_ADMIN = '00000000-0000-4000-8000-000000000001';
-
 describe('PATCH /projects/:id/profile', () => {
   beforeEach(async () => {
     await ctx.store.upsertProject({

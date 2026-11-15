@@ -111,7 +111,7 @@ export function sessionStorageAccess(deps: {
     withGit: async (project, operation) => {
       if (config.dataVolume && !dataVolumeRoot) throw new Error('Data volume root is unavailable');
       const containerName = project.containerName;
-      const hostRoot = projectClonePath(config.hostCloneRoot!, project);
+      const hostRoot = projectClonePath(config.hostCloneRoot, project);
       const inspect = await projectDocker
         .inspectContainer(containerName)
         .catch((error: unknown) => {
@@ -144,7 +144,7 @@ export function sessionStorageAccess(deps: {
             templateContainer: containerName,
             projectId: project.id,
             hostRoot,
-            dockerBaseUrl: config.dockerBaseUrl!,
+            dockerBaseUrl: config.dockerBaseUrl,
             maintenance: {
               ...(preparedWorktreeImages.has(project.id)
                 ? {
@@ -168,7 +168,7 @@ export function sessionStorageAccess(deps: {
         createSandboxGit({
           containerName,
           hostRoot,
-          dockerBaseUrl: config.dockerBaseUrl!,
+          dockerBaseUrl: config.dockerBaseUrl,
           inspect: () => projectDocker.inspectContainer(containerName),
           timeoutMs: 15_000,
         }),

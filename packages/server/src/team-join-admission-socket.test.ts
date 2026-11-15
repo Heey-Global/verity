@@ -42,8 +42,8 @@ async function fixture(decide: (pending: TeamJoinPending) => Promise<'accepted' 
   server.on('connection', (socket, request) => {
     const peer: Peer = { socket, received: [] };
     (request.url === '/data' ? data : control).push(peer);
-    socket.on('message', (raw) =>
-      peer.received.push(JSON.parse(String(raw)) as Record<string, unknown>),
+    socket.on('message', (raw: Buffer) =>
+      peer.received.push(JSON.parse(raw.toString('utf8')) as Record<string, unknown>),
     );
   });
   const settings = { uplinkSubscriptionKey: 'test-subscription', uplinkInstallationId: null };

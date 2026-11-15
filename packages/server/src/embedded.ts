@@ -96,7 +96,6 @@ import {
 } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
-import type { GitOutput } from './branches.js';
 import { SessionStorage } from './session-storage.js';
 import { sessionStorageAccess } from './session-storage-access.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
@@ -275,7 +274,6 @@ import {
   validateRuntimeReadinessTtl,
 } from './runtime-readiness-gate.js';
 import {
-  queueSessionCleanup,
   pendingSessionCleanups,
   createSessionCleanupProcessor,
   deleteRunnerSessionHome,
@@ -285,10 +283,7 @@ import {
 import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
-import {
-  purgeSessionArtifacts as purgeSessionArtifactFiles,
-  type SessionArtifactScope,
-} from './session-artifacts.js';
+import { purgeSessionArtifacts as purgeSessionArtifactFiles } from './session-artifacts.js';
 import {
   createGitHubAppInstallationTokenMint,
   createGitHubAppProjectTokenMint,
@@ -308,7 +303,6 @@ import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from '.
 import {
   ProvisionerImpl,
   projectClonePath,
-  gitAuthHeader,
   devcontainerBuilderIdle,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,

@@ -1,20 +1,8 @@
-import {
-  AUTONOMY_RESUME_SYSTEM_PROMPT,
-  AUTOMATION_SYSTEM_PROMPT,
-  BREVITY_SYSTEM_PROMPT,
-  PLANNING_SYSTEM_PROMPT,
-  TASKS_RESUME_SYSTEM_PROMPT,
-  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
-  SANDBOX_RESOURCES_SYSTEM_PROMPT,
-  TERMINOLOGY_SYSTEM_PROMPT,
-  VISIBLE_MEDIA_SYSTEM_PROMPT,
-  type AgentEvent,
-  type BrokeredGrantChannel,
-} from '@verity/events';
+import { type AgentEvent, type BrokeredGrantChannel } from '@verity/events';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Conductor, SessionBusyError } from './conductor.js';
-import type { RunResult, RunTurnOptions, SteerMessage } from './backend-contract.js';
+import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import { type Backend } from './backend.js';
 import { SessionWriter } from './ingest.js';
 import type { PermissionDecision, PermissionRequest } from '@verity/adapter-claude';
@@ -45,66 +33,6 @@ const ZERO_USAGE = {
   cacheReadTokens: 0,
   cacheCreationTokens: 0,
 } as const;
-
-/**
- * The compact directive set a resumed turn carries, enumerated rather than
- * imported: the conductor consumes `RESUME_SYSTEM_PROMPT`, and
- * restating its membership here is the point — a fragment joining or leaving the
- * set has to be a two-file change, not a silent one.
- */
-const RESUME_SET = [
-  TERMINOLOGY_SYSTEM_PROMPT,
-  AUTONOMY_RESUME_SYSTEM_PROMPT,
-  PLANNING_SYSTEM_PROMPT,
-  TASKS_RESUME_SYSTEM_PROMPT,
-  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
-  VISIBLE_MEDIA_SYSTEM_PROMPT,
-  SANDBOX_RESOURCES_SYSTEM_PROMPT,
-  AUTOMATION_SYSTEM_PROMPT,
-  BREVITY_SYSTEM_PROMPT,
-];
-
-/**
- * Ceiling for the assembled set, which includes the automation contract for existing sessions
- * alongside the compact autonomy convergence fragment. A tripwire on the whole re-sent payload rather
- * than a target: the cost here is per operator message, not per context, so growth that
- * is cheap in a fresh turn is not cheap in this one. Membership is checked
- * exactly by {@link expectResumeSet}; this is the only instrument that notices
- * the members themselves growing — including the two this feature does not own,
- * which is deliberate: what is charged per message is the assembled payload, not
- * whichever fragment last grew. Kept above the sandbox fragment's own ceiling
- * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
- * permits cannot fail here instead, where the message would name the wrong
- * thing. The repository-discovery directive adds 1466 characters so existing
- * sessions learn the managed module workflow too. The assembled payload is now
- * about 9300 characters; keep a small explicit allowance for separators and wording.
- */
-const RESUME_SET_BUDGET = 9500;
-
-/**
- * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
- * once, and nothing else but the separators between them.
- *
- * Membership and exclusivity rather than string equality: equality would also pin
- * the order the conductor happens to interpolate them in, so a semantically
- * neutral reorder would fail with a 3.4 KB string diff naming nothing. What has
- * to hold is that a resumed turn carries exactly this compact convergence set.
- */
-function expectResumeSet(appended: string | undefined): void {
-  let residue = appended ?? '';
-  for (const fragment of RESUME_SET) {
-    // `split` rather than `toContain`, so a template that interpolated a fragment
-    // twice fails here instead of passing.
-    expect(residue.split(fragment)).toHaveLength(2);
-    residue = residue.replace(fragment, '');
-  }
-  expect(residue.trim()).toBe('');
-  expect(
-    (appended ?? '').length,
-    `the resumed-turn prompt exceeds RESUME_SET_BUDGET (${String(RESUME_SET_BUDGET)}); it is ` +
-      're-sent on every operator message, so growing any of its fragments is not free',
-  ).toBeLessThan(RESUME_SET_BUDGET);
-}
 
 /** The live window of a scripted turn, handed to {@link TurnScript.during}. */
 interface ScriptedTurn {
@@ -238,92 +166,6 @@ function scriptedBackend(
       if (options === undefined) throw new Error('backend was never run');
       return options;
     },
-  };
-}
-
-/** A backend whose turn binds its session and then stays in flight until `gate`
- *  resolves, so a test can assert acceptance/serialization while a turn is
- *  genuinely running. */
-function gatedBackend(
-  gate: Promise<void>,
-  script: TurnScript = {},
-): ReturnType<typeof scriptedBackend> {
-  return scriptedBackend({
-    ...script,
-    during: async (turn) => {
-      await script.during?.(turn);
-      await gate;
-    },
-  });
-}
-
-/**
- * A backend that registers the live turn's steering channel (#101) and then holds
- * the turn open until the test releases it — the seam the Conductor folds a mid-turn
- * message through. `registersChannel: false` models a turn that never surfaces an
- * injector (not steerable, or it ended in the race), which must fall back to the
- * #90 queue.
- */
-function steerableBackend(registersChannel = true): {
-  backend: Backend;
-  steered: SteerMessage[];
-  ready: () => boolean;
-  release: () => void;
-  last: () => RunTurnOptions;
-} {
-  const steered: SteerMessage[] = [];
-  let ready = false;
-  let release = (): void => undefined;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const fake = scriptedBackend({
-    during: async (turn) => {
-      if (registersChannel) {
-        turn.opts.onSteer?.((message) => {
-          steered.push(message);
-          return true;
-        });
-      }
-      ready = true; // run is live → the steering channel is registered
-      await gate; // hold the turn in flight so we can steer it
-    },
-  });
-  return { backend: fake.backend, steered, ready: () => ready, release, last: fake.last };
-}
-
-/**
- * A backend whose turns bind their session and then park until released — one
- * resolver per turn, in start order, so a test can hold several turns in flight
- * and free them one at a time.
- */
-function releasableBackend(): {
-  backend: Backend;
-  releases: Array<() => void>;
-  calls: RunTurnOptions[];
-} {
-  const releases: Array<() => void> = [];
-  const fake = scriptedBackend({
-    during: () =>
-      new Promise<void>((resolve) => {
-        releases.push(resolve);
-      }),
-  });
-  return { backend: fake.backend, releases, calls: fake.calls };
-}
-
-/** A backend that must never be reached: every pre-flight rejection test asserts
- *  the Conductor refused the turn before it got this far. */
-function unreachableBackend(): { backend: Backend; ran: () => boolean } {
-  let ran = false;
-  return {
-    backend: {
-      run: () => {
-        ran = true;
-        return Promise.reject(new Error('backend must not run'));
-      },
-    },
-    ran: () => ran,
   };
 }
 
