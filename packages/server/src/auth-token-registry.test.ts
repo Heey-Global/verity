@@ -1,12 +1,5 @@
-import type { Conductor } from '@verity/session';
 import { describe, expect, it, vi } from 'vitest';
 import { createAuthTokenRegistry, hashAuthToken, type AuthTokenStore } from './auth.js';
-
-const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
-
-const conductor = {} as unknown as Conductor;
-
-const PASSWORD = 'correct-horse-battery';
 
 interface FakeRow {
   id: string;
