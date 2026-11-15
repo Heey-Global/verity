@@ -11,7 +11,6 @@ import {
   type Server,
   type IncomingMessage,
   type RequestListener,
-  type ServerResponse,
 } from 'node:http';
 import { connect, TLSSocket } from 'node:tls';
 import { tmpdir } from 'node:os';
@@ -372,23 +371,6 @@ function cliEnv(port: number): NodeJS.ProcessEnv {
     no_proxy: '',
   };
 }
-
-/** An upstream that streams `frames` chunks over `durationMs`, like a first clone. */
-function slowStream(frames: number, durationMs: number) {
-  return (_req: IncomingMessage, res: ServerResponse) => {
-    let sent = 0;
-    const timer = setInterval(() => {
-      res.write(`frame${sent}\n`);
-      if (++sent === frames) {
-        clearInterval(timer);
-        res.end();
-      }
-    }, durationMs / frames);
-    res.once('close', () => clearInterval(timer));
-  };
-}
-
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 describe('brokered forge TLS boundary', () => {
   it('does not diagnose successful or policy-rejected requests as transport failures', async () => {
