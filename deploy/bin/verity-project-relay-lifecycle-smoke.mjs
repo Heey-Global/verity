@@ -78,8 +78,8 @@ const runtime = createProjectRelayRuntime({
   socketOwnerUid: 0,
   relayGid: 65_532,
   defaultSandboxUser: async () => SANDBOX_USER,
-  projectNetwork: (projectId) =>
-    projectId === `rollback-${suffix}` ? `missing-network-${suffix}` : projectNetwork,
+  sandboxNetwork: (sandbox) =>
+    sandbox.projectId === `rollback-${suffix}` ? `missing-network-${suffix}` : projectNetwork,
 });
 
 async function waitFor(description, containerName, operation) {
