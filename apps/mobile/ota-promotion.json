@@ -1,14 +1,17 @@
 {
   "schema": 1,
-  "version": "1.91.1",
-  "runtime": "1.91.0",
+  "version": "1.92.1",
+  "runtime": "1.92.0",
   "channel": "production",
-  "commit": "5148bcaa492ead6f681ec1d9fb0aade288e0be1d",
-  "tag": "mobile-v1.91.1",
-  "branch": "staging-mobile-v1.91.1-5148bcaa492ead6f681ec1d9fb0aade288e0be1d",
-  "baseline": "mobile-v1.91.0",
-  "group": "447233ab-448d-44aa-9182-4d3278fad56e",
+  "commit": "639e4d9ac13c850fa456c3e1a9292fee97a9d005",
+  "tag": "mobile-v1.92.1",
+  "branch": "staging-mobile-v1.92.1-639e4d9ac13c850fa456c3e1a9292fee97a9d005",
+  "baseline": "mobile-v1.92.0",
+  "group": "c7461dd1-ade2-4395-93d6-ee68eaa47ab0",
   "notes": [
-    "keep project reorder attached across tab switches (#2540)"
+    "prepare dependencies in repositories opened into a session (#2572)",
+    "keep Claude turns open while background work runs (#2571)",
+    "render choices when several options are recommended (#2570)",
+    "show server updates and outages once, in a central connection bar (#2562)"
   ]
 }
