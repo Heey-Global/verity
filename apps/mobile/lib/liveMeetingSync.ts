@@ -60,16 +60,24 @@ function publishFailure(serverId: string, id: string, failure: MeetingSyncFailur
 
 const uploadFailureMessage =
   'The server could not accept the saved transcript. Your local copy is kept.';
-// Reconnect + explicit retry can recover auth failures; throttling/timeouts remain retryable.
+// A 401 is about this device's credential, not the meeting: the app re-authenticates and
+// the upload goes through on a later attempt. Blocking it instead left the meeting's
+// final state unsent, so the server kept showing it as running on every device.
 const permanentUploadError = (error: unknown): error is VerityApiError =>
-  error instanceof VerityApiError && [400, 401, 403, 404, 409, 413, 422].includes(error.status);
+  error instanceof VerityApiError && [400, 403, 404, 409, 413, 422].includes(error.status);
 
 async function uploadMeeting(
   client: VerityClient,
   serverId: string,
   meeting: Awaited<ReturnType<typeof pendingMeetings>>[number],
 ): Promise<void> {
-  const blocked = await meetingUploadFailure(serverId, meeting.id);
+  let blocked = await meetingUploadFailure(serverId, meeting.id);
+  if (blocked?.status === 401 && blocked.revision >= 0) {
+    // Recorded by an earlier version that treated 401 as permanent: retry it like an
+    // explicit retry would, keeping a confirmed server finalization.
+    blocked = { ...blocked, revision: -1 };
+    await saveMeetingUploadFailure(serverId, meeting.id, blocked);
+  }
   if (blocked?.status)
     publishFailure(serverId, meeting.id, { ...blocked, message: uploadFailureMessage });
   // Heartbeats and new speech advance revisions too; they do not repair validation/auth.
