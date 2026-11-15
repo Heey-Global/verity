@@ -228,7 +228,10 @@ describe('legacy Documents session conversion', () => {
     vi.mocked(f.deps.ensureWorkspace).mockImplementation(async (session) => {
       mkdirSync(session.worktree, { recursive: true });
     });
-    await expect(recovery.restore('s')).resolves.toBeNull();
+    await expect(recovery.restore('s')).resolves.toMatchObject({
+      restored: true,
+      source: 'journal',
+    });
     expect(existsSync(f.target)).toBe(true);
   });
 
@@ -242,5 +245,36 @@ describe('legacy Documents session conversion', () => {
     });
     await expect(recovery.convert('s')).resolves.toBeNull();
     expect(f.session().worktree).toBe(f.view);
+  });
+
+  it("converts at the conductor's own turn start even behind a queued turn", async () => {
+    const f = fixture();
+    f.busy();
+    // The idle claim refuses while a turn is queued; the start of that very turn owns it.
+    await createCodeWorkspaceRecovery(f.deps).beforeTurn('s', { starting: true });
+    expect(f.session().worktree).toBe(f.target);
+  });
+
+  it('owes no conversion in Verity Control or without project clones', async () => {
+    const f = fixture();
+    const control = createCodeWorkspaceRecovery({
+      ...f.deps,
+      store: {
+        ...f.deps.store,
+        getProject: async () => ({ id: 'p', kind: 'control_plane' }) as unknown as ProjectRecord,
+      },
+    });
+    await expect(control.beforeTurn('s')).resolves.toBeUndefined();
+    const unconfigured = createCodeWorkspaceRecovery({ ...f.deps, cloneRoot: undefined });
+    await expect(unconfigured.beforeTurn('s')).resolves.toBeUndefined();
+    expect(f.session().worktree).toBe(f.view);
+  });
+
+  it('runs one conversion when a turn start and a Restore race', async () => {
+    const f = fixture();
+    const recovery = createCodeWorkspaceRecovery(f.deps);
+    const [first, second] = await Promise.all([recovery.convert('s'), recovery.convert('s')]);
+    expect(second).toBe(first);
+    expect(first?.source).toBe('fresh');
   });
 });

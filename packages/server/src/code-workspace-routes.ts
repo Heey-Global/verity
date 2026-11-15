@@ -54,6 +54,10 @@ export function installCodeWorkspaces(
     },
   });
 
+  if (deps.codeWorkspaceTurns)
+    deps.codeWorkspaceTurns.prepare = (sessionId) =>
+      recovery.beforeTurn(sessionId, { starting: true });
+
   app.post('/sessions/:id/code-workspace/restore', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     if (!(await deps.eventStore.getSession(id))) {
@@ -63,10 +67,10 @@ export function installCodeWorkspaces(
     try {
       const result = await recovery.restore(id);
       request.log.info(
-        { sessionId: id, source: result?.source ?? 'current' },
+        { sessionId: id, source: result.source ?? 'current' },
         'verity: session code workspace restored',
       );
-      return { restored: result !== null, ...(result ?? {}) };
+      return result;
     } catch (error) {
       request.log.warn({ err: error, sessionId: id }, 'verity: session code workspace unavailable');
       reply.code(409);

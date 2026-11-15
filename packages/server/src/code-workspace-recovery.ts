@@ -130,19 +130,22 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       worktreeRoot: dirname(target),
       git: async (args: readonly string[]) => void (await git(args)),
     };
-    if (await hasRef(clone, `refs/heads/${branch}`)) {
-      await addExistingBranchWorktree(options, branch);
-      return 'branch';
-    }
-    if (await hasRef(clone, `refs/remotes/origin/${branch}`)) {
-      await addExistingBranchWorktree(options, branch, `origin/${branch}`);
-      return 'origin';
-    }
-    const created = await deps
-      .worktrees(project, clone, { baseBranch: await deps.defaultBranch(project.id) })
-      .add(branch);
+    const [source, created]: [CodeWorkspaceSource, string] = (await hasRef(
+      clone,
+      `refs/heads/${branch}`,
+    ))
+      ? ['branch', await addExistingBranchWorktree(options, branch)]
+      : (await hasRef(clone, `refs/remotes/origin/${branch}`))
+        ? ['origin', await addExistingBranchWorktree(options, branch, `origin/${branch}`)]
+        : [
+            'fresh',
+            await deps
+              .worktrees(project, clone, { baseBranch: await deps.defaultBranch(project.id) })
+              .add(branch),
+          ];
+    // The session row is about to name `target`; a checkout anywhere else would strand it.
     if (created !== target) throw new Error(`Unexpected code workspace path ${created}`);
-    return 'fresh';
+    return source;
   }
 
   /** Publish what the old view still holds; copy only what could not be published. */
@@ -165,18 +168,31 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     return source.transferPending(destination, `Transferred edits/${OPERATION}`);
   }
 
-  async function convert(sessionId: string): Promise<CodeWorkspaceConversion | null> {
+  /** One conversion per session at a time: a turn start and a Restore may race. */
+  const running = new Map<string, Promise<CodeWorkspaceConversion | null>>();
+  function convert(sessionId: string, claim = deps.claimIdle) {
+    const prior = running.get(sessionId);
+    if (prior) return prior;
+    const next = convertOnce(sessionId, claim).finally(() => running.delete(sessionId));
+    running.set(sessionId, next);
+    return next;
+  }
+
+  async function convertOnce(
+    sessionId: string,
+    claimIdle: CodeWorkspaceRecoveryDeps['claimIdle'],
+  ): Promise<CodeWorkspaceConversion | null> {
     let session = await deps.store.getSession(sessionId);
     if (!session) throw new CodeWorkspaceUnavailableError(`session ${sessionId} not found`);
     if (!isDocumentWorkspace(session.worktree)) return null;
     const projectId = session.projectId;
-    if (projectId === null || !deps.cloneRoot)
-      throw new CodeWorkspaceUnavailableError('code workspaces are not configured here');
+    // Without project clones, or in Verity Control, a Documents view is the whole workspace.
+    if (projectId === null || !deps.cloneRoot) return null;
+    const project = await deps.store.getProject(projectId);
+    if (!project) throw new CodeWorkspaceUnavailableError(`project ${projectId} not found`);
+    if (project.kind === 'control_plane') return null;
     await deps.prepareLocalDocuments?.(projectId);
     session = (await deps.store.getSession(sessionId)) ?? session;
-    const project = await deps.store.getProject(projectId);
-    if (!project || project.kind === 'control_plane')
-      throw new CodeWorkspaceUnavailableError(`project ${projectId} has no code workspace`);
     const clone = projectClonePath(deps.cloneRoot, project);
     // Git searches parent directories; only the clone's own repository counts.
     const own = await git(['-C', clone, 'rev-parse', '--show-toplevel']).then(
@@ -197,7 +213,7 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       );
     const branch = `code-${sessionId}`;
     const legacy = session;
-    const claim = await deps.claimIdle(sessionId, async () => {
+    const claim = await claimIdle(sessionId, async () => {
       const prior = await deps.store.getSessionMove(sessionId, OPERATION);
       if (prior?.result_json) return JSON.parse(prior.result_json) as CodeWorkspaceConversion;
       if (prior && (prior.source_worktree !== legacy.worktree || prior.target_worktree !== target))
@@ -250,29 +266,35 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
   }
 
   /** Convert a legacy session, or bring back an ordinary session's retired checkout. */
-  async function restore(sessionId: string): Promise<CodeWorkspaceConversion | null> {
+  async function restore(
+    sessionId: string,
+  ): Promise<{ restored: boolean } & Partial<CodeWorkspaceConversion>> {
     const converted = await convert(sessionId);
-    if (converted) return converted;
+    if (converted) return { restored: true, ...converted };
     const session = await deps.store.getSession(sessionId);
-    if (!session || (await exists(session.worktree))) return null;
+    if (!session || (await exists(session.worktree))) return { restored: false };
     await deps.ensureWorkspace(session);
     if (!(await exists(session.worktree)))
       throw new CodeWorkspaceUnavailableError(
         `${session.worktree} is missing and has no recovery record`,
       );
-    return null;
+    return { restored: true, worktree: session.worktree, source: 'journal' };
   }
 
   return {
     convert,
     restore,
     /**
-     * Before a turn: convert a legacy session, or fail visibly. A session that is
-     * already running a turn keeps it and converts before the next one.
+     * Before a turn: convert a legacy session, or fail visibly. `starting` is the
+     * conductor's own turn start, which already owns the idle session; a request that
+     * arrives during a turn leaves the conversion to that start.
      */
-    async beforeTurn(sessionId: string): Promise<void> {
+    async beforeTurn(sessionId: string, { starting = false } = {}): Promise<void> {
       try {
-        await convert(sessionId);
+        await convert(
+          sessionId,
+          starting ? async (_, fn) => ({ ran: true, value: await fn() }) : deps.claimIdle,
+        );
       } catch (error) {
         if (error instanceof CodeWorkspaceUnavailableError && error.reason === 'busy') return;
         throw error instanceof CodeWorkspaceUnavailableError

@@ -34,7 +34,7 @@ export function CodeWorkspaceNotice({
         title="Code workspace unavailable"
         detail={
           failure
-            ? 'Restoring did not succeed. Your documents are not affected; try again, or Repair the project Sandbox in its settings.'
+            ? 'Restoring did not succeed; Details says why. Your documents are not affected, and you can try again.'
             : "This session's code checkout is missing on the server. Restore brings it back on its branch and keeps any unpushed work. Your documents are not affected."
         }
         actions={
