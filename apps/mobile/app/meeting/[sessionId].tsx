@@ -67,7 +67,9 @@ import {
   followRemoteMeeting,
   finalizeMeetingOnServer,
   getMeetingSyncFailure,
+  readMeetingControl,
   retryMeetingSync,
+  stopMeetingElsewhere,
   subscribeMeetingSyncFailure,
   syncMeetingSession,
 } from '../../lib/liveMeetingSync';
@@ -486,7 +488,7 @@ export default function MeetingScreen() {
                 if (note.meetingId === shown && !merged.has(note.id)) merged.set(note.id, note);
               return [...merged.values()].sort((a, b) => a.atSeconds - b.atSeconds);
             });
-          const control = await client?.getLiveMeetingCommands(sessionId, shown);
+          const control = client && (await readMeetingControl(client, sessionId, shown));
           if (mounted && control) {
             setRecorderOnline(control.recorderOnline);
             const latest = control.commands[0];
@@ -1077,14 +1079,10 @@ export default function MeetingScreen() {
       if (meeting && currentMeeting()?.id !== meeting.id) {
         if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
           throw new Error('This meeting belongs to another server.');
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this recording.');
-        if (meeting.engine === 'attendee')
-          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
-        else {
-          await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-          setPendingCommand('stop');
-          // The recorder's command state takes over, including a stop that fails there.
+        const outcome = await stopMeetingElsewhere(meeting);
+        // A recorder's command state takes over, including a stop the server has to end.
+        if (outcome !== 'online') {
+          setPendingCommand(outcome === 'requested' ? 'stop' : null);
           stopInFlight.current = null;
           setStopping(null);
         }

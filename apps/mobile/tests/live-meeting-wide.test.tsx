@@ -48,6 +48,9 @@ jest.mock('../lib/liveMeetingSync', () => ({
   finalizeMeetingOnServer: jest.fn().mockResolvedValue(undefined),
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   followRemoteMeeting: jest.fn(),
+  // The real remote-stop logic, so tests see the client calls it makes.
+  stopMeetingElsewhere: jest.requireActual('../lib/liveMeetingSync').stopMeetingElsewhere,
+  readMeetingControl: jest.requireActual('../lib/liveMeetingSync').readMeetingControl,
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),

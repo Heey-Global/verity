@@ -97,6 +97,7 @@ jest.mock('../lib/liveMeetingStore', () => ({
   finalizeNote: jest.fn().mockResolvedValue(true),
 }));
 jest.mock('../lib/liveMeetingSync', () => ({
+  ...jest.requireActual('../lib/liveMeetingSync'),
   subscribeMeetingSyncFailure: jest.fn().mockReturnValue(() => {}),
   getMeetingSyncFailure: jest.fn().mockReturnValue(null),
   retryMeetingSync: jest.fn().mockResolvedValue(undefined),
@@ -1049,7 +1050,7 @@ it.each([
   },
 );
 
-it('explains an unreachable recorder and still lets Stop replace a pending Pause', async () => {
+it('explains an unreachable recorder and ends the meeting on the server instead', async () => {
   const remote: MeetingRecord = {
     id: 'remote-meeting',
     sessionId: 'session-1',
@@ -1062,7 +1063,7 @@ it('explains an unreachable recorder and still lets Stop replace a pending Pause
     transcript: '',
     error: null,
   };
-  const requestLiveMeetingCommand = jest.fn().mockResolvedValue('stop-1');
+  const finalizeLiveMeeting = jest.fn().mockResolvedValue(undefined);
   jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
   jest.mocked(createVerityClient).mockReturnValue({
     getLiveMeetingCommands: jest.fn().mockResolvedValue({
@@ -1079,15 +1080,13 @@ it('explains an unreachable recorder and still lets Stop replace a pending Pause
       ],
       recorderOnline: false,
     }),
-    requestLiveMeetingCommand,
+    finalizeLiveMeeting,
   } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
   jest.mocked(listMeetings).mockResolvedValue([remote]);
   render(<MeetingScreen />);
   await screen.findByText(/Recording device unreachable/);
   fireEvent.press(screen.getByLabelText('End meeting'));
-  await waitFor(() =>
-    expect(requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, 'stop'),
-  );
+  await waitFor(() => expect(finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id));
 });
 
 it('starts with Nemotron and saves a note at its first edit', async () => {
