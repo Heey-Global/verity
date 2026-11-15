@@ -32,8 +32,12 @@ jest.mock('../lib/liveMeetingSession', () => ({
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
   endMeeting: jest.fn().mockResolvedValue(undefined),
+  currentMeeting: jest.fn().mockReturnValue(null),
 }));
-jest.mock('../lib/liveMeetingStore', () => ({ listMeetings: jest.fn().mockResolvedValue([]) }));
+jest.mock('../lib/liveMeetingStore', () => ({
+  listMeetings: jest.fn().mockResolvedValue([]),
+  meetingUploadFailure: jest.fn().mockResolvedValue(null),
+}));
 jest.mock('../lib/liveMeetingSync', () => ({
   subscribeFollowedRemoteMeeting: jest.fn().mockImplementation((listener) => {
     listener(null);
@@ -43,6 +47,9 @@ jest.mock('../lib/liveMeetingSync', () => ({
   clearFollowedRemoteMeeting: jest.fn(),
   followRemoteMeeting: jest.fn(),
   finalizeMeetingOnServer: jest.fn().mockResolvedValue(undefined),
+  // The real remote-stop logic, so tests see the client calls it makes.
+  stopMeetingElsewhere: jest.requireActual('../lib/liveMeetingSync').stopMeetingElsewhere,
+  readMeetingControl: jest.requireActual('../lib/liveMeetingSync').readMeetingControl,
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),
@@ -246,6 +253,55 @@ it('stops a followed online meeting on the server instead of commanding a record
   await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
   expect(stopOnlineMeeting).toHaveBeenCalledWith('session-1', 'online-1');
   expect(requestLiveMeetingCommand).not.toHaveBeenCalled();
+});
+
+// The recording phone crashed: a stop command waited forever and the meeting stayed on every device.
+it('ends a meeting on the server when its recording device cannot run Stop', async () => {
+  const meeting: MeetingRecord = {
+    id: 'phone-recording',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now(),
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: '',
+    error: null,
+  };
+  jest.mocked(subscribeMeeting).mockImplementation((listener) => {
+    listener(null);
+    return jest.fn();
+  });
+  jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+    listener({ serverId: 'server-1', sessionId: 'session-1', meetingId: meeting.id });
+    return jest.fn();
+  });
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  const finalizeLiveMeeting = jest.fn().mockResolvedValue(undefined);
+  const requestLiveMeetingCommand = jest.fn();
+  jest.mocked(createVerityClient).mockReturnValue({
+    getActiveLiveMeetings: jest.fn().mockResolvedValue(activeMeetings({})),
+    getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: false }),
+    requestLiveMeetingCommand,
+    finalizeLiveMeeting,
+  } as unknown as NonNullable<ReturnType<typeof createVerityClient>>);
+  render(<ActiveMeetingOverlay />);
+  await screen.findByText(/Recording device unreachable/);
+  jest
+    .mocked(listMeetings)
+    .mockResolvedValue([{ ...meeting, state: 'ended', endedAt: Date.now() }]);
+  await act(async () => fireEvent.press(screen.getByLabelText('Stop meeting')));
+  expect(finalizeLiveMeeting).toHaveBeenCalledWith('session-1', meeting.id);
+  expect(requestLiveMeetingCommand).not.toHaveBeenCalled();
+  // Reloaded at once: the ended meeting opens and the card goes away.
+  await waitFor(() =>
+    expect(router.push).toHaveBeenCalledWith({
+      pathname: '/meeting/[sessionId]',
+      params: { sessionId: 'session-1' },
+    }),
+  );
+  expect(screen.queryByLabelText('Stop meeting')).toBeNull();
 });
 
 // While Verity waited in a lobby the card said "Online" and Stop could be sent again and again.

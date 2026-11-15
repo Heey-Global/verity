@@ -1,11 +1,11 @@
 {
   "apps/mobile/__tests__/static-preview-sheet.test.tsx": 1967,
   "apps/mobile/app/index.tsx": 2756,
-  "apps/mobile/app/meeting/[sessionId].tsx": 3394,
+  "apps/mobile/app/meeting/[sessionId].tsx": 3392,
   "apps/mobile/app/session/[id].tsx": 12174,
   "apps/mobile/components/project/StaticPreviewSheet.tsx": 2530,
   "apps/mobile/lib/remoteControlTransport.test.ts": 1848,
-  "apps/mobile/tests/live-meeting-screen.test.tsx": 2860,
+  "apps/mobile/tests/live-meeting-screen.test.tsx": 2859,
   "packages/mobile/src/api.test.ts": 5261,
   "packages/mobile/src/api.ts": 7361,
   "packages/mobile/src/models/session.test.ts": 3723,

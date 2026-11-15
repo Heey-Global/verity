@@ -30,6 +30,8 @@ import {
 import {
   clearFollowedRemoteMeeting,
   followRemoteMeeting,
+  readMeetingControl,
+  stopMeetingElsewhere,
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
@@ -79,6 +81,8 @@ export function ActiveMeetingOverlay() {
   // following it again would bounce between follow and clear.
   const settled = useRef(new Set<string>());
   const discoverRef = useRef<() => Promise<void>>(async () => undefined);
+  // Reloads the followed meeting, e.g. once the server has ended it.
+  const pollFollowedRef = useRef<() => void>(() => undefined);
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -233,10 +237,15 @@ export function ActiveMeetingOverlay() {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
+    let pollAgain = false;
     const client = createVerityClient();
     const poll = async () => {
-      if (polling) return;
+      if (polling) {
+        pollAgain = true;
+        return;
+      }
       polling = true;
+      pollAgain = false;
       try {
         if (getActiveMeetingServerId() !== followed.serverId) {
           clearFollowedRemoteMeeting();
@@ -276,11 +285,11 @@ export function ActiveMeetingOverlay() {
         }
         // Online meetings run on the server; there is no recorder to command.
         if (saved?.engine === 'attendee') return;
-        const control = await client?.getLiveMeetingCommands(
-          followed.sessionId,
-          followed.meetingId,
-        );
+        const control =
+          client && (await readMeetingControl(client, followed.sessionId, followed.meetingId));
         if (!mounted || !control || getActiveMeetingServerId() !== followed.serverId) return;
+        // A stop sent from here that the recorder could not finish was ended on the server.
+        if (control.serverEnded) pollAgain = true;
         setRecorderOnline(control.recorderOnline);
         const latest = control.commands[0];
         setPendingCommand(latest?.state === 'pending' ? latest.action : null);
@@ -292,8 +301,10 @@ export function ActiveMeetingOverlay() {
         if (mounted) setError('Waiting for the recording device…');
       } finally {
         polling = false;
+        if (pollAgain && mounted) void poll();
       }
     };
+    pollFollowedRef.current = () => void poll();
     void poll();
     const detach = client
       ? subscribeLiveRefresh(
@@ -305,6 +316,7 @@ export function ActiveMeetingOverlay() {
       : () => undefined;
     return () => {
       mounted = false;
+      pollFollowedRef.current = () => undefined;
       detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
@@ -483,18 +495,17 @@ export function ActiveMeetingOverlay() {
     try {
       if (remote && (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId()))
         throw new Error('This meeting belongs to another server.');
-      if (remote && online) {
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this meeting.');
-        await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
-        setOnlineStopping(meeting.id);
+      if (remote) {
+        const outcome = await stopMeetingElsewhere(meeting);
+        if (outcome === 'online') setOnlineStopping(meeting.id);
+        else {
+          // Opens the meeting once it has ended, whether on the recorder or on the server.
+          remoteStopRequested.current = true;
+          setPendingCommand(outcome === 'requested' ? 'stop' : null);
+          setError(null);
+          pollFollowedRef.current();
+        }
         void discoverRef.current();
-      } else if (remote) {
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this recording.');
-        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-        remoteStopRequested.current = true;
-        setPendingCommand('stop');
       } else await endMeeting();
     } catch (reason) {
       setError(String(reason));
