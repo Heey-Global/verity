@@ -248,6 +248,8 @@ import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../component
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
+import { FileRootTabs } from '../../components/files/FileRootTabs';
+import { CodeWorkspaceNotice } from '../../components/files/CodeWorkspaceNotice';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
 import {
   FileSheetHeader,
@@ -5228,6 +5230,12 @@ function SessionFilesSheet({
   const [confirm, confirmSheet] = useConfirm();
   const [documentSession, setDocumentSession] = useState(false);
   const [codeAvailable, setCodeAvailable] = useState(true);
+  // The server reports a missing checkout instead of handing out Documents in its place.
+  const [codeMissing, setCodeMissing] = useState(false);
+  const [restore, setRestore] = useState<{ running: boolean; failure: string | null }>({
+    running: false,
+    failure: null,
+  });
   const [documentStatus, setDocumentStatus] = useState<{
     pending: boolean;
     running: boolean;
@@ -5303,6 +5311,7 @@ function SessionFilesSheet({
         .then((dir) => {
           if (active && dir.codeAvailable) {
             setCodeAvailable(true);
+            setCodeMissing(false);
             if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
           }
         })
@@ -5357,10 +5366,12 @@ function SessionFilesSheet({
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
         setCodeAvailable(dir.codeAvailable ?? true);
+        setCodeMissing(dir.codeWorkspaceUnavailable === true);
         if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
         if (
           !initialFilePath &&
           root === 'worktree' &&
+          dir.codeWorkspaceUnavailable !== true &&
           (dir.codeAvailable === false || dir.workspaceKind === 'documents') &&
           projectId
         )
@@ -6202,6 +6213,19 @@ function SessionFilesSheet({
           },
         ];
 
+  const restoreCodeWorkspace = (): void => {
+    setRestore({ running: true, failure: null });
+    void client.restoreSessionCodeWorkspace(sessionId).then(
+      () => {
+        setRestore({ running: false, failure: null });
+        setCodeMissing(false);
+        setCodeAvailable(true);
+        setReloadKey((key) => key + 1);
+      },
+      (err: unknown) =>
+        setRestore({ running: false, failure: err instanceof Error ? err.message : String(err) }),
+    );
+  };
   const navigateRoot = (candidate: typeof root): void => {
     if (mutating || (!driveActive && candidate === root && path === '')) return;
     previewRequest.current += 1;
@@ -6285,63 +6309,23 @@ function SessionFilesSheet({
             )
           ) : null}
           {!preview ? (
-            <View style={styles.filesRootBar}>
-              <Pressable
-                disabled={mutating || documentSession || !codeAvailable}
-                onPress={() => navigateRoot('worktree')}
-                accessibilityRole="tab"
-                accessibilityState={{
-                  selected: !driveActive && root === 'worktree',
-                  disabled: documentSession || !codeAvailable,
-                }}
-                accessibilityLabel="Code"
-                style={[
-                  styles.filesRootButton,
-                  !driveActive && root === 'worktree' ? styles.filesRootButtonActive : null,
-                ]}
-              >
-                <Icon name={FILE_ROOT_ICON.worktree} size={14} color={theme.colors.textMuted} />
-                <Text
-                  style={
-                    !driveActive && root === 'worktree'
-                      ? styles.filesRootLabelActive
-                      : styles.filesRootLabel
-                  }
-                >
-                  Code
-                </Text>
-              </Pressable>
-              {projectId ? (
-                <Pressable
-                  disabled={mutating}
-                  onPress={() => {
-                    if (driveActive) return;
-                    previewRequest.current += 1;
-                    endSelection();
-                    setDriveActive(true);
-                    setLoading(true);
-                    setPreview(null);
-                    setError(null);
-                  }}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: driveActive }}
-                  accessibilityLabel="Google Drive"
-                  style={[
-                    styles.filesRootButton,
-                    driveActive ? styles.filesRootButtonActive : null,
-                  ]}
-                >
-                  <Icon
-                    name="hard-drive"
-                    size={14}
-                    color={driveActive ? theme.colors.text : theme.colors.textMuted}
-                  />
-                  <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
-                    Google Drive
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
+            <FileRootTabs
+              codeIcon={FILE_ROOT_ICON.worktree}
+              codeActive={!driveActive && root === 'worktree'}
+              codeDisabled={documentSession || (!codeAvailable && !codeMissing)}
+              driveActive={driveActive}
+              drive={Boolean(projectId)}
+              disabled={mutating}
+              onCode={() => navigateRoot('worktree')}
+              onDrive={() => {
+                previewRequest.current += 1;
+                endSelection();
+                setDriveActive(true);
+                setLoading(true);
+                setPreview(null);
+                setError(null);
+              }}
+            />
           ) : null}
           {preview ? null : driveActive ? (
             (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
@@ -6572,6 +6556,13 @@ function SessionFilesSheet({
                 <View style={styles.sheetLoading}>
                   <ActivityIndicator color={theme.colors.textMuted} />
                 </View>
+              ) : codeMissing && root === 'worktree' ? (
+                <CodeWorkspaceNotice
+                  restoring={restore.running}
+                  failure={restore.failure}
+                  onRestore={restoreCodeWorkspace}
+                  onOpenDocuments={projectId ? () => navigateRoot('documents') : undefined}
+                />
               ) : (
                 <DropZone
                   style={styles.filesDropZone}
@@ -10813,35 +10804,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   // Tabs mark the active root with an underline, not a filled chip: a fill is
   // what a button looks like, and these are places, not actions.
-  filesRootBar: {
-    flexDirection: 'row',
-    gap: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.border,
-  },
-  filesRootButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: theme.spacing.sm,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    marginBottom: -StyleSheet.hairlineWidth,
-  },
-  filesRootButtonActive: {
-    borderBottomColor: theme.colors.action,
-  },
-  filesRootLabel: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
-  filesRootLabelActive: {
-    color: theme.colors.text,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   // The drop target wraps the list rather than the whole sheet: a drop onto the
   // preview or the header would have no directory to land in.
   filesDropZone: {

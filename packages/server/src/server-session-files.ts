@@ -102,6 +102,13 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
   reply.code(404);
   return { error: 'path not found' };
 }
+
+async function isDirectory(path: string): Promise<boolean> {
+  return lstat(path).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  );
+}
 export function registerServerSessionFiles(
   app: FastifyInstance,
   deps: Pick<ServerDeps, 'eventStore' | 'dataRoot' | 'projectCloneRoot'>,
@@ -250,15 +257,11 @@ export function registerServerSessionFiles(
         ? await deps.eventStore.getProject(session.projectId)
         : undefined;
       if (project?.kind === 'control_plane') return false;
-      if (project?.kind !== 'local') {
-        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
-        return legacy
-          ? lstat(legacy).then(
-              (entry) => entry.isDirectory(),
-              () => false,
-            )
-          : true;
-      }
+      if (project?.kind !== 'local')
+        // A missing checkout is reported, so the client can offer to restore it.
+        return isDirectory(
+          legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
+        );
       const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
       if (await hasCodeContent(code)) return true;
       return deps.projectCloneRoot
@@ -273,15 +276,11 @@ export function registerServerSessionFiles(
       const legacy = session
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
-      if (legacy)
-        return project?.kind !== 'control_plane' &&
-          (await lstat(legacy).then(
-            (entry) => entry.isDirectory(),
-            () => false,
-          ))
-          ? 'code'
-          : 'documents';
-      return 'code';
+      if (!legacy) return 'code';
+      if (project?.kind === 'control_plane') return 'documents';
+      // In a repository project the session is a code session even while its checkout is missing.
+      if (project && project.kind !== 'local') return 'code';
+      return (await isDirectory(legacy)) ? 'code' : 'documents';
     },
     // A knowledge root is created on first browse rather than only at
     // provisioning: the folder is the source of truth (ADR 0022 D1), so an
@@ -309,6 +308,17 @@ export function registerServerSessionFiles(
             );
           if (entry?.isDirectory()) return legacy;
         }
+        // A Documents view is no stand-in for a repository project's missing checkout.
+        if (
+          project &&
+          project.kind !== 'local' &&
+          project.kind !== 'control_plane' &&
+          (legacy !== undefined || !(await isDirectory(session.worktree)))
+        )
+          throw new SessionFileRootUnavailableError(
+            "This session's code workspace is unavailable. Restore it to continue.",
+            409,
+          );
         return session.worktree;
       }
       if (deps.dataRoot === undefined)

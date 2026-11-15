@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
+import { isDocumentWorkspace } from './document-workspace.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
@@ -21,7 +22,8 @@ export type RepositoryCheckoutFailure =
   | 'forge proxy transport unavailable'
   | 'clone failed'
   | 'branch checkout failed'
-  | 'repository connection revoked';
+  | 'repository connection revoked'
+  | 'code workspace unavailable';
 
 export class RepositoryCheckoutError extends Error {
   constructor(
@@ -135,7 +137,8 @@ export function createSessionRepositories(deps: {
         ...repository,
         workspace:
           workspaces.find((workspace) => workspace.repositoryId === repository.id) ??
-          (repository.isDefault
+          // A legacy Documents view is not a checkout of the default repository.
+          (repository.isDefault && !isDocumentWorkspace(session.worktree)
             ? {
                 sessionId,
                 repositoryId: repository.id,
@@ -166,6 +169,11 @@ export function createSessionRepositories(deps: {
         throw new RepositoryCheckoutError(
           'repository not connected',
           'repository is not connected to this project',
+        );
+      if (repository.isDefault && isDocumentWorkspace(session.worktree))
+        throw new RepositoryCheckoutError(
+          'code workspace unavailable',
+          'this session has no code workspace yet; Verity restores it before the next turn',
         );
       if (repository.isDefault)
         return {

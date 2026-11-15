@@ -225,3 +225,24 @@ it('redacts credentials from logged git output and never logs the command line',
   expect(String(detail.stderr)).toHaveLength(1000);
   expect(JSON.stringify(detail)).not.toContain('Command failed');
 });
+it('never hands out a legacy Documents view as the default repository checkout', async () => {
+  const project = { id: 'p', kind: 'github', owner: 'app', repo: 'main', cloneDir: 'project' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const store = {
+    getSession: vi.fn(async () => ({
+      projectId: 'p',
+      planning: 'implemented',
+      worktree: '/clones/project/.verity-document-sessions/view',
+    })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  // Without a branch the agent cannot tell this folder from a checkout and works in Documents.
+  await expect(service.open('s', 'd')).rejects.toMatchObject({
+    reason: 'code workspace unavailable',
+  });
+  expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+});

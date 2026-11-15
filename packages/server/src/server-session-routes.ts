@@ -21,6 +21,8 @@ import {
 } from './branches.js';
 import { type PushFirePoints } from './push-fire-points.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
+import { CodeWorkspaceUnavailableError } from './code-workspace-recovery.js';
+import { codeWorkspaceUnavailable, installCodeWorkspaces } from './code-workspace-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import { type ServerContext } from './server-context.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
@@ -119,6 +121,7 @@ export function installSessionRoutes(
     invalidatePrSummaryAction,
     invalidateBranchCache,
   } = sessionOverview;
+  const codeWorkspaces = installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
   // moment it is accepted; live progress flows over the WS stream. What happens to
@@ -171,6 +174,16 @@ export function installSessionRoutes(
       let session = await deps.eventStore.getSession(id);
       if (session?.projectId) {
         await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
+        // A legacy Documents session becomes a code session here, while it is idle;
+        // a turn never runs with the Documents view standing in for its checkout.
+        try {
+          await codeWorkspaces.beforeTurn(id);
+        } catch (error) {
+          if (!(error instanceof CodeWorkspaceUnavailableError)) throw error;
+          request.log.warn({ err: error, sessionId: id }, 'verity: turn without code workspace');
+          reply.code(409);
+          return codeWorkspaceUnavailable(error);
+        }
         session = await deps.eventStore.getSession(id);
       }
       const viewer = request.localUserId ?? legacyAdministratorId;

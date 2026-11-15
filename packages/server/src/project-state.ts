@@ -52,6 +52,20 @@ export async function reconcileProjectContainerStates(
  *  project's container is no longer running — user-facing in the app. */
 export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to restart it.';
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
+
+/**
+ * A Sandbox whose container vanished outside Verity while it was in use. Nothing else
+ * would ever recreate it, so the relay reconciler does, with its usual backoff; the
+ * manual Repair the reason names remains available.
+ */
+export function owesMissingContainerRepair(
+  project: Pick<ProjectRecord, 'state' | 'provisionError'>,
+): boolean {
+  return (
+    project.state === 'active' ||
+    (project.state === 'failed' && project.provisionError === CONTAINER_MISSING_REASON)
+  );
+}
 export const STALE_PROVISIONING_REASON =
   'Project setup did not finish and no Sandbox container is running. Use Repair to retry it.';
 export const INTERRUPTED_SLEEP_REASON =
