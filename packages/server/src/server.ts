@@ -22,13 +22,9 @@ import { createSchedulingTool } from './scheduling-tool.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
 import websocketPlugin, { type WebSocket } from '@fastify/websocket';
-import {
-  LIVE_TICKET_PROTOCOL_PREFIX,
-  type AgentEvent,
-  type AssistantContextProject,
-} from '@verity/events';
+import { LIVE_TICKET_PROTOCOL_PREFIX, type AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL, isCodexModel } from '@verity/session';
-import type { SequencedEvent, SessionRecord, VeritySettingsPatch } from '@verity/store';
+import type { SessionRecord, VeritySettingsPatch } from '@verity/store';
 import { measureLatencyPhase, SealedError, type ProjectRecord } from '@verity/store';
 import Fastify, {
   type FastifyBaseLogger,
@@ -45,10 +41,7 @@ import { join } from 'node:path';
 import { z, ZodError } from 'zod';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
-import { registerAssistantRoutes } from './assistant-routes.js';
-import { registerAssistantConversationRoutes } from './assistant-conversation-routes.js';
-import { ASSISTANT_MODEL, assistantConversationDeps } from './assistant-conversation-runtime.js';
-import { assistantProjectsFor, type AssistantToolDeps } from './assistant-tool.js';
+import type { AssistantToolDeps } from './assistant-tool.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { AttendeeMeetings } from './attendee-meetings.js';
 import { attendeeResearchHints } from './attendee-research.js';
@@ -202,6 +195,7 @@ import { installProjects } from './server-projects.js';
 import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
+import { installAssistant } from './server-assistant.js';
 import type {
   ModelList,
   ProjectDeleteOutcome,
@@ -272,7 +266,6 @@ import {
   DEFAULT_HISTORY_PAGE,
   DEFAULT_BODY_LIMIT_BYTES,
   PROJECTION_TAIL,
-  ASSISTANT_CONVERSATION_EVENTS,
   VERITY_CONTROL_PROJECT_ID,
   PROJECT_DELETE_SPAWN_WAIT_MS,
   makeBranch,
@@ -3371,82 +3364,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   registerRepairRoutes(app, deps.eventStore);
   registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
-  // One Verity Control session, recreated under a fresh id if it was deleted. Concurrent
-  // callers share one attempt, so two requests never spawn the same session id twice.
-  let ensuringAssistant: Promise<string> | undefined;
-  const ensureAssistantSession = async (): Promise<string> => {
-    let id = await deps.eventStore.assistant.session(randomUUID());
-    if (await deps.eventStore.getSession(id)) return id;
-    // Never respawn under an old id: rows keyed by a deleted session may outlive it.
-    id = await deps.eventStore.assistant.replaceSession(id, randomUUID());
-    if (await deps.eventStore.getSession(id)) return id;
-    const project = await ensureVerityControlProject();
-    // Sonnet when offered; otherwise the default Claude model, as before.
-    const model = (
-      await availableModels().catch(() => ({ models: [] as string[] }))
-    ).models.includes(ASSISTANT_MODEL)
-      ? ASSISTANT_MODEL
-      : DEFAULT_MODEL;
-    const result = await sessionCreate.spawn(
-      // Claude is the backend that enforces Verity-tools-only turns (docs/assistant.md).
-      { projectId: project.id, sessionId: id, name: 'Verity · Assistant', model },
-      app.log,
-    );
-    if (result.statusCode >= 300) throw new Error('Assistant session could not be created');
-    return id;
-  };
-  async function assistantModelAvailable(): Promise<boolean> {
-    return (await availableModels()).models.includes(ASSISTANT_MODEL);
-  }
-  function subscribeAssistant(id: string, listener: (event: SequencedEvent) => void): () => void {
-    return deps.bus.subscribe(id, listener);
-  }
-  function assistantBusy(id: string): boolean {
-    return conductor.isBusy(id);
-  }
-  function assistantProjects(userId: string): Promise<AssistantContextProject[]> {
-    return assistantProjectsFor(assistantToolDeps, userId);
-  }
-  function assistantHandoff(id: string, handoff: () => Promise<boolean>): Promise<unknown> {
-    return conductor.runBackendHandoff(id, handoff);
-  }
-  function closeAssistantBackend(id: string): void {
-    conductor.closeSession?.(id);
-  }
-  function assistantDispatchTurn(
-    id: string,
-    prompt: string,
-    turn: { clientReplyId: string; initiatedBy: { userId: string } },
-  ): Promise<unknown> {
-    return conductor.dispatchTurn(id, prompt, {}, turn);
-  }
-  registerAssistantRoutes(app, deps.eventStore, {
-    ensureSession: () =>
-      (ensuringAssistant ??= ensureAssistantSession().finally(() => {
-        ensuringAssistant = undefined;
-      })),
-    sessionExists: async (id) => (await deps.eventStore.getSession(id)) !== undefined,
-    cancel: (id) => conductor.cancelTurn(id),
+  installAssistant(app, ctx, {
+    assistantToolDeps,
+    summarizeSession,
+    ensureVerityControlProject,
+    availableModels,
+    sessionCreate,
   });
-  registerAssistantConversationRoutes(
-    app,
-    deps.eventStore,
-    assistantConversationDeps({
-      store: deps.eventStore,
-      subscribe: subscribeAssistant,
-      isBusy: assistantBusy,
-      summarize: summarizeSession,
-      projects: assistantProjects,
-      dispatchTurn: assistantDispatchTurn,
-      recentEvents: ASSISTANT_CONVERSATION_EVENTS,
-      modelMove: {
-        available: assistantModelAvailable,
-        runBackendHandoff: assistantHandoff,
-        closeSession: closeAssistantBackend,
-      },
-      log: app.log,
-    }),
-  );
   // One fix session per pull request: concurrent taps of "Fix" in this process
   // wait for the first, and the durable origin record covers everything else.
   const pullRequestFixes = new Map<string, Promise<{ sessionId: string; created: boolean }>>();
