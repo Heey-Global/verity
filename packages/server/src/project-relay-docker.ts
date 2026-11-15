@@ -2,7 +2,11 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
 import { DockerError, type ContainerSpec, type DockerClient } from './docker.js';
-import { projectSocketBindingName, type InternalConnectionIdentity } from './internal-listener.js';
+import {
+  projectSocketBindingName,
+  type InternalConnectionIdentity,
+  type SandboxGenerationRef,
+} from './internal-listener.js';
 import { projectRelayContainerName } from './project-relay-identity.js';
 import {
   ProjectRelayStartError,
@@ -49,7 +53,10 @@ export interface DockerProjectRelayOptions {
   codexSocketRoot?: string;
   socketOwnerUid: number;
   relayGid: number;
-  projectNetwork(projectId: string): string;
+  /** The network of the sandbox a relay serves; each sandbox has its own. */
+  sandboxNetwork(
+    sandbox: Pick<InternalConnectionIdentity, 'projectId' | 'userId' | 'projectDefault'>,
+  ): string;
   validateSocketTree?: ((input: SocketTreeValidation) => boolean) | undefined;
   /** Warn sink for the best-effort sweep of superseded relays. Optional: a missing
    *  logger silences the warning, never the sweep. */
@@ -128,7 +135,7 @@ export function createDockerProjectRelayStarter(
     const spec: ContainerSpec = {
       image: options.image,
       name,
-      network: generationNetwork?.networkName ?? options.projectNetwork(context.identity.projectId),
+      network: generationNetwork?.networkName ?? options.sandboxNetwork(context.identity),
       ...(context.egress === undefined ? {} : { runtime: 'runsc-relay' as const }),
       user: `65532:${String(options.relayGid)}`,
       restartPolicy: 'no',
@@ -403,7 +410,7 @@ function exactSocketDirectorySubpath(
   socketPath: string,
   socketRoot: string,
   dataVolumeRoot: string,
-  identity: InternalConnectionIdentity,
+  identity: SandboxGenerationRef,
   socketName: string,
   label: string,
   ownerUid: number,

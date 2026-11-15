@@ -3,6 +3,8 @@
 Status: revision 5 discussion draft accompanying Remote Control revision 6. Not approved,
 implemented or frozen. Existing runtime remains unchanged.
 
+**Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status — team-member invitations use the https form `https://verity.build/join#` with an untrusted display hint and a static redirect page (D5); it takes precedence where the two differ.
+
 ## Evidence and trust material
 
 `packages/server/src/device-pairing.ts` exports an Ed25519 SPKI identity key and

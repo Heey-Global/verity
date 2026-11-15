@@ -1,3 +1,4 @@
+import { aiAccountsSpec } from './ai-accounts';
 import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
 import { sessionGroupsSpec } from './session-groups';
@@ -10,12 +11,14 @@ import { planCardSpec } from './plan-card';
 import { projectNamesSpec } from './project-names';
 import { repositoriesSpec } from './repositories';
 import { sourceActionsSpec } from './source-actions';
+import { teamInvitationsSpec } from './team-invitations';
 import type { MockupScreen, MockupSpec } from './types';
 import { wikiSpec } from './wiki';
 import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  aiAccountsSpec,
   sessionStabilitySpec,
   connectionStatusSpec,
   sessionGroupsSpec,
@@ -28,6 +31,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   projectNamesSpec,
   repositoriesSpec,
   sourceActionsSpec,
+  teamInvitationsSpec,
   wikiSpec,
   wikiMaintenanceSpec,
 ];

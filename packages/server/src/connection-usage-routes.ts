@@ -43,10 +43,20 @@ export function registerConnectionUsageRoutes(
           (usage.forgejo[project.forgeConnectionId] ?? 0) + 1;
       let legacyGoogle = false;
       for (const session of sessions.filter((session) => session.projectId === project.id)) {
+        // An instance-wide count: a chat pinned to anyone's account uses Google,
+        // whoever the reader is. The per-person lookups below only see legacy grants.
+        const pinned = await Promise.all(
+          (['gmail', 'calendar', 'contacts'] as const).map(
+            async (service) =>
+              (await store.googleAccounts.sessionAccess(session.sessionId, service)).mode ===
+              'account',
+          ),
+        );
         if (
-          (await store.getSessionGmailConnection(session.sessionId)) ||
-          (await store.getSessionCalendarConnection(session.sessionId)) ||
-          (await store.getSessionContactsConnection(session.sessionId))
+          pinned.some(Boolean) ||
+          (await store.getSessionGmailConnection(session.sessionId, undefined)) ||
+          (await store.getSessionCalendarConnection(session.sessionId, undefined)) ||
+          (await store.getSessionContactsConnection(session.sessionId, undefined))
         ) {
           legacyGoogle = true;
           break;

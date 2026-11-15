@@ -15,6 +15,8 @@ import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { buildServer } from './server.js';
 import { createAuthTokenRegistry } from './auth.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 // Only the provider transport is simulated. Admission, binding lookup, bearer
 // revocation and SSE polling run through the server's actual composition.
 const transport = vi.hoisted(() => ({ request: vi.fn() }));
@@ -68,6 +70,9 @@ async function fixture() {
     url: 'https://mcp.example.test',
     authorization: 'Bearer synthetic-account-a',
     enabled: true,
+    // A credentialed connection belongs to the person who created it and serves
+    // only their turns (ADR 0023 §3); the running turn here is theirs.
+    ownerUserId: 'caller',
   };
   await store.upsertHttpMcpConnection(connection);
   await store.upsertProjectMcpBinding({
@@ -110,7 +115,12 @@ async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'mcp-revoke-'));
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot: dir,
-    identity: { projectId: 'p', containerGeneration: 'g' },
+    identity: {
+      projectId: 'p',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'g',
+    },
     ownerUid: process.getuid?.() ?? 1000,
     relayGid: process.getgid?.() ?? 1000,
   });
@@ -220,7 +230,10 @@ it.each(['binding', 'bearer'] as const)(
   },
 );
 
-it('characterizes explicit project binding as shared with another executing member', async () => {
+// A project binding makes a connection visible to the project, not usable with
+// its owner's credential: another member's turn must be refused before anything
+// reaches the provider (ADR 0023 §3).
+it("refuses another executing member's turn the owner's credentialed connection", async () => {
   const h = await fixture();
   try {
     await sql`insert into users (id, role, status) values ('member', 'member', 'active')`.execute(
@@ -236,7 +249,7 @@ it('characterizes explicit project binding as shared with another executing memb
     });
     const prompt = await h.store.appendEvent('other', {
       t: 'prompt',
-      text: 'Use the shared connection',
+      text: "Use another person's connection",
       initiatedBy: { userId: 'member' },
     });
     await h.store.markTurnRunning({ sessionId: 'other', promptSeq: prompt.seq });
@@ -244,13 +257,8 @@ it('characterizes explicit project binding as shared with another executing memb
     expect(await h.store.listHttpMcpConnections('member')).toEqual([]);
     expect(await h.store.hasProjectPermission('member', 'p', 'execute')).toBe(true);
     const token = h.tokens.issue({ projectId: 'p', sessionId: 'other', turnId: 'other-turn' });
-    expect((await h.open(token)).statusCode).toBe(200);
-    expect(transport.request).toHaveBeenCalledWith(
-      expect.objectContaining({
-        headers: expect.objectContaining({ authorization: 'Bearer synthetic-account-a' }),
-      }),
-      expect.any(Function),
-    );
+    expect((await h.open(token)).statusCode).toBe(401);
+    expect(transport.request).not.toHaveBeenCalled();
   } finally {
     await h.close();
   }

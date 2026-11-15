@@ -543,6 +543,12 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export {
+  providerConnectionsSchema,
+  type ProviderConnection,
+  type ProviderConnectionKind,
+  type ProviderConnections,
+} from './api.js';
 export type {
   ActiveLiveMeetings,
   OnlineMeetingStatus,
@@ -828,6 +834,15 @@ export {
   type SessionWorkEntry,
   type SessionWorkSections,
 } from './ui/sessionWork.js';
+export {
+  invitationLinkFieldsSchema,
+  projectTeamSchema,
+  type InvitationLinkFields,
+  type TeamJoined,
+  type ProjectInvitation as TeamInvitation,
+  type ProjectMember,
+  type ProjectTeam,
+} from './api.js';
 export {
   CONNECTION_RETRY_DELAYS,
   ConnectionMonitor,

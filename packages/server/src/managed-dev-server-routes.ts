@@ -1,4 +1,5 @@
 import type { EventStore } from '@verity/store';
+import { viewerId } from './view-state-routes.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { bearerToken } from './auth.js';
@@ -63,9 +64,10 @@ export function registerManagedDevServerRoutes(
                   .parse(request.body ?? {}),
               )
             : action === 'restart'
-              ? await m.restart(sessionId, serverId, 'operator')
+              ? await m.restart(sessionId, serverId, 'operator', viewerId(request))
               : await m.start(sessionId, serverId, 'operator', {
                   local: startBody.parse(request.body ?? {}).local,
+                  person: viewerId(request),
                 });
         return { server };
       });
@@ -76,7 +78,7 @@ export function registerManagedDevServerRoutes(
     return respond(reply, async () => {
       const { sessionId, serverId } = serverParams.parse(request.params);
       const { on } = z.object({ on: z.boolean() }).strict().parse(request.body);
-      return { server: await m.setLocal(sessionId, serverId, on) };
+      return { server: await m.setLocal(sessionId, serverId, on, viewerId(request)) };
     });
   });
   // Spelled out: the route-scope scan reads literal paths only.
@@ -109,7 +111,12 @@ export function registerManagedDevServerRoutes(
         })
         .strict()
         .parse(request.body);
-      return { servers: await m.approve(sessionId, serverId, seen, { local }) };
+      return {
+        servers: await m.approve(sessionId, serverId, seen, {
+          local,
+          approvedBy: viewerId(request),
+        }),
+      };
     });
   });
   app.get('/sessions/:sessionId/managed-dev-servers/:serverId/logs', async (request, reply) => {
@@ -216,6 +223,7 @@ export function registerManagedDevServerAgentRoute(
       binding === undefined ||
       socket === undefined ||
       socket.projectId !== binding.projectId ||
+      socket.userId !== binding.userId ||
       socket.containerGeneration !== binding.containerGeneration
     )
       return reply.code(401).send({ error: 'unauthorized' });

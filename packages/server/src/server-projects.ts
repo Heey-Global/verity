@@ -11,6 +11,7 @@ import { parseForgejoRepository, parseOwnerRepo } from './canonical.js';
 import { ensureControlPlaneProject } from './control-plane-project.js';
 import { type ReleaseSummary } from './forge-provider.js';
 import { ProjectAgentNotAllowedError } from './project-agent-policy.js';
+import { ownDefaultModel, setOwnDefaultModel } from './own-default-model.js';
 import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
 import { registerProjectCollectionRoutes } from './project-collection-routes.js';
 import { registerProjectDetailRoutes } from './project-detail-routes.js';
@@ -475,7 +476,14 @@ export function installProjects(
       const [seen] = await projectsAsSeenBy(viewer, [presented]);
       return {
         project: seen ?? presented,
-        settings: publicProjectSettings(settings),
+        settings:
+          settings === null
+            ? publicProjectSettings(settings)
+            : {
+                ...publicProjectSettings(settings)!,
+                // The viewer's own default, not anyone else's.
+                defaultModel: await ownDefaultModel(deps.eventStore, viewer, id, settings),
+              },
         sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
         // What this person may change here, so the app offers only that. The
         // routes check again; this only spares an edit the server would refuse.
@@ -532,19 +540,30 @@ export function installProjects(
       return (await projectsAsSeenBy(viewer, await publicProjects([project])))[0];
     },
     isSealed: () => deps.secretCipher?.isSealed() === true,
-    updateSettings: async (id, patch) => {
+    updateSettings: async (id, patch, viewer) => {
       const store = projectSettingsStore(deps.eventStore);
+      // The default model is each person's own (ADR 0023 §3), never the project's.
+      const { defaultModel, ...projectPatch } = patch;
+      if (defaultModel !== undefined)
+        await setOwnDefaultModel(deps.eventStore, id, viewer, defaultModel);
       let settings: ProjectSettingsRecord | undefined;
       try {
-        settings = await store.updateProjectSettings(id, patch);
+        settings = await store.updateProjectSettings(id, projectPatch);
       } catch (error) {
         if (error instanceof ProjectDefaultModelNotAllowedError) {
           throw new ProjectAgentNotAllowedError(error.model);
         }
         throw error;
       }
-      return settings === undefined ? undefined : publicProjectSettings(settings)!;
+      return settings === undefined
+        ? undefined
+        : {
+            ...publicProjectSettings(settings)!,
+            defaultModel: await ownDefaultModel(deps.eventStore, viewer, id, settings),
+          };
     },
+    setOwnDefaultModel: (id, viewer, model) =>
+      setOwnDefaultModel(deps.eventStore, id, viewer, model),
   });
 
   async function runProjectDelete(

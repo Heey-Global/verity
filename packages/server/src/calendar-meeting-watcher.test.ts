@@ -9,6 +9,9 @@ import {
 } from './calendar-meeting-watcher.js';
 import type { PushSender } from './push-sender.js';
 
+/** The administrator connected the watched account. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 const MIN = 60_000;
 const START = Date.parse('2026-11-02T10:00:00Z');
 
@@ -25,6 +28,7 @@ beforeEach(async () => {
   await truncateAll(ctx.db);
   accountId = (
     await ctx.store.googleAccounts.save({
+      ownerUserId: ADMIN,
       email: 'me@example.com',
       clientId: 'client',
       refreshToken: 'secret',

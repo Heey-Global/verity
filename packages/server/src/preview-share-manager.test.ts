@@ -14,7 +14,7 @@ import {
   GATEWAY_MOUNTS,
 } from './sandbox-standard-mounts.js';
 import { knowledgeSandboxBinds } from './knowledge-folder.js';
-import type { EventStore, PublicPreviewShareRecord } from '@verity/store';
+import type { EventStore, ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
 import { mkdtemp, mkdir, symlink, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,6 @@ import {
   PreviewShareNotFoundError,
   PreviewShareRemovalQueuedError,
   type PreviewShareManagerOptions,
-  sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
 import {
   codexGatewayConfig,
@@ -42,11 +41,13 @@ import {
 } from './provisioner.js';
 
 const digest = `ghcr.io/heey-global/verity/preview-connector@sha256:${'a'.repeat(64)}`;
+
 const project = {
   id: 'p1',
   containerName: 'verity-project',
   state: 'active',
 };
+
 const devServer = { id: 'dev-1', projectId: 'p1', containerPort: '3000' };
 
 function fixture(
@@ -2107,80 +2108,6 @@ describe('PreviewShareManager', () => {
   });
 });
 
-describe('sweepOrphanedPreviewShares', () => {
-  it('kills the connector and revokes every non-terminal share', async () => {
-    const { store, docker, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([
-      {
-        ...record,
-        state: 'active',
-        connectorContainerId: 'connector-id',
-        managedInstanceId: 'managed-1',
-      },
-      { ...record, id: 'other', state: 'creating', connectorContainerName: 'verity-preview-other' },
-      { ...record, id: 'done', state: 'revoked' },
-    ]);
-    const onShareEnded = vi.fn();
-    const swept = await sweepOrphanedPreviewShares({
-      store: store as unknown as EventStore,
-      docker: docker as unknown as DockerClient,
-      now: () => new Date('2030-01-01T00:00:00Z'),
-      onShareEnded,
-    });
-    expect(swept).toBe(2);
-    expect(onShareEnded).toHaveBeenCalledTimes(2);
-    expect(onShareEnded).toHaveBeenCalledWith({
-      id: record.id,
-      managedInstanceId: 'managed-1',
-    });
-    expect(docker.removeContainer).toHaveBeenNthCalledWith(1, 'connector-id');
-    expect(docker.removeContainer).toHaveBeenNthCalledWith(2, 'verity-preview-other');
-    expect(store.transitionPublicPreviewShare.mock.calls.map(([id, , to]) => [id, to])).toEqual([
-      ['share-id', 'revoked'],
-      ['other', 'revoked'],
-    ]);
-    expect(store.transitionPublicPreviewShare.mock.calls[0]?.[3]).toEqual({
-      connectorContainerId: null,
-      revokedAt: new Date('2030-01-01T00:00:00Z'),
-    });
-  });
-
-  it('preserves the original revocation time during orphan cleanup', async () => {
-    const { store, docker, record } = fixture();
-    const began = new Date('2029-12-01T00:00:00Z');
-    store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'revoking', revokedAt: began },
-    ]);
-    await sweepOrphanedPreviewShares({
-      store: store as unknown as EventStore,
-      docker: docker as unknown as DockerClient,
-      now: () => new Date('2030-01-01T00:00:00Z'),
-    });
-    expect(store.transitionPublicPreviewShare).toHaveBeenLastCalledWith(
-      record.id,
-      ['creating', 'active', 'revoking'],
-      'revoked',
-      expect.objectContaining({ revokedAt: began }),
-    );
-  });
-
-  it('closes out the remaining shares when one connector cannot be removed', async () => {
-    const { store, docker, record } = fixture();
-    store.listPublicPreviewShares.mockResolvedValueOnce([
-      { ...record, state: 'active', connectorContainerId: 'stuck' },
-      { ...record, id: 'other', state: 'active', connectorContainerId: 'connector-id' },
-    ]);
-    docker.removeContainer.mockRejectedValueOnce(new Error('daemon unreachable'));
-    await expect(
-      sweepOrphanedPreviewShares({
-        store: store as unknown as EventStore,
-        docker: docker as unknown as DockerClient,
-      }),
-    ).rejects.toThrow(AggregateError);
-    expect(store.transitionPublicPreviewShare.mock.calls.map(([id]) => id)).toEqual(['other']);
-  });
-});
-
 it('refuses preview mutations while a move restart is pending and releases its fence', async () => {
   const { manager, store } = fixture();
   store.listMovePreviewRestarts.mockResolvedValueOnce([{ source_project_id: 'p1' }]);
@@ -2188,6 +2115,7 @@ it('refuses preview mutations while a move restart is pending and releases its f
   const release = await manager.beginDevServerMutation('dev-1');
   release();
 });
+
 it('holds share creation while a session move changes its preview target', async () => {
   const { manager, edge } = fixture();
   const release = await manager.beginSessionMove('p1');
@@ -2837,6 +2765,7 @@ describe('managed public links', () => {
       desired: 'stopped',
       detail: null,
       lastRunSecretBindings: [],
+      lastRunUserId: null,
       lastRunCommand: 'node server.mjs',
       lastRunWorkdir: '.',
       startedAt: null,
@@ -3319,5 +3248,38 @@ describe('public share recovery through Uplink control interruptions', () => {
     } finally {
       await f.client.stop();
     }
+  });
+});
+
+describe('preview sandbox', () => {
+  // ADR 0023 §4: a managed server runs in its person's sandbox. Its preview must
+  // reach that container on that sandbox's own network, never the original one.
+  it('targets the sandbox a managed server runs in, and the original otherwise', async () => {
+    const instances = new Map([['lena-server', { lastRunUserId: 'lena' }]]);
+    const manager = new PreviewShareManager({
+      store: {
+        managedDevServers: { getInstance: async (id: string) => instances.get(id) },
+      } as unknown as EventStore,
+      docker: {} as DockerClient,
+      edge: {} as never,
+      resolveConnectorImage: async () => undefined,
+      dataVolume: 'verity-data',
+      dataVolumeRoot: '/data',
+      hostCloneRoot: '/data',
+      isDevServerRunning: async () => true,
+      sandboxFor: async (project, userId) => ({
+        containerName: `${project.containerName}--${String(userId)}`,
+        networkName: `net--${String(userId)}`,
+      }),
+    });
+    const project = { id: 'p1', containerName: 'sandbox' } as ProjectRecord;
+    expect(await manager.previewSandbox(project, 'lena-server')).toMatchObject({
+      containerName: 'sandbox--lena',
+      previewNetwork: 'net--lena',
+    });
+    expect(await manager.previewSandbox(project, undefined)).toMatchObject({
+      containerName: 'sandbox',
+      previewNetwork: 'verity-proj-p1',
+    });
   });
 });

@@ -1,5 +1,21 @@
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
+  agentLoginResponseSchema,
+  peopleClient,
+  type AgentLogin,
+  type AgentLoginProvider,
+} from './people-api.js';
+export * from './people-api.js';
+export * from './backup-api.js';
+import {
+  backupProbeJobSchema,
+  backupStatusSchema,
+  backupKeyOfferSchema,
+  type BackupKeyOffer,
+  type BackupProbeJob,
+  type BackupStatus,
+} from './backup-api.js';
+import {
   projectRepositorySchema,
   projectInquirySchema,
   repositoryInstructionsSchema,
@@ -504,6 +520,11 @@ export const sessionDetailSchema = sessionSummarySchema.safeExtend({
   busy: z.boolean().optional(),
   /** Turns queued behind the in-flight one (#90/#80), FIFO. Absent → none. */
   queued: z.array(queuedItemSchema).optional(),
+  /** In a session several people write in: each person's name by user id, so
+   *  messages can say who sent them. Absent when one person works alone. */
+  people: z.record(z.string(), z.string()).optional(),
+  /** The signed-in person, beside `people`. */
+  viewerUserId: z.string().optional(),
 });
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 
@@ -1397,21 +1418,6 @@ export type VeritySettingsPatch = {
   opencodeDisabledModels?: string | null | undefined;
 };
 
-export const agentLoginProviderSchema = z.enum(['claude', 'codex']);
-export type AgentLoginProvider = z.infer<typeof agentLoginProviderSchema>;
-export const agentLoginSchema = z.object({
-  sessionId: z.string().min(1),
-  provider: agentLoginProviderSchema,
-  status: z.enum(['starting', 'ready', 'waiting', 'complete', 'failed']),
-  verificationUri: z.string().nullable(),
-  userCode: z.string().nullable(),
-  needsCode: z.boolean(),
-  configured: z.boolean(),
-  message: z.string().nullable(),
-});
-export type AgentLogin = z.infer<typeof agentLoginSchema>;
-const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
-
 /** State of the at-rest secret store (master-password unlock). `uninitialized`
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
@@ -1420,47 +1426,6 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
-/** A restore probe as the server reports it. The server keeps no key in it.
- *  `status` and `phase` stay plain strings so a newer server's values do not
- *  make the whole backup status unreadable. */
-export const backupProbeJobSchema = z.object({
-  id: z.string().uuid(),
-  status: z.string(),
-  phase: z.string(),
-  startedAt: z.number(),
-  finishedAt: z.number().nullable(),
-  snapshot: z.unknown(),
-  error: z.string().nullable(),
-});
-export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
-
-/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
- *  older servers report reasons this app does not know. */
-export const backupStatusSchema = z.discriminatedUnion('available', [
-  z.object({ available: z.literal(false), reason: z.string() }),
-  z.object({
-    available: z.literal(true),
-    configured: z.boolean(),
-    paused: z.boolean().optional(),
-    intervalMs: z.number().optional(),
-    lastSuccess: z.number().nullable().optional(),
-    capturing: z.boolean().optional(),
-    keyGeneration: z.number().optional(),
-    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
-    probe: backupProbeJobSchema.nullable().optional(),
-    alerts: z.array(z.string()),
-  }),
-]);
-export type BackupStatus = z.infer<typeof backupStatusSchema>;
-
-/** A newly generated recovery key, shown once. It becomes active on confirmation. */
-const backupKeyOfferSchema = z.object({
-  id: z.string().uuid(),
-  recoveryKey: z.string().min(1),
-  expiresAt: z.number(),
-});
-export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -2790,6 +2755,23 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  // Team and personal connection calls (people-api.ts); set before the fields below.
+  private readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly getProjectTeam = this.people.getProjectTeam;
+  readonly createProjectInvitation = this.people.createProjectInvitation;
+  readonly getProjectInvitation = this.people.getProjectInvitation;
+  readonly revokeProjectInvitation = this.people.revokeProjectInvitation;
+  readonly setProjectMemberRights = this.people.setProjectMemberRights;
+  readonly removeProjectMember = this.people.removeProjectMember;
+  readonly listProviderConnections = this.people.listProviderConnections;
+  readonly startProviderConnectionLogin = this.people.startProviderConnectionLogin;
+  readonly getProviderConnectionLogin = this.people.getProviderConnectionLogin;
+  readonly submitProviderConnectionLoginCode = this.people.submitProviderConnectionLoginCode;
+  readonly setOpenCodeConnection = this.people.setOpenCodeConnection;
+  readonly disconnectProviderConnection = this.people.disconnectProviderConnection;
+  readonly setOwnProjectDefaultModel = this.people.setOwnProjectDefaultModel;
+  readonly joinTeam = this.people.joinTeam;
+
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,

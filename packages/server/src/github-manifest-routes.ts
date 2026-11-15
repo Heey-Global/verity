@@ -340,6 +340,9 @@ export function registerGitHubManifestRoutes(
       await manifestRouteStore(deps.eventStore).updateVeritySettings({
         githubAppId: converted.appId,
         githubAppPrivateKey: converted.privateKey,
+        ...(converted.clientId !== undefined && converted.clientSecret !== undefined
+          ? { githubAppClientId: converted.clientId, githubAppClientSecret: converted.clientSecret }
+          : {}),
       });
     } catch (err) {
       // A racing seal between the sealed-check and the write surfaces as
@@ -416,6 +419,9 @@ export function registerGitHubManifestRoutes(
       await manifestRouteStore(deps.eventStore).updateVeritySettings({
         githubAppId: converted.appId,
         githubAppPrivateKey: converted.privateKey,
+        ...(converted.clientId !== undefined && converted.clientSecret !== undefined
+          ? { githubAppClientId: converted.clientId, githubAppClientSecret: converted.clientSecret }
+          : {}),
       });
     } catch (err) {
       manifestState.restoreState(state);

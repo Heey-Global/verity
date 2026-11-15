@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { turnFitsSandbox } from './turn-credentials.js';
 import { z } from 'zod';
 import type { EventStore, VeritySettingsRecord } from '@verity/store';
 import { bearerToken } from './auth.js';
@@ -9,6 +10,7 @@ import {
   type SshSignSpawner,
 } from './git-signer.js';
 import { internalConnectionIdentity } from './internal-listener.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 interface GitSignRouteStore extends EventStore {
@@ -29,6 +31,8 @@ function gitSignRouteStore(store: EventStore): GitSignRouteStore {
 export interface GitSignRouteDeps {
   eventStore: EventStore;
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  /** A turn's own badge, accepted alongside the container-wide signing capability. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   sshSign?: SshSignSpawner | undefined;
 }
 
@@ -64,14 +68,36 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
           return { error: 'unauthorized' };
         }
         const socketIdentity = internalConnectionIdentity(request);
-        const capabilityBinding =
+        // A turn's badge names the turn and the person it runs for; the
+        // container-wide capability only names the project. Both sign with the
+        // same key today — the badge is what lets the key become personal.
+        const badge =
           socketIdentity === undefined
+            ? undefined
+            : deps.turnCredentials?.resolve({
+                projectId: socketIdentity.projectId,
+                token: presented,
+              });
+        // A badge carried out of the sandbox it was issued into proves nothing.
+        if (
+          badge !== undefined &&
+          socketIdentity !== undefined &&
+          !turnFitsSandbox(badge, socketIdentity)
+        ) {
+          reply.code(401);
+          return { error: 'unauthorized' };
+        }
+        const turn = badge;
+        const capabilityBinding =
+          socketIdentity === undefined || turn !== undefined
             ? undefined
             : await deps.signingCapabilities?.resolve(presented);
         const capabilityAuthorized =
           socketIdentity !== undefined &&
-          capabilityBinding?.projectId === socketIdentity.projectId &&
-          capabilityBinding.containerGeneration === socketIdentity.containerGeneration;
+          (turn !== undefined ||
+            (capabilityBinding?.projectId === socketIdentity.projectId &&
+              capabilityBinding.userId === socketIdentity.userId &&
+              capabilityBinding.containerGeneration === socketIdentity.containerGeneration));
 
         // A project socket accepts only its own generation-bound capability. Reject
         // before decrypting settings so an invalid UDS caller cannot distinguish a
@@ -89,7 +115,25 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
         const settings = await gitSignRouteStore(deps.eventStore).getVeritySettings();
         // DB contents OR the file at gitSshPrivateKeyPath — the SAME resolution the
         // provisioner uses to derive the sandbox token, so the two agree on the key.
-        const privateKey = resolveSigningPrivateKey(settings);
+        const instanceKey = resolveSigningPrivateKey(settings);
+        // A turn's badge names the person the commit is for: sign with their own
+        // key, else the instance key, which was the administrator's and serves
+        // only an active administrator (ADR 0023 §3). A member without a key
+        // gets a refusal, never someone else's signature. Without a badge the
+        // person is the sandbox's own (§4), also in the project's original
+        // sandbox, which need not belong to the administrator.
+        const person = turn?.userId ?? socketIdentity.userId;
+        const personal = (await deps.eventStore.userGitIdentities.get(person))?.sshPrivateKey;
+        const privateKey =
+          personal !== undefined && personal !== null && personal.trim().length > 0
+            ? personal
+            : (await deps.eventStore.isActiveAdministrator(person))
+              ? instanceKey
+              : null;
+        if (privateKey === null) {
+          reply.code(409);
+          return { error: 'no personal signing key; connect GitHub to sign commits' };
+        }
         if (privateKey === null || privateKey.trim().length === 0) {
           reply.code(409);
           return { error: 'no signing key configured' };
@@ -113,6 +157,14 @@ export function registerGitSignRoute(app: FastifyInstance, deps: GitSignRouteDep
                     containerGeneration: socketIdentity.containerGeneration,
                   }
                 : {}),
+              ...(turn !== undefined
+                ? {
+                    via: 'turn',
+                    sessionId: turn.sessionId,
+                    turnId: turn.turnId,
+                    userId: turn.userId,
+                  }
+                : { via: 'container' }),
             },
             'verity: brokered a git commit signature',
           );

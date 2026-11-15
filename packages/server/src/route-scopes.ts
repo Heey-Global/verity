@@ -131,6 +131,7 @@ export const NON_OPERATOR_ROUTES: ReadonlyMap<string, RouteScopeDeclaration> = n
   declare('POST', '/secret/unlock', 'onboarding', 'master password'),
   declare('GET', '/pair/identity', 'device-pairing', 'pairing code issued out of band'),
   declare('POST', '/pair/redeem', 'device-pairing', 'single-use pairing code'),
+  declare('POST', '/team/join', 'device-pairing', 'single-use team invitation secret'),
   declare(
     'POST',
     '/pair/enroll',

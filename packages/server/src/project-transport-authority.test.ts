@@ -5,6 +5,8 @@ import {
   withProjectTransportAuthority,
 } from './project-transport-authority.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 afterEach(() => vi.useRealTimers());
 
 it('rejects delayed provider requests after the exact generation is retired', async () => {
@@ -14,6 +16,8 @@ it('rejects delayed provider requests after the exact generation is retired', as
     withProjectTransportAuthority(
       {
         projectId: 'project-a',
+        userId: SANDBOX_USER,
+        projectDefault: true,
         containerGeneration: 'old',
         signal: generation.signal,
         authorize: async () => {},
@@ -37,6 +41,8 @@ it('keeps concurrent project scopes isolated and propagates retirement to the pr
       withProjectTransportAuthority(
         {
           projectId: String(index),
+          userId: SANDBOX_USER,
+          projectDefault: true,
           containerGeneration: 'generation',
           signal: generation.signal,
           authorize: async () => {},
@@ -70,6 +76,8 @@ it('rechecks sponsor/turn authority before every provider call and stops after r
     withProjectTransportAuthority(
       {
         projectId: 'a',
+        userId: SANDBOX_USER,
+        projectDefault: true,
         containerGeneration: 'g',
         signal: new AbortController().signal,
         authorize: async () => {
@@ -96,6 +104,8 @@ it('aborts a live provider signal when a sponsor check hangs and cannot revive i
   const run = withProjectTransportAuthority(
     {
       projectId: 'a',
+      userId: SANDBOX_USER,
+      projectDefault: true,
       containerGeneration: 'g',
       signal: new AbortController().signal,
       authorize: async () => {
@@ -132,6 +142,8 @@ it.each(['retire', 'timeout'])(
     const run = withProjectTransportAuthority(
       {
         projectId: 'a',
+        userId: SANDBOX_USER,
+        projectDefault: true,
         containerGeneration: 'g',
         signal: generation.signal,
         authorize: () => new Promise<void>(() => {}),

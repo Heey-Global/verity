@@ -12,7 +12,7 @@ import {
   type ForgeRepositoryOperations,
 } from './forge-provider.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
-import { markInternalConnections } from './internal-listener.js';
+import { type InternalConnectionIdentity, markInternalConnections } from './internal-listener.js';
 import {
   registerProjectRepoRoute,
   type ProjectRepository,
@@ -20,7 +20,15 @@ import {
 } from './project-repo-route.js';
 import { createSessionRepositories } from './session-repositories.js';
 
-const binding = { projectId: 'p', containerGeneration: 'g', owner: 'team', repo: 'site' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+const binding = {
+  projectId: 'p',
+  userId: SANDBOX_USER,
+  containerGeneration: 'g',
+  owner: 'team',
+  repo: 'site',
+};
 const pull: ForgePullRequestView = {
   number: 7,
   title: 'Add search',
@@ -60,7 +68,7 @@ function setup(options: {
   currentRepositoryBranch?: ProjectRepoRouteDeps['currentRepositoryBranch'];
   kind?: ProjectRecord['kind'];
   ops?: ForgeRepositoryOperations;
-  socket?: { projectId: string; containerGeneration: string } | 'external';
+  socket?: InternalConnectionIdentity | 'external';
   repository?: ProjectRepository | undefined | null;
   openRepository?: ProjectRepoRouteDeps['openRepository'];
   log?: string[];
@@ -69,7 +77,12 @@ function setup(options: {
   app = log
     ? Fastify({ logger: { level: 'warn', stream: { write: (line: string) => log.push(line) } } })
     : Fastify();
-  const socket = options.socket ?? { projectId: 'p', containerGeneration: 'g' };
+  const socket = options.socket ?? {
+    projectId: 'p',
+    userId: SANDBOX_USER,
+    projectDefault: true,
+    containerGeneration: 'g',
+  };
   if (socket !== 'external') {
     const connections = new EventEmitter();
     markInternalConnections(connections as unknown as Server, socket);
@@ -115,10 +128,28 @@ describe('POST /internal/project/repo', () => {
   // project's socket or capability would reach a foreign repository.
   it.each([
     ['an unknown capability', {}, 'other'],
-    ['a foreign project socket', { socket: { projectId: 'q', containerGeneration: 'g' } }, 'cap'],
+    [
+      'a foreign project socket',
+      {
+        socket: {
+          projectId: 'q',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'g',
+        },
+      },
+      'cap',
+    ],
     [
       'an older container generation',
-      { socket: { projectId: 'p', containerGeneration: 'old' } },
+      {
+        socket: {
+          projectId: 'p',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'old',
+        },
+      },
       'cap',
     ],
     ['an external connection', { socket: 'external' as const }, 'cap'],

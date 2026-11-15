@@ -175,6 +175,20 @@ function ProjectSettingsIndexView({
           </SettingsListPanel>
         </SettingsGroup>
       ) : null}
+      {detail.viewer?.canManage === true ? (
+        <SettingsGroup title="Team">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="users"
+              title="Team"
+              subtitle="Members and invitations"
+              onPress={() =>
+                router.push({ pathname: '/project/[id]/settings/team', params: { id: projectId } })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow

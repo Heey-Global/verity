@@ -31,6 +31,7 @@ import { registerSessionMergeRoutes } from './session-merge-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
 import { registerSessionTurnRoute } from './session-turn-route.js';
+import { legacyAdministratorId } from './view-state-routes.js';
 import {
   PROJECT_MODEL_ERROR,
   projectSettingsStore,
@@ -73,7 +74,14 @@ export interface SessionRoutesWiring {
   cancelMeetingJobs: (sessionId: string) => boolean;
   decidePendingLinkedMessage: ReturnType<typeof registerServerMcpRoutes>;
   projectAgentRejection: (model: string, projectId: string) => Promise<string | undefined>;
-  isConfiguredProjectSessionModel: (model: string | undefined) => Promise<boolean>;
+  isConfiguredProjectSessionModel: (model: string | undefined, viewer?: string) => Promise<boolean>;
+  /** Whether anyone besides the administrator may work in the project (ADR 0023). */
+  sharedProject: (projectId: string | null) => Promise<boolean>;
+  /** The model a person's turns in a shared session run on; undefined elsewhere. */
+  personSessionModel: (
+    session: { sessionId: string; projectId: string | null; model: string },
+    viewer: string,
+  ) => Promise<string | undefined>;
 }
 
 /**
@@ -93,6 +101,8 @@ export function installSessionRoutes(
     decidePendingLinkedMessage,
     projectAgentRejection,
     isConfiguredProjectSessionModel,
+    sharedProject,
+    personSessionModel,
   }: SessionRoutesWiring,
 ): void {
   const { deps, conductor, liveHub, projectsBeingDeleted, sessionsBeingReaped } = ctx;
@@ -163,16 +173,25 @@ export function installSessionRoutes(
         await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
         session = await deps.eventStore.getSession(id);
       }
+      const viewer = request.localUserId ?? legacyAdministratorId;
+      // In a shared session a turn runs on its sender's own model.
+      let turnModel = body.model;
+      if (session !== undefined) {
+        if (body.model !== undefined && (await sharedProject(session.projectId)))
+          await deps.eventStore.userProviderConnections.setSessionModel(id, viewer, body.model);
+        turnModel ??= await personSessionModel(session, viewer);
+        if (turnModel === session.model && body.model === undefined) turnModel = undefined;
+      }
       if (
-        !(await isConfiguredProjectSessionModel(body.model ?? session?.model)) &&
+        !(await isConfiguredProjectSessionModel(turnModel ?? session?.model, viewer)) &&
         session?.projectId != null
       ) {
         reply.code(400);
         return { error: PROJECT_MODEL_ERROR };
       }
       // Existing sessions keep their model, but a turn override is new work on its chosen agent.
-      if (body.model !== undefined && body.model !== session?.model && session?.projectId != null) {
-        const rejection = await projectAgentRejection(body.model, session.projectId);
+      if (turnModel !== undefined && turnModel !== session?.model && session?.projectId != null) {
+        const rejection = await projectAgentRejection(turnModel, session.projectId);
         if (rejection !== undefined) {
           reply.code(400);
           return { error: rejection };
@@ -219,7 +238,7 @@ export function installSessionRoutes(
       }
       const opts: TurnOptions = {
         permissionMode: body.permissionMode,
-        model: body.model,
+        model: turnModel,
         timeoutMs: body.timeoutMs,
         allowedTools: body.allowedTools,
         disallowedTools: body.disallowedTools,

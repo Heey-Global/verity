@@ -16,6 +16,7 @@ import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
 import { createProjectOrderSaver } from '../lib/projectOrderSaver';
 import { SessionDragSlot } from '../components/SessionDragSlot';
+import { ProjectListFooter } from '../components/home/ProjectListFooter';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
 import {
@@ -1116,21 +1117,11 @@ function SessionList({ client }: { client: VerityClient }) {
             ) : null
           }
           ListFooterComponent={
-            <>
-              {pausedGroups.length > 0 ? (
-                <View style={styles.pausedSection}>
-                  <View style={styles.sectionHeaderRow}>
-                    <Text style={styles.sectionHeader}>Paused</Text>
-                    <Text style={styles.pausedCount}>{pausedGroups.length}</Text>
-                  </View>
-                  <View style={styles.pausedList}>
-                    {pausedGroups.map((group) => (
-                      <Fragment key={group.id}>{renderGroup(group)}</Fragment>
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-            </>
+            <ProjectListFooter
+              pausedGroups={pausedGroups}
+              renderGroup={renderGroup}
+              styles={styles}
+            />
           }
         />
         {floatingSession && reorder.sessionDragToken !== null ? (

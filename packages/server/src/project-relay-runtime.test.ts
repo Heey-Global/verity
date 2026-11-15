@@ -5,12 +5,20 @@ import type { DockerClient } from './docker.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ProjectInternalUnixListener } from './internal-listener.js';
 import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.js';
+import { originalSandbox } from './project-relay-lifecycle.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 describe('project relay runtime composition', () => {
   it('passes all generation-bound listener paths to the relay starter', async () => {
-    const identity = { projectId: 'p1', containerGeneration: 'generation-1' };
+    const identity = {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    };
     const closeBroker = vi.fn(async () => {});
     const closeClaude = vi.fn(async () => {});
     const closeCodex = vi.fn(async () => {});
@@ -33,11 +41,13 @@ describe('project relay runtime composition', () => {
       issue: vi.fn(async () => 'sign-cap'),
       resolve: vi.fn(),
       revokeProject: vi.fn(async () => {}),
+      revokeSandbox: vi.fn(async () => {}),
     } satisfies SigningCapabilityRegistry;
     const github = {
       issue: vi.fn(async () => 'github-cap'),
       resolve: vi.fn(),
       revokeProject: vi.fn(async () => {}),
+      revokeSandbox: vi.fn(async () => {}),
     } satisfies GhTokenCapabilityRegistry;
     const startRelay = vi.fn(async () => ({
       quiesce: vi.fn(async () => {}),
@@ -56,7 +66,8 @@ describe('project relay runtime composition', () => {
       codexSocketRoot: '/data/codex',
       socketOwnerUid: 1000,
       relayGid: 65_532,
-      projectNetwork: (projectId) => `verity-proj-${projectId}`,
+      sandboxNetwork: (sandbox) => `verity-proj-${sandbox.projectId}`,
+      defaultSandboxUser: async () => '00000000-0000-4000-8000-000000000001',
       startBrokerListener: vi.fn(async () => broker),
       startClaudeListener: vi.fn(async () => claude),
       startCodexListener: vi.fn(async () => codex),
@@ -78,7 +89,7 @@ describe('project relay runtime composition', () => {
       claudeSocketPath: claude.socketPath,
       codexSocketPath: codex.socketPath,
     });
-    await runtime.stop('p1');
+    await runtime.stop(originalSandbox('p1'));
     expect(closeBroker).toHaveBeenCalledOnce();
     expect(closeClaude).toHaveBeenCalledOnce();
     expect(closeCodex).toHaveBeenCalledOnce();

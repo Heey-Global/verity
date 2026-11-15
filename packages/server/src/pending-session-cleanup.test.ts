@@ -34,6 +34,39 @@ it('retains ownership after the session row is gone and removes only a completed
   }
 });
 
+// A session's files may sit in every member's own sandbox runtime; a record
+// naming one must survive a restart, or those files would never be deleted.
+it("keeps a person's own runtime in a pending cleanup across restarts", async () => {
+  const root = await mkdtemp(join(tmpdir(), 'verity-pending-cleanup-'));
+  try {
+    const record = {
+      sessionId: 'shared',
+      sandboxCwd: '/work/shared',
+      runnerProjectIds: ['project', 'u0123456789abcdef/project'],
+      bindings: [{ backend: 'codex', backendSessionId: 'thread' }],
+    };
+    await queueSessionCleanup(root, record);
+    expect(await pendingSessionCleanups(root)).toEqual([record]);
+    const reached: string[] = [];
+    const processor = createSessionCleanupProcessor({
+      root,
+      sessionExists: async () => false,
+      runtimeState: async () => 'ready',
+      deleteHome: async (projectId) => {
+        reached.push(projectId);
+      },
+      purgeArtifacts: async () => 'clean',
+      report: () => undefined,
+      now: () => 0,
+    });
+    await processor.run();
+    expect(reached).toEqual(['project', 'u0123456789abcdef/project']);
+    expect(await pendingSessionCleanups(root)).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 async function cleanupFixture() {
   const root = await mkdtemp(join(tmpdir(), 'verity-cleanup-progress-'));
   const record = {
@@ -384,7 +417,8 @@ async function heldSupervisor() {
 async function supervisorBrokerBudgetMs(): Promise<number> {
   const source = await readFile(
     new URL(
-      '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+      // The source module: the shipped bundle rewrites numbers such as `30_000`.
+      '../../../features/verity-sandbox-toolkit/src/runner-supervisor/turns.mjs',
       import.meta.url,
     ),
     'utf8',

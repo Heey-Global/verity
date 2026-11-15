@@ -106,6 +106,7 @@ export function registerPackageInstallRoute(
       !binding ||
       !socket ||
       socket.projectId !== binding.projectId ||
+      socket.userId !== binding.userId ||
       socket.containerGeneration !== binding.containerGeneration
     )
       return reply.code(401).send({ error: 'unauthorized' });
@@ -116,6 +117,7 @@ export function registerPackageInstallRoute(
       return (
         !generationSignal?.aborted &&
         current?.projectId === binding.projectId &&
+        current.userId === binding.userId &&
         current.containerGeneration === binding.containerGeneration
       );
     };

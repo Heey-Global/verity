@@ -287,12 +287,15 @@ case "$COMMAND" in
     # file would mean reviewing nothing at all.
     #
     # In CI the same property is checked positively: the "Committed runner worker
-    # bundle matches its sources" step in .github/workflows/verity-sandbox.yml
-    # rebuilds the bundle and fails on any difference. That step is the reason this
+    # bundle matches its sources" and "Committed toolkit bundles match their
+    # sources" steps in .github/workflows/verity-sandbox.yml rebuild the bundles
+    # and fail on any difference. That step is the reason this
     # exclusion is affordable, so keep its `paths` covering both the bundle and
     # everything bundled INTO it; if it is ever dropped, drop this exclusion too.
     GENERATED_PATHS=(
       'features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs'
+      'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs'
+      'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs'
     )
     # `:(top)` on both sides, so the reviewed set stays the whole repository and the
     # exclusions keep matching no matter which directory this runs from. The `cd` to

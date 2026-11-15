@@ -1,3 +1,4 @@
+import { viewerId } from './view-state-routes.js';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { worktreeExists } from '@verity/session';
@@ -14,7 +15,8 @@ export interface VerityControlSessionRouteDeps {
   deleteSessionEverywhere: (id: string) => Promise<boolean>;
   advancedModeEnabled: () => Promise<boolean>;
   ensureControlProject: () => Promise<ProjectRecord>;
-  resolveProjectModel?: (projectId: string) => Promise<string | undefined>;
+  /** The model `viewer`'s new Control session starts with. */
+  resolveProjectModel?: (projectId: string, viewer: string) => Promise<string | undefined>;
 }
 
 export function registerVerityControlSessionRoute(
@@ -60,11 +62,11 @@ export function registerVerityControlSessionRoute(
 
   app.post(
     '/verity-control/session',
-    async (_request, reply): Promise<{ sessionId: string } | { error: string }> => {
+    async (request, reply): Promise<{ sessionId: string } | { error: string }> => {
       if (await deps.advancedModeEnabled()) {
         const project = await deps.ensureControlProject();
         const model = deps.resolveProjectModel
-          ? await deps.resolveProjectModel(project.id)
+          ? await deps.resolveProjectModel(project.id, viewerId(request))
           : deps.defaultModel;
         if (model === undefined) {
           reply.code(400);

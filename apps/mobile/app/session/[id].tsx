@@ -1,4 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
+import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
@@ -746,6 +748,8 @@ export const SessionChat = memo(function SessionChat({
     model: currentModel,
     projectId,
     googleStatus,
+    people,
+    viewerUserId,
     detailLoaded,
     switchingModel,
     modelSwitchPending,
@@ -4660,42 +4664,29 @@ export const SessionChat = memo(function SessionChat({
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
-          <SessionFileOpenContext.Provider value={openSessionFile}>
-            <AppLinkOpenContext.Provider value={openAppLink}>
-              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-                <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveProvider
-                    client={client}
-                    sessionId={sessionId}
-                    projectId={projectId}
-                  >
-                    {transcriptList}
-                    {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                      <View style={styles.restoreCover}>
-                        <ActivityIndicator
-                          color={theme.colors.textMuted}
-                          accessibilityLabel={
-                            pendingUserJump !== null || jumpTarget !== null
-                              ? 'Jumping to message or bookmark'
-                              : 'Restoring chat position'
-                          }
-                        />
-                        {pendingUserJump !== null || jumpTarget !== null ? (
-                          <Text style={styles.emptySubtitle}>
-                            {pendingUserJump !== null
-                              ? 'Finding previous message or bookmark…'
-                              : 'Jumping to message or bookmark…'}
-                          </Text>
-                        ) : null}
-                      </View>
-                    ) : null}
-                  </KnowledgeSaveProvider>
-                </BookmarksContext.Provider>
-              </SessionFileImageSourceContext.Provider>
-            </AppLinkOpenContext.Provider>
-          </SessionFileOpenContext.Provider>
+          <SessionPeopleProvider people={people} viewerUserId={viewerUserId}>
+            <SessionFileOpenContext.Provider value={openSessionFile}>
+              <AppLinkOpenContext.Provider value={openAppLink}>
+                <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                  <BookmarksContext.Provider value={bookmarks}>
+                    <KnowledgeSaveProvider
+                      client={client}
+                      sessionId={sessionId}
+                      projectId={projectId}
+                    >
+                      {transcriptList}
+                      <TranscriptPositionCover
+                        restoring={restoring}
+                        finding={pendingUserJump !== null}
+                        jumping={jumpTarget !== null}
+                        styles={styles}
+                      />
+                    </KnowledgeSaveProvider>
+                  </BookmarksContext.Provider>
+                </SessionFileImageSourceContext.Provider>
+              </AppLinkOpenContext.Provider>
+            </SessionFileOpenContext.Provider>
+          </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
       {messages.length > 0 ? (
@@ -6949,10 +6940,11 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   const pending = message.pending;
   const actions = useContext(SessionActionsContext);
   const recoverable = pending === 'failed' && actions !== null;
+  const { sender, fromOther } = useMessageSender(message);
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
-      <View style={[styles.userRow, message.peer ? styles.peerRow : null]}>
+      <View style={[styles.userRow, message.peer || fromOther ? styles.peerRow : null]}>
         <View
           style={[
             styles.userBubble,
@@ -6965,6 +6957,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
               Agent · {message.peer.label}
             </Text>
           ) : null}
+          {sender !== undefined ? <Text style={styles.peerSource}>{sender}</Text> : null}
           {attachments.length > 0 ? (
             <View style={styles.userImages}>
               {attachments.map((a, i) =>
@@ -7991,7 +7984,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
       ? actions.lastUserPrompt
       : RETRY_PROMPT;
   const recovery =
-    canRetry || descriptor.action === 'claude-login' ? (
+    canRetry || descriptor.action === 'claude-login' || descriptor.action === 'connect-account' ? (
       <>
         {canRetry ? (
           <Button
@@ -8005,6 +7998,13 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
                 ? 'Sends your last message again'
                 : 'Sends a new turn asking the agent to continue'
             }
+          />
+        ) : null}
+        {descriptor.action === 'connect-account' ? (
+          <Button
+            label="My AI accounts"
+            size="compact"
+            onPress={() => router.push('/settings/ai-accounts')}
           />
         ) : null}
         {descriptor.action === 'claude-login' ? (

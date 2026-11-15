@@ -2,13 +2,16 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { EventStore, createSealableSecretCipher } from '@verity/store';
+import { createIsolatedTestDb, type TestDb } from '@verity/store/testing';
 
 import {
   createGmailTool,
   gmailHasStandingAuthorization,
   type GmailToolStore,
 } from './gmail-tool.js';
+import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 
 function setup(overrides: Partial<GmailToolStore> = {}) {
   const completeGoogleWorkspaceInvocation = vi.fn().mockResolvedValue(undefined);
@@ -422,5 +425,93 @@ describe('Gmail draft attachments from the session workspace', () => {
     const { tool, gmail } = setup();
     await expect(tool.invoke(input(draft([{ path: 'a.pdf' }])))).rejects.toThrow('no workspace');
     expect(gmail.createDraft).not.toHaveBeenCalled();
+  });
+});
+
+describe("Gmail for a turn run by someone other than the account's owner (ADR 0023 §3)", () => {
+  let ctx: TestDb;
+  let store: EventStore;
+  let aliceAccountId: string;
+  beforeAll(async () => {
+    ctx = await createIsolatedTestDb();
+    const cipher = createSealableSecretCipher();
+    cipher.unlock('ab'.repeat(32));
+    store = new EventStore(ctx.db, cipher);
+    await ctx.db
+      .insertInto('users')
+      .values([
+        { id: 'alice', role: 'member', status: 'active' },
+        { id: 'bob', role: 'member', status: 'active' },
+      ])
+      .execute();
+    await store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'p1',
+      cloneDir: 'p1',
+      containerName: 'verity-p1',
+      state: 'active',
+    });
+    await store.createSession({ sessionId: 's1', projectId: 'p1', worktree: '/wt', model: 'm' });
+    aliceAccountId = (
+      await store.googleAccounts.save({
+        ownerUserId: 'alice',
+        email: 'alice@example.test',
+        clientId: 'client',
+        refreshToken: 'alice-refresh',
+        scopes: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].map(
+          (scope) => `https://www.googleapis.com/auth/${scope}`,
+        ),
+      })
+    ).id;
+    // The chat is explicitly pinned to Alice's mailbox.
+    await store.googleAccounts.setSessionAccess('s1', 'gmail', {
+      mode: 'account',
+      accountId: aliceAccountId,
+    });
+  });
+  afterAll(async () => {
+    await ctx.close();
+  });
+
+  async function runTurn(userId: string, turnId: string) {
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Mail',
+      initiatedBy: { userId },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId, startCommandId: turnId });
+  }
+
+  it("never hands Alice's credentials to Bob's turn", async () => {
+    await runTurn('bob', 'bob-turn');
+    await expect(
+      resolveGoogleServiceCredentialForTurn(store, 's1', 'bob-turn', 'gmail'),
+    ).rejects.toThrow('not enabled');
+    const gmail = { search: vi.fn().mockResolvedValue({ messages: [] }) };
+    const googleAccessToken = vi.fn(async () => 'token');
+    const tool = createGmailTool({ eventStore: store, gmail: gmail as never, googleAccessToken });
+    await expect(
+      tool.invoke({
+        projectId: 'p1',
+        sessionId: 's1',
+        turnId: 'bob-turn',
+        invocationId: 'bob-search',
+        request: { action: 'search', query: 'is:unread' },
+      }),
+    ).rejects.toThrow('not enabled');
+    expect(googleAccessToken).not.toHaveBeenCalled();
+    expect(gmail.search).not.toHaveBeenCalled();
+
+    await runTurn('alice', 'alice-turn');
+    expect(
+      (await resolveGoogleServiceCredentialForTurn(store, 's1', 'alice-turn', 'gmail')).accountId,
+    ).toBe(aliceAccountId);
+    // A turn id that is no longer the running one names nobody.
+    await expect(
+      resolveGoogleServiceCredentialForTurn(store, 's1', 'bob-turn', 'gmail'),
+    ).rejects.toThrow('not enabled');
   });
 });

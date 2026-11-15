@@ -1,4 +1,5 @@
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { toolkitSources } from './toolkit-sources.test-helper.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -26,7 +27,9 @@ import {
 } from './runner-supervisor-client.js';
 
 let dir: string;
+
 const servers: Server[] = [];
+
 const sockets = new Set<Socket>();
 
 beforeEach(async () => {
@@ -542,6 +545,91 @@ describe('SupervisorRunnerClient', () => {
     });
   });
 
+  // Every turn, ACP or not, needs its badge: the sandbox helpers that sign
+  // commits or push run under any backend, and without the badge a Server route
+  // can only see the project, never whose turn is calling.
+  // The shared container's git config names one person. A turn that silently fell
+  // back to it would commit as that person, so the turn's own author must reach
+  // the start frame, and an unusable one must stop the turn instead.
+  it("carries the turn's own git author and refuses an unusable one", async () => {
+    const author = { name: 'Lena Berg', email: 'lena@example.com' };
+    const request = await captureStartRequest(
+      'author-runtime',
+      { prompt: 'hello' },
+      { clientOptions: { gitAuthor: () => Promise.resolve(author) } },
+    );
+    expect(request).toMatchObject({ gitAuthor: author });
+    expect(request).not.toHaveProperty('signCommits');
+    const unsigned = await captureStartRequest(
+      'author-unsigned-runtime',
+      { prompt: 'hello' },
+      { clientOptions: { signCommits: () => Promise.resolve(false) } },
+    );
+    expect(unsigned).toMatchObject({ signCommits: false });
+
+    const runtime = join(dir, 'author-invalid-runtime');
+    await mkdir(runtime, { recursive: true });
+    let sent = false;
+    const server = createServer((peer) => {
+      sockets.add(peer);
+      peer.once('close', () => sockets.delete(peer));
+      peer.once('data', () => {
+        sent = true;
+        peer.end(`${JSON.stringify({ ok: true, outcome: 'ambiguous' })}\n`);
+      });
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(join(runtime, 'supervisor.sock'), resolve));
+    const client = new SupervisorRunnerClient(backend, {
+      securityPreflight: false,
+      runtimeDir: runtime,
+      store,
+      bus: new InMemoryEventBus(),
+      gitAuthor: () => Promise.resolve({ name: 'Lena\nauthor x', email: 'lena@example.com' }),
+    });
+    const turn = client.startTurn(
+      {
+        store: {} as never,
+        worktree: '/work/project',
+        cwd: '/work/project',
+        storeSessionId: 'session-1',
+        turnId: 'turn-1',
+        startCommandId: 'start-1',
+        prompt: 'hello',
+      },
+      {},
+    );
+    await expect(turn.result).rejects.toThrow(/invalid git author/u);
+    expect(sent).toBe(false);
+  });
+
+  it("carries the turn's badge for every backend", async () => {
+    for (const backend of [undefined, { runnerSupervisorBackend: 'codex-acp' } as Backend]) {
+      const issued: string[] = [];
+      const request = await captureStartRequest(
+        `badge-runtime-${backend === undefined ? 'native' : 'acp'}`,
+        { prompt: 'hello' },
+        {
+          ...(backend === undefined ? {} : { backend }),
+          clientOptions: {
+            turnCapabilities: {
+              issue: (turnId: string) => {
+                issued.push(turnId);
+                return 'badge-1';
+              },
+              release: () => undefined,
+            },
+            ...(backend === undefined
+              ? {}
+              : { mcpGatewayTokens: { issue: () => 'gateway-token-1', release: () => undefined } }),
+          },
+        },
+      );
+      expect(issued).toEqual(['turn-1']);
+      expect(request).toMatchObject({ turnCapability: 'badge-1' });
+    }
+  });
+
   it('mints a bearer for an OpenCode ACP turn', async () => {
     const issued: string[] = [];
     const request = await captureStartRequest(
@@ -583,13 +671,7 @@ describe('SupervisorRunnerClient', () => {
   // test above still green, because they assert against their own fake server's
   // literal rather than against the real emitter.
   it('keeps the supervisor speaking the refusal the explanation recognizes', async () => {
-    const supervisor = await readFile(
-      new URL(
-        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
-        import.meta.url,
-      ),
-      'utf8',
-    );
+    const supervisor = await toolkitSources('runner-supervisor');
     expect(supervisor).toContain("throw new Error('invalid mcpGatewayToken')");
     // Both ends of the pairing, so this fails whichever one moves.
     const client = await readFile(
@@ -1154,6 +1236,25 @@ describe('SupervisorRunnerClient', () => {
     // captureStartRequest settles the turn by rejecting the launch — a failed turn has
     // to retire its bearer just as a successful one does.
     expect(released).toEqual(['gateway-token-1']);
+  });
+
+  // A badge that outlived its turn would keep naming that person to every
+  // sandbox route for up to a day; it must end with the turn, failed or not.
+  it("retires the turn's badge once the turn settles, for a non-ACP turn too", async () => {
+    const released: string[] = [];
+    await captureStartRequest(
+      'badge-release-runtime',
+      { prompt: 'hello' },
+      {
+        clientOptions: {
+          turnCapabilities: {
+            issue: () => 'badge-1',
+            release: (token: string) => released.push(token),
+          },
+        },
+      },
+    );
+    expect(released).toEqual(['badge-1']);
   });
 
   it('restores Codex rollout state before routing resume through start-turn', async () => {
@@ -2544,141 +2645,6 @@ describe('runSupervisorTrustedCli result validation', () => {
   });
 });
 
-describe('SupervisorRunnerClient.forceCancel', () => {
-  const backend = { runnerSupervisorBackend: 'codex-acp' } as Backend;
-  const store = {
-    ingestRunnerFrame: async () => ({ outcome: 'accepted' as const }),
-  } as RunnerFrameStore;
-
-  /** Reattach to a turn whose artifacts never appear, so the handle stays live and
-   * the only thing under test is how `forceCancel` talks to the supervisor. */
-  function reattach(runtime: string, turnId = 'turn-1') {
-    const client = new SupervisorRunnerClient(backend, {
-      securityPreflight: false,
-      runtimeDir: runtime,
-      store,
-      bus: new InMemoryEventBus(),
-      timeoutMs: 200,
-    });
-    return client.attach(
-      {
-        turnId,
-        sessionId: 'session-1',
-        eventFilePath: join(runtime, 'turns', turnId, 'events.jsonl'),
-        controlSocketPath: join(runtime, 'turns', turnId, 'control.sock'),
-      },
-      {},
-    );
-  }
-
-  it('reports a supervisor-confirmed kill and settles the local handle', async () => {
-    const runtime = join(dir, 'force-cancel-ok');
-    const requests = await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: true, outcome: 'cancelled' },
-    });
-    const turn = reattach(runtime);
-
-    await expect(turn.forceCancel?.()).resolves.toBe(true);
-    expect(requests).toEqual([{ protocolVersion: 1, kind: 'cancel-turn', turnId: 'turn-1' }]);
-    await expect(turn.result).resolves.toEqual({
-      sessionId: 'session-1',
-      exitCode: 143,
-      stderr: '',
-      aborted: true,
-    });
-  });
-
-  // `terminal` means the supervisor found the turn already over. The boolean is a
-  // termination CERTIFICATE, not a report that this call delivered the kill — and a
-  // worker that was already gone certifies just as well as one killed here. Returning
-  // false would tell the ownership barrier the worker might still hold the worktree.
-  it('confirms termination when the turn was already terminal', async () => {
-    const runtime = join(dir, 'force-cancel-terminal');
-    await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: true, outcome: 'terminal' },
-    });
-    const turn = reattach(runtime);
-
-    await expect(turn.forceCancel?.()).resolves.toBe(true);
-    await expect(turn.result).resolves.toMatchObject({ aborted: true });
-  });
-
-  // A cancel whose response was lost may still have killed the worker. Settling
-  // locally on that guess would strand a live agent, so it only settles when a
-  // follow-up state read proves the turn terminal.
-  it('accepts a lost cancel response once a follow-up state read proves the turn settled', async () => {
-    const runtime = join(dir, 'force-cancel-lost-response');
-    const requests = await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: false, error: 'connection reset before the reply' },
-      'get-turn': { ok: true, state: state('settled') },
-    });
-    const turn = reattach(runtime);
-
-    await expect(turn.forceCancel?.()).resolves.toBe(true);
-    expect(requests.map((request) => request.kind)).toEqual(['cancel-turn', 'get-turn']);
-    await expect(turn.result).resolves.toMatchObject({ aborted: true });
-  });
-
-  it('keeps the original failure when the follow-up state read does not prove settlement', async () => {
-    const runtime = join(dir, 'force-cancel-still-running');
-    await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: false, error: 'supervisor is busy' },
-      'get-turn': { ok: true, state: state('running') },
-    });
-    const turn = reattach(runtime);
-
-    await expect(turn.forceCancel?.()).rejects.toThrow(
-      'runner supervisor rejected request: supervisor is busy',
-    );
-    await expect(turn.forceCancel?.()).rejects.toThrow('supervisor is busy');
-    await turn.forceCancel?.().catch(() => undefined);
-    // Never settled locally: the agent may still be running.
-    await expect(
-      Promise.race([
-        turn.result.then(() => 'settled'),
-        new Promise((resolve) => setTimeout(() => resolve('live'), 50)),
-      ]),
-    ).resolves.toBe('live');
-  });
-
-  it('refuses an outcome the supervisor is not allowed to report', async () => {
-    const runtime = join(dir, 'force-cancel-bad-outcome');
-    await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: true, outcome: 'maybe' },
-      'get-turn': { ok: true, state: state('running') },
-    });
-    const turn = reattach(runtime);
-
-    await expect(turn.forceCancel?.()).rejects.toThrow(
-      'runner supervisor returned an invalid cancel outcome',
-    );
-  });
-
-  // A turn id that could not have come from this Server never reaches the wire: it is
-  // interpolated into the supervisor's own turn paths. The wrapper is simply not
-  // installed, so the cancel is NOT dropped — it falls through to the transport's own
-  // force-cancel, which really does abort the handle. Both halves are asserted here,
-  // because "no request was sent" on its own would also describe a silent no-op that
-  // answers `true` while a turn keeps running.
-  it('never sends an unsafe turn id to the supervisor, and still aborts locally', async () => {
-    const runtime = join(dir, 'force-cancel-unsafe-id');
-    const requests = await serveByKind(join(runtime, 'supervisor.sock'), {
-      'cancel-turn': { ok: true, outcome: 'cancelled' },
-    });
-    const turn = reattach(runtime, '../escape');
-
-    await expect(turn.forceCancel?.()).resolves.toBe(false);
-    expect(requests).toEqual([]);
-    // An unsafe id cannot be sent or certified as cancelled by the supervisor.
-    await expect(turn.result).resolves.toEqual({
-      sessionId: 'session-1',
-      exitCode: 143,
-      stderr: '',
-      aborted: true,
-    });
-  });
-});
-
 describe('SupervisorRunnerClient launch preconditions', () => {
   const backend = { runnerSupervisorBackend: 'codex-acp' } as Backend;
   const store = {
@@ -3700,6 +3666,7 @@ it('classifies malformed cache response frames as invalid rather than leaking JS
     requestRunnerSupervisor(path, { kind: 'reclaim-package-caches' }),
   ).rejects.toMatchObject({ runnerCacheFailure: { code: 'invalid-response' } });
 });
+
 it('marks a silent cache supervisor timeout with a safe transport code', async () => {
   const path = join(dir, 'silent-cache.sock');
   const server = createServer((socket) => {

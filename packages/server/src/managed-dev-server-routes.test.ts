@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { legacyAdministratorId } from './view-state-routes.js';
 import type { Server } from 'node:http';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { EventStore } from '@verity/store';
@@ -16,7 +17,16 @@ import {
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
 
-const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+const binding = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+  owner: 'o',
+  repo: 'r',
+};
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -180,7 +190,10 @@ describe('Preview sheet routes', () => {
       url: '/sessions/s1/managed-dev-servers/srv/start',
     });
     expect(response.statusCode).toBe(409);
-    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: undefined });
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', {
+      local: undefined,
+      person: legacyAdministratorId,
+    });
   });
 
   // Shared online alone starts the server without a network address; the route
@@ -198,14 +211,17 @@ describe('Preview sheet routes', () => {
       url: '/sessions/s1/managed-dev-servers/srv/start',
       payload: { local: false },
     });
-    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', { local: false });
+    expect(start).toHaveBeenCalledWith('s1', 'srv', 'operator', {
+      local: false,
+      person: legacyAdministratorId,
+    });
     const off = await app.inject({
       method: 'POST',
       url: '/sessions/s1/managed-dev-servers/srv/local',
       payload: { on: false },
     });
     expect(off.statusCode).toBe(200);
-    expect(setLocal).toHaveBeenCalledWith('s1', 'srv', false);
+    expect(setLocal).toHaveBeenCalledWith('s1', 'srv', false, legacyAdministratorId);
     expect(
       (
         await app.inject({
@@ -235,7 +251,7 @@ describe('Preview sheet routes', () => {
       's1',
       'srv',
       { command: 'node server.mjs', workdir: '.' },
-      { local: undefined },
+      { local: undefined, approvedBy: legacyAdministratorId },
     );
   });
 });
@@ -250,6 +266,7 @@ it('forwards alias-only registration metadata and rejects accidental value field
     command: 'node server.mjs',
     workdir: '.',
     approved: false,
+    approvedBy: null,
     secretBindings,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -300,7 +317,10 @@ it('passes the exact displayed secret mapping through Preview approval', async (
     payload: seen,
   });
   expect(response.statusCode).toBe(200);
-  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, {
+    local: undefined,
+    approvedBy: legacyAdministratorId,
+  });
 });
 
 it('forwards the displayed provider snapshot and reports stale approval conflicts', async () => {
@@ -327,7 +347,10 @@ it('forwards the displayed provider snapshot and reports stale approval conflict
     payload: seen,
   });
   expect(response.statusCode).toBe(409);
-  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, { local: undefined });
+  expect(approve).toHaveBeenCalledWith('s1', 'srv', seen, {
+    local: undefined,
+    approvedBy: legacyAdministratorId,
+  });
   const invalid = await app.inject({
     method: 'POST',
     url: '/sessions/s1/managed-dev-servers/srv/approve',

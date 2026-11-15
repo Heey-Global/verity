@@ -18,6 +18,7 @@ export {
   type Spawner,
 } from './backend-contract.js';
 export { createBrokerSpawner } from './broker-spawner.js';
+export { isGitAuthor, type GitAuthor } from './git-author.js';
 export {
   brokeredGrantChannel,
   isRunnerSupervisorBackend,

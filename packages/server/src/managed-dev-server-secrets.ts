@@ -3,6 +3,7 @@ import {
   type ManagedDevServerSecretBinding,
 } from '@verity/store';
 import type { BrokeredHttpProjectBinding } from './brokered-http-tool.js';
+import type { DopplerPerson } from './doppler-credential.js';
 
 /** Fresh project-bound resolution; buffers are consumed and never retained in registration. */
 export function createManagedDevServerSecretResolver(options: {
@@ -12,12 +13,16 @@ export function createManagedDevServerSecretResolver(options: {
     dopplerProject: string;
     dopplerConfig: string;
     secretName: string;
+    person: DopplerPerson;
   }): Promise<Uint8Array>;
 }) {
+  /** `startedBy` is the person whose Doppler connection resolves the secrets: who
+   *  started the server, also when it is recovered later (ADR 0023 §3). */
   return async (
     projectId: string,
     bindings: readonly ManagedDevServerSecretBinding[],
-    approvedAuthority?: string,
+    approvedAuthority: string | undefined,
+    startedBy: string | null,
   ) => {
     const normalized = normalizeManagedDevServerSecretBindings(bindings);
     const buffers: Uint8Array[] = [];
@@ -35,6 +40,7 @@ export function createManagedDevServerSecretResolver(options: {
           projectId,
           ...binding,
           secretName: entry.secretAlias,
+          person: { userId: startedBy },
         });
         buffers.push(raw);
         const value = new TextDecoder('utf-8', { fatal: true }).decode(raw);

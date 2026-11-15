@@ -58,6 +58,8 @@ export function defaultProjectRelay(): ProjectRelayControl {
       return {
         identity: {
           projectId: binding.projectId,
+          userId: binding.userId,
+          projectDefault: binding.projectDefault,
           containerGeneration: binding.containerGeneration,
         },
         signingCapability: 'test-signing-capability',

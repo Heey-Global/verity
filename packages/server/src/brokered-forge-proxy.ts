@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { turnFitsSandbox } from './turn-credentials.js';
 import type { Duplex } from 'node:stream';
 import { TLSSocket, createSecureContext } from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import type { PemCertificate } from './claude-egress-ca.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import {
@@ -132,7 +134,10 @@ async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>;
+type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>> & {
+  /** The person the forge access is for; absent for the project default. */
+  actingUserId?: string | null;
+};
 
 /** Extend the HTTP secret broker with a repository-bound streaming transport.
  * Only this server owns TLS keys and provider credentials. The project listener
@@ -142,6 +147,9 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  /** A turn's own badge, accepted alongside the container capability; it proves
+   *  the project and names the turn's person for personal forge access later. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   resolveRepository?: (
     binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
     hostname: string,
@@ -300,16 +308,49 @@ export function createBrokeredForgeProxy(options: {
             let chosen: RepositoryBinding | undefined;
             let candidates: RepositoryBinding[] = [];
             const resolveBinding = async () => {
-              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              const badge =
+                presented === undefined
+                  ? undefined
+                  : options.turnCredentials?.resolve({
+                      projectId: identity.projectId,
+                      token: presented,
+                    });
+              // A badge carried out of the sandbox it was issued into proves nothing.
+              const foreignBadge = badge !== undefined && !turnFitsSandbox(badge, identity);
+              const turn = foreignBadge ? undefined : badge;
+              // A badge proves the sandbox itself; the repository and generation are
+              // the sandbox's current container binding, exactly as its capability
+              // would have named them.
+              const current =
+                !presented || foreignBadge
+                  ? undefined
+                  : turn !== undefined
+                    ? await options.capabilities.bindingForSandbox?.(
+                        identity.projectId,
+                        identity.userId,
+                      )
+                    : await options.capabilities.resolve(presented);
               const resolved =
                 current && options.resolveRepository
                   ? await options.resolveRepository(current, hostname, path)
                   : current;
-              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : []).filter(
-                (candidate) =>
-                  candidate.projectId === identity.projectId &&
-                  candidate.containerGeneration === identity.containerGeneration,
-              );
+              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : [])
+                .filter(
+                  (candidate) =>
+                    candidate.projectId === identity.projectId &&
+                    candidate.userId === identity.userId &&
+                    candidate.containerGeneration === identity.containerGeneration,
+                )
+                // The adapter acts with the person's own forge access: the badge's
+                // person, else the sandbox's. The project's original sandbox keeps the
+                // project default without a badge.
+                .map((candidate) =>
+                  turn !== undefined
+                    ? { ...candidate, actingUserId: turn.userId }
+                    : identity.projectDefault
+                      ? candidate
+                      : { ...candidate, actingUserId: identity.userId },
+                );
               const selected = chosen;
               return selected
                 ? candidates.find(

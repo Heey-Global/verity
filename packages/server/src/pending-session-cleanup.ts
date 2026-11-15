@@ -100,7 +100,10 @@ export async function pendingSessionCleanups(root: string): Promise<PendingSessi
         typeof record.sandboxCwd !== 'string' ||
         !Array.isArray(record.bindings) ||
         !Array.isArray(record.runnerProjectIds) ||
-        record.runnerProjectIds.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id))
+        // A project's runtime, or a person's own (`u<tag>/<project>`, ADR 0023 §4).
+        record.runnerProjectIds.some(
+          (id) => !/^(?:u[0-9a-f]{16}\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id),
+        )
       )
         throw new Error('Invalid pending session cleanup');
       if (

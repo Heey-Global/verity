@@ -107,6 +107,7 @@ export {
   ProjectDefaultModelNotAllowedError,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
+  httpMcpConnectionUsableBy,
   type ProjectMcpBindingRecord,
   type DevServerRecord,
   type DevServerCreateInput,
@@ -294,6 +295,29 @@ export {
   validateContext,
   type UserContext,
 } from './user-context.js';
+export {
+  UserProfileStore,
+  DISPLAY_NAME_MAX_CHARS,
+  normalizeDisplayName,
+  type UserProfile,
+} from './user-profile.js';
+export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
+export { UserDopplerConnectionStore } from './user-doppler-connection.js';
+export {
+  UserProviderConnectionStore,
+  type ProviderConnectionKind,
+  type UserProviderConnection,
+  type UserProviderConnectionStatus,
+} from './user-provider-connections.js';
+export {
+  ProjectSandboxStore,
+  type ProjectSandboxRecord,
+  type ProjectSandboxState,
+} from './project-sandboxes.js';
+export {
+  UserGithubAuthorizationStore,
+  type UserGithubAuthorization,
+} from './user-github-authorization.js';
 
 export {
   ViewStateStore,
@@ -335,3 +359,12 @@ export {
   type ProjectInquiry,
   type ProjectInquiryGrant,
 } from './project-inquiries.js';
+export {
+  INVITATION_MAX_TTL_MS,
+  ProjectTeamError,
+  ProjectTeamStore,
+  type InvitationState,
+  type ProjectInvitation,
+  type ProjectMember,
+  type TeamOutboxEntry,
+} from './project-team.js';

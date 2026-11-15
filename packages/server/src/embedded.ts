@@ -1,5 +1,19 @@
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
+import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
+import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
+import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
+import {
+  sandboxIdentity,
+  sandboxNetworkName,
+  sandboxPersonTag,
+  sandboxRunnerDir,
+} from './sandbox-identity.js';
+import { projectDefaultSandboxUser, recordedDefaultSandboxUser } from './project-sandbox.js';
+import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
+import { legacyAdministratorId } from './view-state-routes.js';
+import { createDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
+import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
@@ -82,8 +96,8 @@ import {
 } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
-import type { GitOutput } from './branches.js';
-import { SessionStorage, storageHold } from './session-storage.js';
+import { SessionStorage } from './session-storage.js';
+import { sessionStorageAccess } from './session-storage-access.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
   RunnerCacheMaintenance,
@@ -151,7 +165,6 @@ import {
   requestRunnerSupervisor,
   brokeredGrantTarget,
   brokeredGrantToolName,
-  encodeCwd,
   runnerSupervisorBackendLabel,
   type Backend,
   type RunnerSupervisorBackend,
@@ -168,11 +181,12 @@ import {
   TranscriptStore,
   type Database,
   type ProjectRecord,
+  httpMcpConnectionUsableBy,
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
 
-import { existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
@@ -232,6 +246,8 @@ import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js
 import { createAuditRecorder } from './audit-recorder.js';
 import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring, gatewayRequestMac } from './gateway-request-mac.js';
+import { createTurnCredentials } from './turn-credentials.js';
+import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
@@ -258,19 +274,16 @@ import {
   validateRuntimeReadinessTtl,
 } from './runtime-readiness-gate.js';
 import {
-  queueSessionCleanup,
   pendingSessionCleanups,
   createSessionCleanupProcessor,
   deleteRunnerSessionHome,
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 
-import { sweepOrphanArtifacts, type SweepResult } from './session-artifact-sweep.js';
 import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
-import {
-  purgeSessionArtifacts as purgeSessionArtifactFiles,
-  type SessionArtifactScope,
-} from './session-artifacts.js';
+import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
+import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
+import { purgeSessionArtifacts as purgeSessionArtifactFiles } from './session-artifacts.js';
 import {
   createGitHubAppInstallationTokenMint,
   createGitHubAppProjectTokenMint,
@@ -289,13 +302,12 @@ import { readOrMigrateProjectOverview } from './project-overview-file.js';
 import { validateDopplerToken, listDopplerProjects, listDopplerConfigs } from './doppler-token.js';
 import {
   ProvisionerImpl,
-  DeprovisionerImpl,
   projectClonePath,
-  gitAuthHeader,
   devcontainerBuilderIdle,
-  projectNetworkName,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
+  materializePersonalOpenCodeSettings,
+  personalOpenCodeSubdir,
   type ProjectRelayControl,
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
@@ -342,13 +354,23 @@ import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
 import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
-import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import {
+  originalSandbox,
+  type ProjectRelayLifecycle,
+  type ProjectRelaySandboxRef,
+} from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import { readCodexAccessToken, type AgentGatewayConfiguration } from './agent-gateway-control.js';
+import {
+  readCodexAccessToken,
+  type AgentGatewayConfiguration,
+  type AgentGatewayPerson,
+} from './agent-gateway-control.js';
+import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
+import { installTeamOutbox } from './team-outbox-worker.js';
 import {
   startAgentGatewaySynchronizer,
   type AgentGatewaySynchronizer,
@@ -518,8 +540,36 @@ export async function buildEmbeddedServer(
   const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
   const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
   const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
+  // The administrator's instance token; only the instance-level Doppler routes and
+  // the per-person rule below read it.
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
     eventStore.getDopplerServiceTokenBytes();
+  // ADR 0023 §3: a project's secrets resolve through the Doppler connection of the
+  // person the work is for; see doppler-credential.ts.
+  const dopplerCredentialFor = createDopplerCredentials({
+    personal: (userId, projectId) =>
+      eventStore.userDopplerConnections.tokenBytes(userId, projectId),
+    instance: readBrokerDopplerCredential,
+    isAdministrator: (userId) => eventStore.isActiveAdministrator(userId),
+  });
+  /** The person a turn acts for while it runs; null for a turn without one. A turn
+   *  that is no longer running resolves nothing. */
+  const runningTurnPerson = async (sessionId: string, turnId: string): Promise<string | null> => {
+    const running = (await eventStore.listRunningTurns()).find(
+      (turn) => turn.sessionId === sessionId,
+    );
+    if (running === undefined || running.turnId !== turnId) {
+      throw new DopplerSecretResolutionError(
+        'Secret resolution failed during project configuration. No secret value was exposed.',
+        'project configuration',
+      );
+    }
+    return (await eventStore.promptInitiatorAt(sessionId, running.promptSeq))?.userId ?? null;
+  };
+  const dopplerPersonId = (person: DopplerPerson): Promise<string | null> =>
+    'userId' in person
+      ? Promise.resolve(person.userId)
+      : runningTurnPerson(person.sessionId, person.turnId);
   const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
   const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
   const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
@@ -529,16 +579,13 @@ export async function buildEmbeddedServer(
     const dopplerConfig = settings?.dopplerConfig?.trim();
     return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
   };
-  const resolveBrokerDopplerSecret = async (
-    input: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'>,
-  ): Promise<Uint8Array> => {
-    const token = await readBrokerDopplerCredential();
-    if (token === undefined) {
-      throw new DopplerSecretResolutionError(
-        'Secret resolution failed during Doppler authentication. No secret value was exposed.',
-        'Doppler authentication',
-      );
-    }
+  const resolveBrokerDopplerSecret = async ({
+    person,
+    ...input
+  }: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'> & {
+    person: DopplerPerson;
+  }): Promise<Uint8Array> => {
+    const token = await dopplerCredentialFor(await dopplerPersonId(person), input.projectId);
     try {
       return await resolveDopplerProjectSecret({ ...input, token });
     } finally {
@@ -568,6 +615,14 @@ export async function buildEmbeddedServer(
   // owns the session's permission cards — see `ServerDeps.mcpGateway`.
   const secretAuditLog = createPostgresSecretAuditLog(db);
   const gatewayRequestMacKeys = createGatewayRequestMacKeyring(db, secretCipher);
+  // The turn's badge: names the person a supervised turn runs for to sandbox routes.
+  const turnCredentials = createTurnCredentials(
+    config.turnCredentialStatePath === undefined
+      ? undefined
+      : { persistPath: config.turnCredentialStatePath },
+  );
+  // Each person's own GitHub App authorization; one instance so a token renews once.
+  const githubUserAuthorization = createGitHubUserAuthorization({ store: eventStore });
   const mcpGatewayTokens = createMcpGatewayTokens({
     onResolveRejected: (input) => {
       // Keep the bearer and its digest out of logs. The reason and the two already-known
@@ -712,41 +767,12 @@ export async function buildEmbeddedServer(
     if (binding === undefined) return undefined;
     return brokeredDopplerBindingId(binding);
   };
-  // ADR 0011 D3: secret NAMES (never values) for the turn context, so the agent
-  // stops guessing aliases. Briefly cached; every failure degrades to "no list".
-  const brokeredAliasCache = new Map<string, { names: readonly string[]; expiresAt: number }>();
-  const brokeredSecretAliases = async (projectId: string): Promise<readonly string[]> => {
-    const cached = brokeredAliasCache.get(projectId);
-    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.names;
-    if (cached !== undefined) brokeredAliasCache.delete(projectId);
-    const binding = await getBrokeredProjectBinding(projectId);
-    if (binding === undefined) return [];
-    let names: readonly string[];
-    let ttlMs = 60_000;
-    let token: Uint8Array | undefined;
-    try {
-      token = await readBrokerDopplerCredential();
-      if (token === undefined) throw new Error('broker Doppler identity is unavailable');
-      names = await listDopplerProjectSecretNames({
-        dopplerProject: binding.dopplerProject,
-        dopplerConfig: binding.dopplerConfig,
-        token,
-      });
-    } catch {
-      // Keep provider outages best-effort without paying the same network timeout
-      // at the start of every turn. Retry soon enough to recover automatically.
-      names = [];
-      ttlMs = 10_000;
-    } finally {
-      token?.fill(0);
-    }
-    if (brokeredAliasCache.size >= 256) {
-      const oldestProjectId = brokeredAliasCache.keys().next().value;
-      if (oldestProjectId !== undefined) brokeredAliasCache.delete(oldestProjectId);
-    }
-    brokeredAliasCache.set(projectId, { names, expiresAt: Date.now() + ttlMs });
-    return names;
-  };
+  // ADR 0011 D3: secret NAMES (never values) for the turn context, per person.
+  const brokeredSecretAliases = createBrokeredSecretAliases({
+    getProjectBinding: getBrokeredProjectBinding,
+    credentialFor: dopplerCredentialFor,
+    listNames: listDopplerProjectSecretNames,
+  });
   const secretKeyMeta = await eventStore.getSecretKeyMeta();
   const hasMasterPassword = secretKeyMeta !== undefined;
   // The one non-interactive way in (ADR 0008 D8): a Server promoted by a
@@ -1447,6 +1473,11 @@ export async function buildEmbeddedServer(
     config.publicPreviews !== undefined && projectDocker !== undefined
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
+          // Team v1 is only used once the service selects it in welcome, and
+          // only offered where an invited person can also join: through the
+          // same connector Remote Control uses for its tunnel.
+          offerTeam: remoteConnector !== undefined,
+          admitTeamJoin: (pending) => eventStore.projectTeam.admitJoin(pending),
           ...(config.publicPreviews.expectedInstallationId === undefined
             ? {}
             : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
@@ -1502,6 +1533,16 @@ export async function buildEmbeddedServer(
   ) {
     previewShareManager = new PreviewShareManager({
       store: eventStore,
+      // A managed server's preview reaches the sandbox it runs in (ADR 0023 §4).
+      sandboxFor: async (project, userId) => {
+        const sandbox = await resolveTurnSandbox(
+          eventStore,
+          project.id,
+          userId === null ? undefined : { userId },
+        );
+        const identity = sandboxIdentity(project, sandbox);
+        return { containerName: identity.containerName, networkName: identity.networkName };
+      },
       onShareEnded: (share) => {
         if (share.managedInstanceId) managedLinkEnded.current?.(share.managedInstanceId, share.id);
       },
@@ -1589,7 +1630,8 @@ export async function buildEmbeddedServer(
           ? createDopplerSecretResolver({
               ...secretJobsConfig.doppler,
               catalog: secretProviderCatalog!,
-              readCredential: readBrokerDopplerCredential,
+              readCredential: (_ref, { projectId, userId }) =>
+                dopplerCredentialFor(userId, projectId),
             })
           : secretJobsConfig.resolveSecrets!,
       sealEnvelope,
@@ -1696,6 +1738,49 @@ export async function buildEmbeddedServer(
   let agentGatewayAccessToken: string | null | undefined;
   let agentGatewayCodexAuthJson: string | null | undefined;
   let agentGatewayOpenCode: { baseUrl: string; apiKey: string | null } | undefined;
+  // Each person's own logins (ADR 0023 §3), projected beside the instance login.
+  let agentGatewayPeople: readonly AgentGatewayPerson[] = [];
+  const personalProviderCredentials = createPersonalProviderCredentials({
+    store: eventStore,
+    onError: (error) => {
+      if (error instanceof SealedError) return;
+      // Never include credential contents in this diagnostic.
+      console.warn(`verity: a personal provider login could not be refreshed: ${String(error)}`);
+    },
+  });
+  // A person's sandbox reads its OpenCode models from its own file; rewrite every
+  // person's file when anyone's logins change, so a connected, changed or removed
+  // provider reaches their running sandbox (the directory bind sees the swap).
+  personalProviderCredentials.onChanged(() => {
+    void (async () => {
+      const connections = await eventStore.userProviderConnections.listByProvider('opencode');
+      const written = new Set<string>();
+      for (const connection of connections) {
+        const tag = sandboxPersonTag(connection.userId);
+        materializePersonalOpenCodeSettings(
+          connection,
+          secretRoot,
+          tag,
+          config.claudeConnectorPort,
+        );
+        written.add(personalOpenCodeSubdir(tag));
+      }
+      const prefix = personalOpenCodeSubdir('');
+      for (const entry of existsSync(secretRoot) ? readdirSync(secretRoot) : []) {
+        if (entry.startsWith(prefix) && !written.has(entry))
+          materializePersonalOpenCodeSettings(
+            undefined,
+            secretRoot,
+            entry.slice(prefix.length),
+            config.claudeConnectorPort,
+          );
+      }
+    })().catch((error: unknown) => {
+      if (error instanceof SealedError) return;
+      console.warn(`verity: personal OpenCode configuration not refreshed: ${String(error)}`);
+    });
+  });
+  let agentGatewayPersonalClaudeTokens = new Map<string, string>();
   const { url: agentGatewayUrl } = validateAgentGatewayRoutingConfig({
     url: config.agentGatewayUrl,
     controlSocket: config.agentGatewayControlSocket,
@@ -1713,7 +1798,12 @@ export async function buildEmbeddedServer(
             app.log.warn({ err: error }, 'Standalone agent gateway reconciliation failed');
           },
           persistCodexCredentialUpdate: (update) =>
-            claudeCredentialSync.persistCodexCredentialUpdate(update),
+            update.userId === undefined
+              ? claudeCredentialSync.persistCodexCredentialUpdate(update)
+              : personalProviderCredentials.persistCodexUpdate({
+                  ...update,
+                  userId: update.userId,
+                }),
         });
   const codexGatewayControlSocket = config.agentGatewayControlSocket;
   // Passed straight through: `readCodexAccessToken` already throws a
@@ -1758,10 +1848,13 @@ export async function buildEmbeddedServer(
       )
       .update(
         routedBindings
-          .map((binding) => `${binding.projectId}:${binding.fingerprint256}`)
+          .map(
+            (binding) => `${binding.projectId}:${binding.userId ?? ''}:${binding.fingerprint256}`,
+          )
           .sort()
           .join('\n'),
       )
+      .update(`\0personal:${JSON.stringify(agentGatewayPeople)}`)
       .digest('hex');
     return {
       revision,
@@ -1795,6 +1888,17 @@ export async function buildEmbeddedServer(
             },
           }),
       ...(agentGatewayOpenCode === undefined ? {} : { opencode: agentGatewayOpenCode }),
+      ...(config.agentGatewayUnsealKey === undefined
+        ? {}
+        : {
+            personal: {
+              // Every project's original sandbox is the administrator's, whose
+              // login the instance login was.
+              instanceUserId: legacyAdministratorId,
+              unsealKey: config.agentGatewayUnsealKey,
+              people: agentGatewayPeople,
+            },
+          }),
     };
   };
   const syncAgentGateway = (): void => {
@@ -1829,12 +1933,13 @@ export async function buildEmbeddedServer(
    *  connects yet. A toolkit without the request keeps its previous behaviour. */
   const probeSandboxEgressReadiness = async (
     runnersVolumeRoot: string,
-    projectId: string,
+    /** The sandbox's runner directory, relative to the data volume root. */
+    runnerDir: string,
   ): Promise<SandboxEgressProbe> => {
     try {
       return parseEgressReadiness(
         await requestRunnerSupervisor(
-          join(runnersVolumeRoot, 'runners', projectId, 'supervisor.sock'),
+          join(runnersVolumeRoot, runnerDir, 'supervisor.sock'),
           { kind: 'egress-readiness' },
           3_000,
         ),
@@ -1846,8 +1951,11 @@ export async function buildEmbeddedServer(
   const projectRelayControlRef: { current: ProjectRelayControl | undefined } = {
     current: undefined,
   };
+  // Every check below names one sandbox, never a project: a member's own sandbox
+  // has its own relay and its own gateway certificate, and a lookup by project id
+  // alone would answer for the project's original sandbox instead (ADR 0023 §4).
   const healthyRelayGeneration = async (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): Promise<boolean> =>
     claudeEgressRelayHealthy(
@@ -1855,32 +1963,38 @@ export async function buildEmbeddedServer(
       CONTAINER_GENERATION_LABEL,
       async (containerGeneration) =>
         (await projectRelayControlRef.current?.isHealthy?.({
-          projectId,
+          sandbox,
           containerGeneration,
         })) === true,
     );
   const hasProjectedAgentGatewayBinding = (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): boolean => {
     // A woken Sandbox holds a certificate re-issued after its creation-time label
     // was written; the provisioner vouches for that one per container generation.
-    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, projectId, inspected);
+    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, sandbox.projectId, inspected);
     return (
       fingerprint !== undefined &&
       agentGatewayBindings.some(
-        (binding) => binding.projectId === projectId && binding.fingerprint256 === fingerprint,
+        (binding) =>
+          binding.projectId === sandbox.projectId &&
+          binding.fingerprint256 === fingerprint &&
+          // A binding names its person; it vouches only for that person's sandbox.
+          (sandbox.userId === undefined ||
+            binding.userId === undefined ||
+            binding.userId === sandbox.userId),
       )
     );
   };
   const agentGatewayReady = async (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): Promise<boolean> => {
     await agentGatewayBindingProjection;
     return (
-      (await healthyRelayGeneration(projectId, inspected)) &&
-      hasProjectedAgentGatewayBinding(projectId, inspected)
+      (await healthyRelayGeneration(sandbox, inspected)) &&
+      hasProjectedAgentGatewayBinding(sandbox, inspected)
     );
   };
   /**
@@ -1895,6 +2009,51 @@ export async function buildEmbeddedServer(
    * the caller raises the one operator-facing message, naming the repair's own
    * cause when there is one.
    */
+  /**
+   * The repair of {@link repairSandboxForAgentTurn} for a person's own sandbox:
+   * rebuild it and report whether the turn may proceed on it. Only that person's
+   * sandbox is touched; the project's original one keeps running.
+   */
+  const repairPersonalSandboxForAgentTurn = async (
+    project: ProjectRecord,
+    userId: string,
+    preparation: TurnPreparationContext,
+  ): Promise<{ ready: true } | { ready: false; failure?: AgentGatewayRepairFailure }> => {
+    if (!preparation.canWait || docker === undefined) return { ready: false };
+    if (provisioner?.ensurePersonalSandbox === undefined) return { ready: false };
+    preparation.waitingOn(
+      'Your Sandbox has to be rebuilt before this message can run. Keeping the turn queued while Verity attempts the rebuild; it continues automatically if the Sandbox becomes ready.',
+    );
+    let containerName: string;
+    try {
+      containerName = (
+        await provisioner.ensurePersonalSandbox(project.id, userId, { recreate: true })
+      ).containerName;
+    } catch (error) {
+      app.log.warn(
+        { err: error, projectId: project.id },
+        'turn-time personal sandbox repair failed',
+      );
+      return { ready: false, failure: { stage: 'rebuild', cause: error } };
+    }
+    try {
+      const inspected = await docker.inspectContainer(containerName);
+      await refreshAgentGatewayCredential();
+      await synchronizeAgentGatewayForTurn();
+      return (await agentGatewayReady(
+        { projectId: project.id, userId, projectDefault: false },
+        inspected,
+      ))
+        ? { ready: true }
+        : { ready: false, failure: { stage: 'still_unready' } };
+    } catch (error) {
+      app.log.warn(
+        { err: error, projectId: project.id },
+        'could not verify the Agent Gateway identity after a personal sandbox repair',
+      );
+      return { ready: false, failure: { stage: 'verify', cause: error } };
+    }
+  };
   const repairSandboxForAgentTurn = async (
     project: ProjectRecord,
     preparation: TurnPreparationContext,
@@ -1925,7 +2084,7 @@ export async function buildEmbeddedServer(
     try {
       const inspected = await docker.inspectContainer(project.containerName);
       await synchronizeAgentGatewayForTurn();
-      return (await agentGatewayReady(project.id, inspected))
+      return (await agentGatewayReady(originalSandbox(project.id), inspected))
         ? { ready: true }
         : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
@@ -1989,9 +2148,23 @@ export async function buildEmbeddedServer(
       }
       const project = await eventStore.getProject(binding.projectId);
       if (project === undefined || project.kind === 'control_plane') continue;
+      // A person's own sandbox is routed too: the gateway serves it with that
+      // person's own login or none, and the synchronizer withdraws such routes
+      // from a gateway that cannot tell people apart (ADR 0023 §3–4).
       try {
-        const inspected = await docker.inspectContainer(project.containerName);
-        if (await healthyRelayGeneration(project.id, inspected)) {
+        // Each binding is checked against its own person's container and relay; the
+        // original container vouches only for the original sandbox's bindings.
+        const defaultUser = await recordedDefaultSandboxUser(eventStore, project.id);
+        const sandbox =
+          binding.userId === undefined || binding.userId === defaultUser
+            ? originalSandbox(project.id)
+            : { projectId: project.id, userId: binding.userId, projectDefault: false };
+        const containerName =
+          sandbox.userId === undefined
+            ? project.containerName
+            : sandboxIdentity(project, sandbox).containerName;
+        const inspected = await docker.inspectContainer(containerName);
+        if (await healthyRelayGeneration(sandbox, inspected)) {
           routed.push(binding);
         }
       } catch (error) {
@@ -2005,6 +2178,7 @@ export async function buildEmbeddedServer(
         const previouslyRouted = agentGatewayBindings.some(
           (routed) =>
             routed.projectId === binding.projectId &&
+            routed.userId === binding.userId &&
             routed.fingerprint256 === binding.fingerprint256,
         );
         if (transient && previouslyRouted) routed.push(binding);
@@ -2037,6 +2211,8 @@ export async function buildEmbeddedServer(
   );
   const githubForgeAdapter = createGitHubForgeAdapter({
     mint: cachedProjectTokenMint,
+    mintForUser: (userId) => githubUserAuthorization.accessToken(userId),
+    mayUseInstallationToken: (userId) => eventStore.isActiveAdministrator(userId),
     mintDiagnostic: (binding, permission) => diagnosticMints[permission]!(binding),
     transport: brokeredHttpStreamTransport,
   });
@@ -2054,6 +2230,7 @@ export async function buildEmbeddedServer(
       : createBrokeredForgeProxy({
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
+          turnCredentials,
           resolveRepository: (binding, hostname, path) =>
             resolveForgeRepositoryBinding(eventStore, binding, hostname, path),
           allowsHost: async (authority) =>
@@ -2180,17 +2357,17 @@ export async function buildEmbeddedServer(
             throw error;
           }
         },
-        sleep: (projectId) => {
+        sleep: (sandbox) => {
           if (projectRelayLifecycle === undefined)
             throw new Error('project relay runtime is not initialized');
-          return projectRelayLifecycle.sleep(projectId);
+          return projectRelayLifecycle.sleep(sandbox);
         },
         reactivate: (binding) => {
           if (projectRelayLifecycle === undefined)
             throw new Error('project relay runtime is not initialized');
           return projectRelayLifecycle.reactivate(binding);
         },
-        stop: (projectId) => projectRelayLifecycle?.stop(projectId) ?? Promise.resolve(),
+        stop: (sandbox) => projectRelayLifecycle?.stop(sandbox) ?? Promise.resolve(),
         brokerUrl: (activation) => `http://${projectRelayContainerName(activation.identity)}:8080`,
         claudeGatewayUrl: (activation) =>
           `https://${projectRelayContainerName(activation.identity)}:8443`,
@@ -2201,9 +2378,9 @@ export async function buildEmbeddedServer(
         // behind the relay, and the generation's relay container still running.
         // A restart empties the first, a relay exit empties the second, and either
         // way the sandbox's baked-in broker hostname or on-disk capability is dead.
-        isHealthy: async ({ projectId, containerGeneration }) => {
-          if (projectRelayLifecycle?.isActive(projectId, containerGeneration) !== true)
-            return false;
+        isHealthy: async ({ sandbox, containerGeneration }) => {
+          if (projectRelayLifecycle?.isActive(sandbox, containerGeneration) !== true) return false;
+          const projectId = sandbox.projectId;
           // No project Docker client → we cannot check the container half; the
           // in-memory half already said yes, so report healthy rather than
           // condemning the sandbox on a check we could not run.
@@ -2491,9 +2668,10 @@ export async function buildEmbeddedServer(
           await rename(temporary, target);
         };
         const refreshIdentityOnce = async (): Promise<void> => {
-          const material = await claudeEgressIdentity!.sandboxMaterial(
-            CONTROL_PLANE_RUNNER_PROJECT_ID,
-          );
+          const material = await claudeEgressIdentity!.sandboxMaterial({
+            projectId: CONTROL_PLANE_RUNNER_PROJECT_ID,
+            userId: await projectDefaultSandboxUser(eventStore, CONTROL_PLANE_RUNNER_PROJECT_ID),
+          });
           // The private key is deliberately NOT read back. It goes out group-readable
           // only (see below), so this process — which owns it — cannot open it, and a
           // read that always fails would make the comparison always stale and
@@ -2927,6 +3105,28 @@ export async function buildEmbeddedServer(
         getProjectBinding: getBrokeredProjectBinding,
         resolveSecret: resolveBrokerDopplerSecret,
       }),
+      sandboxContainer: async (project, userId, start) => {
+        const sandbox = await resolveTurnSandbox(
+          eventStore,
+          project.id,
+          userId === null ? undefined : { userId },
+        );
+        if (sandbox.projectDefault) return project.containerName;
+        if (start) {
+          if (provisioner?.ensurePersonalSandbox === undefined)
+            throw new Error('personal sandboxes are not available');
+          return (await provisioner.ensurePersonalSandbox(project.id, sandbox.userId))
+            .containerName;
+        }
+        return sandboxIdentity(project, sandbox).containerName;
+      },
+      agentPerson: async (sessionId) => {
+        const running = (await eventStore.listRunningTurns()).find(
+          (turn) => turn.sessionId === sessionId,
+        );
+        if (running === undefined) return undefined;
+        return (await eventStore.promptInitiatorAt(sessionId, running.promptSeq))?.userId ?? null;
+      },
       runtime: new DockerProjectRuntime({
         listListeningProcesses,
         isSecretManagedServer: async (id) =>
@@ -3017,14 +3217,18 @@ export async function buildEmbeddedServer(
         openCodeApiKey.length === 0
           ? undefined
           : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
+      const personal = await personalProviderCredentials.people(agentGatewayPersonalClaudeTokens);
       if (
         projected !== agentGatewayAccessToken ||
         projectedCodex !== agentGatewayCodexAuthJson ||
-        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode)
+        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode) ||
+        JSON.stringify(personal.people) !== JSON.stringify(agentGatewayPeople)
       ) {
         agentGatewayAccessToken = projected;
         agentGatewayCodexAuthJson = projectedCodex;
         agentGatewayOpenCode = projectedOpenCode;
+        agentGatewayPeople = personal.people;
+        agentGatewayPersonalClaudeTokens = personal.claudeTokens;
         syncAgentGateway();
       }
       // Claude refresh must not hold another provider's logout hostage. Report
@@ -3065,11 +3269,13 @@ export async function buildEmbeddedServer(
     };
     projectCredentialSafely();
     const unsubscribe = claudeCredentialSync.onCredentialsChanged(projectCredentialSafely);
+    const unsubscribePersonal = personalProviderCredentials.onChanged(projectCredentialSafely);
     const timer = setInterval(projectCredentialSafely, 60_000);
     timer.unref();
     stopAgentGatewayCredentialProjection = async (): Promise<void> => {
       clearInterval(timer);
       unsubscribe();
+      unsubscribePersonal();
       projectionClosed = true;
       await projection;
     };
@@ -3177,170 +3383,13 @@ export async function buildEmbeddedServer(
   const purgeRunnerArtifacts =
     dataVolumeRoot === undefined
       ? undefined
-      : async (
-          sessionId: string,
-          bindings: readonly { backend: string; backendSessionId: string }[],
-          scope: SessionArtifactScope,
-        ): Promise<void> => {
-          try {
-            // A delete runs even with no bindings at all: a cold-started claude thread
-            // writes `<veritySessionId>.jsonl` before the binding row naming it lands, so
-            // a session deleted in that window has a transcript nothing points at. A
-            // switch, by contrast, is only ever called with the rows it displaced.
-            if (bindings.length === 0 && scope !== 'session-delete') return;
-            const session = await eventStore.getSession(sessionId);
-            if (session === undefined) {
-              // The row is what names the worktree, and without it there is no directory
-              // to look in. Reachable rather than defensive: a delete that gave up on a
-              // slow purge (`SESSION_ARTIFACT_PURGE_TIMEOUT_MS`) removes the row while
-              // this call is still in flight, and the files it was going to take are then
-              // left for the startup sweep. Logged because a leak nobody hears about is
-              // how the whole class of bug this module fixes went unnoticed for months.
-              app.log.warn(
-                { sessionId, scope },
-                'verity: transcript purge found no session row — leaving its files to the startup sweep',
-              );
-              return;
-            }
-            const controlPlaneRunner = config.controlPlaneRunner === true;
-            // Only asked when it can change the answer — this runs once per session in the
-            // project-delete loop, and the lookup is pure overhead in every deployment
-            // without the dedicated control-plane runner.
-            const isControlPlaneProject =
-              controlPlaneRunner && session.projectId !== null
-                ? (await eventStore.getProject(session.projectId))?.kind === 'control_plane'
-                : false;
-            const runnerProjectIds = new Set(
-              candidateRunnerProjectIds({
-                projectId: session.projectId,
-                isControlPlaneProject,
-                controlPlaneRunner,
-              }),
-            );
-            if (runnerProjectIds.size === 0) return;
-
-            const sandboxCwd = sessionSandboxCwd(session.worktree);
-            const cleanupRoot = join(dataVolumeRoot, 'pending-session-cleanup');
-            if (scope === 'session-delete') {
-              await queueSessionCleanup(cleanupRoot, {
-                sessionId,
-                sandboxCwd,
-                runnerProjectIds: [...runnerProjectIds],
-                bindings: [...bindings],
-              });
-              return;
-            }
-
-            const removed: string[] = [];
-            const absent: string[] = [];
-            const absentBound: string[] = [];
-            const failed: string[] = [];
-            const outsideRuntime: string[] = [];
-            const unresolved: string[] = [];
-            const unknownBackends = new Set<string>();
-            let runtimeSeen = false;
-            for (const runnerProjectId of runnerProjectIds) {
-              const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
-              // Control sessions may name a historical project with no runner runtime.
-              if (!existsSync(runtimeDir)) continue;
-              try {
-                const purge = await purgeSessionArtifactFiles({
-                  runtimeDir,
-                  sandboxCwd,
-                  bindings,
-                  sessionId,
-                  scope,
-                });
-                removed.push(...purge.removed);
-                absent.push(...purge.absent);
-                absentBound.push(...purge.absentBound);
-                failed.push(...purge.failed);
-                outsideRuntime.push(...purge.outsideRuntime);
-                if (!purge.runtimeMissing) runtimeSeen = true;
-                if (purge.unresolved) unresolved.push(runtimeDir);
-                for (const backend of purge.unknownBackends) unknownBackends.add(backend);
-              } catch (error) {
-                unresolved.push(runtimeDir);
-                app.log.warn(
-                  { err: error, sessionId, runnerProjectId },
-                  'verity: runner session cleanup remains pending',
-                );
-              }
-            }
-            // A path that resolved OUT of the runtime means something planted a symlink in
-            // a directory the Sandbox can write. Nothing was deleted — but this is not a
-            // cleanup problem, so it gets its own message rather than being read as one.
-            if (outsideRuntime.length > 0) {
-              app.log.error(
-                { sessionId, scope, outsideRuntime },
-                'verity: refused a transcript path that resolved outside the runner runtime',
-              );
-            }
-            // All three mean a transcript outlived the row naming it, which is the exact
-            // failure this code was written to end — so say so rather than counting a
-            // partial purge as a clean one. `unresolved` is the runtime whose file list
-            // could not even be built, which returns the same empty result as a session
-            // that had nothing there. `absent` rides along for context and does not gate:
-            // a session that never ran a claude subagent legitimately produces one, and
-            // searching a second candidate runtime produces a full set. It is only worth
-            // reading when NOTHING was removed, which is what a wrong `sandboxCwd` or a
-            // wrong runtime looks like.
-            if (failed.length > 0 || unknownBackends.size > 0 || unresolved.length > 0) {
-              app.log.warn(
-                {
-                  sessionId,
-                  scope,
-                  runnerProjectIds: [...runnerProjectIds],
-                  removed: removed.length,
-                  absent: absent.length,
-                  failed,
-                  unresolved,
-                  unknownBackends: [...unknownBackends],
-                },
-                'verity: backend transcripts outlived the session state naming them',
-              );
-            }
-            // Nothing removed, nothing failed, and every path a BINDING named came back
-            // absent — from a runtime that is actually there. That is the shape of a
-            // `sandboxCwd` or a runtime directory derived wrongly: it deletes nothing,
-            // reports no error, and would otherwise be indistinguishable from a clean
-            // purge. It is also the shape of a session whose files an earlier sweep already
-            // collected, which is why it warns rather than errors — but without it the most
-            // likely systemic failure in this path is silent.
-            //
-            // `absentBound`, not `absent`, and only with a runtime present: a delete always
-            // resolves the two speculative claude paths, and a project delete tears the
-            // runtime down before purging its sessions. Gating on the wider signal would put
-            // this line on every OpenCode session delete and every session in a project
-            // delete — routine events, both — and a warning that fires on the routine case
-            // is not read when the real one arrives.
-            if (
-              runtimeSeen &&
-              absentBound.length > 0 &&
-              removed.length === 0 &&
-              failed.length === 0
-            ) {
-              app.log.warn(
-                {
-                  sessionId,
-                  scope,
-                  runnerProjectIds: [...runnerProjectIds],
-                  sandboxCwd,
-                  absent: absentBound.length,
-                },
-                'verity: found none of a session’s backend transcripts where they should be',
-              );
-            }
-          } catch (error) {
-            // Backend switches remain best effort. Deletion must retain the session
-            // if its durable cleanup ownership could not be recorded.
-            app.log.error(
-              { err: error, sessionId, scope },
-              'verity: could not purge the backend transcripts of a session',
-            );
-            if (scope === 'session-delete') throw error;
-          }
-        };
+      : createRunnerArtifactPurge({
+          dataVolumeRoot,
+          store: eventStore,
+          log: () => app.log,
+          controlPlaneRunner: config.controlPlaneRunner === true,
+          sessionSandboxCwd,
+        });
 
   const usesClaudeBackend = (model: string | undefined): boolean =>
     !isCodexModel(model) && !model?.includes('/');
@@ -3419,126 +3468,22 @@ export async function buildEmbeddedServer(
           activity: async (id) =>
             (await eventStore.listSessionProjectionFacts([id], 0)).get(id)?.lastActivityAt ?? null,
           root: (project) => projectClonePath(config.hostCloneRoot!, project),
-          mutate: async (projectId, sessionId, operation, signal) => {
-            const run = (imageId?: string, recheck?: () => Promise<void>) =>
-              // Wait for the project owner before taking preview locks: that owner
-              // may itself need preview teardown in order to finish.
-              provisioner.withProjectExclusiveMutation(
-                projectId,
-                () =>
-                  withStorageProjectMutation(projectId, async () => {
-                    const hold = storageHold({
-                      projectId,
-                      sessionId,
-                      devServers: managedDevServerManager,
-                      localPreviews: localPreviewManager,
-                      publicShares: await eventStore.listPublicPreviewShares(projectId),
-                    });
-                    if (hold) throw new Error(hold);
-                    await recheck?.();
-                    if (imageId) preparedWorktreeImages.set(projectId, imageId);
-                    try {
-                      await operation();
-                    } finally {
-                      preparedWorktreeImages.delete(projectId);
-                    }
-                  }),
-                sessionId ? new Set([sessionId]) : undefined,
-                signal,
-              );
-            const project = await eventStore.getProject(projectId);
-            if (project?.state === 'sleeping') {
-              const parent = await projectDocker
-                .inspectContainer(project.containerName)
-                .catch((error: unknown) => {
-                  if (error instanceof DockerError && error.kind === 'container_not_found')
-                    return undefined;
-                  throw error;
-                });
-              if (!parent) {
-                const selected =
-                  typeof defaultProjectImage === 'function'
-                    ? await defaultProjectImage()
-                    : defaultProjectImage;
-                if (!selected || !maintenanceImages)
-                  throw new MaintenanceImageError('image-unavailable');
-                return maintenanceImages.withImage(
-                  selected,
-                  (image, recheck) => run(image.id, recheck),
-                  signal,
-                );
-              }
-            }
-            return run();
-          },
-          withGit: async (project, operation) => {
-            if (config.dataVolume && !dataVolumeRoot)
-              throw new Error('Data volume root is unavailable');
-            const containerName = project.containerName;
-            const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-            const inspect = await projectDocker
-              .inspectContainer(containerName)
-              .catch((error: unknown) => {
-                if (error instanceof DockerError && error.kind === 'container_not_found')
-                  return null;
-                throw error;
-              });
-            const authenticated = async (git: GitOutput) =>
-              operation(async (args) => {
-                if (!args.includes('fetch')) return git(args);
-                // Keep provider credentials out of persistent Git config and cleanup reports.
-                if (project.kind === 'forgejo')
-                  throw new Error('Forgejo retirement fetch is unavailable; worktree retained');
-                const token =
-                  project.kind === 'local' ? undefined : await cachedProjectTokenMint(project);
-                try {
-                  return await git([
-                    ...(token
-                      ? ['-c', `http.https://github.com/.extraHeader=${gitAuthHeader(token)}`]
-                      : []),
-                    ...args,
-                  ]);
-                } catch {
-                  throw new Error('Retirement remote verification failed; worktree retained');
-                }
-              });
-            if (!inspect?.running)
-              return withSleepingSessionGit(
-                {
-                  docker: projectDocker,
-                  templateContainer: containerName,
-                  projectId: project.id,
-                  hostRoot,
-                  dockerBaseUrl: config.dockerBaseUrl!,
-                  maintenance: {
-                    ...(preparedWorktreeImages.has(project.id)
-                      ? {
-                          fallback: {
-                            imageId: preparedWorktreeImages.get(project.id)!,
-                            runtime: PROJECT_RUNSC_RUNTIME,
-                            memoryBytes: 512 * 1024 ** 2,
-                            nanoCpus: 1_000_000_000,
-                            pidsLimit: 128,
-                          },
-                        }
-                      : {}),
-                  },
-                  ...(config.dataVolume && dataVolumeRoot
-                    ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot } }
-                    : {}),
-                },
-                authenticated,
-              );
-            return authenticated(
-              createSandboxGit({
-                containerName,
-                hostRoot,
-                dockerBaseUrl: config.dockerBaseUrl!,
-                inspect: () => projectDocker.inspectContainer(containerName),
-                timeoutMs: 15_000,
-              }),
-            );
-          },
+          ...sessionStorageAccess({
+            store: eventStore,
+            docker: projectDocker,
+            provisioner,
+            withStorageProjectMutation,
+            devServers: () => managedDevServerManager,
+            localPreviews: localPreviewManager,
+            preparedWorktreeImages,
+            defaultProjectImage,
+            maintenanceImages,
+            projectTokenMint: cachedProjectTokenMint,
+            hostCloneRoot: config.hostCloneRoot,
+            dockerBaseUrl: config.dockerBaseUrl!,
+            dataVolume: config.dataVolume,
+            dataVolumeRoot,
+          }),
           wake: async (project, sessionId) => {
             if (project.state === 'sleeping')
               await provisioner.ensureProjectSandboxAwake?.(project.id, new Set([sessionId]));
@@ -3677,6 +3622,21 @@ export async function buildEmbeddedServer(
             const runtimeExists = existsSync(join(dataVolumeRoot, 'runners', projectId));
             if (projectId === CONTROL_PLANE_RUNNER_PROJECT_ID && config.controlPlaneRunner)
               return runtimeExists ? 'ready' : 'unavailable';
+            // A person's own runtime (`u<tag>/<project>`) follows their sandbox.
+            const [tag, ownProjectId] = projectId.split('/');
+            if (ownProjectId !== undefined && tag !== undefined) {
+              const sandbox = (await eventStore.projectSandboxes.list(ownProjectId)).find(
+                (candidate) => sandboxPersonTag(candidate.userId) === tag,
+              );
+              const state =
+                sandbox === undefined
+                  ? undefined
+                  : (await eventStore.projectSandboxes.state(ownProjectId, sandbox.userId))?.state;
+              if (!runtimeExists) return state === undefined ? 'absent' : 'unavailable';
+              if (state === 'active') return 'ready';
+              if (state?.startsWith('sleeping')) return 'sleeping';
+              return state === undefined ? 'absent' : 'unavailable';
+            }
             const project = await eventStore.getProject(projectId);
             if (!runtimeExists)
               return project === undefined
@@ -3900,11 +3860,30 @@ export async function buildEmbeddedServer(
       if (patch.codexAuthJson !== undefined) await codexModelCatalog?.refresh();
     },
     claudeOAuthTokenProvider: claudeCredentialSync.getAccessToken,
+    teamLinkIdentity: () => {
+      const identity = config.devicePairing?.identity();
+      const installation = uplinkControl?.teamInstallation();
+      return identity === undefined || installation === undefined
+        ? undefined
+        : { ...identity, ...installation };
+    },
+    personalClaudeAccessToken: (userId: string) =>
+      personalProviderCredentials.claudeAccessToken(userId),
+    persistPersonalProviderCredentials: (userId, provider, write) =>
+      personalProviderCredentials.persist(userId, provider, write),
     // The Codex quota probe reads its token from the gateway, the single refresh
     // authority for the rotating Codex login (ADR 0010) — deliberately not from the
     // stored `codexAuthJson`, which would make the Server a second writer. Without a
     // gateway the probe stays inert and the meter keeps its per-session signal.
     ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
+    ...(codexGatewayControlSocket === undefined
+      ? {}
+      : {
+          codexGatewayCredentialFor:
+            (userId: string): CodexUsageCredentialProvider =>
+            () =>
+              readCodexAccessToken(codexGatewayControlSocket, userId),
+        }),
     onSecretUnlocked: async () => {
       // Restore process-local relay listeners before filtering persisted gateway
       // certificates. A new Server owns none yet; treating that as identity drift
@@ -3931,7 +3910,7 @@ export async function buildEmbeddedServer(
             const container = await docker.inspectContainer(project.containerName);
             if (!container.running) continue;
             inspected += 1;
-            if (await agentGatewayReady(project.id, container)) continue;
+            if (await agentGatewayReady(originalSandbox(project.id), container)) continue;
             const didRepair = await provisioner.repairSandboxForTurn(
               project.id,
               `secret-unlock:${project.id}`,
@@ -4058,6 +4037,8 @@ export async function buildEmbeddedServer(
       : {}),
     ...(config.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: config.wsAllowedOrigins } : {}),
     signingCapabilities,
+    turnCredentials,
+    githubUserAuthorization,
     // When a dedicated internal listener is configured, gate `/internal/*` to it
     // (the public listener 404s those paths). main.ts starts that listener and
     // tags its sockets; this predicate reads the tag. Omit → no gate.
@@ -4453,7 +4434,13 @@ export async function buildEmbeddedServer(
         return bindingId === undefined ||
           (input.bindingId !== undefined && input.bindingId !== bindingId)
           ? false
-          : brokeredHttpGrants.check({ ...input, bindingId: input.bindingId ?? bindingId });
+          : brokeredHttpGrants.check({
+              ...input,
+              // A turn without a person acts as the administrator, whose grants the
+              // pre-multi-user ones became; see doppler-credential.ts.
+              userId: input.userId ?? legacyAdministratorId,
+              bindingId: input.bindingId ?? bindingId,
+            });
       },
       persistBrokeredHttpGrant: async (input) => {
         const bindingId = await brokeredGrantBindingId(input.projectId);
@@ -4510,9 +4497,22 @@ export async function buildEmbeddedServer(
               sessionId: string,
               bindings: readonly { backend: string; backendSessionId: string }[],
             ): Promise<void> => {
-              await purgeRunnerArtifacts(sessionId, bindings, 'backend-switch');
+              // A person's own thread (`backend#tag`) lives in their sandbox's runtime.
+              const byPerson = new Map<string | undefined, typeof bindings>();
+              for (const binding of bindings) {
+                const [backend = binding.backend, tag] = binding.backend.split('#');
+                byPerson.set(tag, [...(byPerson.get(tag) ?? []), { ...binding, backend }]);
+              }
+              for (const [tag, scoped] of byPerson)
+                await purgeRunnerArtifacts(sessionId, scoped, 'backend-switch', tag);
             },
           }),
+      // Each person resumes only their own backend thread (ADR 0023 §3–4).
+      backendStateScope: async (session, initiatedBy) => {
+        if (session.projectId === null) return undefined;
+        const sandbox = await resolveTurnSandbox(eventStore, session.projectId, initiatedBy);
+        return sandbox.projectDefault ? undefined : sandboxPersonTag(sandbox.userId);
+      },
       ...buildRunnerConductorWiring({
         // The dedicated control-plane service is itself a supervisor transport;
         // never let its feature flag coexist with loopback conductor wiring.
@@ -4542,8 +4542,29 @@ export async function buildEmbeddedServer(
         // registry is the Server's half of the gateway bearer — the runner client
         // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
+        turnCredentials,
+        turnSandbox: (projectId, initiatedBy) =>
+          resolveTurnSandbox(eventStore, projectId, initiatedBy),
+        turnGitAuthor: (userId) =>
+          resolveTurnGitAuthor(
+            {
+              gitIdentity: (id) => eventStore.userGitIdentities.author(id),
+              githubAccount: (id) => eventStore.userGithubAuthorizations.account(id),
+              displayName: async (id) => (await eventStore.userProfiles.read(id))?.displayName,
+            },
+            userId,
+          ),
+        turnSignsCommits: (userId) =>
+          turnSignsCommits(
+            {
+              hasSigningKey: async (id) =>
+                (await eventStore.userGitIdentities.publicIdentity(id)).hasSigningKey,
+              isAdministrator: (id) => eventStore.isActiveAdministrator(id),
+            },
+            userId,
+          ),
         mcpProxyTokens,
-        listProjectHttpMcpServers: async (projectId) => {
+        listProjectHttpMcpServers: async (projectId, initiatedBy) => {
           const [bindings, connections] = await Promise.all([
             eventStore.listProjectMcpBindings(projectId),
             eventStore.listHttpMcpConnections(),
@@ -4552,7 +4573,12 @@ export async function buildEmbeddedServer(
             bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId),
           );
           return connections
-            .filter((connection) => connection.enabled && enabled.has(connection.id))
+            .filter(
+              (connection) =>
+                connection.enabled &&
+                enabled.has(connection.id) &&
+                httpMcpConnectionUsableBy(connection, initiatedBy?.userId),
+            )
             .map((connection) => ({ id: connection.id, name: connection.name }));
         },
         // ADR 0011 D2: a standing grant answers the prompt inside the tail, before
@@ -4571,9 +4597,16 @@ export async function buildEmbeddedServer(
           if (projectId == null) return false;
           const bindingId = await brokeredGrantBindingId(projectId);
           if (bindingId === undefined) return false;
+          // Only the running turn's person can have consented in advance (ADR 0023 §3).
+          const running = (await eventStore.listRunningTurns()).find(
+            (turn) => turn.sessionId === sessionId,
+          );
+          if (running === undefined) return false;
+          const initiator = await eventStore.promptInitiatorAt(sessionId, running.promptSeq);
           return brokeredHttpGrants.check({
             projectId,
             sessionId,
+            userId: initiator?.userId ?? legacyAdministratorId,
             bindingId,
             channel,
             ...target,
@@ -4666,6 +4699,22 @@ export async function buildEmbeddedServer(
             materializeControlPlaneAgentEnv(secretRoot, inherited),
           );
         }
+        // A person's turn runs in their own sandbox (ADR 0023 §4), on their own
+        // provider login: the gateway serves that sandbox with nobody else's. Without
+        // one the turn is refused here, before anything is prepared, rather than
+        // failing inside the agent.
+        const turnSandbox = await resolveTurnSandbox(store, project.id, preparation.initiatedBy);
+        const turnProvider = isClaudeSession
+          ? 'claude'
+          : isCodexSession
+            ? 'codex'
+            : isOpenCodeSession
+              ? 'opencode'
+              : undefined;
+        const loginRefusal = await personalTurnRefusal(store, turnSandbox, turnProvider);
+        if (loginRefusal !== undefined) throw new Error(loginRefusal);
+        if (!turnSandbox.projectDefault && provisioner?.ensurePersonalSandbox === undefined)
+          throw new Error('Personal sandboxes need the project provisioner.');
         const supervisorRefusal = acpSupervisorWiringRefusal({
           runnerSupervisorBackend: selected.runnerSupervisorBackend,
           runnerSupervisor: config.runnerSupervisor === true,
@@ -4712,6 +4761,11 @@ export async function buildEmbeddedServer(
                     ensureAwake: provisioner.ensureProjectSandboxAwake.bind(provisioner),
                   }),
             });
+            // The person's own sandbox reuses the clone and image the project's
+            // original sandbox prepared above; starting it is idempotent.
+            const sandbox = turnSandbox.projectDefault
+              ? sandboxIdentity(project, turnSandbox)
+              : await provisioner!.ensurePersonalSandbox(project.id, turnSandbox.userId);
             await refreshProjectToken?.(project);
             const settings = isProjectSettingsReader(store)
               ? await store.getProjectSettings(project.id)
@@ -4733,8 +4787,8 @@ export async function buildEmbeddedServer(
               let gatewayReady: boolean;
               let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
-                const inspected = await docker.inspectContainer(project.containerName);
-                gatewayReady = await agentGatewayReady(project.id, inspected);
+                const inspected = await docker.inspectContainer(sandbox.containerName);
+                gatewayReady = await agentGatewayReady(sandbox, inspected);
               } catch (error) {
                 app.log.warn(
                   { err: error, projectId: project.id },
@@ -4753,11 +4807,13 @@ export async function buildEmbeddedServer(
                 // busy. So rebuild now, tell the operator it is happening, and continue
                 // the turn on the fresh Sandbox once it is up. Background resolutions
                 // (auto-title, reattach) don't wait — they keep failing fast.
-                const repair = await repairSandboxForAgentTurn(
-                  project,
-                  preparation,
-                  queuedSessionIds,
-                );
+                const repair = turnSandbox.projectDefault
+                  ? await repairSandboxForAgentTurn(project, preparation, queuedSessionIds)
+                  : await repairPersonalSandboxForAgentTurn(
+                      project,
+                      turnSandbox.userId,
+                      preparation,
+                    );
                 gatewayReady = repair.ready;
                 repairFailure = repair.ready ? undefined : repair.failure;
               }
@@ -4775,6 +4831,9 @@ export async function buildEmbeddedServer(
               // Binding issuance and revocation keep the routed set current: read the
               // latest rotating credential and wait for the gateway to acknowledge
               // that exact cached identity configuration.
+              // A person's own login may have been refreshed or connected just now;
+              // project it before the gateway snapshot this turn waits for.
+              if (!turnSandbox.projectDefault) await refreshAgentGatewayCredential();
               await synchronizeAgentGatewayForTurn();
               // The checks above trust Docker's `running`, which a relay reaches
               // before its process listens. Confirm from inside the Sandbox that
@@ -4789,7 +4848,11 @@ export async function buildEmbeddedServer(
                   relayed: projectRelayEnabled,
                   canWait: preparation.canWait,
                   waitingOn: (message) => preparation.waitingOn(message),
-                  probe: () => probeSandboxEgressReadiness(dataVolumeRoot, project.id),
+                  probe: () =>
+                    probeSandboxEgressReadiness(
+                      dataVolumeRoot,
+                      sandboxRunnerDir(project.id, turnSandbox),
+                    ),
                   log: app.log,
                 });
               }
@@ -4802,7 +4865,7 @@ export async function buildEmbeddedServer(
               egressActive: claudeEgressActive,
             });
             return new DockerExecBackend({
-              containerName: project.containerName,
+              containerName: sandbox.containerName,
               hostProjectRoot: projectClonePath(hostCloneRoot, project),
               dockerBaseUrl,
               backend: sessionSelected,
@@ -4872,104 +4935,16 @@ export async function buildEmbeddedServer(
    */
   const startTranscriptSweep = (): void => {
     if (dataVolumeRoot === undefined || sweepMode === 'off') return;
-    const runnersRoot = join(dataVolumeRoot, 'runners');
-    const dryRun = sweepMode === 'dry';
-    let storeReadsDone!: () => void;
-    const storeReads = new Promise<void>((resolve) => {
-      storeReadsDone = resolve;
+    const sweep = startOrphanTranscriptSweep({
+      runnersRoot: join(dataVolumeRoot, 'runners'),
+      dryRun: sweepMode === 'dry',
+      store: eventStore,
+      sessionSandboxCwd,
+      signal: sweepAbort.signal,
+      log: app.log,
     });
-    transcriptSweep = storeReads;
-    transcriptSweepWalk = (async () => {
-      let liveIds: string[];
-      let worktrees: string[];
-      try {
-        [liveIds, worktrees] = await Promise.all([
-          eventStore.listLiveBackendSessionIds(),
-          eventStore.listSessionWorktrees(),
-        ]);
-      } finally {
-        storeReadsDone();
-      }
-      const result = await sweepOrphanArtifacts({
-        runnersRoot,
-        liveIds: new Set(liveIds),
-        // The claude directory name of every session that still exists. `encodeCwd` is
-        // claude's own naming rule, applied to the cwd as the SANDBOX saw it — the same
-        // derivation the delete path uses, so the two agree on which directory belongs
-        // to which session.
-        liveCwdDirs: new Set(worktrees.map((worktree) => encodeCwd(sessionSandboxCwd(worktree)))),
-        dryRun,
-        signal: sweepAbort.signal,
-      });
-      // Logged unconditionally, at info: this deletes conversations, so what it did on
-      // a given boot has to be answerable afterwards — including "nothing".
-      const summary = {
-        dryRun,
-        scanned: result.scanned,
-        // Under `dry` nothing was deleted, so the count goes out under a name that
-        // says so: a dashboard summing `removed` must not be fed files that are still
-        // there by a run whose whole point was not to touch them.
-        ...(dryRun ? { wouldRemove: result.removed } : { removed: result.removed }),
-        megabytes: Number((result.bytes / 1024 / 1024).toFixed(1)),
-        liveKept: result.liveKept,
-        graceKept: result.graceKept,
-        liveCwdSkipped: result.liveCwdSkipped,
-        claudeCwdDirsSeen: result.claudeCwdDirsSeen,
-        failed: result.failed,
-      };
-      if (result.aborted) {
-        // Shutdown reached the walk before the walk was done. Its own line rather than the
-        // ordinary one, because every count in the summary is a partial and the ordinary
-        // line is what someone reads to answer "what did this boot delete".
-        app.log.info(
-          { ...summary, aborted: true },
-          'verity: orphaned backend transcript sweep stopped by shutdown',
-        );
-        return result;
-      }
-      if (result.storeReportedNoSession) {
-        // The bluntest of the two refusals, and the one that catches a server pointed at
-        // the wrong control-plane database: the store named no session at all, the volume
-        // was full of transcripts, and both readings of that — a deployment with no
-        // sessions, or a database that is not this volume's — end with nothing deleted.
-        // If the store really is this volume's and really is empty, the held files are
-        // dead and can be removed from the volume directly; the sweep will not do it on a
-        // store it cannot corroborate.
-        app.log.error(
-          { ...summary, held: result.held },
-          'verity: orphaned transcript sweep removed nothing — the store knows of no session at all',
-        );
-        return result;
-      }
-      if (result.claudeGuardUnproven !== undefined) {
-        // Either way the sweep collected no claude file this boot, and either way the count
-        // it did NOT take goes out with it. The level splits on how much the sweep actually
-        // knows. A contradiction means one live backend id appeared under multiple cwd
-        // directories, so no legacy mapping is unique; this line is then the only warning
-        // before a session's unreproducible `subagents/` tree would have gone. The weaker check only
-        // says nothing matched, which a deployment whose live sessions have never run claude
-        // sits in legitimately and indefinitely — an error line that never clears teaches
-        // people to ignore error lines.
-        const level = result.claudeGuardUnproven === 'contradiction' ? 'error' : 'warn';
-        app.log[level](
-          { ...summary, held: result.held, signal: result.claudeGuardUnproven },
-          'verity: orphaned transcript sweep kept every claude file — live-worktree guard unproven',
-        );
-        return result;
-      }
-      app.log.info(
-        summary,
-        dryRun
-          ? 'verity: orphaned backend transcript sweep (dry run, nothing removed)'
-          : 'verity: orphaned backend transcript sweep',
-      );
-      return result;
-    })().catch((error: unknown) => {
-      // Covers the store reads too, which is why `storeReadsDone` resolves from a
-      // `finally` — a close waiting on that promise must not hang on a failed query.
-      app.log.warn({ err: error }, 'verity: orphaned transcript sweep failed');
-      return undefined;
-    });
+    transcriptSweep = sweep.storeReads;
+    transcriptSweepWalk = sweep.walk;
   };
 
   app.addHook('onClose', async () => {
@@ -4999,7 +4974,7 @@ export async function buildEmbeddedServer(
       secretProviderCatalog,
       createDopplerSecretNameLister({
         ...dopplerOptions,
-        readCredential: readBrokerDopplerCredential,
+        readCredential: (_ref, { projectId, userId }) => dopplerCredentialFor(userId, projectId),
       }),
       async (header, projectId) => {
         const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];
@@ -5079,6 +5054,14 @@ export async function buildEmbeddedServer(
   }, 60_000);
   outputSweep.unref();
   app.addHook('onClose', () => clearInterval(outputSweep));
+  // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
+  // member's container uses memory only while that member works.
+  installPersonalSandboxSleep(app, {
+    store: eventStore,
+    hasRunningServersFor: async (projectId, userId) =>
+      managedDevServerManager?.hasRunningServersFor(projectId, userId),
+    sleepSandbox: () => provisioner?.sleepPersonalSandbox?.bind(provisioner),
+  });
   // An interrupted build must not hold build storage until someone reboots the host.
   // Ask at start and every five minutes whether earlier attempts provably ended.
   if (buildStorage !== undefined) {
@@ -5163,6 +5146,16 @@ export async function buildEmbeddedServer(
     });
   }
   app.addHook('onClose', () => claudeCredentialSync.close());
+  if (uplinkControl !== undefined) {
+    // Deliver queued team changes to Uplink once it negotiated team v1.
+    installTeamOutbox(app, {
+      team: eventStore.projectTeam,
+      uplink: uplinkControl,
+      identityKey: () => config.devicePairing?.identity().identityKey,
+      log: app.log,
+      isSealed: (error) => error instanceof SealedError,
+    });
+  }
   let preserveProjectRelaysOnClose = false;
   app.addHook('onClose', () =>
     preserveProjectRelaysOnClose
@@ -5372,7 +5365,8 @@ export async function buildEmbeddedServer(
       codexSocketRoot,
       socketOwnerUid: process.getuid?.() ?? 1000,
       relayGid,
-      projectNetwork: projectNetworkName,
+      sandboxNetwork: sandboxNetworkName,
+      defaultSandboxUser: (projectId) => recordedDefaultSandboxUser(eventStore, projectId),
     });
   }
 

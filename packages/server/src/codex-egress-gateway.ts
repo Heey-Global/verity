@@ -119,9 +119,10 @@ const UNLOGGABLE = '<other>';
 export interface CodexEgressGatewayHandlerOptions {
   listenerAuthority: string;
   authenticatePeer: (socket: Socket) => string | undefined;
-  credential: () => Promise<CodexGatewayCredential>;
-  opencodeCredential?: () => { baseUrl: string; apiKey: string } | undefined;
-  refreshAfterUnauthorized?: (previousAccessToken: string) => Promise<unknown>;
+  /** Each resolves the login for the authenticated peer behind `socket`. */
+  credential: (socket: Socket) => Promise<CodexGatewayCredential>;
+  opencodeCredential?: (socket: Socket) => { baseUrl: string; apiKey: string } | undefined;
+  refreshAfterUnauthorized?: (previousAccessToken: string, socket: Socket) => Promise<unknown>;
   forward?: CodexEgressForward;
   /** Called exactly once for each request. Observer failures never affect egress. */
   onRequestEnd?: CodexEgressRequestObserver;
@@ -248,7 +249,7 @@ async function handleRequest(
     let previousAccessToken: string | undefined;
     const authorized = isOpenCode
       ? (() => {
-          const credential = options.opencodeCredential?.();
+          const credential = options.opencodeCredential?.(request.socket);
           if (credential === undefined) {
             throw new CodexCredentialUnavailableError('OpenCode gateway credential is unavailable');
           }
@@ -268,7 +269,7 @@ async function handleRequest(
             url: new URL(request.url ?? '/', CODEX_EGRESS_ORIGIN),
             headers: requestHeaders(request),
           });
-          const credential = await options.credential();
+          const credential = await options.credential(request.socket);
           previousAccessToken = credential.accessToken;
           return injectCodexEgressCredential(validated, credential);
         })();
@@ -287,7 +288,9 @@ async function handleRequest(
     // A POST body cannot be replayed safely. Rotate centrally for the next
     // request, but preserve this upstream response exactly as Codex received it.
     if (upstream.status === 401 && previousAccessToken && options.refreshAfterUnauthorized) {
-      void options.refreshAfterUnauthorized(previousAccessToken).catch(() => undefined);
+      void options
+        .refreshAfterUnauthorized(previousAccessToken, request.socket)
+        .catch(() => undefined);
     }
     sentStatus = upstream.status;
     response.writeHead(upstream.status, responseHeaders(upstream.headers));

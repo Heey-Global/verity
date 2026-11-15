@@ -6,17 +6,21 @@ import {
   SupervisorRunnerClient,
   SupervisorRunnerRecovery,
   type ConductorDeps,
+  type GitAuthor,
   type EventBus,
   type RunnerClient,
   type SupervisorRunnerClientOptions,
   type SupervisorRunnerRecoveryOptions,
   transcriptPath,
 } from '@verity/session';
+import { sandboxRunnerDir } from './sandbox-identity.js';
+import type { TurnSandbox } from './turn-sandbox.js';
 import { TranscriptStore } from '@verity/store';
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { type McpGatewayTokens } from './mcp-gateway-tokens.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import { supervisorSocketReachable } from './runner-supervisor-socket.js';
 import { codexRolloutFiles, ServerCodexTranscript, ServerTranscript } from './runner-transcript.js';
 
@@ -66,10 +70,28 @@ export function buildRunnerConductorWiring(deps: {
   /** ADR 0014 D1: per-turn bearer registry for the loopback MCP gateway. Only ACP
    *  turns are issued one; the supervisor client decides that from its own backend. */
   mcpGatewayTokens?: McpGatewayTokens | undefined;
+  /** Per-turn sandbox credentials naming the person a turn runs for. */
+  turnCredentials?: TurnCredentials | undefined;
+  /** The sandbox a project turn runs in; its Runner runtime is that sandbox's. */
+  turnSandbox?:
+    | ((
+        projectId: string,
+        initiatedBy: { readonly userId: string } | undefined,
+      ) => Promise<TurnSandbox>)
+    | undefined;
+  /** Who a person's turn commits as; see turn-git-author.ts. */
+  turnGitAuthor?: ((userId: string) => Promise<GitAuthor>) | undefined;
+  /** Whether a person's turn can sign commits; see turn-git-author.ts. */
+  turnSignsCommits?: ((userId: string) => Promise<boolean>) | undefined;
   /** Separate audience for configured upstream MCP servers; never accepted by `/internal/mcp`. */
   mcpProxyTokens?: McpGatewayTokens | undefined;
+  /** The project's enabled HTTP MCP servers usable in a turn run for `initiatedBy`. */
   listProjectHttpMcpServers?:
-    ((projectId: string) => Promise<readonly { id: string; name: string }[]>) | undefined;
+    | ((
+        projectId: string,
+        initiatedBy: { readonly userId: string } | undefined,
+      ) => Promise<readonly { id: string; name: string }[]>)
+    | undefined;
   /** ADR 0011 D2: resolve a standing grant before a prompt becomes a card + push.
    *  `channel` is supplied by the runner client from its own backend (ADR 0014 D3). */
   autoApprovePermission?:
@@ -149,7 +171,18 @@ export function buildRunnerConductorWiring(deps: {
         if (backend.runnerSupervisorBackend === undefined) {
           return new LoopbackRunnerClient(backend);
         }
-        const runtimeDir = join(dataVolumeRoot, 'runners', runnerProjectId);
+        // A project turn reaches the Runner of its own sandbox (ADR 0023 §4); the
+        // control-plane runner and the project's original sandbox keep
+        // `runners/<projectId>`.
+        const runtimeDir = join(
+          dataVolumeRoot,
+          useControlPlaneRunner || deps.turnSandbox === undefined
+            ? `runners/${runnerProjectId}`
+            : sandboxRunnerDir(
+                runnerProjectId,
+                await deps.turnSandbox(runnerProjectId, context.initiatedBy),
+              ),
+        );
         // Provisioning can deliberately disable the Sandbox supervisor for a project
         // when its container boundary is not safe for Stage 5c. Native backends may
         // still use the legacy in-process loopback, but ACP must never do so:
@@ -189,7 +222,7 @@ export function buildRunnerConductorWiring(deps: {
         const projectHttpMcpServers =
           ephemeral || context.projectId === null || deps.listProjectHttpMcpServers === undefined
             ? []
-            : await deps.listProjectHttpMcpServers(context.projectId);
+            : await deps.listProjectHttpMcpServers(context.projectId, context.initiatedBy);
         const gatewayToolContext =
           !ephemeral && context.sessionId !== null
             ? {
@@ -334,6 +367,44 @@ export function buildRunnerConductorWiring(deps: {
                       token,
                     }),
                 },
+              }),
+          // Bound to the container's own project: that is the project a sandbox
+          // route sees on the calling socket, including the control-plane runner.
+          ...(deps.turnCredentials === undefined || ephemeral || context.sessionId === null
+            ? {}
+            : {
+                turnCapabilities: {
+                  issue: (turnId: string) =>
+                    deps.turnCredentials!.issue({
+                      projectId: runnerProjectId,
+                      sessionId: context.sessionId!,
+                      turnId,
+                      userId: context.initiatedBy?.userId ?? null,
+                    }),
+                  release: (token: string) => deps.turnCredentials!.release(token),
+                },
+              }),
+          // The shared container's git config names one person; a person's turn
+          // commits as itself. A turn without a person keeps the project default.
+          ...(deps.turnGitAuthor === undefined ||
+          ephemeral ||
+          context.initiatedBy?.userId === undefined
+            ? {}
+            : {
+                gitAuthor: (
+                  (userId: string) => () =>
+                    deps.turnGitAuthor!(userId)
+                )(context.initiatedBy.userId),
+              }),
+          ...(deps.turnSignsCommits === undefined ||
+          ephemeral ||
+          context.initiatedBy?.userId === undefined
+            ? {}
+            : {
+                signCommits: (
+                  (userId: string) => () =>
+                    deps.turnSignsCommits!(userId)
+                )(context.initiatedBy.userId),
               }),
           ...(deps.mcpProxyTokens === undefined || gatewayToolContext === undefined
             ? {}

@@ -16,13 +16,10 @@ export function createGoogleAccountAccessToken(
   >();
   const token = async (accountId?: string): Promise<string | undefined> => {
     if (options.isSealed?.()) return undefined;
-    const accounts = await store.googleAccounts.list();
-    const account =
-      accountId === undefined
-        ? accounts.length === 1
-          ? accounts[0]
-          : undefined
-        : accounts.find((candidate) => candidate.id === accountId);
+    // Always a named account. Choosing "the only one" when none was named would,
+    // with several people on the server, hand one person's account to another.
+    if (accountId === undefined) return undefined;
+    const account = await store.googleAccounts.get(accountId);
     if (!account || options.acceptAccount?.(account) === false) return undefined;
     let cached = providers.get(account.id);
     if (!cached || cached.version !== account.credentialVersion) {

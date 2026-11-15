@@ -36,6 +36,8 @@ interface GoogleDriveAgentToolStore extends Pick<
   GoogleWorkspaceToolStore,
   'claimGoogleWorkspaceInvocation' | 'completeGoogleWorkspaceInvocation' | 'googleAccounts'
 > {
+  /** The person a running turn executes for; Drive uses only their accounts. */
+  runningTurnInitiator?(sessionId: string, turnId: string): Promise<{ userId: string } | undefined>;
   getCompletedGoogleWorkspaceInvocation?(
     input: WorkspaceInvocationInput,
   ): Promise<{ result: unknown } | undefined>;
@@ -170,6 +172,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
   canReadDocumentWithoutApproval(input: {
     projectId: string;
     sessionId: string;
+    turnId: string;
     url: string;
     accountId?: string | undefined;
     folderLinkId?: string | undefined;
@@ -184,6 +187,8 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
     export: exportDriveFile,
     create: createDriveFile,
   };
+  const turnUser = async (input: { sessionId: string; turnId: string }) =>
+    (await deps.eventStore.runningTurnInitiator?.(input.sessionId, input.turnId))?.userId;
   return {
     async canReadDocumentWithoutApproval(input) {
       const session = await deps.eventStore.getSession(input.sessionId);
@@ -193,6 +198,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
             { googleAccounts: deps.eventStore.googleAccounts },
             input.projectId,
             { ...input, action: 'read_document_url' },
+            await turnUser(input),
           ).catch(() => undefined)
         : undefined;
       if (deps.eventStore.googleAccounts && !authority) return false;
@@ -223,11 +229,15 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
         deps.eventStore.googleAccounts &&
         !request.folderLinkId
       ) {
+        const userId = await turnUser(input);
         return {
-          folders: await deps.eventStore.googleAccounts.folders(input.projectId),
-          accounts: (await deps.eventStore.googleAccounts.list()).map(
-            ({ id, email, displayName }) => ({ id, email, displayName }),
+          folders: (await deps.eventStore.googleAccounts.folders(input.projectId)).filter(
+            (folder) => userId !== undefined && folder.accountOwnerUserId === userId,
           ),
+          accounts: (userId === undefined
+            ? []
+            : await deps.eventStore.googleAccounts.list(userId)
+          ).map(({ id, email, displayName }) => ({ id, email, displayName })),
           instructions:
             'Select folderLinkId for subsequent operations. Each folder has its own account and access mode.',
         };
@@ -237,6 +247,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
             { googleAccounts: deps.eventStore.googleAccounts },
             input.projectId,
             request,
+            await turnUser(input),
           )
         : undefined;
       const settings = authority ?? (await deps.eventStore.getProjectSettings(input.projectId));
@@ -261,6 +272,7 @@ export function createGoogleDriveAgentTool(deps: GoogleDriveAgentToolDeps): {
               { googleAccounts: deps.eventStore.googleAccounts },
               input.projectId,
               request,
+              await turnUser(input),
             )
           : undefined;
         if (JSON.stringify(currentAuthority) !== JSON.stringify(authority))

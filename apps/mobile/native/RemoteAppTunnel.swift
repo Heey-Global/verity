@@ -446,7 +446,9 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let frame = try await receiveFrame()
       guard Set(frame.keys) == Set(["type", "sessionId", "capability"]),
         frame["type"] as? String == "attached", frame["sessionId"] as? String == sessionId,
-        frame["capability"] as? String == "remote-control-v1"
+        // A team join borrows this tunnel for its one enrollment; Uplink names
+        // it team-bootstrap-v1. The stream framing is the same either way.
+        ["remote-control-v1", "team-bootstrap-v1"].contains(frame["capability"] as? String ?? "")
       else { throw RemoteSmokeError.invalidFrame }
 
       dataDiagnostics.record(.attached)
