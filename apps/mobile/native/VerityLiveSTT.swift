@@ -1126,9 +1126,13 @@ private final class LiveSTTService {
     let key = "nemotron-\(locale)-2240ms"
     do {
       try ensureActive(generation)
+      let variant = try await StreamingNemotronMultilingualAsrManager.downloadVariant(
+        languageCode: locale, chunkMs: 2240)
+      try ensureActive(generation)
+      // Only the CoreML load is guarded: a process ended while downloading is no crash of it.
       let units = LiveModelCrashGuard.shared.begin(key)
-      models = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
-        languageCode: locale, chunkMs: 2240,
+      models = try await StreamingNemotronMultilingualAsrManager.preloadShared(
+        from: variant,
         configuration: units.map { MLModelConfigurationUtils.defaultConfiguration(computeUnits: $0) })
       LiveModelCrashGuard.shared.finished(key)
       await LiveModelLoadGate.shared.release()
@@ -1173,8 +1177,12 @@ private final class LiveSTTService {
     let key = "parakeet-ultra"
     do {
       try ensureActive(generation)
+      let directory = try await AsrModels.download(version: .ultra)
+      try ensureActive(generation)
+      // Only the CoreML load is guarded: a process ended while downloading is no crash of it.
       let units = LiveModelCrashGuard.shared.begin(key)
-      models = try await AsrModels.downloadAndLoad(
+      models = try await AsrModels.load(
+        from: directory,
         configuration: units.map { MLModelConfigurationUtils.defaultConfiguration(computeUnits: $0) },
         version: .ultra)
       LiveModelCrashGuard.shared.finished(key)

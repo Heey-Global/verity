@@ -11,8 +11,10 @@ import Foundation
 /// model steps down a compute-unit level: first without the Neural Engine, then CPU only.
 ///
 /// The marker is withdrawn while the app is in the background, so iOS ending a suspended
-/// app, or the user closing it from the app switcher, is not taken for a crash. Levels are
-/// kept per model until the system version changes, since an update may fix the compiler.
+/// app, or the user closing it from the app switcher, is not taken for a crash. In exchange
+/// a crash while loading in the background goes unnoticed; loads start from a foreground
+/// tap. Levels are kept per model until the system or app build changes, since either may
+/// fix the fault (a new build can carry a new CoreML library or model).
 final class LiveModelCrashGuard: @unchecked Sendable {
   static let shared = LiveModelCrashGuard()
 
@@ -55,7 +57,7 @@ final class LiveModelCrashGuard: @unchecked Sendable {
       ) { [weak self] _ in self?.mark(nil) },
       center.addObserver(
         forName: Notification.Name("UIApplicationWillEnterForegroundNotification"), object: nil, queue: nil
-      ) { [weak self] _ in self?.mark(self?.currentModel()) },
+      ) { [weak self] _ in self?.restoreMarker() },
     ]
   }
 
@@ -85,15 +87,21 @@ final class LiveModelCrashGuard: @unchecked Sendable {
     write(state)
   }
 
-  private func currentModel() -> String? {
+  /// Writes the marker again for a load still running when the app returns to the foreground.
+  /// Reads `current` under the same lock, so a load finishing meanwhile is not marked again.
+  private func restoreMarker() {
     lock.lock()
     defer { lock.unlock() }
-    return current
+    markLocked(current)
   }
 
   private func mark(_ model: String?) {
     lock.lock()
     defer { lock.unlock() }
+    markLocked(model)
+  }
+
+  private func markLocked(_ model: String?) {
     var state = read()
     guard state.loading != model else { return }
     state.loading = model
@@ -101,7 +109,8 @@ final class LiveModelCrashGuard: @unchecked Sendable {
   }
 
   private func read() -> State {
-    let system = ProcessInfo.processInfo.operatingSystemVersionString
+    let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+    let system = "\(ProcessInfo.processInfo.operatingSystemVersionString) app \(build)"
     guard let url, let data = try? Data(contentsOf: url),
       let state = try? JSONDecoder().decode(State.self, from: data),
       state.system == system
