@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.93.0](https://github.com/Heey-Global/verity/compare/mobile-v1.92.0...mobile-v1.93.0) (2026-11-15)
+
+
+### Features
+
+* **mobile:** show server updates and outages once, in a central connection bar ([#2562](https://github.com/Heey-Global/verity/issues/2562)) ([7c1dc2b](https://github.com/Heey-Global/verity/commit/7c1dc2bf60b0d7bba178a50a023481182c017473))
+* project team invitations and per-person execution ([#2579](https://github.com/Heey-Global/verity/issues/2579)) ([ef49ce4](https://github.com/Heey-Global/verity/commit/ef49ce466a6caeb2309b81cc6f6e03ac1a9c539f))
+
+
+### Bug Fixes
+
+* **mobile:** end a live meeting on the server when its recorder cannot stop it ([#2596](https://github.com/Heey-Global/verity/issues/2596)) ([785ce7d](https://github.com/Heey-Global/verity/commit/785ce7ddc89d24734714f6a11a6925b9f2da1cdd))
+* **mobile:** end live meetings whose recording device is gone ([#2592](https://github.com/Heey-Global/verity/issues/2592)) ([daf328f](https://github.com/Heey-Global/verity/commit/daf328f541c0436707593c20fddb482a70263356))
+
 ## [1.92.0](https://github.com/Heey-Global/verity/compare/mobile-v1.91.0...mobile-v1.92.0) (2026-11-13)
 
 

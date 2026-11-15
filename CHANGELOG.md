@@ -6,6 +6,24 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.95.0](https://github.com/Heey-Global/verity/compare/v4.94.0...v4.95.0) (2026-11-15)
+
+
+### Features
+
+* project team invitations and per-person execution ([#2579](https://github.com/Heey-Global/verity/issues/2579)) ([ef49ce4](https://github.com/Heey-Global/verity/commit/ef49ce466a6caeb2309b81cc6f6e03ac1a9c539f))
+
+
+### Bug Fixes
+
+* **deps:** update dependency @openai/codex to v0.167.2 ([#2584](https://github.com/Heey-Global/verity/issues/2584)) ([4b8a606](https://github.com/Heey-Global/verity/commit/4b8a6068b6b0adb6bb90068aad522beb626e3ac2))
+* **deps:** update dependency minimatch to v11.0.8 ([#2585](https://github.com/Heey-Global/verity/issues/2585)) ([bf4396a](https://github.com/Heey-Global/verity/commit/bf4396aa261aff5c351e66e7fc869aee8252df0d))
+* **deps:** update dependency sanitize-html to v2.18.2 ([#2586](https://github.com/Heey-Global/verity/issues/2586)) ([9c4f3d2](https://github.com/Heey-Global/verity/commit/9c4f3d2c929c43df9a94f5fd43ef8eb48940447c))
+* **deps:** update gvisor runtime to v20261109 ([#2589](https://github.com/Heey-Global/verity/issues/2589)) ([0abbf93](https://github.com/Heey-Global/verity/commit/0abbf938a255c32ebd4cd4d8ce336fbfe38c2cf9))
+* **mobile:** end a live meeting on the server when its recorder cannot stop it ([#2596](https://github.com/Heey-Global/verity/issues/2596)) ([785ce7d](https://github.com/Heey-Global/verity/commit/785ce7ddc89d24734714f6a11a6925b9f2da1cdd))
+* **mobile:** end live meetings whose recording device is gone ([#2592](https://github.com/Heey-Global/verity/issues/2592)) ([daf328f](https://github.com/Heey-Global/verity/commit/daf328f541c0436707593c20fddb482a70263356))
+* **sandbox:** repair clones whose shared config names a session worktree ([#2580](https://github.com/Heey-Global/verity/issues/2580)) ([17c59ca](https://github.com/Heey-Global/verity/commit/17c59caa72c9c596a16b390fa55332e4b0db0ba3))
+
 ## [4.94.0](https://github.com/Heey-Global/verity/compare/v4.93.0...v4.94.0) (2026-11-14)
 
 
