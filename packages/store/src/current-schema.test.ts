@@ -8,13 +8,12 @@ import { createRawDb } from './testing.js';
 
 it('creates exactly the tables and columns the runtime store declares', async () => {
   // `Database` and the interfaces it extends may live in several schema modules.
-  const sources = ['./schema.ts', './schema-people.ts'].map((file) =>
-    ts.createSourceFile(
-      file,
-      readFileSync(new URL(file, import.meta.url), 'utf8'),
-      ts.ScriptTarget.Latest,
-      true,
-    ),
+  // Literal URLs, not built in a loop: tools that trace file use read them.
+  const sources = [
+    new URL('./schema.ts', import.meta.url),
+    new URL('./schema-people.ts', import.meta.url),
+  ].map((file) =>
+    ts.createSourceFile(file.pathname, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true),
   );
   const interfaces = new Map(
     sources.flatMap((source) =>
