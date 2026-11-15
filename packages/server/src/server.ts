@@ -263,7 +263,6 @@ export {
   meetingTranscriptionSettingsWhileSealed,
   removeCancelledMeetingTranscript,
   type MeetingTranscriber,
-  type MeetingTranscriptionSettings,
   type MeetingTranscriptResult,
 } from './meeting-transcription.js';
 export {
