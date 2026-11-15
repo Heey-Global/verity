@@ -128,7 +128,7 @@ describe('legacy Documents session conversion', () => {
     expect(f.session().worktree).toBe(f.target);
     // A native thread remembers the Documents view as its working directory.
     expect(f.backends).toHaveBeenCalledWith('s');
-    expect(f.moves.get('code-workspace')?.notice).toContain('/work/.verity-sessions/code-s');
+    expect([...f.moves.values()][0]?.notice).toContain('/work/.verity-sessions/code-s');
     expect(existsSync(f.view)).toBe(true);
   });
 
@@ -276,5 +276,15 @@ describe('legacy Documents session conversion', () => {
     const [first, second] = await Promise.all([recovery.convert('s'), recovery.convert('s')]);
     expect(second).toBe(first);
     expect(first?.source).toBe('fresh');
+  });
+
+  it("never lets a Restore's busy refusal stand for a starting turn", async () => {
+    const f = fixture();
+    f.busy();
+    const recovery = createCodeWorkspaceRecovery(f.deps);
+    const restore = recovery.convert('s');
+    await recovery.beforeTurn('s', { starting: true });
+    await expect(restore).rejects.toMatchObject({ reason: 'busy' });
+    expect(f.session().worktree).toBe(f.target);
   });
 });

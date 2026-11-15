@@ -53,17 +53,23 @@ export async function reconcileProjectContainerStates(
 export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to restart it.';
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
 
+/** Longer than any deprovision teardown, which removes the container before the row
+ *  becomes `absent`: within it a missing container may be one being torn down. */
+export const MISSING_CONTAINER_REPAIR_GRACE_MS = 15 * 60_000;
+
 /**
- * A Sandbox whose container vanished outside Verity while it was in use. Nothing else
- * would ever recreate it, so the relay reconciler does, with its usual backoff; the
- * manual Repair the reason names remains available.
+ * A Sandbox whose container vanished outside Verity: the state poll marked it, and the
+ * mark has outlasted any teardown. Nothing else would ever recreate it, so the relay
+ * reconciler does, with its usual backoff; the manual Repair the reason names remains.
  */
 export function owesMissingContainerRepair(
-  project: Pick<ProjectRecord, 'state' | 'provisionError'>,
+  project: Pick<ProjectRecord, 'state' | 'provisionError' | 'stateChangedAt'>,
+  now: number,
 ): boolean {
   return (
-    project.state === 'active' ||
-    (project.state === 'failed' && project.provisionError === CONTAINER_MISSING_REASON)
+    project.state === 'failed' &&
+    project.provisionError === CONTAINER_MISSING_REASON &&
+    now - project.stateChangedAt.getTime() >= MISSING_CONTAINER_REPAIR_GRACE_MS
   );
 }
 export const STALE_PROVISIONING_REASON =

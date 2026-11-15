@@ -2,8 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { ProjectState } from '@verity/store';
 import { DockerError } from './docker.js';
-import { SANDBOX_REPAIR_RETRY_MAX_MS } from './project-relay-migration.js';
-import { CONTAINER_MISSING_REASON } from './project-state.js';
+import { CONTAINER_MISSING_REASON, MISSING_CONTAINER_REPAIR_GRACE_MS } from './project-state.js';
 import {
   createProvisioner,
   defaultProjectRelay,
@@ -36,15 +35,14 @@ async function seed(state: ProjectState, provisionError: string | null = null) {
   return (await ctx.store.updateProjectState('p', state, provisionError))!;
 }
 
-function provisionerWithoutContainer() {
+function provisionerWithoutContainer(elapsed = MISSING_CONTAINER_REPAIR_GRACE_MS + 1) {
   const { client } = fakeDocker({
     inspectContainer: vi.fn(async (name: string) => {
       throw new DockerError({ kind: 'container_not_found', id: name });
     }),
   });
-  let clock = 0;
   const provisioner = createProvisioner({
-    now: () => (clock += SANDBOX_REPAIR_RETRY_MAX_MS + 1),
+    now: () => Date.now() + elapsed,
     store: ctx.store,
     db: ctx.db,
     docker: client,
@@ -59,20 +57,22 @@ function provisionerWithoutContainer() {
   return provisioner;
 }
 
-it.each([
-  ['an active project before the state poll noticed', 'active', null],
-  ['a project the state poll already marked failed', 'failed', CONTAINER_MISSING_REASON],
-] as const)('recreates the vanished container of %s', async (_, state, reason) => {
-  const project = await seed(state, reason);
+it('recreates a vanished container once the missing mark outlasts any teardown', async () => {
+  const project = await seed('failed', CONTAINER_MISSING_REASON);
   const provisioner = provisionerWithoutContainer();
   const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
   await provisioner.reconcileRelays([project]);
   expect(recreate).toHaveBeenCalledWith('p', expect.objectContaining({ confirmWarnings: true }));
 });
 
-it('leaves a project that failed for another reason to its manual Repair', async () => {
-  const project = await seed('failed', 'clone failed');
-  const provisioner = provisionerWithoutContainer();
+it.each([
+  // A deprovision removes the container before its row becomes `absent`.
+  ['an active project, which may be mid-deprovision', 'active', null, undefined],
+  ['a fresh missing mark', 'failed', CONTAINER_MISSING_REASON, 0],
+  ['a failure with another cause, left to its manual Repair', 'failed', 'clone failed', undefined],
+] as const)('leaves %s alone', async (_, state, reason, elapsed) => {
+  const project = await seed(state, reason);
+  const provisioner = provisionerWithoutContainer(elapsed);
   const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
   await provisioner.reconcileRelays([project]);
   expect(recreate).not.toHaveBeenCalled();

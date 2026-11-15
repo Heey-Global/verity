@@ -4589,9 +4589,8 @@ export class ProvisionerImpl implements Provisioner {
     // and is asked again on the next one.
     await this.restoreSandboxRepairIntents().catch((error: unknown) => failures.push(error));
     // Each project owns its own relay, network and container, so the migrations are
-    // independent — only the shared bookkeeping below is touched, and that is
-    // per-project keys. Bounded concurrency keeps a real legacy/broken fleet repair
-    // to roughly its slowest batches while capping container creates on the host.
+    // independent: the shared bookkeeping below is keyed per project. Bounded concurrency
+    // keeps a fleet repair to its slowest batches while capping container creates.
     // A repair resumes only where its own failure or a vanished container left the project; any
     // other state was chosen since, and an automatic recreate must not overrule it.
     const currentProjects = await Promise.all(
@@ -4604,8 +4603,9 @@ export class ProvisionerImpl implements Provisioner {
     const pending = currentProjects.filter(
       (project) =>
         project.kind !== 'control_plane' &&
-        (owesMissingContainerRepair(project) ||
-          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
+        (project.state === 'active' ||
+          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id)) ||
+          owesMissingContainerRepair(project, (this.opts.now ?? Date.now)())),
     );
     let cursor = 0;
     const migrateNext = async (): Promise<void> => {
@@ -4688,7 +4688,7 @@ export class ProvisionerImpl implements Provisioner {
               })
             : classification === 'absent' &&
                 (this.pendingSandboxRepairRetries.has(project.id) ||
-                  owesMissingContainerRepair(project))
+                  owesMissingContainerRepair(project, (this.opts.now ?? Date.now)()))
               ? 'migrate'
               : decideMigrationAction({
                   classification:

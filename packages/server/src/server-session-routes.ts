@@ -121,7 +121,7 @@ export function installSessionRoutes(
     invalidatePrSummaryAction,
     invalidateBranchCache,
   } = sessionOverview;
-  const codeWorkspaces = installCodeWorkspaces(app, ctx, { invalidateBranchCache });
+  installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
   // moment it is accepted; live progress flows over the WS stream. What happens to
@@ -174,16 +174,6 @@ export function installSessionRoutes(
       let session = await deps.eventStore.getSession(id);
       if (session?.projectId) {
         await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
-        // A legacy Documents session becomes a code session here, while it is idle;
-        // a turn never runs with the Documents view standing in for its checkout.
-        try {
-          await codeWorkspaces.beforeTurn(id);
-        } catch (error) {
-          if (!(error instanceof CodeWorkspaceUnavailableError)) throw error;
-          request.log.warn({ err: error, sessionId: id }, 'verity: turn without code workspace');
-          reply.code(409);
-          return codeWorkspaceUnavailable(error);
-        }
         session = await deps.eventStore.getSession(id);
       }
       const viewer = request.localUserId ?? legacyAdministratorId;
@@ -302,6 +292,13 @@ export function installSessionRoutes(
         if (error instanceof SessionBusyError) {
           reply.code(409);
           return { error: `session ${id} is completing a stop or backend handoff` };
+        }
+        // The turn start converts a legacy Documents session; one it cannot convert
+        // never runs with the Documents view standing in for its checkout.
+        if (error instanceof CodeWorkspaceUnavailableError) {
+          request.log.warn({ err: error, sessionId: id }, 'verity: turn without code workspace');
+          reply.code(409);
+          return codeWorkspaceUnavailable(error);
         }
         if (error instanceof WorktreeMissingError) {
           // The session's worktree is gone (e.g. an isolated worktree cleaned up

@@ -1,5 +1,6 @@
 import type { EventStore, ProjectRecord, SessionMoveStore, SessionRecord } from '@verity/store';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -73,7 +74,7 @@ export interface CodeWorkspaceRecoveryDeps {
   git?: GitOutputRunner | undefined;
 }
 
-/** One conversion per session: the key makes every retry resume the same reservation. */
+/** Prefix of the conversion's move key; a retry resumes the same reservation. */
 const OPERATION = 'code-workspace';
 
 const hostGit: GitOutputRunner = async (args) =>
@@ -154,6 +155,7 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     legacyView: string,
     target: string,
     sessionId: string,
+    operation: string,
   ): Promise<string[]> {
     const view = documentViewForSession({ sessionId, worktree: target });
     if (!deps.dataRoot || !view) return [];
@@ -165,15 +167,22 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     const destination = documentWorkspace(deps.dataRoot, projectId, view);
     await destination.prepare();
     if (!(await source.hasPendingChanges())) return [];
-    return source.transferPending(destination, `Transferred edits/${OPERATION}`);
+    return source.transferPending(destination, `Transferred edits/${operation}`);
   }
 
   /** One conversion per session at a time: a turn start and a Restore may race. */
   const running = new Map<string, Promise<CodeWorkspaceConversion | null>>();
-  function convert(sessionId: string, claim = deps.claimIdle) {
+  function convert(sessionId: string, claim = deps.claimIdle, starting = false) {
     const prior = running.get(sessionId);
-    if (prior) return prior;
-    const next = convertOnce(sessionId, claim).finally(() => running.delete(sessionId));
+    // A request joins a running conversion. A turn start waits for it instead: a
+    // Restore's idle claim refuses the starting turn, and that refusal is not its own.
+    if (prior && !starting) return prior;
+    const next = (prior ?? Promise.resolve(null))
+      .catch(() => null)
+      .then(() => convertOnce(sessionId, claim))
+      .finally(() => {
+        if (running.get(sessionId) === next) running.delete(sessionId);
+      });
     running.set(sessionId, next);
     return next;
   }
@@ -213,21 +222,33 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       );
     const branch = `code-${sessionId}`;
     const legacy = session;
+    // Keyed by the view it leaves: an abandoned reservation for another view never blocks.
+    const operation = `${OPERATION}-${createHash('sha256').update(legacy.worktree).digest('hex').slice(0, 16)}`;
     const claim = await claimIdle(sessionId, async () => {
-      const prior = await deps.store.getSessionMove(sessionId, OPERATION);
-      if (prior?.result_json) return JSON.parse(prior.result_json) as CodeWorkspaceConversion;
+      const prior = await deps.store.getSessionMove(sessionId, operation);
+      // Committed, yet the row names the view again: something outside Verity reverted it.
+      if (prior?.result_json)
+        throw new CodeWorkspaceUnavailableError(
+          `the session was converted before, but its workspace is again ${legacy.worktree}`,
+        );
       if (prior && (prior.source_worktree !== legacy.worktree || prior.target_worktree !== target))
         throw new CodeWorkspaceUnavailableError('the session changed since its conversion began');
       await deps.store.sessionMoves.prepareRelayout({
         sessionId,
-        operationId: OPERATION,
+        operationId: operation,
         projectId,
         sourceWorktree: legacy.worktree,
         targetWorktree: target,
         branch,
       });
       const source = await materialize(project, legacy, clone, target, branch);
-      const transferred = await carryDocuments(projectId, legacy.worktree, target, sessionId);
+      const transferred = await carryDocuments(
+        projectId,
+        legacy.worktree,
+        target,
+        sessionId,
+        operation,
+      );
       const current =
         (
           await git(['-C', target, 'symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => '')
@@ -246,11 +267,11 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
         `../../.verity-document-sessions/code-${sessionId}. Paths into .verity-document-sessions in earlier ` +
         `messages are historical; the previous Documents view is retained unchanged.` +
         (transferred.length
-          ? ` Edits that could not be published were copied under Transferred edits/${OPERATION}.`
+          ? ` Edits that could not be published were copied under Transferred edits/${operation}.`
           : '');
       await deps.store.sessionMoves.commitRelayout(
         sessionId,
-        OPERATION,
+        operation,
         notice,
         JSON.stringify(result),
       );
@@ -294,9 +315,11 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
         await convert(
           sessionId,
           starting ? async (_, fn) => ({ ran: true, value: await fn() }) : deps.claimIdle,
+          starting,
         );
       } catch (error) {
-        if (error instanceof CodeWorkspaceUnavailableError && error.reason === 'busy') return;
+        if (!starting && error instanceof CodeWorkspaceUnavailableError && error.reason === 'busy')
+          return;
         throw error instanceof CodeWorkspaceUnavailableError
           ? error
           : new CodeWorkspaceUnavailableError(
