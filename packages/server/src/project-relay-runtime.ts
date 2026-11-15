@@ -40,7 +40,7 @@ export interface ProjectRelayRuntimeOptions {
     sandbox: Pick<InternalConnectionIdentity, 'projectId' | 'userId' | 'projectDefault'>,
   ): string;
   /** The person of a project's original sandbox. */
-  defaultSandboxUser(projectId: string): Promise<string>;
+  defaultSandboxUser(projectId: string): Promise<string | undefined>;
   /** Narrow dependency-injection seams used by composition tests. */
   startBrokerListener?:
     ((identity: InternalConnectionIdentity) => Promise<ProjectInternalUnixListener>) | undefined;

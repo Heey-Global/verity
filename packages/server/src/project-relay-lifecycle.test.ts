@@ -5,6 +5,7 @@ import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ProjectInternalUnixListener } from './internal-listener.js';
 import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.js';
 import { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import { originalSandbox } from './project-relay-lifecycle.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
 const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
@@ -19,7 +20,7 @@ const binding = {
   claudeGateway: { host: 'gateway.internal', port: 9443 },
 };
 
-function harness() {
+function harness(options: { defaultSandboxUser?: string | null } = {}) {
   const calls: string[] = [];
   const brokerClose = vi.fn(async () => {
     calls.push('broker.close');
@@ -102,7 +103,10 @@ function harness() {
     startBrokerListener,
     startClaudeListener,
     startRelay,
-    defaultSandboxUser: async () => SANDBOX_USER,
+    defaultSandboxUser: async () =>
+      options.defaultSandboxUser === null
+        ? undefined
+        : (options.defaultSandboxUser ?? SANDBOX_USER),
   });
   return {
     brokerListener,
@@ -121,6 +125,25 @@ function harness() {
 }
 
 describe('ProjectRelayLifecycle', () => {
+  // A stop, sleep or teardown names the original sandbox without its person. The
+  // person must come from the live relay or the record, never be invented: an
+  // invented one would revoke the wrong person's authority and leave the real one.
+  it('revokes project-wide when the original sandbox has no recorded person', async () => {
+    const h = harness({ defaultSandboxUser: null });
+    await h.lifecycle.stop(originalSandbox('p1'));
+    expect(h.signing.revokeProject).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(h.github.revokeProject).toHaveBeenCalledExactlyOnceWith('p1');
+    expect(h.signing.revokeSandbox).not.toHaveBeenCalled();
+  });
+
+  it("answers for a member's own relay, not the original sandbox's", async () => {
+    const h = harness();
+    await h.lifecycle.start(binding);
+    const lena = { projectId: 'p1', userId: 'lena', projectDefault: false };
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(lena, 'generation-1')).toBe(false);
+  });
+
   // ADR 0023 §4: each person's sandbox of a project has its own relay and its own
   // authority. Two may run at once, and ending one must not revoke the other's
   // capabilities or tear down its relay.
@@ -134,7 +157,7 @@ describe('ProjectRelayLifecycle', () => {
     };
     await h.lifecycle.start(binding);
     await h.lifecycle.start(lena);
-    expect(h.lifecycle.isActive('p1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(true);
     expect(h.lifecycle.isActive(lena)).toBe(true);
     expect(h.lifecycle.heldRelays()).toEqual(
       expect.arrayContaining([
@@ -148,10 +171,10 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.github.revokeSandbox).toHaveBeenCalledExactlyOnceWith('p1', 'lena');
     expect(h.signing.revokeProject).not.toHaveBeenCalled();
     expect(h.lifecycle.isActive(lena)).toBe(false);
-    expect(h.lifecycle.isActive('p1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(true);
 
-    // A bare project id still names the project's original sandbox.
-    await h.lifecycle.sleep('p1');
+    // The original sandbox is named without its person and resolved from the live relay.
+    await h.lifecycle.sleep(originalSandbox('p1'));
     expect(h.signing.revokeSandbox).toHaveBeenLastCalledWith('p1', SANDBOX_USER);
   });
 
@@ -191,20 +214,20 @@ describe('ProjectRelayLifecycle', () => {
     // fresh process owns nothing, so every capability a predecessor wrote into a
     // still-running sandbox is already dead.
     const h = harness();
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
     await h.lifecycle.start(binding);
-    expect(h.lifecycle.isActive('p1')).toBe(true);
-    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
-    expect(h.lifecycle.isActive('p1', 'stale-generation')).toBe(false);
-    expect(h.lifecycle.isActive('some-other-project')).toBe(false);
-    await h.lifecycle.stop('p1');
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'stale-generation')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('some-other-project'))).toBe(false);
+    await h.lifecycle.stop(originalSandbox('p1'));
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
   });
 
   it('resumes an existing generation without rotating its durable capabilities', async () => {
     const h = harness();
     await h.lifecycle.resume(binding);
-    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
     expect(h.signing.issue).not.toHaveBeenCalled();
     expect(h.github.issue).not.toHaveBeenCalled();
     expect(h.calls).toEqual(['broker.start', 'claude.start', 'runtime.start']);
@@ -228,7 +251,7 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.startRelay).toHaveBeenCalledOnce();
     expect(h.signing.issue).toHaveBeenCalledOnce();
     expect(h.github.issue).toHaveBeenCalledOnce();
-    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
   });
 
   it('leaves a held generation alone when asked to resume a different one', async () => {
@@ -242,7 +265,7 @@ describe('ProjectRelayLifecycle', () => {
     await h.lifecycle.resume({ ...binding, containerGeneration: 'generation-2' });
 
     expect(h.calls).toEqual([]);
-    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
   });
 
   it('surfaces a restart failure without dropping the generation it still holds', async () => {
@@ -254,7 +277,7 @@ describe('ProjectRelayLifecycle', () => {
     h.runtime.ensureRunning.mockRejectedValueOnce(new Error('container gone'));
 
     await expect(h.lifecycle.resume(binding)).rejects.toThrow('container gone');
-    expect(h.lifecycle.isActive('p1', 'generation-1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'), 'generation-1')).toBe(true);
     expect(h.signing.revokeSandbox).not.toHaveBeenCalled();
   });
 
@@ -263,7 +286,7 @@ describe('ProjectRelayLifecycle', () => {
     await h.lifecycle.start(binding);
     h.calls.length = 0;
 
-    await h.lifecycle.sleep('p1');
+    await h.lifecycle.sleep(originalSandbox('p1'));
 
     expect(h.calls).toEqual([
       'signing.revoke',
@@ -273,7 +296,7 @@ describe('ProjectRelayLifecycle', () => {
       'claude.close',
     ]);
     expect(h.runtime.close).not.toHaveBeenCalled();
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
 
     await expect(h.lifecycle.reactivate(binding)).resolves.toEqual({
       identity: {
@@ -323,9 +346,9 @@ describe('ProjectRelayLifecycle', () => {
     await h.lifecycle.start(binding);
     h.runtime.quiesce.mockRejectedValueOnce(new Error('relay stop failed'));
 
-    await expect(h.lifecycle.sleep('p1')).rejects.toThrow(/relay sleep failed/);
-    expect(h.lifecycle.isActive('p1')).toBe(true);
-    await expect(h.lifecycle.sleep('p1')).resolves.toBeUndefined();
+    await expect(h.lifecycle.sleep(originalSandbox('p1'))).rejects.toThrow(/relay sleep failed/);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(true);
+    await expect(h.lifecycle.sleep(originalSandbox('p1'))).resolves.toBeUndefined();
 
     expect(h.runtime.quiesce).toHaveBeenCalledTimes(2);
     expect(h.brokerClose).toHaveBeenCalledOnce();
@@ -338,7 +361,7 @@ describe('ProjectRelayLifecycle', () => {
     await expect(h.lifecycle.resume(binding)).rejects.toThrow('relay unavailable');
     expect(h.signing.revokeSandbox).not.toHaveBeenCalled();
     expect(h.github.revokeSandbox).not.toHaveBeenCalled();
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
   });
 
   it('suspends for a Server handoff without stopping the relay or revoking capabilities', async () => {
@@ -349,7 +372,7 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.signing.revokeSandbox).not.toHaveBeenCalled();
     expect(h.github.revokeSandbox).not.toHaveBeenCalled();
     expect(h.calls).toEqual(expect.arrayContaining(['broker.close', 'claude.close']));
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
   });
 
   it('retains a relay whose listener failed to close so suspend can retry it', async () => {
@@ -357,9 +380,9 @@ describe('ProjectRelayLifecycle', () => {
     await h.lifecycle.start(binding);
     h.brokerClose.mockRejectedValueOnce(new Error('close failed'));
     await expect(h.lifecycle.suspend()).rejects.toThrow(/suspend failed/);
-    expect(h.lifecycle.isActive('p1')).toBe(true);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(true);
     await expect(h.lifecycle.suspend()).resolves.toBeUndefined();
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
     expect(h.brokerClose).toHaveBeenCalledTimes(2);
     expect(h.claudeClose).toHaveBeenCalledTimes(1);
   });
@@ -386,7 +409,7 @@ describe('ProjectRelayLifecycle', () => {
     expect(h.lifecycle.heldRelays()).toEqual([
       { projectId: binding.projectId, containerGeneration: binding.containerGeneration },
     ]);
-    await h.lifecycle.stop('p1');
+    await h.lifecycle.stop(originalSandbox('p1'));
     expect(h.lifecycle.heldRelays()).toEqual([]);
   });
 
@@ -411,7 +434,7 @@ describe('ProjectRelayLifecycle', () => {
     ]);
     // Still only a claim: ownership is what the reconciler reads, and it must not
     // report a start that has not finished.
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
 
     releaseRelay();
     await started;
@@ -424,7 +447,7 @@ describe('ProjectRelayLifecycle', () => {
     const h = harness();
     h.startRelay.mockRejectedValueOnce(new Error('docker start failed'));
     await expect(h.lifecycle.start(binding)).rejects.toThrow('docker start failed');
-    expect(h.lifecycle.isActive('p1')).toBe(false);
+    expect(h.lifecycle.isActive(originalSandbox('p1'))).toBe(false);
   });
 
   it('rolls back the listener and all capabilities when relay start fails', async () => {
@@ -458,7 +481,7 @@ describe('ProjectRelayLifecycle', () => {
     const h = harness();
     await h.lifecycle.start(binding);
     h.calls.length = 0;
-    await h.lifecycle.stop('p1');
+    await h.lifecycle.stop(originalSandbox('p1'));
     expect(h.calls).toEqual([
       'signing.revoke',
       'github.revoke',
@@ -476,7 +499,7 @@ describe('ProjectRelayLifecycle', () => {
       h.calls.push('broker.close');
       throw new Error('listener stuck');
     });
-    await expect(h.lifecycle.stop('p1')).rejects.toBeInstanceOf(AggregateError);
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).rejects.toBeInstanceOf(AggregateError);
     expect(h.signing.revokeSandbox).toHaveBeenCalledWith('p1', SANDBOX_USER);
     expect(h.github.revokeSandbox).toHaveBeenCalledWith('p1', SANDBOX_USER);
   });
@@ -485,8 +508,8 @@ describe('ProjectRelayLifecycle', () => {
     const h = harness();
     await h.lifecycle.start(binding);
     await expect(h.lifecycle.start(binding)).rejects.toThrow('project relay already active');
-    await h.lifecycle.stop('p1');
-    await expect(h.lifecycle.stop('p1')).resolves.toBeUndefined();
+    await h.lifecycle.stop(originalSandbox('p1'));
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).resolves.toBeUndefined();
   });
 
   it('serializes concurrent starts so only one project relay can activate', async () => {
@@ -514,9 +537,9 @@ describe('ProjectRelayLifecycle', () => {
     const h = harness();
     await h.lifecycle.start(binding);
     h.runtime.close.mockRejectedValueOnce(new Error('relay stuck'));
-    await expect(h.lifecycle.stop('p1')).rejects.toBeInstanceOf(AggregateError);
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).rejects.toBeInstanceOf(AggregateError);
     await expect(h.lifecycle.start(binding)).rejects.toThrow('project relay already active');
-    await expect(h.lifecycle.stop('p1')).resolves.toBeUndefined();
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).resolves.toBeUndefined();
     expect(h.runtime.close).toHaveBeenCalledTimes(2);
     expect(h.calls.filter((call) => call === 'broker.close')).toHaveLength(1);
   });
@@ -530,9 +553,9 @@ describe('ProjectRelayLifecycle', () => {
     h.claudeListener.close = closeClaude;
     await h.lifecycle.start(binding);
 
-    await expect(h.lifecycle.stop('p1')).rejects.toBeInstanceOf(AggregateError);
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).rejects.toBeInstanceOf(AggregateError);
     await expect(h.lifecycle.start(binding)).rejects.toThrow('project relay already active');
-    await expect(h.lifecycle.stop('p1')).resolves.toBeUndefined();
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).resolves.toBeUndefined();
     expect(closeClaude).toHaveBeenCalledTimes(2);
     expect(h.runtime.close).toHaveBeenCalledOnce();
     expect(h.calls.filter((call) => call === 'broker.close')).toHaveLength(1);
@@ -548,7 +571,7 @@ describe('ProjectRelayLifecycle', () => {
     h.brokerListener.close = listenerClose;
     await expect(h.lifecycle.start(binding)).rejects.toBeInstanceOf(AggregateError);
     await expect(h.lifecycle.start(binding)).rejects.toThrow('project relay already active');
-    await expect(h.lifecycle.stop('p1')).resolves.toBeUndefined();
+    await expect(h.lifecycle.stop(originalSandbox('p1'))).resolves.toBeUndefined();
     expect(listenerClose).toHaveBeenCalledTimes(2);
   });
 
@@ -563,7 +586,7 @@ describe('ProjectRelayLifecycle', () => {
       h.calls.push('signing.revoke');
       await blocked;
     });
-    const stopping = h.lifecycle.stop('p1');
+    const stopping = h.lifecycle.stop(originalSandbox('p1'));
     await vi.waitFor(() => {
       expect(h.github.revokeSandbox).toHaveBeenCalledWith('p1', SANDBOX_USER);
       expect(h.runtime.close).toHaveBeenCalledOnce();
@@ -585,7 +608,7 @@ describe('ProjectRelayLifecycle', () => {
       return h.runtime;
     });
     const starting = h.lifecycle.start(binding);
-    const stopping = h.lifecycle.stop('p1');
+    const stopping = h.lifecycle.stop(originalSandbox('p1'));
     await Promise.resolve();
     expect(h.signing.revokeSandbox).not.toHaveBeenCalled();
     release();

@@ -40,7 +40,6 @@ import {
   type ImageFileEvidence,
 } from './runner-boundary-attestation.js';
 import {
-  ProvisionerImpl,
   DeprovisionerImpl,
   ProvisioningError,
   gitAuthHeader,
@@ -105,6 +104,12 @@ import {
   SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
+import {
+  createProvisioner,
+  defaultProjectRelay,
+  fakeDocker,
+  fakeGit,
+} from './provisioner.test-helper.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
@@ -382,125 +387,6 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(ctx.db);
 });
-
-/** Build a fake {@link DockerClient} that records all calls + returns canned
- *  success/id/{inspect} so a provisioner test doesn't hit a real daemon. */
-function fakeDocker(overrides?: Partial<DockerClient> & { createdContainerId?: string }): {
-  client: DockerClient;
-  calls: Array<{ method: string; payload: unknown }>;
-} {
-  const calls: Array<{ method: string; payload: unknown }> = [];
-  const createdId = overrides?.createdContainerId ?? 'container-abc';
-  const base: Pick<
-    DockerClient,
-    | 'createContainer'
-    | 'startContainer'
-    | 'stopContainer'
-    | 'removeContainer'
-    | 'inspectContainer'
-    | 'ensureNetwork'
-    | 'listContainers'
-  > = {
-    listContainers: vi.fn(async () => []),
-    ensureNetwork: vi.fn(async (name: string) => {
-      calls.push({ method: 'ensureNetwork', payload: name });
-    }),
-    createContainer: vi.fn(async (spec: ContainerSpec) => {
-      calls.push({ method: 'createContainer', payload: spec });
-      return { id: createdId, warnings: [] };
-    }),
-    startContainer: vi.fn(async (id: string) => {
-      calls.push({ method: 'startContainer', payload: id });
-    }),
-    stopContainer: vi.fn(async (id: string) => {
-      calls.push({ method: 'stopContainer', payload: id });
-    }),
-    removeContainer: vi.fn(async (id: string) => {
-      calls.push({ method: 'removeContainer', payload: id });
-    }),
-    inspectContainer: vi.fn(async (id: string) => {
-      calls.push({ method: 'inspectContainer', payload: id });
-      return { id, running: true };
-    }),
-  };
-  return { client: { ...base, ...overrides }, calls };
-}
-
-function defaultProjectRelay(): ProjectRelayControl {
-  return {
-    async start(binding) {
-      return {
-        identity: {
-          projectId: binding.projectId,
-          userId: binding.userId,
-          projectDefault: binding.projectDefault,
-          containerGeneration: binding.containerGeneration,
-        },
-        signingCapability: 'test-signing-capability',
-        githubCapability: 'test-github-capability',
-      };
-    },
-    async resume() {
-      return true;
-    },
-    async stop() {},
-    brokerUrl: () => 'http://relay:8080',
-    claudeGatewayUrl: () => 'https://relay:8443',
-  };
-}
-
-function createProvisioner(
-  options: Omit<ProvisionerOptions, 'projectRelay' | 'claudeEgressGatewayUrl'> & {
-    projectRelay?: ProjectRelayControl;
-    claudeEgressGatewayUrl?: string;
-  },
-): ProvisionerImpl {
-  const {
-    projectRelay = defaultProjectRelay(),
-    claudeEgressGatewayUrl = 'https://verity:9443',
-    ...rest
-  } = options;
-  return new ProvisionerImpl({
-    // No real supervisor runs here; tests that care pass their own.
-    supervisorReachable: async () => undefined,
-    supervisorStackHealth: async () => undefined,
-    prepareLocalWorkspace: async () => undefined,
-    // A host larger than any quota asserted here, so CPU expectations do not depend
-    // on the machine running the suite. The clamp itself is tested on its own.
-    hostCpuCount: () => 64,
-    ...rest,
-    projectRelay,
-    claudeEgressGatewayUrl,
-  });
-}
-
-/** Build a fake {@link GitRunner} that records call args + returns canned
- *  output, dispatching on the first arg to"/><sub-command>" for canned stdout. */
-function fakeGit(canned: Array<{ match: RegExp; stdout?: string; reject?: boolean }>): {
-  runner: GitRunner;
-  calls: Array<{ args: readonly string[] }>;
-} {
-  const calls: Array<{ args: readonly string[] }> = [];
-  const runner: GitRunner = async (args) => {
-    calls.push({ args });
-    const joined = args.join(' ');
-    for (const c of canned) {
-      if (c.match.test(joined)) {
-        if (c.reject === true) {
-          throw new Error(`fake git: simulated failure for ${joined}`);
-        }
-        return { stdout: c.stdout ?? '', stderr: '' };
-      }
-    }
-    // Most provisioner fixtures model an established repository. Individual
-    // empty-repository tests override this with an explicit empty response.
-    if (joined.includes('ls-remote --heads')) {
-      return { stdout: `${'a'.repeat(40)}\trefs/heads/main\n`, stderr: '' };
-    }
-    throw new Error(`fake git: no canned response for ${joined}`);
-  };
-  return { runner, calls };
-}
 
 describe('resolveImage (#174)', () => {
   const baseProject = {
@@ -6411,7 +6297,9 @@ describe('ProvisionerImpl (#174)', () => {
 
       expect(startRelay).toHaveBeenCalledOnce();
       expect(stopRelay).toHaveBeenCalledOnce();
-      expect(stopRelay).toHaveBeenCalledWith(id);
+      expect(stopRelay).toHaveBeenCalledWith(
+        expect.objectContaining({ projectId: id, projectDefault: true }),
+      );
       expect(startRelay.mock.calls[0]?.[0]).toMatchObject({
         projectId: id,
         owner: 'example-org',
@@ -6559,7 +6447,9 @@ describe('ProvisionerImpl (#174)', () => {
     });
 
     await expect(provisioner.provision(id)).rejects.toThrow('sandbox start failed');
-    expect(stopRelay).toHaveBeenCalledWith(id);
+    expect(stopRelay).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: id, projectDefault: true }),
+    );
   });
 
   it('does not stop an existing relay when failure happens before relay cutover', async () => {
@@ -11423,7 +11313,7 @@ describe('DeprovisionerImpl (#174)', () => {
 
 describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () => {
   function relayControl(
-    isHealthy?: (binding: { projectId: string; containerGeneration: string }) => Promise<boolean>,
+    isHealthy?: ProjectRelayControl['isHealthy'],
     resume?: ProjectRelayControl['resume'],
   ) {
     return {
@@ -11450,7 +11340,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
   function makeProvisioner(
     docker: DockerClient,
     opts: {
-      isHealthy?: (binding: { projectId: string; containerGeneration: string }) => Promise<boolean>;
+      isHealthy?: ProjectRelayControl['isHealthy'];
       resume?: ProjectRelayControl['resume'];
       withContainerReplace?: ProvisionerOptions['withContainerReplace'];
       veritySettings?: ProvisionerOptions['veritySettings'];
@@ -12418,7 +12308,10 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     await provisioner.reconcileRelays([p]);
     // `gen-1` is the stamp on migratedInspect: asking about any other generation
     // would answer for a relay this sandbox was never wired to.
-    expect(isHealthy).toHaveBeenCalledWith({ projectId: p.id, containerGeneration: 'gen-1' });
+    expect(isHealthy).toHaveBeenCalledWith({
+      sandbox: { projectId: p.id, projectDefault: true },
+      containerGeneration: 'gen-1',
+    });
   });
 
   it('defers a busy sandbox whose relay is gone instead of recreating it', async () => {
@@ -13959,7 +13852,9 @@ describe('disconnectGitHub', () => {
           provisioner.disconnectGitHub(project),
         );
         expect(local).toMatchObject({ id, kind: 'local', cloneDir: 'retained' });
-        expect(stop).toHaveBeenCalledWith(id);
+        expect(stop).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: id, projectDefault: true }),
+        );
         expect(recreate).toHaveBeenCalledTimes(state === 'absent' ? 0 : 1);
         expect(local.state).toBe(state);
         expect(execFileSync('git', ['-C', clone, 'remote'], { encoding: 'utf8' }).trim()).toBe('');

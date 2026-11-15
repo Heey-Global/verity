@@ -16,3 +16,12 @@ export async function projectDefaultSandboxUser(
   return (await store.projectSandboxes.ensureProjectDefault(projectId, legacyAdministratorId))
     .userId;
 }
+
+/** The person recorded for a project's original sandbox, without recording one:
+ *  for lookups on a stop, a sleep or a teardown, which must never create a sandbox. */
+export async function recordedDefaultSandboxUser(
+  store: Pick<EventStore, 'projectSandboxes'>,
+  projectId: string,
+): Promise<string | undefined> {
+  return (await store.projectSandboxes.projectDefault(projectId))?.userId;
+}

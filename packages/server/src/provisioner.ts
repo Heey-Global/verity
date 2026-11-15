@@ -10,7 +10,11 @@ import {
   type ProjectActivityAnswer,
   type ProjectActivityReason,
 } from './project-idle-sleep.js';
-import type { ProjectRelaySandbox, ProjectRelaySandboxRef } from './project-relay-lifecycle.js';
+import {
+  originalSandbox,
+  type ProjectRelaySandbox,
+  type ProjectRelaySandboxRef,
+} from './project-relay-lifecycle.js';
 import { projectDefaultSandboxUser } from './project-sandbox.js';
 import {
   projectNetworkName,
@@ -238,7 +242,10 @@ export interface ProjectRelayControl {
    *  doubles, older wirings) leaves relay health unprobed rather than reported
    *  unhealthy. A property rather than a method so callers can test for its
    *  presence without holding an unbound method reference. */
-  isHealthy?: (binding: { projectId: string; containerGeneration: string }) => Promise<boolean>;
+  isHealthy?: (binding: {
+    sandbox: ProjectRelaySandboxRef;
+    containerGeneration: string;
+  }) => Promise<boolean>;
 }
 
 const execFileAsync = promisify(execFile);
@@ -3689,7 +3696,7 @@ export class ProvisionerImpl implements Provisioner {
     stopTarget: string | false = project.containerName,
   ): Promise<void> {
     const authorityResults = await Promise.allSettled([
-      this.opts.projectRelay.sleep?.(project.id) ??
+      this.opts.projectRelay.sleep?.(originalSandbox(project.id)) ??
         Promise.reject(new Error('project relay does not support sleep')),
       ...(this.opts.claudeEgressIdentity === undefined
         ? []
@@ -3812,7 +3819,7 @@ export class ProvisionerImpl implements Provisioner {
       // host-operated Git metadata, then recreate it with the normal config boundary.
       if (!this.isRepoDir(clonePath) && project.state === 'active') {
         await this.retireEgressGeneration(project.id);
-        await this.opts.projectRelay.stop(project.id);
+        await this.opts.projectRelay.stop(originalSandbox(project.id));
         await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
         await this.doClone(project);
         await this.recreateContainer(project.id, {
@@ -4189,7 +4196,9 @@ export class ProvisionerImpl implements Provisioner {
               .catch(() => undefined);
             const cleanup = await Promise.allSettled([
               this.opts.docker.stopContainer(project.containerName),
-              ...(relayAwake && sleepRelay !== undefined ? [sleepRelay(project.id)] : []),
+              ...(relayAwake && sleepRelay !== undefined
+                ? [sleepRelay(originalSandbox(project.id))]
+                : []),
               ...(this.opts.claudeEgressIdentity === undefined
                 ? []
                 : [this.opts.claudeEgressIdentity.revokeProject(project.id)]),
@@ -4626,7 +4635,8 @@ export class ProvisionerImpl implements Provisioner {
     const isHealthy = this.opts.projectRelay.isHealthy;
     if (isHealthy === undefined || containerGeneration === undefined) return undefined;
     try {
-      if (await isHealthy({ projectId: project.id, containerGeneration })) return true;
+      const sandbox = originalSandbox(project.id);
+      if (await isHealthy({ sandbox, containerGeneration })) return true;
       if (this.opts.projectRelay.resume === undefined) return false;
       const binding = await this.relayBinding(
         project,
@@ -4634,7 +4644,7 @@ export class ProvisionerImpl implements Provisioner {
         await this.generationEgress(project.id, containerGeneration),
       );
       if (!(await this.opts.projectRelay.resume(binding))) return false;
-      return await isHealthy({ projectId: project.id, containerGeneration });
+      return await isHealthy({ sandbox, containerGeneration });
     } catch {
       return undefined;
     }
@@ -4716,7 +4726,7 @@ export class ProvisionerImpl implements Provisioner {
       // an unreachable host service block an open start.
       if (await this.projectEgressEnabled()) throw error;
     }
-    await this.opts.projectRelay.stop(projectId);
+    await this.opts.projectRelay.stop(originalSandbox(projectId));
   }
 
   /** The project's original sandbox: its names are the project's, and its state
@@ -4728,7 +4738,7 @@ export class ProvisionerImpl implements Provisioner {
       identity,
       key: project.id,
       fileKey: project.id,
-      relaySandbox: project.id,
+      relaySandbox: { projectId: project.id, userId, projectDefault: true },
       setState: (state, error = null, warning = null) =>
         this.opts.store.updateProjectState(project.id, state, error, warning),
       activate: async (imageRef, toolkitIdentity, warning) => {
@@ -5513,7 +5523,10 @@ export class ProvisionerImpl implements Provisioner {
         const generation = inspect.labels[CONTAINER_GENERATION_LABEL];
         if (
           generation !== undefined &&
-          (await this.opts.projectRelay.isHealthy({ projectId, containerGeneration: generation }))
+          (await this.opts.projectRelay.isHealthy({
+            sandbox: run.relaySandbox,
+            containerGeneration: generation,
+          }))
         )
           return run.identity;
       }
@@ -6548,7 +6561,7 @@ export class ProvisionerImpl implements Provisioner {
     if (project.kind !== 'github' && project.kind !== 'local')
       throw new ProvisioningError('Only GitHub projects can be disconnected.');
     await this.retireEgressGeneration(project.id);
-    await this.opts.projectRelay.stop(project.id);
+    await this.opts.projectRelay.stop(originalSandbox(project.id));
     await this.opts.claudeEgressIdentity?.revokeProject(project.id);
     await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
     const clonePath = projectClonePath(this.opts.hostCloneRoot, project);
@@ -6855,7 +6868,7 @@ export class ProvisionerImpl implements Provisioner {
         project,
         generation,
         egress,
-        typeof sandbox.relaySandbox === 'string' ? undefined : sandbox.relaySandbox,
+        sandbox.relaySandbox.projectDefault ? undefined : sandbox.relaySandbox,
       ),
     );
     relayAttempt.started = true;
@@ -8629,7 +8642,7 @@ export class DeprovisionerImpl implements Deprovisioner {
     // the deletion no longer joins the queue, and the timeout is reported
     // through `onTeardownFailure`, so the wedged relay is in the log instead of
     // showing up later as an unexplained hang.
-    await bestEffort('relay-stop', () => this.projectRelay?.stop(project.id));
+    await bestEffort('relay-stop', () => this.projectRelay?.stop(originalSandbox(project.id)));
     await bestEffort('network-remove', () => removeLegacyProjectNetwork(this.docker, project.id));
     // Every person's own sandbox of the project goes with it (ADR 0023 §4): its
     // container, relay and network now, its runtime and volume on purge below.

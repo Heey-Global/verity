@@ -8,7 +8,7 @@ import {
   sandboxPersonTag,
   sandboxRunnerDir,
 } from './sandbox-identity.js';
-import { projectDefaultSandboxUser } from './project-sandbox.js';
+import { projectDefaultSandboxUser, recordedDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { createDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
@@ -362,7 +362,11 @@ import { CONTAINER_GENERATION_LABEL } from './project-relay-migration.js';
 import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
 import { projectRelayContainerName } from './project-relay-docker.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
-import type { ProjectRelayLifecycle } from './project-relay-lifecycle.js';
+import {
+  originalSandbox,
+  type ProjectRelayLifecycle,
+  type ProjectRelaySandboxRef,
+} from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
@@ -1976,8 +1980,11 @@ export async function buildEmbeddedServer(
   const projectRelayControlRef: { current: ProjectRelayControl | undefined } = {
     current: undefined,
   };
+  // Every check below names one sandbox, never a project: a member's own sandbox
+  // has its own relay and its own gateway certificate, and a lookup by project id
+  // alone would answer for the project's original sandbox instead (ADR 0023 §4).
   const healthyRelayGeneration = async (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): Promise<boolean> =>
     claudeEgressRelayHealthy(
@@ -1985,32 +1992,38 @@ export async function buildEmbeddedServer(
       CONTAINER_GENERATION_LABEL,
       async (containerGeneration) =>
         (await projectRelayControlRef.current?.isHealthy?.({
-          projectId,
+          sandbox,
           containerGeneration,
         })) === true,
     );
   const hasProjectedAgentGatewayBinding = (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): boolean => {
     // A woken Sandbox holds a certificate re-issued after its creation-time label
     // was written; the provisioner vouches for that one per container generation.
-    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, projectId, inspected);
+    const fingerprint = projectedAgentGatewayFingerprint(secretRoot, sandbox.projectId, inspected);
     return (
       fingerprint !== undefined &&
       agentGatewayBindings.some(
-        (binding) => binding.projectId === projectId && binding.fingerprint256 === fingerprint,
+        (binding) =>
+          binding.projectId === sandbox.projectId &&
+          binding.fingerprint256 === fingerprint &&
+          // A binding names its person; it vouches only for that person's sandbox.
+          (sandbox.userId === undefined ||
+            binding.userId === undefined ||
+            binding.userId === sandbox.userId),
       )
     );
   };
   const agentGatewayReady = async (
-    projectId: string,
+    sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): Promise<boolean> => {
     await agentGatewayBindingProjection;
     return (
-      (await healthyRelayGeneration(projectId, inspected)) &&
-      hasProjectedAgentGatewayBinding(projectId, inspected)
+      (await healthyRelayGeneration(sandbox, inspected)) &&
+      hasProjectedAgentGatewayBinding(sandbox, inspected)
     );
   };
   /**
@@ -2056,7 +2069,10 @@ export async function buildEmbeddedServer(
       const inspected = await docker.inspectContainer(containerName);
       await refreshAgentGatewayCredential();
       await synchronizeAgentGatewayForTurn();
-      return (await agentGatewayReady(project.id, inspected))
+      return (await agentGatewayReady(
+        { projectId: project.id, userId, projectDefault: false },
+        inspected,
+      ))
         ? { ready: true }
         : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
@@ -2097,7 +2113,7 @@ export async function buildEmbeddedServer(
     try {
       const inspected = await docker.inspectContainer(project.containerName);
       await synchronizeAgentGatewayForTurn();
-      return (await agentGatewayReady(project.id, inspected))
+      return (await agentGatewayReady(originalSandbox(project.id), inspected))
         ? { ready: true }
         : { ready: false, failure: { stage: 'still_unready' } };
     } catch (error) {
@@ -2165,8 +2181,19 @@ export async function buildEmbeddedServer(
       // person's own login or none, and the synchronizer withdraws such routes
       // from a gateway that cannot tell people apart (ADR 0023 §3–4).
       try {
-        const inspected = await docker.inspectContainer(project.containerName);
-        if (await healthyRelayGeneration(project.id, inspected)) {
+        // Each binding is checked against its own person's container and relay; the
+        // original container vouches only for the original sandbox's bindings.
+        const defaultUser = await recordedDefaultSandboxUser(eventStore, project.id);
+        const sandbox =
+          binding.userId === undefined || binding.userId === defaultUser
+            ? originalSandbox(project.id)
+            : { projectId: project.id, userId: binding.userId, projectDefault: false };
+        const containerName =
+          sandbox.userId === undefined
+            ? project.containerName
+            : sandboxIdentity(project, sandbox).containerName;
+        const inspected = await docker.inspectContainer(containerName);
+        if (await healthyRelayGeneration(sandbox, inspected)) {
           routed.push(binding);
         }
       } catch (error) {
@@ -2180,6 +2207,7 @@ export async function buildEmbeddedServer(
         const previouslyRouted = agentGatewayBindings.some(
           (routed) =>
             routed.projectId === binding.projectId &&
+            routed.userId === binding.userId &&
             routed.fingerprint256 === binding.fingerprint256,
         );
         if (transient && previouslyRouted) routed.push(binding);
@@ -2358,17 +2386,17 @@ export async function buildEmbeddedServer(
             throw error;
           }
         },
-        sleep: (projectId) => {
+        sleep: (sandbox) => {
           if (projectRelayLifecycle === undefined)
             throw new Error('project relay runtime is not initialized');
-          return projectRelayLifecycle.sleep(projectId);
+          return projectRelayLifecycle.sleep(sandbox);
         },
         reactivate: (binding) => {
           if (projectRelayLifecycle === undefined)
             throw new Error('project relay runtime is not initialized');
           return projectRelayLifecycle.reactivate(binding);
         },
-        stop: (projectId) => projectRelayLifecycle?.stop(projectId) ?? Promise.resolve(),
+        stop: (sandbox) => projectRelayLifecycle?.stop(sandbox) ?? Promise.resolve(),
         brokerUrl: (activation) => `http://${projectRelayContainerName(activation.identity)}:8080`,
         claudeGatewayUrl: (activation) =>
           `https://${projectRelayContainerName(activation.identity)}:8443`,
@@ -2379,9 +2407,9 @@ export async function buildEmbeddedServer(
         // behind the relay, and the generation's relay container still running.
         // A restart empties the first, a relay exit empties the second, and either
         // way the sandbox's baked-in broker hostname or on-disk capability is dead.
-        isHealthy: async ({ projectId, containerGeneration }) => {
-          if (projectRelayLifecycle?.isActive(projectId, containerGeneration) !== true)
-            return false;
+        isHealthy: async ({ sandbox, containerGeneration }) => {
+          if (projectRelayLifecycle?.isActive(sandbox, containerGeneration) !== true) return false;
+          const projectId = sandbox.projectId;
           // No project Docker client → we cannot check the container half; the
           // in-memory half already said yes, so report healthy rather than
           // condemning the sandbox on a check we could not run.
@@ -4187,7 +4215,7 @@ export async function buildEmbeddedServer(
             const container = await docker.inspectContainer(project.containerName);
             if (!container.running) continue;
             inspected += 1;
-            if (await agentGatewayReady(project.id, container)) continue;
+            if (await agentGatewayReady(originalSandbox(project.id), container)) continue;
             const didRepair = await provisioner.repairSandboxForTurn(
               project.id,
               `secret-unlock:${project.id}`,
@@ -5065,7 +5093,7 @@ export async function buildEmbeddedServer(
               let repairFailure: AgentGatewayRepairFailure | undefined;
               try {
                 const inspected = await docker.inspectContainer(sandbox.containerName);
-                gatewayReady = await agentGatewayReady(project.id, inspected);
+                gatewayReady = await agentGatewayReady(sandbox, inspected);
               } catch (error) {
                 app.log.warn(
                   { err: error, projectId: project.id },
@@ -5778,7 +5806,7 @@ export async function buildEmbeddedServer(
       socketOwnerUid: process.getuid?.() ?? 1000,
       relayGid,
       sandboxNetwork: sandboxNetworkName,
-      defaultSandboxUser: (projectId) => projectDefaultSandboxUser(eventStore, projectId),
+      defaultSandboxUser: (projectId) => recordedDefaultSandboxUser(eventStore, projectId),
     });
   }
 

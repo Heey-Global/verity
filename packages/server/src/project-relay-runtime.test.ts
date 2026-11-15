@@ -5,6 +5,7 @@ import type { DockerClient } from './docker.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { ProjectInternalUnixListener } from './internal-listener.js';
 import type { ProjectClaudeUnixListener } from './project-claude-unix-listener.js';
+import { originalSandbox } from './project-relay-lifecycle.js';
 import { createProjectRelayRuntime } from './project-relay-runtime.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 
@@ -88,7 +89,7 @@ describe('project relay runtime composition', () => {
       claudeSocketPath: claude.socketPath,
       codexSocketPath: codex.socketPath,
     });
-    await runtime.stop('p1');
+    await runtime.stop(originalSandbox('p1'));
     expect(closeBroker).toHaveBeenCalledOnce();
     expect(closeClaude).toHaveBeenCalledOnce();
     expect(closeCodex).toHaveBeenCalledOnce();

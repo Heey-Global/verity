@@ -80,9 +80,10 @@ export interface ProjectRelayLifecycleOptions {
     gateway: { host: string; port: number },
   ): Promise<ProjectClaudeUnixListener>;
   startRelay(context: ProjectRelayStartContext): Promise<ProjectRelayRuntime>;
-  /** The person of a project's original sandbox, for callers that name a sandbox
-   *  by its project id alone. */
-  defaultSandboxUser(projectId: string): Promise<string>;
+  /** The person recorded for a project's original sandbox, read without writing:
+   *  `undefined` when none is recorded, in which case no sandbox of the project was
+   *  ever started and nothing person-scoped was issued for it. */
+  defaultSandboxUser(projectId: string): Promise<string | undefined>;
 }
 
 /** One person's sandbox in a project (ADR 0023 §4). */
@@ -92,8 +93,26 @@ export interface ProjectRelaySandbox {
   projectDefault: boolean;
 }
 
-/** A sandbox, or a bare project id naming the project's original sandbox. */
-export type ProjectRelaySandboxRef = string | ProjectRelaySandbox;
+/** A project's original sandbox, named without knowing its person. */
+export interface OriginalSandboxRef {
+  projectId: string;
+  projectDefault: true;
+  userId?: undefined;
+}
+
+/** One person's sandbox, or a project's original sandbox. Never a bare project id:
+ *  a lookup by project id alone always lands on the original sandbox, which is the
+ *  wrong one for every member's own (ADR 0023 §4). */
+export type ProjectRelaySandboxRef = ProjectRelaySandbox | OriginalSandboxRef;
+
+export function originalSandbox(projectId: string): OriginalSandboxRef {
+  return { projectId, projectDefault: true };
+}
+
+/** The key the lifecycle holds a sandbox's relay under. */
+export function relaySandboxKey(ref: ProjectRelaySandboxRef): string {
+  return ref.userId === undefined ? ref.projectId : sandboxKey(ref);
+}
 
 interface ActiveRelay {
   projectId: string;
@@ -150,6 +169,7 @@ export class ProjectRelayLifecycle {
 
   async stop(ref: ProjectRelaySandboxRef): Promise<void> {
     const sandbox = await this.sandboxOf(ref);
+    if (sandbox === undefined) return this.revokeUnrecordedProject(ref.projectId);
     return this.serialize(sandboxKey(sandbox), () => this.stopExclusive(sandbox));
   }
 
@@ -157,18 +177,37 @@ export class ProjectRelayLifecycle {
    * generation container. A later {@link resume} adopts that same container. */
   async sleep(ref: ProjectRelaySandboxRef): Promise<void> {
     const sandbox = await this.sandboxOf(ref);
+    if (sandbox === undefined) return this.revokeUnrecordedProject(ref.projectId);
     return this.serialize(sandboxKey(sandbox), () => this.sleepExclusive(sandbox));
   }
 
-  private async sandboxOf(ref: ProjectRelaySandboxRef): Promise<ProjectRelaySandbox> {
-    if (typeof ref !== 'string') return ref;
-    const known = this.active.get(ref);
+  /** The full sandbox a reference names. The original sandbox's person comes from
+   *  its live relay, else from the store, read-only: stopping a project must never
+   *  record a sandbox for it. `undefined` when the original has no recorded person. */
+  private async sandboxOf(ref: ProjectRelaySandboxRef): Promise<ProjectRelaySandbox | undefined> {
+    if (ref.userId !== undefined) return ref;
+    const known = this.active.get(ref.projectId);
     if (known !== undefined) return known;
-    return {
-      projectId: ref,
-      userId: await this.options.defaultSandboxUser(ref),
-      projectDefault: true,
-    };
+    const userId = await this.options.defaultSandboxUser(ref.projectId);
+    return userId === undefined
+      ? undefined
+      : { projectId: ref.projectId, userId, projectDefault: true };
+  }
+
+  /**
+   * A project without a recorded original sandbox never started one, and a person's
+   * own sandbox only starts after the original is recorded, so whatever authority it
+   * still holds predates per-person sandboxes. Revoking it project-wide takes nothing
+   * from any member, and stays fail-closed if that assumption is ever wrong.
+   */
+  private async revokeUnrecordedProject(projectId: string): Promise<void> {
+    const results = await Promise.all([
+      runCleanup(() => this.options.signingCapabilities.revokeProject(projectId)),
+      runCleanup(() => this.options.githubCapabilities.revokeProject(projectId)),
+    ]);
+    const failures = results.flatMap((result) => (result.ok ? [] : [result.error]));
+    if (failures.length > 0)
+      throw new AggregateError(failures, `project relay teardown failed: ${projectId}`);
   }
 
   /**
@@ -182,7 +221,7 @@ export class ProjectRelayLifecycle {
    * provisions separately, so that can never race into a recreate.
    */
   isActive(ref: ProjectRelaySandboxRef, containerGeneration?: string): boolean {
-    const active = this.active.get(typeof ref === 'string' ? ref : sandboxKey(ref));
+    const active = this.active.get(relaySandboxKey(ref));
     return (
       active !== undefined &&
       (containerGeneration === undefined || active.containerGeneration === containerGeneration)
