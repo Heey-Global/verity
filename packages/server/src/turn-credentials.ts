@@ -20,7 +20,7 @@ import { readFileSync, renameSync, writeFileSync } from 'node:fs';
  * "the project, no person": a route may serve project-default behaviour for it
  * but must never select a personal credential from it.
  */
-export interface TurnCredentialBinding {
+interface TurnCredentialBinding {
   readonly projectId: string;
   readonly sessionId: string;
   readonly turnId: string;

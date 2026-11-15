@@ -110,7 +110,7 @@ export function originalSandbox(projectId: string): OriginalSandboxRef {
 }
 
 /** The key the lifecycle holds a sandbox's relay under. */
-export function relaySandboxKey(ref: ProjectRelaySandboxRef): string {
+function relaySandboxKey(ref: ProjectRelaySandboxRef): string {
   return ref.userId === undefined ? ref.projectId : sandboxKey(ref);
 }
 

@@ -117,7 +117,7 @@ describe('Claude egress mTLS project identity', () => {
     const gateway = await start(accessToken, forward);
 
     await expect(call(gateway.port, PROJECT_ONE)).resolves.toEqual({ status: 200, body: 'ok' });
-    expect(accessToken).toHaveBeenCalledWith('project-1');
+    expect(accessToken).toHaveBeenCalledWith('project-1', expect.anything());
   });
 
   it('reloads the gateway leaf for new handshakes without restarting the listener', async () => {

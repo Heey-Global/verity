@@ -3,7 +3,7 @@ import type { ColumnType } from 'kysely';
 // Tables of people in shared projects (ADR 0023), part of `Database` in schema.ts.
 
 /** Local identity is separate from a paired device and from project access. */
-export interface UsersTable {
+interface UsersTable {
   id: string;
   role: 'administrator' | 'member';
   status: 'active' | 'disabled';
@@ -14,7 +14,7 @@ export interface UsersTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface ProjectMembershipsTable {
+interface ProjectMembershipsTable {
   project_id: string;
   user_id: string;
   can_read: boolean;
@@ -24,7 +24,7 @@ export interface ProjectMembershipsTable {
 }
 
 /** A person's git author identity and commit signing key (ADR 0023 §3). */
-export interface UserGitIdentitiesTable {
+interface UserGitIdentitiesTable {
   user_id: string;
   author_name: string | null;
   author_email: string | null;
@@ -35,7 +35,7 @@ export interface UserGitIdentitiesTable {
 }
 
 /** A person's own authorization of the instance's GitHub App (ADR 0023 §3). */
-export interface UserProviderConnectionsTable {
+interface UserProviderConnectionsTable {
   user_id: string;
   provider: 'claude' | 'codex' | 'opencode';
   /** Encrypted at rest: Claude OAuth credentials, Codex auth.json or an OpenCode key. */
@@ -45,7 +45,7 @@ export interface UserProviderConnectionsTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface UserProjectPreferencesTable {
+interface UserProjectPreferencesTable {
   user_id: string;
   project_id: string;
   default_model: ColumnType<string | null, string | null | undefined, string | null>;
@@ -53,7 +53,7 @@ export interface UserProjectPreferencesTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface ProjectInvitationsTable {
+interface ProjectInvitationsTable {
   id: string;
   project_id: string;
   inviter_user_id: string;
@@ -78,7 +78,7 @@ export interface ProjectInvitationsTable {
 }
 
 /** Core's stored decision on one team join's tunnel (team bootstrap v1). */
-export interface TeamJoinAdmissionsTable {
+interface TeamJoinAdmissionsTable {
   session_id: string;
   /** Uplink's invitation id. */
   invitation_id: string;
@@ -89,7 +89,7 @@ export interface TeamJoinAdmissionsTable {
   expires_at: ColumnType<Date, string | Date, never>;
 }
 
-export interface TeamOutboxTable {
+interface TeamOutboxTable {
   operation_id: string;
   kind: string;
   payload: ColumnType<unknown, string, string>;
@@ -100,14 +100,14 @@ export interface TeamOutboxTable {
   done_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
 }
 
-export interface SessionUserModelsTable {
+interface SessionUserModelsTable {
   session_id: string;
   user_id: string;
   model: string;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface ProjectSandboxesTable {
+interface ProjectSandboxesTable {
   project_id: string;
   user_id: string;
   /** The project's original container, kept under its pre-multi-user names. */
@@ -120,7 +120,7 @@ export interface ProjectSandboxesTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
-export interface UserDopplerConnectionsTable {
+interface UserDopplerConnectionsTable {
   user_id: string;
   project_id: string;
   /** Encrypted at rest. */
@@ -128,7 +128,7 @@ export interface UserDopplerConnectionsTable {
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
 
-export interface UserGithubAuthorizationsTable {
+interface UserGithubAuthorizationsTable {
   user_id: string;
   github_user_id: string;
   login: string;

@@ -39,7 +39,7 @@ export interface ClaudeEgressIdentityStore {
 }
 
 /** One person's sandbox in a project (ADR 0023 §4). */
-export interface EgressSandboxRef {
+interface EgressSandboxRef {
   projectId: string;
   userId: string;
 }

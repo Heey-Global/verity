@@ -52,4 +52,4 @@ export function createDopplerCredentials(sources: DopplerCredentialSources) {
 export type DopplerPerson =
   { readonly sessionId: string; readonly turnId: string } | { readonly userId: string | null };
 
-export type DopplerCredentialFor = ReturnType<typeof createDopplerCredentials>;
+type DopplerCredentialFor = ReturnType<typeof createDopplerCredentials>;

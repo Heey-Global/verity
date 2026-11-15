@@ -22,7 +22,7 @@ export type AgentLogin = z.infer<typeof agentLoginSchema>;
 export const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
 
 /** A project's team (ADR 0023 §1): members and open invitations. */
-export const projectMemberSchema = z.object({
+const projectMemberSchema = z.object({
   userId: z.string(),
   displayName: z.string().nullable(),
   canRead: z.boolean(),
@@ -32,7 +32,7 @@ export const projectMemberSchema = z.object({
   joinedAt: z.string(),
 });
 export type ProjectMember = z.infer<typeof projectMemberSchema>;
-export const projectInvitationSchema = z.object({
+const projectInvitationSchema = z.object({
   id: z.string(),
   inviteeName: z.string(),
   canExecute: z.boolean(),
@@ -68,9 +68,9 @@ const invitationResponseSchema = z.object({
 });
 
 /** A provider account of the signed-in person's own (ADR 0023 §3). */
-export const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
+const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
 export type ProviderConnectionKind = z.infer<typeof providerConnectionKindSchema>;
-export const providerConnectionSchema = z.object({
+const providerConnectionSchema = z.object({
   provider: providerConnectionKindSchema,
   baseUrl: z.string().nullable(),
   models: z.array(z.string()),

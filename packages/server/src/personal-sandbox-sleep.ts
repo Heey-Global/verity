@@ -1,7 +1,7 @@
 import type { EventStore } from '@verity/store';
 
 /** How long a person's own sandbox may sit idle before it is put to sleep. */
-export const PERSONAL_SANDBOX_IDLE_MS = 30 * 60_000;
+const PERSONAL_SANDBOX_IDLE_MS = 30 * 60_000;
 
 export interface PersonalSandboxSleepDeps {
   /** Every person's own sandbox (not a project's original one) that is running. */

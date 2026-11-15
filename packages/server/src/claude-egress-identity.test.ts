@@ -454,7 +454,7 @@ describe('Claude egress identity service', () => {
       material,
     );
     expect(response).toEqual({ status: 200, body: 'ok' });
-    expect(accessToken).toHaveBeenCalledWith('project-1');
+    expect(accessToken).toHaveBeenCalledWith('project-1', expect.anything());
   });
 });
 

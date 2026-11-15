@@ -1,5 +1,6 @@
+// Shared by the provisioner suites: a recording fake Docker client and Git runner, and a
+// ProvisionerImpl with the defaults no test here cares about.
 import { vi } from 'vitest';
-
 import type { ContainerSpec, DockerClient } from './docker.js';
 import {
   ProvisionerImpl,
@@ -7,9 +8,6 @@ import {
   type ProjectRelayControl,
   type ProvisionerOptions,
 } from './provisioner.js';
-
-// Fakes shared by the provisioner suites, so each suite stays a module of its own
-// (docs/adr/0029-module-boundaries-and-file-size.md).
 
 /** Build a fake {@link DockerClient} that records all calls + returns canned
  *  success/id/{inspect} so a provisioner test doesn't hit a real daemon. */

@@ -22,7 +22,7 @@ function randomId(): string {
 }
 
 /** The native tunnel Remote Control uses; a join borrows it for one enrollment. */
-export interface JoinTunnel {
+interface JoinTunnel {
   start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
   stop(): Promise<void>;
 }

@@ -189,4 +189,4 @@ export function createPersonalProviderCredentials(options: {
   };
 }
 
-export type PersonalProviderCredentials = ReturnType<typeof createPersonalProviderCredentials>;
+type PersonalProviderCredentials = ReturnType<typeof createPersonalProviderCredentials>;

@@ -5523,7 +5523,7 @@ export class EventStore implements EventSink {
    *
    * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
    * answers all of them in four queries (tails, rate-limit states, sums,
-   * counters) rather than four per session — four per {@link PROJECTION_ID_CHUNK}
+   * counters) rather than four per session — four per `PROJECTION_ID_CHUNK` (message-projection.ts)
    * sessions, precisely, since the bind-parameter ceiling forces a chunk loop
    * above that many ids. Sessions with an empty log are present in the map with
    * `eventCount: 0` — absent from the map means the session id was not asked for.

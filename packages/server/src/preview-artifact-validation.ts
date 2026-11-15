@@ -3,7 +3,7 @@ import { OPENCODE_KNOWLEDGE_READ_PERMISSION } from './provisioner.js';
 // What a preview may ship as an OpenCode gateway config: checked before the
 // artifact is served, so a share cannot carry another person's provider settings.
 
-export function validModelMetadata(value: object): boolean {
+function validModelMetadata(value: object): boolean {
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     if (key === 'name') {
       if (typeof child !== 'string') return false;
@@ -146,11 +146,11 @@ export function validOpenCodeGatewayConfig(contents: string): boolean {
   }
 }
 
-export function exactKeys(value: object, allowed: readonly string[]): boolean {
+function exactKeys(value: object, allowed: readonly string[]): boolean {
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-export function validKnowledgePermission(value: unknown): boolean {
+function validKnowledgePermission(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const actual = value as Record<string, unknown>;
   return (

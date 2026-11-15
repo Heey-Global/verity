@@ -30,7 +30,7 @@ export class GitHubUserAuthorizationError extends Error {
   }
 }
 
-export interface GitHubUserAuthorizationStatus {
+interface GitHubUserAuthorizationStatus {
   /** Whether the administrator has given Verity the App's OAuth client. */
   configured: boolean;
   connected: boolean;

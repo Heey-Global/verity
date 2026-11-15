@@ -33,9 +33,9 @@ export interface TeamJoinPending {
 
 export const REMOTE_CAPABILITY = 'remote-control-v1';
 export const TEAM_BOOTSTRAP_CAPABILITY = 'team-bootstrap-v1';
-export const MAX_REFUSAL_REASON_CHARS = 200;
+const MAX_REFUSAL_REASON_CHARS = 200;
 /** Hard WebSocket limit on a close reason; `ws` throws above it. */
-export const MAX_CLOSE_REASON_BYTES = 123;
+const MAX_CLOSE_REASON_BYTES = 123;
 
 export function validInstallationHandle(value: unknown): value is string {
   return (
@@ -174,7 +174,7 @@ export function validRemoteSessionTicket(frame: Record<string, unknown>): boolea
   );
 }
 
-export function validRemoteId(value: unknown): boolean {
+function validRemoteId(value: unknown): boolean {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 }
 

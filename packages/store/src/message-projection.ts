@@ -140,7 +140,7 @@ export async function projectMessageEvent(
  * ceiling on purpose: the extra round trips are cheap next to the per-session
  * reads this replaced, and the queries spend parameters on the type filter too.
  */
-export const PROJECTION_ID_CHUNK = 500;
+const PROJECTION_ID_CHUNK = 500;
 
 /** Split `items` into chunks of at most {@link PROJECTION_ID_CHUNK}. */
 export function idChunks<T>(items: readonly T[]): T[][] {

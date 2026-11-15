@@ -21,7 +21,7 @@ function noreplyEmail(account: { githubUserId: string; login: string }): string 
   return `${account.githubUserId}+${account.login}@users.noreply.github.com`;
 }
 
-export class SigningKeyUnavailableError extends Error {
+class SigningKeyUnavailableError extends Error {
   constructor(
     readonly code: 'github_required' | 'locked',
     message: string,

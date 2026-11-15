@@ -55,7 +55,7 @@ export function resolveClaudeEgressPeerProject(
 }
 
 /** Resolve a sandbox (project and person) only from a TLS-authenticated fingerprint. */
-export function resolveClaudeEgressPeerIdentity(
+function resolveClaudeEgressPeerIdentity(
   peer: ClaudeEgressPeerCertificate,
   bindings: ReadonlyMap<string, ClaudeEgressPeerIdentity>,
 ): ClaudeEgressPeerIdentity | undefined {

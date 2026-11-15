@@ -188,7 +188,7 @@ export function accepts(name: SchemaName, value: unknown): boolean {
 }
 
 /** `srv_` + base64url(SHA-256("verity.device-pairing.v1.server-id" NUL identityKey)[0..16]). */
-export function deriveServerId(identityKey: string): string {
+function deriveServerId(identityKey: string): string {
   const digest = createHash('sha256')
     .update(`verity.device-pairing.v1.server-id\0${identityKey}`, 'utf8')
     .digest();

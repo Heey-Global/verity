@@ -15,7 +15,7 @@ const DEFAULT_RECONCILE_INTERVAL_MS = 5_000;
  * sandboxes without a person. Such a gateway ignores the personal section and
  * would serve the administrator's account to every route it is given.
  */
-export function instanceOnlyConfiguration(
+function instanceOnlyConfiguration(
   configuration: AgentGatewayConfiguration,
 ): AgentGatewayConfiguration {
   const instanceUserId = configuration.personal?.instanceUserId;

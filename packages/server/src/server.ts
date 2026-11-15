@@ -1,12 +1,14 @@
+import websocketPlugin, { type WebSocket } from '@fastify/websocket';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyHttpsOptions,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
-import { fetchOpenCodeModels } from './opencode-model-catalog.js';
-import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
-import { registerProjectTeamRoutes } from './project-team-routes.js';
-import { registerTeamJoinRoutes } from './team-join-routes.js';
-import { createMemberRevocation } from './member-revocation.js';
-import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
-import { registerDopplerConnectionRoutes } from './doppler-connection-routes.js';
 import {
   createSessionRepositories,
   removeSessionRepositoryWorkspaces,
@@ -17,10 +19,6 @@ import { registerVulnerabilityFixRoute, buildVulnerabilityFixPrompt } from './vu
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
-import { registerUserProfileRoutes } from './user-profile-routes.js';
-import { registerGitHubUserRoutes } from './github-user-routes.js';
-import { mintPersonalSigningKey, registerGitIdentityRoutes } from './git-identity-routes.js';
-import { createGitHubUserAuthorization } from './github-user-authorization.js';
 import { PreviewConnector } from '@verity/preview-tunnel';
 import { SchedulingPageListeners } from './scheduling-page.js';
 import { registerSchedulingRoutes } from './scheduling-routes.js';
@@ -34,9 +32,7 @@ import {
 import { createSchedulingTool } from './scheduling-tool.js';
 import compressPlugin from '@fastify/compress';
 import rateLimitPlugin from '@fastify/rate-limit';
-import websocketPlugin, { type WebSocket } from '@fastify/websocket';
 import {
-  appendExternalPromptData,
   LIVE_TICKET_PROTOCOL_PREFIX,
   type AgentEvent,
   type AssistantContextProject,
@@ -57,27 +53,11 @@ import type {
   SessionRecord,
   VeritySettingsPatch,
 } from '@verity/store';
-import {
-  isLocalProject,
-  LOCAL_PROJECT_OWNER,
-  measureLatencyPhase,
-  ProjectDefaultModelNotAllowedError,
-  SealedError,
-  type ProjectRecord,
-} from '@verity/store';
-import Fastify, {
-  type FastifyBaseLogger,
-  type FastifyHttpsOptions,
-  type FastifyInstance,
-  type FastifyReply,
-  type FastifyRequest,
-  type FastifyServerOptions,
-} from 'fastify';
+import { measureLatencyPhase, SealedError, type ProjectRecord } from '@verity/store';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { z, ZodError } from 'zod';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
@@ -122,7 +102,6 @@ import {
   DirtyWorktreeError,
   InvalidBranchNameError,
 } from './branches.js';
-import { parseForgejoRepository, parseOwnerRepo } from './canonical.js';
 import {
   createClaudeOAuthTokenProvider,
   createClaudeUsageService,
@@ -130,13 +109,10 @@ import {
 } from './claudeUsage.js';
 import { createCodexUsageService, type CodexUsageHealth } from './codexUsage.js';
 import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
-import { ensureControlPlaneProject } from './control-plane-project.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import { createDocumentWorkspaceProvisioner, isDocumentWorkspace } from './document-workspace.js';
 import { registerDopplerRoutes } from './doppler-routes.js';
-import './fastify-augmentation.js';
 import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
-import type { PullRequestStatus, ReleaseSummary } from './forge-provider.js';
 import { registerGitSignRoute } from './git-sign-route.js';
 import { registerGitHubAppRoutes } from './github-app-routes.js';
 import { registerGitHubManifestRoutes } from './github-manifest-routes.js';
@@ -162,7 +138,6 @@ import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
-import { createLiveMeetingAnalysisQuery } from './live-meeting-analysis-query.js';
 import { meetingKnowledgeExcerpts } from './live-meeting-knowledge.js';
 import { registerLiveMeetingRoutes } from './live-meeting-routes.js';
 import { LiveHub } from './live/live-hub.js';
@@ -181,7 +156,6 @@ import {
 } from './meeting-transcription.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerOnboardingRoutes } from './onboarding-routes.js';
-import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
@@ -197,57 +171,31 @@ import {
   resolveProjectDefaultModel,
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
-import { registerProjectRepositoriesRoutes } from './project-repositories-routes.js';
-import {
-  registerProjectPullRequestRoutes,
-  type SessionPullRequestLink,
-} from './project-pull-requests.js';
-import { registerProjectCollectionRoutes, repositoryCatalog } from './project-collection-routes.js';
-import { registerProjectDetailRoutes } from './project-detail-routes.js';
+import { repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
-import { registerProjectGitHubIssueRoutes } from './project-github-issues.js';
-import { registerProjectGitHubLinkRoute } from './project-github-link-route.js';
 import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   observeProjectActivity,
-  activityReasons,
-  recreateRefusalMessage,
   startProjectIdleSleepScheduler,
   type ProjectActivitySnapshot,
 } from './project-idle-sleep.js';
-import { registerProjectLifecycleRoutes } from './project-lifecycle-routes.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
-import {
-  parseRecreateContainerBody,
-  registerProjectVerityControlRoutes,
-} from './project-verity-control-routes.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import {
-  AmbiguousGitPushError,
-  projectClonePath,
-  ProvisioningError,
-  ProvisioningWarning,
-  type LinkCloneToGitHubResult,
-} from './provisioner.js';
+import { projectClonePath } from './provisioner.js';
 import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { registerPushTokenRoute } from './push-token-route.js';
-import { createQACoordinator } from './qa-coordinator.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
-import { createRepairSupervisor, repairTurnTerminated } from './repair-supervisor.js';
 import { registerRequestLatencyDiagnostics } from './request-latency.js';
 import {
   declaredNonOperatorKeys,
   missingLockoutKeys,
   nonOperatorRequestKey,
 } from './route-scopes.js';
-import { cachedTrustedToolkitIdentity } from './runner-boundary-attestation.js';
-import { SandboxUnavailableError } from './sandbox-git.js';
-import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import type { ServerDeps } from './server-deps.js';
@@ -265,24 +213,31 @@ import {
 } from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
-import { createProjectDeleteRunner } from './project-delete-runner.js';
-import { createPrRepairDispatcher, type PullRequestRepairKind } from './pr-repair-dispatch.js';
+import { createServerLifecycle, type ServerContext } from './server-context.js';
+import { createSessionDeletion } from './server-session-deletion.js';
+import { installProjects } from './server-projects.js';
+import {
+  installPeople,
+  modelAccounts,
+  peopleDirectQueries,
+  personalUsageProbes,
+  sharedProjectPeople,
+} from './server-people.js';
+import { installProjectPullRequests } from './server-project-pull-requests.js';
+import { installSaveToProject } from './server-save-to-project.js';
+import { createPrRepairTurns } from './server-pr-repair.js';
+import { installRepairSupervision } from './server-repair-supervision.js';
 import type {
   ModelList,
   ProjectDeleteOutcome,
-  ProjectSettingsRecord,
-  ProjectToolkitDrift,
   PublicProjectRecord,
-  SandboxRepairVerdicts,
-  SessionArtifactPurgeBudget,
   SessionDetail,
-  SessionSummary,
 } from './server-types.js';
 import { registerServerUpdateRoutes, type ServerUpdateController } from './server-update-routes.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
 import { registerSessionBranchSwitchRoute } from './session-branch-switch-route.js';
 import { registerSessionControlRoutes } from './session-control-routes.js';
-import { preselectModel, registerSessionCreateRoute } from './session-create-route.js';
+import { registerSessionCreateRoute } from './session-create-route.js';
 import {
   createSessionDeletionManager,
   type SessionDeletionPayload,
@@ -300,7 +255,6 @@ import { registerSessionMergeRoutes } from './session-merge-routes.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
-
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionRecoveryRoute } from './session-recovery-route.js';
 import { sessionParams } from './session-route-schemas.js';
@@ -310,10 +264,8 @@ import { registerSessionTurnRoute } from './session-turn-route.js';
 import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
 import { registerSigningKeyRoutes } from './signing-key-routes.js';
 import { permissionEventAwaitsInput } from './status.js';
-
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
-import { isDriftReportable, toolkitDriftEntryOf } from './toolkit-drift.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
 import { startVulnerabilityPush } from './vulnerability-push.js';
 import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
@@ -334,25 +286,18 @@ import {
   isProjectSessionModel,
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
-  NO_UNREPAIRED_SANDBOXES,
   SERVER_VERSION,
   startProjectRelayMigrationScheduler,
   hasVeritySettingsStore,
   veritySettingsStore,
   projectSettingsStore,
-  projectDeleteStore,
   emptyProjectSettings,
   externalMeetingTranscriptionConfigured,
   effectiveExternalTranscription,
   publicVeritySettings,
   isSleepLifecycleState,
   publicProject,
-  isUniqueViolation,
   isControlPlaneProject,
-  recordReleaseSummary,
-  releaseDiffers,
-  projectWithRelease,
-  publicProjectSettings,
   CLAUDE_MODELS,
   CLAUDE_MORE_MODELS,
   DEFAULT_MODEL,
@@ -367,22 +312,13 @@ import {
   rejectedTurnAttachmentsMessage,
   turnBody,
   PROJECT_DELETE_SPAWN_WAIT_MS,
-  SESSION_ARTIFACT_PURGE_TIMEOUT_MS,
-  buildPullRequestCiFailureDisplayPrompt,
-  buildPullRequestCiFailurePrompt,
-  pullRequestCiFailureKey,
-  buildPostMergeActionsFailureDisplayPrompt,
-  buildPostMergeActionsFailurePrompt,
-  postMergeActionsFailureKey,
-  buildPullRequestConflictDisplayPrompt,
-  buildPullRequestConflictPrompt,
-  pullRequestConflictKey,
   makeBranch,
   redactScrollDiagnosticEvent,
   redactScrollDiagnosticData,
   WS_LIVE_PATH,
   BINARY_UPLOAD_ROUTES,
 } from './server-support.js';
+import './fastify-augmentation.js';
 export type { ServerUpdateController } from './server-update-routes.js';
 export { VERITY_CONTROL_SESSION_NAME } from './verity-control-session-route.js';
 
@@ -457,109 +393,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       return undefined;
     return { deviceId: record.deviceId, userId: record.userId, credential: record.credential };
   };
-  // A link keeps its original local identity reserved while the DB row
-  // temporarily carries the GitHub target. This closes the only interval in
-  // which a concurrent local create could steal the slug and block rollback.
-  // Verity has one API writer process; symbols prevent an older request from
-  // releasing a newer request's reservation.
-  const localIdentityLinkReservations = new Map<string, symbol>();
-  const githubTargetLinkReservations = new Map<string, symbol>();
-  /**
-   * Delete a session everywhere it exists, not just in the store.
-   *
-   * Every `deleteSession` in this file goes through here. The store delete removes
-   * the row and cascades to the durable transcript, but the backend's own transcript
-   * file on the runner runtime is nobody's child and used to survive — so a deleted
-   * session's prompts and replies stayed readable on disk indefinitely. The purge
-   * runs FIRST because it needs `session_backend_state` to know which files are the
-   * session's, and the cascade is about to delete exactly that.
-   *
-   * Managed runners persist cleanup ownership through `queueSessionArtifacts` before
-   * the cascade, then wake a background worker after deletion. That durable write must
-   * succeed; supervisor calls and filesystem purges never run in the request.
-   *
-   * A purge failure never blocks the delete: leaving the row behind because a file
-   * could not be unlinked would strand the session in the UI, which is strictly
-   * worse than the leak it is trying to prevent. A purge that neither succeeds nor
-   * fails is bounded for the same reason — see `SESSION_ARTIFACT_PURGE_TIMEOUT_MS`.
-   *
-   * `budget` shares one such bound across a run of deletes. Per call it would be a
-   * per-call bound, and a project with fifty sessions on a wedged volume would spend
-   * fifty times ten seconds inside one request — the stall the bound exists to prevent,
-   * arrived at by arithmetic.
-   */
-  const deleteSessionEverywhereUnqueued = async (
-    sessionId: string,
-    budget?: SessionArtifactPurgeBudget,
-  ): Promise<boolean> => {
-    const session = await deps.eventStore.getSession(sessionId);
-    const release = session?.projectId
-      ? await deps.localPreviewManager?.beginSessionMove(session.projectId)
-      : undefined;
-    try {
-      // Processes started for this session must not outlive its worktree.
-      try {
-        await deps.managedDevServerManager?.stopSession(sessionId);
-      } catch (error) {
-        // The delete goes on; the orphan sweep stops tagged processes left behind.
-        app.log.warn({ err: error, sessionId }, 'verity: could not stop managed dev servers');
-      }
-      await deps.localPreviewManager?.stopSession(sessionId);
-      await deps.queueSessionArtifacts?.(sessionId);
-      // `.catch()` alone would only cover a REJECTED promise; an implementation that
-      // throws before returning one would escape and fail the delete — the outcome the
-      // paragraph above says must never happen. try/catch covers both.
-      try {
-        const purge = deps.purgeSessionArtifacts?.(sessionId);
-        // `Promise.race` attaches its own handler to `purge` immediately, so a purge
-        // that rejects after the timer won is already handled, not an unhandled
-        // rejection. The timer is unref'd: losing the race must not hold the process.
-        if (purge !== undefined) {
-          const allowance = budget?.remainingMs ?? SESSION_ARTIFACT_PURGE_TIMEOUT_MS;
-          const startedAt = Date.now();
-          await Promise.race([purge, sleep(allowance, undefined, { ref: false })]);
-          // Only time spent WAITING is charged, so a healthy volume — where each purge
-          // returns in milliseconds — never runs the budget down and every session in the
-          // loop gets its transcripts removed. It is a wedged volume the budget is for.
-          if (budget !== undefined) {
-            budget.remainingMs = Math.max(0, budget.remainingMs - (Date.now() - startedAt));
-          }
-        }
-      } catch {
-        // Logged by the implementation; never fatal here.
-      }
-      const deleted = await deps.eventStore.deleteSession(sessionId);
-      if (deleted) deps.scheduleSessionCleanup?.();
-      return deleted;
-    } finally {
-      release?.();
-    }
-  };
-  // The preview fence is project-wide, even when deleting different sessions.
-  // Optimistic clients can send the next delete before the first cleanup settles.
-  const projectSessionDeletes = new Map<string, Promise<void>>();
-  const deleteSessionEverywhere = async (
-    sessionId: string,
-    budget?: SessionArtifactPurgeBudget,
-  ): Promise<boolean> => {
-    const session = await deps.eventStore.getSession(sessionId);
-    const projectId = session?.projectId;
-    if (!projectId || !deps.localPreviewManager)
-      return deleteSessionEverywhereUnqueued(sessionId, budget);
-    const previous = projectSessionDeletes.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    projectSessionDeletes.set(projectId, current);
-    await previous;
-    try {
-      return await deleteSessionEverywhereUnqueued(sessionId, budget);
-    } finally {
-      release();
-      if (projectSessionDeletes.get(projectId) === current) projectSessionDeletes.delete(projectId);
-    }
-  };
   // Search projection is an eventually-consistent read model. Start/resume its
   // bounded backfill independently of requests; live event appends schedule it too.
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
@@ -619,6 +452,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         } satisfies FastifyHttpsOptions<HttpsServer>);
   if (deps.logger) registerRequestLatencyDiagnostics(app);
   app.decorateRequest('localUserId', null);
+  const lifecycle = createServerLifecycle(app);
   // Derives the auth gate's pre-auth exception set from the routes this instance
   // actually registers; the gate that consumes it is far below, next to the rest
   // of the auth logic. It is attached HERE, in the same statement group as the
@@ -892,13 +726,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return session ? describePushSession(session) : {};
   };
   const resources = new ResourceObserver();
-  app.addHook('onClose', () => resources.close());
+  lifecycle.onClose(() => resources.close());
   const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
     deps.bus,
     deps.eventStore,
     app.log,
   );
-  app.addHook('onClose', () => unsubscribeAgentProcessLogging());
+  lifecycle.onClose(() => unsubscribeAgentProcessLogging());
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&
@@ -973,10 +807,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       topics: change === 'name' ? ['session'] : ['activity', 'status'],
     });
   });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     unsubscribeSessionChanges?.();
     liveHub.close();
   });
+  const ctx: ServerContext = {
+    app,
+    deps,
+    lifecycle,
+    conductor,
+    liveHub,
+    resources,
+    pushSender,
+    projectsBeingDeleted,
+    sessionsBeingReaped,
+    deleteSession: createSessionDeletion({ app, deps }),
+  };
   const deletedSessionProjects = new WeakMap<object, string | null>();
   app.addHook('preHandler', async (request) => {
     if (request.method !== 'DELETE' || request.routeOptions.url !== '/sessions/:id') return;
@@ -1031,7 +877,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
           logger: app.log,
           ...(deps.pushEscalationMs === undefined ? {} : { escalationMs: deps.pushEscalationMs }),
         });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     pushRouter?.close();
   });
   const pushFirePoints: PushFirePoints | undefined =
@@ -1128,7 +974,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       log: app.log,
     });
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     await schedulingScheduler?.stop();
     schedulingService.close();
     await schedulingPages.close();
@@ -1174,12 +1020,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     liveHub.revokeDevice(deviceId);
   });
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     detachStreamRevocation?.();
-    done();
   });
 
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     unsubscribePushFirePoints?.();
     // Awaited, and before the sender it pushes through: a check still in flight
     // would otherwise resolve the channel and send into a closing PushSender.
@@ -1195,7 +1040,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // like `recover` below: a conductor implementation (or test double) without
   // the method is simply skipped, and returning the promise lets Fastify await
   // the drain before teardown continues.
-  app.addHook('onClose', () =>
+  lifecycle.onClose(() =>
     (conductor as { drainOnShutdown?: () => Promise<void> }).drainOnShutdown?.(),
   );
 
@@ -1349,7 +1194,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     run: (automation) => automationExecutor.run(automation),
     log: app.log,
   });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     automationScheduler.stop();
   });
 
@@ -1448,7 +1293,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       void vulnerabilitySessions.rebuild();
     },
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     vulnerabilityScheduler.stop();
     unsubscribeVulnerabilityTurns();
     await vulnerabilitySessions.stop();
@@ -1484,7 +1329,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     app.log,
     projectActivity,
   );
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     stopProjectRelayMigrationScheduler();
   });
   const idleSleepScheduler =
@@ -1520,7 +1365,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   deps.projectSandboxLifecycleTelemetry?.attachSink((event) => {
     app.log.info(event, 'project Sandbox lifecycle transition');
   });
-  app.addHook('onClose', () => idleSleepScheduler?.stop());
+  lifecycle.onClose(() => idleSleepScheduler?.stop());
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
@@ -1548,150 +1393,20 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         );
       },
     });
-  app.addHook('onClose', () => {
+  lifecycle.onClose(() => {
     agentLogin.close();
   });
-  // The self-repair turns Verity dispatches from a session's own PR status. Each one
-  // re-reads the PR right before dispatching (the state may have moved while the
-  // session was busy) and dedupes durably per head commit, so a poll running every
-  // couple of seconds still produces at most one turn per pushed state.
-  const CI_FAILURE_REPAIR: PullRequestRepairKind = {
-    id: 'ci-failure',
-    applies: (pr) => pr.phase === 'open' && pr.pipeline === 'failure' && pr.checks.failed > 0,
-    key: pullRequestCiFailureKey,
-    prompt: buildPullRequestCiFailurePrompt,
-    displayPrompt: buildPullRequestCiFailureDisplayPrompt,
-  };
-  const MERGE_CONFLICT_REPAIR: PullRequestRepairKind = {
-    id: 'merge-conflict',
-    applies: (pr) => pr.phase === 'open' && pr.mergeState === 'dirty',
-    key: pullRequestConflictKey,
-    prompt: buildPullRequestConflictPrompt,
-    displayPrompt: buildPullRequestConflictDisplayPrompt,
-  };
-  const POST_MERGE_ACTIONS_FAILURE_REVIEW: PullRequestRepairKind = {
-    id: 'post-merge-actions-failure',
-    applies: (pr) => pr.phase === 'merged' && pr.pipeline === 'failure' && pr.checks.failed > 0,
-    key: postMergeActionsFailureKey,
-    prompt: buildPostMergeActionsFailurePrompt,
-    displayPrompt: buildPostMergeActionsFailureDisplayPrompt,
-  };
-  // Repair turns name the code host the agent has to act on; a Forgejo PR
-  // described as a GitHub one sends the agent to the wrong tools.
-  const codeHostName = async (session: SessionRecord): Promise<string> => {
-    if (session.projectId === null) return 'GitHub';
-    const project = await deps.eventStore.getProject(session.projectId).catch(() => undefined);
-    return project?.kind === 'forgejo' ? 'Forgejo' : 'GitHub';
-  };
-  const scheduledPrRepairTurns = new Set<string>();
-  const preparingRepairDispatches = new Set<string>();
-  const repairTerminated = async (sessionId: string, dispatchId: string) => {
-    const receipt = await deps.eventStore.repairs.dispatchReceipt(dispatchId);
-    const boundary =
-      receipt?.prompt_seq == null
-        ? await deps.eventStore.repairs.attemptBoundary(dispatchId)
-        : Number(receipt.prompt_seq);
-    if (boundary === undefined || receipt?.state === 'reserved') return false;
-    const latest = await deps.eventStore.latestSessionTurnControlEvent(sessionId, boundary);
-    return repairTurnTerminated(latest ? [latest] : []);
-  };
-  const reconcileSessionRepairs = async (projectId: string) => {
-    for (const incident of await deps.eventStore.repairs.incidents(projectId)) {
-      if (
-        !incident.dispatch_id ||
-        !incident.owner_session_id ||
-        conductor.isBusy(incident.owner_session_id)
-      )
-        continue;
-      if (preparingRepairDispatches.has(incident.dispatch_id)) continue;
-      const sessionMarker = await deps.eventStore.repairs.sessionAutomationMarker(
-        incident.dispatch_id,
-      );
-      // Recover pre-existing QA PR claims even with QA disabled. Workflow workers
-      // still need the supervisor's repair-PR / awaiting-merge handoff.
-      if (
-        !sessionMarker &&
-        !(incident.resource.startsWith('pr:') && incident.originating_session_id)
-      )
-        continue;
-      if (
-        sessionMarker &&
-        (await deps.eventStore.repairs.cancelReservedDispatch(incident.dispatch_id))
-      )
-        continue;
-      if (await repairTerminated(incident.owner_session_id, incident.dispatch_id))
-        await deps.eventStore.repairs.finishAttempt(
-          incident.id,
-          incident.dispatch_id,
-          'verifying',
-          incident.evidence,
-        );
-    }
-  };
-  const maybeDispatchPrRepairTurn = createPrRepairDispatcher({
-    deps,
-    app,
-    conductor,
-    canExecuteAs,
-    codeHostName,
-    preparingRepairDispatches,
+  // `sessionPrStatus` comes from the session overview further down, which itself
+  // takes `maybeDispatchPrRepairTurns`, so the repair turns read it lazily.
+  const {
     reconcileSessionRepairs,
-    scheduledPrRepairTurns,
-    sessionsBeingReaped,
+    maybeDispatchPrRepairTurns,
+    repairTerminated,
+    preparingRepairDispatches,
+  } = createPrRepairTurns(ctx, {
+    canExecuteAs,
     sessionPrStatus: (session) => sessionPrStatus(session),
   });
-  /** Dispatch the ONE repair turn a PR's state calls for. A conflicted PR takes
-   * precedence over failing CI: GitHub builds no merge ref for it, so its checks are
-   * either absent or stale, and asking the session to chase them before the branch
-   * merges cleanly again sends it after the wrong problem. */
-  const maybeDispatchPrRepairTurns = async (
-    session: SessionRecord,
-    pr: PullRequestStatus | null | undefined,
-  ): Promise<void> => {
-    if (pr === null || pr === undefined) return;
-    if (session.projectId !== null) {
-      const resource = `pr:${pr.number}`;
-      if (pr.phase === 'open') {
-        await deps.eventStore.repairs.registerSessionOrigin(
-          session.projectId,
-          resource,
-          session.sessionId,
-        );
-        if (pr.headSha && pr.pipeline !== 'unknown')
-          await deps.eventStore.repairs.supersede(session.projectId, resource, pr.headSha);
-        if (
-          pr.headSha &&
-          pr.pipeline === 'success' &&
-          !MERGE_CONFLICT_REPAIR.applies(pr) &&
-          pr.checks.total > 0 &&
-          pr.checks.pending === 0 &&
-          pr.checks.failed === 0 &&
-          pr.checks.successful === pr.checks.total &&
-          (await deps.eventStore.repairs.incidents(session.projectId)).some(
-            (i) => i.resource === resource,
-          )
-        ) {
-          await reconcileSessionRepairs(session.projectId);
-          const incident = await deps.eventStore.repairs.observe(
-            session.projectId,
-            resource,
-            pr.headSha,
-            JSON.stringify({ observedAt: new Date().toISOString(), status: pr }),
-          );
-          await deps.eventStore.repairs.resolve(incident.id, pr.headSha);
-        }
-      } else await deps.eventStore.repairs.retireResource(session.projectId, resource);
-    }
-    if (MERGE_CONFLICT_REPAIR.applies(pr)) {
-      await maybeDispatchPrRepairTurn(session, pr, MERGE_CONFLICT_REPAIR);
-      return;
-    }
-    if (POST_MERGE_ACTIONS_FAILURE_REVIEW.applies(pr)) {
-      await maybeDispatchPrRepairTurn(session, pr, POST_MERGE_ACTIONS_FAILURE_REVIEW);
-      return;
-    }
-    await maybeDispatchPrRepairTurn(session, pr, CI_FAILURE_REPAIR);
-  };
   // Rebuild the conductor's in-memory queues from the durable backlog before serving
   // (issue #80), so turns queued before a restart resume rather than being lost.
   // If the deployment manages encrypted secrets, recovery must wait until unlock:
@@ -1963,9 +1678,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     return reply.code(401).send({ error: 'unauthorized' });
   });
 
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.authRegistry?.dispose?.();
-    done();
   });
 
   // Record activity after the response, outside the authorization hook. `touch`
@@ -1995,7 +1709,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   if (deps.backup) {
-    app.addHook('onClose', () => deps.backup!.close());
+    lifecycle.onClose(() => deps.backup!.close());
     deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
     app.addHook('onReady', (done) => {
       deps.backup!.service?.start();
@@ -2066,9 +1780,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deps.returnPathActivation!.stop();
     return deps.returnPathActivation!.status();
   });
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.returnPathActivation?.dispose();
-    done();
   });
   const recordingRequest = async (
     request: FastifyRequest,
@@ -2152,9 +1865,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ),
     ),
   );
-  app.addHook('onClose', (_instance, done) => {
+  lifecycle.onClose(() => {
     deps.coordinatedRecording?.dispose();
-    done();
   });
   app.get('/api/remote-control/descriptor', async (request, reply) => {
     // This route is only for an authenticated paired device. Headless deployments
@@ -2371,34 +2083,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   // Both probes are cached, backed off and never throw. An unconfigured provider
   // simply contributes nothing.
-  // Each person sees the quota of their own accounts; the instance probes are the
-  // administrator's. One probe pair per person, kept for the server's lifetime.
-  const personalUsage = new Map<
-    string,
-    { claudeUsage: typeof claudeUsage; codexUsage: typeof codexUsage }
-  >();
   registerProviderLimitsRoute(app, {
     claudeUsage,
     codexUsage,
-    probesFor: (viewer) => {
-      if (viewer === legacyAdministratorId) return undefined;
-      const known = personalUsage.get(viewer);
-      if (known !== undefined) return known;
-      const probes = {
-        claudeUsage: createClaudeUsageService({
-          log: app.log,
-          tokenProvider: () =>
-            deps.personalClaudeAccessToken?.(viewer).catch(() => undefined) ??
-            Promise.resolve(undefined),
-        }),
-        codexUsage: createCodexUsageService({
-          log: app.log,
-          credentialProvider: deps.codexGatewayCredentialFor?.(viewer),
-        }),
-      };
-      personalUsage.set(viewer, probes);
-      return probes;
-    },
+    // Each person sees the quota of their own accounts.
+    probesFor: personalUsageProbes(ctx),
   });
 
   // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
@@ -2609,56 +2298,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     });
   }
   registerUserContextRoutes(app, deps.eventStore.userContext);
-  registerUserProfileRoutes(app, deps.eventStore.userProfiles);
-  const gitIdentityDeps = {
-    store: deps.eventStore,
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
-  };
-  registerGitIdentityRoutes(app, gitIdentityDeps);
-  registerProviderConnectionRoutes(app, {
-    store: deps.eventStore,
-    agentLogin,
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
-    persist: persistPersonal,
-  });
-  const revokeMember = createMemberRevocation({
-    store: deps.eventStore,
-    dequeue: (sessionId, id) => conductor.dequeue(sessionId, id),
-    cancelTurn: (sessionId) => conductor.cancelTurn(sessionId),
-    sleepSandbox: deps.provisioner?.sleepPersonalSandbox?.bind(deps.provisioner),
-    stopDevServers: (projectId, userId) =>
-      deps.managedDevServerManager?.stopForPerson(projectId, userId) ?? Promise.resolve(),
-    onError: (step, error) =>
-      app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
-  });
-  registerTeamJoinRoutes(app, { store: deps.eventStore, authRegistry: deps.authRegistry });
-  registerProjectTeamRoutes(app, {
-    store: deps.eventStore,
-    projectName: async (projectId) =>
-      (await deps.eventStore.getProject(projectId))?.name ?? undefined,
-    ...(deps.teamLinkIdentity === undefined ? {} : { linkIdentity: deps.teamLinkIdentity }),
-    onMemberRemoved: async (projectId, userId) => {
-      await revokeMember(projectId, userId);
-      await deps.onMemberRemoved?.(projectId, userId);
-    },
-  });
-  registerDopplerConnectionRoutes(app, {
-    store: deps.eventStore,
-    listNames: (input) => listDopplerProjectSecretNames(input),
-  });
-  registerGitHubUserRoutes(app, {
-    authorization:
-      deps.githubUserAuthorization ?? createGitHubUserAuthorization({ store: deps.eventStore }),
-    store: deps.eventStore,
-    // Connecting GitHub is when a person's commits can first become verified:
-    // give them a signing key of their own unless they already have one.
-    onConnected: async (userId) => {
-      if ((await deps.eventStore.userGitIdentities.publicIdentity(userId)).hasSigningKey) return;
-      await mintPersonalSigningKey(gitIdentityDeps, userId);
-    },
-  });
+  installPeople(ctx, { agentLogin, persistPersonal });
   if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined
@@ -2791,329 +2431,17 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.previewShareManager ? { manager: deps.previewShareManager } : {}),
   });
 
-  const resolveProjectRelease = async (
-    project: ProjectRecord,
-    opts?: { awaitRefresh?: boolean },
-  ): Promise<{ project: ProjectRecord; release: ReleaseSummary | null }> => {
-    // Neither the control-plane workspace nor a project without a GitHub
-    // repository has releases to look up; both would just mint tokens and 404.
-    if (isControlPlaneProject(project) || isLocalProject(project) || project.kind === 'forgejo') {
-      return { project, release: null };
-    }
-    // Trigger the in-memory release refresh + read its freshest SETTLED value.
-    // Tristate (see GitHubReleaseService): `undefined` = unknown (cold cache /
-    // no token) → keep the persisted value and don't write; `null` = confirmed
-    // no release → clear a stale persisted tag; a summary = the latest release.
-    // Persist only on an actual change, so a polled overview/detail isn't a write
-    // storm, and a release deleted on GitHub is cleared rather than pinned.
-    let fresh: ReleaseSummary | null | undefined;
-    if (opts?.awaitRefresh === true && deps.refreshLatestRelease !== undefined) {
-      fresh = await measureLatencyPhase('project_release_refresh', () =>
-        deps.refreshLatestRelease!(project.owner, project.repo),
-      );
-    } else {
-      fresh = deps.latestRelease?.(project.owner, project.repo);
-      // If the nonblocking cache is unknown, await one refresh. This is what
-      // lets DB-backed GitHub-App deployments (no PAT/gh-token) populate release
-      // badges from the project overview instead of staying permanently blank.
-      if (fresh === undefined && deps.refreshLatestRelease !== undefined) {
-        fresh = await measureLatencyPhase('project_release_refresh', () =>
-          deps.refreshLatestRelease!(project.owner, project.repo),
-        );
-      }
-    }
-    if (fresh !== undefined && releaseDiffers(project, fresh)) {
-      await measureLatencyPhase('project_release_persist', () =>
-        deps.eventStore.updateProjectReleaseStatus(project.id, {
-          tag: fresh?.tag ?? null,
-          name: fresh?.name ?? null,
-          url: fresh?.url ?? null,
-          publishedAt: fresh?.publishedAt ?? null,
-        }),
-      );
-    }
-    // A cold/unknown lookup (undefined) falls back to the persisted value so
-    // the badge never blanks out right after a restart.
-    const release = fresh !== undefined ? fresh : recordReleaseSummary(project);
-    return {
-      project: fresh !== undefined ? projectWithRelease(project, fresh) : project,
-      release,
-    };
-  };
-
-  /**
-   * This Server's own toolkit identity — the right-hand side of every drift
-   * comparison in one response.
-   *
-   * Resolved once per response and passed down rather than looked up per
-   * project. A successful read is cached process-wide, so on the happy path the
-   * difference is nil; a failing one is not cached (a transient I/O fault must
-   * not freeze into a permanently poisoned answer), and per-project resolution
-   * would turn one broken mount into one filesystem retry per project on every
-   * overview poll.
-   *
-   * A failure to read the bundle is a broken deployment, not a reason to fail
-   * the project list: it degrades to `undefined`, which `toolkitDriftEntryOf`
-   * turns into `unknown` — "cannot be compared", the one verdict that is still
-   * true when the comparison is unavailable — and the wire then carries no
-   * verdict at all. Reporting it as `matches` would be the exact false
-   * all-clear the drift report exists to remove.
-   *
-   * But degrading quietly would be its own version of that: every project would
-   * lose its drift verdict with nothing anywhere saying why, and the packaging or mount
-   * fault behind it would be invisible. So it is logged — deduplicated while the
-   * fault persists, and re-armed by the first read that succeeds, so a Server
-   * polled once a second does not bury the finding in its own noise.
-   */
-  let toolkitIdentityFailureLogged = false;
-  const serverToolkitIdentity = async (): Promise<string | undefined> =>
-    (deps.toolkitIdentity ?? cachedTrustedToolkitIdentity)().then(
-      (identity) => {
-        toolkitIdentityFailureLogged = false;
-        return identity;
-      },
-      (error: unknown) => {
-        if (!toolkitIdentityFailureLogged) {
-          toolkitIdentityFailureLogged = true;
-          app.log.error(
-            { err: error },
-            'verity: cannot read the bundled sandbox toolkit — no project can be checked for drift until this is fixed',
-          );
-        }
-        return undefined;
-      },
-    );
-
-  /**
-   * This project's toolkit drift verdict, or `null` when the report declines to
-   * judge the row at all or can reach no verdict (`unknown`).
-   *
-   * Pure: it compares the project's recorded `toolkitIdentity` against the
-   * identity the caller already resolved, so it costs no Docker call and no
-   * disk read.
-   */
-  const projectToolkitDrift = (
-    project: ProjectRecord,
-    current: string | undefined,
-  ): ProjectToolkitDrift | null => {
-    if (!isDriftReportable(project)) return null;
-    const { verdict, carrier } = toolkitDriftEntryOf(current, project);
-    // Base-image projects are never attested, so `unknown` is their permanent
-    // state, and a failed attestation already surfaces as a provision warning.
-    // Shown, it would be a banner that is always on and nothing clears.
-    if (verdict === 'unknown') return null;
-    return { verdict, carrier };
-  };
-
-  /**
-   * Qualify an update status with whether Verity's own repair is still working on it.
-   *
-   * The checker compares images and knows nothing about the reconciler, so it
-   * always reports `converging`. Only the provisioner knows which projects the
-   * automatic repair has given up on or will never pick up, and only that
-   * distinction makes `state: 'available'` worth showing. A Server restart resumes
-   * the existing Sandbox generation and queues its stale image until the project is
-   * idle, so that waiting period is genuinely an in-flight automatic repair. Optional throughout —
-   * a deployment whose provisioner does not reconcile (tests, non-relay setups)
-   * keeps `converging`.
-   *
-   * Normally applied only to an `available` status. The deliberate exception is
-   * a failed project the provisioner itself still owes a repair: its recreate may
-   * already have removed the old container, so the image checker honestly says
-   * `unknown` while the reconciler can still say, independently, that rebuilding
-   * has stalled. Other unknowns (custom image, registry failure) remain unknown
-   * and converging rather than acquiring a verdict nobody established.
-   */
-  const withSelfRepair = (
-    project: ProjectRecord,
-    status: SandboxUpdateStatus,
-    verdicts: SandboxRepairVerdicts,
-  ): SandboxUpdateStatus => {
-    // Reported together, because they answer the same question — is this gap
-    // closing on its own? — from the two sides the reconciler can be on. A
-    // turn-blocked sandbox also reads `stalled` so that a client which knows
-    // nothing of `turnBlocked` still surfaces it rather than showing the
-    // reassuring spinner forever; one that does know reads the flag and names the
-    // remedy. `available` only: a blocked update the checker cannot even see is
-    // not something to report a turn about.
-    const blocked = status.state === 'available' && verdicts.turnBlocked.has(project.id);
-    const unrepaired =
-      verdicts.unrepaired.has(project.id) &&
-      (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'));
-    // One expression for both reasons, deliberately: they set the SAME two fields,
-    // and split branches drifting apart is how a sandbox ends up reported as
-    // blocked without the `stalled` that older clients read.
-    // Carried with its time whatever the verdict: while a retry waits or builds,
-    // the status is `converging` and the failure is plainly an earlier one.
-    const failure = status.state === 'current' ? undefined : verdicts.lastFailures?.get(project.id);
-    const withFailure =
-      failure === undefined
-        ? status
-        : {
-            ...status,
-            lastRepairFailure: { at: new Date(failure.at).toISOString(), message: failure.message },
-          };
-    if (!unrepaired && !blocked) return withFailure;
-    return {
-      ...withFailure,
-      selfRepair: 'stalled',
-      turnBlocked: blocked,
-      blockedBy: blocked ? [...(verdicts.blockers?.get(project.id) ?? [])] : [],
-    };
-  };
-  const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
-    unrepaired: deps.provisioner?.unrepairedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
-    turnBlocked: deps.provisioner?.turnBlockedSandboxes?.() ?? NO_UNREPAIRED_SANDBOXES,
-    ...(deps.provisioner?.sandboxUpdateBlockers
-      ? { blockers: deps.provisioner.sandboxUpdateBlockers() }
-      : {}),
-    ...(deps.provisioner?.sandboxRepairLastFailures
-      ? { lastFailures: deps.provisioner.sandboxRepairLastFailures() }
-      : {}),
-  });
-
-  // Read marks and dismissed Home items of the person asking; a session they
-  // never touched is unread-neutral and hides nothing.
-  const sessionsAsSeenBy = async (
-    viewer: string,
-    summaries: SessionSummary[],
-  ): Promise<SessionSummary[]> => {
-    const views = await deps.eventStore.viewState.sessionViews(viewer);
-    return summaries.map((summary) => {
-      const view = views.get(summary.sessionId);
-      return {
-        ...summary,
-        lastSeenEventCount: view?.lastSeenEventCount ?? null,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
-  };
-  // Fold state and dismissed Home items belong to the person asking, never to the
-  // project row, so one member folding a group leaves everyone else's open.
-  const projectsAsSeenBy = async (
-    viewer: string,
-    projects: PublicProjectRecord[],
-  ): Promise<PublicProjectRecord[]> => {
-    const views = await deps.eventStore.viewState.projectViews(viewer);
-    return projects.map((project) => {
-      const view = views.get(project.id);
-      return {
-        ...project,
-        collapsed: view?.collapsed ?? false,
-        inboxDismissed: view?.inboxDismissed ?? [],
-      };
-    });
-  };
-  const publicProjects = async (projects: ProjectRecord[]): Promise<PublicProjectRecord[]> => {
-    const toolkit = await measureLatencyPhase('project_toolkit', serverToolkitIdentity);
-    const resolved = await measureLatencyPhase('project_releases', () =>
-      Promise.all(projects.map((project) => resolveProjectRelease(project))),
-    );
-    // One update check for the whole page. Per project this used to re-resolve
-    // the default image, its labels and its registry version — the same answer
-    // every time — so a ten-project overview poll walked ghcr.io ten times over,
-    // and the poll runs several times a minute per client.
-    const sandboxUpdates =
-      (await measureLatencyPhase('project_sandbox_updates', async () =>
-        deps.sandboxUpdates?.statusAll(
-          resolved
-            .map(({ project }) => project)
-            .filter((project) => !isControlPlaneProject(project)),
-        ),
-      )) ?? new Map<string, SandboxUpdateStatus>();
-    const verdicts = sandboxRepairVerdicts();
-    return resolved.map(({ project, release }) =>
-      presentProject(
-        project,
-        release,
-        isControlPlaneProject(project)
-          ? UNKNOWN_SANDBOX_UPDATE
-          : withSelfRepair(
-              project,
-              sandboxUpdates.get(project.id) ?? UNKNOWN_SANDBOX_UPDATE,
-              verdicts,
-            ),
-        projectToolkitDrift(project, toolkit),
-      ),
-    );
-  };
-  const advancedModeEnabled = async (): Promise<boolean> =>
-    (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw())?.advancedModeEnabled ===
-    true;
-
-  const ensureVerityControlProject = async (): Promise<ProjectRecord> => {
-    return ensureControlPlaneProject(deps.eventStore);
-  };
-
-  const projectsForOverview = async (projects: ProjectRecord[]): Promise<ProjectRecord[]> => {
-    const withoutControl = projects.filter((project) => !isControlPlaneProject(project));
-    if (!(await measureLatencyPhase('project_settings', advancedModeEnabled)))
-      return withoutControl;
-    return [
-      await measureLatencyPhase('project_control', ensureVerityControlProject),
-      ...withoutControl,
-    ];
-  };
-
-  const appearsInProjectOverview = (project: ProjectRecord): boolean =>
-    project.state !== 'absent' || project.overviewVisible === true;
-
-  registerProjectGitHubIssueRoutes(app, {
-    store: deps.eventStore,
-    list: deps.listProjectGitHubIssues,
-  });
-  registerProjectRepositoriesRoutes(app, {
-    store: deps.eventStore,
-    repositoryFor: deps.projectRepository,
-  });
-  registerProjectCollectionRoutes(app, {
-    store: deps.eventStore,
-    listOverview: async (userId, viewer) => {
-      const projects = await measureLatencyPhase('project_list', () =>
-        deps.listProjects ? deps.listProjects() : deps.eventStore.listProjects(),
-      );
-      const readableIds =
-        userId === null
-          ? null
-          : new Set(
-              await measureLatencyPhase('project_permissions', () =>
-                deps.eventStore.listReadableProjectIds(userId),
-              ),
-            );
-      return measureLatencyPhase('project_overview', async () =>
-        projectsAsSeenBy(
-          viewer,
-          await publicProjects(
-            await projectsForOverview(
-              projects.filter(
-                (project) =>
-                  appearsInProjectOverview(project) &&
-                  (readableIds === null || readableIds.has(project.id)),
-              ),
-            ),
-          ),
-        ),
-      );
-    },
-    reorder: async (ids, viewer) => {
-      const reordered = await deps.eventStore.reorderProjects(ids);
-      deps.invalidateProjectList?.();
-      return projectsAsSeenBy(
-        viewer,
-        await publicProjects(await projectsForOverview(reordered.filter(appearsInProjectOverview))),
-      );
-    },
-    forgejoEnabled: deps.forgejoEnabled === true,
-    listAvailableRepositories: async () =>
-      deps.listAvailableRepositories
-        ? deps.listAvailableRepositories()
-        : deps.listProjects
-          ? deps.listProjects()
-          : deps.eventStore.listProjects({ includeHidden: true }),
-    presentRepositories: publicProjects,
-    localIdentityReservations: localIdentityLinkReservations,
-    githubTargetReservations: githubTargetLinkReservations,
-    isUniqueViolation,
+  const { advancedModeEnabled, ensureVerityControlProject } = installProjects(app, ctx, {
+    presentProject,
+    projectActivity,
+    hasMeetingJob,
+    summarizeSessions,
+    projectsBeingDeleted,
+    sessionsBeingReaped,
+    projectDeletesInFlight,
+    settleProjectSpawns,
+    afterProjectProvision,
+    settleBackgroundProvision,
   });
   if (deps.eventStore.knowledge !== undefined) {
     registerKnowledgeSourceRoutes(app, {
@@ -3182,123 +2510,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     browserRequestOrigin: deps.browserRequestOrigin,
   });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
-  registerProjectDetailRoutes(app, {
-    getDetail: async (id, viewer) => {
-      const cached = await deps.eventStore.getProject(id);
-      if (cached === undefined) return undefined;
-      const project = deps.reconcileProjectState
-        ? await deps.reconcileProjectState(cached).catch(() => cached)
-        : cached;
-      const settings =
-        (await projectSettingsStore(deps.eventStore).getProjectSettingsRaw(id)) ?? null;
-      const sessions = (await deps.eventStore.listSessions()).filter(
-        (session) => session.projectId === id,
-      );
-      const resolved = await resolveProjectRelease(project);
-      const sandboxUpdate = withSelfRepair(
-        resolved.project,
-        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-        sandboxRepairVerdicts(),
-      );
-      // The project page shows this person's dismissed health items too, so the
-      // project carries their view state just as its sessions do.
-      const presented = presentProject(
-        resolved.project,
-        resolved.release,
-        sandboxUpdate,
-        projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      );
-      const [seen] = await projectsAsSeenBy(viewer, [presented]);
-      return {
-        project: seen ?? presented,
-        settings:
-          settings === null
-            ? publicProjectSettings(settings)
-            : {
-                ...publicProjectSettings(settings)!,
-                // The viewer's own default, not anyone else's.
-                defaultModel: await ownDefaultModel(viewer, id, settings),
-              },
-        sessions: await sessionsAsSeenBy(viewer, await summarizeSessions(sessions)),
-        // What this person may change here, so the app offers only that. The
-        // routes check again; this only spares an edit the server would refuse.
-        viewer: {
-          canManage:
-            deps.authRegistry?.isEnabled() !== true ||
-            (await deps.eventStore.hasProjectPermission(viewer, id, 'manage')),
-        },
-      };
-    },
-    projectExists: async (id) => (await deps.eventStore.getProject(id)) !== undefined,
-    renameProject: async (id, name) => {
-      const renamed = await deps.eventStore.renameProject(id, name);
-      // The overview list is memoised; it must show the new name at once.
-      if (renamed !== undefined) deps.invalidateProjectList?.();
-      return renamed;
-    },
-    ...(deps.listBrokeredGrants !== undefined ? { listGrants: deps.listBrokeredGrants } : {}),
-    ...(deps.revokeBrokeredGrant !== undefined ? { revokeGrant: deps.revokeBrokeredGrant } : {}),
-    setSetupStatus: async (id, status) => {
-      const updated = await deps.eventStore.setProjectSetupStatus(id, status);
-      if (updated === undefined) return undefined;
-      const resolved = await resolveProjectRelease(updated, { awaitRefresh: false });
-      const sandboxUpdate = withSelfRepair(
-        resolved.project,
-        (await deps.sandboxUpdates?.status(resolved.project)) ?? UNKNOWN_SANDBOX_UPDATE,
-        sandboxRepairVerdicts(),
-      );
-      // After the last row write in this handler, so no list started in between
-      // can memoise a state this request is still about to change.
-      deps.invalidateProjectList?.();
-      return presentProject(
-        resolved.project,
-        resolved.release,
-        sandboxUpdate,
-        projectToolkitDrift(resolved.project, await serverToolkitIdentity()),
-      );
-    },
-    setCollapsed: async (id, collapsed, viewer) => {
-      if (!(await deps.eventStore.viewState.setProjectCollapsed(viewer, id, collapsed)))
-        return undefined;
-      // Answer from the state just written, never from the memoised fleet list:
-      // that list can predate the write by a whole cache window, and a client
-      // trusting the response would fold the group straight back.
-      const row = await deps.eventStore.getProject(id);
-      if (row === undefined) return undefined;
-      // The list path reconciles lifecycle state against the container; keep
-      // the response on that footing, as the detail route does. The fold state
-      // is already committed, so a reconciliation failure must not turn into an
-      // error the client would roll its fold back for: answer with the row.
-      const project = deps.reconcileProjectState
-        ? await deps.reconcileProjectState(row).catch(() => row)
-        : row;
-      return (await projectsAsSeenBy(viewer, await publicProjects([project])))[0];
-    },
-    isSealed: () => deps.secretCipher?.isSealed() === true,
-    updateSettings: async (id, patch, viewer) => {
-      const store = projectSettingsStore(deps.eventStore);
-      // The default model is each person's own (ADR 0023 §3), never the project's.
-      const { defaultModel, ...projectPatch } = patch;
-      if (defaultModel !== undefined) await setOwnDefaultModel(id, viewer, defaultModel);
-      let settings: ProjectSettingsRecord | undefined;
-      try {
-        settings = await store.updateProjectSettings(id, projectPatch);
-      } catch (error) {
-        if (error instanceof ProjectDefaultModelNotAllowedError) {
-          throw new ProjectAgentNotAllowedError(error.model);
-        }
-        throw error;
-      }
-      return settings === undefined
-        ? undefined
-        : {
-            ...publicProjectSettings(settings)!,
-            defaultModel: await ownDefaultModel(viewer, id, settings),
-          };
-    },
-    setOwnDefaultModel: (id, viewer, model) => setOwnDefaultModel(id, viewer, model),
-  });
-
   const veritySettingsBody = z.object({
     advancedModeEnabled: z.boolean().optional(),
     unassignedMeetingRetentionDays: z.number().int().min(1).max(365).nullable().optional(),
@@ -3349,461 +2560,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     projectEgressEnabled: z.boolean().optional(),
   });
 
-  const runProjectDelete = createProjectDeleteRunner({
-    deps,
-    app,
-    conductor,
-    deleteSessionEverywhere,
-    projectsBeingDeleted,
-    sessionsBeingReaped,
-    settleProjectSpawns,
-    worktrees,
-  });
-
-  registerProjectLifecycleRoutes(app, {
-    deleteProject: async (request, id) => {
-      const joined = projectDeletesInFlight.get(id);
-      if (joined !== undefined) return joined;
-      const teardown = runProjectDelete(request, id);
-      projectDeletesInFlight.set(id, teardown);
-      try {
-        return await teardown;
-      } finally {
-        projectDeletesInFlight.delete(id);
-      }
-    },
-    deprovision: async (request, id, purge) => {
-      if (!deps.deprovisioner) {
-        return { code: 503, error: 'multi-repo provisioning is not configured' };
-      }
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined) return { code: 404, error: `project ${id} not found` };
-      const busySession = (await deps.eventStore.listSessions()).find(
-        (session) =>
-          session.projectId === id &&
-          (conductor.isBusy(session.sessionId) || hasMeetingJob(session.sessionId)),
-      );
-      if (busySession !== undefined) {
-        return { code: 409, error: `project session ${busySession.sessionId} is busy` };
-      }
-      try {
-        return {
-          code: 200,
-          project: await deps.deprovisioner.deprovision(id, { purge }),
-        };
-      } catch (error) {
-        request.log.error({ err: error, projectId: id }, 'verity: deprovision failed');
-        throw error;
-      }
-    },
-    repair: async (request, id, confirmWarnings) => {
-      if (!deps.provisioner) {
-        return { code: 503, error: 'multi-repo provisioning is not configured' };
-      }
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined || project.hiddenAt !== null) {
-        return { code: 404, error: `project ${id} not found` };
-      }
-      if (project.state === 'active') return { code: 200, project };
-      if (deps.secretCipher?.isSealed() === true) {
-        return { code: 503, error: 'secret store is sealed', status: 'sealed' as const };
-      }
-      if (!confirmWarnings && deps.provisioner.provisionWarnings !== undefined) {
-        const warnings = await deps.provisioner.provisionWarnings(project.id);
-        if (warnings.length > 0) {
-          return { code: 409, requiresConfirmation: true as const, warnings };
-        }
-      }
-      const queued =
-        project.state === 'absent' || project.state === 'failed'
-          ? ((await deps.eventStore.updateProjectState(project.id, 'cloning')) ?? project)
-          : project;
-      settleBackgroundProvision(
-        project.id,
-        deps.provisioner.provision(project.id, {
-          confirmWarnings,
-          initiator: { kind: 'user', userId: request.localUserId },
-        }),
-        (error) =>
-          request.log.error({ err: error, projectId: id }, 'verity: project repair failed'),
-      );
-      return { code: 202, project: queued };
-    },
-    sleep: async (request, id) => {
-      if (deps.provisioner?.sleepProject === undefined) {
-        return { code: 503, error: 'project sleep is not configured' };
-      }
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined || project.hiddenAt !== null) {
-        return { code: 404, error: `project ${id} not found` };
-      }
-      if (project.state === 'sleeping') {
-        return {
-          code: 200,
-          project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
-      }
-      if (project.state !== 'active') {
-        return { code: 409, error: `project ${id} is ${project.state}` };
-      }
-      try {
-        const slept = await deps.provisioner.sleepProject(id);
-        return {
-          code: 200,
-          project: presentProject(slept, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
-      } catch (error) {
-        request.log.error({ err: error, projectId: id }, 'verity: project sleep failed');
-        throw error;
-      }
-    },
-    wake: async (request, id) => {
-      if (deps.provisioner?.wakeProject === undefined) {
-        return { code: 503, error: 'project wake is not configured' };
-      }
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined || project.hiddenAt !== null) {
-        return { code: 404, error: `project ${id} not found` };
-      }
-      if (
-        project.state === 'active' ||
-        (project.state === 'waking' && deps.provisioner.ensureProjectSandboxAwake)
-      ) {
-        // An explicit wake takes ownership from a temporary background scan, also while
-        // that scan's own wake is still in flight: it joins the wake and marks activity,
-        // so the scan does not put the sandbox back to sleep afterwards.
-        try {
-          if (project.state === 'active') {
-            // Only the activity mark matters here, which a scan lease reads as takeover;
-            // the readiness gate is not needed for a sandbox that is already running.
-            const acquired = deps.provisioner.tryBeginProjectSandboxActivity?.(id);
-            if (acquired === false)
-              return { code: 409, error: `project ${id} has a sandbox mutation in progress` };
-            if (acquired) deps.provisioner.endProjectSandboxActivity?.(id);
-            return {
-              code: 200,
-              project: presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
-            };
-          }
-          const awake = (await deps.provisioner.ensureProjectSandboxAwake?.(id)) ?? project;
-          return {
-            code: 200,
-            project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
-          };
-        } catch (error) {
-          // A row left in `waking` without a wake in flight (after a restart) stays a conflict.
-          if (project.state === 'waking' && error instanceof ProvisioningError)
-            return { code: 409, error: `project ${id} is ${project.state}` };
-          request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
-          throw error;
-        }
-      }
-      if (project.state !== 'sleeping') {
-        return { code: 409, error: `project ${id} is ${project.state}` };
-      }
-      try {
-        const awake = await deps.provisioner.wakeProject(id);
-        return {
-          code: 200,
-          project: presentProject(awake, null, UNKNOWN_SANDBOX_UPDATE, null),
-        };
-      } catch (error) {
-        request.log.error({ err: error, projectId: id }, 'verity: project wake failed');
-        throw error;
-      }
-    },
-  });
-
-  registerProjectVerityControlRoutes(app, {
-    canRefreshToken: () => deps.refreshProjectToken !== undefined,
-    refreshToken: async (_request, reply, id) => {
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      await deps.refreshProjectToken!(project);
-      return { projectId: project.id, refreshedAt: new Date().toISOString() };
-    },
-    canRecreateContainer: () => deps.provisioner?.recreateContainer !== undefined,
-    recreateContainer: async (request, reply, id) => {
-      const provisioner = deps.provisioner!;
-      const recreateContainer = provisioner.recreateContainer!.bind(provisioner);
-      const project = await deps.eventStore.getProject(id);
-      // Hidden = soft-deleted: recreate must not resurrect it (mirrors /repair).
-      if (project === undefined || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      if (project.state === 'absent') {
-        reply.code(409);
-        return { error: `project ${id} is absent; provision it instead` };
-      }
-      if (project.state === 'cloning' || project.state === 'container_starting') {
-        reply.code(409);
-        return { error: `project ${id} is already provisioning` };
-      }
-      // SBX-1: refuse to recreate a sandbox with a turn in flight — recreate
-      // stops+removes the container and would kill the running docker-exec agent
-      // mid-turn. Operator cancels or waits, then retries.
-      const activity = activityReasons(await projectActivity(id));
-      if (activity.length > 0) {
-        reply.code(409);
-        return { error: recreateRefusalMessage(id, activity) };
-      }
-      const body = parseRecreateContainerBody(request.body);
-      let updated: ProjectRecord;
-      try {
-        updated = await recreateContainer(project.id, {
-          confirmWarnings: body?.confirmWarnings === true,
-          forceRebuild: body?.forceRebuild === true,
-          initiator: { kind: 'user', userId: request.localUserId },
-        });
-        await afterProjectProvision(project.id);
-      } catch (error) {
-        if (error instanceof ProvisioningWarning) {
-          reply.code(409);
-          return { requiresConfirmation: true, warnings: error.warnings };
-        }
-        if (error instanceof ProvisioningError) {
-          reply.code(409);
-          return { error: error.message };
-        }
-        throw error;
-      }
-      return { project: updated };
-    },
-  });
-
-  /** The "connect later" bridge for a project created without GitHub. The target
-   *  must be an EXISTING repository the App installation can reach — Verity does
-   *  not create repositories. The provisioner merges an existing default branch
-   *  before its plain (non-forced) push. */
-  /** The linked project, plus how its history reached GitHub — an empty target takes
-   *  it directly, a target with history gets a branch and the pull request that
-   *  carries it in, which the operator still has to merge. */
-  type LinkGitHubResponse = { project: ProjectRecord } & LinkCloneToGitHubResult;
-  registerProjectGitHubLinkRoute(app, {
-    isAvailable: () => deps.provisioner?.linkCloneToGitHub !== undefined,
-    link: async (request, reply, id, repository, connectionId) => {
-      const provisioner = deps.provisioner!;
-      const project = await deps.eventStore.getProject(id);
-      if (project === undefined || project.hiddenAt !== null) {
-        reply.code(404);
-        return { error: `project ${id} not found` };
-      }
-      if (!isLocalProject(project)) {
-        reply.code(409);
-        return { error: 'this project is already backed by a GitHub repository' };
-      }
-      let parsedTarget = parseOwnerRepo(repository);
-      if (connectionId) {
-        const connection = await deps.eventStore.forgeConnections.get(connectionId);
-        if (connection?.provider === 'forgejo')
-          parsedTarget = parseForgejoRepository(repository, connection.baseUrl);
-      }
-      if (parsedTarget === undefined || parsedTarget.owner === LOCAL_PROJECT_OWNER) {
-        reply.code(400);
-        return { error: 'invalid repository' };
-      }
-      const target: {
-        owner: string;
-        repo: string;
-        forgeConnectionId?: string | null;
-        kind?: 'github' | 'forgejo';
-      } = { ...parsedTarget };
-      if (connectionId) {
-        if (
-          !request.localUserId ||
-          !(await deps.eventStore.isActiveAdministrator(request.localUserId))
-        )
-          return reply.code(403).send({ error: 'administrator required' });
-        const connection = await deps.eventStore.forgeConnections.get(connectionId);
-        if (!connection) return reply.code(404).send({ error: 'connection not found' });
-        if (connection.provider === 'github' && connection.id !== 'legacy-github')
-          return reply
-            .code(400)
-            .send({ error: 'only the existing GitHub App connection is supported' });
-        if (connection.provider === 'forgejo' && !deps.forgejoEnabled)
-          return reply.code(503).send({ error: 'Forgejo sandbox integration unavailable' });
-        target.forgeConnectionId = connection.id;
-        target.kind = connection.provider;
-      }
-      // The repository may already back other projects: the reservation below
-      // either adopts its installation placeholder or reserves another instance
-      // of it, so this project stays separate from every existing one.
-      const performLink = async (): Promise<LinkGitHubResponse | { error: string }> => {
-        // Scoped to the TARGET repo, not the project's current (local) identity.
-        const token = await deps.ghTokenMint?.(target);
-        if (token === undefined || token.length === 0) {
-          reply.code(503);
-          return { error: 'GitHub authentication is unavailable for this repository' };
-        }
-        const reserved = await deps.eventStore.reserveProjectIdentity(project.id, target);
-        if (!reserved) {
-          reply.code(409);
-          return { error: `${target.owner}/${target.repo} is already registered as a project` };
-        }
-        // Publish first while the persisted project remains local. If the
-        // process stops here, a retry can recognize the identical remote branch
-        // and finish the DB transition; it never strands a false GitHub identity.
-        let published: LinkCloneToGitHubResult;
-        try {
-          published = await provisioner.linkCloneToGitHub!(project, target, token);
-        } catch (error) {
-          // An ambiguous push may already have updated GitHub, so retain the
-          // claim for this same project's idempotent retry. Every other error is
-          // known to be pre-publication and releases the target immediately.
-          if (!(error instanceof AmbiguousGitPushError)) {
-            await deps.eventStore.releaseProjectIdentity(project.id, target);
-          }
-          if (error instanceof ProvisioningError) {
-            // The message the operator sees names the STEP; git's own explanation
-            // rides along as the cause and is the only thing that says WHY. It is
-            // already redacted of the token, so log it rather than dropping it —
-            // without it a rejected push is indistinguishable from a broken one.
-            request.log.warn(
-              {
-                projectId: project.id,
-                target: `${target.owner}/${target.repo}`,
-                err: error.cause ?? error,
-              },
-              'verity: linking a project to GitHub failed',
-            );
-            reply.code(409);
-            return {
-              error:
-                error.cause instanceof Error
-                  ? `${error.message}: ${error.cause.message}${/signature|GH013|verified/i.test(error.cause.message) ? '. Configure a Git signing key and verified Git email; existing history is retained. If existing commits are unsigned, choose a target that accepts them or resolve the repository policy before retrying.' : ''}`
-                  : error.message,
-            };
-          }
-          throw error;
-        }
-        let linked: ProjectRecord | undefined;
-        try {
-          if (published.defaultBranch)
-            await deps.eventStore.updateProjectSettings(project.id, {
-              defaultBranch: published.defaultBranch,
-            });
-          linked = await deps.eventStore.linkProjectToGitHub(project.id, target);
-        } catch (error) {
-          // Publication is already externally visible. Retain the durable claim
-          // for this project and turn every persistence failure into the same
-          // idempotent recovery response; throwing a generic 500 here would hide
-          // the fact that retrying safely completes the local transition.
-          request.log.warn(
-            { projectId: project.id, err: error },
-            'GitHub publication succeeded but project finalization is pending',
-          );
-          reply.code(409);
-          return {
-            error: 'the repository was published but linking was not finalized; retry to finish',
-          };
-        }
-        if (linked === undefined) {
-          reply.code(409);
-          return { error: 'this project is already being linked' };
-        }
-        // Best-effort: the clone and its worktrees are already correct, so a failed
-        // recreate is a stale-sandbox problem the operator can Repair — not a reason
-        // to report the link itself as failed.
-        if (linked.state !== 'absent' && provisioner.recreateContainer) {
-          try {
-            await provisioner.recreateContainer(linked.id, {
-              confirmWarnings: true,
-              initiator: { kind: 'user', userId: request.localUserId },
-            });
-            await afterProjectProvision(linked.id);
-          } catch (error) {
-            app.log.warn(
-              { projectId: linked.id, err: error },
-              'verity: linked project to GitHub but recreating its sandbox failed',
-            );
-          }
-        }
-        return {
-          project: (await deps.eventStore.getProject(linked.id)) ?? linked,
-          // How the history reached GitHub. Absent for an empty target (it went
-          // straight onto the default branch); otherwise the operator still has a
-          // pull request to merge, and needs to be told so.
-          ...(published.importBranch === undefined ? {} : { importBranch: published.importBranch }),
-          ...(published.pullRequest === undefined ? {} : { pullRequest: published.pullRequest }),
-          ...(published.pullRequestError === undefined
-            ? {}
-            : { pullRequestError: published.pullRequestError }),
-        };
-      };
-      const localIdentityKey = `${project.owner}/${project.repo}`;
-      if (localIdentityLinkReservations.has(localIdentityKey)) {
-        reply.code(409);
-        return { error: 'this project is already being linked' };
-      }
-      const reservation = Symbol(localIdentityKey);
-      localIdentityLinkReservations.set(localIdentityKey, reservation);
-      const targetKey = `${target.forgeConnectionId && target.forgeConnectionId !== 'legacy-github' ? `${target.forgeConnectionId}:` : ''}${target.owner}/${target.repo}`;
-      if (githubTargetLinkReservations.has(targetKey)) {
-        localIdentityLinkReservations.delete(localIdentityKey);
-        reply.code(409);
-        return { error: `${targetKey} is currently being linked` };
-      }
-      githubTargetLinkReservations.set(targetKey, reservation);
-      try {
-        // The barrier is installed before the second busy check and remains
-        // through identity reservation, remote mutation, push, and recreate.
-        // New turns wait; existing turns make the mutation fail cleanly.
-        return provisioner.withProjectExclusiveMutation
-          ? await provisioner.withProjectExclusiveMutation(id, performLink)
-          : await performLink();
-      } catch (error) {
-        if (error instanceof ProvisioningError) {
-          reply.code(409);
-          return { error: `${error.message} — cancel it or wait, then link` };
-        }
-        throw error;
-      } finally {
-        if (localIdentityLinkReservations.get(localIdentityKey) === reservation) {
-          localIdentityLinkReservations.delete(localIdentityKey);
-        }
-        if (githubTargetLinkReservations.get(targetKey) === reservation) {
-          githubTargetLinkReservations.delete(targetKey);
-        }
-      }
-    },
-  });
-
-  app.post('/projects/:id/disconnect-github', async (request, reply) => {
-    const { id } = z.object({ id: z.string().min(1) }).parse(request.params);
-    const project = await deps.eventStore.getProject(id);
-    if (!project || project.hiddenAt !== null)
-      return reply.code(404).send({ error: 'Project not found' });
-    if (!['github', 'local'].includes(project.kind ?? 'github'))
-      return reply.code(409).send({ error: 'Only GitHub projects can be disconnected.' });
-    const provisioner = deps.provisioner;
-    if (!provisioner?.disconnectGitHub || !provisioner.withProjectExclusiveMutation)
-      return reply.code(503).send({ error: 'GitHub disconnection is unavailable.' });
-    try {
-      const local = await provisioner.withProjectExclusiveMutation(id, () =>
-        provisioner.disconnectGitHub!(project),
-      );
-      await afterProjectProvision(local.id);
-      return { project: local };
-    } catch (error) {
-      if (error instanceof ProvisioningError) return reply.code(409).send({ error: error.message });
-      request.log.warn({ err: error, projectId: id }, 'GitHub disconnection failed');
-      return reply.code(409).send({
-        error:
-          'Could not disconnect GitHub. Local files and history were retained; retry or repair the Sandbox.',
-      });
-    }
-  });
-
   registerVerityControlSessionRoute(app, {
     defaultModel: DEFAULT_MODEL,
     eventStore: deps.eventStore,
     worktrees,
     makeBranch,
-    deleteSessionEverywhere,
+    deleteSessionEverywhere: ctx.deleteSession,
     advancedModeEnabled,
     ensureControlProject: ensureVerityControlProject,
     resolveProjectModel: async (projectId, viewer) => {
@@ -3830,40 +2592,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // subscription-backed and therefore appear only when their login exists in Verity
   // settings. OpenCode provider-qualified ids still come from the configured backend.
   // This keeps the UI from offering engines that would immediately fail at runtime.
-  /**
-   * Which provider accounts serve a person's turns (ADR 0023 §3): their own, and
-   * the instance logins only for the administrator they belonged to. Without a
-   * person — background work — the instance logins, as before.
-   */
-  const modelAccounts = async (viewer: string | undefined) => {
-    const settings = (await veritySettingsStore(deps.eventStore).getVeritySettingsRaw()) ?? null;
-    const usesInstance = viewer === undefined || viewer === legacyAdministratorId;
-    const own =
-      viewer === undefined ? [] : await deps.eventStore.userProviderConnections.status(viewer);
-    const owns = (provider: string) => own.some((connection) => connection.provider === provider);
-    const ownOpenCode = own.find((connection) => connection.provider === 'opencode');
-    const instanceOpenCode =
-      settings?.opencodeBaseUrl?.trim() && settings.opencodeApiKey?.trim()
-        ? selectedOpenCodeModels(settings)
-        : [];
-    return {
-      claude:
-        owns('claude') ||
-        (usesInstance && (settings?.claudeCodeOauthCredentialsJson ?? '').trim().length > 0),
-      codex: owns('codex') || (usesInstance && (settings?.codexAuthJson ?? '').trim().length > 0),
-      // A person's own OpenCode provider replaces the instance one for them.
-      openCode:
-        ownOpenCode !== undefined
-          ? (ownOpenCode.models ?? '').split('\n').filter(Boolean)
-          : usesInstance
-            ? instanceOpenCode
-            : [],
-    };
-  };
   const availableModels = async (
     options: { allowLegacyCodexFallback?: boolean; viewer?: string | undefined } = {},
   ): Promise<ModelList> => {
-    const accounts = await modelAccounts(options.viewer);
+    const accounts = await modelAccounts(deps.eventStore, options.viewer);
     const claudeConfigured = accounts.claude;
     const codexConfigured = accounts.codex;
     let dynamicModels: string[] = [];
@@ -3957,103 +2689,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   ): Promise<boolean> => {
     if (!isProjectSessionModel(model)) return false;
     if (model === undefined || !model.startsWith('verity/')) return true;
-    return (await modelAccounts(viewer)).openCode.includes(model.slice('verity/'.length));
+    return (await modelAccounts(deps.eventStore, viewer)).openCode.includes(
+      model.slice('verity/'.length),
+    );
   };
 
-  /** Whether anyone besides the administrator may work in the project. */
-  const sharedProject = async (projectId: string | null): Promise<boolean> =>
-    projectId !== null &&
-    (await deps.eventStore.listProjectUserIds(projectId, 'execute')).some(
-      (userId) => userId !== legacyAdministratorId,
-    );
-  /**
-   * The model `viewer`'s turns in a shared session run on (ADR 0023 §3): their
-   * own choice in this session, else the session's model when their accounts
-   * serve it, else their own project default, last model or first model.
-   * Undefined outside shared projects, where the session's model applies as
-   * before.
-   */
-  const personSessionModel = async (
-    session: { sessionId: string; projectId: string | null; model: string },
-    viewer: string,
-  ): Promise<string | undefined> => {
-    if (!(await sharedProject(session.projectId))) return undefined;
-    const projectId = session.projectId!;
-    const [available, settings] = await Promise.all([
-      availableModels({ allowLegacyCodexFallback: true, viewer }),
-      projectSettingsStore(deps.eventStore).getProjectSettings(projectId),
-    ]);
-    const usable = (model: string): boolean =>
-      available.models.includes(model) &&
-      isProjectSessionModel(model) &&
-      isModelAllowedForProject(model, settings);
-    const preferences = deps.eventStore.userProviderConnections;
-    return preselectModel(
-      [
-        await preferences.sessionModel(session.sessionId, viewer),
-        session.model,
-        await preferences.projectDefaultModel(viewer, projectId),
-        await preferences.lastModel(viewer, projectId),
-        available.default ?? null,
-      ],
-      usable,
-    );
-  };
-  /**
-   * Who may work in a shared project, by name: what the app labels each person's
-   * messages with. Undefined in a project only one person works in, whose
-   * transcript stays unlabelled.
-   */
-  const projectPeopleNames = async (
-    projectId: string | null,
-  ): Promise<Record<string, string> | undefined> => {
-    if (!(await sharedProject(projectId))) return undefined;
-    const ids = [
-      ...new Set([
-        legacyAdministratorId,
-        ...(await deps.eventStore.listProjectUserIds(projectId!, 'read')),
-      ]),
-    ];
-    const chosen = await deps.eventStore.userDisplayNames(ids);
-    const names: Record<string, string> = {};
-    for (const id of ids) {
-      const author =
-        chosen.get(id) ?? (await deps.eventStore.userGitIdentities.author(id))?.authorName;
-      names[id] = author?.trim() || (id === legacyAdministratorId ? 'Administrator' : 'Member');
-    }
-    return names;
-  };
-  /** A person's own default model for a project, hidden while the agent rule excludes it. */
-  const ownDefaultModel = async (
-    viewer: string,
-    projectId: string,
-    settings: Parameters<typeof isModelAllowedForProject>[1],
-  ): Promise<string | null> => {
-    const model = await deps.eventStore.userProviderConnections.projectDefaultModel(
-      viewer,
-      projectId,
-    );
-    return model !== null && isModelAllowedForProject(model, settings) ? model : null;
-  };
-  /** Sets a person's own default model for a project, within the project's agent rule. */
-  const setOwnDefaultModel = async (
-    projectId: string,
-    viewer: string,
-    model: string | null,
-  ): Promise<{ defaultModel: string | null }> => {
-    model = model?.trim() || null;
-    if (model !== null) {
-      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-      if (!isModelAllowedForProject(model, settings)) throw new ProjectAgentNotAllowedError(model);
-    }
-    await deps.eventStore.userProviderConnections.setProjectDefaultModel(viewer, projectId, model);
-    // The project page reads the default from the project's settings, which a
-    // project nobody has configured yet does not have.
-    const settingsStore = projectSettingsStore(deps.eventStore);
-    if ((await settingsStore.getProjectSettingsRaw(projectId)) === undefined)
-      await settingsStore.updateProjectSettings(projectId, {});
-    return { defaultModel: model };
-  };
+  const { sharedProject, personSessionModel, projectPeopleNames } = sharedProjectPeople(ctx, {
+    availableModels,
+  });
   registerSessionReadRoutes(app, {
     getGoogleStatus: async (id, viewer) =>
       (await deps.eventStore.getSession(id))
@@ -4137,40 +2780,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  /**
-   * A direct model query on the accounts of the person the work is for (ADR 0023
-   * §3): their own Codex login through the gateway and their own OpenCode
-   * provider; the instance logins only for the administrator they belonged to,
-   * and for work with no person behind it.
-   */
-  const directQueryFor = (userId: string | undefined) => {
-    const instance = userId === undefined || userId === legacyAdministratorId;
-    return createLiveMeetingAnalysisQuery({
-      codexCredential: instance
-        ? deps.codexGatewayCredentialProvider
-        : deps.codexGatewayCredentialFor?.(userId!),
-      codexDefaultModel: async () =>
-        (await availableModels({ viewer: userId })).modelOrder?.find(
-          (id) => id.startsWith('codex/') && id !== CODEX_DEFAULT_MODEL,
-        ),
-      openCode: async () => {
-        if (userId !== undefined) {
-          const own = await deps.eventStore.userProviderConnections.get(userId, 'opencode');
-          const baseUrl = own?.baseUrl?.trim();
-          if (own !== undefined && baseUrl) return { baseUrl, apiKey: own.credential };
-        }
-        if (!instance) return undefined;
-        const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-        const baseUrl = settings?.opencodeBaseUrl?.trim();
-        const apiKey = settings?.opencodeApiKey?.trim();
-        return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
-      },
-    });
-  };
-  /** Whether background work for `userId` may take the Claude path, which runs on
-   *  the instance login: only the administrator's or work without a person. */
-  const instanceClaudeServes = (userId: string | undefined): boolean =>
-    userId === undefined || userId === legacyAdministratorId;
+  const { directQueryFor, instanceClaudeServes } = peopleDirectQueries(ctx, availableModels);
   registerTasksRoutes(app, {
     eventStore: deps.eventStore,
     publish: publishSessionEvent,
@@ -4332,7 +2942,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     }
     calendarMeetingWatcher = startCalendarMeetingWatcher(calendarMeetings);
   });
-  app.addHook('onClose', async () => {
+  lifecycle.onClose(async () => {
     // Before the meetings close: a pass in flight may still be starting a bot.
     await calendarMeetingWatcher?.stop();
     await attendeeMeetings.close();
@@ -4698,14 +3308,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
     },
   });
-  const deletionRetryTimer = setInterval(() => {
+  lifecycle.every(30_000, () => {
     void sessionDeletions
       .resume()
       .catch((error: unknown) =>
         app.log.warn({ err: error }, 'verity: session deletion retry failed'),
       );
-  }, 30_000);
-  deletionRetryTimer.unref();
+  });
   app.addHook('onReady', () => {
     void sessionDeletions
       .resume()
@@ -4713,10 +3322,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         app.log.warn({ err: error }, 'verity: session deletion recovery failed'),
       );
   });
-  app.addHook('onClose', () => {
-    clearInterval(deletionRetryTimer);
-    sessionDeletions.close();
-  });
+  lifecycle.onClose(() => sessionDeletions.close());
 
   registerSessionDeleteRoute(app, {
     remove: async (request, reply, id, force, options) => {
@@ -4841,7 +3447,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     makeBranch,
     isProjectSessionModel,
     availableModels,
-    deleteSessionEverywhere,
+    deleteSessionEverywhere: ctx.deleteSession,
     PROJECT_MODEL_ERROR,
     isSleepLifecycleState,
     publicProject: (project) => presentProject(project, null, UNKNOWN_SANDBOX_UPDATE, null),
@@ -4975,254 +3581,16 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   );
   // One fix session per pull request: concurrent taps of "Fix" in this process
   // wait for the first, and the durable origin record covers everything else.
-  const pullRequestFixes = new Map<string, Promise<{ sessionId: string; created: boolean }>>();
-  registerProjectPullRequestRoutes(app, {
-    store: deps.eventStore,
-    backend: deps.projectPullRequests,
-    sessionLinks: async (projectId) => {
-      const sessions = (await deps.eventStore.listSessions()).filter(
-        (session) => session.projectId === projectId,
-      );
-      // One lookup per session, read together rather than one after another.
-      const workspaces = await Promise.all(
-        sessions.map((session) =>
-          deps.eventStore.listSessionRepositoryWorkspaces(session.sessionId),
-        ),
-      );
-      return sessions.flatMap((session, index): SessionPullRequestLink[] => {
-        // Only what is already known: the project page reads every session's PR
-        // status, so asking the code host again here would double that traffic.
-        const pr = sessionPrCache.peek(session.worktree);
-        return [
-          {
-            sessionId: session.sessionId,
-            repositoryId: `default:${projectId}`,
-            ...(pr ? { number: pr.number } : {}),
-            name: session.name,
-          },
-          ...workspaces[index]!.map((workspace): SessionPullRequestLink => {
-            const number = (workspace.pullRequest as { number?: unknown } | null | undefined)
-              ?.number;
-            return {
-              sessionId: session.sessionId,
-              repositoryId: workspace.repositoryId,
-              branch: workspace.branch,
-              ...(typeof number === 'number' ? { number } : {}),
-              name: session.name,
-            };
-          }),
-        ];
-      });
-    },
-    startFix: (input) => {
-      const key = `${input.project.id}\u0000${input.resource}`;
-      const running = pullRequestFixes.get(key);
-      if (running) return running;
-      const start = async () => {
-        const repairs = deps.eventStore.repairs;
-        const existing = await repairs.sessionOrigin(input.project.id, input.resource);
-        if (existing && (await deps.eventStore.getSession(existing)))
-          return { sessionId: existing, created: false };
-        const sessionId = randomUUID();
-        const spawned = await sessionCreate.spawn(
-          {
-            projectId: input.project.id,
-            sessionId,
-            name: `Fix PR #${String(input.status.number)}`,
-          },
-          app.log,
-        );
-        if (spawned.statusCode >= 300)
-          throw Object.assign(new Error('The fix session could not be created'), {
-            statusCode: spawned.statusCode >= 500 ? 503 : spawned.statusCode,
-          });
-        // A session that never got its prompt, or lost the claim to another
-        // process, is removed again: a durable origin pointing at it would turn
-        // every later tap into "already fixing", and a duplicate helps no one.
-        const discard = () =>
-          deleteSessionEverywhere(sessionId).catch((error: unknown) => {
-            app.log.warn({ err: error, sessionId }, 'could not remove an unused fix session');
-            return false;
-          });
-        try {
-          const owner = existing
-            ? await repairs.replaceSessionOrigin(
-                input.project.id,
-                input.resource,
-                existing,
-                sessionId,
-              )
-            : await repairs.registerSessionOrigin(input.project.id, input.resource, sessionId);
-          if (owner === undefined)
-            throw Object.assign(new Error('The fix session could not be recorded'), {
-              statusCode: 503,
-            });
-          if (owner !== sessionId) {
-            await discard();
-            return { sessionId: owner, created: false };
-          }
-          await conductor.dispatchTurn(sessionId, input.prompt, undefined, {
-            displayPrompt: `Fix pull request #${String(input.status.number)}`,
-            ...(input.userId ? { initiatedBy: { userId: input.userId } } : {}),
-          });
-        } catch (error) {
-          // The origin, if recorded, now names a missing session; the next tap
-          // replaces it.
-          await discard();
-          if (typeof (error as { statusCode?: unknown }).statusCode === 'number') throw error;
-          app.log.error({ err: error, sessionId }, 'fix session could not be started');
-          throw Object.assign(new Error('The fix session could not be started. Try again.'), {
-            statusCode: 503,
-          });
-        }
-        return { sessionId, created: true };
-      };
-      const promise = start().finally(() => pullRequestFixes.delete(key));
-      pullRequestFixes.set(key, promise);
-      return promise;
-    },
+  installProjectPullRequests(ctx, { sessionCreate, sessionPrCache });
+  installRepairSupervision(app, ctx, {
+    canExecuteAs,
+    sessionPrStatus,
+    branchesForSession,
+    spawn: sessionCreate.spawn,
+    ensureVerityControlProject,
+    repairTerminated,
+    preparingRepairDispatches,
   });
-  if (deps.repairDiscovery) {
-    const qaEnabled = async () => {
-      const state = await deps.eventStore.repairs.qa();
-      return (
-        state.enabled &&
-        !!state.sponsor &&
-        (await deps.eventStore.isActiveAdministrator(state.sponsor))
-      );
-    };
-    const preparingDispatches = preparingRepairDispatches;
-    const supervisor = createRepairSupervisor({
-      preparingDispatches,
-      enabled: qaEnabled,
-      coordinate: true,
-      store: deps.eventStore,
-      discover: deps.repairDiscovery,
-      ...(deps.repairPullRequest ? { pullRequest: deps.repairPullRequest } : {}),
-      changed: (projectId) => {
-        resources.invalidate(`/projects/${encodeURIComponent(projectId)}/repairs`);
-        void deps.eventStore.repairs
-          .incidents(projectId)
-          .then((incidents) => {
-            for (const incident of incidents)
-              if (incident.last_session_id)
-                liveHub.notify({
-                  sessionId: incident.last_session_id,
-                  projectId,
-                  topics: ['status'],
-                });
-          })
-          .catch(() => undefined);
-      },
-      authorized: (userId, projectId) => canExecuteAs(userId, projectId),
-      busy: (id) => conductor.isBusy(id),
-      result: async (sessionId) => {
-        const session = await deps.eventStore.getSession(sessionId);
-        return session ? sessionPrStatus(session) : null;
-      },
-      target: async (projectId, branch, resource) => {
-        let match: string | undefined;
-        for (const session of await deps.eventStore.listSessions()) {
-          if (session.projectId !== projectId || !(await worktreeExists(session.worktree)))
-            continue;
-          const branches = await branchesForSession(session);
-          if (!branches || (await branches.current(session.worktree)) !== branch) continue;
-          await deps.eventStore.repairs.registerSessionOrigin(
-            projectId,
-            resource,
-            session.sessionId,
-          );
-          if (
-            match ||
-            conductor.isBusy(session.sessionId) ||
-            session.planning === 'active' ||
-            (await branches.isDirty(session.worktree))
-          )
-            return { blocked: true };
-          match = session.sessionId;
-        }
-        return match ? { blocked: true } : { blocked: false };
-      },
-      terminated: repairTerminated,
-      spawn: async (projectId, sessionId) => {
-        if (await deps.eventStore.getSession(sessionId)) return;
-        const result = await sessionCreate.spawn(
-          { projectId, sessionId, name: 'QA · CI repair' },
-          app.log,
-        );
-        if (result.statusCode >= 300) throw new Error('Repair session could not be created');
-      },
-      dispatch: async (sessionId, prompt, dispatchId, validate, sponsorUserId, projectId) => {
-        if ((await deps.eventStore.repairs.dispatchReceipt(dispatchId))?.state === 'admitted')
-          return true;
-        const result = await conductor.dispatchTurnWhenIdle(
-          sessionId,
-          prompt,
-          {},
-          {
-            displayPrompt: 'QA: investigate assigned CI failure',
-            durableDispatchId: dispatchId,
-            initiatedBy: { userId: sponsorUserId },
-            validateSession: async (session) => {
-              if (session.projectId !== projectId || !(await validate())) return false;
-              const mandate = await deps.eventStore.repairs.mandate(session.projectId);
-              return (
-                mandate?.mode === 'automatic' &&
-                (await canExecuteAs(mandate.sponsor_user_id, session.projectId))
-              );
-            },
-          },
-        );
-        return result.accepted;
-      },
-    });
-    const qa = createQACoordinator({
-      preparingDispatches,
-      store: deps.eventStore,
-      authorized: canExecuteAs,
-      administrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
-      busy: (id) => conductor.isBusy(id),
-      ensureSession: async (id) => {
-        if (await deps.eventStore.getSession(id)) return;
-        const project = await ensureVerityControlProject();
-        const result = await sessionCreate.spawn(
-          { projectId: project.id, sessionId: id, name: 'Verity · QA' },
-          app.log,
-        );
-        if (result.statusCode >= 300) throw new Error('QA session could not be created');
-      },
-      dispatch: async (id, prompt, validate, sponsor, dispatchId) => {
-        const result = await conductor.dispatchTurnWhenIdle(
-          id,
-          prompt,
-          { timeoutMs: 180_000 },
-          {
-            displayPrompt: 'QA: review changes in CI supervision',
-            durableDispatchId: dispatchId,
-            initiatedBy: { userId: sponsor },
-            validateSession: validate,
-          },
-        );
-        return result.accepted;
-      },
-      delegate: supervisor.delegate,
-    });
-    let timer: ReturnType<typeof setInterval> | undefined;
-    app.addHook('onReady', () => {
-      timer = setInterval(() => {
-        void supervisor
-          .sweep()
-          .then(() => qa.tick())
-          .catch((error) => app.log.warn({ error }, 'repair supervision failed'));
-      }, 120_000);
-      timer.unref();
-    });
-    app.addHook('onClose', async () => {
-      if (timer) clearInterval(timer);
-      await qa.stop();
-      await supervisor.stop();
-    });
-  }
 
   // First-run welcome session in the starter project (see welcome-session.ts).
   // Created through the same spawn path as POST /sessions; the session-route
@@ -5278,7 +3646,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
             await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
           } catch (err) {
             // Unrecorded, it would show up in lists after a restart and never be reused.
-            await deleteSessionEverywhere(sessionId).catch(() => false);
+            await ctx.deleteSession(sessionId).catch(() => false);
             throw err;
           }
           return sessionId;
@@ -5299,7 +3667,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         log: app.log,
       });
     });
-    app.addHook('onClose', async () => {
+    lifecycle.onClose(async () => {
       await wikiMaintenance?.stop();
     });
   }
@@ -5739,97 +4107,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     invalidatePrSummaryAction,
   });
 
-  const localSavesInFlight = new Set<string>();
-  app.post('/sessions/:id/save-to-project', async (request, reply) => {
-    const { id } = sessionParams.parse(request.params);
-    const session = await deps.eventStore.getSession(id);
-    if (session === undefined) {
-      reply.code(404);
-      return { error: `session ${id} not found` };
-    }
-    const target = await localMergeTarget(session);
-    if (target === undefined) {
-      reply.code(409);
-      return { error: 'saving this way is available only for local projects' };
-    }
-    const sandboxGit = deps.sandboxGit?.(target.project, target.basePath);
-    if (!(await branchesForSession(session)) || sandboxGit === undefined) {
-      reply.code(503);
-      return { error: 'saving to this project is not configured' };
-    }
-    if (localSavesInFlight.has(id) || conductor.isBusy(id)) {
-      reply.code(409);
-      return { error: 'finish the current session activity before saving to the project' };
-    }
-
-    localSavesInFlight.add(id);
-    // The save and its follow-up turns run for the user who asked for it, so they keep
-    // gateway tool access under authentication.
-    const initiatedBy = request.localUserId ? { userId: request.localUserId } : undefined;
-    const origin = initiatedBy ? { initiatedBy } : {};
-    const approvalRef = `refs/verity/save-approval/${randomUUID()}`;
-    const prompt =
-      "Save this session's work to the local project. Review the working tree and the branch changes. " +
-      'Run proportionate checks, then commit relevant uncommitted changes with a clear commit message. ' +
-      'Do not include secrets, generated local state, or unrelated files. Do not push or merge: ' +
-      'Verity will add the committed version to the project after this turn. ' +
-      'If you cannot safely commit the work or checks fail, explain why and leave it unchanged. ' +
-      `Only after all checks pass and the work is ready to add, run git update-ref ${approvalRef} HEAD as your final command. Do not create that ref when declining to save.`;
-    void (async () => {
-      try {
-        const result = await conductor.sendTurn(id, prompt, {}, 'Save to project', origin);
-        if (result.aborted || result.exitCode !== 0) return;
-        let approvedTip: string;
-        try {
-          approvedTip = (
-            await sandboxGit(['-C', session.worktree, 'rev-parse', '--verify', approvalRef])
-          ).trim();
-        } catch (error) {
-          if (error instanceof SandboxUnavailableError) throw error;
-          return;
-        }
-        await sandboxGit(['-C', session.worktree, 'update-ref', '-d', approvalRef]);
-        if (approvedTip.length === 0) return;
-        const branches = await branchesForSession(session);
-        if (await branches?.isDirty(session.worktree)) {
-          await conductor.dispatchTurn(
-            id,
-            'Saving to the local project stopped because some file changes are still uncommitted. Explain which changes need attention. Do not merge them.',
-            undefined,
-            { displayPrompt: 'Save to project needs attention', ...origin },
-          );
-          return;
-        }
-        const merged = await mergeLocalSession(id, () => undefined, approvedTip, initiatedBy);
-        if ('error' in merged) {
-          await conductor.dispatchTurn(
-            id,
-            appendExternalPromptData(
-              'Saving to the local project could not finish. Explain what needs attention.',
-              'local merge error',
-              { error: merged.error },
-            ),
-            undefined,
-            { displayPrompt: 'Save to project needs attention', ...origin },
-          );
-        }
-      } catch (error) {
-        app.log.error({ err: error, sessionId: id }, 'save to local project failed');
-        await conductor
-          .dispatchTurn(
-            id,
-            'Saving to the local project stopped unexpectedly. Explain that the work has not been added to the project and ask to retry once the session is ready.',
-            undefined,
-            { displayPrompt: 'Save to project needs attention', ...origin },
-          )
-          .catch(() => undefined);
-      } finally {
-        localSavesInFlight.delete(id);
-      }
-    })();
-    reply.code(202);
-    return { accepted: true };
-  });
+  installSaveToProject(ctx, { branchesForSession, localMergeTarget, mergeLocalSession });
   registerServerSessionMove({
     app,
     deps,

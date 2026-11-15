@@ -38,7 +38,7 @@ const providerName: Record<TurnProvider, string> = {
  * Why a turn in a person's own sandbox cannot start: it runs only on that
  * person's own account for the model's provider, never on anyone else's.
  */
-export function personalLoginMissing(provider: TurnProvider): string {
+function personalLoginMissing(provider: TurnProvider): string {
   return `Connect your ${providerName[provider]} account in Verity to send messages with this model.`;
 }
 

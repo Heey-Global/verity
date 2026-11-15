@@ -24,7 +24,8 @@ describe.skipIf(!adminUrl)('restored database startup safety', () => {
         INSERT INTO secret_key_meta(id,salt,verifier) VALUES ('master','unchanged-salt','unchanged-verifier');
         INSERT INTO queued_turns(id,session_id,prompt,opts) VALUES ('queued','s','must not run','{}');
         INSERT INTO running_turns(session_id,prompt_seq) VALUES ('s',1);
-        INSERT INTO gh_token_capabilities(project_id,cap_hash,owner,repo) VALUES ('p','old-capability','test','repo');
+        INSERT INTO users(id,role,status) VALUES ('00000000-0000-4000-8000-000000000001','administrator','active') ON CONFLICT DO NOTHING;
+        INSERT INTO gh_token_capabilities(project_id,user_id,cap_hash,owner,repo) VALUES ('p','00000000-0000-4000-8000-000000000001','old-capability','test','repo');
         INSERT INTO secret_jobs(job_id,actor_id,authorization_hash,state) VALUES ('job','actor','old-auth','queued');
         INSERT INTO session_automations(id,session_id,name,status,schedule,prompt,next_run_at) VALUES ('automatic','s','Scheduled','enabled','{}','must not run',now())`);
       await pool.query(`
@@ -32,7 +33,7 @@ describe.skipIf(!adminUrl)('restored database startup safety', () => {
         INSERT INTO local_preview_shares(id,project_id,session_id,network_port,url,target_port,connector_secret,state,expires_at) VALUES('local','p','s',12345,'http://example.invalid',3000,'cipher','active',now()+interval '1 day');
         INSERT INTO public_preview_pin_locks(share_id) VALUES('public');
         INSERT INTO uplink_pending_share_removals(share_id) VALUES('public');
-        INSERT INTO signing_capabilities(project_id,cap_hash,container_generation) VALUES('p','sign-cap','old-generation');
+        INSERT INTO signing_capabilities(project_id,user_id,cap_hash,container_generation) VALUES('p','00000000-0000-4000-8000-000000000001','sign-cap','old-generation');
         INSERT INTO secret_run_grants(capability_hash,grant_id,claims_json,expires_at) VALUES('run-cap','run-grant','{}',now()+interval '1 day');
         INSERT INTO secret_approvals(id,project_id,session_id,tool_call_id,claims_json,state) VALUES('approval','p','s','tool','{}','approved');
         INSERT INTO secret_job_frames(job_id,protocol_version,sequence,stream,encoding,payload,byte_length,emitted_at) VALUES('job',1,0,'stdout','utf8','old-frame',9,'2026-10-28T00:00:00Z');

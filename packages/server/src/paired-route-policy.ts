@@ -638,6 +638,11 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
+    // Finishing a recording files it like a stop does; it never discards content.
+    routeScopeKey('POST', '/sessions/:id/live-meetings/:meetingId/finalize'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     // Discarding deletes what everyone in the session heard; like other destructive
     // replacements it needs management rights, not only the right to record.
     routeScopeKey('DELETE', '/sessions/:id/live-meetings/:meetingId'),

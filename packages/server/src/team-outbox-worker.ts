@@ -23,7 +23,7 @@ export interface TeamUplink {
 }
 
 /** `sha256-` + base64url SHA-256 of the Core identity key (SPKI, base64url). */
-export function installationKeyFingerprint(identityKey: string): string {
+function installationKeyFingerprint(identityKey: string): string {
   const digest = createHash('sha256').update(Buffer.from(identityKey, 'base64url')).digest();
   return `sha256-${digest.toString('base64url')}`;
 }

@@ -9,12 +9,12 @@ import type { Database } from './schema.js';
 /** An invitation is valid for 7 days by default and at most (Uplink team contract). */
 export const INVITATION_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** A team operation is retried for 7 days before it is given up. */
-export const TEAM_OUTBOX_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+const TEAM_OUTBOX_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type InvitationState = 'creating' | 'open' | 'redeemed' | 'revoked' | 'expired' | 'failed';
 
 /** How long an accepted join tunnel may still redeem: the tunnel's five minutes plus its attach window. */
-export const JOIN_ADMISSION_TTL_MS = 10 * 60 * 1000;
+const JOIN_ADMISSION_TTL_MS = 10 * 60 * 1000;
 
 export interface ProjectInvitation {
   id: string;
