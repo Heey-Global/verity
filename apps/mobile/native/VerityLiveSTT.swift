@@ -253,8 +253,11 @@ private actor LiveSpeakerModels {
         case .sortformerDefault:
           // FluidAudio's ModelHub validates revision and compiled-model layout
           // before CoreML loading, and owns its targeted cache recovery.
+          let key = "sortformer-default"
+          let units = LiveModelCrashGuard.shared.begin(key)
+          defer { LiveModelCrashGuard.shared.finished(key) }
           return LoadedSpeakerModel(sortformer: try await SortformerModels.loadFromHuggingFace(
-            config: .default))
+            config: .default, computeUnits: units))
         case .lsEendDihard3Step100ms:
           return LoadedSpeakerModel(lsEend: try await LSEENDModel.loadFromHuggingFace(
             variant: .dihard3, stepSize: .step100ms))
@@ -1120,12 +1123,17 @@ private final class LiveSTTService {
     emit?(["kind": "status", "state": "downloading"])
     await LiveModelLoadGate.shared.acquire()
     let models: SharedNemotronMultilingualModels
+    let key = "nemotron-\(locale)-2240ms"
     do {
       try ensureActive(generation)
+      let units = LiveModelCrashGuard.shared.begin(key)
       models = try await StreamingNemotronMultilingualAsrManager.downloadAndPreloadShared(
-        languageCode: locale, chunkMs: 2240)
+        languageCode: locale, chunkMs: 2240,
+        configuration: units.map { MLModelConfigurationUtils.defaultConfiguration(computeUnits: $0) })
+      LiveModelCrashGuard.shared.finished(key)
       await LiveModelLoadGate.shared.release()
     } catch {
+      LiveModelCrashGuard.shared.finished(key)
       await LiveModelLoadGate.shared.release()
       throw error
     }
@@ -1162,11 +1170,17 @@ private final class LiveSTTService {
     emit?(["kind": "status", "state": "downloading"])
     await LiveModelLoadGate.shared.acquire()
     let models: AsrModels
+    let key = "parakeet-ultra"
     do {
       try ensureActive(generation)
-      models = try await AsrModels.downloadAndLoad(version: .ultra)
+      let units = LiveModelCrashGuard.shared.begin(key)
+      models = try await AsrModels.downloadAndLoad(
+        configuration: units.map { MLModelConfigurationUtils.defaultConfiguration(computeUnits: $0) },
+        version: .ultra)
+      LiveModelCrashGuard.shared.finished(key)
       await LiveModelLoadGate.shared.release()
     } catch {
+      LiveModelCrashGuard.shared.finished(key)
       await LiveModelLoadGate.shared.release()
       throw error
     }
