@@ -161,8 +161,9 @@ describe('native shared CoreML loading guards', () => {
       expect(permit).toBeGreaterThanOrEqual(0);
       expect(fetched).toBeGreaterThan(permit);
       expect(load).toBeGreaterThan(fetched);
-      // A failed load must release the permit rather than blocking every later model.
-      expect(body.slice(load)).toMatch(
+      // A failed download or load must release the permit rather than blocking
+      // every later model.
+      expect(body.slice(fetched)).toMatch(
         /await LiveModelLoadGate.shared.release\(\)[\s\S]*catch[\s\S]*await LiveModelLoadGate.shared.release\(\)/,
       );
     }
