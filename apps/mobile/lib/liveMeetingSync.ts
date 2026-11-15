@@ -23,6 +23,7 @@ import {
   meetingUploadFailure,
   saveMeetingUploadFailure,
   clearMeetingUploadFailure,
+  type MeetingRecord,
 } from './liveMeetingStore';
 
 const flushing = new Map<string, Promise<void>>();
@@ -129,6 +130,77 @@ export async function finalizeMeetingOnServer(sessionId: string, meetingId: stri
     throw new Error('Stop recording on this device before ending the meeting on the server.');
   await client.finalizeLiveMeeting(sessionId, meetingId);
   await recordServerFinalization(serverId, meetingId);
+}
+
+// Meetings whose stop this device sent to their recorder, until it finished or was ended.
+const stopsSentHere = new Set<string>();
+
+type MeetingControl = Awaited<ReturnType<VerityClient['getLiveMeetingCommands']>>;
+
+/** True when the newest command is a stop that its recorder refused or cannot pick up. */
+function stopStranded(control: MeetingControl): boolean {
+  const latest = control.commands[0];
+  if (latest?.action !== 'stop') return false;
+  return latest.state === 'failed' || (latest.state === 'pending' && !control.recorderOnline);
+}
+
+async function endOnServer(client: VerityClient, sessionId: string, meetingId: string) {
+  await finalizeMeetingOnServer(sessionId, meetingId);
+  // Kept until the server confirmed, so a failed end is tried again on the next refresh.
+  stopsSentHere.delete(meetingId);
+  await syncMeetingSession(sessionId, client).catch(() => undefined);
+}
+
+/**
+ * Stops a meeting this device is not recording. An online meeting is left by its bot. A
+ * reachable recorder is asked to stop, so it keeps its last audio and uploads the final
+ * transcript. Without one the server ends the meeting itself: a stop command that no device
+ * runs would leave the meeting running on every device, with no way to end it.
+ */
+export async function stopMeetingElsewhere(
+  meeting: Pick<MeetingRecord, 'id' | 'sessionId' | 'engine'>,
+  suppliedClient?: VerityClient,
+): Promise<'online' | 'requested' | 'ended'> {
+  const client = suppliedClient ?? createVerityClient();
+  if (!client) throw new Error('Connect to the server to stop this meeting.');
+  if (meeting.engine === 'attendee') {
+    await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+    return 'online';
+  }
+  const control = await client.getLiveMeetingCommands(meeting.sessionId, meeting.id);
+  const latest = control.commands[0];
+  if (control.recorderOnline) {
+    // A reachable recorder stops itself and keeps its last audio. A stop it is about to pick
+    // up is kept rather than repeated; one it refused is ended on the server by the next
+    // refresh (`readMeetingControl`), once this device has asked for itself.
+    if (!(latest?.action === 'stop' && latest.state === 'pending'))
+      await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+    stopsSentHere.add(meeting.id);
+    return 'requested';
+  }
+  await endOnServer(client, meeting.sessionId, meeting.id);
+  return 'ended';
+}
+
+/**
+ * Reads a meeting's remote-control state for a device that is not recording it. A stop sent
+ * from this device that cannot finish on the recorder is ended on the server here; the
+ * result then reports `serverEnded` and no pending command.
+ */
+export async function readMeetingControl(
+  client: VerityClient,
+  sessionId: string,
+  meetingId: string,
+): Promise<MeetingControl & { serverEnded: boolean }> {
+  const control = await client.getLiveMeetingCommands(sessionId, meetingId);
+  if (!stopsSentHere.has(meetingId)) return { ...control, serverEnded: false };
+  if (stopStranded(control)) {
+    await endOnServer(client, sessionId, meetingId);
+    return { ...control, commands: [], serverEnded: true };
+  }
+  if (control.commands[0]?.action !== 'stop' || control.commands[0].state === 'completed')
+    stopsSentHere.delete(meetingId);
+  return { ...control, serverEnded: false };
 }
 
 async function recordServerFinalization(serverId: string, meetingId: string): Promise<void> {
