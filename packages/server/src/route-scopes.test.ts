@@ -558,6 +558,54 @@ describe('the onRoute hook in buildServer', () => {
     ).not.toBeNull();
   });
 
+  it('installs the auth gate before any plugin that would not inherit it', () => {
+    // The gate is a root `onRequest` hook. A plugin registered before it gets an
+    // encapsulated context without the hook, so its routes would skip the
+    // bearer check, paired-route authorization and the `/internal` guard. Plugins
+    // are registered in server.ts directly or by the `server-*.ts` modules it
+    // calls, so every such call must follow `installHttpGuards`.
+    const dir = join(REPO_ROOT, 'packages/server/src');
+    const server = readFileSync(join(dir, 'server.ts'), 'utf8');
+    const gate = server.indexOf('installHttpGuards(app');
+    expect(gate, 'server.ts must install the auth gate').toBeGreaterThan(-1);
+    const registersPlugins = (source: string): boolean => {
+      PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+      return PLUGIN_REGISTER_PATTERN.test(source);
+    };
+    // The exported function's own body, up to the next top-level export.
+    const functionBody = (source: string, name: string): string => {
+      const start = source.indexOf(`export function ${name}(`);
+      if (start === -1) return '';
+      const next = source.indexOf('\nexport ', start + 1);
+      return source.slice(start, next === -1 ? undefined : next);
+    };
+    const callers: string[] = [];
+    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/(server-[a-z-]+)\.js';/gu)) {
+      const [, names = '', module = ''] = match;
+      if (module === 'server-http') continue;
+      const source = readFileSync(join(dir, `${module}.ts`), 'utf8');
+      for (const name of names.split(',').map((entry) => entry.trim())) {
+        if (name === '' || name.startsWith('type ')) continue;
+        if (registersPlugins(functionBody(source, name))) callers.push(name);
+      }
+    }
+    expect(
+      callers,
+      'no plugin-registering install function found — the scan broke',
+    ).not.toHaveLength(0);
+    for (const name of callers) {
+      for (const call of server.matchAll(new RegExp(`\\b${name}\\(`, 'gu'))) {
+        expect(call.index, `${name} registers a plugin before installHttpGuards`).toBeGreaterThan(
+          gate,
+        );
+      }
+    }
+    PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+    for (const call of server.matchAll(PLUGIN_REGISTER_PATTERN)) {
+      expect(call.index, 'a plugin is registered before installHttpGuards').toBeGreaterThan(gate);
+    }
+  });
+
   it('refuses to register a declared exception under a parameterised url', () => {
     const routes = fixture('GET', '/probe/:id');
     const app = Fastify({ logger: false });
