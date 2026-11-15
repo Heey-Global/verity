@@ -91,14 +91,18 @@ describe('the repository', () => {
     expect(compareWithDebt(oversizedFiles(ROOT), readDebt(ROOT))).toEqual([]);
   });
 
-  it('excludes the generated runner bundle named by its build script', () => {
-    const [bundle] = generatedFiles(ROOT);
-    // The exclusion must still name a tracked file, or it hides nothing and a
-    // renamed bundle would surface here instead of in the debt list.
-    expect(execFileSync('git', ['ls-files', bundle!], { cwd: ROOT, encoding: 'utf8' })).toBe(
-      `${bundle}\n`,
-    );
-    expect(Object.keys(readDebt(ROOT))).not.toContain(bundle);
+  it('excludes the generated bundles named by their build scripts', () => {
+    const bundles = generatedFiles(ROOT);
+    // The runner worker, the spawn broker and the Runner supervisor ship as bundles.
+    expect(bundles).toHaveLength(3);
+    for (const bundle of bundles) {
+      // The exclusion must still name a tracked file, or it hides nothing and a
+      // renamed bundle would surface here instead of in the debt list.
+      expect(execFileSync('git', ['ls-files', bundle], { cwd: ROOT, encoding: 'utf8' })).toBe(
+        `${bundle}\n`,
+      );
+      expect(Object.keys(readDebt(ROOT))).not.toContain(bundle);
+    }
   });
 
   it('runs ahead of ESLint in the full and the scoped lint entry points', () => {

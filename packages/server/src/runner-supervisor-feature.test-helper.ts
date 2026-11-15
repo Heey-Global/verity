@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { promisify } from 'node:util';
-import { it } from 'vitest';
 import { runSupervisor as runSupervisorRuntime } from '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
 import {
   runAgentSpawnBroker as runAgentSpawnBrokerRuntime,
@@ -142,4 +142,12 @@ export async function supervisorRequestFramesTogether(
   const ready = await Promise.all(pending);
   for (const { socket, payload } of ready) socket.write(`${JSON.stringify(payload)}\n`);
   return await Promise.all(ready.map(async ({ replied }) => await replied));
+}
+
+/** Every source module of the Runner supervisor, joined: the code of record. The
+ *  shipped bin/ file is bundled from these, and the bundler reformats and may rename. */
+export async function supervisorSources(): Promise<string> {
+  const dir = 'features/verity-sandbox-toolkit/src/runner-supervisor';
+  const files = (await readdir(dir)).filter((file) => file.endsWith('.mjs')).sort();
+  return (await Promise.all(files.map((file) => readFile(join(dir, file), 'utf8')))).join('\n');
 }

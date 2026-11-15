@@ -62,6 +62,9 @@ on:
       - 'scripts/test-runner-claude-live-container.sh'
       - 'scripts/test-runner-claude-live-recreate.sh'
       - 'scripts/build-runner-worker.mjs'
+      # Builds the spawn broker and Runner supervisor bundles from
+      # features/verity-sandbox-toolkit/src/, which the Feature path above covers.
+      - 'scripts/build-toolkit-bundles.mjs'
       # esbuild substitutes this for `@verity/store`, so its source is INSIDE the
       # worker bundle even though the package it replaces is not. Without it here,
       # a shim change drifts the committed bundle with nothing to notice — and the
@@ -250,6 +253,13 @@ jobs:
             echo "::error::the committed runner worker bundle differs from the one built from packages/session — run 'npm run build:runner-worker' and commit the result"
             exit 1
           fi
+
+      # The spawn broker and the Runner supervisor are boundary binaries the Server
+      # hashes as shipped, built from the modules under features/verity-sandbox-toolkit/src/.
+      # The same reasoning as above: the committed files must be exactly what those
+      # sources build, and `verity-code-review` excludes them on that basis.
+      - name: Committed toolkit bundles match their sources
+        run: npm run check:toolkit-bundles
 
       - name: Build ${{ matrix.architecture }} and load Docker image
         # renovate: datasource=github-actions depName=docker/build-push-action

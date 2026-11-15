@@ -25,20 +25,28 @@ import { fileURLToPath } from 'node:url';
 export const FILE_LINE_LIMIT = 1500;
 export const DEBT_FILE = 'scripts/file-size-debt.json';
 const BUNDLE_SCRIPT = 'scripts/build-runner-worker.mjs';
+const TOOLKIT_BUNDLE_SCRIPT = 'scripts/build-toolkit-bundles.mjs';
 
 const SOURCE = /\.[cm]?[jt]sx?$/;
 // Declarations describe code that lives elsewhere; vendor/ holds third-party
 // code kept as published.
 const EXCLUDED = [/\.d\.[cm]?ts$/, /^vendor\//];
 
-/** Paths of generated bundles, read from the script that writes them, so a
+/** Paths of generated bundles, read from the scripts that write them, so a
  *  moved bundle cannot leave a stale exclusion behind.
  *  @param {string} root */
 export function generatedFiles(root) {
   const script = readFileSync(join(root, BUNDLE_SCRIPT), 'utf8');
   const outfile = script.match(/^const outfile = '([^']+)';$/m)?.[1];
   if (!outfile) throw new Error(`${BUNDLE_SCRIPT} no longer declares its outfile`);
-  return [outfile];
+  const toolkitScript = join(root, TOOLKIT_BUNDLE_SCRIPT);
+  if (!existsSync(toolkitScript)) return [outfile];
+  const toolkitOutfiles = [
+    ...readFileSync(toolkitScript, 'utf8').matchAll(/^\s*outfile: '([^']+)',$/gm),
+  ].map((match) => match[1]);
+  if (toolkitOutfiles.length === 0)
+    throw new Error(`${TOOLKIT_BUNDLE_SCRIPT} no longer declares its outfiles`);
+  return [outfile, ...toolkitOutfiles];
 }
 
 /** Tracked and new unignored source files that exist in the working tree.

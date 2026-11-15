@@ -40,6 +40,8 @@
     "build": "tsc -b",
     "build:runner-worker": "npm run build && node scripts/build-runner-worker.mjs",
     "check:runner-worker": "npm run build && node scripts/build-runner-worker.mjs --check",
+    "build:toolkit-bundles": "node scripts/build-toolkit-bundles.mjs",
+    "check:toolkit-bundles": "node scripts/build-toolkit-bundles.mjs --check",
     "typecheck": "tsc -b",
     "clean": "tsc -b --clean",
     "lint": "bash scripts/lint.sh",

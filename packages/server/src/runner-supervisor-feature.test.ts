@@ -87,6 +87,7 @@ import {
   supervisorRequestFrames,
   supervisorRequestsTogether,
   supervisorRequestFramesTogether,
+  supervisorSources,
 } from './runner-supervisor-feature.test-helper.js';
 
 let runtimeDir: string;
@@ -145,10 +146,7 @@ describe('verity-runner supervisor runtime', () => {
     // The production main block must launch from the constant — through the
     // installed-adapter filter, never a bare literal — so re-narrowing to
     // ['claude'] can never silently regress the gate again.
-    const source = await readFile(
-      'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
-      'utf8',
-    );
+    const source = await supervisorSources();
     expect(source).toContain('workerBackends: installedWorkerBackends()');
     expect(source).not.toContain("workerBackends: ['claude']");
     // Same reasoning for the worker env: the production entry must build it from the
@@ -2417,8 +2415,9 @@ describe('verity-runner supervisor runtime', () => {
     // And that it DISCRIMINATES, which is the property the operator's conclusion rests
     // on. Take OpenCode back out of the admission list — the pre-amendment supervisor,
     // which still names it everywhere else — and the command must answer `0`.
+    // Either quote: this is the shipped bundle, whose declaration the bundler rewrites.
     const stale = supervisor.replace(
-      /(ACP_WORKER_BACKENDS = new Set\(\[[^\]]*), 'opencode-acp'/u,
+      /(ACP_WORKER_BACKENDS = [^\n]*?new Set\(\[[^\]]*), ["']opencode-acp["']/u,
       '$1',
     );
     expect(stale).not.toBe(supervisor);

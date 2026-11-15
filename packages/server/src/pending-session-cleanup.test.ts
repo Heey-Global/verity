@@ -417,7 +417,8 @@ async function heldSupervisor() {
 async function supervisorBrokerBudgetMs(): Promise<number> {
   const source = await readFile(
     new URL(
-      '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+      // The source module: the shipped bundle rewrites numbers such as `30_000`.
+      '../../../features/verity-sandbox-toolkit/src/runner-supervisor/turns.mjs',
       import.meta.url,
     ),
     'utf8',
