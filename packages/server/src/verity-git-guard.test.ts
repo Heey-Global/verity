@@ -298,3 +298,154 @@ describe('agent-seed/bin/git guard (push bypass)', () => {
     expect(stderr).not.toContain('verity git guard');
   });
 });
+
+describe('agent-seed/bin/git guard (core.worktree in the shared repository config)', () => {
+  const sharedConfig = (): string => join(main, '.git', 'config');
+  const session = (): string => join(main, '.verity-sessions', 'agent-test');
+  /** GIT_DIR as git exports it to a hook running in the session worktree. */
+  const hookGitDir = (): string => join(main, '.git', 'worktrees', 'agent-test');
+
+  it('refuses git init that re-initializes the shared repository with a work tree', async () => {
+    // The reproduced writer: a hook's inherited GIT_DIR plus a work tree. Real git records
+    // the session as core.worktree in the config every session shares.
+    const before = readFileSync(sharedConfig(), 'utf8');
+    const { code, stderr } = await runWrapper(['init', '-q'], session(), {
+      GIT_DIR: hookGitDir(),
+      GIT_WORK_TREE: session(),
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain('verity git guard: refusing');
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+  });
+
+  it('is what stands between that call and a re-pointed main checkout', async () => {
+    // Same call through real git: the shared config gains the session as core.worktree.
+    // If this ever stops writing the key, the refusal above guards nothing and can go.
+    await execFileAsync(REAL_GIT, ['init', '-q'], {
+      cwd: session(),
+      env: { ...process.env, ...GIT_ENV, GIT_DIR: hookGitDir(), GIT_WORK_TREE: session() },
+    });
+    expect(readFileSync(sharedConfig(), 'utf8')).toMatch(/worktree = .*agent-test/);
+  });
+
+  it('refuses git init with only the hook GIT_DIR, which would make the repository bare', async () => {
+    const before = readFileSync(sharedConfig(), 'utf8');
+    const { code } = await runWrapper(['init', '-q'], session(), { GIT_DIR: hookGitDir() });
+    expect(code).toBe(1);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+    // Real git, same call: the shared repository turns bare under every session.
+    await execFileAsync(REAL_GIT, ['init', '-q'], {
+      cwd: session(),
+      env: { ...process.env, ...GIT_ENV, GIT_DIR: hookGitDir() },
+    });
+    expect(readFileSync(sharedConfig(), 'utf8')).toMatch(/bare = true/);
+  });
+
+  it('refuses the --git-dir / --work-tree option spelling as well', async () => {
+    const { code } = await runWrapper(
+      [`--git-dir=${hookGitDir()}`, '--work-tree', session(), 'init', '-q'],
+      session(),
+    );
+    expect(code).toBe(1);
+  });
+
+  it('follows the gitfile of a session worktree to the shared repository', async () => {
+    const before = readFileSync(sharedConfig(), 'utf8');
+    const { code } = await runWrapper(['init', '-q'], session(), {
+      GIT_DIR: join(session(), '.git'),
+      GIT_WORK_TREE: session(),
+    });
+    expect(code).toBe(1);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+  });
+
+  it('resolves a relative GIT_DIR inside the directory git init creates', async () => {
+    // A hook in the main checkout carries GIT_DIR=.git; `git init <dir>` reads it from <dir>.
+    const fixture = join(base, 'fixture');
+    const { code } = await runWrapper(['init', '-q', fixture], main, { GIT_DIR: '.git' });
+    expect(code).toBe(0);
+    expect(existsSync(join(fixture, '.git', 'HEAD'))).toBe(true);
+    expect((await runWrapper(['init', '-q'], main, { GIT_DIR: '.git' })).code).toBe(1);
+  });
+
+  it('needs no rule for a work tree alone: git itself refuses init without a git dir', async () => {
+    // Why the wrapper only inspects GIT_DIR / --git-dir. Should git ever accept this, the
+    // session's gitfile would lead it into the shared repository and this has to change.
+    const before = readFileSync(sharedConfig(), 'utf8');
+    await expect(
+      execFileAsync(REAL_GIT, ['init', '-q'], {
+        cwd: session(),
+        env: { ...process.env, ...GIT_ENV, GIT_WORK_TREE: join(base, 'elsewhere') },
+      }),
+    ).rejects.toThrow(/not allowed without specifying GIT_DIR/);
+    expect(readFileSync(sharedConfig(), 'utf8')).toBe(before);
+  });
+
+  it('still lets an unrelated existing repository be re-initialized', async () => {
+    const cache = join(base, 'cache.git');
+    await realGit(base, 'init', '-q', '--bare', cache);
+    const { code } = await runWrapper([`--git-dir=${cache}`, 'init', '-q', '--bare'], base);
+    expect(code).toBe(0);
+  });
+
+  it('still lets a separate repository be created with both set', async () => {
+    const fresh = join(base, 'fresh');
+    mkdirSync(fresh);
+    const { code } = await runWrapper(['init', '-q'], base, {
+      GIT_DIR: join(fresh, '.git'),
+      GIT_WORK_TREE: fresh,
+    });
+    expect(code).toBe(0);
+    expect(existsSync(join(fresh, '.git', 'HEAD'))).toBe(true);
+  });
+
+  it('refuses writing core.worktree into the shared config, whatever the case', async () => {
+    for (const args of [
+      ['config', 'core.worktree', '/work/.verity-sessions/agent-test'],
+      ['config', '--local', 'Core.WorkTree', '/elsewhere'],
+      ['config', 'set', 'core.worktree', '/elsewhere'],
+      ['config', '--add', 'core.worktree', '/elsewhere'],
+      ['config', '--type', 'path', 'core.worktree', '/elsewhere'],
+      // Without extensions.worktreeConfig, --worktree writes the shared config like --local.
+      ['config', '--worktree', 'core.worktree', '/elsewhere'],
+    ]) {
+      const { code, stderr } = await runWrapper(args, session());
+      expect(code, args.join(' ')).toBe(1);
+      expect(stderr).toContain("'git config core.worktree'");
+    }
+    expect(readFileSync(sharedConfig(), 'utf8')).not.toMatch(/worktree =/);
+  });
+
+  it('lets reads, removals and explicitly scoped writes through', async () => {
+    await realGit(main, 'config', '--file', sharedConfig(), 'core.worktree', '/tmp/x');
+    expect((await runWrapper(['config', '--get', 'core.worktree'], main)).stdout.trim()).toBe(
+      '/tmp/x',
+    );
+    expect((await runWrapper(['config', '--unset', 'core.worktree'], main)).code).toBe(0);
+    const other = join(base, 'other.cfg');
+    expect((await runWrapper(['config', '--file', other, 'core.worktree', '/x'], main)).code).toBe(
+      0,
+    );
+    expect((await runWrapper(['config', 'user.name', 'n'], session())).code).toBe(0);
+    await realGit(main, 'config', '--file', sharedConfig(), 'core.worktree', '/tmp/y');
+    // Bare and decorated reads are reads, whatever flags they carry.
+    for (const args of [
+      ['config', 'core.worktree'],
+      ['config', '--show-origin', 'core.worktree'],
+      ['config', '--type', 'path', 'core.worktree'],
+      ['config', '--null', 'core.worktree'],
+      ['config', 'get', 'core.worktree'],
+    ]) {
+      const { code, stderr } = await runWrapper(args, main);
+      expect(stderr, args.join(' ')).not.toContain('verity git guard');
+      expect(code, `${args.join(' ')}: ${stderr}`).not.toBe(1);
+    }
+  });
+
+  it('is transparent with VERITY_GIT_GUARD_DISABLE=1 (operator escape hatch)', async () => {
+    const { code } = await runWrapper(['config', 'core.worktree', main], main, {
+      VERITY_GIT_GUARD_DISABLE: '1',
+    });
+    expect(code).toBe(0);
+  });
+});

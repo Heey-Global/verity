@@ -664,6 +664,34 @@ export function repairProjectAdminGitdirs(cloneRoot: string): void {
 }
 
 /**
+ * Startup heal for the server repository and every project clone: worktrees whose admin
+ * `gitdir` git cannot follow — left relative by an earlier version, or absolute with a
+ * container-side `/work` prefix — are `prunable`, so a `prune`/gc silently deregisters a
+ * still-live session. Best-effort: a heal failure must never block server boot.
+ *
+ * The multi-project runner deliberately leaves `repoDir` EMPTY and keeps one clone per
+ * project under `hostCloneRoot`, so gating the heal on `repoDir` alone silently disabled
+ * it for every project on exactly the deployment that spawns the most sessions. Both are
+ * healed when both are configured.
+ */
+export function healAdminGitdirsAtStartup(
+  repoDir: string | undefined,
+  hostCloneRoot: string | undefined,
+): void {
+  for (const [root, heal] of [
+    [repoDir, repairAdminGitdirs],
+    [hostCloneRoot, repairProjectAdminGitdirs],
+  ] as const) {
+    if (!root) continue;
+    try {
+      heal(root);
+    } catch {
+      // ignore — new spawns are unaffected; only pre-existing landmines stay
+    }
+  }
+}
+
+/**
  * Build a {@link WorktreeProvisioner} backed by `git worktree`. `add` runs
  * `git -C <repo> worktree add <path> -b <branch> <base>`; `remove` runs
  * `git -C <repo> worktree remove <path> --force`. The worktree path is always a
