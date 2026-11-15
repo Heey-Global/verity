@@ -508,18 +508,26 @@ describe('stopping a meeting recorded on another device', () => {
     expect(client.getLiveMeetingChanges).toHaveBeenCalled();
   });
 
-  it.each(['pending', 'failed'] as const)(
-    'ends it on the server when tapped again after a %s stop',
-    async (state) => {
-      client.getLiveMeetingCommands.mockResolvedValue({
-        commands: [stop(state)],
-        recorderOnline: true,
-      });
-      expect(await stopMeetingElsewhere(remote)).toBe('ended');
-      expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
-      expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
-    },
-  );
+  it('ends it on the server when tapped again after the recorder refused the stop', async () => {
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('failed')],
+      recorderOnline: true,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('ended');
+    expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
+    expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending stop for a reachable recorder when tapped again', async () => {
+    // Ending on the server here would cut off the last audio the recorder is about to save.
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('pending')],
+      recorderOnline: true,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+    expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
+  });
 
   it('leaves an online meeting through its bot, never through the server end', async () => {
     expect(await stopMeetingElsewhere({ ...remote, engine: 'attendee' })).toBe('online');
@@ -531,7 +539,7 @@ describe('stopping a meeting recorded on another device', () => {
     ['refused', { commands: [stop('failed')], recorderOnline: true }],
     ['stranded with a silent recorder', { commands: [stop('pending')], recorderOnline: false }],
   ])('ends on the server a stop sent from here that the recorder %s', async (_, stranded) => {
-    await stopMeetingElsewhere(remote);
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
     client.getLiveMeetingCommands.mockResolvedValue(stranded);
     const control = await readMeetingControl(
       client as unknown as Parameters<typeof readMeetingControl>[0],
@@ -543,7 +551,7 @@ describe('stopping a meeting recorded on another device', () => {
   });
 
   it('keeps waiting while a reachable recorder has the stop pending', async () => {
-    await stopMeetingElsewhere(remote);
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
     client.getLiveMeetingCommands.mockResolvedValue({
       commands: [stop('pending')],
       recorderOnline: true,

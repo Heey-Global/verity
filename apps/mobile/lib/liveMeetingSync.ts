@@ -169,12 +169,15 @@ export async function stopMeetingElsewhere(
   }
   const control = await client.getLiveMeetingCommands(meeting.sessionId, meeting.id);
   const latest = control.commands[0];
-  // An earlier stop that is still waiting or was refused would only be repeated.
-  if (control.recorderOnline && !(latest?.action === 'stop' && latest.state !== 'completed')) {
-    await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+  if (control.recorderOnline && !stopStranded(control)) {
+    // A reachable recorder about to pick up an earlier stop keeps it: ending on the server
+    // at a second tap would cut off the audio that stop is meant to keep.
+    if (!(latest?.action === 'stop' && latest.state === 'pending'))
+      await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
     stopsSentHere.add(meeting.id);
     return 'requested';
   }
+  // Unreachable, or an earlier stop was refused: asking again would only repeat it.
   await endOnServer(client, meeting.sessionId, meeting.id);
   return 'ended';
 }
