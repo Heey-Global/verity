@@ -38,7 +38,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import type { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { z, ZodError } from 'zod';
+import { ZodError } from 'zod';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import type { AssistantToolDeps } from './assistant-tool.js';
@@ -68,22 +68,10 @@ import {
   type ClaudeOAuthTokenProvider,
 } from './claudeUsage.js';
 import { createCodexUsageService, type CodexUsageHealth } from './codexUsage.js';
-import { registerConnectionUsageRoutes } from './connection-usage-routes.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import { createDocumentWorkspaceProvisioner, isDocumentWorkspace } from './document-workspace.js';
-import { registerDopplerRoutes } from './doppler-routes.js';
-import { registerForgeConnectionRoutes } from './forge-connection-routes.js';
 import { registerGitSignRoute } from './git-sign-route.js';
-import { registerGitHubAppRoutes } from './github-app-routes.js';
-import { registerGitHubManifestRoutes } from './github-manifest-routes.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
-import { registerGmailRoutes } from './gmail-routes.js';
-import { googleAccountSettingsStatus } from './google-account-presentation.js';
-import { googleAppClient } from './google-app-client.js';
-import { registerGoogleCalendarRoutes } from './google-calendar-routes.js';
-import { registerGoogleConnectRoutes } from './google-connect-routes.js';
-import { registerGoogleContactsRoutes } from './google-contacts-routes.js';
-import { registerGoogleDriveRoutes } from './google-drive-routes.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
@@ -107,11 +95,9 @@ import {
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
-import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
-import { registerPairingRoutes } from './pairing-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { type PushSessionContext } from './pr-ready-push.js';
@@ -123,10 +109,8 @@ import {
   resolveProjectDefaultModel,
 } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
-import { repositoryCatalog } from './project-collection-routes.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
-import { registerProjectGoogleRoutes } from './project-google-routes.js';
 import {
   PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
   observeProjectActivity,
@@ -148,7 +132,6 @@ import {
   missingLockoutKeys,
   nonOperatorRequestKey,
 } from './route-scopes.js';
-import { registerSecretLifecycleRoutes } from './secret-lifecycle-routes.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
@@ -178,6 +161,8 @@ import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
+import { installOnboarding } from './server-onboarding.js';
+import { installSettings } from './server-settings.js';
 import {
   createMeetingTranscripts,
   installMeetingIntake,
@@ -208,9 +193,7 @@ import { recentSessionDiagnostics } from './session-observation.js';
 import { registerSessionOrderRoute } from './session-order-route.js';
 import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
-import { registerViewStateRoutes, viewerId } from './view-state-routes.js';
-import { registerSettingsRoutes, SELECTABLE_TRANSCRIBE_BACKEND_MODES } from './settings-routes.js';
-import { registerSigningKeyRoutes } from './signing-key-routes.js';
+import { registerViewStateRoutes } from './view-state-routes.js';
 import { permissionEventAwaitsInput } from './status.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
@@ -222,8 +205,7 @@ import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
 import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
-import { isWebAppRequest, registerWebAppRoutes } from './web-app.js';
-import { registerWelcomeRoutes } from './welcome-session.js';
+import { isWebAppRequest } from './web-app.js';
 import {
   createGitWorktreeProvisioner,
   createScratchProvisioner,
@@ -240,9 +222,6 @@ import {
   veritySettingsStore,
   projectSettingsStore,
   emptyProjectSettings,
-  externalMeetingTranscriptionConfigured,
-  effectiveExternalTranscription,
-  publicVeritySettings,
   isSleepLifecycleState,
   publicProject,
   isControlPlaneProject,
@@ -2010,171 +1989,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     probesFor: personalUsageProbes(ctx),
   });
 
-  // Multi-repo fleet-registry projects (concept §19, #174) for `GET /projects` —
-  // the source of the new-session picker's project list. When a GitHub provider is
-  // configured it may sync installation repos into the cache before returning;
-  // otherwise the route still returns the local cache so manually-added projects
-  // work without GitHub App setup.
-  const { refreshOpenCodeModels } = registerSettingsRoutes(app, {
-    store: () => veritySettingsStore(deps.eventStore),
-    agentLogin,
-    parseSettingsPatch: (body) => veritySettingsBody.parse(body),
-    projectEgressAvailable: deps.projectEgressAvailable,
-    projectEgressStatus: deps.projectEgressStatus,
+  installSettings(app, ctx, {
     storeAgentCredentials,
-    publicSettings: async (settings, request) => ({
-      ...publicVeritySettings(
-        settings,
-        googleAppClient(request, deps.googleDriveClientId, deps.stagingGoogleClientId) ??
-          (request.headers['x-verity-app-variant'] === undefined ? undefined : null),
-      ),
-      ...(await googleAccountSettingsStatus(deps.eventStore, viewerId(request))),
-      projectEgressAvailable: (await deps.projectEgressAvailable?.()) === true,
-      ...(deps.projectEgressStatus
-        ? { projectEgressStatus: await deps.projectEgressStatus() }
-        : {}),
-      claudeCredentialStatus: (
-        deps.claudeOAuthTokenProvider ?? dbClaudeOAuthTokenProvider
-      ).statusForCredentials?.(settings.claudeCodeOauthCredentialsJson) ?? {
-        state: 'unknown',
-        code: null,
-      },
-    }),
-    effectiveTranscription: effectiveExternalTranscription,
-    transcriptionConfigured: externalMeetingTranscriptionConfigured,
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onUplinkCredentialsChanged !== undefined
-      ? { onUplinkCredentialsChanged: deps.onUplinkCredentialsChanged }
-      : {}),
-    ...(deps.onPremiumFeatureSwitchesChanged !== undefined
-      ? { onPremiumFeatureSwitchesChanged: deps.onPremiumFeatureSwitchesChanged }
-      : {}),
-    ...(deps.onOpenCodeSettingsChanged !== undefined
-      ? { onOpenCodeSettingsChanged: deps.onOpenCodeSettingsChanged }
-      : {}),
-  });
-
-  registerGoogleDriveRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
-    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
-    ...(deps.googleDriveClientId !== undefined
-      ? { googleDriveClientId: deps.googleDriveClientId }
-      : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
-  });
-  registerGoogleConnectRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
-    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.onGoogleCredentialsChanged !== undefined
-      ? { onCredentialsChanged: deps.onGoogleCredentialsChanged }
-      : {}),
-  });
-  registerForgeConnectionRoutes(
-    app,
-    deps.eventStore,
-    async () => {
-      const projects = deps.listAvailableRepositories
-        ? await deps.listAvailableRepositories()
-        : await deps.eventStore.listProjects({ includeHidden: true });
-      return repositoryCatalog(projects).map((project) => ({
-        owner: project.owner,
-        repo: project.repo,
-      }));
-    },
-    deps.forgejoEnabled === true,
-  );
-  registerConnectionUsageRoutes(app, deps.eventStore, () => availableModels());
-  registerProjectGoogleRoutes(app, deps.eventStore);
-  registerGmailRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
-    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-  });
-  registerGoogleCalendarRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
-    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-  });
-  registerGoogleContactsRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.stagingGoogleClientId ? { stagingGoogleClientId: deps.stagingGoogleClientId } : {}),
-    ...(deps.googleDriveClientId !== undefined ? { googleClientId: deps.googleDriveClientId } : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-  });
-
-  // ── Master-password secret-store lifecycle (ADR 0002 D3) ──────────────────
-  // The cipher holds the at-rest key in memory only. `status` reports the
-  // state; `init` sets the master password the first time; `unlock` re-derives
-  // and verifies it after a restart (scrypt over the stored salt, checked
-  // against the stored verifier before the key is trusted). A deployment
-  // without a managed cipher reports 'unmanaged' and rejects init/unlock.
-  registerWebAppRoutes(app, deps.webAppDir);
-  registerPairingRoutes(app, {
-    browserRequestOrigin: deps.browserRequestOrigin,
-    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-  });
-
-  registerSecretLifecycleRoutes(app, {
-    browserRequestOrigin: deps.browserRequestOrigin,
-    store: deps.eventStore,
-    readStatus: readSecretStatus,
+    agentLogin,
     recoverQueuedTurns,
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-    ...(deps.unlockClientIdentity !== undefined
-      ? { unlockClientIdentity: deps.unlockClientIdentity }
-      : {}),
-    onSecretUnlocked: async () => {
-      await deps.onSecretUnlocked?.();
-      await refreshOpenCodeModels();
-    },
-  });
-
-  registerGitHubAppRoutes(app, {
-    store: () => veritySettingsStore(deps.eventStore),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.githubAppValidate !== undefined ? { validate: deps.githubAppValidate } : {}),
-  });
-
-  registerDopplerRoutes(app, {
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.dopplerCredentialReader !== undefined
-      ? { dopplerCredentialReader: deps.dopplerCredentialReader }
-      : {}),
-    ...(deps.dopplerValidate !== undefined ? { dopplerValidate: deps.dopplerValidate } : {}),
-    ...(deps.dopplerListProjects !== undefined
-      ? { dopplerListProjects: deps.dopplerListProjects }
-      : {}),
-    ...(deps.dopplerListConfigs !== undefined
-      ? { dopplerListConfigs: deps.dopplerListConfigs }
-      : {}),
-  });
-
-  registerGitHubManifestRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.manifestConvert !== undefined ? { manifestConvert: deps.manifestConvert } : {}),
-    ...(deps.manifestStateNow !== undefined ? { manifestStateNow: deps.manifestStateNow } : {}),
-  });
-
-  registerSigningKeyRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
-    ...(deps.resolveGitHubAppIdentity !== undefined
-      ? { resolveGitHubAppIdentity: deps.resolveGitHubAppIdentity }
-      : {}),
-    ...(deps.sshKeygen !== undefined ? { sshKeygen: deps.sshKeygen } : {}),
+    dbClaudeOAuthTokenProvider,
+    readSecretStatus,
+    // Declared further down; read only when a request arrives.
+    availableModels: () => availableModels(),
   });
   registerGitSignRoute(app, {
     eventStore: deps.eventStore,
@@ -2302,17 +2124,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     SERVER_VERSION,
     VERITY_CONTROL_PROJECT_ID,
   });
-
-  // ── First-run onboarding gate (#320) ──────────────────────────────────────
-  // `GET /onboarding/status` — the pre-unlock gate the app polls on launch. Uses
-  // ONLY non-decrypting reads so it answers while the store is sealed.
-  registerOnboardingRoutes(app, {
-    eventStore: deps.eventStore,
-    secretCipher: deps.secretCipher,
-    isAuthenticated: (request) =>
-      deps.authRegistry === undefined ||
-      deps.authRegistry.verify(requestCredential(request)) === true,
-  });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerMockupRoutes(app, { mockups: sessionMockups });
   registerAutomationRoutes(app, {
@@ -2430,55 +2241,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     browserRequestOrigin: deps.browserRequestOrigin,
   });
   registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
-  const veritySettingsBody = z.object({
-    advancedModeEnabled: z.boolean().optional(),
-    unassignedMeetingRetentionDays: z.number().int().min(1).max(365).nullable().optional(),
-    gitUserName: z.string().nullable().optional(),
-    gitUserEmail: z.string().nullable().optional(),
-    gitSshPrivateKeyPath: z.string().nullable().optional(),
-    gitSshPrivateKey: z.string().nullable().optional(),
-    gitSshPublicKeyPath: z.string().nullable().optional(),
-    gitSshPublicKey: z.string().nullable().optional(),
-    gitKnownHostsPath: z.string().nullable().optional(),
-    gitKnownHosts: z.string().nullable().optional(),
-    gitAllowedSignersPath: z.string().nullable().optional(),
-    gitAllowedSigners: z.string().nullable().optional(),
-    githubAppId: z.string().nullable().optional(),
-    githubAppInstallationId: z.string().nullable().optional(),
-    githubAppPrivateKey: z.string().nullable().optional(),
-    dopplerServiceToken: z.string().nullable().optional(),
-    transcribeBaseUrl: z.string().nullable().optional(),
-    transcribeApiKey: z.string().nullable().optional(),
-    transcribeModel: z.string().nullable().optional(),
-    transcribeBackendMode: z.enum(SELECTABLE_TRANSCRIBE_BACKEND_MODES).nullable().optional(),
-    claudeCodeOauthCredentialsJson: z.string().nullable().optional(),
-    codexAuthJson: z.string().nullable().optional(),
-    opencodeBaseUrl: z
-      .string()
-      .url()
-      .refine((value) => {
-        const url = new URL(value);
-        return (
-          url.protocol === 'https:' &&
-          url.username === '' &&
-          url.password === '' &&
-          url.search === '' &&
-          url.hash === ''
-        );
-      }, 'OpenCode Base URL must be an HTTPS origin or path without credentials, query, or fragment')
-      .nullable()
-      .optional(),
-    opencodeApiKey: z
-      .string()
-      .refine((value) => !/[\r\n]/u.test(value))
-      .nullable()
-      .optional(),
-    opencodeDisabledModels: z.string().max(100_000).nullable().optional(),
-    uplinkSubscriptionKey: z.string().trim().min(1).max(4096).nullable().optional(),
-    premiumSharingEnabled: z.boolean().optional(),
-    premiumRemoteAccessEnabled: z.boolean().optional(),
-    projectEgressEnabled: z.boolean().optional(),
-  });
 
   registerVerityControlSessionRoute(app, {
     defaultModel: DEFAULT_MODEL,
@@ -3310,16 +3072,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     preparingRepairDispatches,
   });
 
-  // First-run welcome session in the starter project (see welcome-session.ts).
-  // Created through the same spawn path as POST /sessions; the session-route
-  // live hint does not fire for this URL, so it is sent here.
-  registerWelcomeRoutes(app, {
-    eventStore: deps.eventStore,
-    secretCipher: deps.secretCipher,
-    spawn: sessionCreate.spawn,
-    notifySessionCreated: (sessionId, projectId) =>
-      liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
-  });
+  installOnboarding(app, ctx, { spawn: sessionCreate.spawn });
 
   // Wiki maintenance runs when something new happened in a project (see
   // wiki-maintenance-trigger.ts and docs/knowledge.md).
