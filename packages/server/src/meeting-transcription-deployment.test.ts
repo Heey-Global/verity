@@ -40,8 +40,11 @@ describe('meeting transcription deployment', () => {
   it('takes provider configuration only from encrypted Settings', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
     expect(compose).not.toContain('VERITY_TRANSCRIBE_BASE_URL');
-    const server = await readFile('packages/server/src/server.ts', 'utf8');
-    expect(server).not.toContain('process.env.VERITY_TRANSCRIBE_BASE_URL');
-    expect(server).not.toContain('process.env.VERITY_MEETING_TRANSCRIBE_COMMAND');
+    // buildServer wires the transcriber through server-meetings.ts.
+    for (const file of ['server.ts', 'server-meetings.ts']) {
+      const server = await readFile(`packages/server/src/${file}`, 'utf8');
+      expect(server).not.toContain('process.env.VERITY_TRANSCRIBE_BASE_URL');
+      expect(server).not.toContain('process.env.VERITY_MEETING_TRANSCRIBE_COMMAND');
+    }
   });
 });
