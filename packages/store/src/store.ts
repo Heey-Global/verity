@@ -1,4 +1,15 @@
 import { ProjectTeamStore } from './project-team.js';
+import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
+import {
+  MESSAGE_PROJECTION_VERSION,
+  pendingMessageProjectionByDb,
+  pendingMessageBackfillsByDb,
+  waitForPendingMessageProjections,
+  waitForMessageProjectionWork,
+  projectMessageEvent,
+  idChunks,
+} from './message-projection.js';
+export { waitForMessageProjectionWork, waitForPendingMessageProjections };
 import { ProjectInquiryStore } from './project-inquiries.js';
 import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
 import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
@@ -1048,26 +1059,6 @@ export interface SequencedEvent {
 }
 
 /**
- * How many session ids one `in (…)` list carries — see
- * {@link EventStore.listSessionProjectionFacts}. Postgres refuses a statement
- * with more than 65535 bind parameters outright, and `GET /sessions` passes
- * EVERY session of a deployment at once, so an unchunked list turns a big
- * install into a route that throws rather than one that is slow. Well under the
- * ceiling on purpose: the extra round trips are cheap next to the per-session
- * reads this replaced, and the queries spend parameters on the type filter too.
- */
-const PROJECTION_ID_CHUNK = 500;
-
-/** Split `items` into chunks of at most {@link PROJECTION_ID_CHUNK}. */
-function idChunks<T>(items: readonly T[]): T[][] {
-  const chunks: T[][] = [];
-  for (let at = 0; at < items.length; at += PROJECTION_ID_CHUNK) {
-    chunks.push(items.slice(at, at + PROJECTION_ID_CHUNK));
-  }
-  return chunks;
-}
-
-/**
  * One token field of a `result` payload, summed across a group — see
  * {@link EventStore.readUsageTotals}.
  *
@@ -1239,134 +1230,6 @@ export interface EventSink {
  */
 export const RUNNER_FRAME_PROTOCOL_VERSION = 1;
 
-type ProjectionDb = Kysely<Database> | Transaction<Database>;
-const MESSAGE_PROJECTION_VERSION = 1;
-const pendingMessageProjectionByDb = new WeakMap<Kysely<Database>, Promise<void>>();
-const pendingMessageBackfillsByDb = new WeakMap<Kysely<Database>, Set<Promise<void>>>();
-
-export async function waitForPendingMessageProjections(db: Kysely<Database>): Promise<void> {
-  await (pendingMessageProjectionByDb.get(db) ?? Promise.resolve());
-}
-
-/**
- * Wait until no projection work is in flight against `db` — the ordered live
- * chain AND every recovery/search backfill.
- *
- * {@link waitForPendingMessageProjections} covers only the first. That is enough
- * to observe a projected event, but not to know the database is quiet: a live
- * projection that declines its slot enqueues a backfill *as it resolves*, and
- * {@link EventStore.ingestRunnerFrame} schedules one unawaited by design. Those
- * run on their own connection, so a caller that needs exclusive access (a test
- * harness truncating between tests) must wait for them too — otherwise its
- * TRUNCATE takes AccessExclusiveLock on the tables the backfill is midway
- * through reading and the two deadlock (40P01).
- *
- * The queues are re-read across a barrier because draining one can enqueue into
- * the other; the loop settles once a full pass adds nothing.
- */
-export async function waitForMessageProjectionWork(db: Kysely<Database>): Promise<void> {
-  for (;;) {
-    const live = pendingMessageProjectionByDb.get(db) ?? Promise.resolve();
-    const backfills = [...(pendingMessageBackfillsByDb.get(db) ?? [])];
-    await Promise.all([live, ...backfills.map((backfill) => backfill.catch(() => undefined))]);
-    // Let completion handlers enqueue a recovery backfill before checking that
-    // the two queues stayed unchanged across the barrier.
-    await Promise.resolve();
-    if (
-      (pendingMessageProjectionByDb.get(db) ?? live) === live &&
-      (pendingMessageBackfillsByDb.get(db)?.size ?? 0) === 0
-    ) {
-      return;
-    }
-  }
-}
-
-async function finalizeOpenMessage(db: ProjectionDb, sessionId: string): Promise<void> {
-  await db
-    .updateTable('messages')
-    .set({ finalized: true })
-    .where('session_id', '=', sessionId)
-    .where('finalized', '=', false)
-    .execute();
-}
-
-/** Fold one persisted canonical event into the rebuildable visible-message view. */
-async function projectMessageEvent(
-  db: ProjectionDb,
-  sessionId: string,
-  seq: number,
-  createdAt: Date,
-  event: AgentEvent,
-): Promise<void> {
-  if (event.t === 'task' || event.t === 'session') return;
-
-  if (event.t === 'text' && event.parentToolId === undefined) {
-    const open = await db
-      .selectFrom('messages')
-      .select(['id', 'text'])
-      .where('session_id', '=', sessionId)
-      .where('finalized', '=', false)
-      .where('role', '=', 'agent')
-      .orderBy('id', 'desc')
-      .executeTakeFirst();
-    if (open !== undefined) {
-      await db
-        .updateTable('messages')
-        .set({ text: open.text + event.delta, last_event_seq: seq })
-        .where('id', '=', open.id)
-        .execute();
-    } else {
-      await db
-        .insertInto('messages')
-        .values({
-          session_id: sessionId,
-          role: 'agent',
-          kind: 'text',
-          text: event.delta,
-          first_event_seq: seq,
-          last_event_seq: seq,
-          created_at: createdAt,
-        })
-        .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-        .execute();
-    }
-    return;
-  }
-
-  await finalizeOpenMessage(db, sessionId);
-  if (event.t === 'prompt') {
-    await db
-      .insertInto('messages')
-      .values({
-        session_id: sessionId,
-        role: 'user',
-        kind: 'prompt',
-        text: event.peer?.message ?? event.text,
-        first_event_seq: seq,
-        last_event_seq: seq,
-        finalized: true,
-        created_at: createdAt,
-      })
-      .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-      .execute();
-  } else if (event.t === 'notice') {
-    await db
-      .insertInto('messages')
-      .values({
-        session_id: sessionId,
-        role: event.role === 'operator' ? 'user' : 'agent',
-        kind: 'notice',
-        text: event.text,
-        first_event_seq: seq,
-        last_event_seq: seq,
-        finalized: true,
-        created_at: createdAt,
-      })
-      .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-      .execute();
-  }
-}
-
 /**
  * The Server-side ingest descriptor for one Runner frame (ADR 0006 D4). It is the
  * transport-neutral projection of `@verity/session`'s `RunnerFrame` — carrying only
@@ -1419,72 +1282,6 @@ const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
  * there is no real instance to name. Excluded from the turn→instance binding check. */
 const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
 
-/**
- * The durable source of truth (concept §5a). Wraps the append-only Postgres
- * event log. Every event is validated against the canonical contract before it
- * is persisted and again when it is read back, so the log can never hold — or
- * hand out — an event that violates the schema.
- */
-interface SessionDeletionState {
-  session?: { sessionId?: string; projectId?: string | null; worktree?: string };
-  previewIds?: string[];
-  managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
-  terminationConfirmed?: boolean;
-  legacyArtifactsPurged?: boolean;
-  artifactBindings?: { backend: string; backendSessionId: string }[];
-  purgedArtifactBindings?: { backend: string; backendSessionId: string }[];
-}
-
-/** Ownership is monotonic even when an older Server writes its retry snapshot. */
-function mergeSessionDeletionState(
-  current: SessionDeletionState,
-  next: SessionDeletionState,
-): SessionDeletionState {
-  const managed = current.managed ?? next.managed;
-  const session = current.session ?? next.session;
-  return {
-    ...current,
-    ...next,
-    artifactBindings: [
-      ...new Map(
-        [...(current.artifactBindings ?? []), ...(next.artifactBindings ?? [])].map((binding) => [
-          JSON.stringify([binding.backend, binding.backendSessionId]),
-          binding,
-        ]),
-      ).values(),
-    ],
-    purgedArtifactBindings: [
-      ...new Map(
-        [...(current.purgedArtifactBindings ?? []), ...(next.purgedArtifactBindings ?? [])].map(
-          (binding) => [JSON.stringify([binding.backend, binding.backendSessionId]), binding],
-        ),
-      ).values(),
-    ],
-    ...(session === undefined ? {} : { session }),
-    previewIds: [...new Set([...(current.previewIds ?? []), ...(next.previewIds ?? [])])],
-    ...(managed === undefined
-      ? {}
-      : {
-          managed: {
-            ...managed,
-            projectId: current.managed?.projectId ?? next.managed?.projectId ?? null,
-            instanceIds: [
-              ...new Set([
-                ...(current.managed?.instanceIds ?? []),
-                ...(next.managed?.instanceIds ?? []),
-              ]),
-            ],
-          },
-        }),
-    ...(current.legacyArtifactsPurged || next.legacyArtifactsPurged
-      ? { legacyArtifactsPurged: true }
-      : {}),
-    ...(current.terminationConfirmed || next.terminationConfirmed
-      ? { terminationConfirmed: true }
-      : {}),
-  };
-}
-
 // PGlite has one physical connection, where advisory locks are re-entrant even
 // through different EventStore wrappers. Keep physical cleanup exclusive there too.
 const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
@@ -1495,6 +1292,12 @@ function backendStateScope(backend: string): string {
   return separator < 0 ? '' : backend.slice(separator + 1);
 }
 
+/**
+ * The durable source of truth (concept §5a). Wraps the append-only Postgres
+ * event log. Every event is validated against the canonical contract before it
+ * is persisted and again when it is read back, so the log can never hold — or
+ * hand out — an event that violates the schema.
+ */
 export class EventStore implements EventSink {
   listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
     return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(

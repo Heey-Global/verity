@@ -18,7 +18,6 @@ import { join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createConnection, createServer } from 'node:net';
 import { createHash } from 'node:crypto';
-import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   collectEscapedProcessTree,
@@ -52,7 +51,6 @@ import {
   readTurnState,
   redactTrustedCliText,
   runTrustedCliViaBroker,
-  runSupervisor as runSupervisorRuntime,
   supervisorRequestTimeoutMs,
   probeSupervisor,
   validateRuntimeDirectory,
@@ -70,60 +68,28 @@ import {
   materializeTrustedCliEntryScript,
   probeAgentSpawnBroker,
   resetProcessTreeWarnings,
-  runAgentSpawnBroker as runAgentSpawnBrokerRuntime,
   stopAgentProcessGroup,
   collectEscapedProcessTree as brokerCollectEscapedProcessTree,
   PROCESS_TREE_KILL_GRACE_MS as BROKER_PROCESS_TREE_KILL_GRACE_MS,
   trustedCliLaunchSpec,
-  validateTrustedCliArguments as validateTrustedCliArgumentsRuntime,
   validateRunnerRuntimeStats,
   validateTrustedCliExecutable,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
+import {
+  execFileAsync,
+  connectorLauncher,
+  NATIVE_WORKER_SETTLE_TIMEOUT_MS,
+  IMMUTABLE_EXECUTABLE_PATH,
+  validateTrustedCliArguments,
+  runAgentSpawnBroker,
+  runSupervisor,
+  supervisorRequest,
+  supervisorRequestFrames,
+  supervisorRequestsTogether,
+  supervisorRequestFramesTogether,
+} from './runner-supervisor-feature.test-helper.js';
 
 let runtimeDir: string;
-const execFileAsync = promisify(execFile);
-const connectorLauncher = resolve(
-  'features/verity-sandbox-toolkit/bin/verity-egress-connector-start',
-);
-const NATIVE_WORKER_SETTLE_TIMEOUT_MS = 5_000;
-// Keep broker fixtures independent of the host image's runner-writable
-// /usr/local/bin; dedicated tests below still cover mutable PATH rejection.
-const IMMUTABLE_EXECUTABLE_PATH = '/usr/bin:/bin';
-
-const validateTrustedCliArguments: typeof validateTrustedCliArgumentsRuntime = (
-  command,
-  args,
-  cwd,
-  executablePath = IMMUTABLE_EXECUTABLE_PATH,
-  ...rest
-) => validateTrustedCliArgumentsRuntime(command, args, cwd, executablePath, ...rest);
-
-function runAgentSpawnBroker(options: Parameters<typeof runAgentSpawnBrokerRuntime>[0]) {
-  const testIdentity =
-    options.enforceRoot === false
-      ? { agentUid: process.getuid?.() ?? 0, agentGid: process.getgid?.() ?? 0 }
-      : {};
-  return runAgentSpawnBrokerRuntime({
-    // The helper is not installed on a test host; script-isolation.test.ts owns the probe.
-    scriptIsolation: { available: true },
-    worktreeRoot: options.runtimeDir ?? tmpdir(),
-    ...options,
-    ...testIdentity,
-    env: { ...options.env, PATH: options.env?.PATH ?? IMMUTABLE_EXECUTABLE_PATH },
-  });
-}
-
-type RunSupervisorOptions = Parameters<typeof runSupervisorRuntime>[0];
-
-function runSupervisor(options: RunSupervisorOptions = {}) {
-  return runSupervisorRuntime({
-    uid: process.getuid?.() ?? 0,
-    gid: process.getgid?.() ?? 0,
-    scriptIsolation: { available: true },
-    ...options,
-  });
-}
-
 beforeEach(async () => {
   runtimeDir = await mkdtemp(join(tmpdir(), 'verity-runner-supervisor-'));
   await chmod(runtimeDir, 0o770);
@@ -132,95 +98,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(runtimeDir, { recursive: true, force: true });
 });
-
-async function supervisorRequest(
-  socketPath: string,
-  payload: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const frames = await supervisorRequestFrames(socketPath, payload);
-  return frames.at(-1) ?? {};
-}
-
-async function supervisorRequestFrames(
-  socketPath: string,
-  payload: Record<string, unknown>,
-): Promise<Record<string, unknown>[]> {
-  return await new Promise((resolveReply, rejectReply) => {
-    const socket = createConnection(socketPath);
-    let response = '';
-    socket.once('error', rejectReply);
-    socket.on('data', (chunk) => {
-      response += chunk.toString('utf8');
-    });
-    socket.once('end', () => {
-      const frames = response
-        .trimEnd()
-        .split('\n')
-        .map((line) => JSON.parse(line) as Record<string, unknown>);
-      resolveReply(frames);
-    });
-    socket.once('connect', () => socket.write(`${JSON.stringify(payload)}\n`));
-  });
-}
-
-/**
- * Send several requests that must be IN FLIGHT TOGETHER.
- *
- * `Promise.all` over independent connect-then-write round trips does not give that:
- * on a host that schedules unkindly, each request can be answered before the next
- * socket even connects, and a test about a full queue quietly becomes a test about
- * six starts in a row. Connecting everything first and only then writing removes the
- * scheduling from the question — the frames land while the first start is still
- * awaiting its own filesystem work.
- */
-async function supervisorRequestsTogether(
-  socketPath: string,
-  payloads: Record<string, unknown>[],
-): Promise<Record<string, unknown>[]> {
-  const frames = await supervisorRequestFramesTogether(socketPath, payloads);
-  return frames.map((lines) => lines.at(-1) ?? {});
-}
-
-/**
- * The same burst, keeping EVERY frame each connection received.
- *
- * What a two-phase reply refuses to say matters as much as what it says: a refusal
- * that arrives on its own proves the supervisor never acknowledged the start, which
- * is the difference between a turn the Server may retry and one it has to fence.
- * Collapsing each connection to its last frame hides exactly that.
- */
-async function supervisorRequestFramesTogether(
-  socketPath: string,
-  payloads: Record<string, unknown>[],
-): Promise<Record<string, unknown>[][]> {
-  const pending = payloads.map(async (payload) => {
-    const socket = createConnection(socketPath);
-    let response = '';
-    const connected = new Promise<void>((resolveConnect, rejectConnect) => {
-      socket.once('connect', () => resolveConnect());
-      socket.once('error', rejectConnect);
-    });
-    const replied = new Promise<Record<string, unknown>[]>((resolveReply, rejectReply) => {
-      socket.once('error', rejectReply);
-      socket.on('data', (chunk) => {
-        response += chunk.toString('utf8');
-      });
-      socket.once('end', () => {
-        resolveReply(
-          response
-            .trimEnd()
-            .split('\n')
-            .map((line) => JSON.parse(line) as Record<string, unknown>),
-        );
-      });
-    });
-    await connected;
-    return { payload, socket, replied };
-  });
-  const ready = await Promise.all(pending);
-  for (const { socket, payload } of ready) socket.write(`${JSON.stringify(payload)}\n`);
-  return await Promise.all(ready.map(async ({ replied }) => await replied));
-}
 
 describe('verity-runner supervisor runtime', () => {
   it('keeps the control-plane Codex provider config aligned with project sandboxes', async () => {

@@ -1,3 +1,5 @@
+import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
+export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
@@ -123,48 +125,10 @@ export interface ManagedDevServerManagerOptions {
   log?: (message: string, detail?: Record<string, unknown>) => void;
 }
 
-export interface ManagedInstanceView {
-  id: string;
-  sessionId: string;
-  state: ManagedDevServerInstanceRecord['state'];
-  desired: ManagedDevServerInstanceRecord['desired'];
-  detail: string | null;
-  /** The network address; set while the instance is published locally. */
-  url: string | null;
-  localShareId: string | null;
-  /** Internal; the app uses it only as a share target and never displays it. */
-  sandboxPort: number;
-  /** True while running without the operator's approval for local publishing. */
-  awaitingApproval: boolean;
-  /** The Local switch: on while the operator wants it published on the network. A
-   *  crash keeps it as it was; an unapproved command never reads as on. */
-  localOn: boolean;
-  /** The running command differs from the entry's current one. */
-  restartToApply: boolean;
-  startedAt: string | null;
-}
-
 export interface ManagedServerProviderSnapshot {
   provider: 'doppler';
   project: string;
   config: string;
-}
-
-export interface ManagedServerView {
-  providerSnapshot?: ManagedServerProviderSnapshot | null | undefined;
-  id: string;
-  name: string;
-  command: string;
-  workdir: string;
-  secretBindings: ManagedDevServerSecretBinding[];
-  approved: boolean;
-  /** This Core has the Local and Shared online switches (`/local`, `local` on
-   *  start and approve). Lets newer apps fall back on older Cores. */
-  accessSwitches: true;
-  /** This session's instance, if the entry ever ran here. */
-  instance: ManagedInstanceView | null;
-  /** Running or starting instances in other sessions of the project. */
-  elsewhere: Array<{ instanceId: string; sessionId: string; sessionName: string | null }>;
 }
 
 export class ManagedDevServerError extends Error {

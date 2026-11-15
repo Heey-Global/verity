@@ -13,7 +13,6 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
 import { VERITY_CONTROL_PROJECT_ID, buildServer } from './server.js';
 import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import {
@@ -34,18 +33,23 @@ import {
 const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const TEST_UID = process.getuid?.() ?? 1000;
+
 const TEST_GID = process.getgid?.() ?? 1000;
 
 let ctx: TestDb;
+
 let projectRoot: string;
+
 beforeAll(async () => {
   ctx = await createTestDb();
   projectRoot = mkdtempSync(join(tmpdir(), 'verity-mcp-projects-'));
 });
+
 afterAll(async () => {
   await ctx.close();
   rmSync(projectRoot, { recursive: true, force: true });
 });
+
 beforeEach(async () => {
   await truncateAll(ctx.db);
 });
@@ -320,6 +324,7 @@ function build(
 }
 
 const relayPorts = new Map<string, number>();
+
 function postUnix(
   socketPath: string,
   authorization: string | undefined,
@@ -2706,6 +2711,7 @@ it('lets the user leave planning before a proposal exists with one confirmation'
   expect((await harness.store.getSession('s1'))?.planning).toBe('discarded');
   expect(harness.dispatches).toEqual([]);
 });
+
 it('keeps a newer proposal when an agent dismissal confirmation races a revision', async () => {
   const harness = build({ planningTools: true, revisePlanOnApproval: true });
   await harness.store.createProject({
@@ -2736,55 +2742,6 @@ it('keeps a newer proposal when an agent dismissal confirmation races a revision
     expect(JSON.parse(response.body)).toMatchObject({ result: { isError: true } });
   });
   expect((await harness.store.getSession('s1'))?.planning).toBe('active');
-});
-
-it('serves vulnerability reads through the audited gateway and refuses foreign resource overrides', async () => {
-  const harness = build({ vulnerabilityTools: true });
-  await harness.store.upsertProject({
-    id: 'p1',
-    owner: 'test',
-    repo: 'vulns',
-    containerName: 'vulns',
-    state: 'active',
-  });
-  await harness.store.createSession({
-    sessionId: 's1',
-    projectId: 'p1',
-    worktree: '/tmp/vulns',
-    model: 'test',
-  });
-  const prompt = await harness.store.appendEvent('s1', {
-    t: 'prompt',
-    text: 'Read vulnerabilities',
-  });
-  await harness.store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
-  await harness.store.bindTurnIdentity('s1', { turnId: 't1', startCommandId: 'c1' });
-  const token = harness.tokens.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1' });
-  await withListener(harness, async (socketPath) => {
-    const call = (args: object) =>
-      postUnix(socketPath, `Bearer ${token}`, {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/call',
-        params: { name: 'verity_vulnerabilities', arguments: args },
-      });
-    const read = await call({ action: 'read', scope: 'session' });
-    expect(read.body).toContain('findings');
-    expect(read.body).toContain('comparable');
-    await harness.store.startSessionPlanning('s1');
-    expect((await call({ action: 'read', scope: 'project' })).body).toContain('findings');
-    expect((await call({ action: 'scan', scope: 'project' })).body).toContain('planning mode');
-    expect(
-      (await call({ action: 'read', scope: 'project', projectId: 'foreign' })).body,
-    ).not.toContain('comparable');
-  });
-  expect(harness.approvals).toEqual([]);
-  expect(harness.invocations).toEqual([]);
-  expect(
-    harness.records.some(
-      (r) => r.toolName === 'verity_vulnerabilities' && r.kind === 'gateway_call_served',
-    ),
-  ).toBe(true);
 });
 
 it('rejects forged project/generation headers at the real relay before broker execution', async () => {

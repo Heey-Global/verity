@@ -1,4 +1,6 @@
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
+import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
@@ -658,14 +660,6 @@ interface SessionActions {
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
-
-// Who sent each message, in a session several people write in: names by user id
-// and the signed-in person. Absent (null) when one person works alone, whose
-// transcript stays unlabelled.
-const SessionPeopleContext = createContext<{
-  people: Readonly<Record<string, string>>;
-  viewerUserId: string | undefined;
-} | null>(null);
 
 // Bookmark state (#bookmarks), provided once by `SessionChat` so a deep transcript
 // row (`<AgentMarkdown>`) can toggle its own message's bookmark without threading a
@@ -3662,10 +3656,6 @@ export const SessionChat = memo(function SessionChat({
       },
     ]);
   }, [decidePermission, decidePlanning, planningRevision, session.pendingPermission]);
-  const peopleContext = useMemo(
-    () => (people === undefined ? null : { people, viewerUserId }),
-    [people, viewerUserId],
-  );
   const actions = useMemo<SessionActions>(
     () => ({
       sendTurn: sendQuickReply,
@@ -4674,7 +4664,7 @@ export const SessionChat = memo(function SessionChat({
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
-          <SessionPeopleContext.Provider value={peopleContext}>
+          <SessionPeopleProvider people={people} viewerUserId={viewerUserId}>
             <SessionFileOpenContext.Provider value={openSessionFile}>
               <AppLinkOpenContext.Provider value={openAppLink}>
                 <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
@@ -4685,33 +4675,18 @@ export const SessionChat = memo(function SessionChat({
                       projectId={projectId}
                     >
                       {transcriptList}
-                      {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                      {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                        <View style={styles.restoreCover}>
-                          <ActivityIndicator
-                            color={theme.colors.textMuted}
-                            accessibilityLabel={
-                              pendingUserJump !== null || jumpTarget !== null
-                                ? 'Jumping to message or bookmark'
-                                : 'Restoring chat position'
-                            }
-                          />
-                          {pendingUserJump !== null || jumpTarget !== null ? (
-                            <Text style={styles.emptySubtitle}>
-                              {pendingUserJump !== null
-                                ? 'Finding previous message or bookmark…'
-                                : 'Jumping to message or bookmark…'}
-                            </Text>
-                          ) : null}
-                        </View>
-                      ) : null}
+                      <TranscriptPositionCover
+                        restoring={restoring}
+                        finding={pendingUserJump !== null}
+                        jumping={jumpTarget !== null}
+                        styles={styles}
+                      />
                     </KnowledgeSaveProvider>
                   </BookmarksContext.Provider>
                 </SessionFileImageSourceContext.Provider>
               </AppLinkOpenContext.Provider>
             </SessionFileOpenContext.Provider>
-          </SessionPeopleContext.Provider>
+          </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
       {messages.length > 0 ? (
@@ -6965,15 +6940,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   const pending = message.pending;
   const actions = useContext(SessionActionsContext);
   const recoverable = pending === 'failed' && actions !== null;
-  const shared = useContext(SessionPeopleContext);
-  // In a shared session every person's message names its sender; someone else's
-  // sits on the other side, like an agent's, so the reader can tell them apart.
-  const senderId = message.initiatedBy?.userId ?? (pending ? shared?.viewerUserId : undefined);
-  const sender =
-    shared !== null && !message.peer && senderId !== undefined
-      ? shared.people[senderId]
-      : undefined;
-  const fromOther = sender !== undefined && senderId !== shared?.viewerUserId;
+  const { sender, fromOther } = useMessageSender(message);
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
