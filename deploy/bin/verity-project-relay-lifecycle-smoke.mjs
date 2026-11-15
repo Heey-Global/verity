@@ -8,11 +8,15 @@ import Fastify from 'fastify';
 import { createDockerClient } from '../../packages/server/dist/docker.js';
 import { internalConnectionIdentity } from '../../packages/server/dist/internal-listener.js';
 import { projectRelayContainerName } from '../../packages/server/dist/project-relay-docker.js';
+import { originalSandbox } from '../../packages/server/dist/project-relay-lifecycle.js';
 import { createProjectRelayRuntime } from '../../packages/server/dist/project-relay-runtime.js';
 
 const [image, dataVolume, projectNetwork, suffix] = process.argv.slice(2);
 assert(image?.includes('@sha256:'), 'relay lifecycle smoke requires a digest-pinned image');
 assert(dataVolume && projectNetwork && suffix, 'relay lifecycle smoke arguments are incomplete');
+
+// Relays run per sandbox (ADR 0023 §4); this smoke drives the original one.
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const brokerSocketRoot = '/data/relay-lifecycle/broker';
 const claudeSocketRoot = '/data/relay-lifecycle/claude';
@@ -51,6 +55,10 @@ function capabilityRegistry(prefix) {
       revoked.push(projectId);
       active.delete(projectId);
     },
+    async revokeSandbox(projectId) {
+      revoked.push(projectId);
+      active.delete(projectId);
+    },
   };
 }
 
@@ -69,6 +77,7 @@ const runtime = createProjectRelayRuntime({
   claudeSocketRoot,
   socketOwnerUid: 0,
   relayGid: 65_532,
+  defaultSandboxUser: async () => SANDBOX_USER,
   projectNetwork: (projectId) =>
     projectId === `rollback-${suffix}` ? `missing-network-${suffix}` : projectNetwork,
 });
@@ -146,6 +155,8 @@ async function assertContainerGone(containerName) {
 const projectId = `lifecycle-${suffix}`;
 const firstBinding = {
   projectId,
+  userId: SANDBOX_USER,
+  projectDefault: true,
   owner: 'Heey-Global',
   repo: 'Verity',
   containerGeneration: 'generation-a',
@@ -163,7 +174,7 @@ await waitFor('generation-a Claude relay', firstContainer, () => probeClaude(fir
 assert.equal(signingCapabilities.active.get(projectId)?.value, first.signingCapability);
 assert.equal(githubCapabilities.active.get(projectId)?.value, first.githubCapability);
 
-await runtime.stop(projectId);
+await runtime.stop(originalSandbox(projectId));
 await assertContainerGone(firstContainer);
 assert.equal(signingCapabilities.active.has(projectId), false);
 assert.equal(githubCapabilities.active.has(projectId), false);
@@ -179,6 +190,8 @@ await waitFor('generation-b Claude relay', secondContainer, () => probeClaude(se
 const rollbackProject = `rollback-${suffix}`;
 const rollbackIdentity = {
   projectId: rollbackProject,
+  userId: SANDBOX_USER,
+  projectDefault: true,
   containerGeneration: 'generation-failed',
 };
 await assert.rejects(() =>
@@ -195,7 +208,7 @@ assert.equal(githubCapabilities.active.has(rollbackProject), false);
 assert(signingCapabilities.revoked.includes(rollbackProject));
 assert(githubCapabilities.revoked.includes(rollbackProject));
 
-await runtime.stop(projectId);
+await runtime.stop(originalSandbox(projectId));
 await assertContainerGone(secondContainer);
 await runtime.close();
 await new Promise((resolve, reject) =>

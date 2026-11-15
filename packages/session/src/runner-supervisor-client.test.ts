@@ -1,4 +1,5 @@
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { toolkitSources } from './toolkit-sources.test-helper.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
@@ -670,13 +671,7 @@ describe('SupervisorRunnerClient', () => {
   // test above still green, because they assert against their own fake server's
   // literal rather than against the real emitter.
   it('keeps the supervisor speaking the refusal the explanation recognizes', async () => {
-    const supervisor = await readFile(
-      new URL(
-        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
-        import.meta.url,
-      ),
-      'utf8',
-    );
+    const supervisor = await toolkitSources('runner-supervisor');
     expect(supervisor).toContain("throw new Error('invalid mcpGatewayToken')");
     // Both ends of the pairing, so this fails whichever one moves.
     const client = await readFile(
