@@ -579,19 +579,29 @@ describe('the onRoute hook in buildServer', () => {
       const next = source.indexOf('\nexport ', start + 1);
       return source.slice(start, next === -1 ? undefined : next);
     };
+    // Every `install*` call wires a whole area, including route modules that may
+    // register plugins of their own, so each must follow the gate whatever its
+    // body shows. Other `server-*` helpers count when their own body registers
+    // a plugin, and any other module's functions when that module does.
     const callers: string[] = [];
-    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/(server-[a-z-]+)\.js';/gu)) {
+    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/([a-z-]+)\.js';/gu)) {
       const [, names = '', module = ''] = match;
       if (module === 'server-http') continue;
       const source = readFileSync(join(dir, `${module}.ts`), 'utf8');
-      for (const name of names.split(',').map((entry) => entry.trim())) {
-        if (name === '' || name.startsWith('type ')) continue;
-        if (registersPlugins(functionBody(source, name))) callers.push(name);
+      for (const entry of names.split(',').map((value) => value.trim())) {
+        if (entry === '' || entry.startsWith('type ')) continue;
+        const [imported = entry, local = imported] = entry.split(/\s+as\s+/u);
+        if (
+          module.startsWith('server-')
+            ? imported.startsWith('install') || registersPlugins(functionBody(source, imported))
+            : registersPlugins(source)
+        )
+          callers.push(local);
       }
     }
     expect(
       callers,
-      'no plugin-registering install function found — the scan broke',
+      'no install or plugin-registering call found — the scan broke',
     ).not.toHaveLength(0);
     for (const name of callers) {
       for (const call of server.matchAll(new RegExp(`\\b${name}\\(`, 'gu'))) {
