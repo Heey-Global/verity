@@ -145,15 +145,22 @@ describe('native shared CoreML loading guards', () => {
     expect(coordinator).toMatch(
       /await LiveModelLoadGate.shared.acquire\(\)[\s\S]*defer \{ Task \{ await LiveModelLoadGate.shared.release\(\)/,
     );
-    for (const [method, loader] of [
-      ['startNemotron', 'StreamingNemotronMultilingualAsrManager.preloadShared('],
-      ['startParakeet', 'AsrModels.load('],
+    // Download and CoreML load are separate calls; both run under the permit.
+    for (const [method, download, loader] of [
+      [
+        'startNemotron',
+        'StreamingNemotronMultilingualAsrManager.downloadVariant(',
+        'StreamingNemotronMultilingualAsrManager.preloadShared(',
+      ],
+      ['startParakeet', ' AsrModels.download(', ' AsrModels.load('],
     ]) {
       const body = nativeMethod(source, method!);
       const permit = body.indexOf('await LiveModelLoadGate.shared.acquire()');
+      const fetched = body.indexOf(download!);
       const load = body.indexOf(loader!);
       expect(permit).toBeGreaterThanOrEqual(0);
-      expect(load).toBeGreaterThan(permit);
+      expect(fetched).toBeGreaterThan(permit);
+      expect(load).toBeGreaterThan(fetched);
       // A failed load must release the permit rather than blocking every later model.
       expect(body.slice(load)).toMatch(
         /await LiveModelLoadGate.shared.release\(\)[\s\S]*catch[\s\S]*await LiveModelLoadGate.shared.release\(\)/,
