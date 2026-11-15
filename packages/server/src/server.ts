@@ -95,11 +95,9 @@ import {
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
 import { registerMessageSearchRoute } from './message-search-route.js';
-import { registerOnboardingRoutes } from './onboarding-routes.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
-import { registerPairingRoutes } from './pairing-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { type PushSessionContext } from './pr-ready-push.js';
@@ -163,6 +161,7 @@ import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
+import { installOnboarding } from './server-onboarding.js';
 import { installSettings } from './server-settings.js';
 import {
   createMeetingTranscripts,
@@ -206,8 +205,7 @@ import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
 import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
-import { isWebAppRequest, registerWebAppRoutes } from './web-app.js';
-import { registerWelcomeRoutes } from './welcome-session.js';
+import { isWebAppRequest } from './web-app.js';
 import {
   createGitWorktreeProvisioner,
   createScratchProvisioner,
@@ -1991,13 +1989,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     probesFor: personalUsageProbes(ctx),
   });
 
-  registerWebAppRoutes(app, deps.webAppDir);
-  registerPairingRoutes(app, {
-    browserRequestOrigin: deps.browserRequestOrigin,
-    ...(deps.devicePairing !== undefined ? { devicePairing: deps.devicePairing } : {}),
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-  });
-
   installSettings(app, ctx, {
     storeAgentCredentials,
     agentLogin,
@@ -2132,17 +2123,6 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     makeBranch,
     SERVER_VERSION,
     VERITY_CONTROL_PROJECT_ID,
-  });
-
-  // ── First-run onboarding gate (#320) ──────────────────────────────────────
-  // `GET /onboarding/status` — the pre-unlock gate the app polls on launch. Uses
-  // ONLY non-decrypting reads so it answers while the store is sealed.
-  registerOnboardingRoutes(app, {
-    eventStore: deps.eventStore,
-    secretCipher: deps.secretCipher,
-    isAuthenticated: (request) =>
-      deps.authRegistry === undefined ||
-      deps.authRegistry.verify(requestCredential(request)) === true,
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerMockupRoutes(app, { mockups: sessionMockups });
@@ -3092,16 +3072,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     preparingRepairDispatches,
   });
 
-  // First-run welcome session in the starter project (see welcome-session.ts).
-  // Created through the same spawn path as POST /sessions; the session-route
-  // live hint does not fire for this URL, so it is sent here.
-  registerWelcomeRoutes(app, {
-    eventStore: deps.eventStore,
-    secretCipher: deps.secretCipher,
-    spawn: sessionCreate.spawn,
-    notifySessionCreated: (sessionId, projectId) =>
-      liveHub.notify({ sessionId, projectId, topics: ['session', 'status'] }),
-  });
+  installOnboarding(app, ctx, { spawn: sessionCreate.spawn });
 
   // Wiki maintenance runs when something new happened in a project (see
   // wiki-maintenance-trigger.ts and docs/knowledge.md).
