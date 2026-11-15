@@ -7,25 +7,42 @@ import { migrateToLatest } from './db.js';
 import { createRawDb } from './testing.js';
 
 it('creates exactly the tables and columns the runtime store declares', async () => {
-  const source = ts.createSourceFile(
-    'schema.ts',
-    readFileSync(new URL('./schema.ts', import.meta.url), 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
+  // `Database` and the interfaces it extends may live in several schema modules.
+  const sources = ['./schema.ts', './schema-people.ts'].map((file) =>
+    ts.createSourceFile(
+      file,
+      readFileSync(new URL(file, import.meta.url), 'utf8'),
+      ts.ScriptTarget.Latest,
+      true,
+    ),
   );
   const interfaces = new Map(
-    source.statements.filter(ts.isInterfaceDeclaration).map((node) => [node.name.text, node]),
+    sources.flatMap((source) =>
+      source.statements
+        .filter(ts.isInterfaceDeclaration)
+        .map((node) => [node.name.text, node] as const),
+    ),
   );
   const database = interfaces.get('Database');
   expect(database).toBeDefined();
+  const tableMaps = [
+    database!,
+    ...(database!.heritageClauses ?? []).flatMap((clause) =>
+      clause.types.map((type) => {
+        const base = interfaces.get(type.expression.getText());
+        if (!base) throw new Error(`Missing Database base interface: ${type.getText()}`);
+        return base;
+      }),
+    ),
+  ];
   const expected: Record<string, string[]> = {};
-  for (const member of database!.members) {
+  for (const member of tableMaps.flatMap((map) => map.members)) {
     if (!ts.isPropertySignature(member) || !member.type || !ts.isTypeReferenceNode(member.type))
       throw new Error('Database must map tables to named interfaces');
-    const columns = interfaces.get(member.type.typeName.getText(source));
-    if (!columns) throw new Error(`Missing table interface: ${member.type.getText(source)}`);
-    expected[member.name.getText(source)] = columns.members
-      .map((column) => column.name!.getText(source))
+    const columns = interfaces.get(member.type.typeName.getText());
+    if (!columns) throw new Error(`Missing table interface: ${member.type.getText()}`);
+    expected[member.name.getText()] = columns.members
+      .map((column) => column.name!.getText())
       .sort();
   }
 
