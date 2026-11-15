@@ -508,10 +508,21 @@ describe('stopping a meeting recorded on another device', () => {
     expect(client.getLiveMeetingChanges).toHaveBeenCalled();
   });
 
-  it('ends it on the server when tapped again after the recorder refused the stop', async () => {
+  it('asks a reachable recorder again after an earlier stop failed', async () => {
+    // The refusal may be stale or from another device; the recorder still keeps its audio.
     client.getLiveMeetingCommands.mockResolvedValue({
       commands: [stop('failed')],
       recorderOnline: true,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    expect(extra.requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, 'stop');
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+  });
+
+  it('ends it on the server when tapped again while the recorder stays unreachable', async () => {
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('pending')],
+      recorderOnline: false,
     });
     expect(await stopMeetingElsewhere(remote)).toBe('ended');
     expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
