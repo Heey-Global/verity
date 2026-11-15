@@ -547,6 +547,10 @@ describe('the onRoute hook in buildServer', () => {
         ).toBeGreaterThan(at);
       }
     };
+    // createServerApp also registers @fastify/rate-limit and @fastify/compress
+    // ahead of the auth gate. Both are fastify-plugin wrappers that share the root
+    // context, so they open no encapsulated scope the gate would miss; an
+    // encapsulated plugin added there would need to follow installHttpGuards.
     expectFirst('server-http.ts', "addHook('onRoute'", 'the onRoute hook');
     expectFirst('server.ts', 'createServerApp(deps)', 'the createServerApp call');
     // Something to order against, or the scan itself broke.
@@ -572,33 +576,41 @@ describe('the onRoute hook in buildServer', () => {
       PLUGIN_REGISTER_PATTERN.lastIndex = 0;
       return PLUGIN_REGISTER_PATTERN.test(source);
     };
-    // The exported function's own body, up to the next top-level export.
-    const functionBody = (source: string, name: string): string => {
-      const start = source.indexOf(`export function ${name}(`);
-      if (start === -1) return '';
+    // The exported declaration's own text, up to the next top-level export.
+    // `undefined` when the module does not declare the name itself.
+    const declaration = (source: string, name: string): string | undefined => {
+      const start = new RegExp(
+        `^export (?:async function|function|const|let|class) ${name}\\b`,
+        'mu',
+      ).exec(source)?.index;
+      if (start === undefined) return undefined;
       const next = source.indexOf('\nexport ', start + 1);
       return source.slice(start, next === -1 ? undefined : next);
     };
     // Every `install*` call wires a whole area, including route modules that may
     // register plugins of their own, so each must follow the gate whatever its
-    // body shows. Other `server-*` helpers count when their own body registers
-    // a plugin, and any other module's functions when that module does.
+    // body shows. Other `server-*` helpers count when their own declaration
+    // registers a plugin, and any other module's functions when that module does.
     const callers: string[] = [];
-    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/([a-z-]+)\.js';/gu)) {
+    const unlocated: string[] = [];
+    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/([\w/-]+)\.js';/gu)) {
       const [, names = '', module = ''] = match;
       if (module === 'server-http') continue;
       const source = readFileSync(join(dir, `${module}.ts`), 'utf8');
       for (const entry of names.split(',').map((value) => value.trim())) {
         if (entry === '' || entry.startsWith('type ')) continue;
         const [imported = entry, local = imported] = entry.split(/\s+as\s+/u);
-        if (
-          module.startsWith('server-')
-            ? imported.startsWith('install') || registersPlugins(functionBody(source, imported))
-            : registersPlugins(source)
-        )
-          callers.push(local);
+        let counts = registersPlugins(source);
+        if (module.startsWith('server-')) {
+          const own = declaration(source, imported);
+          if (own === undefined) unlocated.push(`${module}:${imported}`);
+          counts = imported.startsWith('install') || registersPlugins(own ?? '');
+        }
+        if (counts) callers.push(local);
       }
     }
+    // A name this cannot read is not proof that it registers nothing.
+    expect(unlocated, 'server-* imports the scan could not locate').toEqual([]);
     expect(
       callers,
       'no install or plugin-registering call found — the scan broke',
