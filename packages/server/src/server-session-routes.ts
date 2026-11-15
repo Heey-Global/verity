@@ -74,10 +74,7 @@ export interface SessionRoutesWiring {
   cancelMeetingJobs: (sessionId: string) => boolean;
   decidePendingLinkedMessage: ReturnType<typeof registerServerMcpRoutes>;
   projectAgentRejection: (model: string, projectId: string) => Promise<string | undefined>;
-  isConfiguredProjectSessionModel: (
-    model: string | undefined,
-    viewer?: string,
-  ) => Promise<boolean>;
+  isConfiguredProjectSessionModel: (model: string | undefined, viewer?: string) => Promise<boolean>;
   /** Whether anyone besides the administrator may work in the project (ADR 0023). */
   sharedProject: (projectId: string | null) => Promise<boolean>;
   /** The model a person's turns in a shared session run on; undefined elsewhere. */
