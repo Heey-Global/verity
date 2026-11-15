@@ -65,9 +65,7 @@ import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import {
   discardFinishedMeeting,
   followRemoteMeeting,
-  finalizeMeetingOnServer,
   getMeetingSyncFailure,
-  retryMeetingSync,
   subscribeMeetingSyncFailure,
   syncMeetingSession,
 } from '../../lib/liveMeetingSync';
@@ -94,6 +92,7 @@ import {
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
+import { MeetingRecoveryCard } from '../../components/meeting/MeetingRecoveryCard';
 import { MeetingWave } from '../../components/meeting/MeetingWave';
 import { OnlineJoinScreen, PLATFORM_NAME } from '../../components/meeting/OnlineJoinScreen';
 import { AskVerityField, MeetingModelSheet, VerityPane } from '../../components/meeting/VerityPane';
@@ -297,7 +296,6 @@ export default function MeetingScreen() {
   }, [meetingSource, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
   const [, refreshSyncFailure] = useState(0);
-  const [syncRecovery, setSyncRecovery] = useState<'end' | 'retry' | null>(null);
   useEffect(() => subscribeMeetingSyncFailure(() => refreshSyncFailure((value) => value + 1)), []);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
@@ -1704,80 +1702,21 @@ export default function MeetingScreen() {
     </View>
   ) : null;
 
-  const recoverSync = async (action: 'end' | 'retry') => {
-    if (!meeting || syncRecovery) return;
-    setSyncRecovery(action);
-    setError(null);
-    try {
-      if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
-        throw new Error('Reconnect to this meeting’s server to recover sync.');
-      if (action === 'end') await finalizeMeetingOnServer(sessionId, meeting.id);
-      else await retryMeetingSync(sessionId, meeting.id);
-      await refresh();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Meeting recovery failed. Try again.');
-    } finally {
-      setSyncRecovery(null);
-    }
-  };
-  const localTranscriptSaved =
-    Boolean(meeting?.ownerToken) && !meeting?.error?.startsWith('Local save failed');
-  const syncRecoveryCard =
-    syncFailure && meeting && meeting.engine !== 'attendee' ? (
-      <NoticedCard
-        tone={colors.attention}
-        label="Sync needs attention"
-        title={
-          live
-            ? 'Transcript sync needs attention'
-            : syncFailure.serverFinalized
-              ? 'Meeting ended on server'
-              : 'Server end not confirmed'
-        }
-        body={
-          live
-            ? localTranscriptSaved
-              ? 'Your transcript is saved on this device, but changes could not be sent to the server. Check recording status before leaving.'
-              : 'Meeting updates could not be sent to the server. Check the recording device before ending the meeting.'
-            : syncFailure.serverFinalized
-              ? 'The server meeting has ended. Some transcript changes have not been synced. Keep this device’s copy until sync succeeds.'
-              : localTranscriptSaved
-                ? 'Recording has stopped on this device. Your transcript is saved here. Sync failed, so we cannot confirm that the meeting has ended on the server.'
-                : 'The meeting has stopped locally, but its end on the server is not confirmed. Check the local save error before leaving this screen.'
-        }
-      >
-        <View style={styles.block}>
-          {!live && meeting.ownerToken && !syncFailure.serverFinalized ? (
-            <>
-              <Button
-                label="End on server"
-                onPress={() => void recoverSync('end')}
-                loading={syncRecovery === 'end'}
-                disabled={syncRecovery !== null || meeting.serverId !== getActiveMeetingServerId()}
-                fullWidth
-              />
-              <UiText variant="footnote" tone="muted">
-                Keep the transcript already received by the server and end the meeting there.
-              </UiText>
-            </>
-          ) : null}
-          <Button
-            label="Retry sync"
-            variant="secondary"
-            icon="refresh-cw"
-            onPress={() => void recoverSync('retry')}
-            loading={syncRecovery === 'retry'}
-            disabled={syncRecovery !== null || meeting.serverId !== getActiveMeetingServerId()}
-            fullWidth
-          />
-          <UiText variant="footnote" tone="muted">
-            {meeting.serverId === getActiveMeetingServerId()
-              ? 'Try sending the saved transcript again.'
-              : 'Reconnect to this meeting’s server to recover sync.'}
-          </UiText>
-        </View>
-      </NoticedCard>
-    ) : null;
+  const syncRecoveryCard = (
+    <MeetingRecoveryCard
+      meeting={meeting}
+      live={live}
+      recordingHere={active}
+      recorderOnline={recorderOnline}
+      pendingCommand={pendingCommand}
+      syncFailure={syncFailure}
+      onRecovered={async () => {
+        await syncMeetingSession(sessionId).catch(() => undefined);
+        await refresh();
+      }}
+      onError={setError}
+    />
+  );
 
   const statusLines = (
     <>

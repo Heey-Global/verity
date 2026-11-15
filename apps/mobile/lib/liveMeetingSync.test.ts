@@ -116,6 +116,34 @@ it('keeps a rejected revision locally and suppresses its retry after restoring p
   expect(deleteMeeting).not.toHaveBeenCalled();
 });
 
+// A 401 means this device lost its credential, not that the meeting is bad. Blocking it
+// left the recorder's final state unsent after re-authentication, so the server kept the
+// meeting running on every device with nothing able to end it.
+it('retries a meeting upload refused for authentication once the device is authorized again', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, state: 'interrupted' as const }]);
+  client.putLiveMeeting.mockRejectedValueOnce(new VerityApiError(401, 'unauthorized'));
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
+  expect(saveMeetingUploadFailure).not.toHaveBeenCalled();
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
+  expect(client.putLiveMeeting).toHaveBeenCalledTimes(2);
+  expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, meeting.revision);
+});
+
+it('lifts a stored authentication block from an earlier version and sends the meeting', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, revision: 5 }]);
+  jest
+    .mocked(meetingUploadFailure)
+    .mockResolvedValue({ revision: 4, status: 401, serverFinalized: true });
+  await syncMeetingSession('session-1');
+  expect(saveMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id, {
+    revision: -1,
+    status: 401,
+    serverFinalized: true,
+  });
+  expect(client.putLiveMeeting).toHaveBeenCalledTimes(1);
+  expect(clearMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id);
+});
+
 it('keeps new revisions pending until explicit retry after a permanent validation failure', async () => {
   jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, revision: 5 }]);
   jest

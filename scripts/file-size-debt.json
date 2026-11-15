@@ -1,7 +1,7 @@
 {
   "apps/mobile/__tests__/static-preview-sheet.test.tsx": 1967,
   "apps/mobile/app/index.tsx": 2756,
-  "apps/mobile/app/meeting/[sessionId].tsx": 3456,
+  "apps/mobile/app/meeting/[sessionId].tsx": 3395,
   "apps/mobile/app/session/[id].tsx": 12174,
   "apps/mobile/components/project/StaticPreviewSheet.tsx": 2530,
   "apps/mobile/lib/remoteControlTransport.test.ts": 1848,

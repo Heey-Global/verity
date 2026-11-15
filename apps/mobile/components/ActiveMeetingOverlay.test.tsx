@@ -42,6 +42,7 @@ jest.mock('../lib/liveMeetingSync', () => ({
   syncMeetingSession: jest.fn().mockResolvedValue({ pending: false }),
   clearFollowedRemoteMeeting: jest.fn(),
   followRemoteMeeting: jest.fn(),
+  finalizeMeetingOnServer: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../lib/client', () => ({
   createVerityClient: jest.fn().mockReturnValue(null),
@@ -758,6 +759,109 @@ it('opens an unreachable device meeting and reconciles reconnection and confirme
       .mockResolvedValue([{ ...meeting, state: 'ended', endedAt: Date.now() }]);
     await act(async () => {
       await refreshRemote();
+    });
+    expect(screen.queryByLabelText('Return to live meeting')).toBeNull();
+  } finally {
+    subscription.mockRestore();
+    sync.followRemoteMeeting.mockReset();
+    sync.clearFollowedRemoteMeeting.mockReset();
+  }
+});
+
+// Only the recorder can confirm a stop. With it gone, the meeting stayed running on every
+// device and its controls were disabled, with no way to end it.
+it('ends a meeting whose recorder is unreachable on the server, after confirmation', async () => {
+  noLocalMeeting();
+  jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  const meeting: MeetingRecord = {
+    id: 'orphaned-recording',
+    sessionId: 'session-1',
+    serverId: 'server-1',
+    engine: 'fluid-nemotron',
+    startedAt: Date.now() - 3 * 3600_000,
+    endedAt: null,
+    state: 'active',
+    captureStatus: 'listening',
+    transcript: 'Words received before the recorder went away',
+    error: null,
+  };
+  let notify!: Parameters<typeof subscribeFollowedRemoteMeeting>[0];
+  jest.mocked(subscribeFollowedRemoteMeeting).mockImplementation((listener) => {
+    notify = listener;
+    listener(null);
+    return jest.fn();
+  });
+  const sync = jest.requireMock('../lib/liveMeetingSync');
+  sync.followRemoteMeeting.mockImplementation((sessionId: string, meetingId: string) =>
+    notify({ serverId: 'server-1', sessionId, meetingId }),
+  );
+  sync.clearFollowedRemoteMeeting.mockImplementation(() => notify(null));
+  jest.mocked(listMeetings).mockResolvedValue([meeting]);
+  // The server keeps listing it until the next refresh after ending it.
+  const getActiveLiveMeetings = jest
+    .fn()
+    .mockResolvedValue(
+      activeMeetings({ running: [{ ...meeting, recorderLastSeenAt: Date.now() - 3 * 3600_000 }] }),
+    );
+  const pendingStop = {
+    id: 'stop-1',
+    meetingId: meeting.id,
+    action: 'stop',
+    state: 'pending',
+    error: null,
+    requestedAt: Date.now(),
+    acknowledgedAt: null,
+  };
+  const getLiveMeetingCommands = jest
+    .fn()
+    .mockResolvedValue({ commands: [], recorderOnline: true });
+  jest
+    .mocked(createVerityClient)
+    .mockReturnValue({ getActiveLiveMeetings, getLiveMeetingCommands } as never);
+  const connection =
+    jest.requireActual<typeof import('../lib/liveConnection')>('../lib/liveConnection');
+  let refreshDiscovery!: () => unknown;
+  let refreshRemote!: () => unknown;
+  const subscription = jest
+    .spyOn(connection, 'subscribeLiveRefresh')
+    .mockImplementation((_client, refresh, _filter, resources, options) => {
+      if (resources?.[0]?.path === '/live-meetings/active') refreshDiscovery = refresh;
+      else refreshRemote = refresh;
+      if (options?.initial) void Promise.resolve().then(refresh);
+      return () => {};
+    });
+  try {
+    // A recorder that still reports gets the ordinary Stop, not the server end.
+    getActiveLiveMeetings.mockResolvedValue(
+      activeMeetings({ running: [{ ...meeting, recorderLastSeenAt: Date.now() }] }),
+    );
+    render(<ActiveMeetingOverlay />);
+    await screen.findByLabelText('Stop meeting');
+    expect(screen.queryByLabelText('End meeting without recording device')).toBeNull();
+
+    getActiveLiveMeetings.mockResolvedValue(
+      activeMeetings({
+        running: [{ ...meeting, recorderLastSeenAt: Date.now() - 3 * 3600_000 }],
+      }),
+    );
+    getLiveMeetingCommands.mockResolvedValue({ commands: [pendingStop], recorderOnline: false });
+    await act(async () => {
+      await refreshDiscovery();
+      await refreshRemote();
+    });
+    await screen.findByText(/Recorder unreachable/);
+    expect(screen.getByLabelText('Stop meeting')).toBeDisabled();
+    await act(async () =>
+      fireEvent.press(screen.getByLabelText('End meeting without recording device')),
+    );
+    expect(sync.finalizeMeetingOnServer).not.toHaveBeenCalled();
+    expect(screen.getByText('End without the recording device?')).toBeOnTheScreen();
+    await act(async () => fireEvent.press(screen.getByText('End meeting')));
+    expect(sync.finalizeMeetingOnServer).toHaveBeenCalledWith('session-1', meeting.id);
+    await waitFor(() => expect(screen.queryByLabelText('Return to live meeting')).toBeNull());
+    // Discovery still names it until it refreshes: it must not be followed again.
+    await act(async () => {
+      await refreshDiscovery();
     });
     expect(screen.queryByLabelText('Return to live meeting')).toBeNull();
   } finally {

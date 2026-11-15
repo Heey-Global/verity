@@ -35,6 +35,7 @@ import {
 } from '../lib/liveMeetingSync';
 import { subscribeMeetingPrompt } from '../lib/meetingPrompts';
 import { AssignMeetingSheet, type AssignableMeeting } from './meeting/AssignMeetingSheet';
+import { canEndWithoutRecorder, confirmEndWithoutRecorder } from './meeting/MeetingRecoveryCard';
 import { CalendarMeetingPrompt } from './meeting/CalendarMeetingPrompt';
 import { Button, Text, useConfirm } from './ui';
 import { Dot } from './ui/Status';
@@ -503,6 +504,34 @@ export function ActiveMeetingOverlay() {
     }
   };
 
+  // A stop only its recorder can confirm: without it, offer to end the meeting on the server.
+  const endWithoutRecorder = canEndWithoutRecorder(
+    meeting,
+    !remote,
+    recorderUnreachable,
+    activePendingCommand,
+  )
+    ? () => {
+        const target = { id: meeting.id, sessionId: meeting.sessionId };
+        confirmEndWithoutRecorder(confirm, target, {
+          onEnded: async () => {
+            // Ended on the server: stop following it now rather than on the next refresh.
+            settled.current.add(target.id);
+            remoteStopRequested.current = false;
+            clearFollowedRemoteMeeting();
+            setRemoteMeeting(null);
+            setPendingCommand(null);
+            setError(null);
+            await Promise.all([
+              syncMeetingSession(target.sessionId).catch(() => undefined),
+              discoverRef.current(),
+            ]);
+          },
+          onError: setError,
+        });
+      }
+    : null;
+
   return (
     <View
       pointerEvents="box-none"
@@ -609,6 +638,16 @@ export function ActiveMeetingOverlay() {
             onPress={stop}
           />
         </View>
+        {endWithoutRecorder ? (
+          <Button
+            label="End without recorder"
+            accessibilityLabel="End meeting without recording device"
+            variant="secondary"
+            size="compact"
+            onPress={endWithoutRecorder}
+            fullWidth
+          />
+        ) : null}
       </Animated.View>
       {sheets}
     </View>
