@@ -762,7 +762,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         rateLimitCooldown.until = Math.max(rateLimitCooldown.until, rateLimitDeadline);
       else rateLimitDeadline = 0;
       if (result.ok) {
-        if (probe !== undefined) recoveryCooldown.until = 0;
+        if (probe !== undefined && recoveryCooldown.until <= now()) recoveryCooldown.until = 0;
         const entry = { status: result.status, at: now() };
         cache.set(cacheKey, entry);
         return result.status;

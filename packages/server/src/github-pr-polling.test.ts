@@ -271,3 +271,41 @@ it('uses the new root observation scope after token minting failed for the old c
   expect(statusMint).toHaveBeenCalledTimes(3);
   expect(fetch.mock.calls[1]?.[1]?.headers?.Authorization).toBe('Bearer new-status-fixture');
 });
+
+it('retains a renewed rate-limit deadline from optional recovery detail reads', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response({}, 429, { 'retry-after': '120' }))
+    .mockResolvedValueOnce(response([{ number: 7, state: 'open', head: { sha: 'fixture-sha' } }]))
+    .mockResolvedValueOnce(response({ check_runs: [{ status: 'in_progress', conclusion: null }] }))
+    .mockResolvedValueOnce(response({ statuses: [] }))
+    .mockResolvedValueOnce(response({}, 429, { 'retry-after': '120' }))
+    .mockResolvedValue(response([]));
+  const mint = async () => 'fixture';
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+  });
+  const service = provider.repositoryPrService!({ owner: 'owner', repo: 'repo' });
+  await expect(service.prStatusForBranch('initial')).rejects.toMatchObject({
+    category: 'unavailable',
+  });
+  vi.setSystemTime(120_001);
+  expect(await service.prStatusForBranch('recovering')).toMatchObject({
+    number: 7,
+    pipeline: 'running',
+    mergeable: null,
+  });
+  expect(fetch).toHaveBeenCalledTimes(5);
+  await expect(service.prStatusForBranch('another')).rejects.toMatchObject({
+    category: 'unavailable',
+  });
+  expect(fetch).toHaveBeenCalledTimes(5);
+  vi.setSystemTime(240_002);
+  expect(await service.prStatusForBranch('another')).toBeNull();
+  expect(fetch).toHaveBeenCalledTimes(6);
+});
