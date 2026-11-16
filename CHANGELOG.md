@@ -6,6 +6,23 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.95.1](https://github.com/Heey-Global/verity/compare/v4.95.0...v4.95.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2609](https://github.com/Heey-Global/verity/issues/2609)) ([0f016cb](https://github.com/Heey-Global/verity/commit/0f016cbff56b5019463e63cbc55e9a4371f8d95c))
+* **deps:** update dependency @napi-rs/canvas to v1.1.1 ([#2610](https://github.com/Heey-Global/verity/issues/2610)) ([21d8062](https://github.com/Heey-Global/verity/commit/21d8062d95afcc0d10e37b15d10b791825616345))
+* **deps:** update dependency kysely to v0.29.9 ([#2611](https://github.com/Heey-Global/verity/issues/2611)) ([96066e3](https://github.com/Heey-Global/verity/commit/96066e3d7d3e159a439c8adbbe1dd945b2c12584))
+* **deps:** update dependency ws to v8.23.0 ([#2614](https://github.com/Heey-Global/verity/issues/2614)) ([a6e4d5f](https://github.com/Heey-Global/verity/commit/a6e4d5f6f77c391d7e3a0f94661688c33658190f))
+* **forge:** coalesce PR polling and honor recovery deadlines ([#2617](https://github.com/Heey-Global/verity/issues/2617)) ([e2d9551](https://github.com/Heey-Global/verity/commit/e2d95519a9ab91b120a1c177251e0cec814d2ef8))
+* **forge:** suspend background PR work for paused projects ([#2626](https://github.com/Heey-Global/verity/issues/2626)) ([666603e](https://github.com/Heey-Global/verity/commit/666603e4e436b32528fcb72e5eccf11b4be7053f))
+* **sandbox:** recover services across nightly and manual updates ([#2623](https://github.com/Heey-Global/verity/issues/2623)) ([1638a2e](https://github.com/Heey-Global/verity/commit/1638a2e2a41b86ee49d753af98bd9d5daff43e8a))
+* **server:** enforce member isolation across models and credentials ([#2618](https://github.com/Heey-Global/verity/issues/2618)) ([44af8a8](https://github.com/Heey-Global/verity/commit/44af8a8f1fc4e694c4057aaeeda83d0b3f05d950))
+* **server:** restore missing code workspaces before session turns ([#2619](https://github.com/Heey-Global/verity/issues/2619)) ([8f7d296](https://github.com/Heey-Global/verity/commit/8f7d29614f18918304550becbaecd89904ec55b2))
+* **team:** bound join admission and preserve replay credentials ([#2625](https://github.com/Heey-Global/verity/issues/2625)) ([3e4934c](https://github.com/Heey-Global/verity/commit/3e4934ce3bc154414d9b9883b8f28127c15d9570))
+* **team:** persist app access before completing project joins ([#2629](https://github.com/Heey-Global/verity/issues/2629)) ([5f85785](https://github.com/Heey-Global/verity/commit/5f8578554f28cc1d04442189c7e07b9b4a4487b1))
+
 ## [4.95.0](https://github.com/Heey-Global/verity/compare/v4.94.0...v4.95.0) (2026-11-15)
 
 
