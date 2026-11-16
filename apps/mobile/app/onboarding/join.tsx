@@ -12,7 +12,7 @@ import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../co
 import { OnboardingProgress } from '../../components/OnboardingProgress';
 import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { bumpServerRevision } from '../../lib/serverProfile';
-import { joinTeam, resumeTeamJoin, TeamJoinError } from '../../lib/teamJoin';
+import { joinTeam, resumeTeamJoin, TeamJoinError, teamJoinNameProblem } from '../../lib/teamJoin';
 import {
   parseTeamJoinLink,
   TeamJoinLinkError,
@@ -126,6 +126,8 @@ export function JoinView({
           if (!mounted.current || active.signal.aborted) return;
           if (error instanceof TeamJoinLinkError)
             setPhase({ kind: 'unusable', link: target, reason: error.reason });
+          else if (error instanceof TeamJoinError && error.reason === 'name')
+            setPhase({ kind: 'accept', link: target, problem: error.message });
           else if (error instanceof TeamJoinError && error.reason === 'unavailable')
             setPhase({ kind: 'unusable', link: target, reason: 'unavailable' });
           else
@@ -298,8 +300,9 @@ export function JoinView({
       </Frame>
     );
   }
+  const nameProblem = teamJoinNameProblem(name);
   const accept = () => {
-    if (name.trim() !== '' && name.trim().length <= 80) run(phase.link, false);
+    if (nameProblem === null) run(phase.link, false);
   };
   return (
     <Frame
@@ -308,7 +311,7 @@ export function JoinView({
           <Button
             label="Join project"
             onPress={accept}
-            disabled={name.trim() === '' || name.trim().length > 80}
+            disabled={nameProblem !== null}
             loading={joining}
             fullWidth
           />
@@ -330,8 +333,8 @@ export function JoinView({
         value={name}
         onChangeText={setName}
         error={
-          name.trim().length > 80
-            ? { title: 'Name is too long', message: 'Use 80 characters or fewer.' }
+          name !== '' && nameProblem !== null
+            ? { title: 'Check your name', message: nameProblem }
             : undefined
         }
       />

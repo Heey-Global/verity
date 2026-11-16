@@ -548,3 +548,21 @@ it('rechecks account collisions after completion before writing the new credenti
   expect(mockSetToken).not.toHaveBeenCalled();
   expect(mockSaveProfile).not.toHaveBeenCalled();
 });
+
+it('rejects formatting characters before reserving or saving a new join', async () => {
+  await expect(joinTeam(link, 'Lena\u200b', deps)).rejects.toMatchObject({ reason: 'name' });
+  expect(admission).not.toHaveBeenCalled();
+  expect(mockSaveProgress).not.toHaveBeenCalled();
+});
+
+it('corrects a server-rejected name while preserving the original recovery admission', async () => {
+  mockJoin.mockRejectedValueOnce(new VerityApiError(400, 'invalid name'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'name' });
+  expect(mockProgress.current).toMatchObject({
+    admission: { redemptionId: 'redemption_from_uplink' },
+  });
+  await expect(joinTeam(link, 'Sam', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(mockJoin).toHaveBeenLastCalledWith(
+    expect.objectContaining({ displayName: 'Sam', redemptionId: 'redemption_from_uplink' }),
+  );
+});

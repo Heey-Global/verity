@@ -151,3 +151,29 @@ it('keeps an overlong name editable before starting enrollment', async () => {
   fireEvent.press(screen.getByLabelText('Join project'));
   await waitFor(() => expect(props.join).toHaveBeenCalled());
 });
+
+it('keeps formatting characters out of the request and lets the name be corrected', async () => {
+  const props = views({ initialLink: valid });
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena\u200b');
+  expect(screen.getByLabelText('Join project')).toBeDisabled();
+  expect(props.join).not.toHaveBeenCalled();
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena');
+  fireEvent.press(screen.getByLabelText('Join project'));
+  await waitFor(() => expect(props.join).toHaveBeenCalled());
+});
+
+it('returns server name validation failures to the editable acceptance form', async () => {
+  const join = jest
+    .fn()
+    .mockRejectedValueOnce(new TeamJoinError('name', 'Check your name.'))
+    .mockResolvedValue({ projectId: 'p1' });
+  views({ initialLink: valid, join });
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena');
+  fireEvent.press(screen.getByLabelText('Join project'));
+  await screen.findByText('Check your name.');
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Sam');
+  fireEvent.press(screen.getByLabelText('Join project'));
+  await waitFor(() =>
+    expect(join).toHaveBeenLastCalledWith(expect.anything(), 'Sam', expect.anything()),
+  );
+});

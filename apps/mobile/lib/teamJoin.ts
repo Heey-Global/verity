@@ -49,11 +49,20 @@ export interface JoinTeamDeps {
 
 export class TeamJoinError extends Error {
   constructor(
-    readonly reason: 'unavailable' | 'known_server' | 'identity' | 'incompatible',
+    readonly reason: 'unavailable' | 'known_server' | 'identity' | 'incompatible' | 'name',
     message: string,
   ) {
     super(message);
   }
+}
+
+export function teamJoinNameProblem(input: string): string | null {
+  const name = input.normalize('NFC').trim().replace(/\s+/gu, ' ');
+  if (name.length === 0) return 'Enter your name.';
+  if (name.length > 80) return 'Use 80 characters or fewer.';
+  if (/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(name))
+    return 'Use visible text without control or formatting characters.';
+  return null;
 }
 
 /**
@@ -84,10 +93,19 @@ async function joinTeamAttempt(
   displayName: string,
   deps: JoinTeamDeps = {},
 ): Promise<{ projectId: string }> {
-  const saved = await loadTeamJoinProgress();
+  let saved = await loadTeamJoinProgress();
   if (saved !== null && saved.link.invitationId !== link.invitationId)
     throw new Error('Finish the saved join before opening another invitation.');
   if (saved !== null) link = saved.link;
+  if (saved?.credential === undefined) {
+    displayName = displayName.normalize('NFC').trim().replace(/\s+/gu, ' ');
+    const problem = teamJoinNameProblem(displayName);
+    if (problem !== null) throw new TeamJoinError('name', problem);
+    if (saved !== null && saved.displayName !== displayName) {
+      saved = { ...saved, displayName };
+      await saveTeamJoinProgress(saved);
+    }
+  }
   if (saved?.credential === undefined && link.expiresAt <= Date.now())
     throw new TeamJoinLinkError('expired');
   const validateConnections = async (credential?: { tokenId: string }) => {
@@ -350,6 +368,8 @@ async function joinTeamAttempt(
           };
           await saveTeamJoinProgress(progress);
         } catch (error) {
+          if (error instanceof VerityApiError && error.status === 400)
+            throw new TeamJoinError('name', 'Check your name and try again.');
           if (error instanceof VerityApiError && error.status === 410) {
             await clearTeamJoinProgress();
             throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
