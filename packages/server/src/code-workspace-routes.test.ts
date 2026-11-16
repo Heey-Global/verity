@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { InMemoryEventBus, type Backend, type RunTurnOptions } from '@verity/session';
 import { createIsolatedTestDb } from '@verity/store/testing';
 import { expect, it, vi } from 'vitest';
+import type { EventStore } from '@verity/store';
+import { createSessionRepositories } from './session-repositories.js';
 import type { ServerDeps } from './server-deps.js';
 import { buildControlPlane } from './app.js';
 import { SessionStorage } from './session-storage.js';
@@ -416,6 +418,73 @@ it.each(['restore', 'turn'])(
       expect(response.statusCode).toBe(action === 'restore' ? 200 : 202);
       if (action === 'turn') await vi.waitFor(() => expect(h.cwd).toHaveBeenCalledWith(h.target));
       expect(git(['-C', h.target, 'branch', '--show-current']).trim()).toBe('code-s');
+      expect((await h.ctx.store.getSession('s'))?.worktree).toBe(h.target);
+    } finally {
+      await h.close();
+    }
+  },
+);
+
+it.each(['branch', 'journal'])(
+  'recovers local code saved only in a %s with an infrastructure-only clone',
+  async (source) => {
+    const h = await harness({ repository: true, kind: 'local' });
+    try {
+      git(['-C', h.clone, 'branch', 'code-s']);
+      const sha = git(['-C', h.clone, 'rev-parse', 'code-s']).trim();
+      git(['-C', h.clone, 'rm', '.gitignore']);
+      await writeFile(join(h.clone, 'AGENTS.md'), 'Instructions');
+      git(['-C', h.clone, 'add', 'AGENTS.md']);
+      git(['-C', h.clone, 'commit', '-qm', 'infrastructure only']);
+      if (source === 'journal') {
+        git(['-C', h.clone, 'branch', '-m', 'code-s', 'saved']);
+        await mkdir(join(h.clone, '.verity-sessions'), { recursive: true });
+        const directory = join(h.clone, '.git', 'verity-storage');
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          join(directory, `retired-${createHash('sha256').update(h.target).digest('hex')}.json`),
+          JSON.stringify({
+            version: 1,
+            sessionId: 's',
+            path: h.target,
+            sha,
+            branch: null,
+            sidecar: null,
+          }),
+        );
+      }
+      for (const root of ['worktree', 'documents']) {
+        const listing = await h.app.inject({
+          method: 'GET',
+          url: `/sessions/s/files?root=${root}`,
+        });
+        expect(listing.json()).toMatchObject({
+          workspaceKind: 'code',
+          codeAvailable: false,
+          codeWorkspaceUnavailable: true,
+        });
+      }
+      const repository = { id: 'default', projectId: 'p', isDefault: true };
+      const repositories = createSessionRepositories({
+        cloneRoot: join(h.clone, '..'),
+        store: {
+          getSession: () => h.ctx.store.getSession('s'),
+          getProject: () => h.ctx.store.getProject('p'),
+          getProjectRepository: async () => repository,
+          listProjectRepositories: async () => [repository],
+          listSessionRepositoryWorkspaces: async () => [],
+        } as unknown as EventStore,
+      });
+      expect((await repositories.list('s')).repositories[0]?.workspace).toBeNull();
+      await expect(repositories.open('s', 'default')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      const restore = await h.app.inject({
+        method: 'POST',
+        url: '/sessions/s/code-workspace/restore',
+      });
+      expect(restore.statusCode).toBe(200);
+      expect(git(['-C', h.target, 'rev-parse', 'HEAD']).trim()).toBe(sha);
       expect((await h.ctx.store.getSession('s'))?.worktree).toBe(h.target);
     } finally {
       await h.close();

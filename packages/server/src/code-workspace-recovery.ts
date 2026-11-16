@@ -10,7 +10,7 @@ import {
   isDocumentWorkspace,
 } from './document-workspace.js';
 import { containerPathFor } from './project-backend.js';
-import { hasCodeContent, legacySessionCodePath } from './project-code.js';
+import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import { projectClonePath } from './provisioner.js';
 import { describeCheckoutFailure } from './session-repositories.js';
 import { addExistingBranchWorktree, type WorktreeProvisioner } from './worktree.js';
@@ -306,7 +306,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     if (
       project.kind === 'local' &&
       !(target && (await hasCodeContent(target))) &&
-      !(await hasCodeContent(clone))
+      !(await hasCodeContent(clone)) &&
+      !(target && (await hasSavedCodeWorkspace(clone, sessionId, target)))
     )
       return null;
     if (!target || !(await same(dirname(target), join(clone, '.verity-sessions'))))

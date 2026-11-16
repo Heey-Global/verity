@@ -1,4 +1,4 @@
-import { hasCodeContent, legacySessionCodePath } from './project-code.js';
+import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import type { Conductor } from '@verity/session';
 import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
 import { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -279,12 +279,18 @@ export function registerServerSessionFiles(
       const legacy = session
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
-      if (!legacy) return 'code';
+      if (!legacy || !session) return 'code';
       if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
       // In a repository project the session is a code session even while its checkout is missing.
       if (project && project.kind !== 'local') return 'code';
       return (await isDirectory(legacy)) ||
-        (project && (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))))
+        (project &&
+          ((await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
+            (await hasSavedCodeWorkspace(
+              projectClonePath(deps.projectCloneRoot, project),
+              session.sessionId,
+              legacy,
+            ))))
         ? 'code'
         : 'documents';
     },
@@ -330,7 +336,12 @@ export function registerServerSessionFiles(
           project.kind !== 'control_plane' &&
           deps.projectCloneRoot &&
           (project.kind !== 'local' ||
-            (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project)))) &&
+            (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
+            (await hasSavedCodeWorkspace(
+              projectClonePath(deps.projectCloneRoot, project),
+              session.sessionId,
+              legacy ?? session.worktree,
+            ))) &&
           (legacy || !(await isDirectory(session.worktree)))
         )
           throw new SessionFileRootUnavailableError(

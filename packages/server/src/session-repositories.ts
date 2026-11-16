@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
 import { isDocumentWorkspace } from './document-workspace.js';
-import { hasCodeContent, legacySessionCodePath } from './project-code.js';
+import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
@@ -143,7 +143,13 @@ export function createSessionRepositories(deps: {
       (await hasCodeContent(
         legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
       )) ||
-      (deps.cloneRoot && (await hasCodeContent(projectClonePath(deps.cloneRoot, project))))) &&
+      (deps.cloneRoot &&
+        ((await hasCodeContent(projectClonePath(deps.cloneRoot, project))) ||
+          (await hasSavedCodeWorkspace(
+            projectClonePath(deps.cloneRoot, project),
+            session.sessionId,
+            legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
+          ))))) &&
     (isDocumentWorkspace(session.worktree) ||
       (await deps.sessionStorage?.hasPendingWorkspaceRecovery(session)) ||
       !(await stat(session.worktree).then(
