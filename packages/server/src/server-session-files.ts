@@ -257,22 +257,18 @@ export function registerServerSessionFiles(
         ? await deps.eventStore.getProject(session.projectId)
         : undefined;
       if (project?.kind === 'control_plane') return false;
+      const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+      const code = legacy ?? session.worktree;
+      if (await deps.sessionStorage?.hasPendingWorkspaceRecovery({ ...session, worktree: code }))
+        return false;
       if (project?.kind !== 'local') {
-        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
         if (legacy && !deps.projectCloneRoot) return false;
-        if (
-          await deps.sessionStorage?.hasPendingWorkspaceRecovery({
-            ...session,
-            worktree: legacy ?? session.worktree,
-          })
-        )
-          return false;
-        return isDirectory(legacy ?? session.worktree);
+        return isDirectory(code);
       }
-      const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
       if (await hasCodeContent(code)) return true;
       return deps.projectCloneRoot
-        ? hasCodeContent(projectClonePath(deps.projectCloneRoot, project))
+        ? (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) &&
+            (await isDirectory(code))
         : false;
     },
     workspaceKind: async (id) => {
@@ -287,7 +283,10 @@ export function registerServerSessionFiles(
       if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
       // In a repository project the session is a code session even while its checkout is missing.
       if (project && project.kind !== 'local') return 'code';
-      return (await isDirectory(legacy)) ? 'code' : 'documents';
+      return (await isDirectory(legacy)) ||
+        (project && (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))))
+        ? 'code'
+        : 'documents';
     },
     // A knowledge root is created on first browse rather than only at
     // provisioning: the folder is the source of truth (ADR 0022 D1), so an
@@ -328,9 +327,10 @@ export function registerServerSessionFiles(
         // A Documents view is no stand-in for a repository project's missing checkout.
         if (
           project &&
-          project.kind !== 'local' &&
           project.kind !== 'control_plane' &&
           deps.projectCloneRoot &&
+          (project.kind !== 'local' ||
+            (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project)))) &&
           (legacy || !(await isDirectory(session.worktree)))
         )
           throw new SessionFileRootUnavailableError(

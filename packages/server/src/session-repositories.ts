@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
 import { isDocumentWorkspace } from './document-workspace.js';
+import { hasCodeContent } from './project-code.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
@@ -137,8 +138,9 @@ export function createSessionRepositories(deps: {
    * must never expose either a Documents view or a missing directory as their checkout. */
   const codeUnavailable = async (session: SessionRecord, project: ProjectRecord | undefined) =>
     project !== undefined &&
-    project.kind !== 'local' &&
     project.kind !== 'control_plane' &&
+    (project.kind !== 'local' ||
+      (deps.cloneRoot && (await hasCodeContent(projectClonePath(deps.cloneRoot, project))))) &&
     (isDocumentWorkspace(session.worktree) ||
       (await deps.sessionStorage?.hasPendingWorkspaceRecovery(session)) ||
       !(await stat(session.worktree).then(

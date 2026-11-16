@@ -264,38 +264,44 @@ it('keeps the Documents view as the default workspace of a local project', async
   expect((await service.list('s')).repositories[0]?.workspace).toMatchObject({ worktree });
 });
 
-it('refuses to expose a missing ordinary checkout through repository open or list', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'missing-default-'));
-  try {
-    const project = { id: 'p', kind: 'github' };
-    const repository = { id: 'd', projectId: 'p', isDefault: true };
-    const worktree = join(root, 'code-s');
-    const store = {
-      getSession: async () => ({ projectId: 'p', planning: 'implemented', worktree }),
-      getProject: async () => project,
-      getProjectRepository: async () => repository,
-      listProjectRepositories: async () => [repository],
-      listSessionRepositoryWorkspaces: async () => [],
-    } as unknown as EventStore;
-    const recoveryPending = vi.fn(async () => false);
-    const service = createSessionRepositories({
-      store,
-      sessionStorage: { hasPendingWorkspaceRecovery: recoveryPending },
-    });
-    await expect(service.open('s', 'd')).rejects.toMatchObject({
-      reason: 'code workspace unavailable',
-    });
-    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
-    await mkdir(worktree);
-    recoveryPending.mockResolvedValue(true);
-    // Partial restore leaves a directory without a usable checkout.
-    await expect(service.open('s', 'd')).rejects.toMatchObject({
-      reason: 'code workspace unavailable',
-    });
-    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
-    recoveryPending.mockResolvedValue(false);
-    await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+it.each(['github', 'local'])(
+  'refuses to expose a missing %s checkout through repository open or list',
+  async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), 'missing-default-'));
+    try {
+      const project = { id: 'p', kind, cloneDir: 'project' };
+      await mkdir(join(root, 'project'));
+      await writeFile(join(root, 'project', 'index.ts'), 'export {};');
+      const repository = { id: 'd', projectId: 'p', isDefault: true };
+      const worktree = join(root, 'code-s');
+      const store = {
+        getSession: async () => ({ projectId: 'p', planning: 'implemented', worktree }),
+        getProject: async () => project,
+        getProjectRepository: async () => repository,
+        listProjectRepositories: async () => [repository],
+        listSessionRepositoryWorkspaces: async () => [],
+      } as unknown as EventStore;
+      const recoveryPending = vi.fn(async () => false);
+      const service = createSessionRepositories({
+        store,
+        cloneRoot: root,
+        sessionStorage: { hasPendingWorkspaceRecovery: recoveryPending },
+      });
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      await mkdir(worktree);
+      recoveryPending.mockResolvedValue(true);
+      // Partial restore leaves a directory without a usable checkout.
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      recoveryPending.mockResolvedValue(false);
+      await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

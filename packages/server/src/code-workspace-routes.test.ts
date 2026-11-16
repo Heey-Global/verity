@@ -22,11 +22,13 @@ async function harness({
   repository,
   model = 'm',
   configured = true,
+  kind = 'github',
   sandboxGit,
 }: {
   repository: boolean;
   model?: string;
   configured?: boolean;
+  kind?: 'github' | 'local';
   sandboxGit?: ServerDeps['sandboxGit'];
 }) {
   const ctx = await createIsolatedTestDb();
@@ -47,7 +49,7 @@ async function harness({
     id: 'p',
     owner: 'o',
     repo: 'r',
-    kind: 'github',
+    kind,
     state: 'active',
     containerName: 'o-r',
   });
@@ -346,6 +348,38 @@ it('keeps a partial journal restore unavailable until recovery finishes', async 
     ).toBe(200);
     const listing = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
     expect(listing.json()).toMatchObject({ codeAvailable: true });
+    expect(listing.json()).not.toHaveProperty('codeWorkspaceUnavailable');
+  } finally {
+    await h.close();
+  }
+});
+
+it('offers Restore for a local code project with a missing legacy checkout', async () => {
+  const h = await harness({ repository: true, kind: 'local' });
+  try {
+    const listing = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
+    expect(listing.json()).toMatchObject({
+      workspaceKind: 'code',
+      codeAvailable: false,
+      codeWorkspaceUnavailable: true,
+    });
+    const restore = await h.app.inject({
+      method: 'POST',
+      url: '/sessions/s/code-workspace/restore',
+    });
+    expect(restore.statusCode).toBe(200);
+    const restored = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
+    expect(restored.json()).toMatchObject({ workspaceKind: 'code', codeAvailable: true });
+  } finally {
+    await h.close();
+  }
+});
+
+it('keeps a local Documents-only project in Documents without offering Restore', async () => {
+  const h = await harness({ repository: false, kind: 'local' });
+  try {
+    const listing = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
+    expect(listing.json()).toMatchObject({ workspaceKind: 'documents', codeAvailable: false });
     expect(listing.json()).not.toHaveProperty('codeWorkspaceUnavailable');
   } finally {
     await h.close();
