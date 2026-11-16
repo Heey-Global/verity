@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
-import OpenCodeSettingsScreen from '../app/settings/services/opencode';
+import OpenCodeSettingsScreen from '../app/settings/ai-accounts/opencode';
 import {
   makeClient,
   makeSettings,

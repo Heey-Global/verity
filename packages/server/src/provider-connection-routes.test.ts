@@ -2,6 +2,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentLoginPublic, AgentLoginService } from './agent-login.js';
+import { administratorProviderConnections } from './administrator-provider-connections.js';
+import { legacyAdministratorId } from './view-state-routes.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
 
@@ -29,6 +31,22 @@ function harness() {
     submitCode: vi.fn(async () => login('s1')),
     close: () => undefined,
   } satisfies AgentLoginService;
+  const instance = {
+    claudeCodeOauthCredentialsJson: 'stored-claude',
+    codexAuthJson: 'stored-codex',
+    opencodeApiKey: 'stored-key',
+    opencodeBaseUrl: 'https://llm.example/v1',
+    opencodeModels: 'm1',
+  };
+  const updateInstance = vi.fn(async (patch) => {
+    Object.assign(instance, patch);
+  });
+  const administratorAccounts = administratorProviderConnections(
+    {
+      getVeritySettingsRaw: async () => instance as never,
+    },
+    updateInstance,
+  );
   const app = Fastify();
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
@@ -38,7 +56,7 @@ function harness() {
     const outcome = await authorizePairedRoute(
       {
         isActiveLocalUser: async (id) => id !== 'disabled',
-        isActiveAdministrator: async (id) => id === 'admin',
+        isActiveAdministrator: async (id) => id === 'admin' || id === legacyAdministratorId,
         hasProjectPermission: async () => false,
         getSession: async () => undefined,
       },
@@ -51,7 +69,7 @@ function harness() {
   });
   registerProviderConnectionRoutes(app, {
     store: {
-      isActiveAdministrator: async (id: string) => id === 'admin',
+      isActiveAdministrator: async (id: string) => id === 'admin' || id === legacyAdministratorId,
       userProviderConnections: {
         status: async (userId: string) =>
           [...stored.entries()]
@@ -71,12 +89,13 @@ function harness() {
       },
     } as never,
     agentLogin,
+    administratorAccounts,
     listOpenCodeModels: async (_baseUrl, apiKey) => {
       if (apiKey !== 'sk-good') throw new Error('401');
       return ['m1', 'm2'];
     },
   });
-  return { app, agentLogin, stored };
+  return { app, agentLogin, stored, updateInstance };
 }
 
 const as = (
@@ -140,4 +159,46 @@ describe('personal provider connection routes', () => {
     );
     expect(stored.size).toBe(0);
   });
+});
+
+it('exposes original administrator logins only to their owner and disconnects the actual runtime login', async () => {
+  const { app, stored, updateInstance } = harness();
+  try {
+    const response = await as(app, legacyAdministratorId, 'GET', '/me/provider-connections');
+    expect(response.statusCode).toBe(200);
+    expect(
+      response
+        .json<{ connections: { provider: string }[] }>()
+        .connections.map((entry) => entry.provider),
+    ).toEqual(['claude', 'codex', 'opencode']);
+    expect(response.body).not.toMatch(/stored-claude|stored-codex|stored-key/);
+    expect((await as(app, 'lena', 'GET', '/me/provider-connections')).json().connections).toEqual(
+      [],
+    );
+    expect(
+      (await as(app, legacyAdministratorId, 'DELETE', '/me/provider-connections/claude'))
+        .statusCode,
+    ).toBe(204);
+    expect(updateInstance).toHaveBeenLastCalledWith({ claudeCodeOauthCredentialsJson: null });
+    expect(
+      (await as(app, legacyAdministratorId, 'GET', '/me/provider-connections')).json().connections,
+    ).not.toEqual(expect.arrayContaining([expect.objectContaining({ provider: 'claude' })]));
+    const openCode = await as(
+      app,
+      legacyAdministratorId,
+      'PUT',
+      '/me/provider-connections/opencode',
+      { baseUrl: 'https://new.example/v1', apiKey: 'sk-good' },
+    );
+    expect(openCode.statusCode).toBe(200);
+    expect(updateInstance).toHaveBeenLastCalledWith({
+      opencodeBaseUrl: 'https://new.example/v1',
+      opencodeApiKey: 'sk-good',
+      opencodeModels: 'm1\nm2',
+      opencodeDisabledModels: null,
+    });
+    expect(stored.size).toBe(0);
+  } finally {
+    await app.close();
+  }
 });

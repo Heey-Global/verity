@@ -101,7 +101,11 @@ export function AiAccountsView({ client }: { client: VerityClient }) {
                 }
                 trailing={<StatusTag intent="ready" label="Connected" />}
                 navigates
-                onPress={() => disconnect(provider, title)}
+                onPress={() =>
+                  accounts?.usesInstanceLogins
+                    ? router.push(`/settings/ai-accounts/${provider}`)
+                    : disconnect(provider, title)
+                }
               />
             ))}
           </Group>

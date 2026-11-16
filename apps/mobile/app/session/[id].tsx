@@ -7993,7 +7993,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
           <Button
             label="Sign in to Claude"
             size="compact"
-            onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
+            onPress={() => router.push('/settings/ai-accounts/claude?agentLogin=claude')}
           />
         ) : null}
       </>

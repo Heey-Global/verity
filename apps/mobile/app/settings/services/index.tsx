@@ -2,7 +2,6 @@ import {
   codeHostFromConnection,
   forgejoConnection,
   githubRepositoryAccessReady,
-  selectedOpenCodeModels,
   type ForgeConnectionList,
   type VerityClient,
 } from '@verity/mobile';
@@ -20,7 +19,6 @@ import {
   SettingsScaffold,
 } from '../../../components/settings/SettingsChrome';
 import { type ComponentProps } from 'react';
-import { AgentProviderIcon } from '../../../components/AgentProviderIcon';
 import { type StatusIntent } from '../../../components/ui/Status';
 import { settingsStyles as styles } from '../../../components/settings/settingsStyles';
 import { createVerityClient } from '../../../lib/client';
@@ -126,7 +124,6 @@ function CodeHostRows({
 }
 
 function ConnectionsView({ client }: { client: VerityClient }) {
-  const { theme } = useUnistyles();
   const reload = useLoadVeritySettings(client);
   const { settings } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -183,43 +180,6 @@ function ConnectionsView({ client }: { client: VerityClient }) {
     }, [client, retry]),
   );
   const rows: Connection[] = [
-    {
-      title: 'Claude',
-      usageKey: 'claude',
-      group: 'Agents',
-      icon: { element: <AgentProviderIcon provider="claude" color={theme.colors.action} /> },
-      subtitle: 'Use your Claude subscription',
-      route: '/settings/services/claude',
-      connected: settings?.claudeCodeOauthCredentialsConfigured === true,
-      ...(settings?.claudeCodeOauthCredentialsConfigured &&
-      settings.claudeCredentialStatus?.state === 'relogin_required'
-        ? { status: 'Re-login needed', statusIntent: 'needsSetup' as const }
-        : settings?.claudeCodeOauthCredentialsConfigured &&
-            settings.claudeCredentialStatus?.state === 'refresh_failed'
-          ? { status: 'Retrying', statusIntent: 'transient' as const }
-          : {}),
-    },
-    {
-      title: 'Codex',
-      usageKey: 'codex',
-      group: 'Agents',
-      icon: { element: <AgentProviderIcon provider="codex" color={theme.colors.action} /> },
-      subtitle: 'Use your Codex subscription',
-      route: '/settings/services/codex',
-      connected: settings?.codexAuthJsonConfigured === true,
-    },
-    {
-      title: 'OpenCode',
-      usageKey: 'opencode',
-      group: 'Agents',
-      icon: { element: <AgentProviderIcon provider="opencode" color={theme.colors.action} /> },
-      subtitle: 'Custom providers and models',
-      route: '/settings/services/opencode',
-      connected:
-        settings?.opencodeApiKeyConfigured === true &&
-        Boolean(settings.opencodeBaseUrl?.trim()) &&
-        selectedOpenCodeModels(settings).length > 0,
-    },
     {
       title: 'Google',
       usageKey: 'google',
@@ -308,29 +268,27 @@ function ConnectionsView({ client }: { client: VerityClient }) {
         setRetry((value) => value + 1);
       }}
     >
-      {['Agents', 'Code', 'Files & documents', 'Communication', 'Secrets', 'Advanced'].map(
-        (group) => (
-          <SettingsGroup key={group} title={group}>
-            {group === 'Code' ? (
-              <CodeHostRows
-                githubConnected={githubConnected}
-                githubStatus={
-                  githubConnected && githubActionNeeded(githubPermission)
-                    ? { intent: 'needsSetup', label: 'Action needed' }
-                    : undefined
-                }
-                forge={forge}
-                usage={usage}
-              />
-            ) : (
-              renderRows(
-                rows.filter((item) => item.group === group),
-                group === 'Communication',
-              )
-            )}
-          </SettingsGroup>
-        ),
-      )}
+      {['Code', 'Files & documents', 'Communication', 'Secrets', 'Advanced'].map((group) => (
+        <SettingsGroup key={group} title={group}>
+          {group === 'Code' ? (
+            <CodeHostRows
+              githubConnected={githubConnected}
+              githubStatus={
+                githubConnected && githubActionNeeded(githubPermission)
+                  ? { intent: 'needsSetup', label: 'Action needed' }
+                  : undefined
+              }
+              forge={forge}
+              usage={usage}
+            />
+          ) : (
+            renderRows(
+              rows.filter((item) => item.group === group),
+              group === 'Communication',
+            )
+          )}
+        </SettingsGroup>
+      ))}
       {error ? (
         <SettingsPanel>
           <Text style={styles.reproHint}>

@@ -7,6 +7,7 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
+import type { administratorProviderConnections } from './administrator-provider-connections.js';
 import type { AgentLoginService } from './agent-login.js';
 import { viewerId } from './view-state-routes.js';
 
@@ -33,6 +34,7 @@ export function registerProviderConnectionRoutes(
   app: FastifyInstance,
   deps: {
     store: Store;
+    administratorAccounts: ReturnType<typeof administratorProviderConnections>;
     agentLogin: AgentLoginService;
     secretCipher?: SealableSecretCipher | undefined;
     /** Lists the provider's models with the given address and key, proving both work. */
@@ -58,7 +60,9 @@ export function registerProviderConnectionRoutes(
     reply.header('cache-control', 'no-store');
     const userId = viewerId(request);
     const [connections, administrator] = await Promise.all([
-      deps.store.userProviderConnections.status(userId),
+      deps.administratorAccounts.owns(userId)
+        ? deps.administratorAccounts.status()
+        : deps.store.userProviderConnections.status(userId),
       deps.store.isActiveAdministrator(userId),
     ]);
     return {
@@ -118,11 +122,17 @@ export function registerProviderConnectionRoutes(
     }
     const userId = viewerId(request);
     await persist(userId, 'opencode', () =>
-      deps.store.userProviderConnections.set(userId, 'opencode', {
-        credential: input.data.apiKey,
-        baseUrl: input.data.baseUrl,
-        models: models.join('\n'),
-      }),
+      deps.administratorAccounts.owns(userId)
+        ? deps.administratorAccounts.set('opencode', {
+            credential: input.data.apiKey,
+            baseUrl: input.data.baseUrl,
+            models: models.join('\n'),
+          })
+        : deps.store.userProviderConnections.set(userId, 'opencode', {
+            credential: input.data.apiKey,
+            baseUrl: input.data.baseUrl,
+            models: models.join('\n'),
+          }),
     );
     reply.header('cache-control', 'no-store');
     return { provider: 'opencode', baseUrl: input.data.baseUrl, models };
@@ -132,7 +142,9 @@ export function registerProviderConnectionRoutes(
     const { provider } = anyProvider.parse(request.params);
     const userId = viewerId(request);
     await persist(userId, provider, () =>
-      deps.store.userProviderConnections.delete(userId, provider),
+      deps.administratorAccounts.owns(userId)
+        ? deps.administratorAccounts.delete(provider)
+        : deps.store.userProviderConnections.delete(userId, provider),
     );
     return reply.code(204).send();
   });

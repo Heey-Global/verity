@@ -1,3 +1,4 @@
+import { administratorProviderConnections } from './administrator-provider-connections.js';
 import type { FastifyInstance } from 'fastify';
 import { SealedError, type ProviderConnectionKind, type VeritySettingsPatch } from '@verity/store';
 import { createProcessAgentLoginService } from './agent-login.js';
@@ -24,6 +25,10 @@ export function createServerAgentCredentials(ctx: ServerContext) {
       await persist();
     }
   };
+  const administratorAccounts = administratorProviderConnections(
+    deps.eventStore,
+    storeAgentCredentials,
+  );
   const persistPersonal = (
     userId: string,
     provider: ProviderConnectionKind,
@@ -36,14 +41,16 @@ export function createServerAgentCredentials(ctx: ServerContext) {
       storePersonal: async (userId, provider, credential) => {
         if (deps.secretCipher?.isSealed() === true) throw new SealedError();
         await persistPersonal(userId, provider, () =>
-          deps.eventStore.userProviderConnections.set(userId, provider, { credential }),
+          administratorAccounts.owns(userId)
+            ? administratorAccounts.set(provider, { credential })
+            : deps.eventStore.userProviderConnections.set(userId, provider, { credential }),
         );
       },
     });
   lifecycle.onClose(() => {
     agentLogin.close();
   });
-  return { storeAgentCredentials, persistPersonal, agentLogin };
+  return { storeAgentCredentials, persistPersonal, agentLogin, administratorAccounts };
 }
 
 /** Create usage probes at their original point in server initialization. */
