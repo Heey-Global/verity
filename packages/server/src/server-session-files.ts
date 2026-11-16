@@ -258,10 +258,9 @@ export function registerServerSessionFiles(
         : undefined;
       if (project?.kind === 'control_plane') return false;
       if (project?.kind !== 'local') {
-        // A legacy session's checkout is restorable; an ordinary session's is reported
-        // by its turn, which restores a retired checkout from its journal.
         const legacy = legacySessionCodePath(session.worktree, session.sessionId);
-        return legacy ? isDirectory(legacy) : true;
+        if (legacy && !deps.projectCloneRoot) return false;
+        return isDirectory(legacy ?? session.worktree);
       }
       const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
       if (await hasCodeContent(code)) return true;
@@ -278,7 +277,7 @@ export function registerServerSessionFiles(
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
       if (!legacy) return 'code';
-      if (project?.kind === 'control_plane') return 'documents';
+      if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
       // In a repository project the session is a code session even while its checkout is missing.
       if (project && project.kind !== 'local') return 'code';
       return (await isDirectory(legacy)) ? 'code' : 'documents';
@@ -314,7 +313,8 @@ export function registerServerSessionFiles(
           project &&
           project.kind !== 'local' &&
           project.kind !== 'control_plane' &&
-          legacy !== undefined
+          deps.projectCloneRoot &&
+          (legacy || !(await isDirectory(session.worktree)))
         )
           throw new SessionFileRootUnavailableError(
             "This session's code workspace is unavailable. Restore it to continue.",

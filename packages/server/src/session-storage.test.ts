@@ -31,17 +31,35 @@ function fixture() {
   const root = join(dir, 'repo'),
     remote = join(dir, 'remote.git');
   const git: GitOutput = async (args) =>
-    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync(
+      'git',
+      [
+        ...(args.includes('push') ? [] : ['-c', 'core.hooksPath=/dev/null']),
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ],
+      {
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
   const run = (args: string[]) =>
-    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync(
+      'git',
+      [
+        ...(args.includes('push') ? [] : ['-c', 'core.hooksPath=/dev/null']),
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ],
+      {
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
   run(['init', '-q', '-b', 'main', root]);
   run(['-C', root, 'config', 'user.email', 'test@example.invalid']);
   run(['-C', root, 'config', 'user.name', 'Test']);

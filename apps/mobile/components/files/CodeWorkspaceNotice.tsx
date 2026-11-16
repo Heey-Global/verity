@@ -35,7 +35,7 @@ export function CodeWorkspaceNotice({
         detail={
           failure
             ? 'Restoring did not succeed; Details says why. Your documents are not affected, and you can try again.'
-            : "This session's code checkout is missing on the server. Restore brings it back on its branch and keeps any unpushed work. Your documents are not affected."
+            : "This session's code checkout is missing on the server. Restore looks for this session's saved checkout and branch. Your documents are not affected."
         }
         actions={
           <View style={styles.actions}>
