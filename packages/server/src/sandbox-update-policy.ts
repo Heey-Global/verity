@@ -33,21 +33,33 @@ interface StateStore {
 export class SandboxUpdateTracker {
   readonly states = new Map<string, SandboxUpdateState>();
   private restored = false;
+  private restoring: Promise<void> | undefined;
   async restore(store: StateStore | undefined): Promise<void> {
     if (this.restored) return;
-    if (store)
-      for (const [id, state] of await store.list()) {
-        if (state.recovery?.state === 'checking') {
-          state.recovery = {
-            state: 'failed',
-            at: Date.now(),
-            detail: 'Recovery check interrupted by server restart; verify dev servers and previews',
-          };
-          await store.set(id, state);
+    this.restoring ??= (async () => {
+      if (store)
+        for (const [id, saved] of await store.list()) {
+          const state: SandboxUpdateState =
+            saved.recovery?.state === 'checking'
+              ? {
+                  ...saved,
+                  recovery: {
+                    state: 'failed',
+                    at: Date.now(),
+                    detail:
+                      'Recovery check interrupted by server restart; verify dev servers and previews',
+                  },
+                }
+              : saved;
+          if (state !== saved) await store.set(id, state);
+          this.states.set(id, state);
         }
-        this.states.set(id, state);
-      }
-    this.restored = true;
+      this.restored = true;
+    })().catch((error: unknown) => {
+      this.restoring = undefined;
+      throw error;
+    });
+    return this.restoring;
   }
   async defer(
     store: StateStore | undefined,
@@ -55,6 +67,7 @@ export class SandboxUpdateTracker {
     reasons: readonly ProjectActivityReason[],
     now: number,
   ): Promise<boolean> {
+    await this.restore(store);
     const saved = this.states.get(id);
     const previous = saved?.reasons.length ? saved : undefined;
     const ordered = [...new Set(reasons)].sort();
@@ -76,6 +89,7 @@ export class SandboxUpdateTracker {
     id: string,
     recovery: NonNullable<SandboxUpdateState['recovery']>,
   ): Promise<void> {
+    await this.restore(store);
     const state: SandboxUpdateState = {
       since: recovery.at,
       reasons: [],
@@ -116,6 +130,7 @@ export class SandboxUpdateTracker {
     }
   }
   async failRecovery(store: StateStore | undefined, id: string, cause: unknown): Promise<void> {
+    await this.restore(store);
     const saved = this.states.get(id);
     if (saved?.recovery?.state !== 'checking') return;
     const state: SandboxUpdateState = {
@@ -130,6 +145,7 @@ export class SandboxUpdateTracker {
     await store?.set(id, state).catch(() => undefined);
   }
   async clearWait(store: StateStore | undefined, id: string): Promise<void> {
+    await this.restore(store);
     if (!this.states.has(id) || this.states.get(id)?.recovery) return;
     await store?.clear(id);
     this.states.delete(id);

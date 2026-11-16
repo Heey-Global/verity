@@ -1,9 +1,10 @@
+import { DockerError } from './docker.js';
 import type { ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
 
 /** A retained URL is intent, not evidence that its target is serving. Probe the
  * target on every activity check; an offline connector can itself be healthy. */
-export async function previewTargetIsLive(
+async function previewTargetEvidence(
   share: PublicPreviewShareRecord,
   options: PreviewShareManagerOptions,
   probes: {
@@ -77,4 +78,15 @@ function confirmedInvalidDirectory(error: unknown): boolean {
       return true;
   }
   return false;
+}
+
+export async function previewTargetIsLive(
+  ...args: Parameters<typeof previewTargetEvidence>
+): Promise<boolean> {
+  try {
+    return await previewTargetEvidence(...args);
+  } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') return false;
+    throw error;
+  }
 }

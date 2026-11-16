@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { nightlySandboxUpdate } from './sandbox-update-policy.js';
 describe('fixed sandbox update window', () => {
   it.each([
@@ -24,7 +24,7 @@ describe('fixed sandbox update window', () => {
   );
 });
 
-import { SandboxUpdateTracker } from './sandbox-update-policy.js';
+import { SandboxUpdateTracker, type SandboxUpdateState } from './sandbox-update-policy.js';
 it('restores original waiting time and throttles repeated reports', async () => {
   const durable = new Map();
   const store = {
@@ -86,4 +86,66 @@ it('terminates a recovery interrupted by server restart and persists its concret
     detail: expect.stringContaining('server restart'),
   });
   expect(persisted).toEqual(tracker.states.get('p'));
+});
+
+it('preserves a manual recovery started before the first reconcile restore', async () => {
+  const durable = new Map<string, SandboxUpdateState>();
+  const store = {
+    list: vi.fn(async () => new Map(durable)),
+    set: vi.fn(async (id: string, state: SandboxUpdateState) => {
+      durable.set(id, state);
+    }),
+    clear: async () => {},
+  };
+  const tracker = new SandboxUpdateTracker();
+  await tracker.beginRecovery(store, 'p');
+  await tracker.restore(store);
+  expect(store.list).toHaveBeenCalledTimes(1);
+  expect(store.set).toHaveBeenCalledTimes(1);
+  expect(tracker.states.get('p')?.recovery?.state).toBe('checking');
+  expect(durable.get('p')?.recovery?.state).toBe('checking');
+});
+
+it('serializes concurrent startup restore and manual recovery before any writes', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const saved = {
+    since: 10,
+    reasons: [],
+    reportedAt: 10,
+    recovery: { state: 'checking' as const, at: 10, detail: 'Prior process' },
+  };
+  const durable = new Map<string, SandboxUpdateState>([['p', saved]]);
+  const store = {
+    list: vi.fn(async () => {
+      entered();
+      await gate;
+      return new Map(durable);
+    }),
+    set: vi.fn(async (id: string, state: SandboxUpdateState) => {
+      durable.set(id, state);
+    }),
+    clear: async () => {},
+  };
+  const tracker = new SandboxUpdateTracker();
+  const first = tracker.restore(store);
+  await started;
+  const second = tracker.restore(store);
+  const manual = tracker.beginRecovery(store, 'p');
+  expect(store.set).not.toHaveBeenCalled();
+  release();
+  await Promise.all([first, second, manual]);
+  expect(store.list).toHaveBeenCalledTimes(1);
+  expect(store.set.mock.calls.map(([, state]) => state.recovery?.state)).toEqual([
+    'failed',
+    'checking',
+  ]);
+  expect(durable.get('p')?.recovery?.state).toBe('checking');
+  expect(tracker.states.get('p')?.recovery?.state).toBe('checking');
 });
