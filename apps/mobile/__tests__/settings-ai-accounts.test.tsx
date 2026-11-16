@@ -3,6 +3,8 @@ jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMo
 jest.mock('expo-clipboard', () => ({ setStringAsync: jest.fn().mockResolvedValue(true) }));
 import type { VerityClient } from '@verity/mobile';
 
+import { Text } from 'react-native';
+import { PersonalAiProviderBoundary } from '../components/settings/PersonalAiProviderBoundary';
 import { AiAccountsView } from '../app/settings/ai-accounts';
 import { ConnectProviderView } from '../app/settings/ai-accounts/connect';
 import { OpenCodeAccountView } from '../app/settings/ai-accounts/opencode';
@@ -83,4 +85,41 @@ it('saves OpenCode only through the person’s own connection', async () => {
     baseUrl: 'https://llm.example/v1',
     apiKey: 'sk-own',
   });
+});
+
+it('opens the existing administrator controls without starting another login', async () => {
+  const client = {
+    listProviderConnections: jest.fn().mockResolvedValue({
+      connections: ['claude', 'codex', 'opencode'].map((provider) => ({
+        provider,
+        baseUrl: null,
+        models: [],
+        updatedAt: '2026-11-16',
+      })),
+      usesInstanceLogins: true,
+    }),
+    startProviderConnectionLogin: jest.fn(),
+  } as unknown as VerityClient;
+  render(<AiAccountsView client={client} />);
+  fireEvent.press(await screen.findByLabelText('Claude, Connected'));
+  expect(mockPush).toHaveBeenCalledWith('/settings/ai-accounts/claude');
+  expect(client.startProviderConnectionLogin).not.toHaveBeenCalled();
+  expect(screen.queryByText('Not connected')).toBeNull();
+});
+
+it('keeps members on personal accounts when opening a provider detail link', async () => {
+  const client = {
+    listProviderConnections: jest
+      .fn()
+      .mockResolvedValue({ connections: [], usesInstanceLogins: false }),
+    getVeritySettings: jest.fn(),
+  } as unknown as VerityClient;
+  render(
+    <PersonalAiProviderBoundary client={client} provider="claude">
+      <Text>Administrator controls</Text>
+    </PersonalAiProviderBoundary>,
+  );
+  expect(await screen.findByText('Not connected')).toBeOnTheScreen();
+  expect(screen.queryByText('Administrator controls')).toBeNull();
+  expect(client.getVeritySettings).not.toHaveBeenCalled();
 });

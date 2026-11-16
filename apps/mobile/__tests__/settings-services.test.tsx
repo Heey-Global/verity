@@ -20,10 +20,11 @@ jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMo
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
 
 import ConnectionsScreen from '../app/settings/services/index';
+import { AiAccountsView } from '../app/settings/ai-accounts';
 import SecretScreen from '../app/settings/secret-store';
 import DopplerScreen from '../app/settings/services/doppler';
-import ClaudeScreen from '../app/settings/services/claude';
-import CodexScreen from '../app/settings/services/codex';
+import ClaudeScreen from '../app/settings/ai-accounts/claude';
+import CodexScreen from '../app/settings/ai-accounts/codex';
 import TranscriptionScreen from '../app/settings/transcription';
 let ServicesSettingsScreen = ConnectionsScreen;
 import { ATTENTION_ACTION_ROUTES } from '../components/ServerAttentionBanner';
@@ -432,7 +433,8 @@ describe('settings/services — AI backends', () => {
       }),
     );
     render(<ConnectionsScreen />);
-    expect(await screen.findByLabelText(new RegExp(`^Claude,.*${label}`))).toBeOnTheScreen();
+    await screen.findByLabelText(/^GitHub(,|$)/);
+    expect(screen.queryByLabelText(new RegExp(`^Claude,.*${label}`))).toBeNull();
   });
 
   it('offers re-login for a stored Claude login whose refresh was rejected', async () => {
@@ -513,7 +515,7 @@ describe('settings/services — AI backends', () => {
     setSearchParams(Object.fromEntries(route.searchParams));
     // The banner must also point at the screen that now holds the login panel;
     // a correct parameter on the wrong route opens nothing.
-    expect(route.pathname).toBe('/settings/services/codex');
+    expect(route.pathname).toBe('/settings/ai-accounts/codex');
     ServicesSettingsScreen = CodexScreen;
     mockCreateVerityClient.mockReturnValue(
       makeClient('unlocked', {
@@ -570,11 +572,13 @@ describe('settings/services — AI backends', () => {
     expect(startAgentLogin).not.toHaveBeenCalled();
   });
 
-  it('opens OpenCode connection and model settings on its own page', async () => {
+  it('keeps AI accounts out of the connectors list', async () => {
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
     render(<ConnectionsScreen />);
-    fireEvent.press(await screen.findByLabelText(/^OpenCode(,|$)/));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services/opencode');
+    await screen.findByLabelText(/^GitHub(,|$)/);
+    expect(screen.queryByLabelText(/^OpenCode(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Claude(,|$)/)).toBeNull();
+    expect(screen.queryByLabelText(/^Codex(,|$)/)).toBeNull();
   });
 });
 
@@ -782,30 +786,39 @@ describe('connections catalog', () => {
   });
 });
 
-it('keeps OpenCode available when all discovered models are disabled', async () => {
-  mockCreateVerityClient.mockReturnValue(
-    makeClient('unlocked', {
-      settings: makeSettings({
-        opencodeApiKeyConfigured: true,
-        opencodeBaseUrl: 'https://provider.example.test',
-        opencodeModels: 'first,second',
-        opencodeDisabledModels: 'first,second',
-      }),
+it('keeps the existing OpenCode account connected when all models are disabled', async () => {
+  const client = makeClient('unlocked', {
+    listProviderConnections: jest.fn().mockResolvedValue({
+      connections: [
+        {
+          provider: 'opencode',
+          baseUrl: 'https://provider.example.test',
+          models: [],
+          updatedAt: '2026-11-16',
+        },
+      ],
+      usesInstanceLogins: true,
     }),
-  );
-  render(<ConnectionsScreen />);
-  await act(async () => undefined);
+  });
+  render(<AiAccountsView client={client} />);
   const openCode = await screen.findByLabelText(/^OpenCode(,|$)/);
-  expect(within(openCode).getByLabelText(/^Connect(,|$)/)).toBeOnTheScreen();
-  expect(within(openCode).queryByLabelText(/^Connected(,|$)/)).toBeNull();
+  expect(within(openCode).getByLabelText(/^Connected(,|$)/)).toBeOnTheScreen();
 });
 
 it.each([
-  ['Claude', ClaudeScreen, 'Codex', '/settings/services/claude'],
-  ['Codex', CodexScreen, 'Claude', '/settings/services/codex'],
+  ['Claude', ClaudeScreen, 'Codex', '/settings/ai-accounts/claude'],
+  ['Codex', CodexScreen, 'Claude', '/settings/ai-accounts/codex'],
 ] as const)('keeps %s settings separate', async (title, DetailScreen, otherTitle, route) => {
-  mockCreateVerityClient.mockReturnValue(makeClient('unlocked'));
-  const catalog = render(<ConnectionsScreen />);
+  const client = makeClient('unlocked', {
+    listProviderConnections: jest.fn().mockResolvedValue({
+      connections: [
+        { provider: title.toLowerCase(), baseUrl: null, models: [], updatedAt: '2026-11-16' },
+      ],
+      usesInstanceLogins: true,
+    }),
+  });
+  mockCreateVerityClient.mockReturnValue(client);
+  const catalog = render(<AiAccountsView client={client} />);
   fireEvent.press(await screen.findByLabelText(rowLabel(title)));
   expect(mockPush).toHaveBeenCalledWith(route);
   catalog.unmount();
@@ -830,11 +843,10 @@ it.each([false, true])('groups services consistently when connected=%s', async (
     }),
   );
   render(<ConnectionsScreen />);
-  await screen.findByLabelText(/^Claude(,|$)/);
+  await screen.findByLabelText(/^Doppler(,|$)/);
   await act(async () => undefined);
 
   const categories = [
-    ['Agents', ['Claude', 'Codex', 'OpenCode']],
     ['Code', ['GitHub']],
     ['Files & documents', ['Google']],
     ['Communication', ['Matrix', 'Attendee']],
@@ -857,8 +869,8 @@ it.each([false, true])('groups services consistently when connected=%s', async (
   }
   expect(screen.queryByRole('header', { name: 'Connected' })).toBeNull();
   expect(screen.queryByRole('header', { name: 'Available' })).toBeNull();
-  const claude = within(screen.getByLabelText(/^Claude(,|$)/));
-  expect(claude.getByLabelText(rowLabel(connected ? 'Connected' : 'Connect'))).toBeOnTheScreen();
+  const doppler = within(screen.getByLabelText(/^Doppler(,|$)/));
+  expect(doppler.getByLabelText(rowLabel(connected ? 'Connected' : 'Connect'))).toBeOnTheScreen();
 });
 
 it.each([false, true])(

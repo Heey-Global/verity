@@ -569,3 +569,33 @@ migrations['0227_sandbox_update_state'] = {
     await sql`drop table sandbox_update_state`.execute(db);
   },
 };
+
+migrations['0228_administrator_provider_accounts'] = {
+  // The original administrator manages the original encrypted logins through
+  // My AI accounts. Collapse any separately connected personal account into
+  // that same refresh pipeline, without decrypting or exchanging credentials.
+  async up(db: Kysely<unknown>): Promise<void> {
+    const administrator = '00000000-0000-4000-8000-000000000001';
+    for (const [provider, column] of [
+      ['claude', 'claude_code_oauth_credentials_json'],
+      ['codex', 'codex_auth_json'],
+    ] as const) {
+      await sql`insert into verity_settings (id, ${sql.ref(column)})
+        select 'global', credential from user_provider_connections
+        where user_id = ${administrator} and provider = ${provider}
+        on conflict (id) do update set ${sql.ref(column)} = excluded.${sql.ref(column)}`.execute(
+        db,
+      );
+    }
+    await sql`insert into verity_settings (id, opencode_api_key, opencode_base_url, opencode_models)
+      select 'global', credential, base_url, models from user_provider_connections
+      where user_id = ${administrator} and provider = 'opencode'
+      on conflict (id) do update set opencode_api_key = excluded.opencode_api_key,
+        opencode_base_url = excluded.opencode_base_url, opencode_models = excluded.opencode_models,
+        opencode_disabled_models = null`.execute(db);
+    await sql`delete from user_provider_connections where user_id = ${administrator}`.execute(db);
+  },
+  async down(): Promise<void> {
+    // Credentials stay with the original refresh pipeline on rollback.
+  },
+};

@@ -7,10 +7,11 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
+import type { administratorProviderConnections } from './administrator-provider-connections.js';
 import type { AgentLoginService } from './agent-login.js';
 import { viewerId } from './view-state-routes.js';
 
-type Store = Pick<EventStore, 'userProviderConnections' | 'isActiveAdministrator'>;
+type Store = Pick<EventStore, 'userProviderConnections'>;
 
 const loginProvider = z.object({ provider: z.enum(['claude', 'codex']) }).strict();
 const anyProvider = z.object({ provider: z.enum(['claude', 'codex', 'opencode']) }).strict();
@@ -33,6 +34,7 @@ export function registerProviderConnectionRoutes(
   app: FastifyInstance,
   deps: {
     store: Store;
+    administratorAccounts: ReturnType<typeof administratorProviderConnections>;
     agentLogin: AgentLoginService;
     secretCipher?: SealableSecretCipher | undefined;
     /** Lists the provider's models with the given address and key, proving both work. */
@@ -57,10 +59,10 @@ export function registerProviderConnectionRoutes(
   app.get('/me/provider-connections', async (request, reply) => {
     reply.header('cache-control', 'no-store');
     const userId = viewerId(request);
-    const [connections, administrator] = await Promise.all([
-      deps.store.userProviderConnections.status(userId),
-      deps.store.isActiveAdministrator(userId),
-    ]);
+    const ownsInstance = deps.administratorAccounts.owns(userId);
+    const connections = ownsInstance
+      ? await deps.administratorAccounts.status()
+      : await deps.store.userProviderConnections.status(userId);
     return {
       connections: connections.map((connection) => ({
         provider: connection.provider,
@@ -69,7 +71,7 @@ export function registerProviderConnectionRoutes(
         updatedAt: connection.updatedAt.toISOString(),
       })),
       // The administrator's turns fall back to the instance login, which was theirs.
-      usesInstanceLogins: administrator,
+      usesInstanceLogins: ownsInstance,
     };
   });
 
@@ -118,11 +120,17 @@ export function registerProviderConnectionRoutes(
     }
     const userId = viewerId(request);
     await persist(userId, 'opencode', () =>
-      deps.store.userProviderConnections.set(userId, 'opencode', {
-        credential: input.data.apiKey,
-        baseUrl: input.data.baseUrl,
-        models: models.join('\n'),
-      }),
+      deps.administratorAccounts.owns(userId)
+        ? deps.administratorAccounts.set('opencode', {
+            credential: input.data.apiKey,
+            baseUrl: input.data.baseUrl,
+            models: models.join('\n'),
+          })
+        : deps.store.userProviderConnections.set(userId, 'opencode', {
+            credential: input.data.apiKey,
+            baseUrl: input.data.baseUrl,
+            models: models.join('\n'),
+          }),
     );
     reply.header('cache-control', 'no-store');
     return { provider: 'opencode', baseUrl: input.data.baseUrl, models };
@@ -132,7 +140,9 @@ export function registerProviderConnectionRoutes(
     const { provider } = anyProvider.parse(request.params);
     const userId = viewerId(request);
     await persist(userId, provider, () =>
-      deps.store.userProviderConnections.delete(userId, provider),
+      deps.administratorAccounts.owns(userId)
+        ? deps.administratorAccounts.delete(provider)
+        : deps.store.userProviderConnections.delete(userId, provider),
     );
     return reply.code(204).send();
   });
