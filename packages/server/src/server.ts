@@ -1,3 +1,5 @@
+import { installProjectContext, installUserContext } from './server-context-routes.js';
+import { createServerWikiProposals } from './server-wiki-proposals.js';
 import { installTasks } from './server-tasks.js';
 import { installKnowledge } from './server-knowledge.js';
 import { installPreviews } from './server-previews.js';
@@ -25,8 +27,6 @@ import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
-import { registerProjectContextRoutes } from './project-context-routes.js';
-import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -44,16 +44,11 @@ import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
-import { registerProjectMemoryRoute } from './project-memory-route.js';
-import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
-import { registerServerSessionFiles } from './server-session-files.js';
-import { WikiProposals } from './wiki-proposals.js';
-import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { type ServerContext } from './server-context.js';
 import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
 import { installProjects } from './server-projects.js';
@@ -377,45 +372,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     availableModels: () => availableModels(),
   });
   installRepositoryTools(app, ctx);
-  registerUserContextRoutes(app, deps.eventStore.userContext);
+  installUserContext(app, ctx);
   installPeople(ctx, { agentLogin, persistPersonal, administratorAccounts });
-  if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
-  registerProjectMemoryRoute(app, {
-    ...(deps.mcpGateway === undefined
-      ? {}
-      : { resolveControlCaller: deps.mcpGateway.resolveCaller }),
-    append: async (projectId, text) => {
-      if (deps.dataRoot !== undefined) {
-        await readOrMigrateProjectOverview(deps.dataRoot, projectId, async () => {
-          const approved = await deps.eventStore.knowledge.getProjectOverview(projectId);
-          if (approved !== null) return approved.bodyMarkdown;
-          return (await deps.eventStore.getProjectSettingsRaw(projectId))?.memory ?? undefined;
-        });
-        return appendProjectOverview(deps.dataRoot, projectId, text);
-      }
-      const settings = await deps.eventStore.appendProjectMemory(projectId, text);
-      return settings?.memory?.length;
-    },
-    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
-  });
-  // Proposals write through the Wiki's file routes, which are registered further below.
-  const sessionFiles: { current?: ReturnType<typeof registerServerSessionFiles> } = {};
-  const wikiFiles = () => {
-    if (!sessionFiles.current) throw new Error('Wiki files are not ready');
-    return sessionFiles.current;
-  };
-  const wikiProposals =
-    deps.dataRoot === undefined
-      ? undefined
-      : new WikiProposals(deps.dataRoot, {
-          readProjectWiki: (projectId, path) => wikiFiles().readProjectWiki(projectId, path),
-          writeProjectWiki: (projectId, path, content, version) =>
-            wikiFiles().writeProjectWiki(projectId, path, content, version),
-          onFailure: (err, details) =>
-            app.log.warn({ err, ...details }, 'Wiki proposal page could not be written'),
-          onChange: (projectId) =>
-            resources.invalidate(`/projects/${encodeURIComponent(projectId)}/knowledge/proposals`),
-        });
+  installProjectContext(app, ctx);
+  const { wikiProposals, installWikiFiles } = createServerWikiProposals(app, ctx);
   const decidePendingLinkedMessage = registerServerMcpRoutes({
     wikiProposals,
     inquiryTool: async (sessionId, userId, input) => {
@@ -564,12 +524,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     directQueryFor,
     instanceClaudeServes,
   });
-  sessionFiles.current = registerServerSessionFiles(app, deps, conductor);
-  if (wikiProposals)
-    registerWikiProposalRoutes(app, wikiProposals, async (projectId) => {
-      const project = await deps.eventStore.getProject(projectId);
-      return project !== undefined && !project.hiddenAt;
-    });
+  installWikiFiles();
 
   // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
   // event references images by this id; the client fetches them lazily (only the
