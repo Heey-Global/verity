@@ -273,6 +273,50 @@ describe('managed dev servers', () => {
     expect(manager.hasUnverifiedServers('p1')).toBe(true);
   });
 
+  it.each(['sandbox', 'sandbox--person'])(
+    'requires a fresh scan in %s rather than renewing cached listener proof',
+    async (containerName) => {
+      await manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        now: () => now,
+        sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
+        sandboxContainer: async () => containerName,
+      });
+      await manager.add('s1', { name: 'Demo', command: 'npm run dev' });
+      await manager.start('s1', 'Demo', 'agent');
+      const run = sandbox.started[0]!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      const cached = [...sandbox.listeners];
+      const scans = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
+      scans.mockImplementation(async (_project, options) =>
+        options?.fresh ? [...sandbox.listeners] : cached,
+      );
+      await manager.tick();
+      expect(manager.hasRunningServers('p1')).toBe(true);
+      expect(manager.hasVerifiedInstance(run.instanceId)).toBe(true);
+      scans.mockClear();
+      sandbox.listeners.splice(0); // npm remains alive after its server child stopped.
+      now += 2_000;
+      await manager.tick();
+      expect(manager.hasRunningServers('p1')).toBe(false);
+      expect(manager.hasVerifiedInstance(run.instanceId)).toBe(false);
+      expect(manager.hasUnverifiedServers('p1')).toBe(true);
+      expect(scans).toHaveBeenCalledWith(expect.objectContaining({ containerName }), {
+        fresh: true,
+      });
+      now += MANAGED_SILENT_LIMIT_MS + 1;
+      await manager.tick();
+      expect(await instanceOf()).toMatchObject({
+        state: 'crashed',
+        detail: 'Stopped answering on its port',
+      });
+    },
+  );
+
   it('starts an entry with its own port and reports running only once the port answers', async () => {
     await manager.add('s1', {
       name: 'Curtis Demo',

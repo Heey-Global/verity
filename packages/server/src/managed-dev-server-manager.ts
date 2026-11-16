@@ -1350,10 +1350,9 @@ export class ManagedDevServerManager {
     const processesIn = (target: ProjectRecord): Promise<ListeningProcess[]> => {
       let listing = listings.get(target.containerName);
       if (listing === undefined) {
-        listing =
-          target.containerName === project.containerName
-            ? this.options.runtime.listListeningProcesses(target)
-            : this.options.runtime.listListeningProcesses(target).catch(() => []);
+        // Cached discovery must never renew the short activity-evidence lease.
+        listing = this.options.runtime.listListeningProcesses(target, { fresh: true });
+        if (target.containerName !== project.containerName) listing = listing.catch(() => []);
         listings.set(target.containerName, listing);
       }
       return listing;

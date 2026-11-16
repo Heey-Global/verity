@@ -190,12 +190,25 @@ it('persists turn repair storage refusal and skips another build until its backo
       status: 'waiting',
       sourceGeneration: 'generation-1',
     });
+    const intent = (await ctx.store.sandboxRepairIntents.list())[0];
+    await f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set() });
+    expect((await ctx.store.sandboxRepairIntents.list())[0]).toEqual(intent);
     await expect(
       f.provisioner.repairSandboxForTurn('p', 'session', undefined, {
         requireFreshAgentGatewayIdentity: true,
       }),
     ).resolves.toBe(true);
     expect(recreate).toHaveBeenCalledTimes(1);
+    // A restarted reconciler must retain the owed identity refresh too.
+    const restored = await fixture(12);
+    restored.provisioner.attachProjectBusyProbe(async () => []);
+    const restoredRecreate = vi.spyOn(restored.provisioner, 'recreateContainer');
+    await restored.provisioner.reconcileRelays([restored.project], { updateAvailable: new Set() });
+    expect((await ctx.store.sandboxRepairIntents.list())[0]).toEqual(intent);
+    await restored.provisioner.repairSandboxForTurn('p', 'session', undefined, {
+      requireFreshAgentGatewayIdentity: true,
+    });
+    expect(restoredRecreate).not.toHaveBeenCalled();
     f.setTime(12, 1);
     await f.provisioner.repairSandboxForTurn('p', 'session', undefined, {
       requireFreshAgentGatewayIdentity: true,

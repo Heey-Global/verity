@@ -4638,7 +4638,7 @@ export class ProvisionerImpl implements Provisioner {
             callbacks.onImageUpdateUnresolved?.(project.id, { attempts: imageUpdateAttempts });
           }
           const imageUpdate = updateOffered && !imageUpdateSpent;
-          const owedRuntimeRepair = previousIntent !== undefined && project.state === 'failed';
+          const owedRuntimeRepair = previousIntent !== undefined;
           const nightlyOverride =
             imageUpdate &&
             confirmed &&
