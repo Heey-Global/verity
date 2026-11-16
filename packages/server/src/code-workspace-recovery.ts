@@ -165,6 +165,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     target: string,
     branch: string,
   ): Promise<CodeWorkspaceSource> {
+    const present = await exists(target);
+    await deps.ensureWorkspace({ ...session, worktree: target });
     if (await exists(target)) {
       const top = await git(['-C', target, 'rev-parse', '--show-toplevel']).then(
         (out) => out.trim(),
@@ -185,10 +187,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
         throw new CodeWorkspaceUnavailableError(
           `${target} exists but is not this session's Git checkout`,
         );
-      return 'adopted';
+      return present ? 'adopted' : 'journal';
     }
-    await deps.ensureWorkspace({ ...session, worktree: target });
-    if (await exists(target)) return 'journal';
     await dropStaleRegistration(clone, target);
     const options = {
       repoDir: clone,
@@ -380,29 +380,44 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     return claim.value;
   }
 
+  type RestoreResult = { restored: boolean } & Partial<CodeWorkspaceConversion>;
+  const restorations = new Map<string, Promise<RestoreResult>>();
+
+  function restoreOrdinary(sessionId: string): Promise<RestoreResult> {
+    const prior = restorations.get(sessionId);
+    if (prior) return prior;
+    const operation = (async (): Promise<RestoreResult> => {
+      const session = await deps.store.getSession(sessionId);
+      if (!session) return { restored: false };
+      const missing = !(await exists(session.worktree));
+      // A prior attempt may have created the folder before failing journal validation
+      // or sidecar/lock restoration. Only the storage service can finish that recovery.
+      await deps.ensureWorkspace(session);
+      if (!(await exists(session.worktree)))
+        throw new CodeWorkspaceUnavailableError(
+          `${session.worktree} is missing and has no recovery record`,
+        );
+      return missing
+        ? { restored: true, worktree: session.worktree, source: 'journal' }
+        : { restored: false };
+    })().finally(() => {
+      if (restorations.get(sessionId) === operation) restorations.delete(sessionId);
+    });
+    restorations.set(sessionId, operation);
+    return operation;
+  }
+
   /** Convert a legacy session, or bring back an ordinary session's retired checkout. */
-  async function restore(
-    sessionId: string,
-  ): Promise<{ restored: boolean } & Partial<CodeWorkspaceConversion>> {
+  async function restore(sessionId: string): Promise<RestoreResult> {
     const converted = await convert(sessionId);
     if (converted) return { restored: true, ...converted };
-    const session = await deps.store.getSession(sessionId);
-    if (!session || (await exists(session.worktree))) return { restored: false };
-    // The turn's own journal restore may win the race; the checkout being back is what counts.
-    const failure = await deps.ensureWorkspace(session).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    if (!(await exists(session.worktree))) {
-      if (failure !== undefined)
-        throw failure instanceof Error
-          ? failure
-          : new Error('workspace restore failed', { cause: failure });
+    const claim = await deps.claimIdle(sessionId, () => restoreOrdinary(sessionId));
+    if (!claim.ran)
       throw new CodeWorkspaceUnavailableError(
-        `${session.worktree} is missing and has no recovery record`,
+        'the session is busy; restore its code workspace when the current turn ends',
+        'busy',
       );
-    }
-    return { restored: true, worktree: session.worktree, source: 'journal' };
+    return claim.value;
   }
 
   return {
@@ -421,10 +436,10 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
           starting,
         );
         const session = await deps.store.getSession(sessionId);
-        if (deps.cloneRoot && session?.projectId && !(await exists(session.worktree))) {
+        if (deps.cloneRoot && session?.projectId) {
           const project = await deps.store.getProject(session.projectId);
           if (project && project.kind !== 'local' && project.kind !== 'control_plane')
-            await restore(sessionId);
+            await restoreOrdinary(sessionId);
         }
       } catch (error) {
         if (!starting && error instanceof CodeWorkspaceUnavailableError && error.reason === 'busy')

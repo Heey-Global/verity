@@ -156,6 +156,19 @@ describe('legacy Documents session conversion', () => {
     expect(result?.source).toBe('journal');
   });
 
+  it('does not adopt a legacy checkout left behind by a failed journal restore', async () => {
+    const f = fixture();
+    vi.mocked(f.deps.ensureWorkspace).mockImplementation(async (session) => {
+      if (!existsSync(session.worktree))
+        git(['-C', f.clone, 'worktree', 'add', '-qb', 'code-s', session.worktree, 'main']);
+      throw new Error('journal validation failed');
+    });
+    const recovery = createCodeWorkspaceRecovery(f.deps);
+    await expect(recovery.convert('s')).rejects.toThrow('journal validation failed');
+    await expect(recovery.convert('s')).rejects.toThrow('journal validation failed');
+    expect(f.session().worktree).toBe(f.view);
+  });
+
   it('checks out a surviving local branch instead of starting over', async () => {
     const f = fixture();
     git(['-C', f.clone, 'branch', 'code-s', 'main']);
@@ -274,13 +287,53 @@ describe('legacy Documents session conversion', () => {
       source: 'journal',
     });
     expect(existsSync(f.target)).toBe(true);
-    // A turn's own journal restore can win the race and fail this one; the checkout is back.
+    // A folder can exist before journal validation and sidecar/lock restoration finish.
     rmSync(f.target, { recursive: true, force: true });
     vi.mocked(f.deps.ensureWorkspace).mockImplementation(async (session) => {
       mkdirSync(session.worktree, { recursive: true });
-      throw new Error('already restored by the turn');
+      throw new Error('journal validation failed');
     });
-    await expect(recovery.restore('s')).resolves.toMatchObject({ restored: true });
+    await expect(recovery.restore('s')).rejects.toThrow('journal validation failed');
+    // Retrying must not skip validation merely because the failed attempt created a folder.
+    await expect(recovery.restore('s')).rejects.toThrow('journal validation failed');
+  });
+
+  it('refuses to restore an ordinary checkout under a running turn', async () => {
+    const f = fixture();
+    const recovery = createCodeWorkspaceRecovery(f.deps);
+    await recovery.convert('s');
+    rmSync(f.target, { recursive: true, force: true });
+    vi.mocked(f.deps.ensureWorkspace).mockClear();
+    f.busy();
+    await expect(recovery.restore('s')).rejects.toMatchObject({ reason: 'busy' });
+    expect(f.deps.ensureWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('shares a verified ordinary journal restore between concurrent callers', async () => {
+    const f = fixture();
+    const recovery = createCodeWorkspaceRecovery(f.deps);
+    await recovery.convert('s');
+    rmSync(f.target, { recursive: true, force: true });
+    let finish!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(f.deps.ensureWorkspace)
+      .mockClear()
+      .mockImplementation(async (session) => {
+        mkdirSync(session.worktree, { recursive: true });
+        await completed;
+      });
+    const first = recovery.restore('s');
+    const second = recovery.restore('s');
+    await vi.waitFor(() => expect(f.deps.ensureWorkspace).toHaveBeenCalledTimes(1));
+    finish();
+    const results = await Promise.all([first, second]);
+    expect(results).toEqual([
+      expect.objectContaining({ restored: true }),
+      expect.objectContaining({ restored: true }),
+    ]);
+    expect(f.deps.ensureWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it('leaves a local Documents project without commits in its Documents view', async () => {
