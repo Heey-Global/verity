@@ -234,14 +234,43 @@ export class ProjectTeamStore {
   async revokeInvitation(projectId: string, id: string, now = new Date()): Promise<boolean> {
     return this.db.transaction().execute(async (tx) => {
       const row = await tx
+        .selectFrom('project_invitations')
+        .selectAll()
+        .where('id', '=', id)
+        .where('project_id', '=', projectId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (row === undefined) return false;
+      if (row.state === 'redeemed' && row.redeemed_by_user_id !== null) {
+        const user = await tx
+          .selectFrom('users')
+          .select(['status', 'team_membership_ref'])
+          .where('id', '=', row.redeemed_by_user_id)
+          .executeTakeFirst();
+        if (user?.status !== 'disabled') return false;
+        await tx
+          .deleteFrom('project_memberships')
+          .where('user_id', '=', row.redeemed_by_user_id)
+          .execute();
+        await tx.deleteFrom('auth_tokens').where('user_id', '=', row.redeemed_by_user_id).execute();
+        // The commit may already have consumed a seat while its answer was lost.
+        // Uplink's removal tombstone also fences a commit that arrives later.
+        if (user.team_membership_ref !== null)
+          await this.enqueue(
+            tx,
+            'team.membership.remove',
+            {
+              membershipRef: user.team_membership_ref,
+              reason: 'membership_removed',
+            },
+            now,
+          );
+      } else if (!['creating', 'open'].includes(row.state)) return false;
+      await tx
         .updateTable('project_invitations')
         .set({ state: 'revoked', revoked_at: now, secret_encrypted: null })
         .where('id', '=', id)
-        .where('project_id', '=', projectId)
-        .where('state', 'in', ['creating', 'open'])
-        .returning(['id', 'invitation_id'])
-        .executeTakeFirst();
-      if (row === undefined) return false;
+        .execute();
       // One Uplink has not created yet is cancelled when its creation is answered.
       if (row.invitation_id !== null)
         await this.enqueue(tx, 'team.invite.cancel', { invitationId: row.invitation_id }, now);
@@ -291,6 +320,38 @@ export class ProjectTeamStore {
         .where('invitation_id', '=', input.invitationId)
         .forUpdate()
         .executeTakeFirst();
+      const saved = await tx
+        .selectFrom('team_join_admissions')
+        .selectAll()
+        .where('redemption_id', '=', input.redemptionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (
+        saved !== undefined &&
+        saved.invitation_id === input.invitationId &&
+        saved.decision === 'accepted' &&
+        saved.expires_at.getTime() > now.getTime() &&
+        row !== undefined &&
+        (row.state === 'open' ||
+          (row.state === 'redeemed' && row.redemption_id === input.redemptionId)) &&
+        row.project_id === input.projectId &&
+        row.expires_at.getTime() > now.getTime() &&
+        (await this.managesProject(tx, row.project_id, row.inviter_user_id)) &&
+        input.permissions.join(',') === (row.can_execute ? ['read', 'execute'] : ['read']).join(',')
+      ) {
+        try {
+          await this.requireShareable(tx, row.project_id);
+        } catch {
+          return 'refused';
+        }
+        input.signal?.throwIfAborted();
+        await tx
+          .updateTable('team_join_admissions')
+          .set({ session_id: input.sessionId })
+          .where('redemption_id', '=', input.redemptionId)
+          .execute();
+        return 'accepted';
+      }
       const expected = row?.can_execute ? ['read', 'execute'] : ['read'];
       let decision: 'accepted' | 'refused' = 'refused';
       if (
@@ -332,6 +393,7 @@ export class ProjectTeamStore {
       .deleteFrom('team_join_admissions')
       .where('session_id', '=', input.sessionId)
       .where('redemption_id', '=', input.redemptionId)
+      .where('device_token_id', 'is', null)
       .execute();
   }
 
@@ -408,6 +470,7 @@ export class ProjectTeamStore {
     userId: string;
     projectId: string;
     replay: boolean;
+    completionExpiresAt: number;
     token: string;
     tokenId: string;
   }> {
@@ -428,6 +491,7 @@ export class ProjectTeamStore {
         .select(['invitation_id', 'expires_at', 'device_token_encrypted', 'device_token_id'])
         .where('redemption_id', '=', input.redemptionId)
         .where('decision', '=', 'accepted')
+        .forUpdate()
         .executeTakeFirst();
       if (
         admission === undefined ||
@@ -458,7 +522,13 @@ export class ProjectTeamStore {
           .where('token_hash', '=', createHash('sha256').update(paired.token).digest('hex'))
           .executeTakeFirst();
         if (user?.status !== 'disabled' || token === undefined) throw unavailable();
-        return { userId, projectId: row.project_id, replay: true, ...paired };
+        return {
+          userId,
+          projectId: row.project_id,
+          replay: true,
+          completionExpiresAt: admission.expires_at.getTime(),
+          ...paired,
+        };
       }
       if (row.state !== 'open' || row.expires_at.getTime() <= now.getTime()) throw unavailable();
       await this.requireShareable(tx, row.project_id);
@@ -501,12 +571,6 @@ export class ProjectTeamStore {
         })
         .where('id', '=', row.id)
         .execute();
-      await this.enqueue(
-        tx,
-        'team.join.commit',
-        { invitationId: input.invitationId, redemptionId: input.redemptionId, membershipRef },
-        now,
-      );
       // The invitation holder cannot derive this permanent device credential.
       // Keep an encrypted replay copy only with the short-lived admission.
       const paired = {
@@ -530,7 +594,79 @@ export class ProjectTeamStore {
           label: input.deviceLabel ?? null,
         })
         .execute();
-      return { userId, projectId: row.project_id, replay: false, ...paired };
+      return {
+        userId,
+        projectId: row.project_id,
+        replay: false,
+        completionExpiresAt: admission.expires_at.getTime(),
+        ...paired,
+      };
+    });
+  }
+
+  /** Only the device which durably received its credential may authorize activation. */
+  async completeJoin(
+    token: string,
+    now = new Date(),
+  ): Promise<{ projectId: string; confirmed: boolean }> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('project_invitations as i')
+        .innerJoin('auth_tokens as t', 't.user_id', 'i.redeemed_by_user_id')
+        .innerJoin('users as u', 'u.id', 't.user_id')
+        .innerJoin('team_join_admissions as a', 'a.redemption_id', 'i.redemption_id')
+        .select([
+          'i.project_id',
+          'i.invitation_id',
+          'i.redemption_id',
+          'i.expires_at',
+          'i.inviter_user_id',
+          't.user_id',
+          'u.status',
+          'u.team_membership_ref',
+          'a.expires_at as admission_expires_at',
+        ])
+        .where('t.token_hash', '=', createHash('sha256').update(token).digest('hex'))
+        .whereRef('a.device_token_id', '=', 't.id')
+        .where('i.state', '=', 'redeemed')
+        .forUpdate('i')
+        .executeTakeFirst();
+      const unavailable = () =>
+        new ProjectTeamError('invitation_unavailable', 'This invitation can no longer be used.');
+      if (row === undefined) throw unavailable();
+      const member = await tx
+        .selectFrom('project_memberships')
+        .select('user_id')
+        .where('project_id', '=', row.project_id)
+        .where('user_id', '=', row.user_id)
+        .executeTakeFirst();
+      if (member === undefined) throw unavailable();
+      if (row.status === 'active') return { projectId: row.project_id, confirmed: true };
+      const queued = await tx
+        .selectFrom('team_outbox')
+        .select('operation_id')
+        .where('kind', '=', 'team.join.commit')
+        .where(sql<string>`payload::jsonb ->> 'redemptionId'`, '=', row.redemption_id)
+        .executeTakeFirst();
+      if (queued !== undefined) return { projectId: row.project_id, confirmed: false };
+      if (
+        row.admission_expires_at.getTime() <= now.getTime() ||
+        row.expires_at.getTime() <= now.getTime() ||
+        !(await this.managesProject(tx, row.project_id, row.inviter_user_id))
+      )
+        throw unavailable();
+      await this.requireShareable(tx, row.project_id);
+      await this.enqueue(
+        tx,
+        'team.join.commit',
+        {
+          invitationId: row.invitation_id,
+          redemptionId: row.redemption_id,
+          membershipRef: row.team_membership_ref,
+        },
+        now,
+      );
+      return { projectId: row.project_id, confirmed: false };
     });
   }
 
@@ -547,6 +683,18 @@ export class ProjectTeamStore {
       .limit(1)
       .executeTakeFirst();
     if (open !== undefined) return true;
+    const recovering = await this.db
+      .selectFrom('project_invitations as i')
+      .innerJoin('team_join_admissions as a', 'a.redemption_id', 'i.redemption_id')
+      .innerJoin('users as u', 'u.id', 'i.redeemed_by_user_id')
+      .select('i.id')
+      .where('i.state', '=', 'redeemed')
+      .where('u.status', '=', 'disabled')
+      .where('a.expires_at', '>', now)
+      .where('i.expires_at', '>', now)
+      .limit(1)
+      .executeTakeFirst();
+    if (recovering !== undefined) return true;
     const queued = await this.db
       .selectFrom('team_outbox')
       .select('operation_id')
@@ -571,6 +719,13 @@ export class ProjectTeamStore {
         .executeTakeFirst();
       // A join fenced as failed stays fenced, whatever arrives late.
       if (row?.state !== 'redeemed' || row.redeemed_by_user_id == null) return false;
+      const authorized = await tx
+        .selectFrom('team_outbox')
+        .select('operation_id')
+        .where('kind', '=', 'team.join.commit')
+        .where(sql<string>`payload::jsonb ->> 'redemptionId'`, '=', redemptionId)
+        .executeTakeFirst();
+      if (authorized === undefined) return false;
       // A replayed confirmation must not bring back someone removed since:
       // only a person still pending, and still a member, becomes active.
       const pending = await tx
@@ -581,6 +736,11 @@ export class ProjectTeamStore {
         .where('u.status', '=', 'disabled')
         .executeTakeFirst();
       if (pending === undefined) return false;
+      await tx
+        .updateTable('team_join_admissions')
+        .set({ device_token_encrypted: null })
+        .where('redemption_id', '=', redemptionId)
+        .execute();
       await tx
         .updateTable('users')
         .set({ status: 'active' })
@@ -679,6 +839,70 @@ export class ProjectTeamStore {
         );
       return { lastProject };
     });
+  }
+
+  /** Retire expired replay secrets and fence joins that never authorized completion. */
+  async clearExpiredJoinCredentials(now = new Date()): Promise<void> {
+    await this.db
+      .updateTable('team_join_admissions')
+      .set({ device_token_encrypted: null })
+      .where('expires_at', '<=', now)
+      .where('device_token_encrypted', 'is not', null)
+      .execute();
+    const expired = await this.db
+      .selectFrom('project_invitations as i')
+      .innerJoin('team_join_admissions as a', 'a.redemption_id', 'i.redemption_id')
+      .innerJoin('users as u', 'u.id', 'i.redeemed_by_user_id')
+      .select('i.id')
+      .where('i.state', '=', 'redeemed')
+      .where('u.status', '=', 'disabled')
+      .where(
+        sql<boolean>`not exists (select 1 from team_outbox o where o.kind = 'team.join.commit' and o.payload::jsonb ->> 'redemptionId' = i.redemption_id)`,
+      )
+      .where((eb) => eb.or([eb('a.expires_at', '<=', now), eb('i.expires_at', '<=', now)]))
+      .limit(20)
+      .execute();
+    for (const candidate of expired) {
+      await this.db.transaction().execute(async (tx) => {
+        // Completion takes the same lock: cleanup cannot erase an authorization
+        // queued after the expiry scan but before this transaction acquired it.
+        const row = await tx
+          .selectFrom('project_invitations')
+          .select(['state', 'redemption_id', 'redeemed_by_user_id'])
+          .where('id', '=', candidate.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row?.state !== 'redeemed' || row.redeemed_by_user_id === null) return;
+        const authorized = await tx
+          .selectFrom('team_outbox')
+          .select('operation_id')
+          .where('kind', '=', 'team.join.commit')
+          .where(sql<string>`payload::jsonb ->> 'redemptionId'`, '=', row.redemption_id)
+          .executeTakeFirst();
+        if (authorized !== undefined) return;
+        const person = await tx
+          .selectFrom('users')
+          .select('status')
+          .where('id', '=', row.redeemed_by_user_id)
+          .executeTakeFirst();
+        if (person?.status !== 'disabled') return;
+        await tx
+          .updateTable('project_invitations')
+          .set({ state: 'failed' })
+          .where('id', '=', candidate.id)
+          .execute();
+        await tx
+          .updateTable('team_join_admissions')
+          .set({ device_token_encrypted: null })
+          .where('redemption_id', '=', row.redemption_id)
+          .execute();
+        await tx
+          .deleteFrom('project_memberships')
+          .where('user_id', '=', row.redeemed_by_user_id)
+          .execute();
+        await tx.deleteFrom('auth_tokens').where('user_id', '=', row.redeemed_by_user_id).execute();
+      });
+    }
   }
 
   /** Team operations due for delivery to Uplink, oldest first. */

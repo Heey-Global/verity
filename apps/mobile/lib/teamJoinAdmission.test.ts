@@ -56,7 +56,10 @@ it('sends the one reserve request and resolves with the ticket and Uplink’s re
   const { admission, socket, request } = start();
   expect(socket.url).toBe('wss://uplink.verity.build/remote-control');
   expect(Object.keys(request).sort()).toEqual(Object.keys(valid('joinReserve')).sort());
-  expect(request).toMatchObject({ type: 'team.join.reserve', capabilities: ['team-bootstrap-v1'] });
+  expect(request).toMatchObject({
+    type: 'team.join.reserve',
+    capabilities: ['team-bootstrap-resume-v1'],
+  });
   socket.emit('message', {
     data: JSON.stringify({ ...valid('joinReady'), requestId: request.requestId }),
   });

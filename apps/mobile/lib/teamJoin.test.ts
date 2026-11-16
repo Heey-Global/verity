@@ -23,29 +23,63 @@ const mockSetToken = jest.fn(async (..._args: unknown[]) => {
   mockCalls.push('token');
   return true;
 });
+const mockStoredTokenId = jest.fn(async (_url: string) => null as string | null);
 jest.mock('./authToken', () => ({
-  clearStoredAuthState: async () => undefined,
+  getStoredAuthTokenId: (url: string) => mockStoredTokenId(url),
+  adoptStoredAuthToken: jest.fn(),
   setAuthToken: (...args: unknown[]) => mockSetToken(...args),
 }));
-const mockSetBaseUrl = jest.fn(async (_url: string) => void mockCalls.push('baseUrl'));
-jest.mock('./client', () => ({ setVerityBaseUrl: (url: string) => mockSetBaseUrl(url) }));
+const mockSetBaseUrl = jest.fn(async (_url: string, signal?: AbortSignal, commit?: () => void) => {
+  signal?.throwIfAborted();
+  mockCalls.push('baseUrl');
+  commit?.();
+});
+jest.mock('./client', () => ({
+  setVerityBaseUrl: (...args: Parameters<typeof mockSetBaseUrl>) => mockSetBaseUrl(...args),
+}));
 jest.mock('./deviceLabel', () => ({ deviceLabel: () => 'Lena’s iPhone' }));
+const mockTransport = jest.fn(async (_binding: unknown, ..._args: unknown[]) => new Response('{}'));
 const mockVerify = jest.fn(async (_input: unknown) => undefined);
 jest.mock('./pinnedTransport', () => ({
-  createPinnedFetch: (pin: string, useRemote: boolean, port?: number) => ({ pin, useRemote, port }),
+  createPinnedFetch:
+    (pin: string, useRemote: boolean, port?: number) =>
+    (...args: unknown[]) =>
+      mockTransport({ pin, useRemote, port }, ...args),
   verifyPairedIdentity: (input: unknown) => mockVerify(input),
 }));
 const mockProfile = { current: null as unknown };
-const mockSaveProfile = jest.fn(async (profile: unknown) => {
-  mockCalls.push('profile');
-  mockProfile.current = profile;
-});
+const mockSaveProfile = jest.fn(
+  async (profile: unknown, signal?: AbortSignal, finalize?: () => Promise<void>) => {
+    mockCalls.push('profile');
+    mockProfile.current = profile;
+    signal?.throwIfAborted();
+    await finalize?.();
+  },
+);
 const mockOthers = { current: [] as unknown[] };
 jest.mock('./serverProfile', () => ({
   getServerProfile: () => mockProfile.current,
   getOtherServerProfiles: () => mockOthers.current,
-  activateServerProfile: (profile: unknown) => mockSaveProfile(profile),
+  activateServerProfile: (...args: Parameters<typeof mockSaveProfile>) => mockSaveProfile(...args),
 }));
+const mockProgress = { current: null as unknown };
+const mockSaveProgress = jest.fn(async (value: unknown) => {
+  mockCalls.push('save');
+  mockProgress.current = value;
+});
+jest.mock('./teamJoinState', () => ({
+  loadTeamJoinProgress: async () => mockProgress.current,
+  saveTeamJoinProgress: (value: unknown) => mockSaveProgress(value),
+  clearTeamJoinProgress: async () => {
+    mockProgress.current = null;
+  },
+}));
+const mockRemote = jest.fn();
+jest.mock('./remoteControlAdmission', () => ({
+  requestRemoteControlAdmission: (...args: unknown[]) => mockRemote(...args),
+}));
+const mockComplete = jest.fn();
+const mockCapabilities = jest.fn();
 const mockIdentity = jest.fn();
 const mockJoin = jest.fn();
 const mockClients: Array<{ baseUrl: string; fetch: unknown }> = [];
@@ -57,6 +91,10 @@ jest.mock('@verity/mobile', () => {
       constructor(options: { baseUrl: string; fetch: unknown }) {
         mockClients.push(options);
       }
+      people = {
+        teamJoinCapabilities: () => mockCapabilities(),
+        completeTeamJoin: () => mockComplete(),
+      };
       fetchPairingIdentity = (challenge: string) => mockIdentity(challenge);
       joinTeam = (body: unknown) => mockJoin(body);
     },
@@ -92,6 +130,24 @@ const deps: JoinTeamDeps = { admission, tunnel: () => tunnel };
 const finish = jest.fn();
 
 beforeEach(() => {
+  mockStoredTokenId.mockReset().mockResolvedValue(null);
+  mockProgress.current = null;
+  mockSaveProgress.mockImplementation(async (value: unknown) => {
+    mockCalls.push('save');
+    mockProgress.current = value;
+  });
+  mockCapabilities.mockResolvedValue({ completion: 1 });
+  mockComplete.mockImplementation(async () => {
+    mockCalls.push('complete');
+    return { projectId: 'p1', confirmed: true };
+  });
+  mockRemote.mockResolvedValue({
+    sessionId: 'resumed',
+    ticket: 'resume_ticket',
+    expiresAt: Date.now() + 60_000,
+    cancel: jest.fn(),
+    finish: jest.fn(),
+  });
   mockCalls.length = 0;
   mockClients.length = 0;
   mockProfile.current = null;
@@ -129,6 +185,7 @@ it('joins through the tunnel Uplink opened, with the pin and redemption from the
     uplinkOrigin: link.uplinkOrigin,
     installationHandle: link.installationHandle,
     invitationId: link.invitationId,
+    signal: expect.any(AbortSignal),
   });
   const dataUrl = new URL(link.uplinkOrigin);
   dataUrl.protocol = 'wss:';
@@ -138,11 +195,16 @@ it('joins through the tunnel Uplink opened, with the pin and redemption from the
     'app_ticket',
     'session_1',
     link.coreOrigin,
+    'team-bootstrap-v1',
   );
   expect(finish).toHaveBeenCalled();
   // Only through that tunnel, only with the link's pin: never the direct route.
-  const pinned = { pin: link.tlsPin, useRemote: false, port: PORT };
-  expect(mockClients).toEqual([{ baseUrl: link.coreOrigin, fetch: pinned, uploadFetch: pinned }]);
+  expect(mockClients[0]).toMatchObject({
+    baseUrl: link.coreOrigin,
+    fetch: expect.any(Function),
+    uploadFetch: expect.any(Function),
+    getToken: expect.any(Function),
+  });
   expect(mockVerify).toHaveBeenCalledWith(
     expect.objectContaining({ identityKey: link.identityKey, expectedServerId: link.serverId }),
   );
@@ -154,8 +216,19 @@ it('joins through the tunnel Uplink opened, with the pin and redemption from the
       displayName: 'Lena',
     }),
   );
-  expect(mockSetToken).toHaveBeenCalledWith(link.coreOrigin, 'device-token', 'tok-1');
-  expect(mockCalls).toEqual(['admission', 'tunnel', 'join', 'stop', 'token', 'profile', 'baseUrl']);
+  expect(mockSetToken).toHaveBeenCalledWith(link.coreOrigin, 'device-token', 'tok-1', false);
+  expect(mockCalls).toEqual([
+    'admission',
+    'save',
+    'tunnel',
+    'join',
+    'save',
+    'complete',
+    'stop',
+    'token',
+    'profile',
+    'baseUrl',
+  ]);
   expect(mockProfile.current).toMatchObject({
     serverId: link.serverId,
     activeUrl: link.coreOrigin,
@@ -205,6 +278,8 @@ it('joins a second server next to the one the app already uses', async () => {
   // Activating keeps the previous server among the others (serverProfile.test).
   expect(mockSaveProfile).toHaveBeenCalledWith(
     expect.objectContaining({ serverId: link.serverId, sharedBy: 'Holger Teske' }),
+    expect.any(AbortSignal),
+    expect.any(Function),
   );
 });
 
@@ -227,4 +302,267 @@ it('refuses a link naming the address of another server this app uses', async ()
   await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'invalid' });
   expect(admission).not.toHaveBeenCalled();
   expect(mockSetToken).not.toHaveBeenCalled();
+});
+
+it('never authorizes activation when the credential cannot be durably saved', async () => {
+  mockSaveProgress.mockImplementation(async (value: unknown) => {
+    if ((value as { credential?: unknown }).credential) throw new Error('keychain unavailable');
+    mockProgress.current = value;
+  });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toThrow('keychain unavailable');
+  expect(mockComplete).not.toHaveBeenCalled();
+  expect(mockSaveProfile).not.toHaveBeenCalled();
+  expect(tunnel.stop).toHaveBeenCalled();
+});
+
+it('resumes with the saved bearer after a lost completion answer, without redeeming again', async () => {
+  mockComplete.mockRejectedValue(new Error('answer lost'));
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('answer lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  expect(mockProgress.current).toMatchObject({
+    credential: { token: 'device-token' },
+    link: { secret: '' },
+  });
+  mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(mockJoin).toHaveBeenCalledTimes(1);
+  expect(admission).toHaveBeenLastCalledWith(
+    expect.objectContaining({ redemptionId: 'redemption_from_uplink' }),
+  );
+  expect(mockRemote).not.toHaveBeenCalled();
+});
+
+it('rejects an incompatible Core before redeeming the invitation', async () => {
+  mockCapabilities.mockRejectedValue(new Error('not found'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'incompatible' });
+  expect(mockJoin).not.toHaveBeenCalled();
+  expect(mockComplete).not.toHaveBeenCalled();
+});
+
+it('cleans up a failed tunnel start', async () => {
+  tunnel.start.mockRejectedValueOnce(new Error('attachment failed'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toThrow('attachment failed');
+  expect(tunnel.stop).toHaveBeenCalled();
+  expect(finish).toHaveBeenCalled();
+});
+
+it('keeps the saved server binding when the same invitation id is supplied with another origin', async () => {
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+  await joinTeam({ ...link, coreOrigin: 'https://other.example' }, 'Lena', deps);
+  expect(mockClients.at(-1)?.baseUrl).toBe(link.coreOrigin);
+  expect(mockSetToken).toHaveBeenLastCalledWith(
+    link.coreOrigin,
+    'device-token',
+    expect.any(String),
+    false,
+  );
+});
+
+it('retains the redemption beyond ticket expiry while the original recovery window remains', async () => {
+  const controller = new AbortController();
+  mockJoin.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  const saved = mockProgress.current as {
+    admission: { expiresAt: number };
+    recoveryExpiresAt: number;
+  };
+  saved.admission.expiresAt = Date.now() - 1;
+  expect(saved.recoveryExpiresAt).toBeGreaterThan(Date.now());
+  mockJoin.mockResolvedValue({
+    token: 'device-token',
+    tokenId: 't1',
+    projectId: 'p1',
+    completionExpiresAt: Date.now() + 60_000,
+  });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(admission).toHaveBeenLastCalledWith(
+    expect.objectContaining({ redemptionId: 'redemption_from_uplink' }),
+  );
+});
+
+it('does not switch profiles when cancelled during final credential storage', async () => {
+  const controller = new AbortController();
+  mockSetToken.mockImplementationOnce(async () => {
+    controller.abort();
+    return true;
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  expect(mockSaveProfile).not.toHaveBeenCalled();
+  expect(mockSetBaseUrl).not.toHaveBeenCalled();
+  expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
+});
+
+it('does not adopt credentials or switch the base URL after cancellation during profile activation', async () => {
+  const controller = new AbortController();
+  mockSaveProfile.mockImplementationOnce(async () => {
+    controller.abort();
+    controller.signal.throwIfAborted();
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  expect(mockSetBaseUrl).not.toHaveBeenCalled();
+  expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
+});
+
+it('releases terminal invitation progress so a replacement can be accepted', async () => {
+  tunnel.start.mockRejectedValueOnce(new Error('attachment failed'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toThrow();
+  admission.mockRejectedValueOnce(new TeamJoinAdmissionError('unavailable'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'unavailable' });
+  expect(mockProgress.current).toBeNull();
+  await expect(joinTeam({ ...link, invitationId: 'replacement' }, 'Lena', deps)).resolves.toEqual({
+    projectId: 'p1',
+  });
+});
+
+it.each([new Error('Uplink unreachable'), new TeamJoinAdmissionError('unavailable')])(
+  'finishes with the saved bearer through pinned Core when bootstrap recovery fails: %s',
+  async (failure) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    admission.mockRejectedValueOnce(failure);
+    mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+    await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+    expect(mockJoin).toHaveBeenCalledTimes(1);
+    expect(tunnel.start).toHaveBeenCalledTimes(1);
+    expect(mockRemote).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['start', 'transport'])(
+  'recovers with the saved bearer when bootstrap %s fails after admission',
+  async (failure) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    if (failure === 'start') tunnel.start.mockRejectedValueOnce(new Error('attachment failed'));
+    mockTransport.mockImplementation(async (binding: unknown) => {
+      if ((binding as { port?: number }).port !== undefined) throw new Error('tunnel broken');
+      return new Response('{}');
+    });
+    mockComplete.mockImplementation(async () => {
+      await (mockClients.at(-1)!.fetch as typeof fetch)(link.coreOrigin + '/team/join/complete');
+      return { projectId: 'p1', confirmed: true };
+    });
+    await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+    expect(mockTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pin: link.tlsPin, port: undefined }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockJoin).toHaveBeenCalledTimes(1);
+    expect(mockRemote).not.toHaveBeenCalled();
+  },
+);
+
+it('uses one ordinary Remote Control attachment when both bootstrap and direct transport fail', async () => {
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  tunnel.start.mockImplementation(async (...args: unknown[]) =>
+    args[4] === 'remote-control-v1' ? PORT + 1 : PORT,
+  );
+  mockTransport.mockImplementation(async (binding: unknown) => {
+    if ((binding as { port?: number }).port !== PORT + 1) throw new Error('unreachable');
+    return new Response('{}');
+  });
+  mockComplete.mockImplementation(async () => {
+    await (mockClients.at(-1)!.fetch as typeof fetch)(link.coreOrigin + '/team/join/complete');
+    return { projectId: 'p1', confirmed: true };
+  });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(mockRemote).toHaveBeenCalledTimes(1);
+  expect(mockJoin).toHaveBeenCalledTimes(1);
+});
+
+it.each(['same-server', 'same-address'])(
+  'preserves an intervening account when resuming a saved join: %s',
+  async (collision) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    mockProfile.current = {
+      serverId: collision === 'same-server' ? link.serverId : 'another-server',
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin }],
+    };
+    mockStoredTokenId.mockResolvedValueOnce('another-account');
+    await expect(joinTeam(link, 'Lena', deps)).rejects.toBeInstanceOf(Error);
+    expect(mockSetToken).not.toHaveBeenCalled();
+    expect(mockSaveProfile).not.toHaveBeenCalled();
+  },
+);
+
+it('allows a saved join to finish its own partially activated profile', async () => {
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  mockProfile.current = {
+    serverId: link.serverId,
+    activeUrl: link.coreOrigin,
+    endpoints: [{ url: link.coreOrigin }],
+  };
+  mockStoredTokenId.mockResolvedValue('tok-1');
+  mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+});
+
+it('rechecks account collisions after completion before writing the new credential', async () => {
+  mockComplete.mockImplementation(async () => {
+    mockProfile.current = {
+      serverId: link.serverId,
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin }],
+    };
+    return { projectId: 'p1', confirmed: true };
+  });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'known_server' });
+  expect(mockSetToken).not.toHaveBeenCalled();
+  expect(mockSaveProfile).not.toHaveBeenCalled();
+});
+
+it('rejects formatting characters before reserving or saving a new join', async () => {
+  await expect(joinTeam(link, 'Lena\u200b', deps)).rejects.toMatchObject({ reason: 'name' });
+  expect(admission).not.toHaveBeenCalled();
+  expect(mockSaveProgress).not.toHaveBeenCalled();
+});
+
+it('corrects a server-rejected name while preserving the original recovery admission', async () => {
+  mockJoin.mockRejectedValueOnce(new VerityApiError(400, 'invalid name'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'name' });
+  expect(mockProgress.current).toMatchObject({
+    admission: { redemptionId: 'redemption_from_uplink' },
+  });
+  await expect(joinTeam(link, 'Sam', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(mockJoin).toHaveBeenLastCalledWith(
+    expect.objectContaining({ displayName: 'Sam', redemptionId: 'redemption_from_uplink' }),
+  );
 });

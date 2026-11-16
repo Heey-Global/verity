@@ -78,3 +78,25 @@ it('scopes browser meetings to the authenticated origin without a native pairing
     else Reflect.deleteProperty(window, 'location');
   }
 });
+
+it('keeps the runtime connection and credential unchanged when cancelled during URL persistence', async () => {
+  await setVerityBaseUrl('https://previous.test');
+  const controller = new AbortController();
+  const commit = jest.fn();
+  const listener = jest.fn();
+  const unsubscribe = subscribeVerityBaseUrl(listener);
+  (AsyncStorage.setItem as jest.Mock).mockImplementationOnce(async () => {
+    controller.abort();
+  });
+  await expect(
+    setVerityBaseUrl('https://joining.test', controller.signal, commit),
+  ).rejects.toThrow();
+  expect(getVerityBaseUrl()).toBe('https://previous.test');
+  expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
+    'verity.serverUrl',
+    'https://previous.test',
+  );
+  expect(commit).not.toHaveBeenCalled();
+  expect(listener).not.toHaveBeenCalled();
+  unsubscribe();
+});

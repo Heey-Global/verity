@@ -267,5 +267,43 @@
       "expiresAt": 1800000060000,
       "capability": "team-bootstrap-v1"
     }
+  },
+  {
+    "name": "resume-capable initial admission",
+    "schema": "joinReserve",
+    "valid": true,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "capabilities": ["team-bootstrap-resume-v1"]
+    }
+  },
+  {
+    "name": "resume-capable reattachment",
+    "schema": "joinReserve",
+    "valid": true,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "capabilities": ["team-bootstrap-resume-v1"],
+      "redemptionId": "saved_redemption"
+    }
+  },
+  {
+    "name": "legacy capability cannot resume",
+    "schema": "joinReserve",
+    "valid": false,
+    "value": {
+      "type": "team.join.reserve",
+      "requestId": "request_1",
+      "installationHandle": "AQEBAQEBAQEBAQEBAQEBAQ",
+      "invitationId": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM",
+      "capabilities": ["team-bootstrap-v1"],
+      "redemptionId": "saved_redemption"
+    }
   }
 ]
