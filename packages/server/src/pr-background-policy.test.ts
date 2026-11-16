@@ -15,7 +15,9 @@ it('invalidates after pause/resume between ticks and does not reset on unrelated
     store: { getProject: async () => project },
     invalidate,
   });
+  // Foreground reads may have filled the cache before the monitor's first tick.
   expect(await policy.allows(session)).toBe(true);
+  expect(invalidate).toHaveBeenCalledOnce();
   invalidate.mockClear();
   project = { ...project, updatedAt: new Date(20) };
   expect(await policy.allows(session)).toBe(true);

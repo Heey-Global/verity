@@ -28,7 +28,7 @@ export function createPrBackgroundPolicy(options: {
       const previous = generations.get(session.worktree);
       if (previous !== generation) {
         generations.set(session.worktree, generation);
-        if (previous !== undefined || !permitsBackgroundPr(project)) options.invalidate(session);
+        options.invalidate(session);
       }
       return permitsBackgroundPr(project);
     },
