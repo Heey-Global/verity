@@ -229,18 +229,35 @@ async function joinTeamAttempt(
           throw new Error('The join tunnel did not open.');
         return port;
       };
-      const port = useDirect
-        ? undefined
-        : await attach(admission.ticket, admission.sessionId, 'team-bootstrap-v1');
+      let port: number | undefined;
+      if (!useDirect) {
+        try {
+          port = await attach(admission.ticket, admission.sessionId, 'team-bootstrap-v1');
+        } catch (error) {
+          if (joined === undefined || controller.signal.aborted) throw error;
+          await tunnel.stop().catch(() => undefined);
+          useDirect = true;
+        }
+      }
       admission.finish();
       let transport = createPinnedFetch(link.tlsPin, false, port);
-      let fallbackAvailable = useDirect;
+      let fallback: 'none' | 'direct' | 'remote' =
+        joined === undefined ? 'none' : useDirect ? 'remote' : 'direct';
       const pinnedFetch: typeof transport = async (input, init) => {
         try {
           return await transport(input, { ...init, signal: controller.signal });
         } catch (error) {
-          if (!fallbackAvailable || controller.signal.aborted) throw error;
-          fallbackAvailable = false;
+          if (fallback === 'none' || controller.signal.aborted) throw error;
+          if (fallback === 'direct') {
+            fallback = 'remote';
+            transport = createPinnedFetch(link.tlsPin, false);
+            try {
+              return await transport(input, { ...init, signal: controller.signal });
+            } catch (directError) {
+              if (controller.signal.aborted) throw directError;
+            }
+          }
+          fallback = 'none';
           const remote = await requestRemoteControlAdmission({
             uplinkOrigin: link.uplinkOrigin,
             installationHandle: link.installationHandle,
@@ -325,6 +342,7 @@ async function joinTeamAttempt(
           throw error;
         }
       }
+      if (saved?.credential === undefined) fallback = useDirect ? 'remote' : 'direct';
       deps.onPhase?.('confirming');
       let confirmed = false;
       for (let attempt = 0; attempt < 12; attempt++) {

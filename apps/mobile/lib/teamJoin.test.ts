@@ -36,9 +36,13 @@ jest.mock('./client', () => ({
   setVerityBaseUrl: (...args: Parameters<typeof mockSetBaseUrl>) => mockSetBaseUrl(...args),
 }));
 jest.mock('./deviceLabel', () => ({ deviceLabel: () => 'Lena’s iPhone' }));
+const mockTransport = jest.fn(async (_binding: unknown, ..._args: unknown[]) => new Response('{}'));
 const mockVerify = jest.fn(async (_input: unknown) => undefined);
 jest.mock('./pinnedTransport', () => ({
-  createPinnedFetch: (pin: string, useRemote: boolean, port?: number) => ({ pin, useRemote, port }),
+  createPinnedFetch:
+    (pin: string, useRemote: boolean, port?: number) =>
+    (...args: unknown[]) =>
+      mockTransport({ pin, useRemote, port }, ...args),
   verifyPairedIdentity: (input: unknown) => mockVerify(input),
 }));
 const mockProfile = { current: null as unknown };
@@ -437,3 +441,55 @@ it.each([new Error('Uplink unreachable'), new TeamJoinAdmissionError('unavailabl
     expect(mockRemote).not.toHaveBeenCalled();
   },
 );
+
+it.each(['start', 'transport'])(
+  'recovers with the saved bearer when bootstrap %s fails after admission',
+  async (failure) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    if (failure === 'start') tunnel.start.mockRejectedValueOnce(new Error('attachment failed'));
+    mockTransport.mockImplementation(async (binding: unknown) => {
+      if ((binding as { port?: number }).port !== undefined) throw new Error('tunnel broken');
+      return new Response('{}');
+    });
+    mockComplete.mockImplementation(async () => {
+      await (mockClients.at(-1)!.fetch as typeof fetch)(link.coreOrigin + '/team/join/complete');
+      return { projectId: 'p1', confirmed: true };
+    });
+    await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+    expect(mockTransport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pin: link.tlsPin, port: undefined }),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockJoin).toHaveBeenCalledTimes(1);
+    expect(mockRemote).not.toHaveBeenCalled();
+  },
+);
+
+it('uses one ordinary Remote Control attachment when both bootstrap and direct transport fail', async () => {
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  tunnel.start.mockImplementation(async (...args: unknown[]) =>
+    args[4] === 'remote-control-v1' ? PORT + 1 : PORT,
+  );
+  mockTransport.mockImplementation(async (binding: unknown) => {
+    if ((binding as { port?: number }).port !== PORT + 1) throw new Error('unreachable');
+    return new Response('{}');
+  });
+  mockComplete.mockImplementation(async () => {
+    await (mockClients.at(-1)!.fetch as typeof fetch)(link.coreOrigin + '/team/join/complete');
+    return { projectId: 'p1', confirmed: true };
+  });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(mockRemote).toHaveBeenCalledTimes(1);
+  expect(mockJoin).toHaveBeenCalledTimes(1);
+});
