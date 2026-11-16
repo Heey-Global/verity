@@ -43,8 +43,15 @@ installation receipt names a central installation that is still present and
 every file is byte-identical to it. Links in the copy count as matching wherever
 the central installation has a link, because activation rewrites workspace
 links and a removed link deletes nothing it points to. Copies without a
-receipt, with any differing file, or whose central installation is gone stay in
-place and are reported as blockers.
+receipt, with any differing file, or whose central installation is gone are
+reported as blockers and kept for three days after collection first sees them,
+recorded in `verity-dependencies-preserved.observed.json` beside them. After
+that they are removed even while the session is still in use: the central store
+keeps only a few identities, so such a copy can never be compared again, and a
+session that is never idle for three days would otherwise keep every copy it
+ever made. Recover a local package edit from a copy within that window. A
+corrupt, symlinked or future-dated record restarts the window; it never
+shortens it. Dry runs neither remove copies nor write the record.
 
 A session without a turn for three days gives up its private top-level
 `node_modules` and every preserved copy, whatever their contents: both are
@@ -56,9 +63,15 @@ again. Source files stay; retiring a whole worktree still needs a week of
 idleness and a closed or merged pull request.
 
 Each session pass logs `session storage pass complete` with its duration,
-whether it reached every project, what it removed and its most frequent
-blocker reasons. A pass stopped by its budget continues after the session it
-was working on, so every session is reached over successive passes. A dev
+whether it reached every project, what it removed, its most frequent blocker
+reasons and its session coverage: how many sessions existed, how many it
+reached, and how many of those it skipped because a dev server, preview, spawn
+or teardown held them, because they have no recorded activity, or because a
+turn or move was running. A pass stopped by its one-minute budget continues
+after the session it was working on, and starts again on its own 15 minutes
+later, until one pass reaches every project; it no longer waits for the next
+daily or low-disk maintenance pass. A failure on one preserved copy no longer
+keeps the other copies or an idle session's private installation in place. A dev
 server or preview holds back only its own session's pass; a project-level
 public share and the orphan pass still hold the project.
 

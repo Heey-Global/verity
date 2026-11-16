@@ -172,6 +172,11 @@ const storageReclamationSchema = z.object({
   worktrees: z
     .object({
       observedAt: timestamp,
+      // Optional: diagnostics from servers before session coverage omit both.
+      completed: z.boolean().optional(),
+      sessions: z
+        .object({ total: number, visited: number, held: number, noActivity: number, busy: number })
+        .optional(),
       dependenciesRemoved: number,
       worktreesRetired: number,
       comparedDependencyBytes: number,
