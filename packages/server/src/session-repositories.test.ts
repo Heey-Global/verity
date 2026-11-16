@@ -305,3 +305,33 @@ it.each(['github', 'local'])(
     }
   },
 );
+
+it('does not expose Documents when local code exists only in the legacy sibling', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'local-sibling-'));
+  try {
+    const worktree = join(root, '.verity-document-sessions', 'view');
+    const sibling = join(root, '.verity-sessions', 'code-s');
+    await mkdir(sibling, { recursive: true });
+    await writeFile(join(sibling, 'index.ts'), 'export {};');
+    const repository = { id: 'd', projectId: 'p', isDefault: true };
+    const store = {
+      getSession: async () => ({
+        sessionId: 's',
+        projectId: 'p',
+        planning: 'implemented',
+        worktree,
+      }),
+      getProject: async () => ({ id: 'p', kind: 'local' }),
+      getProjectRepository: async () => repository,
+      listProjectRepositories: async () => [repository],
+      listSessionRepositoryWorkspaces: async () => [],
+    } as unknown as EventStore;
+    const service = createSessionRepositories({ store });
+    await expect(service.open('s', 'd')).rejects.toMatchObject({
+      reason: 'code workspace unavailable',
+    });
+    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
