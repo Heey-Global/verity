@@ -1,14 +1,22 @@
 import { createHash } from 'node:crypto';
 import { realpath, rm, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
-import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
+import {
+  projectForRepository,
+  type EventStore,
+  type ProjectRecord,
+  type SessionRecord,
+} from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import type { GitOutput } from './branches.js';
+import { isDocumentWorkspace } from './document-workspace.js';
+import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
+import type { SessionStorage } from './session-storage.js';
 
 /** Why a module checkout could not be opened. A closed set, so the category can
  *  reach the sandbox and the log without carrying git output, URLs or paths. */
@@ -21,7 +29,8 @@ export type RepositoryCheckoutFailure =
   | 'forge proxy transport unavailable'
   | 'clone failed'
   | 'branch checkout failed'
-  | 'repository connection revoked';
+  | 'repository connection revoked'
+  | 'code workspace unavailable';
 
 export class RepositoryCheckoutError extends Error {
   constructor(
@@ -120,22 +129,50 @@ async function repositoryInstructionsFile(worktree: string): Promise<boolean> {
 
 export function createSessionRepositories(deps: {
   store: EventStore;
+  sessionStorage?: Pick<SessionStorage, 'hasPendingWorkspaceRecovery'> | undefined;
   cloneRoot?: string | undefined;
   git?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
 }) {
   const pending = new Map<string, Promise<unknown>>();
+  /** Documents remains intentional for local and control projects. Repository projects
+   * must never expose either a Documents view or a missing directory as their checkout. */
+  const codeUnavailable = async (session: SessionRecord, project: ProjectRecord | undefined) =>
+    project !== undefined &&
+    project.kind !== 'control_plane' &&
+    (project.kind !== 'local' ||
+      (await hasCodeContent(
+        legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
+      )) ||
+      (deps.cloneRoot &&
+        ((await hasCodeContent(projectClonePath(deps.cloneRoot, project))) ||
+          (await hasSavedCodeWorkspace(
+            projectClonePath(deps.cloneRoot, project),
+            session.sessionId,
+            legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
+          ))))) &&
+    (isDocumentWorkspace(session.worktree) ||
+      (await deps.sessionStorage?.hasPendingWorkspaceRecovery(session)) ||
+      !(await stat(session.worktree).then(
+        (entry) => entry.isDirectory(),
+        () => false,
+      )));
   async function list(sessionId: string) {
     const session = await deps.store.getSession(sessionId);
     if (!session?.projectId) throw new Error('project session required');
+    const project = await deps.store.getProject(session.projectId);
     const workspaces = await deps.store.listSessionRepositoryWorkspaces(sessionId);
+    const unavailable = await codeUnavailable(session, project);
     return {
       repositories: (
         await deps.store.listProjectRepositories(session.projectId, { includeRemoved: true })
       ).map((repository) => ({
         ...repository,
         workspace:
-          workspaces.find((workspace) => workspace.repositoryId === repository.id) ??
-          (repository.isDefault
+          (repository.isDefault && unavailable
+            ? null
+            : workspaces.find((workspace) => workspace.repositoryId === repository.id)) ??
+          // A legacy Documents view is not a checkout of the default repository.
+          (repository.isDefault && !unavailable
             ? {
                 sessionId,
                 repositoryId: repository.id,
@@ -166,6 +203,11 @@ export function createSessionRepositories(deps: {
         throw new RepositoryCheckoutError(
           'repository not connected',
           'repository is not connected to this project',
+        );
+      if (repository.isDefault && (await codeUnavailable(session, project)))
+        throw new RepositoryCheckoutError(
+          'code workspace unavailable',
+          "This session's code workspace is unavailable; use Restore to recover its saved checkout.",
         );
       if (repository.isDefault)
         return {

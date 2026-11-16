@@ -12,9 +12,10 @@ import {
   rename,
   rm,
 } from 'node:fs/promises';
-import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
+import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import type { GitOutput } from './branches.js';
+import { legacySessionCodePath } from './project-code.js';
 import { linkWorkspacePackages, WORKTREE_SIDECAR } from './worktree.js';
 
 const WEEK = 7 * 24 * 60 * 60_000;
@@ -76,6 +77,13 @@ interface Retirement {
   branch: string | null;
   sidecar: string | null;
   locked?: boolean;
+}
+/** The orphan sweep journals a legacy session's code sibling before any row names it. */
+function ownsRetirement(entry: Retirement, session: SessionRecord): boolean {
+  return (
+    entry.sessionId === session.sessionId ||
+    (entry.sessionId === null && basename(entry.path) === `code-${session.sessionId}`)
+  );
 }
 async function atomicJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
@@ -388,7 +396,7 @@ export class SessionStorage {
       return (
         entry !== null &&
         entry.version === 1 &&
-        entry.sessionId === session.sessionId &&
+        ownsRetirement(entry, session) &&
         entry.path === session.worktree &&
         /^[a-f0-9]{40,64}$/.test(entry.sha) &&
         (entry.branch === null || typeof entry.branch === 'string') &&
@@ -399,6 +407,22 @@ export class SessionStorage {
       return false;
     }
   }
+  /** A directory is incomplete until its durable retirement record has been cleared. */
+  async hasPendingWorkspaceRecovery(session: SessionRecord): Promise<boolean> {
+    const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
+    if (!project || project.kind === 'control_plane') return false;
+    const root = resolve(this.deps.root(project));
+    if (dirname(session.worktree) !== join(root, '.verity-sessions')) return false;
+    return lstat(this.manifest(root, session.worktree)).then(
+      () => true,
+      (error: unknown) => {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+          return false;
+        throw error;
+      },
+    );
+  }
+
   async ensureWorkspace(session: SessionRecord): Promise<void> {
     const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
     if (!project || project.kind === 'control_plane') return;
@@ -421,7 +445,7 @@ export class SessionStorage {
     const entry = JSON.parse(source) as Retirement;
     if (
       entry.version !== 1 ||
-      entry.sessionId !== session.sessionId ||
+      !ownsRetirement(entry, session) ||
       entry.path !== session.worktree ||
       !/^[a-f0-9]{40,64}$/.test(entry.sha) ||
       (entry.branch !== null && typeof entry.branch !== 'string') ||
@@ -592,7 +616,14 @@ export class SessionStorage {
                   number
                 >;
                 const current: Record<string, number> = {};
-                const live = new Set((await this.deps.listSessions()).map((s) => s.worktree));
+                // A legacy Documents session's code lives in a sibling that no row names
+                // until the session is converted; it is never an orphan.
+                const live = new Set(
+                  (await this.deps.listSessions()).flatMap((s) => {
+                    const code = legacySessionCodePath(s.worktree, s.sessionId);
+                    return code ? [s.worktree, code] : [s.worktree];
+                  }),
+                );
                 for (const path of (await this.registrations(root, git)).keys()) {
                   if (dirname(path) !== join(root, '.verity-sessions') || live.has(path)) continue;
                   const since = old[path];

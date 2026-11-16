@@ -167,6 +167,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],
   [
+    routeScopeKey('POST', '/sessions/:id/code-workspace/restore'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/save-to-project'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

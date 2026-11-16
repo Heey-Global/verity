@@ -1,5 +1,6 @@
 import { sandboxUpdatesSpec } from './sandbox-updates';
 import { aiAccountsSpec } from './ai-accounts';
+import { codeWorkspaceSpec } from './code-workspace';
 import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
 import { sessionGroupsSpec } from './session-groups';
@@ -21,6 +22,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
   sandboxUpdatesSpec,
   aiAccountsSpec,
+  codeWorkspaceSpec,
   sessionStabilitySpec,
   connectionStatusSpec,
   sessionGroupsSpec,

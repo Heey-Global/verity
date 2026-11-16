@@ -31,17 +31,35 @@ function fixture() {
   const root = join(dir, 'repo'),
     remote = join(dir, 'remote.git');
   const git: GitOutput = async (args) =>
-    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync(
+      'git',
+      [
+        ...(args.includes('push') ? [] : ['-c', 'core.hooksPath=/dev/null']),
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ],
+      {
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
   const run = (args: string[]) =>
-    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    execFileSync(
+      'git',
+      [
+        ...(args.includes('push') ? [] : ['-c', 'core.hooksPath=/dev/null']),
+        '-c',
+        'commit.gpgsign=false',
+        ...args,
+      ],
+      {
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
   run(['init', '-q', '-b', 'main', root]);
   run(['-C', root, 'config', 'user.email', 'test@example.invalid']);
   run(['-C', root, 'config', 'user.name', 'Test']);
@@ -109,6 +127,15 @@ function fixture() {
       activity = now - days * 86400000;
     },
   };
+}
+/** Relayout the fixture as a legacy Documents session whose code is the `code-s` sibling. */
+function legacyCodeSibling(f: ReturnType<typeof fixture>): string {
+  const code = join(f.root, '.verity-sessions', 'code-s');
+  f.run(['-C', f.root, 'worktree', 'unlock', f.path]);
+  f.run(['-C', f.root, 'worktree', 'move', f.path, code]);
+  f.run(['-C', f.root, 'worktree', 'lock', '--reason', 'Verity session: managed by server', code]);
+  f.session.worktree = join(f.root, '.verity-document-sessions', 'view');
+  return code;
 }
 describe('safe session storage reclamation', () => {
   it.each([false, true])(
@@ -527,6 +554,30 @@ describe('safe session storage reclamation', () => {
     f.advance();
     await f.service.runOnce();
     expect(existsSync(f.path)).toBe(false);
+  });
+  it("keeps an unconverted legacy session's code sibling out of the orphan pass", async () => {
+    const f = fixture();
+    const code = legacyCodeSibling(f);
+    f.advance();
+    await f.service.runOnce();
+    f.advance();
+    await f.service.runOnce();
+    // Removing it strands the session in its Documents view: nothing recreates it.
+    expect(existsSync(code)).toBe(true);
+  });
+  it('restores an orphan-retired code sibling for the legacy session that owns it', async () => {
+    const f = fixture();
+    const code = legacyCodeSibling(f);
+    f.orphan();
+    await f.service.runOnce();
+    f.advance();
+    await f.service.runOnce();
+    expect(existsSync(code)).toBe(false);
+    await f.service.ensureWorkspace({ ...f.session, worktree: code });
+    expect(existsSync(join(code, '.git'))).toBe(true);
+    await expect(
+      f.service.ensureWorkspace({ ...f.session, sessionId: 'other', worktree: code }),
+    ).resolves.toBeUndefined();
   });
   it('does not mutate in dry-run mode', async () => {
     const f = fixture();

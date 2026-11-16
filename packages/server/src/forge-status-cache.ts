@@ -18,7 +18,25 @@ export function createForgeStatusCache(now: () => number = Date.now) {
   const entries = new Map<string, Entry>();
   const pending = new Map<string, Promise<PullRequestStatus | null>>();
   const aliases = new Map<string, string>();
-  const epochs = new Map<string, number>();
+  interface ObservationScope {
+    generation: object;
+    valid: boolean;
+    readers: number;
+  }
+  const scopes = new Map<string, ObservationScope>();
+  // Idle scopes can be forgotten; active/queued readers must retain their shared identity.
+  const pruneScopes = () => {
+    if (scopes.size <= 4096) return;
+    for (const [key, scope] of scopes) {
+      if (scope.readers > 0) continue;
+      scope.valid = false;
+      scopes.delete(key);
+      const prefix = `${key}:`;
+      for (const entry of entries.keys()) if (entry.startsWith(prefix)) entries.delete(entry);
+      for (const alias of aliases.keys()) if (alias.startsWith(prefix)) aliases.delete(alias);
+      if (scopes.size <= 4096) break;
+    }
+  };
   const waiting: (() => void)[] = [];
   let active = 0;
   const acquire = async () => {
@@ -37,6 +55,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
     const result = {
       ...value,
       pipeline: 'unknown' as const,
+      observationFailed: true,
       mergeable: null,
       checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 },
     };
@@ -47,27 +66,39 @@ export function createForgeStatusCache(now: () => number = Date.now) {
     async read(
       id: ForgeStatusIdentity,
       branch: string,
-      load: () => Promise<PullRequestStatus | null>,
+      load: (observationScope: object) => Promise<PullRequestStatus | null>,
     ): Promise<PullRequestStatus | null> {
-      const epochKey = scope(id);
-      const epoch = epochs.get(epochKey) ?? 0;
+      const scopeKey = scope(id);
+      let observation = scopes.get(scopeKey);
+      if (!observation) {
+        observation = { generation: {}, valid: true, readers: 0 };
+        scopes.set(scopeKey, observation);
+      }
+      const generation = observation;
       const branchKey = `${scope(id)}:branch:${branch}`;
       const key = aliases.get(branchKey) ?? branchKey;
       const running = pending.get(key);
       if (running) return running;
       const previous = entries.get(key);
       if (previous && now() < previous.nextReadAt) return structuredClone(previous.value);
+      generation.readers++;
+      pruneScopes();
       const read = (async () => {
         let value: PullRequestStatus | null;
         let failures = 0;
         try {
           await acquire();
           try {
-            value = await load();
+            // A mutation may have invalidated this read while it waited for a slot.
+            if (!generation.valid) return unknown(previous?.value ?? null);
+            value = await load(generation.generation);
           } finally {
             release();
           }
-          if (value?.pipeline === 'unknown') failures = (previous?.failures ?? 0) + 1;
+          if (value?.observationFailed === true) {
+            value = unknown(value);
+            failures = (previous?.failures ?? 0) + 1;
+          }
         } catch {
           value = unknown(previous?.value ?? null);
           failures = (previous?.failures ?? 0) + 1;
@@ -84,7 +115,7 @@ export function createForgeStatusCache(now: () => number = Date.now) {
                 ? 15_000
                 : 30_000;
         const entry = { value, failures, checkedAt: now(), nextReadAt: now() + ttl };
-        if ((epochs.get(epochKey) ?? 0) !== epoch) return unknown(value);
+        if (!generation.valid) return unknown(value);
         entries.set(key, entry);
         if (value) {
           const prKey = `${scope(id)}:pr:${value.number}`;
@@ -101,12 +132,16 @@ export function createForgeStatusCache(now: () => number = Date.now) {
         return structuredClone(await read);
       } finally {
         if (pending.get(key) === read) pending.delete(key);
+        generation.readers--;
+        pruneScopes();
       }
     },
     invalidate(id: ForgeStatusIdentity): void {
-      const epochKey = scope(id);
-      epochs.set(epochKey, (epochs.get(epochKey) ?? 0) + 1);
-      const prefix = `${epochKey}:`;
+      const scopeKey = scope(id);
+      const observation = scopes.get(scopeKey);
+      if (observation) observation.valid = false;
+      scopes.delete(scopeKey);
+      const prefix = `${scopeKey}:`;
       for (const key of pending.keys()) if (key.startsWith(prefix)) pending.delete(key);
       for (const key of entries.keys()) if (key.startsWith(prefix)) entries.delete(key);
       for (const key of aliases.keys()) if (key.startsWith(prefix)) aliases.delete(key);

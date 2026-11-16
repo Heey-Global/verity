@@ -809,6 +809,18 @@ describe('global auth gate (onRequest)', () => {
       expect(history.statusCode).toBe(401);
       expect(history.json()).toEqual({ error: 'unauthorized' });
 
+      // A missing route can still return 401 at the root gate. Authenticated
+      // requests also prove the extracted scheduling endpoints are registered.
+      for (const url of ['/scheduling-requests', '/assistant/scheduling-requests']) {
+        const blockedScheduling = await app.inject({ method: 'GET', url });
+        expect(blockedScheduling.statusCode).toBe(401);
+        expect(blockedScheduling.json()).toEqual({ error: 'unauthorized' });
+        expect(
+          (await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${token}` } }))
+            .statusCode,
+        ).toBe(200);
+      }
+
       // Wrong token → 401.
       expect(
         (

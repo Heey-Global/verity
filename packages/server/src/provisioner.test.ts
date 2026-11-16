@@ -2889,10 +2889,10 @@ describe('ProvisionerImpl (#174)', () => {
       }
     },
   );
-
-  it('retains existing local history and legacy Documents while allocating code worktrees', async () => {
+  it('retains local history and leaves missing legacy code siblings to session recovery', async () => {
     const root = mkdtempSync(join(tmpdir(), 'local-code-resume-'));
-    const id = randomUUID();
+    const id = randomUUID(),
+      sessionId = randomUUID();
     await ctx.store.upsertProject({
       id,
       ...baseInput,
@@ -2918,7 +2918,7 @@ describe('ProvisionerImpl (#174)', () => {
       'initial',
     ]);
     const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-    const sessionId = randomUUID();
+    execFileSync('git', ['-C', clone, 'branch', `code-${sessionId}`]);
     const view = join(clone, '.verity-document-sessions', 'existing');
     mkdirSync(view, { recursive: true });
     writeFileSync(join(view, 'note.md'), 'keep');
@@ -2939,7 +2939,7 @@ describe('ProvisionerImpl (#174)', () => {
         head,
       );
       expect(readFileSync(join(view, 'note.md'), 'utf8')).toBe('keep');
-      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(true);
+      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(false);
       expect((await ctx.store.getSession(sessionId))?.worktree).toBe(view);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -10304,20 +10304,22 @@ describe('DeprovisionerImpl (#174)', () => {
     const { client: docker } = fakeDocker({ stopContainer: stopMock, removeContainer: removeMock });
     const origTransaction = ctx.db.transaction.bind(ctx.db);
     const txSpy = vi.spyOn(ctx.db, 'transaction').mockImplementation(() => {
-      events.push('lock');
-      return origTransaction();
+      const transaction = origTransaction();
+      const execute = transaction.execute.bind(transaction);
+      transaction.execute = (callback) => {
+        events.push('lock');
+        return execute(callback).finally(() => {
+          events.push('unlock');
+        });
+      };
+      return transaction;
     });
     try {
       const deprovisioner = new DeprovisionerImpl(ctx.store, ctx.db, docker, '/data/dev');
       const result = await deprovisioner.deprovision(id, { purge: false });
       expect(result.state).toBe('absent');
-      // The teardown must run BEFORE the row-lock transaction opens — otherwise a
-      // stuck docker stop/remove pins the projects-row lock `idle in transaction`,
-      // exhausting the DB pool and hanging reads like /onboarding/status.
-      expect(events).toContain('lock');
-      expect(events.indexOf('stop')).toBeGreaterThanOrEqual(0);
-      expect(events.indexOf('stop')).toBeLessThan(events.indexOf('lock'));
-      expect(events.indexOf('remove')).toBeLessThan(events.indexOf('lock'));
+      // Both durable transitions release their locks before any Docker operation.
+      expect(events).toEqual(['lock', 'unlock', 'stop', 'remove', 'lock', 'unlock']);
     } finally {
       txSpy.mockRestore();
     }
@@ -10702,13 +10704,7 @@ describe('DeprovisionerImpl (#174)', () => {
     expect(failures).toEqual(['clone-purge']);
   });
 
-  // The deliberate counterpart to the best-effort cleanup above: a project whose
-  // capabilities could not be revoked must NOT be deprovisioned, because
-  // `DELETE /projects/:id` would then hide it while a capability that leaked out
-  // of the sandbox still redeems. Deletion staying blocked is the correct
-  // outcome here — the revoke is a DELETE against the same database the state
-  // transition needs, so a failure that outlives a retry is an outage under
-  // which nothing could have been deleted anyway.
+  // A failed revocation must keep the project visible and deletion incomplete.
   it('an unreachable egress registry blocks the deprovision instead of failing open', async () => {
     const id = await seedProject('active');
     const { client: docker } = fakeDocker();
@@ -10742,7 +10738,7 @@ describe('DeprovisionerImpl (#174)', () => {
     // Not reported as a best-effort failure, and the row never reaches `absent`,
     // so the route rejects before it can hide the project.
     expect(failures).toEqual([]);
-    expect((await ctx.store.getProject(id))?.state).toBe('active');
+    expect((await ctx.store.getProject(id))?.state).toBe('failed');
   });
 
   // The registries are independent, so one that is wedged must not shield the
@@ -10797,7 +10793,7 @@ describe('DeprovisionerImpl (#174)', () => {
     // The other two authorities are gone even though the deletion is blocked.
     expect(revokedGithub).toEqual([id]);
     expect(revokedEgress).toEqual([id]);
-    expect((await ctx.store.getProject(id))?.state).toBe('active');
+    expect((await ctx.store.getProject(id))?.state).toBe('failed');
   });
 
   // Same requirement, harsher failure: a registry that throws before returning
@@ -10842,7 +10838,7 @@ describe('DeprovisionerImpl (#174)', () => {
     ]);
 
     expect(revokedEgress).toEqual([id]);
-    expect((await ctx.store.getProject(id))?.state).toBe('active');
+    expect((await ctx.store.getProject(id))?.state).toBe('failed');
   });
 
   // A cleanup step that never settles blocks the deletion exactly as durably as
@@ -10919,7 +10915,7 @@ describe('DeprovisionerImpl (#174)', () => {
 
     // The wedged registry did not hold up the one behind it.
     expect(revokedEgress).toEqual([id]);
-    expect((await ctx.store.getProject(id))?.state).toBe('active');
+    expect((await ctx.store.getProject(id))?.state).toBe('failed');
   });
 
   // A logger that throws must not resurrect the abort the best-effort branch

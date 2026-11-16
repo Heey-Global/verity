@@ -315,6 +315,7 @@ export {
   type ProjectSandboxRecord,
   type ProjectSandboxState,
 } from './project-sandboxes.js';
+export { SessionMoveStore, type SessionRelayoutInput } from './session-moves.js';
 export {
   UserGithubAuthorizationStore,
   type UserGithubAuthorization,

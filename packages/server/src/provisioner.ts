@@ -62,7 +62,6 @@ import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
 import type { HistorySigningIdentity } from './sign-history.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
@@ -238,6 +237,7 @@ import {
   SANDBOX_REPAIR_RETRY_MAX_MS,
   SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
+import { automaticSandboxRepairAllowed, owesMissingContainerRepair } from './project-state.js';
 
 export interface ProjectRelayControl {
   start(binding: ProjectRelayBinding): Promise<ProjectRelayActivation>;
@@ -3532,24 +3532,8 @@ export class ProvisionerImpl implements Provisioner {
     }
     await this.serializeProjectCheckoutOperation(projectId, async () => {
       await this.doClone(project);
-      const sessions = await this.opts.store.listSessions();
-      for (const session of sessions) {
-        if (
-          session.projectId !== projectId ||
-          !session.worktree.split('/').includes('.verity-document-sessions')
-        )
-          continue;
-        const branch = `code-${session.sessionId}`;
-        const path = join(clonePath, '.verity-sessions', branch);
-        if (this.isDir(path)) continue;
-        await createGitWorktreeProvisioner({
-          repoDir: clonePath,
-          worktreeRoot: join(clonePath, '.verity-sessions'),
-          git: async (args) => {
-            await this.git(['-c', 'core.hooksPath=/dev/null', ...args]);
-          },
-        }).add(branch);
-      }
+      // Session recovery owns sibling creation, branch reuse and retirement journals.
+      // Preparing every legacy sibling here races recovery and can replace saved history.
     });
   }
 
@@ -4586,8 +4570,10 @@ export class ProvisionerImpl implements Provisioner {
     const pending = currentProjects.filter(
       (project) =>
         project.kind !== 'control_plane' &&
+        automaticSandboxRepairAllowed(project) &&
         (project.state === 'active' ||
-          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
+          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id)) ||
+          owesMissingContainerRepair(project, (this.opts.now ?? Date.now)())),
     );
     for (const project of pending)
       if (
@@ -4657,7 +4643,9 @@ export class ProvisionerImpl implements Provisioner {
                 busy: busy && !nightlyOverride,
                 busyConfirmed: confirmed,
               })
-            : classification === 'absent' && this.pendingSandboxRepairRetries.has(project.id)
+            : classification === 'absent' &&
+                (this.pendingSandboxRepairRetries.has(project.id) ||
+                  owesMissingContainerRepair(project, (this.opts.now ?? Date.now)()))
               ? 'migrate'
               : decideMigrationAction({
                   classification:
@@ -5276,7 +5264,7 @@ export class ProvisionerImpl implements Provisioner {
     const automatic =
       opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
     const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
-    if (automatic && !['active', 'failed'].includes(project.state)) {
+    if (automatic && !automaticSandboxRepairAllowed(project)) {
       this.forgetSandboxRepairIntent(projectId);
       await this.sandboxRepairIntentWrites;
       throw new ProvisioningError('Automatic repair no longer authorized by project state');
@@ -5369,7 +5357,7 @@ export class ProvisionerImpl implements Provisioner {
         const latestProject = await this.opts.store.getProject(project.id);
         if (
           !latestProject ||
-          !['active', 'failed'].includes(latestProject.state) ||
+          !automaticSandboxRepairAllowed(latestProject) ||
           (latestProject.imageOverrideRef ?? (await this.defaultImageRef())) !==
             automaticIntent.targetImageRef
         ) {
