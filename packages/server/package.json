@@ -20,7 +20,7 @@
     "@fastify/compress": "9.3.0",
     "@fastify/rate-limit": "11.2.2",
     "@fastify/websocket": "11.3.7",
-    "@napi-rs/canvas": "1.1.0",
+    "@napi-rs/canvas": "1.1.1",
     "@verity/events": "*",
     "@verity/preview-tunnel": "*",
     "@verity/secret-contracts": "*",
@@ -41,7 +41,7 @@
     "sanitize-html": "2.18.2",
     "sharp": "0.35.5",
     "sigstore": "5.0.1",
-    "ws": "8.22.2",
+    "ws": "8.23.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
