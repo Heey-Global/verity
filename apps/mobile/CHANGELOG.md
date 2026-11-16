@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.94.0](https://github.com/Heey-Global/verity/compare/mobile-v1.93.0...mobile-v1.94.0) (2026-11-16)
+
+
+### Bug Fixes
+
+* **mobile:** load a speech model with fewer compute units after it crashed the app ([#2597](https://github.com/Heey-Global/verity/issues/2597)) ([1078afd](https://github.com/Heey-Global/verity/commit/1078afd137955733f6409f16231161107d2844ed))
+* **sandbox:** recover services across nightly and manual updates ([#2623](https://github.com/Heey-Global/verity/issues/2623)) ([1638a2e](https://github.com/Heey-Global/verity/commit/1638a2e2a41b86ee49d753af98bd9d5daff43e8a))
+* **server:** restore missing code workspaces before session turns ([#2619](https://github.com/Heey-Global/verity/issues/2619)) ([8f7d296](https://github.com/Heey-Global/verity/commit/8f7d29614f18918304550becbaecd89904ec55b2))
+* **team:** persist app access before completing project joins ([#2629](https://github.com/Heey-Global/verity/issues/2629)) ([5f85785](https://github.com/Heey-Global/verity/commit/5f8578554f28cc1d04442189c7e07b9b4a4487b1))
+
 ## [1.93.0](https://github.com/Heey-Global/verity/compare/mobile-v1.92.0...mobile-v1.93.0) (2026-11-15)
 
 
