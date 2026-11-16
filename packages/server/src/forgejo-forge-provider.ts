@@ -246,12 +246,14 @@ export function createForgejoForgeProvider(options: {
     };
     return {
       prForBranch: async (branch) => {
-        const pull = await lookup(branch);
+        const pull = await lookup(branch).catch(() => null);
         return pull?.phase === 'open' ? pull.number : null;
       },
       prStatusForBranch: lookup,
       prStatusForBranches: async (branches) => {
-        const results = await Promise.all(branches.map(lookup));
+        const results = await Promise.all(
+          branches.map((branch) => lookup(branch).catch(() => null)),
+        );
         return (
           results
             .filter((row): row is PullRequestStatus => row?.phase === 'open')

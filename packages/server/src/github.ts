@@ -794,7 +794,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       }
     }
     if (ordered.length === 0) return null;
-    const statuses = await Promise.all(ordered.map((b) => prStatusForBranch(b)));
+    const statuses = await Promise.all(ordered.map((b) => prStatusForBranch(b).catch(() => null)));
     // Prefer an OPEN PR — the actionable one for a session. Among opens, the most
     // recently updated on GitHub wins; a tie (or a missing `updatedAt`) keeps the
     // earlier — i.e. more-recently-active-in-this-worktree — branch. This is what
@@ -814,7 +814,7 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
 
   return {
     async prForBranch(branch: string): Promise<number | null> {
-      const status = await prStatusForBranch(branch);
+      const status = await prStatusForBranch(branch).catch(() => null);
       return status?.number ?? null;
     },
     prStatusForBranch,
