@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 
 import { createSecretCipher } from './crypto.js';
@@ -90,13 +91,20 @@ it('redeems an invitation exactly once, as a member who cannot manage', async ()
   const { secret } = await invite();
   const first = await redeem(secret);
   expect(first.replay).toBe(false);
+  const admission = await ctx.db
+    .selectFrom('team_join_admissions')
+    .selectAll()
+    .executeTakeFirstOrThrow();
+  expect(admission.device_token_encrypted).toMatch(/^enc:v1:/);
+  expect(JSON.stringify(admission)).not.toContain(first.token);
   // Pending until Uplink confirms the join, which it is asked to do.
   expect((await team().listMembers('p1')).map((member) => member.userId)).toEqual([ADMIN]);
   expect((await team().dueOperations()).map((operation) => operation.kind)).toContain(
     'team.join.commit',
   );
-  expect(await team().confirmJoin('r1')).toBe(true);
   await expect(redeem(secret)).resolves.toEqual({ ...first, replay: true });
+  expect(await team().confirmJoin('r1')).toBe(true);
+  await expect(redeem(secret)).rejects.toBeInstanceOf(ProjectTeamError);
   await expect(redeem(secret, 'r2')).rejects.toBeInstanceOf(ProjectTeamError);
   const members = await team().listMembers('p1');
   expect(members.find((member) => member.userId === first.userId)).toMatchObject({
@@ -388,4 +396,24 @@ it("keeps a joiner's name free of controls that would reorder other people's lis
       displayName: 'Lena \u202e',
     }),
   ).rejects.toThrow();
+});
+
+it('refuses a replay after admission expiry or token revocation', async () => {
+  const { secret } = await invite();
+  const first = await redeem(secret);
+  const replay = () =>
+    team().redeemInvitation({
+      invitationId: 'inv-1',
+      secret,
+      redemptionId: 'r1',
+      displayName: 'Lena',
+    });
+  await sql`update team_join_admissions set expires_at = ${new Date(0)}`.execute(ctx.db);
+  await expect(replay()).rejects.toBeInstanceOf(ProjectTeamError);
+  await expect(admit('r1')).resolves.toBe('refused');
+  await sql`update team_join_admissions set expires_at = ${new Date(Date.now() + 60_000)}`.execute(
+    ctx.db,
+  );
+  await ctx.db.deleteFrom('auth_tokens').where('id', '=', first.tokenId).execute();
+  await expect(replay()).rejects.toBeInstanceOf(ProjectTeamError);
 });

@@ -170,6 +170,8 @@ export interface AuthTokenRegistry {
     label?: string | null,
     browser?: boolean,
   ): Promise<MintedAuthToken>;
+  /** Load a token already persisted atomically with its enrollment. */
+  adoptPersisted(token: string, id: string, userId: string): Promise<void>;
   list(): Promise<PairedDevice[]>;
   /** Give a paired device a new display name. False when no such device. */
   rename(id: string, label: string): Promise<boolean>;
@@ -302,6 +304,16 @@ export async function createAuthTokenRegistry(
       tokenIdsByHash.set(tokenHash, id);
       tokenUsersByHash.set(tokenHash, boundUserId);
       return { token, id };
+    },
+    async adoptPersisted(token, id, userId): Promise<void> {
+      const tokenHash = hashAuthToken(token);
+      const record = (await store.listAuthTokens()).find(
+        (entry) => entry.id === id && entry.tokenHash === tokenHash && entry.userId === userId,
+      );
+      if (!record) throw new Error('persisted auth token unavailable');
+      expiryByHash.set(tokenHash, record.expiresAt ?? null);
+      tokenIdsByHash.set(tokenHash, id);
+      tokenUsersByHash.set(tokenHash, userId);
     },
     async register(token, id, label, browser = false): Promise<MintedAuthToken> {
       const tokenHash = hashAuthToken(token);

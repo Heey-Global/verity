@@ -45,6 +45,7 @@ export function registerTeamJoinRoutes(
         secret: body.secret,
         redemptionId: body.redemptionId,
         displayName: body.displayName,
+        ...(body.deviceLabel === undefined ? {} : { deviceLabel: body.deviceLabel }),
       });
     } catch (error) {
       if (!(error instanceof ProjectTeamError)) throw error;
@@ -52,9 +53,8 @@ export function registerTeamJoinRoutes(
       // learns nothing about which invitations exist.
       return reply.code(410).send({ error: error.message, code: 'invitation_unavailable' });
     }
-    // A replay of the same redemption (its answer was lost) pairs the device
-    // again; the membership is not touched.
-    const { token, id } = await registry.mintFor(joined.userId, body.deviceLabel ?? null);
+    const { token, tokenId: id } = joined;
+    await registry.adoptPersisted(token, id, joined.userId);
     reply.header('cache-control', 'no-store');
     return { token, tokenId: id, userId: joined.userId, projectId: joined.projectId };
   });
