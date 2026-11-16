@@ -29,7 +29,6 @@ import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
-import type { SessionRecord } from '@verity/store';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
