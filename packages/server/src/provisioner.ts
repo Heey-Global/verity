@@ -5262,9 +5262,7 @@ export class ProvisionerImpl implements Provisioner {
     }
   }
 
-  /** Whether this process still owns provisioning/replacement work for a project.
-   * Durable rebuild notices are cleared by reconciliation only when no such work
-   * survived in this server process (notably after a restart). */
+  /** Reconciliation clears durable rebuild notices only when no local work owns them. */
   isProjectProvisioning(projectId: string): boolean {
     return this.inFlightProvisions.has(projectId);
   }
@@ -5363,32 +5361,15 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`replacement image preparation failed: ${detail}`, cause);
     }
     let checkRecovery: (() => Promise<{ state: 'ready' | 'failed'; detail: string }>) | undefined;
-    const replace = async (): Promise<ProjectRecord> => {
-      if (this.opts.sandboxUpdateRecovery && !checkRecovery)
-        throw new ProvisioningError('Service recovery capture must finish before replacement');
+    let preflightComplete = false;
+    const beforeRetire = async () => {
+      checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
       this.resolveRelayClaudeGateway(project);
       const egress = await this.egressFor();
       await this.ensureSandboxRuntime(
         project,
         this.opts.sandboxRuntime ?? (egress === undefined ? undefined : PROJECT_RUNSC_RUNTIME),
       );
-      // Recheck activity and the window after image preparation, under the mutation barrier.
-      const activity = await this.probeProjectBusy(project.id);
-      const override =
-        opts.interruptServices === true &&
-        canInterruptSandboxServices(activity.reasons) &&
-        (!automatic || nightlySandboxUpdate((this.opts.now ?? Date.now)(), activity.reasons));
-      if ((automatic || opts.interruptServices) && activity.busy && !override) {
-        const current = await this.opts.docker
-          .inspectContainer(project.containerName)
-          .catch((error: unknown) => {
-            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
-            throw error;
-          });
-        // A proven missing container has no running work to interrupt.
-        if (current !== null)
-          throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
-      }
       if (automaticIntent) {
         const latestProject = await this.opts.store.getProject(project.id);
         if (
@@ -5424,6 +5405,23 @@ export class ProvisionerImpl implements Provisioner {
           throw new ProvisioningError('Automatic repair generation or target changed');
         }
       }
+      // Recheck activity and the window after image preparation, under the mutation barrier.
+      const activity = await this.probeProjectBusy(project.id);
+      const override =
+        opts.interruptServices === true &&
+        canInterruptSandboxServices(activity.reasons) &&
+        (!automatic || nightlySandboxUpdate((this.opts.now ?? Date.now)(), activity.reasons));
+      if ((automatic || opts.interruptServices) && activity.busy && !override) {
+        const current = await this.opts.docker
+          .inspectContainer(project.containerName)
+          .catch((error: unknown) => {
+            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+            throw error;
+          });
+        // A proven missing container has no running work to interrupt.
+        if (current !== null)
+          throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
+      }
       if (override)
         try {
           this.opts.onSandboxServiceInterruption?.(
@@ -5434,6 +5432,11 @@ export class ProvisionerImpl implements Provisioner {
         } catch {
           /* Telemetry never owns the lifecycle. */
         }
+      preflightComplete = true;
+    };
+    const replace = async (): Promise<ProjectRecord> => {
+      if (!preflightComplete || (this.opts.sandboxUpdateRecovery && !checkRecovery))
+        throw new ProvisioningError('Replacement requires service capture and preflight');
       if (checkRecovery)
         await this.sandboxUpdateTracker.beginRecovery(
           (this.opts.store as Partial<EventStore>).sandboxUpdateState,
@@ -5452,12 +5455,9 @@ export class ProvisionerImpl implements Provisioner {
     };
     try {
       await this.opts.sandboxUpdateRecovery?.prepare?.();
-      const capture = async () => {
-        checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
-      };
       const updated = await (this.opts.withContainerReplace
-        ? this.opts.withContainerReplace(project, replace, capture)
-        : capture().then(replace));
+        ? this.opts.withContainerReplace(project, replace, beforeRetire)
+        : beforeRetire().then(replace));
       if (checkRecovery)
         await this.sandboxUpdateTracker.checkRecovery(
           (this.opts.store as Partial<EventStore>).sandboxUpdateState,
@@ -5468,7 +5468,7 @@ export class ProvisionerImpl implements Provisioner {
         );
       return updated;
     } catch (cause) {
-      if (checkRecovery)
+      if (checkRecovery && preflightComplete)
         await this.sandboxUpdateTracker.failRecovery(
           (this.opts.store as Partial<EventStore>).sandboxUpdateState,
           project.id,

@@ -1,3 +1,4 @@
+import { withPreviewProjectMutation } from './preview-project-mutation.js';
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 import type { ProvisionerOptions } from './provisioner.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -349,18 +350,72 @@ it('prepares outside the mutation fence, captures before retirement and checks a
   expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state).toBe('ready');
 });
 
-it('refuses a legacy replacement hook that skips recovery capture before retiring the sandbox', async () => {
-  const capture = vi.fn(async () => async () => ({ state: 'ready' as const, detail: 'ready' }));
-  const f = await fixture(12, 0, {
-    sandboxUpdateRecovery: { capture },
-    withContainerReplace: async (_project, replace) => replace(),
-  });
-  f.provisioner.attachProjectBusyProbe(async () => []);
-  await expect(f.provisioner.recreateContainer('p')).rejects.toThrow(
-    'Service recovery capture must finish before replacement',
-  );
-  expect(capture).not.toHaveBeenCalled();
-  expect(
-    f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
-  ).toBe(false);
-});
+it.each([false, true])(
+  'refuses a legacy replacement hook without preflight (recovery: %s)',
+  async (recovery) => {
+    const capture = vi.fn(async () => async () => ({ state: 'ready' as const, detail: 'ready' }));
+    const f = await fixture(12, 0, {
+      ...(recovery ? { sandboxUpdateRecovery: { capture } } : {}),
+      withContainerReplace: async (_project, replace) => replace(),
+    });
+    f.provisioner.attachProjectBusyProbe(async () => []);
+    await expect(f.provisioner.recreateContainer('p')).rejects.toThrow(
+      'Replacement requires service capture and preflight',
+    );
+    expect(capture).not.toHaveBeenCalled();
+    expect(
+      f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+    ).toBe(false);
+  },
+);
+
+it.each(['turn', 'unknown', 'window'] as const)(
+  'refuses late %s before the actual preview mutation hook retires either connector set',
+  async (change) => {
+    let reasons: ProjectActivityReason[] = ['preview'];
+    const retireLocal = vi.fn(async () => {
+      reasons = [];
+    });
+    const retirePublic = vi.fn(async () => {
+      reasons = [];
+    });
+    const releaseLocal = vi.fn();
+    const releasePublic = vi.fn();
+    const f = await fixture(4, 59, {
+      sandboxUpdateRecovery: {
+        capture: async () => {
+          if (change === 'window') f.setTime(5);
+          else reasons = [change];
+          return async () => ({ state: 'ready', detail: 'ready' });
+        },
+      },
+      withContainerReplace: (project, replace, beforeRetire) =>
+        withPreviewProjectMutation(
+          project.id,
+          replace,
+          {
+            local: { beginSessionMove: async () => releaseLocal, retireProjectShares: retireLocal },
+            public: {
+              beginSessionMove: async () => releasePublic,
+              retireProjectShares: retirePublic,
+            },
+          },
+          beforeRetire,
+        ),
+    });
+    f.provisioner.attachProjectBusyProbe(async () => reasons);
+    await expect(
+      f.provisioner.recreateContainer('p', {
+        interruptServices: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      }),
+    ).rejects.toThrow('busy');
+    expect(retireLocal).not.toHaveBeenCalled();
+    expect(retirePublic).not.toHaveBeenCalled();
+    expect(releaseLocal).toHaveBeenCalledOnce();
+    expect(releasePublic).toHaveBeenCalledOnce();
+    expect(
+      f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+    ).toBe(false);
+  },
+);

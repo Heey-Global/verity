@@ -12484,7 +12484,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
         const remove = vi.spyOn(client, 'removeContainer');
         const before = makeProvisioner(client, {
           isHealthy: async () => false,
-          withContainerReplace: async (_project, replace) => {
+          withContainerReplace: async (_project, replace, preflight) => {
             if (change === 'cancel') await ctx.store.sandboxRepairIntents.clear(p.id);
             if (change === 'generation')
               inspect.labels = {
@@ -12492,6 +12492,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
                 'verity.container-generation': 'new-generation',
               };
             if (change === 'sleep') await ctx.store.updateProjectState(p.id, 'sleeping');
+            await preflight?.();
             return replace();
           },
         });
@@ -12640,15 +12641,14 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     });
     const provisioner = makeProvisioner(client, {
       isHealthy: async () => true,
-      // Hangs the recreate after it registers as in-flight, without needing the
-      // container phase to be faked out.
-      withContainerReplace: async (_project, replace) => {
+      // Pause the registered recreate before entering its container phase.
+      withContainerReplace: async (_project, replace, preflight) => {
         await replaceGate;
+        await preflight?.();
         return replace();
       },
     });
     provisioner.attachProjectBusyProbe(async () => false);
-
     await provisioner.reconcileRelays([p]);
     expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
 
