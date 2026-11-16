@@ -525,6 +525,7 @@ describe('the onRoute hook in buildServer', () => {
     // Fastify constructor, and `buildServer` calls that before it registers
     // anything. The route modules are covered by the same fact: they are called
     // from `buildServer`, below that call.
+    const installerPattern = /\b(?:install|register)\w+\(\s*app\b/g;
     const expectFirst = (file: string, marker: string, what: string): void => {
       const source = readFileSync(join(REPO_ROOT, 'packages/server/src', file), 'utf8');
       const at = source.indexOf(marker);
@@ -535,6 +536,13 @@ describe('the onRoute hook in buildServer', () => {
         expect(firstRoute.index, `a route is registered above ${what} in ${file}`).toBeGreaterThan(
           at,
         );
+      }
+      // Domain installers now own all root routes; hoisting one has the same
+      // effect as hoisting a direct route registration.
+      if (file === 'server.ts') {
+        for (const call of source.matchAll(installerPattern)) {
+          expect(call.index, `an installer runs above ${what} in ${file}`).toBeGreaterThan(at);
+        }
       }
       // A plugin gets its own encapsulated context, which inherits the hooks that
       // existed when it was created — and only those.
@@ -553,11 +561,12 @@ describe('the onRoute hook in buildServer', () => {
     // encapsulated plugin added there would need to follow installHttpGuards.
     expectFirst('server-http.ts', "addHook('onRoute'", 'the onRoute hook');
     expectFirst('server.ts', 'createServerApp(deps)', 'the createServerApp call');
-    // Something to order against, or the scan itself broke.
+    // With all inline routes extracted, installer calls keep the ordering
+    // check live even when the root no longer contains a direct route.
     const server = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
     ANY_ROUTE_PATTERN.lastIndex = 0;
     expect(
-      ANY_ROUTE_PATTERN.exec(server),
+      ANY_ROUTE_PATTERN.exec(server) ?? installerPattern.exec(server),
       'nothing to order against — the scan broke',
     ).not.toBeNull();
   });
