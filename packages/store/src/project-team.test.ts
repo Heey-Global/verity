@@ -608,10 +608,7 @@ it.each(['expired', 'authority', 'unshareable'])(
     const created = await invite();
     await redeem(created.secret);
     if (changed === 'expired')
-      await ctx.db
-        .updateTable('project_invitations')
-        .set({ expires_at: new Date(0) })
-        .execute();
+      await sql`update project_invitations set expires_at = ${new Date(0)}`.execute(ctx.db);
     if (changed === 'authority')
       await ctx.db
         .updateTable('project_memberships')
