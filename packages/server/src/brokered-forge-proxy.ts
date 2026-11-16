@@ -150,6 +150,9 @@ export function createBrokeredForgeProxy(options: {
   /** A turn's own badge, accepted alongside the container capability; it proves
    *  the project and names the turn's person for personal forge access later. */
   turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
+  /** Whether a turn without a person may use the project default here
+   *  (`personlessWorkAllowed`); without it such a badge is refused. */
+  personlessAllowed?: ((projectId: string) => Promise<boolean>) | undefined;
   resolveRepository?: (
     binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
     hostname: string,
@@ -316,7 +319,12 @@ export function createBrokeredForgeProxy(options: {
                       token: presented,
                     });
               // A badge carried out of the sandbox it was issued into proves nothing.
-              const foreignBadge = badge !== undefined && !turnFitsSandbox(badge, identity);
+              // So does one without a person in a project shared with others.
+              const foreignBadge =
+                badge !== undefined &&
+                (!turnFitsSandbox(badge, identity) ||
+                  (badge.userId === null &&
+                    (await options.personlessAllowed?.(identity.projectId)) !== true));
               const turn = foreignBadge ? undefined : badge;
               // A badge proves the sandbox itself; the repository and generation are
               // the sandbox's current container binding, exactly as its capability

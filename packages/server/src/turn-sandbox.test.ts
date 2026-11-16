@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PERSONLESS_TURN_REFUSAL } from './personless-credential.js';
 import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
 
 const store = (owner: string) =>
@@ -30,6 +31,7 @@ describe('resolveTurnSandbox', () => {
     await expect(resolveTurnSandbox(store('admin'), 'p1', undefined)).resolves.toEqual({
       userId: 'admin',
       projectDefault: true,
+      personlessIn: 'p1',
     });
   });
 });
@@ -61,6 +63,39 @@ describe('personalTurnRefusal', () => {
     // The original sandbox keeps the instance login it always had.
     await expect(
       personalTurnRefusal(connections([]), { userId: 'admin', projectDefault: true }, 'codex'),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe('a turn without a person', () => {
+  const project = (members: string[]) =>
+    ({
+      projectSandboxes: {
+        projectDefault: async (projectId: string) => ({
+          projectId,
+          userId: 'admin',
+          projectDefault: true,
+        }),
+      },
+      projectTeam: { listMembers: async () => members.map((userId) => ({ userId })) },
+      userProviderConnections: { get: async () => undefined },
+    }) as never;
+
+  // Nobody can tell whose work a personless turn is. In a shared project it would
+  // run on the owner's instance login, Doppler token and forge access for
+  // whoever sent it, so it stops before any of them is reached.
+  it("runs on the owner's credentials only while nobody else is in the project", async () => {
+    const personless = await resolveTurnSandbox(project(['admin']), 'p1', undefined);
+    await expect(
+      personalTurnRefusal(project(['admin']), personless, 'codex'),
+    ).resolves.toBeUndefined();
+    await expect(
+      personalTurnRefusal(project(['admin', 'lena']), personless, 'codex'),
+    ).resolves.toBe(PERSONLESS_TURN_REFUSAL);
+    // The owner's own turn in the same shared project is unaffected.
+    const owners = await resolveTurnSandbox(project(['admin', 'lena']), 'p1', { userId: 'admin' });
+    await expect(
+      personalTurnRefusal(project(['admin', 'lena']), owners, 'codex'),
     ).resolves.toBeUndefined();
   });
 });

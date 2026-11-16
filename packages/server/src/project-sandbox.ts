@@ -17,6 +17,17 @@ export async function projectDefaultSandboxUser(
     .userId;
 }
 
+/** The same person as `projectDefaultSandboxUser`, without recording anything:
+ *  for sleeping, quiescing and health checks, which run on a sandbox that may
+ *  never have been provisioned and must not create its record as a side effect.
+ *  Only provisioning records the original sandbox. */
+export async function originalSandboxUser(
+  store: Pick<EventStore, 'projectSandboxes'>,
+  projectId: string,
+): Promise<string> {
+  return (await recordedDefaultSandboxUser(store, projectId)) ?? legacyAdministratorId;
+}
+
 /** The person recorded for a project's original sandbox, without recording one:
  *  for lookups on a stop, a sleep or a teardown, which must never create a sandbox. */
 export async function recordedDefaultSandboxUser(
