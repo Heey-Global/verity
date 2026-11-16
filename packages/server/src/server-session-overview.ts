@@ -596,7 +596,7 @@ export function createServerSessionOverview({
         return;
       }
       if (!invalidatePrSummaryAction(session, true)) return;
-      await sessionPrCache.get(session);
+      await backgroundPrStatus(session);
       resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
     },
     onError: (err, sessionId) => app.log.warn({ err, sessionId }, 'PR activity refresh failed'),

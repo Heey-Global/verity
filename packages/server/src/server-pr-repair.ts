@@ -276,22 +276,26 @@ export function createPrRepairTurns(
             {
               displayPrompt: repair.displayPrompt(latest.number),
               ...(dispatchId ? { durableDispatchId: dispatchId } : {}),
-              validateSession: async (current: SessionRecord) => {
-                if (
-                  !(await sessionPermitsBackgroundPr(deps.eventStore, current)) ||
-                  current.planning === 'active' ||
-                  current.projectId !== session.projectId ||
-                  !(await canExecuteAs(initiatedBy?.userId, current.projectId))
-                )
-                  return false;
-                const observed = await sessionPrStatus(current);
-                return (
-                  observed !== null &&
-                  repair.applies(observed) &&
-                  repair.key(sessionId, observed) === repair.key(sessionId, latest) &&
-                  (await sessionPermitsBackgroundPr(deps.eventStore, current))
-                );
-              },
+              ...(session.projectId !== null
+                ? {
+                    validateSession: async (current: SessionRecord) => {
+                      if (
+                        !(await sessionPermitsBackgroundPr(deps.eventStore, current)) ||
+                        current.planning === 'active' ||
+                        current.projectId !== session.projectId ||
+                        !(await canExecuteAs(initiatedBy?.userId, current.projectId))
+                      )
+                        return false;
+                      const observed = await sessionPrStatus(current);
+                      return (
+                        observed !== null &&
+                        repair.applies(observed) &&
+                        repair.key(sessionId, observed) === repair.key(sessionId, latest) &&
+                        (await sessionPermitsBackgroundPr(deps.eventStore, current))
+                      );
+                    },
+                  }
+                : {}),
               ...(initiatedBy ? { initiatedBy } : {}),
             },
           );

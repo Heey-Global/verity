@@ -152,43 +152,55 @@ it('rejects repair admission if pause happens after the idle callback has prepar
   }
 });
 
-it('does not start queued overview PR reads after a project is paused', async () => {
-  await createExistingSession('s1');
-  await createExistingSession('s2');
-  await ctx.store.upsertProject({
-    id: 'p1',
-    owner: 'team',
-    repo: 'app',
-    containerName: 'app',
-    state: 'active',
-  });
-  await ctx.store.setSessionProject('s1', 'p1');
-  await ctx.store.setSessionProject('s2', 'p1');
-  let release!: () => void;
-  const blocked = new Promise<void>((done) => {
-    release = done;
-  });
-  const read = vi.fn(async () => {
-    await blocked;
-    return { ...failing, phase: 'closed' as const };
-  });
-  const server = buildServer({
-    eventStore: ctx.store,
-    bus,
-    conductor,
-    branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
-    branchPrStatus: read,
-  });
-  try {
-    await server.inject({ method: 'GET', url: '/sessions' });
-    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-    await ctx.store.updateProjectState('p1', 'absent');
-    release();
-    await new Promise((done) => setTimeout(done, 80));
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
-  } finally {
-    release();
-    await server.close();
-  }
-});
+it.each(['overview', 'activity'] as const)(
+  'does not start queued %s PR reads after a project is paused',
+  async (trigger) => {
+    await createExistingSession('s1');
+    await createExistingSession('s2');
+    await ctx.store.upsertProject({
+      id: 'p1',
+      owner: 'team',
+      repo: 'app',
+      containerName: 'app',
+      state: 'active',
+    });
+    await ctx.store.setSessionProject('s1', 'p1');
+    await ctx.store.setSessionProject('s2', 'p1');
+    let release!: () => void;
+    const blocked = new Promise<void>((done) => {
+      release = done;
+    });
+    const read = vi.fn(async () => {
+      await blocked;
+      return { ...failing, phase: 'closed' as const };
+    });
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      branches: branchSvc as unknown as NonNullable<ServerDeps['branches']>,
+      branchPrStatus: read,
+    });
+    try {
+      await server.ready();
+      if (trigger === 'overview') await server.inject({ method: 'GET', url: '/sessions' });
+      else
+        for (const id of ['s1', 's2'])
+          bus.publish(id, {
+            seq: 1,
+            ts: Date.now(),
+            event: { t: 'tool_result', id: 'tool', output: 'done', isError: false },
+          });
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+      await new Promise((done) => setTimeout(done, 30));
+      await ctx.store.updateProjectState('p1', 'absent');
+      release();
+      await new Promise((done) => setTimeout(done, 80));
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(dispatchTurnWhenIdle).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await server.close();
+    }
+  },
+);
