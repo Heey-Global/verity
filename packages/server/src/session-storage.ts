@@ -79,7 +79,7 @@ export function sessionStorageDiagnostics(report: SessionStorageReport) {
   };
 }
 
-export interface SessionCoverage {
+interface SessionCoverage {
   /** Sessions of collectable projects when the pass started. */
   total: number;
   /** Sessions the pass reached before it finished or stopped at its budget. */
