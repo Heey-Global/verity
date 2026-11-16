@@ -1,3 +1,4 @@
+import type { ProvisionerOptions } from './provisioner.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -30,7 +31,7 @@ type Internals = {
   ensureSandboxRuntime: () => Promise<void>;
   runContainerPhase: () => Promise<ProjectRecord>;
 };
-async function fixture(hour = 3, minute = 0) {
+async function fixture(hour = 3, minute = 0, extra: Partial<ProvisionerOptions> = {}) {
   let now = new Date(2026, 10, 16, hour, minute).getTime();
   const project = await ctx.store.upsertProject({
     id: 'p',
@@ -56,6 +57,7 @@ async function fixture(hour = 3, minute = 0) {
     hostCloneRoot: '/work/fixture',
     isDirectory: () => false,
     now: () => now,
+    ...extra,
   });
   const internals = provisioner as unknown as Internals;
   vi.spyOn(internals, 'classifyProjectSandbox').mockResolvedValue({
@@ -201,4 +203,20 @@ it('persists turn repair storage refusal and skips another build until its backo
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+it('persists recovery before retiring the old generation and records a failed replacement', async () => {
+  const check = vi.fn(async () => ({ state: 'ready' as const, detail: 'ready' }));
+  const f = await fixture(12, 0, { sandboxUpdateRecovery: { capture: async () => check } });
+  f.provisioner.attachProjectBusyProbe(async () => []);
+  let persistedBeforeStop = false;
+  vi.spyOn(f.client, 'stopContainer').mockImplementation(async () => {
+    persistedBeforeStop =
+      (await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state === 'checking';
+  });
+  vi.spyOn(f.internals, 'runContainerPhase').mockRejectedValue(new Error('replacement failed'));
+  await expect(f.provisioner.recreateContainer('p')).rejects.toThrow('replacement failed');
+  expect(persistedBeforeStop).toBe(true);
+  expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state).toBe('failed');
+  expect(check).not.toHaveBeenCalled();
 });

@@ -118,3 +118,22 @@ it('bounds a stalled supervisor probe by the overall recovery deadline', async (
   release();
   await blocked;
 });
+it('bounds a stalled pre-replacement capture without retiring the sandbox', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const recovery = createSandboxUpdateRecovery({
+    store: {
+      managedDevServers: { listInstances: async () => [] },
+      listPublicPreviewShares: async () => [],
+    } as unknown as EventStore,
+    devServers: () => undefined,
+    local: () => ({ reconcile: () => blocked }) as never,
+    public: () => undefined,
+    timeoutMs: 5,
+  });
+  await expect(recovery.capture('p')).rejects.toThrow('capture deadline exceeded');
+  release();
+  await blocked;
+});

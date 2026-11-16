@@ -85,6 +85,13 @@ export class SandboxUpdateTracker {
     await store?.set(id, state);
     this.states.set(id, state);
   }
+  async beginRecovery(store: StateStore | undefined, id: string): Promise<void> {
+    await this.recovered(store, id, {
+      state: 'checking',
+      at: Date.now(),
+      detail: 'Update started; checking service recovery after replacement',
+    });
+  }
   async checkRecovery(
     store: StateStore | undefined,
     id: string,
@@ -107,6 +114,20 @@ export class SandboxUpdateTracker {
     } catch {
       /* Telemetry never owns the lifecycle. */
     }
+  }
+  async failRecovery(store: StateStore | undefined, id: string, cause: unknown): Promise<void> {
+    const saved = this.states.get(id);
+    if (saved?.recovery?.state !== 'checking') return;
+    const state: SandboxUpdateState = {
+      ...saved,
+      recovery: {
+        state: 'failed',
+        at: Date.now(),
+        detail: `Update interrupted before recovery completed: ${String(cause).slice(0, 500)}`,
+      },
+    };
+    this.states.set(id, state);
+    await store?.set(id, state).catch(() => undefined);
   }
   async clearWait(store: StateStore | undefined, id: string): Promise<void> {
     if (!this.states.has(id) || this.states.get(id)?.recovery) return;

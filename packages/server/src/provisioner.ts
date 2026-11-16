@@ -497,18 +497,10 @@ export type DevcontainerBuildSpawner = (args: {
   noCache?: boolean | undefined;
 }) => Promise<{ stdout: string; stderr: string }>;
 
-/** Options for the container-replacing actions: the recreate the app exposes as
- *  "Update & restart", and the container phase it and `provision` both run. */
+/** Options for explicit replacement and its container phase. */
 export interface RecreateContainerOptions {
   confirmWarnings?: boolean;
-  /** The app's "Rebuild image" action. Skips the derived devcontainer image
-   *  cache and builds with `--no-cache`. Costs a full build, so it is never
-   *  implied by an ordinary provision or update — only an operator asks for it,
-   *  after a change the content hash cannot see (see `resolveOrBuildImage`).
-   *  A project running the base image directly has nothing to rebuild, and the
-   *  flag is inert there rather than an error: which of the two a project is
-   *  depends on whether its clone carries a `.devcontainer/`, which the caller
-   *  is not required to know. */
+  /** Explicit cacheless devcontainer rebuild; inert for base-image projects. */
   forceRebuild?: boolean;
   interruptServices?: boolean;
   /** Who asked for this; recorded with any project image build it causes (ADR 0028). */
@@ -5450,6 +5442,11 @@ export class ProvisionerImpl implements Provisioner {
         } catch {
           /* Telemetry never owns the lifecycle. */
         }
+      if (checkRecovery)
+        await this.sandboxUpdateTracker.beginRecovery(
+          (this.opts.store as Partial<EventStore>).sandboxUpdateState,
+          project.id,
+        );
       await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
@@ -5459,10 +5456,7 @@ export class ProvisionerImpl implements Provisioner {
       );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
 
-      // ADR 0004 — "Update & restart" actively fetched the target image in the
-      // non-destructive preflight above. Keep forcePull true here to retain the
-      // replacement path's locking contract; preparedImage suppresses a second
-      // pull after the old container has been removed.
+      // Reuse the image prepared before retirement; retain forcePull's locking contract.
       containerPhaseStarted = true;
       return this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
     };
@@ -5481,6 +5475,12 @@ export class ProvisionerImpl implements Provisioner {
         );
       return updated;
     } catch (cause) {
+      if (checkRecovery)
+        await this.sandboxUpdateTracker.failRecovery(
+          (this.opts.store as Partial<EventStore>).sandboxUpdateState,
+          project.id,
+          cause,
+        );
       if (opts.forceRebuild === true && !containerPhaseStarted) {
         const restoredState = replacementStarted ? 'failed' : project.state;
         const replacementError = `container replacement failed: ${failureMessage(cause)}`;
