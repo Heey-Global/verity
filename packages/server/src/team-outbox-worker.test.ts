@@ -168,6 +168,7 @@ describe('team outbox worker', () => {
       redemptionId: 'redemption_1',
       displayName: 'Lena',
     });
+    await team.completeJoin(joined.token);
     await worker.run();
     // Uplink confirmed the join: the person is now an active member.
     expect((await team.listMembers('p1')).map((member) => member.userId)).toContain(joined.userId);
@@ -249,6 +250,7 @@ describe('team outbox worker', () => {
       redemptionId: 'redemption_1',
       displayName: 'Lena',
     });
+    await team.completeJoin(joined.token);
     await worker.run();
     const later = new Date(Date.now() + 10 * 60_000);
     expect(await team.dueOperations(later)).toHaveLength(1);

@@ -420,7 +420,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
     writer = Writer(socket)
   }
 
-  func start(ticket: String, sessionId: String) async throws -> Int {
+  func start(ticket: String, sessionId: String, expectedCapability: String = "remote-control-v1") async throws -> Int {
     guard ticket.range(of: "^[A-Za-z0-9_-]{1,512}$", options: .regularExpression) != nil,
       sessionId.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil
     else { throw RemoteSmokeError.invalidInput }
@@ -446,9 +446,7 @@ final class RemoteAppTunnel: @unchecked Sendable {
       let frame = try await receiveFrame()
       guard Set(frame.keys) == Set(["type", "sessionId", "capability"]),
         frame["type"] as? String == "attached", frame["sessionId"] as? String == sessionId,
-        // A team join borrows this tunnel for its one enrollment; Uplink names
-        // it team-bootstrap-v1. The stream framing is the same either way.
-        ["remote-control-v1", "team-bootstrap-v1"].contains(frame["capability"] as? String ?? "")
+        frame["capability"] as? String == expectedCapability
       else { throw RemoteSmokeError.invalidFrame }
 
       dataDiagnostics.record(.attached)

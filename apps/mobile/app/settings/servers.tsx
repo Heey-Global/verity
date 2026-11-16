@@ -1,7 +1,7 @@
 // Settings › Servers: the servers this app is connected to, for managing them.
 // Their projects all appear in the one project list.
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import { serverLabel } from '../../components/home/OtherServerProjects';
@@ -20,6 +20,7 @@ import {
   removeOtherServerProfile,
   type VerityServerProfile,
 } from '../../lib/serverProfile';
+import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { switchToServer } from '../../lib/serverSwitch';
 
 export default function ServersScreen() {
@@ -44,6 +45,18 @@ export function ServersView({
   switchTo: (serverId: string) => Promise<void>;
   remove: (serverId: string) => Promise<void>;
 }) {
+  const [hasSavedJoin, setHasSavedJoin] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void loadTeamJoinProgress()
+      .then((value) => {
+        if (active) setHasSavedJoin(value !== null);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   const [others, setOthers] = useState(initialOthers);
   const [open, setOpen] = useState<VerityServerProfile | null>(null);
   const [error, setError] = useState<string | undefined>();
@@ -139,6 +152,14 @@ export function ServersView({
           </Group>
         )}
       </Sheet>
+      {hasSavedJoin ? (
+        <Button
+          label="Continue joining"
+          variant="secondary"
+          onPress={() => router.push('/onboarding/join')}
+          fullWidth
+        />
+      ) : null}
       {confirmSheet}
     </SettingsScaffold>
   );

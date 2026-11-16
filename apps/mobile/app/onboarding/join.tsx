@@ -9,22 +9,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
-import { createVerityClient } from '../../lib/client';
+import { OnboardingProgress } from '../../components/OnboardingProgress';
+import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { bumpServerRevision } from '../../lib/serverProfile';
-import { joinTeam, TeamJoinError } from '../../lib/teamJoin';
+import { joinTeam, resumeTeamJoin, TeamJoinError } from '../../lib/teamJoin';
 import {
   parseTeamJoinLink,
   TeamJoinLinkError,
   type TeamJoinLink,
 } from '../../lib/teamInvitationLink';
 
-const POLL_MS = 3_000;
-
 type Phase =
   | { kind: 'enter'; problem?: string }
   | { kind: 'accept'; link: TeamJoinLink; problem?: string }
   | { kind: 'unusable'; link?: TeamJoinLink; reason: 'expired' | 'unavailable' | 'invalid' }
-  | { kind: 'waiting'; link: TeamJoinLink };
+  | { kind: 'waiting'; link: TeamJoinLink; saving: boolean }
+  | { kind: 'resume'; link: TeamJoinLink }
+  | { kind: 'interrupted'; link: TeamJoinLink; problem: string }
+  | { kind: 'complete'; link: TeamJoinLink };
 
 function phaseFor(raw: string | undefined): Phase {
   if (raw === undefined || raw.trim() === '') return { kind: 'enter' };
@@ -44,7 +46,7 @@ export default function JoinScreen() {
       initialLink={typeof link === 'string' ? link : undefined}
       onClose={() => router.replace('/onboarding/welcome')}
       onJoined={() => {
-        router.replace('/');
+        router.replace('/settings/ai-accounts');
         // Start the whole app over for the server just joined.
         bumpServerRevision();
       }}
@@ -57,42 +59,85 @@ export function JoinView({
   onClose,
   onJoined,
   join = joinTeam,
-  confirmed = () => createVerityClient()?.listProjects() ?? Promise.reject(new Error('offline')),
+  resume = resumeTeamJoin,
 }: {
   initialLink?: string | undefined;
   onClose: () => void;
   onJoined: () => void;
   join?: typeof joinTeam;
-  /** Resolves once the server serves this person, i.e. their join is confirmed. */
-  confirmed?: () => Promise<unknown>;
+  resume?: typeof resumeTeamJoin;
 }) {
   const [phase, setPhase] = useState<Phase>(() => phaseFor(initialLink));
   const [pasted, setPasted] = useState('');
   const [name, setName] = useState('');
   const [joining, setJoining] = useState(false);
-  const joinedRef = useRef(onJoined);
-  joinedRef.current = onJoined;
-
-  // The server answers this person only after Uplink confirmed the join.
-  const waiting = phase.kind === 'waiting';
+  const controller = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
   useEffect(() => {
-    if (!waiting) return;
-    let active = true;
-    const probe = () => {
-      confirmed().then(
-        () => {
-          if (active) joinedRef.current();
-        },
-        () => undefined,
-      );
-    };
-    probe();
-    const timer = setInterval(probe, POLL_MS);
+    mounted.current = true;
+    void loadTeamJoinProgress()
+      .then((progress) => {
+        if (mounted.current && progress !== null) setPhase({ kind: 'resume', link: progress.link });
+      })
+      .catch(() => {
+        if (mounted.current)
+          setPhase({
+            kind: 'enter',
+            problem: 'Could not read saved join progress. Try reopening this screen.',
+          });
+      });
     return () => {
-      active = false;
-      clearInterval(timer);
+      mounted.current = false;
+      controller.current?.abort();
     };
-  }, [waiting, confirmed]);
+  }, []);
+  const close = () => {
+    controller.current?.abort();
+    onClose();
+  };
+  const run = (target: TeamJoinLink, continuing: boolean) => {
+    if (controller.current !== null) return;
+    const active = new AbortController();
+    controller.current = active;
+    setJoining(true);
+    setPhase({ kind: 'waiting', link: target, saving: true });
+    const options = {
+      signal: active.signal,
+      onPhase: (next: 'saving' | 'confirming') => {
+        if (mounted.current && !active.signal.aborted)
+          setPhase({ kind: 'waiting', link: target, saving: next === 'saving' });
+      },
+    };
+    const work = continuing
+      ? loadTeamJoinProgress().then((saved) =>
+          saved === null ? join(target, name, options) : resume(options),
+        )
+      : join(target, name, options);
+    void work
+      .then(
+        () => {
+          if (mounted.current && !active.signal.aborted)
+            setPhase({ kind: 'complete', link: target });
+        },
+        (error: unknown) => {
+          if (!mounted.current || active.signal.aborted) return;
+          if (error instanceof TeamJoinLinkError)
+            setPhase({ kind: 'unusable', link: target, reason: error.reason });
+          else if (error instanceof TeamJoinError && error.reason === 'unavailable')
+            setPhase({ kind: 'unusable', link: target, reason: 'unavailable' });
+          else
+            setPhase({
+              kind: 'interrupted',
+              link: target,
+              problem: error instanceof Error ? error.message : 'Could not join the project.',
+            });
+        },
+      )
+      .finally(() => {
+        controller.current = null;
+        if (mounted.current) setJoining(false);
+      });
+  };
 
   if (phase.kind === 'enter') {
     return (
@@ -112,7 +157,7 @@ export function JoinView({
               }}
               fullWidth
             />
-            <Button label="Back" variant="text" onPress={onClose} fullWidth />
+            <Button label="Back" variant="text" onPress={close} fullWidth />
           </>
         }
       >
@@ -147,7 +192,7 @@ export function JoinView({
           ? 'This invitation can no longer be used'
           : 'This link is not a valid invitation';
     return (
-      <Frame footer={<Button label="Close" variant="secondary" onPress={onClose} fullWidth />}>
+      <Frame footer={<Button label="Close" variant="secondary" onPress={close} fullWidth />}>
         <StepIntro
           headline="Invitation to"
           accent={projectName}
@@ -164,38 +209,94 @@ export function JoinView({
 
   if (phase.kind === 'waiting') {
     return (
-      <Frame>
-        <StepIntro headline="Welcome to" accent={projectName} lead="Almost there." />
+      <Frame
+        footer={<Button label="Leave for now" variant="secondary" onPress={close} fullWidth />}
+      >
+        <OnboardingProgress current={2} total={3} />
+        <StepIntro
+          headline="Joining"
+          accent={projectName}
+          lead={
+            phase.saving
+              ? 'Saving your access securely on this device.'
+              : 'Your access is saved. We’re confirming your membership.'
+          }
+        />
         <Group>
           <Row
             leading={{ element: <Spinner /> }}
-            title="Confirming your membership"
-            subtitle={inviter ? `On ${inviter}'s server` : undefined}
+            title={phase.saving ? 'Saving device access' : 'Confirming your membership'}
+            subtitle={inviter ? `On ${inviter}’s server` : undefined}
           />
         </Group>
+        <SystemNotice
+          intent="transient"
+          title="You can leave this screen"
+          detail="You can continue after your access has been saved. Your existing server stays connected."
+        />
       </Frame>
     );
   }
-
-  const acceptedLink = phase.link;
+  if (phase.kind === 'resume' || phase.kind === 'interrupted') {
+    return (
+      <Frame
+        footer={
+          <>
+            <Button
+              label={phase.kind === 'resume' ? 'Continue joining' : 'Try again'}
+              onPress={() => run(phase.link, true)}
+              disabled={joining}
+              fullWidth
+            />
+            <Button label="Leave for now" variant="text" onPress={close} fullWidth />
+          </>
+        }
+      >
+        <OnboardingProgress current={2} total={3} />
+        <StepIntro
+          headline={phase.kind === 'resume' ? 'Continue joining' : 'Join interrupted'}
+          accent={projectName}
+          lead="We’ll check your saved progress before continuing."
+        />
+        <Group>
+          <Row
+            leading={{ icon: 'folder' }}
+            title={projectName}
+            subtitle={inviter ? `${inviter}’s server` : undefined}
+          />
+        </Group>
+        {phase.kind === 'interrupted' ? (
+          <SystemNotice
+            intent="needsSetup"
+            title={phase.problem}
+            detail="Your existing server and its connections haven’t changed."
+          />
+        ) : null}
+      </Frame>
+    );
+  }
+  if (phase.kind === 'complete') {
+    return (
+      <Frame footer={<Button label="Set up my AI account" onPress={onJoined} fullWidth />}>
+        <OnboardingProgress current={3} total={3} />
+        <StepIntro
+          headline="You’ve joined"
+          accent={projectName}
+          lead="Set up your own AI account to start working with the team."
+        />
+        <Group>
+          <Row leading={{ icon: 'check' }} title="Membership confirmed" />
+        </Group>
+        <SystemNotice
+          intent="needsSetup"
+          title="Connect your own AI account"
+          detail="Your teammates’ accounts stay private. GitHub and other connections can be added later."
+        />
+      </Frame>
+    );
+  }
   const accept = () => {
-    if (name.trim() === '') return;
-    setJoining(true);
-    join(acceptedLink, name)
-      .then(() => setPhase({ kind: 'waiting', link: acceptedLink }))
-      .catch((error: unknown) => {
-        if (error instanceof TeamJoinLinkError)
-          setPhase({ kind: 'unusable', link: acceptedLink, reason: error.reason });
-        else if (error instanceof TeamJoinError && error.reason === 'unavailable')
-          setPhase({ kind: 'unusable', link: acceptedLink, reason: 'unavailable' });
-        else
-          setPhase({
-            kind: 'accept',
-            link: acceptedLink,
-            problem: error instanceof Error ? error.message : 'Could not join the project.',
-          });
-      })
-      .finally(() => setJoining(false));
+    if (name.trim() !== '') run(phase.link, false);
   };
   return (
     <Frame
@@ -208,14 +309,15 @@ export function JoinView({
             loading={joining}
             fullWidth
           />
-          <Button label="Decline" variant="text" onPress={onClose} fullWidth />
+          <Button label="Not now" variant="text" onPress={close} fullWidth />
         </>
       }
     >
+      <OnboardingProgress current={1} total={3} />
       <StepIntro
         headline={`${inviter ?? 'Someone'} invites you to`}
         accent={projectName}
-        lead="Work on it together, with your own AI."
+        lead="Join the team with your own accounts."
       />
       <Group>
         <Row leading={{ icon: 'folder', quiet: true }} title={`The project “${projectName}”`} />

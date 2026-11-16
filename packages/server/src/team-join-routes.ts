@@ -2,11 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import { normalizeDisplayName, ProjectTeamError, type EventStore } from '@verity/store';
 import { z } from 'zod';
 
-import type { AuthTokenRegistry } from './auth.js';
+import { bearerToken, type AuthTokenRegistry } from './auth.js';
 
 const bytes32 = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);
 const joinBody = z
   .object({
+    completionProtocol: z.literal(1),
     invitationId: bytes32,
     secret: bytes32,
     redemptionId: z.string().min(1).max(128),
@@ -26,10 +27,35 @@ export function registerTeamJoinRoutes(
   app: FastifyInstance,
   deps: { store: Pick<EventStore, 'projectTeam'>; authRegistry: AuthTokenRegistry | undefined },
 ): void {
+  app.get('/team/join/capabilities', async (_request, reply) => {
+    reply.header('cache-control', 'no-store');
+    return { completion: 1 };
+  });
+  app.post('/team/join/complete', { bodyLimit: 1_024 }, async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    const token = bearerToken(request.headers.authorization);
+    if (token === undefined) return reply.code(401).send({ error: 'device credential required' });
+    try {
+      return await deps.store.projectTeam.completeJoin(token);
+    } catch (error) {
+      if (!(error instanceof ProjectTeamError)) throw error;
+      return reply.code(410).send({ error: error.message, code: 'invitation_unavailable' });
+    }
+  });
   app.post('/team/join', { bodyLimit: 4_096 }, async (request, reply) => {
     const registry = deps.authRegistry;
     if (registry === undefined || !registry.isEnabled())
       return reply.code(409).send({ error: 'device pairing is not configured' });
+    if (
+      !request.body ||
+      typeof request.body !== 'object' ||
+      !('completionProtocol' in request.body) ||
+      request.body.completionProtocol !== 1
+    )
+      return reply.code(409).send({
+        error: 'Update this app before joining this server.',
+        code: 'join_completion_required',
+      });
     const parsed = joinBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'invalid invitation' });
     const body = parsed.data;
@@ -56,6 +82,12 @@ export function registerTeamJoinRoutes(
     const { token, tokenId: id } = joined;
     await registry.adoptPersisted(token, id, joined.userId);
     reply.header('cache-control', 'no-store');
-    return { token, tokenId: id, userId: joined.userId, projectId: joined.projectId };
+    return {
+      token,
+      tokenId: id,
+      userId: joined.userId,
+      projectId: joined.projectId,
+      completionExpiresAt: joined.completionExpiresAt,
+    };
   });
 }

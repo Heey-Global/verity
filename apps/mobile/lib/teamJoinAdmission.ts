@@ -53,8 +53,11 @@ export function requestTeamJoinAdmission(options: {
   uplinkOrigin: string;
   installationHandle: string;
   invitationId: string;
+  redemptionId?: string;
+  signal?: AbortSignal;
   socketFactory?: (url: string) => WebSocket;
 }): Promise<TeamJoinAdmission> {
+  options.signal?.throwIfAborted();
   const url = admissionUrl(options.uplinkOrigin);
   const id = requestId();
   const socket = (options.socketFactory ?? ((target) => new WebSocket(target)))(url);
@@ -62,6 +65,7 @@ export function requestTeamJoinAdmission(options: {
   return new Promise<TeamJoinAdmission>((resolve, reject) => {
     const close = () => {
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
       try {
         socket.close();
       } catch {
@@ -74,6 +78,8 @@ export function requestTeamJoinAdmission(options: {
       close();
       reject(error);
     };
+    const abort = () => fail(new TeamJoinAdmissionError('cancelled'));
+    options.signal?.addEventListener('abort', abort, { once: true });
     // Uplink decides within 15 seconds of the request; allow for the round trips.
     const timer = setTimeout(() => fail(new TeamJoinAdmissionError('timeout')), 25_000);
     socket.addEventListener('open', () => {
@@ -84,7 +90,8 @@ export function requestTeamJoinAdmission(options: {
             requestId: id,
             installationHandle: options.installationHandle,
             invitationId: options.invitationId,
-            capabilities: [CAPABILITY],
+            capabilities: ['team-bootstrap-resume-v1'],
+            ...(options.redemptionId === undefined ? {} : { redemptionId: options.redemptionId }),
           }),
         );
       } catch {
@@ -136,6 +143,7 @@ export function requestTeamJoinAdmission(options: {
         typeof frame.ticket !== 'string' ||
         !TICKET.test(frame.ticket) ||
         !Number.isSafeInteger(frame.expiresAt) ||
+        (frame.expiresAt as number) <= Date.now() ||
         frame.capability !== CAPABILITY
       ) {
         fail(new Error('Invalid team join admission response.'));
@@ -143,6 +151,7 @@ export function requestTeamJoinAdmission(options: {
       }
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
       resolve({
         sessionId: frame.sessionId,
         redemptionId: frame.redemptionId,

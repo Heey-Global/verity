@@ -90,6 +90,7 @@ const openCodeConnectionSchema = z.object({
 });
 
 const teamJoinedSchema = z.object({
+  completionExpiresAt: z.number().int().positive(),
   token: z.string().min(1),
   tokenId: z.string().min(1),
   userId: z.string().min(1),
@@ -103,6 +104,16 @@ type Request = (path: string, init: TransportRequestInit) => Promise<Response>;
 /** The team and personal connection calls, bound to the client's `request`. */
 export function peopleClient(request: Request) {
   return {
+    teamJoinCapabilities: async (): Promise<{ completion: 1 }> => {
+      const res = await request('/team/join/capabilities', { method: 'GET' });
+      return z.object({ completion: z.literal(1) }).parse(await res.json());
+    },
+    completeTeamJoin: async (): Promise<{ projectId: string; confirmed: boolean }> => {
+      const res = await request('/team/join/complete', { method: 'POST' });
+      return z
+        .object({ projectId: z.string().min(1), confirmed: z.boolean() })
+        .parse(await res.json());
+    },
     getProjectTeam: async (projectId: string): Promise<ProjectTeam> => {
       const res = await request(`/projects/${encodeURIComponent(projectId)}/team`, {
         method: 'GET',
@@ -246,7 +257,7 @@ export function peopleClient(request: Request) {
       const res = await request('/team/join', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, completionProtocol: 1 }),
       });
       return teamJoinedSchema.parse(await res.json());
     },

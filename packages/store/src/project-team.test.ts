@@ -66,6 +66,17 @@ const redeem = async (secret: string, redemptionId = 'r1') => {
   });
 };
 
+async function authorize(redemptionId: string) {
+  const row = await ctx.db
+    .selectFrom('team_join_admissions')
+    .select('device_token_encrypted')
+    .where('redemption_id', '=', redemptionId)
+    .executeTakeFirstOrThrow();
+  await team().completeJoin(
+    createSecretCipher('cd'.repeat(32)).decrypt(row.device_token_encrypted!),
+  );
+}
+
 // The link secret is the only thing that lets someone join; it must not be
 // readable from the database, and Uplink learns only its commitment.
 it('keeps the link secret out of storage and queues the creation for Uplink', async () => {
@@ -97,13 +108,29 @@ it('redeems an invitation exactly once, as a member who cannot manage', async ()
     .executeTakeFirstOrThrow();
   expect(admission.device_token_encrypted).toMatch(/^enc:v1:/);
   expect(JSON.stringify(admission)).not.toContain(first.token);
-  // Pending until Uplink confirms the join, which it is asked to do.
+  // Losing the token response cannot activate a person without a stored credential.
   expect((await team().listMembers('p1')).map((member) => member.userId)).toEqual([ADMIN]);
-  expect((await team().dueOperations()).map((operation) => operation.kind)).toContain(
+  expect((await team().dueOperations()).map((operation) => operation.kind)).not.toContain(
     'team.join.commit',
   );
+  expect(await team().confirmJoin('r1')).toBe(false);
+  await expect(team().completeJoin(secret)).rejects.toBeInstanceOf(ProjectTeamError);
+  await expect(team().completeJoin(first.token)).resolves.toEqual({
+    projectId: 'p1',
+    confirmed: false,
+  });
+  await team().completeJoin(first.token);
+  await expect(
+    team().completeJoin(first.token, new Date(Date.now() + 86_400_000)),
+  ).resolves.toEqual({ projectId: 'p1', confirmed: false });
+  expect(
+    (await team().dueOperations()).filter((operation) => operation.kind === 'team.join.commit'),
+  ).toHaveLength(1);
   await expect(redeem(secret)).resolves.toEqual({ ...first, replay: true });
   expect(await team().confirmJoin('r1')).toBe(true);
+  await expect(
+    team().completeJoin(first.token, new Date(Date.now() + 86_400_000)),
+  ).resolves.toEqual({ projectId: 'p1', confirmed: true });
   await expect(redeem(secret)).rejects.toBeInstanceOf(ProjectTeamError);
   await expect(redeem(secret, 'r2')).rejects.toBeInstanceOf(ProjectTeamError);
   const members = await team().listMembers('p1');
@@ -177,6 +204,7 @@ it('never shares the control-plane project', async () => {
 it('changes and removes members but never the creator', async () => {
   const { secret } = await invite(false);
   const { userId } = await redeem(secret);
+  await authorize('r1');
   await team().confirmJoin('r1');
   await expect(
     team().setMemberRights('p1', userId, { canExecute: true, canManage: true }),
@@ -241,7 +269,7 @@ it('admits a join tunnel only for what the invitation binds, and stores the deci
       projectId: 'p1',
       permissions: ['read'],
     }),
-  ).resolves.toBe('refused');
+  ).resolves.toBe('accepted');
   await expect(
     team().admitJoin({
       sessionId: 'session-p2',
@@ -334,6 +362,7 @@ it('marks an invitation Uplink refused to create as failed', async () => {
 it('never fences a person Uplink already confirmed, nor confirms one it fenced', async () => {
   const { secret } = await invite();
   const joined = await redeem(secret);
+  await authorize('r1');
   await team().confirmJoin('r1');
   await expect(team().failJoin('r1')).resolves.toBe(false);
   expect((await team().listMembers('p1')).map((member) => member.userId)).toContain(joined.userId);
@@ -369,6 +398,7 @@ it('never fences a person Uplink already confirmed, nor confirms one it fenced',
 it('never brings a removed person back with a replayed confirmation', async () => {
   const { secret } = await invite();
   const joined = await redeem(secret);
+  await authorize('r1');
   await team().confirmJoin('r1');
   await team().removeMember('p1', joined.userId);
   await ctx.db
@@ -416,4 +446,37 @@ it('refuses a replay after admission expiry or token revocation', async () => {
   );
   await ctx.db.deleteFrom('auth_tokens').where('id', '=', first.tokenId).execute();
   await expect(replay()).rejects.toBeInstanceOf(ProjectTeamError);
+});
+
+it('keeps a saved credential across reattachment but refuses expired, revoked and cancelled completion', async () => {
+  const { invitation, secret } = await invite();
+  const joined = await redeem(secret);
+  const original = await ctx.db
+    .selectFrom('team_join_admissions')
+    .selectAll()
+    .where('redemption_id', '=', 'r1')
+    .executeTakeFirstOrThrow();
+  await expect(
+    team().admitJoin({
+      sessionId: 'resume',
+      invitationId: 'inv-1',
+      redemptionId: 'r1',
+      projectId: 'p1',
+      permissions: ['read', 'execute'],
+    }),
+  ).resolves.toBe('accepted');
+  await team().rollbackJoinAdmission({ sessionId: 'resume', redemptionId: 'r1' });
+  const after = await ctx.db
+    .selectFrom('team_join_admissions')
+    .selectAll()
+    .where('redemption_id', '=', 'r1')
+    .executeTakeFirstOrThrow();
+  expect(after.expires_at).toEqual(original.expires_at);
+  await expect(
+    team().completeJoin(joined.token, new Date(original.expires_at.getTime() + 1)),
+  ).rejects.toBeInstanceOf(ProjectTeamError);
+  await expect(team().revokeInvitation('p1', invitation.id)).resolves.toBe(true);
+  await expect(team().completeJoin(joined.token)).rejects.toBeInstanceOf(ProjectTeamError);
+  expect(await team().confirmJoin('r1')).toBe(false);
+  expect((await team().listMembers('p1')).map((member) => member.userId)).toEqual([ADMIN]);
 });

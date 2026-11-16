@@ -2747,7 +2747,7 @@ export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
   // Team and personal connection calls (people-api.ts); set before the fields below.
-  private readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly people = peopleClient((path, init) => this.request(path, init));
   readonly getProjectTeam = this.people.getProjectTeam;
   readonly createProjectInvitation = this.people.createProjectInvitation;
   readonly getProjectInvitation = this.people.getProjectInvitation;

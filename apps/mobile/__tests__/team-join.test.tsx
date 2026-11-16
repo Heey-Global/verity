@@ -11,6 +11,8 @@ jest.mock('expo-router', () => ({
 const mockPaste = jest.fn();
 jest.mock('expo-clipboard', () => ({ getStringAsync: () => mockPaste() }));
 
+jest.mock('../lib/teamJoinState', () => ({ loadTeamJoinProgress: jest.fn(async () => null) }));
+
 import { joinRedirect } from '../app/+native-intent';
 import { JoinView } from '../app/onboarding/join';
 import { TeamJoinError } from '../lib/teamJoin';
@@ -34,42 +36,55 @@ const views = (overrides: Partial<Parameters<typeof JoinView>[0]> = {}) => {
     onClose: jest.fn(),
     onJoined: jest.fn(),
     join: jest.fn().mockResolvedValue({ projectId: 'p1' }),
-    confirmed: jest.fn().mockResolvedValue([]),
+    resume: jest.fn().mockResolvedValue({ projectId: 'p1' }),
     ...overrides,
   };
   render(<JoinView {...props} />);
   return props;
 };
 
-it('accepts under the chosen name and continues once the join is confirmed', async () => {
-  let confirm: () => void = () => undefined;
-  const confirmed = jest
-    .fn()
-    .mockRejectedValueOnce(new Error('pending'))
-    .mockImplementation(() => new Promise<void>((resolve) => (confirm = resolve)));
-  jest.useFakeTimers();
-  const props = views({ initialLink: valid, confirmed });
-  expect(screen.getByText(/Holger Teske invites you to/)).toBeOnTheScreen();
-  expect(screen.getByText('The project “verity”')).toBeOnTheScreen();
-  expect(screen.getByLabelText('Join project')).toBeDisabled();
-
+it('waits for safe completion before offering the personal-account setup', async () => {
+  let finish!: (value: { projectId: string }) => void;
+  const join = jest.fn(
+    () =>
+      new Promise<{ projectId: string }>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const props = views({ initialLink: valid, join });
   fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena');
   fireEvent.press(screen.getByLabelText('Join project'));
   await waitFor(() =>
-    expect(props.join).toHaveBeenCalledWith(
+    expect(join).toHaveBeenCalledWith(
       expect.objectContaining({ invitationId: fixture.value.invitationId }),
       'Lena',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     ),
   );
-  expect(await screen.findByText('Confirming your membership')).toBeOnTheScreen();
-  // Still pending: the app must not enter a server that refuses this person yet.
+  expect(screen.getByText('Saving device access')).toBeOnTheScreen();
   expect(props.onJoined).not.toHaveBeenCalled();
-  await act(async () => {
-    jest.advanceTimersByTime(3_000);
-  });
-  expect(confirmed).toHaveBeenCalledTimes(2);
-  await act(async () => confirm());
+  await act(async () => finish({ projectId: 'p1' }));
+  expect(screen.getByText('Membership confirmed')).toBeOnTheScreen();
+  expect(props.onJoined).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByLabelText('Set up my AI account'));
   expect(props.onJoined).toHaveBeenCalledTimes(1);
+});
+
+it('aborts work when leaving without reporting success', async () => {
+  let signal!: AbortSignal;
+  const props = views({
+    initialLink: valid,
+    join: jest.fn((_link, _name, options) => {
+      signal = options!.signal!;
+      return new Promise(() => undefined);
+    }),
+  });
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena');
+  fireEvent.press(screen.getByLabelText('Join project'));
+  fireEvent.press(await screen.findByLabelText('Leave for now'));
+  expect(signal.aborted).toBe(true);
+  expect(props.onClose).toHaveBeenCalledTimes(1);
+  expect(props.onJoined).not.toHaveBeenCalled();
 });
 
 afterEach(() => {

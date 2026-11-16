@@ -19,13 +19,23 @@ const permissions = z.union([
 const coreDecision = { sessionId: id };
 
 export const schemas = {
-  joinReserve: object({
-    type: z.literal('team.join.reserve'),
-    requestId: id,
-    installationHandle: handle,
-    invitationId,
-    capabilities: z.tuple([capability]),
-  }),
+  joinReserve: z.union([
+    object({
+      type: z.literal('team.join.reserve'),
+      requestId: id,
+      installationHandle: handle,
+      invitationId,
+      capabilities: z.tuple([capability]),
+    }),
+    object({
+      type: z.literal('team.join.reserve'),
+      requestId: id,
+      installationHandle: handle,
+      invitationId,
+      redemptionId: id.optional(),
+      capabilities: z.tuple([z.literal('team-bootstrap-resume-v1')]),
+    }),
+  ]),
   joinPending: object({
     type: z.literal('team.join.pending'),
     requestId: id,
