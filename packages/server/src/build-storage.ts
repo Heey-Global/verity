@@ -23,11 +23,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
-import {
-  builderAdmissionMessage,
-  readBuilderAdmissionState,
-  type BuilderAdmissionState,
-} from './builder-admission.js';
+import { builderAdmissionMessage, readBuilderAdmissionState } from './builder-admission.js';
 
 const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
@@ -822,7 +818,7 @@ export class BuildStorage {
     };
   }
 
-  private admissionState(directory: string): BuilderAdmissionState {
+  private admissionState(directory: string): ReturnType<typeof readBuilderAdmissionState> {
     try {
       return readBuilderAdmissionState(directory);
     } catch (cause) {
