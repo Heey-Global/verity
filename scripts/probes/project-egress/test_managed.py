@@ -183,6 +183,15 @@ class ManagedTests(unittest.TestCase):
         self.assertTrue(old[0].exists())
         self.assertFalse(old[1].exists())
 
+    def test_release_of_a_process_started_through_the_link_is_kept(self):
+        self.provision()
+        old = [self.old_release(str(age), age) for age in range(4)]
+        self.process_table('/opt/verity-egress/node /opt/verity-egress/project-egress-host-main.mjs')
+        (self.root / 'proc/100/exe').symlink_to(old[0] / 'node')
+        managed.prune_releases(self.root, set())
+        self.assertTrue(old[0].exists())
+        self.assertFalse(old[1].exists())
+
     def test_unreadable_process_table_or_pending_journal_removes_nothing(self):
         self.provision()
         old = [self.old_release(str(age), age) for age in range(4)]

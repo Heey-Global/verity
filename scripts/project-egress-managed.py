@@ -316,6 +316,10 @@ RETAINED_RELEASES = 2
 def release_references(root):
     """Executable, working directory and arguments of every process on the host.
 
+    Managed units start bundle code as ``/opt/verity-egress/node``; the kernel
+    reports that executable by its resolved release path, so a process keeps
+    the bundle it started from even after the link has moved on.
+
     An unreadable process table raises: without it no release can be shown unused."""
     references = []
     for entry in (root / 'proc').iterdir():

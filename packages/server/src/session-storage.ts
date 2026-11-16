@@ -888,6 +888,7 @@ export class SessionStorage {
         });
       }
     };
+    let reachedAll = false;
     try {
       for (const entry of await readdir(preserved, { withFileTypes: true })) {
         signal.throwIfAborted();
@@ -935,11 +936,12 @@ export class SessionStorage {
           });
         }
       }
+      reachedAll = true;
     } finally {
       // Keep first observations of copies not yet reached when a pass stops at
-      // its budget, so its clock is never reset by an interrupted pass.
+      // its budget or fails, so an interrupted pass never resets their clock.
       if (!this.deps.dryRun)
-        await atomicJson(journal, { ...(signal.aborted ? seen : {}), ...observed });
+        await atomicJson(journal, { ...(reachedAll ? {} : seen), ...observed });
     }
   }
   /** Removes the private top-level installation of a session idle past
