@@ -42,8 +42,6 @@ const CONTINUE_AFTER_MS = 15 * 60_000;
 const UNKNOWN_SHOWN = 10;
 /** Multi-link files remembered per round; beyond it they may be counted twice. */
 const LINKED_LIMIT = 500_000;
-/** Errors that leave one entry unmeasured without invalidating the round. */
-const SKIPPED = ['EACCES', 'EPERM', 'ELOOP', 'EIO', 'ENAMETOOLONG'];
 
 /** Category of a path given as segments relative to the volume root. */
 export function classifyDataVolumePath(segments: readonly string[]): Category {
@@ -244,12 +242,12 @@ export class DataVolumeUsage {
         } catch (error) {
           // Removed or replaced since it was listed: nothing left to count. A
           // vanished root is not an empty volume; the round starts over.
-          const code = (error as NodeJS.ErrnoException).code ?? '';
-          if (top.segments.length === 0 || ![...SKIPPED, 'ENOENT', 'ENOTDIR'].includes(code))
-            throw error;
-          // An unreadable directory, such as a sandbox-private home, is reported
-          // as unmeasured instead of discarding the whole round.
-          if (SKIPPED.includes(code)) round.unreadable++;
+          if (top.segments.length === 0) throw error;
+          // An unreadable directory, such as a sandbox-private home, or one an
+          // odd mount refuses, is reported as unmeasured; one entry must not
+          // discard the whole round. A directory removed meanwhile is just gone.
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT' && code !== 'ENOTDIR') round.unreadable++;
           round.stack.pop();
           continue;
         }
@@ -271,9 +269,7 @@ export class DataVolumeUsage {
       try {
         stat = await (this.deps.lstat ?? lstat)(path);
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code ?? '';
-        if (SKIPPED.includes(code)) round.unreadable++;
-        else if (code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') round.unreadable++;
         continue;
       }
       // Another filesystem mounted inside the volume is not the volume.

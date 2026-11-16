@@ -176,7 +176,9 @@ describe('data volume usage', () => {
   it('reports unreadable entries as unmeasured and still finishes the round', async () => {
     const f = fixture();
     const denied = (path: string) =>
-      Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
+      Object.assign(new Error(`EACCES: ${path}`), {
+        code: path.endsWith('.json') ? 'ESTALE' : 'EACCES',
+      });
     const homes = join(f.root, 'runners/p/session-homes/h/.claude');
     const turn = join(f.root, LAYOUT.turns);
     const usage = new DataVolumeUsage({
