@@ -267,17 +267,22 @@ export class ProjectTeamStore {
     projectId: string;
     permissions: readonly string[];
     now?: Date;
+    signal?: AbortSignal;
   }): Promise<'accepted' | 'refused'> {
+    input.signal?.throwIfAborted();
     const now = input.now ?? new Date();
     return this.db.transaction().execute(async (tx) => {
+      input.signal?.throwIfAborted();
       const earlier = await tx
         .selectFrom('team_join_admissions')
-        .select(['decision', 'invitation_id', 'redemption_id'])
+        .select(['decision', 'invitation_id', 'redemption_id', 'expires_at'])
         .where('session_id', '=', input.sessionId)
         .executeTakeFirst();
+      input.signal?.throwIfAborted();
       if (earlier !== undefined)
         return earlier.invitation_id === input.invitationId &&
-          earlier.redemption_id === input.redemptionId
+          earlier.redemption_id === input.redemptionId &&
+          earlier.expires_at.getTime() > now.getTime()
           ? earlier.decision
           : 'refused';
       const row = await tx
@@ -315,9 +320,19 @@ export class ProjectTeamStore {
         .onConflict((conflict) => conflict.doNothing())
         .returning('decision')
         .executeTakeFirst();
+      input.signal?.throwIfAborted();
       // A redemption already bound to another session is never accepted twice.
       return stored?.decision ?? 'refused';
     });
+  }
+
+  /** A cancelled tunnel cannot leave a usable admission behind. */
+  async rollbackJoinAdmission(input: { sessionId: string; redemptionId: string }): Promise<void> {
+    await this.db
+      .deleteFrom('team_join_admissions')
+      .where('session_id', '=', input.sessionId)
+      .where('redemption_id', '=', input.redemptionId)
+      .execute();
   }
 
   /**
@@ -387,8 +402,15 @@ export class ProjectTeamStore {
     secret: string;
     redemptionId: string;
     displayName: string;
+    deviceLabel?: string;
     now?: Date;
-  }): Promise<{ userId: string; projectId: string; replay: boolean }> {
+  }): Promise<{
+    userId: string;
+    projectId: string;
+    replay: boolean;
+    token: string;
+    tokenId: string;
+  }> {
     const now = input.now ?? new Date();
     return this.db.transaction().execute(async (tx) => {
       const row = await tx
@@ -400,17 +422,10 @@ export class ProjectTeamStore {
       const unavailable = () =>
         new ProjectTeamError('invitation_unavailable', 'This invitation can no longer be used.');
       if (row === undefined || row.secret_hash !== sha256(input.secret)) throw unavailable();
-      if (row.state === 'redeemed') {
-        if (row.redemption_id === input.redemptionId && row.redeemed_by_user_id !== null)
-          return { userId: row.redeemed_by_user_id, projectId: row.project_id, replay: true };
-        throw unavailable();
-      }
-      if (row.state !== 'open' || row.expires_at.getTime() <= now.getTime()) throw unavailable();
-      // Only the redemption Uplink minted for a tunnel Core accepted, and only
-      // while that tunnel can still be open: an app cannot bring its own.
+      // Admission bounds every attempt, including retries after a lost response.
       const admission = await tx
         .selectFrom('team_join_admissions')
-        .select(['invitation_id', 'expires_at'])
+        .select(['invitation_id', 'expires_at', 'device_token_encrypted', 'device_token_id'])
         .where('redemption_id', '=', input.redemptionId)
         .where('decision', '=', 'accepted')
         .executeTakeFirst();
@@ -420,6 +435,32 @@ export class ProjectTeamStore {
         admission.expires_at.getTime() <= now.getTime()
       )
         throw unavailable();
+      if (row.state === 'redeemed') {
+        if (row.redemption_id !== input.redemptionId || row.redeemed_by_user_id === null)
+          throw unavailable();
+        const userId = row.redeemed_by_user_id;
+        const user = await tx
+          .selectFrom('users')
+          .select('status')
+          .where('id', '=', userId)
+          .executeTakeFirst();
+        if (admission.device_token_encrypted === null || admission.device_token_id === null)
+          throw unavailable();
+        const paired = {
+          token: this.cipher.decrypt(admission.device_token_encrypted),
+          tokenId: admission.device_token_id,
+        };
+        const token = await tx
+          .selectFrom('auth_tokens')
+          .select('id')
+          .where('id', '=', paired.tokenId)
+          .where('user_id', '=', userId)
+          .where('token_hash', '=', createHash('sha256').update(paired.token).digest('hex'))
+          .executeTakeFirst();
+        if (user?.status !== 'disabled' || token === undefined) throw unavailable();
+        return { userId, projectId: row.project_id, replay: true, ...paired };
+      }
+      if (row.state !== 'open' || row.expires_at.getTime() <= now.getTime()) throw unavailable();
       await this.requireShareable(tx, row.project_id);
       // The inviter must still be allowed to manage the project.
       if (!(await this.managesProject(tx, row.project_id, row.inviter_user_id)))
@@ -466,7 +507,30 @@ export class ProjectTeamStore {
         { invitationId: input.invitationId, redemptionId: input.redemptionId, membershipRef },
         now,
       );
-      return { userId, projectId: row.project_id, replay: false };
+      // The invitation holder cannot derive this permanent device credential.
+      // Keep an encrypted replay copy only with the short-lived admission.
+      const paired = {
+        token: randomBytes(32).toString('base64url'),
+        tokenId: randomBytes(18).toString('base64url'),
+      };
+      await tx
+        .updateTable('team_join_admissions')
+        .set({
+          device_token_encrypted: this.cipher.encrypt(paired.token),
+          device_token_id: paired.tokenId,
+        })
+        .where('redemption_id', '=', input.redemptionId)
+        .execute();
+      await tx
+        .insertInto('auth_tokens')
+        .values({
+          id: paired.tokenId,
+          token_hash: createHash('sha256').update(paired.token).digest('hex'),
+          user_id: userId,
+          label: input.deviceLabel ?? null,
+        })
+        .execute();
+      return { userId, projectId: row.project_id, replay: false, ...paired };
     });
   }
 
@@ -487,6 +551,7 @@ export class ProjectTeamStore {
       .selectFrom('team_outbox')
       .select('operation_id')
       .where('done_at', 'is', null)
+      .where('failed_at', 'is', null)
       .where('give_up_at', '>', now)
       .limit(1)
       .executeTakeFirst();
@@ -622,6 +687,7 @@ export class ProjectTeamStore {
       .selectFrom('team_outbox')
       .select(['operation_id', 'kind', 'payload', 'attempts'])
       .where('done_at', 'is', null)
+      .where('failed_at', 'is', null)
       .where('next_attempt_at', '<=', now)
       .where('give_up_at', '>', now)
       .orderBy('created_at')
@@ -633,6 +699,21 @@ export class ProjectTeamStore {
       payload: row.payload,
       attempts: row.attempts,
     }));
+  }
+
+  /** Record exhaustion once, including while Uplink is offline. A later team change re-arms it. */
+  async failExhaustedOperations(
+    now = new Date(),
+  ): Promise<Array<{ operationId: string; kind: string }>> {
+    const rows = await this.db
+      .updateTable('team_outbox')
+      .set({ failed_at: now })
+      .where('done_at', 'is', null)
+      .where('failed_at', 'is', null)
+      .where('give_up_at', '<=', now)
+      .returning(['operation_id', 'kind'])
+      .execute();
+    return rows.map((row) => ({ operationId: row.operation_id, kind: row.kind }));
   }
 
   async completeOperation(operationId: string, now = new Date()): Promise<void> {
@@ -657,6 +738,19 @@ export class ProjectTeamStore {
     payload: Record<string, unknown>,
     now: Date,
   ): Promise<void> {
+    // Preserve operation ids: an answer may have been lost after Uplink applied the change.
+    // Completed final refusals stay completed; only exhausted unfinished work resumes.
+    await tx
+      .updateTable('team_outbox')
+      .set({
+        failed_at: null,
+        next_attempt_at: now,
+        give_up_at: new Date(now.getTime() + TEAM_OUTBOX_RETRY_MS),
+        attempts: 0,
+      })
+      .where('done_at', 'is', null)
+      .where('give_up_at', '<=', now)
+      .execute();
     const operationId = randomUUID();
     await tx
       .insertInto('team_outbox')

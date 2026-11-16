@@ -177,6 +177,7 @@ export interface ControlPlaneDeps {
   /** Project- and generation-bound signing authority for the relay UDS listener. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
   turnCredentials?: ServerDeps['turnCredentials'];
+  claudeEgressIdentity?: ServerDeps['claudeEgressIdentity'];
   githubUserAuthorization?: ServerDeps['githubUserAuthorization'];
   /** Network-origin guard for `/internal/*` (audit H1 follow-up) — when set, those
    *  routes 404 unless the request arrived on the internal listener. Forwarded to
@@ -382,8 +383,11 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : undefined;
 
   const sessionChanges = createSessionChangeFeed();
+  // Filled by the session routes; every turn start converts a legacy Documents session.
+  const codeWorkspaceTurns: NonNullable<ServerDeps['codeWorkspaceTurns']> = {};
   return buildServer({
     eventStore: deps.eventStore,
+    codeWorkspaceTurns,
     ...(deps.backup ? { backup: deps.backup } : {}),
     sessionChanges,
     ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
@@ -522,6 +526,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.pushSender !== undefined ? { pushSender: deps.pushSender } : {}),
     ...(deps.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: deps.wsAllowedOrigins } : {}),
     ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
+    ...(deps.claudeEgressIdentity !== undefined
+      ? { claudeEgressIdentity: deps.claudeEgressIdentity }
+      : {}),
     ...(deps.githubUserAuthorization !== undefined
       ? { githubUserAuthorization: deps.githubUserAuthorization }
       : {}),
@@ -627,6 +634,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
           const session = await deps.eventStore.getSession(sessionId);
           if (session?.projectId)
             await deps.provisioner?.prepareLocalDocuments?.(session.projectId);
+          await codeWorkspaceTurns.prepare?.(sessionId);
         },
         prepareWorkspace: async (session) => {
           await deps.conductor?.prepareWorkspace?.(session);

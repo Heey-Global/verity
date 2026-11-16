@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTeamOutboxWorker } from './team-outbox-worker.js';
 
@@ -55,6 +55,76 @@ function uplink(
 }
 
 describe('team outbox worker', () => {
+  // An outage beyond the retry window must be visible, but polling cannot
+  // revive changes on its own or give a replay a new id.
+  it('records exhaustion once offline and resumes unfinished changes on the next team change', async () => {
+    const team = ctx.store.projectTeam;
+    const now = new Date();
+    const expired = new Date(now.getTime() - 1);
+    await ctx.db
+      .insertInto('team_outbox')
+      .values([
+        {
+          operation_id: 'exhausted',
+          kind: 'team.membership.remove',
+          payload: '{}',
+          give_up_at: expired,
+        },
+        {
+          operation_id: 'completed',
+          kind: 'team.membership.remove',
+          payload: '{}',
+          give_up_at: expired,
+          done_at: expired,
+        },
+      ])
+      .execute();
+    const warn = vi.fn();
+    const worker = createTeamOutboxWorker({
+      team,
+      uplink: { teamNegotiated: () => false, teamRequest: vi.fn() },
+      identityKey: () => IDENTITY_KEY,
+      now: () => now,
+      log: { warn },
+    });
+    await worker.run();
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      operationId: 'exhausted',
+      kind: 'team.membership.remove',
+    });
+    expect(await team.dueOperations(now)).toEqual([]);
+    expect(await team.hasTeamWork(now)).toBe(false);
+    const row = await ctx.db
+      .selectFrom('team_outbox')
+      .selectAll()
+      .where('operation_id', '=', 'exhausted')
+      .executeTakeFirstOrThrow();
+    expect(row.failed_at).toEqual(now);
+
+    await team.createInvitation({
+      projectId: 'p1',
+      inviterUserId: ADMIN,
+      inviteeName: 'Next',
+      canExecute: false,
+      now,
+    });
+    const due = await team.dueOperations(now);
+    expect(due.map((operation) => operation.operationId)).toContain('exhausted');
+    expect(due.map((operation) => operation.operationId)).not.toContain('completed');
+    expect(await team.hasTeamWork(now)).toBe(true);
+    const resumed = await ctx.db
+      .selectFrom('team_outbox')
+      .selectAll()
+      .where('operation_id', '=', 'exhausted')
+      .executeTakeFirstOrThrow();
+    expect(resumed.failed_at).toBeNull();
+    expect(resumed.give_up_at.getTime()).toBeGreaterThan(now.getTime());
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
   // Team messages are strict: Uplink rejects an unknown field and a missing one.
   // Every message sent must carry exactly the fields of its contract fixture.
   it('sends invitations, joins and removals exactly as the contract defines them', async () => {

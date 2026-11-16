@@ -1129,11 +1129,11 @@ export class SupervisorRunnerClient implements RunnerClient {
     if (needsMcpProxy === true && mcpProxyToken === undefined) {
       throw new Error('supervisor runner requires MCP proxy token issuance');
     }
-    const turnCapability = this.options.turnCapabilities?.issue(opts.turnId);
+    // Only into the box of the start attempt that asked for this launch, the only one
+    // entitled to retire it; minted without one, a badge would outlive its turn.
+    const turnCapability = bearer && this.options.turnCapabilities?.issue(opts.turnId);
     if (turnCapability !== undefined && bearer !== undefined)
       bearer.turnCapability = turnCapability;
-    // Hand it back to the start attempt that asked for this launch, which is the only
-    // one entitled to retire it.
     // Built ONCE and re-sent byte-identical on retry. Idempotence here is not a
     // nicety: the supervisor keys its claim on `turnId`, so an identical frame can
     // only ever adopt the existing turn, while a frame carrying a fresh id would

@@ -1,9 +1,9 @@
-import {
-  type FastifyBaseLogger,
-  type FastifyInstance,
-  type FastifyReply,
-  type FastifyRequest,
-} from 'fastify';
+import { createServerAuthority } from './server-authority.js';
+import { createServerAutomations } from './server-automations.js';
+import { createServerModels } from './server-models.js';
+import { createServerScheduling } from './server-scheduling.js';
+import { installRemoteControl } from './server-remote-control.js';
+import { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import {
@@ -13,19 +13,8 @@ import {
 import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
-import { PreviewConnector } from '@verity/preview-tunnel';
-import { SchedulingPageListeners } from './scheduling-page.js';
-import { registerSchedulingRoutes } from './scheduling-routes.js';
-import { startSchedulingScheduler, type SchedulingScheduler } from './scheduling-scheduler.js';
-import { SchedulingService } from './scheduling-service.js';
-import {
-  assistantNoticeTarget,
-  schedulingNoticeText,
-  schedulingPush,
-} from './scheduling-notices.js';
-import { createSchedulingTool } from './scheduling-tool.js';
 import type { AgentEvent } from '@verity/events';
-import { CODEX_DEFAULT_MODEL, isCodexModel } from '@verity/session';
+import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
 import { SealedError, type ProjectRecord } from '@verity/store';
 import { randomUUID } from 'node:crypto';
@@ -33,12 +22,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
-import type { AssistantToolDeps } from './assistant-tool.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerAuditRoutes } from './audit-routes.js';
-import { createAutomationExecutor } from './automation-executor.js';
-import { registerAutomationRoutes } from './automation-routes.js';
-import { startAutomationScheduler } from './automation-scheduler.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import { registerBackupRoutes } from './backup/routes.js';
 import {
@@ -71,11 +56,7 @@ import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
-import {
-  isModelAllowedForProject,
-  ProjectAgentNotAllowedError,
-  resolveProjectDefaultModel,
-} from './project-agent-policy.js';
+import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
@@ -113,7 +94,6 @@ import { createSessionDeletion, installSessionDeletion } from './server-session-
 import { installProjects } from './server-projects.js';
 import {
   installPeople,
-  modelAccounts,
   peopleDirectQueries,
   personalUsageProbes,
   sharedProjectPeople,
@@ -137,11 +117,10 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type { ModelList, ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
+import type { ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
-import { emitNotice, emitSessionEvent } from './session-event-writer.js';
-import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
+import { emitSessionEvent } from './session-event-writer.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerViewStateRoutes } from './view-state-routes.js';
@@ -157,7 +136,6 @@ import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
-  ProjectNotReadyError,
   isProjectSessionModel,
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
@@ -170,10 +148,7 @@ import {
   isSleepLifecycleState,
   publicProject,
   isControlPlaneProject,
-  CLAUDE_MODELS,
-  CLAUDE_MORE_MODELS,
   DEFAULT_MODEL,
-  sortModelIds,
   VERITY_CONTROL_PROJECT_ID,
   PROJECT_DELETE_SPAWN_WAIT_MS,
   makeBranch,
@@ -181,7 +156,6 @@ import {
 import './fastify-augmentation.js';
 export type { ServerUpdateController } from './server-update-routes.js';
 export { VERITY_CONTROL_SESSION_NAME } from './verity-control-session-route.js';
-
 export type {
   ProjectSettingsRecord,
   PublicProjectRecord,
@@ -539,87 +513,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       : deps.bus.subscribeAll((sessionId, event) => {
           if (!wikiMaintenanceSessions.has(sessionId)) pushFirePoints.observe(sessionId, event);
         });
-  // Scheduling requests run on their own once approved: the service owns holds, the public
-  // booking links (one Uplink share and loopback page each) and cleanup; the scheduler resumes
-  // all of it from durable state after a restart.
-  let schedulingScheduler: SchedulingScheduler | undefined;
-  const schedulingPages: SchedulingPageListeners = new SchedulingPageListeners({
-    view: (id) => schedulingService.view(id),
-    book: (id, start, note) => schedulingService.book(id, start, note),
-    publicOrigin: async (id) => (await deps.eventStore.scheduling.share(id))?.publicOrigin,
-  });
-  const schedulingService: SchedulingService = new SchedulingService({
-    store: deps.eventStore,
-    googleAccessToken: deps.googleAccessToken ?? (() => Promise.resolve(undefined)),
-    edge: deps.attendeeEdge,
-    listen: schedulingPages.listen,
-    unlisten: schedulingPages.unlisten,
-    connect: async (binding, targetOrigin) => {
-      const connector = new PreviewConnector({
-        edgeUrl: binding.edgeUrl,
-        connectorToken: binding.connectorToken,
-        targetOrigin,
-        maxBodyBytes: 65_536,
-        requestTimeoutMs: 25_000,
-      });
-      await connector.connect();
-      return connector;
-    },
-    notify: async (notification) => {
-      const sessionId = notification.request.sessionId;
-      try {
-        await emitNotice({
-          eventStore: deps.eventStore,
-          bus: deps.bus,
-          sessionId,
-          text: schedulingNoticeText(notification),
-        });
-      } catch (err) {
-        app.log.warn({ err, sessionId }, 'scheduling notice failed');
-      }
-      try {
-        const assistant = await assistantNoticeTarget(deps.eventStore, notification.request);
-        if (assistant)
-          await emitNotice({
-            eventStore: deps.eventStore,
-            bus: deps.bus,
-            sessionId: assistant.sessionId,
-            text: `${assistant.prefix}${schedulingNoticeText(notification)}`,
-          });
-      } catch (err) {
-        app.log.warn({ err, sessionId }, 'assistant scheduling notice failed');
-      }
-      const push = schedulingPush(notification);
-      if (push && pushRouter)
-        try {
-          await pushRouter.notify({
-            key: `scheduling:${notification.request.id}:${notification.kind}`,
-            sessionId,
-            initiatorUserId: await pushFirePoints?.initiatorOf(sessionId),
-            notification: push,
-          });
-        } catch (err) {
-          app.log.warn({ err, sessionId }, 'scheduling push failed');
-        }
-    },
-    wake: () => schedulingScheduler?.wake(),
-  });
-  registerSchedulingRoutes(app, { eventStore: deps.eventStore, service: schedulingService });
-  app.addHook('onReady', () => {
-    schedulingScheduler = startSchedulingScheduler({
-      runDue: () => schedulingService.runDue(),
-      log: app.log,
-    });
-  });
-  lifecycle.onClose(async () => {
-    await schedulingScheduler?.stop();
-    schedulingService.close();
-    await schedulingPages.close();
-  });
-  const schedulingTool = createSchedulingTool({
-    store: deps.eventStore,
-    service: () => schedulingService,
-  });
+  const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });
   // Built here rather than in `embedded.ts` because this is where the single
   // long-lived PushSender exists: a second instance would poll Expo receipts in
   // parallel with this one, and the notifier needs delivery, not its own fleet.
@@ -679,159 +573,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     (conductor as { drainOnShutdown?: () => Promise<void> }).drainOnShutdown?.(),
   );
 
-  // Session automations (ADR 0008): a recurring prompt bound to one ordinary
-  // session. Prompt-only runs need nothing but the conductor, which wakes a
-  // sleeping project for the turn itself; only a check script needs the
-  // project container directly.
-  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
-    if (!userId) return deps.authRegistry?.isEnabled() !== true;
-    return (
-      projectId !== null &&
-      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
-    );
-  };
-  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
-  // `undefined` when the turn is not the session's running one or has no initiator.
-  const runningTurnInitiator = async (
-    sessionId: string,
-    turnId: string,
-  ): Promise<{ userId: string } | undefined> => {
-    const running = (await deps.eventStore.listRunningTurns()).find(
-      (t) => t.sessionId === sessionId,
-    );
-    if (running?.turnId !== turnId) return undefined;
-    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
-      (event) => event.seq === running.promptSeq,
-    )?.event;
-    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
-  };
-  // The assistant acts for the user behind its running turn, and only in granted projects.
-  // Reading and filing tasks follow the project routes, where administrators count as
-  // readers. Handing off starts a turn, so it needs the same execute permission as
-  // `canExecuteAs`, which every later tool call of that turn is checked against.
-  const assistantToolDeps: AssistantToolDeps = {
-    eventStore: deps.eventStore,
-    initiator: runningTurnInitiator,
-    permitted: async (userId, projectId, permission) => {
-      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
-      if (permission === 'execute') return canExecuteAs(userId, projectId);
-      return (
-        (await deps.eventStore.isActiveAdministrator(userId)) ||
-        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
-      );
-    },
-    administrator: async (userId) =>
-      userId === undefined
-        ? deps.authRegistry?.isEnabled() !== true
-        : deps.eventStore.isActiveAdministrator(userId),
-  };
-  const automationExecutor = createAutomationExecutor({
-    isAuthorized: async (automation, session) => {
-      try {
-        return await canExecuteAs(automation.sponsorUserId, session.projectId);
-      } catch {
-        return false;
-      }
-    },
-    isCurrent: async (automation, snapshot) => {
-      const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
-      const session = await deps.eventStore.getSession(automation.sessionId);
-      return (
-        current?.id === automation.id &&
-        current.status === 'enabled' &&
-        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
-        session?.projectId === snapshot.projectId &&
-        session.worktree === snapshot.worktree
-      );
-    },
-    getSession: (sessionId) => deps.eventStore.getSession(sessionId),
-    getProject: (projectId) => deps.eventStore.getProject(projectId),
-    prepareProject: async (project) => {
-      if (project.state === 'active') return project;
-      if (
-        (project.state === 'sleeping' || project.state === 'waking') &&
-        deps.provisioner?.ensureProjectSandboxAwake
-      ) {
-        return deps.provisioner.ensureProjectSandboxAwake(project.id);
-      }
-      throw new ProjectNotReadyError();
-    },
-    beginProjectActivity: (projectId) => {
-      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
-      return () => deps.provisioner?.endProjectSandboxActivity?.(projectId);
-    },
-    ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
-      ? {
-          runScript: async ({ script, project, session, automation }) => {
-            const runtime = deps.projectRuntime;
-            const cloneRoot = deps.projectCloneRoot;
-            if (!runtime?.runAutomationScript || !cloneRoot) {
-              throw new Error('Check scripts are not available on this server.');
-            }
-            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-              project.id,
-            );
-            try {
-              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
-                throw new Error('revoked');
-            } catch {
-              throw new ControlPlaneSessionAuthorityError(
-                'The automation sponsor no longer has execution permission.',
-              );
-            }
-            return runtime.runAutomationScript(
-              project,
-              settings ?? emptyProjectSettings(project.id),
-              {
-                workdir: containerPathFor(session.worktree, projectClonePath(cloneRoot, project)),
-                script,
-                timeoutMs: 120_000,
-                maxOutputBytes: 64 * 1024,
-              },
-            );
-          },
-        }
-      : {}),
-    appendNotice: async (sessionId, text) => {
-      await deps.eventStore.appendEvent(sessionId, { t: 'notice', text, role: 'agent' });
-    },
-    dispatchTurnWhenIdle: async (
-      sessionId,
-      prompt,
-      { model, displayPrompt, validateSession, initiatedBy },
-    ) =>
-      // A run that fires while the session's project is being torn down would
-      // start a turn against a worktree the purge is removing. Report it as not
-      // accepted; by the next slot the session is gone or usable again.
-      sessionsBeingReaped.has(sessionId)
-        ? { accepted: false }
-        : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
-            displayPrompt,
-            validateSession,
-            ...(initiatedBy ? { initiatedBy } : {}),
-          }),
-    isModelAllowed: async (model, session) =>
-      session.projectId === null
-        ? (await availableModels()).models.includes(model)
-        : (await isConfiguredProjectSessionModel(model)) &&
-          (await projectAgentRejection(model, session.projectId)) === undefined,
-    // A sealed secret store or a project that is still being set up is not the
-    // automation's fault; those slots are skipped rather than counted toward the
-    // pause after repeated failures.
-    isSkippableError: (error) =>
-      error instanceof SealedError ||
-      error instanceof ProjectNotReadyError ||
-      error instanceof ControlPlaneSessionAuthorityError,
-  });
-
-  const automationScheduler = startAutomationScheduler({
-    store: deps.eventStore,
-    run: (automation) => automationExecutor.run(automation),
-    log: app.log,
-  });
-  lifecycle.onClose(() => {
-    automationScheduler.stop();
-  });
+  const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
+  const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
   const vulnerabilityService = createVulnerabilityScanService({
     logFailure: (data) => app.log.warn(data, 'verity: vulnerability scan job failed'),
@@ -1153,169 +896,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
       : {}),
   });
-  const authorizeReturnPath = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<boolean> => {
-    if (!request.localUserId) {
-      reply.code(404).send({ error: 'not found' });
-      return false;
-    }
-    if (!(await deps.eventStore.isActiveAdministrator(request.localUserId))) {
-      reply.code(403).send({ error: 'administrator required' });
-      return false;
-    }
-    if (!deps.returnPathActivation) {
-      reply.code(503).send({ error: 'diagnostics unavailable' });
-      return false;
-    }
-    return true;
-  };
-  app.get('/api/remote-control/diagnostics', async (request, reply) => {
-    if (!(await authorizeReturnPath(request, reply))) return;
-    return deps.returnPathActivation!.status(deps.returnPathConnectorCount?.() ?? 0);
-  });
-  app.post('/api/remote-control/diagnostics', async (request, reply) => {
-    if (!(await authorizeReturnPath(request, reply))) return;
-    const body = request.body as Record<string, unknown> | null;
-    if (
-      !body ||
-      typeof body !== 'object' ||
-      Object.keys(body).length !== 1 ||
-      typeof body.expiresAt !== 'string'
-    )
-      return reply.code(400).send({ error: 'absolute expiry required' });
-    try {
-      deps.returnPathActivation!.start(body.expiresAt);
-      return deps.returnPathActivation!.status(deps.returnPathConnectorCount?.() ?? 0);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const reason = ['invalid_expiry', 'already_active', 'remote_unavailable'].includes(message)
-        ? message
-        : 'diagnostics_unavailable';
-      return reply
-        .code(reason === 'already_active' ? 409 : reason === 'remote_unavailable' ? 503 : 400)
-        .send({ error: reason });
-    }
-  });
-  app.delete('/api/remote-control/diagnostics', async (request, reply) => {
-    if (!(await authorizeReturnPath(request, reply))) return;
-    deps.returnPathActivation!.stop();
-    return deps.returnPathActivation!.status();
-  });
-  lifecycle.onClose(() => {
-    deps.returnPathActivation?.dispose();
-  });
-  const recordingRequest = async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    operation: (
-      manager: import('./coordinated-recording.js').CoordinatedRecordingManager,
-    ) => unknown,
-  ): Promise<unknown> => {
-    if (!(await authorizeReturnPath(request, reply))) return;
-    if (!deps.coordinatedRecording)
-      return reply.code(503).send({ error: 'recordings_unavailable' });
-    try {
-      return await operation(deps.coordinatedRecording);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '';
-      const reasons = [
-        'invalid_recording',
-        'recording_conflict',
-        'recording_capacity',
-        'recording_not_found',
-        'remote_unavailable',
-      ];
-      const reason = reasons.includes(message) ? message : 'recording_failed';
-      const code =
-        reason === 'recording_not_found'
-          ? 404
-          : reason === 'invalid_recording'
-            ? 400
-            : reason === 'recording_conflict' || reason === 'recording_capacity'
-              ? 409
-              : 503;
-      return reply.code(code).send({ error: reason });
-    }
-  };
-  app.post('/api/remote-control/recordings', async (request, reply) =>
-    recordingRequest(request, reply, (manager) => {
-      const body = request.body as Record<string, unknown> | null;
-      if (
-        !body ||
-        typeof body !== 'object' ||
-        Object.keys(body).some(
-          (key) => !['runId', 'durationMs', 'diagnosticsVersion', 'targetSessionId'].includes(key),
-        ) ||
-        (body.diagnosticsVersion !== undefined &&
-          body.diagnosticsVersion !== 1 &&
-          body.diagnosticsVersion !== 2 &&
-          body.diagnosticsVersion !== 3) ||
-        typeof body.runId !== 'string' ||
-        typeof body.durationMs !== 'number' ||
-        (body.targetSessionId !== undefined && typeof body.targetSessionId !== 'string')
-      )
-        throw new Error('invalid_recording');
-      return manager.start(
-        body.runId,
-        body.durationMs,
-        body.diagnosticsVersion,
-        body.targetSessionId,
-      );
-    }),
-  );
-  app.get('/api/remote-control/recordings/:runId', async (request, reply) =>
-    recordingRequest(request, reply, (manager) =>
-      manager.refreshStatus((request.params as { runId: string }).runId),
-    ),
-  );
-  app.get('/api/remote-control/recordings/:runId/selection', async (request, reply) =>
-    recordingRequest(request, reply, (manager) =>
-      manager.selectedStatus((request.params as { runId: string }).runId),
-    ),
-  );
-  app.delete('/api/remote-control/recordings/:runId', async (request, reply) =>
-    recordingRequest(request, reply, (manager) =>
-      manager.stop((request.params as { runId: string }).runId),
-    ),
-  );
-  app.get('/api/remote-control/recordings/:runId/export', async (request, reply) =>
-    recordingRequest(request, reply, (manager) =>
-      manager.export(
-        (request.params as { runId: string }).runId,
-        request.headers['x-verity-recording-failure-details'] === '1',
-      ),
-    ),
-  );
-  lifecycle.onClose(() => {
-    deps.coordinatedRecording?.dispose();
-  });
-  app.get('/api/remote-control/descriptor', async (request, reply) => {
-    // This route is only for an authenticated paired device. Headless deployments
-    // can run without the global bearer gate, but have no paired device to serve.
-    if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
-    return deps.remoteControlDescriptor?.() ?? { version: 1, enabled: false, reason: 'disabled' };
-  });
-  app.post('/api/uplink/check', async (request, reply) => {
-    if (request.localUserId === undefined || !deps.recheckUplink)
-      return reply.code(404).send({ error: 'not found' });
-    try {
-      return await deps.recheckUplink();
-    } catch {
-      return reply.code(503).send({ error: 'Uplink rights check failed' });
-    }
-  });
-  app.get('/api/uplink/diagnostics', async (request, reply) => {
-    if (request.localUserId === undefined) return reply.code(404).send({ error: 'not found' });
-    return (
-      deps.uplinkDiagnostics?.() ?? {
-        control: 'disabled',
-        sharing: 'unavailable',
-        remoteControl: 'unavailable',
-      }
-    );
-  });
+  installRemoteControl(app, ctx);
   registerDiagnosticsMemoryRoute(app);
   if (deps.audit !== undefined) {
     registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
@@ -1423,6 +1004,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   const sessionRepositories = createSessionRepositories({
+    sessionStorage: deps.sessionStorage,
     store: deps.eventStore,
     cloneRoot: deps.projectCloneRoot,
     git: deps.sandboxGit,
@@ -1526,22 +1108,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerMockupRoutes(app, { mockups: sessionMockups });
-  registerAutomationRoutes(app, {
-    eventStore: deps.eventStore,
-    checkScript: (automation) => automationExecutor.checkScript(automation),
-    // The same rules a turn's model must pass, checked once when the operator
-    // confirms rather than on every unattended run.
-    validateModel: async (model, session) => {
-      if (session.projectId !== null) {
-        if (!(await isConfiguredProjectSessionModel(model))) return PROJECT_MODEL_ERROR;
-        return (await projectAgentRejection(model, session.projectId)) ?? null;
-      }
-      return (await availableModels()).models.includes(model)
-        ? null
-        : 'That model is not available on this server.';
-    },
-    onAutomationsChanged: () => automationScheduler.wake(),
-  });
+  automations.installRoutes();
 
   registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
   registerProjectDnsRoute(app, { resolveDirect: deps.projectEgressResolve });
@@ -1670,115 +1237,21 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
-  // subscription-backed and therefore appear only when their login exists in Verity
-  // settings. OpenCode provider-qualified ids still come from the configured backend.
-  // This keeps the UI from offering engines that would immediately fail at runtime.
-  const availableModels = async (
-    options: { allowLegacyCodexFallback?: boolean; viewer?: string | undefined } = {},
-  ): Promise<ModelList> => {
-    const accounts = await modelAccounts(deps.eventStore, options.viewer);
-    const claudeConfigured = accounts.claude;
-    const codexConfigured = accounts.codex;
-    let dynamicModels: string[] = [];
-    if (deps.listModels) {
-      try {
-        dynamicModels = await deps.listModels();
-      } catch (error) {
-        app.log.error({ err: error }, 'verity: dynamic model list unavailable');
-      }
-    }
-    // OpenCode models are the person's own provider's, never the instance's for
-    // someone else.
-    dynamicModels = [
-      ...dynamicModels.filter((id) => !id.startsWith('verity/')),
-      ...accounts.openCode.map((model) => `verity/${model}`),
-    ];
-    const seen = new Set<string>();
-    const merged: string[] = [];
-    const codexModels: string[] = [];
-    let codexDefault: string | undefined;
-    const add = (id: string) => {
-      if (id.length === 0 || seen.has(id)) return;
-      seen.add(id);
-      merged.push(id);
-    };
-    if (claudeConfigured) for (const id of CLAUDE_MODELS) add(id);
-    for (const id of dynamicModels) {
-      if (typeof id !== 'string' || id.length === 0) continue;
-      if (isCodexModel(id)) {
-        if (codexConfigured && id !== CODEX_DEFAULT_MODEL && !seen.has(id)) {
-          codexDefault ??= id;
-          codexModels.push(id);
-          add(id);
-        }
-        continue;
-      }
-      if (!id.includes('/')) {
-        if (claudeConfigured) add(id);
-        continue;
-      }
-      add(id);
-    }
-    // Spawn callers can use the authenticated CLI default even when discovery fails.
-    // Keep it eligible when a project's rule excludes the global Claude default.
-    if (options.allowLegacyCodexFallback === true && codexConfigured && codexModels.length === 0) {
-      add(CODEX_DEFAULT_MODEL);
-    }
-    const models = sortModelIds(merged);
-    const modelOrder = [
-      ...models.filter((id) => !id.includes('/')),
-      ...codexModels,
-      ...models.filter((id) => id.includes('/') && !isCodexModel(id)),
-    ];
-    const fallbackDefault =
-      codexDefault ??
-      (options.allowLegacyCodexFallback === true && codexConfigured
-        ? CODEX_DEFAULT_MODEL
-        : models.find((model) => !model.startsWith('verity/')));
-    const moreModels = [...(claudeConfigured ? CLAUDE_MORE_MODELS : []), ...codexModels.slice(3)];
-    return {
-      models,
-      ...(codexModels.length > 0 ? { modelOrder } : {}),
-      ...(moreModels.length > 0 ? { moreModels } : {}),
-      ...(claudeConfigured && models.includes(DEFAULT_MODEL)
-        ? { default: DEFAULT_MODEL }
-        : fallbackDefault !== undefined
-          ? { default: fallbackDefault }
-          : {}),
-    };
-  };
-  /** Why the project's agent rule rejects `model`, or undefined when it is allowed. */
-  const projectAgentRejection = async (
-    model: string,
-    projectId: string,
-  ): Promise<string | undefined> => {
-    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-    return isModelAllowedForProject(model, settings)
-      ? undefined
-      : new ProjectAgentNotAllowedError(model).message;
-  };
-  /** The model a project's new work starts with, honouring its agent rule. */
-  const projectDefaultModel = async (projectId: string | null): Promise<string | undefined> => {
-    const available = await availableModels();
-    if (projectId === null) return available.default;
-    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-    return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
-  };
-  const isConfiguredProjectSessionModel = async (
-    model: string | undefined,
-    viewer?: string,
-  ): Promise<boolean> => {
-    if (!isProjectSessionModel(model)) return false;
-    if (model === undefined || !model.startsWith('verity/')) return true;
-    return (await modelAccounts(deps.eventStore, viewer)).openCode.includes(
-      model.slice('verity/'.length),
-    );
-  };
-
-  const { sharedProject, personSessionModel, projectPeopleNames } = sharedProjectPeople(ctx, {
+  const models = createServerModels(ctx);
+  const {
     availableModels,
-  });
+    projectAgentRejection,
+    projectDefaultModel,
+    isConfiguredProjectSessionModel,
+  } = models;
+
+  const {
+    sharedProject,
+    personSessionModel,
+    projectPeopleNames,
+    choosePersonModel,
+    personalModelRefusal,
+  } = sharedProjectPeople(ctx, { availableModels });
   installSessionReads(app, ctx, {
     hasMeetingJob,
     sessionOverview: {
@@ -1898,18 +1371,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isModelAllowed: isProjectSessionModel,
     projectModelError: PROJECT_MODEL_ERROR,
     projectAgentRejection: (model, projectId) => projectAgentRejection(model, projectId),
-    // In a shared project a model switch is the person's own: it changes the model
-    // their turns run on, without interrupting anyone else's.
-    choosePersonModel: async (session, viewer, model) => {
-      if (!(await sharedProject(session.projectId))) return false;
-      await deps.eventStore.userProviderConnections.setSessionModel(
-        session.sessionId,
-        viewer,
-        model,
-      );
-      await deps.eventStore.userProviderConnections.setLastModel(viewer, session.projectId!, model);
-      return true;
-    },
+    choosePersonModel,
+    personModelRefusal: personalModelRefusal,
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the

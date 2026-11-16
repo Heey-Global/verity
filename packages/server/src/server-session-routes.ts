@@ -1,3 +1,4 @@
+import { NO_PERSONAL_MODEL, personModelRefusal } from './turn-sandbox.js';
 import { isVulnerabilityWorkspace } from './vulnerability-project.js';
 import { buildVulnerabilityFixPrompt } from './vulnerability-fix.js';
 import { measureBranchReadStage, type BranchReadStage } from './branch-read-diagnostics.js';
@@ -21,6 +22,11 @@ import {
 } from './branches.js';
 import { type PushFirePoints } from './push-fire-points.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
+import {
+  CodeWorkspaceUnavailableError,
+  describeCodeWorkspaceFailure,
+} from './code-workspace-recovery.js';
+import { codeWorkspaceUnavailable, installCodeWorkspaces } from './code-workspace-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import { type ServerContext } from './server-context.js';
 import { registerSessionBranchReadRoute } from './session-branch-read-route.js';
@@ -119,6 +125,7 @@ export function installSessionRoutes(
     invalidatePrSummaryAction,
     invalidateBranchCache,
   } = sessionOverview;
+  installCodeWorkspaces(app, ctx, { invalidateBranchCache });
 
   // Steering (M3-3): trigger one operator turn on a session. We answer 202 the
   // moment it is accepted; live progress flows over the WS stream. What happens to
@@ -174,12 +181,21 @@ export function installSessionRoutes(
         session = await deps.eventStore.getSession(id);
       }
       const viewer = request.localUserId ?? legacyAdministratorId;
-      // In a shared session a turn runs on its sender's own model.
+      // In a shared session a turn runs on its sender's own model, served by their
+      // own accounts. Without one it is refused, never run on the session's model,
+      // which another person's account may be what serves.
       let turnModel = body.model;
-      if (session !== undefined) {
-        if (body.model !== undefined && (await sharedProject(session.projectId)))
-          await deps.eventStore.userProviderConnections.setSessionModel(id, viewer, body.model);
+      const shared = session !== undefined && (await sharedProject(session.projectId));
+      if (shared && session !== undefined) {
         turnModel ??= await personSessionModel(session, viewer);
+        const refusal =
+          turnModel === undefined
+            ? NO_PERSONAL_MODEL
+            : await personModelRefusal(deps.eventStore, session.projectId!, viewer, turnModel);
+        if (refusal !== undefined) {
+          reply.code(400);
+          return { error: refusal };
+        }
         if (turnModel === session.model && body.model === undefined) turnModel = undefined;
       }
       if (
@@ -197,6 +213,9 @@ export function installSessionRoutes(
           return { error: rejection };
         }
       }
+      // Recorded only once every check above accepted it.
+      if (shared && body.model !== undefined)
+        await deps.eventStore.userProviderConnections.setSessionModel(id, viewer, body.model);
       // SBX-4: reject a turn against a project whose sandbox cannot become active
       // (stopped/failed/restarting) up front — 409 + repair hint — instead of
       // dispatching a doomed `docker exec` that would just crash the turn. Sleeping
@@ -289,6 +308,16 @@ export function installSessionRoutes(
         if (error instanceof SessionBusyError) {
           reply.code(409);
           return { error: `session ${id} is completing a stop or backend handoff` };
+        }
+        // The turn start converts a legacy Documents session; one it cannot convert
+        // never runs with the Documents view standing in for its checkout.
+        if (error instanceof CodeWorkspaceUnavailableError) {
+          request.log.warn(
+            { ...describeCodeWorkspaceFailure(error), sessionId: id },
+            'verity: turn without code workspace',
+          );
+          reply.code(409);
+          return codeWorkspaceUnavailable(error);
         }
         if (error instanceof WorktreeMissingError) {
           // The session's worktree is gone (e.g. an isolated worktree cleaned up

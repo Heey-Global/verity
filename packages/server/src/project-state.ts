@@ -52,6 +52,37 @@ export async function reconcileProjectContainerStates(
  *  project's container is no longer running — user-facing in the app. */
 export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to restart it.';
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
+
+/** Persisted before teardown removes resources; reconciliation must not undo that intent. */
+export const PROJECT_TEARDOWN_REASON = 'Project teardown started — retry deletion to finish it.';
+
+export function automaticSandboxRepairAllowed(
+  project: Pick<ProjectRecord, 'state' | 'provisionError'>,
+): boolean {
+  return (
+    ['active', 'failed'].includes(project.state) &&
+    project.provisionError !== PROJECT_TEARDOWN_REASON
+  );
+}
+
+/** Let transient provisioning and state observations settle before automatic repair. */
+export const MISSING_CONTAINER_REPAIR_GRACE_MS = 15 * 60_000;
+
+/**
+ * A Sandbox whose container vanished outside Verity: the state poll marked it, and the
+ * mark has outlasted the observation grace period. Nothing else would ever recreate it, so the relay
+ * reconciler does, with its usual backoff; the manual Repair the reason names remains.
+ */
+export function owesMissingContainerRepair(
+  project: Pick<ProjectRecord, 'state' | 'provisionError' | 'stateChangedAt'>,
+  now: number,
+): boolean {
+  return (
+    project.state === 'failed' &&
+    project.provisionError === CONTAINER_MISSING_REASON &&
+    now - project.stateChangedAt.getTime() >= MISSING_CONTAINER_REPAIR_GRACE_MS
+  );
+}
 export const STALE_PROVISIONING_REASON =
   'Project setup did not finish and no Sandbox container is running. Use Repair to retry it.';
 export const INTERRUPTED_SLEEP_REASON =
@@ -82,7 +113,8 @@ async function reconcileProject(
   recoverInterruptedSleep?: (projectId: string) => Promise<ProjectRecord>,
   recoverInterruptedWake?: (projectId: string) => Promise<ProjectRecord>,
 ): Promise<ProjectRecord> {
-  if (project.kind === 'control_plane') return project;
+  if (project.kind === 'control_plane' || project.provisionError === PROJECT_TEARDOWN_REASON)
+    return project;
 
   if (project.state === 'cloning' || project.state === 'container_starting') {
     // Age off `stateChangedAt`, NOT `updatedAt`. Every writer that touches the

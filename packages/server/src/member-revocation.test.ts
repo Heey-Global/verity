@@ -51,4 +51,47 @@ describe('member revocation', () => {
     expect(order).toEqual(['servers', 'sleep']);
     expect(onError).toHaveBeenCalledWith('Doppler connection', expect.any(Error));
   });
+
+  // A sandbox already asleep has nothing for the sleep to stop, yet its signing
+  // and GitHub capabilities, egress certificate and turn badges stay valid; a
+  // removed member's still-settling turn or a woken container could use them.
+  it("revokes the person's sandbox authority even when a step fails", async () => {
+    const revoked: string[] = [];
+    const revoke = createMemberRevocation({
+      store: {
+        getSession: async () => undefined,
+        listQueuedTurns: async () => [],
+        listRunningTurns: async () => [],
+        promptInitiatorAt: async () => undefined,
+        userDopplerConnections: { delete: async () => undefined },
+        deleteUserProjectGrants: async () => 0,
+      } as never,
+      dequeue: async () => undefined,
+      cancelTurn: async () => undefined,
+      turnCredentials: {
+        revokeUser: (projectId, userId) => void revoked.push(`badges ${projectId} ${userId}`),
+      },
+      signingCapabilities: {
+        revokeSandbox: async () => {
+          throw new Error('store unavailable');
+        },
+      },
+      ghTokenCapabilities: {
+        revokeSandbox: async (projectId, userId) =>
+          void revoked.push(`github ${projectId} ${userId}`),
+      },
+      claudeEgressIdentity: {
+        revokeSandbox: async ({ projectId, userId }) =>
+          void revoked.push(`egress ${projectId} ${userId}`),
+      },
+      onError: (step) => void revoked.push(`failed ${step}`),
+    });
+    await revoke('p1', 'lena');
+    expect(revoked).toEqual([
+      'badges p1 lena',
+      'failed signing capability',
+      'github p1 lena',
+      'egress p1 lena',
+    ]);
+  });
 });

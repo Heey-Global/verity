@@ -225,3 +225,113 @@ it('redacts credentials from logged git output and never logs the command line',
   expect(String(detail.stderr)).toHaveLength(1000);
   expect(JSON.stringify(detail)).not.toContain('Command failed');
 });
+it('never hands out a legacy Documents view as the default repository checkout', async () => {
+  const project = { id: 'p', kind: 'github', owner: 'app', repo: 'main', cloneDir: 'project' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const store = {
+    getSession: vi.fn(async () => ({
+      projectId: 'p',
+      planning: 'implemented',
+      worktree: '/clones/project/.verity-document-sessions/view',
+    })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  // Without a branch the agent cannot tell this folder from a checkout and works in Documents.
+  await expect(service.open('s', 'd')).rejects.toMatchObject({
+    reason: 'code workspace unavailable',
+  });
+  expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+});
+
+it('keeps the Documents view as the default workspace of a local project', async () => {
+  // Recovery leaves local Documents sessions where they are; refusing them would strand them.
+  const project = { id: 'p', kind: 'local', cloneDir: 'notes' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const worktree = '/clones/notes/.verity-document-sessions/view';
+  const store = {
+    getSession: vi.fn(async () => ({ projectId: 'p', planning: 'implemented', worktree })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+  expect((await service.list('s')).repositories[0]?.workspace).toMatchObject({ worktree });
+});
+
+it.each(['github', 'local'])(
+  'refuses to expose a missing %s checkout through repository open or list',
+  async (kind) => {
+    const root = await mkdtemp(join(tmpdir(), 'missing-default-'));
+    try {
+      const project = { id: 'p', kind, cloneDir: 'project' };
+      await mkdir(join(root, 'project'));
+      await writeFile(join(root, 'project', 'index.ts'), 'export {};');
+      const repository = { id: 'd', projectId: 'p', isDefault: true };
+      const worktree = join(root, 'code-s');
+      const store = {
+        getSession: async () => ({ projectId: 'p', planning: 'implemented', worktree }),
+        getProject: async () => project,
+        getProjectRepository: async () => repository,
+        listProjectRepositories: async () => [repository],
+        listSessionRepositoryWorkspaces: async () => [],
+      } as unknown as EventStore;
+      const recoveryPending = vi.fn(async () => false);
+      const service = createSessionRepositories({
+        store,
+        cloneRoot: root,
+        sessionStorage: { hasPendingWorkspaceRecovery: recoveryPending },
+      });
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      await mkdir(worktree);
+      recoveryPending.mockResolvedValue(true);
+      // Partial restore leaves a directory without a usable checkout.
+      await expect(service.open('s', 'd')).rejects.toMatchObject({
+        reason: 'code workspace unavailable',
+      });
+      expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+      recoveryPending.mockResolvedValue(false);
+      await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it('does not expose Documents when local code exists only in the legacy sibling', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'local-sibling-'));
+  try {
+    const worktree = join(root, '.verity-document-sessions', 'view');
+    const sibling = join(root, '.verity-sessions', 'code-s');
+    await mkdir(sibling, { recursive: true });
+    await writeFile(join(sibling, 'index.ts'), 'export {};');
+    const repository = { id: 'd', projectId: 'p', isDefault: true };
+    const store = {
+      getSession: async () => ({
+        sessionId: 's',
+        projectId: 'p',
+        planning: 'implemented',
+        worktree,
+      }),
+      getProject: async () => ({ id: 'p', kind: 'local' }),
+      getProjectRepository: async () => repository,
+      listProjectRepositories: async () => [repository],
+      listSessionRepositoryWorkspaces: async () => [],
+    } as unknown as EventStore;
+    const service = createSessionRepositories({ store });
+    await expect(service.open('s', 'd')).rejects.toMatchObject({
+      reason: 'code workspace unavailable',
+    });
+    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -1,4 +1,7 @@
+import type { EventStore } from '@verity/store';
+
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
+import { personForCredential } from './personless-credential.js';
 
 /** Shown to the agent and in the transcript when a person has not connected Doppler. */
 export const DOPPLER_CONNECTION_REQUIRED_MESSAGE =
@@ -19,23 +22,24 @@ export interface DopplerCredentialSources {
   /** The instance token, which was the administrator's. */
   instance(): Promise<Buffer | undefined>;
   isAdministrator(userId: string): Promise<boolean>;
+  /** Whose credentials serve work without a person (`personForCredential`);
+   *  throws where none may. */
+  personless(projectId: string): Promise<string>;
 }
 
 /**
  * The single rule for whose Doppler token resolves a project's secrets (ADR 0023
  * §3): the person's own connection for the project; the instance token only for
  * the active administrator, whose token it was; anyone else gets a connect
- * prompt, never another person's token. `null` is a turn without a person — only
- * a pre-multi-user session or an administrator's legacy device creates one — and
- * keeps the project default, the instance token, as GitHub and signing do.
+ * prompt, never another person's token. `null` is work without a person, served
+ * as the original sandbox's person only where `personForCredential` allows it.
  */
 export function createDopplerCredentials(sources: DopplerCredentialSources) {
-  return async (userId: string | null, projectId: string): Promise<Buffer> => {
-    if (userId !== null) {
-      const own = await sources.personal(userId, projectId);
-      if (own !== undefined) return own;
-      if (!(await sources.isAdministrator(userId))) throw dopplerConnectionRequired();
-    }
+  return async (person: string | null, projectId: string): Promise<Buffer> => {
+    const userId = person ?? (await sources.personless(projectId));
+    const own = await sources.personal(userId, projectId);
+    if (own !== undefined) return own;
+    if (!(await sources.isAdministrator(userId))) throw dopplerConnectionRequired();
     const instance = await sources.instance();
     if (instance === undefined) {
       throw new DopplerSecretResolutionError(
@@ -45,6 +49,25 @@ export function createDopplerCredentials(sources: DopplerCredentialSources) {
     }
     return instance;
   };
+}
+
+/** `createDopplerCredentials` over the store, with the instance token as stored. */
+export function createStoreDopplerCredentials(store: EventStore) {
+  return createDopplerCredentials({
+    personal: (userId, projectId) => store.userDopplerConnections.tokenBytes(userId, projectId),
+    instance: () => store.getDopplerServiceTokenBytes(),
+    isAdministrator: (userId) => store.isActiveAdministrator(userId),
+    personless: async (projectId) => {
+      try {
+        return await personForCredential(store, projectId, null);
+      } catch (error) {
+        throw new DopplerSecretResolutionError(
+          `${(error as Error).message} No secret value was exposed.`,
+          'Doppler connection',
+        );
+      }
+    },
+  });
 }
 
 /** Whose connection resolves a secret: a running turn's person, or a fixed person

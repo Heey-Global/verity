@@ -128,4 +128,35 @@ describe("a person's own sandbox", () => {
       rmSync(secretRoot, { recursive: true, force: true });
     }
   });
+
+  // Only provisioning records who a project's original sandbox belongs to. A sleep
+  // sweep reaching a project that never ran one would otherwise record it first,
+  // and that record then decides whose credentials the original sandbox serves.
+  it('does not record the original sandbox when asked to put it to sleep', async () => {
+    const id = randomUUID();
+    await ctx.store.upsertProject({
+      id,
+      owner: 'example-org',
+      repo: 'example-repo',
+      containerName: 'dev-example-org-example-repo',
+      state: 'absent',
+    });
+    const { client: docker } = fakeDocker();
+    const provisioner = createProvisioner({
+      store: ctx.store,
+      db: ctx.db,
+      docker,
+      defaultImageRef: 'default',
+      hostCloneRoot: '/nonexistent',
+      gitSecretRoot: '/nonexistent',
+      dataVolumeRoot: '/nonexistent',
+      claudeConnectorPort: 47_821,
+      projectTokenMint: async () => 'server-side-token',
+      isDirectory: () => false,
+    });
+
+    await provisioner.sleepPersonalSandbox(id, '00000000-0000-4000-8000-000000000001');
+
+    expect(await ctx.store.projectSandboxes.projectDefault(id)).toBeUndefined();
+  });
 });
