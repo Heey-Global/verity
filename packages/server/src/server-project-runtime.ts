@@ -44,14 +44,10 @@ export function createServerProjectRuntime(
 ): ProjectRuntime {
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
-  // root, nothing may start work on the project or its sessions: a turn
-  // dispatched into that window writes into a worktree being deleted, and a
-  // spawn adds a session the delete has already listed. The project row cannot
-  // carry the flag — hiding it before the deprovision succeeded would take a
-  // project whose container is still running out of the overview — so the
-  // window lives here, in the process that owns both the conductor and the
-  // teardown. Both sets are cleared in the route's `finally`, so a failed
-  // teardown hands the sessions back rather than stranding them.
+  // root, turns and session spawns must not enter worktrees being deleted.
+  // Keep the window here: hiding the project row before deprovision succeeds
+  // would hide a still-running container. Both sets clear in the route's
+  // `finally`, handing sessions back after a failed teardown.
   const projectsBeingDeleted = new Set<string>();
   const sessionsBeingReaped = new Set<string>();
   // In-flight `DELETE /projects/:id`, by project id. A second request for the
@@ -86,11 +82,11 @@ export function createServerProjectRuntime(
       (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
       (sessionId === null
         ? deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+          deps.managedDevServerManager?.hasUnverifiedServers(projectId) === true ||
           (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0
         : deps.managedDevServerManager?.hasRunningSessionServers(sessionId) === true ||
           (deps.localPreviewManager?.list(sessionId).length ?? 0) > 0),
   );
-  /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {
     let finish: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
@@ -223,9 +219,7 @@ interface ProjectSandboxRuntime {
 
 export function createServerProjectSandboxRuntime(ctx: ServerContext): ProjectSandboxRuntime {
   const { app, deps, conductor, lifecycle } = ctx;
-  // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
-  // any bound session, a running dev server, or a shared preview? Used to refuse
-  // tearing a sandbox out from under them, and to name which one is waiting.
+  // Recreate and sleep share the same activity evidence.
   const projectActivity = async (
     projectId: string,
     exceptSessionIds?: ReadonlySet<string>,
@@ -237,6 +231,10 @@ export function createServerProjectSandboxRuntime(ctx: ServerContext): ProjectSa
       isTurnBusy: (sessionId) => conductor.isBusy(sessionId),
       listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
       hasLocalPreviewShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
+      hasUnverifiedDevServers: () =>
+        deps.managedDevServerManager?.hasUnverifiedServers(projectId) ?? false,
+      isShareTargetLive: (share) =>
+        deps.previewShareManager?.hasLiveTarget(share) ?? Promise.resolve(false),
       hasRunningDevServers: () =>
         deps.managedDevServerManager?.hasRunningServers(projectId) ?? false,
     });
@@ -245,8 +243,7 @@ export function createServerProjectSandboxRuntime(ctx: ServerContext): ProjectSa
     exceptSessionIds?: ReadonlySet<string>,
   ): Promise<boolean> =>
     (await projectActivity(projectId, exceptSessionIds)).observations.length > 0;
-  // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
-  // project network, deferring around in-flight turns via the same busy probe.
+  // Migrate legacy networks using the same activity barrier.
   const stopProjectRelayMigrationScheduler = startProjectRelayMigrationScheduler(
     deps,
     app.log,

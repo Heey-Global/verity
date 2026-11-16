@@ -41,10 +41,12 @@ export async function retireStoppedContainers(input: {
   withProjectMutation: (projectId: string, run: () => Promise<void>) => Promise<void>;
   now?: number;
   dryRun?: boolean;
-  /** Capacity passes only retire cache helpers, with a bounded project inventory. */
+  /** Fast reclamation passes bound both helper projects and generic candidates. */
   cacheHelpersOnly?: boolean;
   maxHelperProjects?: number;
   helperProjectOffset?: number;
+  maxStoppedContainers?: number;
+  stoppedContainerOffset?: number;
 }): Promise<{
   removed: string[];
   errors: string[];
@@ -128,16 +130,21 @@ export async function retireStoppedContainers(input: {
     }
   }
   if (input.cacheHelpersOnly) return result;
-  for (const candidate of containers) {
-    if (!stopped(candidate)) continue;
+  const candidates = containers.filter(
+    (candidate) => stopped(candidate) && !hasCacheHelperIdentity(candidate),
+  );
+  if (input.maxStoppedContainers !== undefined) candidates.sort((a, b) => a.id.localeCompare(b.id));
+  const start = candidates.length ? (input.stoppedContainerOffset ?? 0) % candidates.length : 0;
+  const batch = [...candidates.slice(start), ...candidates.slice(0, start)].slice(
+    0,
+    input.maxStoppedContainers,
+  );
+  for (const candidate of batch) {
     const projectId = candidate.labels?.[projectLabel];
     if (!projectId) {
       keep(candidate, 'No project identity; outside managed ownership');
       continue;
     }
-    // Cache helpers were reconciled under their project barrier above. Generic GC
-    // must not delete result evidence or bypass a blocked retention pass.
-    if (hasCacheHelperIdentity(candidate)) continue;
     const maintenance =
       candidate.labels?.[componentLabel] === 'storage-maintenance' &&
       candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
@@ -318,4 +325,15 @@ export async function retireCompletedHostPreparationJobs(
     removed.push(candidate.names?.[0] ?? candidate.id);
   }
   return removed;
+}
+
+/** Each capacity pass leaves time for image reclamation, while rotating later work in. */
+export function boundedContainerRetirement(cacheHelpersOnly: boolean, offset: number) {
+  return {
+    cacheHelpersOnly,
+    maxHelperProjects: 8,
+    helperProjectOffset: offset,
+    maxStoppedContainers: 8,
+    stoppedContainerOffset: offset,
+  };
 }

@@ -168,15 +168,12 @@ export {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
-  // Search projection is an eventually-consistent read model. Start/resume its
-  // bounded backfill independently of requests; live event appends schedule it too.
+  // Resume the bounded search backfill independently of requests.
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
     deps.eventStore.scheduleMessageProjection();
   }
   const { app, lifecycle, preAuthKeys } = createServerApp(deps);
-  // Resolve the conductor: a factory is called with the app logger so its
-  // background-failure sink can log through it (chicken/egg: the conductor is
-  // built before the routes, but the logger exists once `app` does).
+  // The conductor factory needs the app logger for background failures.
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
   deps.onConductorReady?.(conductor);
   const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>

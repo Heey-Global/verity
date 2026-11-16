@@ -12,6 +12,7 @@ it('creates exactly the tables and columns the runtime store declares', async ()
   const sources = [
     new URL('./schema.ts', import.meta.url),
     new URL('./schema-people.ts', import.meta.url),
+    new URL('./schema-sandbox.ts', import.meta.url),
   ].map((file) =>
     ts.createSourceFile(file.pathname, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true),
   );

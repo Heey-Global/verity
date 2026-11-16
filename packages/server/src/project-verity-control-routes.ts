@@ -6,6 +6,8 @@ const recreateContainerBody = z
   .object({
     confirmWarnings: z.boolean().optional(),
     forceRebuild: z.boolean().optional(),
+    interruptServices: z.boolean().optional(),
+    cancelTurns: z.boolean().optional(),
   })
   .optional();
 

@@ -1006,8 +1006,8 @@ it('describes what a build-capacity pass freed and what stopped containers keep'
     stoppedContainerPins: { images: 6, containers: 29, estimatedBytes: 35 * 1024 ** 3 },
   } as DockerGcReport;
   expect(describeBuildCapacityReclamation(report)).toBe(
-    'Reclamation removed 1 image(s) (about 9.0 GiB) and 0.0 GiB of build cache. ' +
-      '35.0 GiB of images stay for 29 stopped container(s).',
+    'Reclamation removed 0 container(s) and 1 image(s) (9.0 GiB apparent upper bound; exclusive layer bytes unavailable), ' +
+      'plus 0.0 GiB of build cache. Protected: 35.0 GiB apparent image bytes pinned by 29 stopped container(s).',
   );
 });
 
@@ -1061,4 +1061,90 @@ it('retires cache helpers before capacity image inventory without full maintenan
   } finally {
     scheduler.stop();
   }
+});
+
+it('retires policy-approved stopped containers before planning capacity images', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:old'], created: 100, size: 100 }),
+    ],
+    containers: [{ id: 'stopped', imageId: 'old', state: 'exited' }],
+  };
+  const docker = fakeDocker(state);
+  docker.removeImage = async () => {
+    state.images = state.images.filter((image) => image.id !== 'old');
+  };
+  docker.imageDiskUsage = async () =>
+    new Map([
+      ['new', 20],
+      ['old', 30],
+    ]);
+  const retirement = vi.fn(async () => {
+    state.containers = [];
+    return {
+      removed: ['stopped'],
+      errors: [],
+      retained: [{ name: 'protected', reason: 'Grace period' }],
+    };
+  });
+  const report = await runDockerGc(
+    deps(docker, { retireCapacityContainers: retirement, policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(retirement).toHaveBeenCalledOnce();
+  expect(report.containersRemoved).toEqual(['stopped']);
+  expect(report.imagesRemoved).toEqual(['verity-devc-example:old']);
+  expect(report.exclusiveImageLayerBytes).toBe(30);
+  expect(report.estimatedImageBytes).toBe(100);
+  expect(report.measuredFreeBytesDelta).toBe(0);
+  expect(describeBuildCapacityReclamation(report)).toContain('Retained: Grace period');
+});
+
+it('does not count image layers when removing a reference only untags it', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({
+        id: 'old',
+        repoTags: ['verity-devc-example:old', 'retained:stable'],
+        created: 100,
+        size: 100,
+      }),
+    ],
+  };
+  const docker = fakeDocker(state);
+  docker.imageDiskUsage = async () => new Map([['old', 30]]);
+  const report = await runDockerGc(
+    deps(docker, { policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(report.imagesRemoved).toContain('verity-devc-example:old');
+  expect(report.exclusiveImageLayerBytes).toBe(0);
+});
+
+it('keeps removal notifications when post-removal measurement is unavailable', async () => {
+  const docker = fakeDocker({
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:old'], created: 100 }),
+    ],
+  });
+  docker.imageDiskUsage = async () => new Map([['old', 30]]);
+  const list = docker.listImages!.bind(docker);
+  let reads = 0;
+  docker.listImages = async () => {
+    if (reads++ > 0) throw new Error('measurement unavailable');
+    return list();
+  };
+  const onProjectImageRemoved = vi.fn(async () => {});
+  const report = await runDockerGc(
+    deps(docker, { onProjectImageRemoved, policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(report.exclusiveImageLayerBytes).toBeUndefined();
+  expect(onProjectImageRemoved).toHaveBeenCalledWith({
+    ref: 'verity-devc-example:old',
+    imageId: 'old',
+  });
 });

@@ -684,6 +684,7 @@ describe('storage shutdown', () => {
 describe('storage hold', () => {
   const devServers = {
     hasRunningServers: (projectId: string) => projectId === 'p',
+    hasUnverifiedServers: () => false,
     hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
   };
   const localPreviews = {
@@ -694,6 +695,21 @@ describe('storage hold', () => {
     sessionId: string | undefined,
     publicShares: { state: string; sessionId?: string | null }[] = [],
   ) => storageHold({ projectId: 'p', sessionId, devServers, localPreviews, publicShares });
+  it('holds orphan storage while listener evidence is unavailable', () => {
+    expect(
+      storageHold({
+        projectId: 'p',
+        sessionId: undefined,
+        devServers: {
+          ...devServers,
+          hasRunningServers: () => false,
+          hasUnverifiedServers: () => true,
+        },
+        localPreviews: undefined,
+        publicShares: [],
+      }),
+    ).toBe('Managed dev server is active');
+  });
   it('holds only the serving session, any project-level share, and the orphan pass', () => {
     expect(hold('idle')).toBeUndefined();
     expect(hold('serving')).toBe('Managed dev server is active');

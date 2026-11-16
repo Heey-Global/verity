@@ -247,11 +247,75 @@ describe('managed dev servers', () => {
     await manager.start('s1', 'Demo', 'agent');
     expect(manager.hasRunningSessionServers('s1')).toBe(true);
     expect(manager.hasRunningSessionServers('s2')).toBe(false);
-    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
     await manager.stop('s1', 'Demo');
     await manager.tick();
     expect(manager.hasRunningSessionServers('s1')).toBe(false);
   });
+
+  it('expires listener evidence when supervision stops and invalidates a vanished listener', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasUnverifiedServers('p1')).toBe(false);
+    now += 6_001;
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    sandbox.listeners.splice(0);
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
+  });
+
+  it.each(['sandbox', 'sandbox--person'])(
+    'requires a fresh scan in %s rather than renewing cached listener proof',
+    async (containerName) => {
+      await manager.close();
+      manager = new ManagedDevServerManager({
+        store: ctx.store,
+        runtime: sandbox.runtime,
+        localShares: shares.local,
+        networkPorts: [8100, 8101],
+        now: () => now,
+        sandboxWorktree: (_project: ProjectRecord, worktree: string) => worktree,
+        sandboxContainer: async () => containerName,
+      });
+      await manager.add('s1', { name: 'Demo', command: 'npm run dev' });
+      await manager.start('s1', 'Demo', 'agent');
+      const run = sandbox.started[0]!;
+      sandbox.listen(run.instanceId, Number(run.env.PORT));
+      const cached = [...sandbox.listeners];
+      const scans = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
+      scans.mockImplementation(async (_project, options) =>
+        options?.fresh ? [...sandbox.listeners] : cached,
+      );
+      await manager.tick();
+      expect(manager.hasRunningServers('p1')).toBe(true);
+      expect(manager.hasVerifiedInstance(run.instanceId)).toBe(true);
+      scans.mockClear();
+      sandbox.listeners.splice(0); // npm remains alive after its server child stopped.
+      now += 2_000;
+      await manager.tick();
+      expect(manager.hasRunningServers('p1')).toBe(false);
+      expect(manager.hasVerifiedInstance(run.instanceId)).toBe(false);
+      expect(manager.hasUnverifiedServers('p1')).toBe(true);
+      expect(scans).toHaveBeenCalledWith(expect.objectContaining({ containerName }), {
+        fresh: true,
+      });
+      now += MANAGED_SILENT_LIMIT_MS + 1;
+      await manager.tick();
+      expect(await instanceOf()).toMatchObject({
+        state: 'crashed',
+        detail: 'Stopped answering on its port',
+      });
+    },
+  );
 
   it('starts an entry with its own port and reports running only once the port answers', async () => {
     await manager.add('s1', {
@@ -496,7 +560,8 @@ describe('managed dev servers', () => {
     await ctx.store.updateProjectState('p1', 'sleeping');
     await manager.start('s1', 'Demo', 'agent');
     expect(await instanceOf()).toMatchObject({ state: 'starting', detail: 'Waking sandbox…' });
-    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
     expect(wake).toHaveBeenCalledWith('p1', 's1');
     expect(sandbox.started).toHaveLength(0);
     await vi.waitFor(async () => expect((await ctx.store.getProject('p1'))?.state).toBe('active'));

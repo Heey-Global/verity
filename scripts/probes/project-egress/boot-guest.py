@@ -207,6 +207,23 @@ def setup():
     Path(data_root, 'boot-retained-marker').write_text('retained actual project data')
 
 
+def replace_when_verified(token):
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            return api('/verity-control/projects/' + descriptor()['projectId'] + '/recreate-container',
+                       {'confirmWarnings': True}, token=token, timeout=180)
+        except ValueError as error:
+            # A fresh Server must establish activity evidence before replacement.
+            cause = error.__cause__
+            if not (isinstance(cause, urllib.error.HTTPError) and cause.code == 409
+                    and 'activity could not be confirmed idle' in str(error)):
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
 def recover(replace=False):
     recover_database()
     run('systemctl', 'start', 'verity-boot-gateway.service', 'verity-boot-server.service')
@@ -224,8 +241,7 @@ def recover(replace=False):
         wait(registry_ready, 30)
         # Stopped packet registrations are immutable. Use the actual authenticated
         # replacement lifecycle rather than restarting an attested old endpoint.
-        api('/verity-control/projects/' + descriptor()['projectId'] + '/recreate-container',
-            {'confirmWarnings': True}, token=token, timeout=180)
+        replace_when_verified(token)
     else:
         run('env', 'PROJECT_EGRESS_DISPOSABLE=yes', '/usr/bin/node', '/opt/verity-fixture/boot-server.mjs', 'readmit')
     api('/projects', token=token)
