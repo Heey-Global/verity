@@ -81,7 +81,7 @@
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.1",
     "playwright": "1.65.0",
-    "prettier": "3.10.0",
+    "prettier": "3.10.1",
     "query-string": "file:vendor/expo-router-query-string",
     "react": "19.2.3",
     "react-dom": "19.2.3",
