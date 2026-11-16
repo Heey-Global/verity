@@ -118,20 +118,35 @@ export function hasConfiguredVerityBaseUrl(): boolean {
  * only), persist to AsyncStorage, and update module state. Throws if the
  * input normalizes to nothing (empty/whitespace) so a caller can't persist junk.
  */
-export async function setVerityBaseUrl(url: string): Promise<void> {
+export async function setVerityBaseUrl(
+  url: string,
+  signal?: AbortSignal,
+  onCommit?: () => void,
+): Promise<void> {
   const normalized = normalizeServerUrl(url);
   if (normalized === null) {
     throw new Error('Server URL must not be empty.');
   }
+  signal?.throwIfAborted();
+  const previous = currentBaseUrl;
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, normalized);
+    if (isDemoMode()) await exitDemoMode();
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (signal?.aborted) {
+      if (previous === null) await AsyncStorage.removeItem(STORAGE_KEY);
+      else await AsyncStorage.setItem(STORAGE_KEY, previous);
+    }
+    throw error;
+  }
+  // No asynchronous gap after the cancellation boundary: listeners observe
+  // the matching credential, profile and URL together.
+  onCommit?.();
   if (normalized !== currentBaseUrl) resetVeritySettingsStore();
   currentBaseUrl = normalized;
   configuredBaseUrl = true;
-  if (!isDemoMode()) notifyBaseUrlChanged();
-  await AsyncStorage.setItem(STORAGE_KEY, normalized);
-  if (isDemoMode()) {
-    await exitDemoMode();
-    notifyBaseUrlChanged();
-  }
+  notifyBaseUrlChanged();
 }
 
 /** Build the API client for the current base URL, or `null` when none is set.

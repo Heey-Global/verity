@@ -27,8 +27,14 @@ jest.mock('./authToken', () => ({
   adoptStoredAuthToken: jest.fn(),
   setAuthToken: (...args: unknown[]) => mockSetToken(...args),
 }));
-const mockSetBaseUrl = jest.fn(async (_url: string) => void mockCalls.push('baseUrl'));
-jest.mock('./client', () => ({ setVerityBaseUrl: (url: string) => mockSetBaseUrl(url) }));
+const mockSetBaseUrl = jest.fn(async (_url: string, signal?: AbortSignal, commit?: () => void) => {
+  signal?.throwIfAborted();
+  mockCalls.push('baseUrl');
+  commit?.();
+});
+jest.mock('./client', () => ({
+  setVerityBaseUrl: (...args: Parameters<typeof mockSetBaseUrl>) => mockSetBaseUrl(...args),
+}));
 jest.mock('./deviceLabel', () => ({ deviceLabel: () => 'Lena’s iPhone' }));
 const mockVerify = jest.fn(async (_input: unknown) => undefined);
 jest.mock('./pinnedTransport', () => ({
@@ -36,15 +42,19 @@ jest.mock('./pinnedTransport', () => ({
   verifyPairedIdentity: (input: unknown) => mockVerify(input),
 }));
 const mockProfile = { current: null as unknown };
-const mockSaveProfile = jest.fn(async (profile: unknown) => {
-  mockCalls.push('profile');
-  mockProfile.current = profile;
-});
+const mockSaveProfile = jest.fn(
+  async (profile: unknown, signal?: AbortSignal, finalize?: () => Promise<void>) => {
+    mockCalls.push('profile');
+    mockProfile.current = profile;
+    signal?.throwIfAborted();
+    await finalize?.();
+  },
+);
 const mockOthers = { current: [] as unknown[] };
 jest.mock('./serverProfile', () => ({
   getServerProfile: () => mockProfile.current,
   getOtherServerProfiles: () => mockOthers.current,
-  activateServerProfile: (profile: unknown) => mockSaveProfile(profile),
+  activateServerProfile: (...args: Parameters<typeof mockSaveProfile>) => mockSaveProfile(...args),
 }));
 const mockProgress = { current: null as unknown };
 const mockSaveProgress = jest.fn(async (value: unknown) => {
@@ -261,6 +271,8 @@ it('joins a second server next to the one the app already uses', async () => {
   // Activating keeps the previous server among the others (serverProfile.test).
   expect(mockSaveProfile).toHaveBeenCalledWith(
     expect.objectContaining({ serverId: link.serverId, sharedBy: 'Holger Teske' }),
+    expect.any(AbortSignal),
+    expect.any(Function),
   );
 });
 
@@ -390,8 +402,20 @@ it('does not adopt credentials or switch the base URL after cancellation during 
   const controller = new AbortController();
   mockSaveProfile.mockImplementationOnce(async () => {
     controller.abort();
+    controller.signal.throwIfAborted();
   });
   await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
   expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
+});
+
+it('releases terminal invitation progress so a replacement can be accepted', async () => {
+  tunnel.start.mockRejectedValueOnce(new Error('attachment failed'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toThrow();
+  admission.mockRejectedValueOnce(new TeamJoinAdmissionError('unavailable'));
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'unavailable' });
+  expect(mockProgress.current).toBeNull();
+  await expect(joinTeam({ ...link, invitationId: 'replacement' }, 'Lena', deps)).resolves.toEqual({
+    projectId: 'p1',
+  });
 });

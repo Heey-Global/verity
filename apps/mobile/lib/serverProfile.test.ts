@@ -187,4 +187,18 @@ describe('several servers', () => {
       expect(getOtherServerProfiles()).toEqual([]);
     },
   );
+  it('rolls back the profile when final URL persistence is cancelled', async () => {
+    const mine = profileFromPairing(pairing, pairing.suggestedUrl);
+    await saveServerProfile(mine);
+    await hydrateServerProfile();
+    const controller = new AbortController();
+    await expect(
+      activateServerProfile(other, controller.signal, async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      }),
+    ).rejects.toThrow();
+    await hydrateServerProfile();
+    expect(getServerProfile()?.serverId).toBe(mine.serverId);
+  });
 });

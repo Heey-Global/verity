@@ -345,6 +345,19 @@ async function joinTeamAttempt(
       }
       if (!confirmed)
         throw new Error('Membership is not confirmed yet. Your access is saved; try again.');
+    } catch (error) {
+      if (
+        error instanceof TeamJoinAdmissionError &&
+        error.code === 'unavailable' &&
+        joined === undefined
+      ) {
+        await clearTeamJoinProgress();
+        throw new TeamJoinError(
+          'unavailable',
+          'This invitation can no longer be used. Ask for a new invitation.',
+        );
+      }
+      throw error;
     } finally {
       admission.finish();
       await tunnel.stop().catch(() => undefined);
@@ -370,10 +383,12 @@ async function joinTeamAttempt(
       ...(link.display === undefined ? {} : { sharedBy: link.display.inviterName }),
     };
     // The server used so far stays known, so the app can switch back to it.
-    await activateServerProfile(profile, controller.signal);
-    controller.signal.throwIfAborted();
-    adoptStoredAuthToken(link.coreOrigin, joined.token, joined.tokenId);
-    await setVerityBaseUrl(link.coreOrigin);
+    const credential = joined;
+    await activateServerProfile(profile, controller.signal, () =>
+      setVerityBaseUrl(link.coreOrigin, controller.signal, () =>
+        adoptStoredAuthToken(link.coreOrigin, credential.token, credential.tokenId),
+      ),
+    );
     await clearTeamJoinProgress().catch(() => undefined);
     return { projectId: joined.projectId };
   } finally {

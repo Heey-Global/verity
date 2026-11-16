@@ -241,6 +241,7 @@ export function getOtherServerProfiles(): readonly VerityServerProfile[] {
 export async function activateServerProfile(
   profile: VerityServerProfile,
   signal?: AbortSignal,
+  finalize?: () => Promise<void>,
 ): Promise<void> {
   const next = validateServerProfile(profile);
   signal?.throwIfAborted();
@@ -259,8 +260,10 @@ export async function activateServerProfile(
     signal?.throwIfAborted();
     await writeOthers(others);
     signal?.throwIfAborted();
+    // Finalize the URL/credential switch within the same cancellation boundary.
+    await finalize?.();
   } catch (error) {
-    if (signal?.aborted) {
+    if (signal?.aborted || finalize !== undefined) {
       // A cancelled enrollment must restore the active profile even if its
       // keychain write completed after navigation left the joining screen.
       if (previous === null) {
