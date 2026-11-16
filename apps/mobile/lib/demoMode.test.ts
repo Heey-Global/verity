@@ -137,3 +137,25 @@ it('tolerates a failed preference read', async () => {
   await hydrateDemoMode();
   expect(isDemoMode()).toBe(false);
 });
+
+it('restores the destination credential when pairing to another server from demo mode', async () => {
+  await setVerityBaseUrl('https://previous.test');
+  await enterDemoMode();
+  await setVerityBaseUrl('https://newly-paired.test');
+  expect(isDemoMode()).toBe(false);
+  expect(getVerityBaseUrl()).toBe('https://newly-paired.test');
+  expect(restoreUnprotectedAuthToken).toHaveBeenLastCalledWith('https://newly-paired.test');
+});
+
+it('defers enrollment credential adoption until URL persistence commits when leaving demo mode', async () => {
+  await setVerityBaseUrl('https://previous.test');
+  await enterDemoMode();
+  const commit = jest.fn();
+  await setVerityBaseUrl('https://joining.test', undefined, commit);
+  expect(restoreUnprotectedAuthToken).toHaveBeenLastCalledWith('https://previous.test');
+  expect(commit).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(restoreUnprotectedAuthToken).mock.invocationCallOrder.at(-1)).toBeLessThan(
+    commit.mock.invocationCallOrder[0]!,
+  );
+  expect(getVerityBaseUrl()).toBe('https://joining.test');
+});

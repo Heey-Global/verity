@@ -131,7 +131,9 @@ export async function setVerityBaseUrl(
   const previous = currentBaseUrl;
   try {
     await AsyncStorage.setItem(STORAGE_KEY, normalized);
-    if (isDemoMode()) await exitDemoMode();
+    // Enrollment adopts its credential only at the final commit boundary.
+    // Until then demo exit must preserve the previous connection's credential.
+    if (isDemoMode()) await exitDemoMode(onCommit === undefined ? normalized : previous);
     signal?.throwIfAborted();
   } catch (error) {
     if (signal?.aborted) {
