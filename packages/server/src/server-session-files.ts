@@ -111,7 +111,7 @@ async function isDirectory(path: string): Promise<boolean> {
 }
 export function registerServerSessionFiles(
   app: FastifyInstance,
-  deps: Pick<ServerDeps, 'eventStore' | 'dataRoot' | 'projectCloneRoot'>,
+  deps: Pick<ServerDeps, 'eventStore' | 'dataRoot' | 'projectCloneRoot' | 'sessionStorage'>,
   conductor: Conductor,
 ) {
   const fileStorageRoot = (root: { root: SessionFileRootName; dir: string }) =>
@@ -260,6 +260,13 @@ export function registerServerSessionFiles(
       if (project?.kind !== 'local') {
         const legacy = legacySessionCodePath(session.worktree, session.sessionId);
         if (legacy && !deps.projectCloneRoot) return false;
+        if (
+          await deps.sessionStorage?.hasPendingWorkspaceRecovery({
+            ...session,
+            worktree: legacy ?? session.worktree,
+          })
+        )
+          return false;
         return isDirectory(legacy ?? session.worktree);
       }
       const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
@@ -297,6 +304,16 @@ export function registerServerSessionFiles(
           ? await deps.eventStore.getProject(session.projectId)
           : undefined;
         const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+        if (
+          await deps.sessionStorage?.hasPendingWorkspaceRecovery({
+            ...session,
+            worktree: legacy ?? session.worktree,
+          })
+        )
+          throw new SessionFileRootUnavailableError(
+            "This session's code workspace recovery is incomplete. Restore it to continue.",
+            409,
+          );
         if (legacy && project?.kind !== 'control_plane') {
           const entry = await lstat(legacy).catch((error: unknown) => {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;

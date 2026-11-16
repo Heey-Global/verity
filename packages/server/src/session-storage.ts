@@ -407,6 +407,22 @@ export class SessionStorage {
       return false;
     }
   }
+  /** A directory is incomplete until its durable retirement record has been cleared. */
+  async hasPendingWorkspaceRecovery(session: SessionRecord): Promise<boolean> {
+    const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
+    if (!project || project.kind === 'control_plane') return false;
+    const root = resolve(this.deps.root(project));
+    if (dirname(session.worktree) !== join(root, '.verity-sessions')) return false;
+    return lstat(this.manifest(root, session.worktree)).then(
+      () => true,
+      (error: unknown) => {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
+          return false;
+        throw error;
+      },
+    );
+  }
+
   async ensureWorkspace(session: SessionRecord): Promise<void> {
     const project = (await this.deps.listProjects()).find((p) => p.id === session.projectId);
     if (!project || project.kind === 'control_plane') return;

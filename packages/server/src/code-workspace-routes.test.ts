@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,7 @@ import { createIsolatedTestDb } from '@verity/store/testing';
 import { expect, it, vi } from 'vitest';
 import type { ServerDeps } from './server-deps.js';
 import { buildControlPlane } from './app.js';
+import { SessionStorage } from './session-storage.js';
 
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 const git = (args: string[]) =>
@@ -66,6 +68,15 @@ async function harness({
     bus: new InMemoryEventBus(),
     dataRoot,
     projectCloneRoot: configured ? cloneRoot : undefined,
+    sessionStorage: new SessionStorage({
+      listProjects: () => ctx.store.listProjects(),
+      listSessions: () => ctx.store.listSessions(),
+      root: () => clone,
+      activity: async () => null,
+      withGit: async (_, operation) => operation(async (args) => git([...args])),
+      mutate: async (_, __, operation) => operation(),
+      pr: async () => null,
+    }),
     conductor: { backend, codexBackend: backend },
     ...(sandboxGit ? { sandboxGit } : {}),
     logger: false,
@@ -76,6 +87,7 @@ async function harness({
     cwd,
     runs,
     closeSession,
+    clone,
     target: join(clone, '.verity-sessions', 'code-s'),
     close: async () => {
       await app.close();
@@ -287,6 +299,54 @@ it('uses project-authenticated Git for remote recovery rather than the host cred
     expect(remote).toHaveBeenCalledWith(
       expect.arrayContaining(['ls-remote', '--heads', 'origin', 'refs/heads/code-s']),
     );
+  } finally {
+    await h.close();
+  }
+});
+
+it('keeps a partial journal restore unavailable until recovery finishes', async () => {
+  const h = await harness({ repository: true });
+  try {
+    expect(
+      (await h.app.inject({ method: 'POST', url: '/sessions/s/code-workspace/restore' }))
+        .statusCode,
+    ).toBe(200);
+    const journalDir = join(h.clone, '.git', 'verity-storage');
+    await mkdir(journalDir, { recursive: true });
+    const journal = join(
+      journalDir,
+      `retired-${createHash('sha256').update(h.target).digest('hex')}.json`,
+    );
+    const entry = {
+      version: 1,
+      sessionId: 's',
+      path: h.target,
+      sha: '0'.repeat(40),
+      branch: 'code-s',
+      sidecar: null,
+    };
+    await writeFile(journal, JSON.stringify(entry));
+    expect(
+      (await h.app.inject({ method: 'POST', url: '/sessions/s/code-workspace/restore' }))
+        .statusCode,
+    ).toBe(409);
+    // A directory left by failed recovery must not hide Restore on the next poll.
+    for (const root of ['worktree', 'documents']) {
+      const listing = await h.app.inject({ method: 'GET', url: `/sessions/s/files?root=${root}` });
+      expect(listing.json()).toMatchObject({
+        codeAvailable: false,
+        codeWorkspaceUnavailable: true,
+      });
+    }
+    entry.sha = git(['-C', h.target, 'rev-parse', 'HEAD']).trim();
+    await writeFile(journal, JSON.stringify(entry));
+    expect(
+      (await h.app.inject({ method: 'POST', url: '/sessions/s/code-workspace/restore' }))
+        .statusCode,
+    ).toBe(200);
+    const listing = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });
+    expect(listing.json()).toMatchObject({ codeAvailable: true });
+    expect(listing.json()).not.toHaveProperty('codeWorkspaceUnavailable');
   } finally {
     await h.close();
   }
