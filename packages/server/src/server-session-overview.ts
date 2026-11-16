@@ -21,6 +21,7 @@ import { type PushFirePoints } from './push-fire-points.js';
 import { type PushRouter } from './push-router.js';
 import type { ServerDeps } from './server-deps.js';
 import type { ActivityProjection, SessionPrSummary, SessionSummary } from './server-types.js';
+import { createPrBackgroundPolicy } from './pr-background-policy.js';
 import { createSessionPrCache } from './session-pr-cache.js';
 import { createPrActivityRefresh } from './pr-activity-refresh.js';
 import {
@@ -523,6 +524,17 @@ export function createServerSessionOverview({
       resources.invalidate(`/sessions/${encodeURIComponent(session.sessionId)}/branches`);
     },
   });
+  const backgroundPr = createPrBackgroundPolicy({
+    store: deps.eventStore,
+    invalidate: (session) => {
+      invalidatePrSummaryAction(session);
+    },
+  });
+  const backgroundPrStatus = (session: SessionRecord) =>
+    sessionPrCache.get(session, {
+      background: true,
+      load: async () => ((await backgroundPr.allows(session)) ? sessionPrStatus(session) : null),
+    });
   // App-driven status refreshes cannot discover failures while every client is
   // closed. Keep repair discovery independent of push registration and presence.
   let prRepairStopped = false;
@@ -532,10 +544,14 @@ export function createServerSessionOverview({
     if (prRepairStopped || prRepairSweep !== undefined) return prRepairSweep;
     prRepairSweep = (async () => {
       if (deps.secretCipher?.isSealed() === true) return;
-      const sessions = await deps.eventStore.listSessions();
+      const allSessions = await deps.eventStore.listSessions();
+      const sessions: SessionRecord[] = [];
+      for (const session of allSessions)
+        if (await backgroundPr.allows(session)) sessions.push(session);
       for (const projectId of new Set(sessions.flatMap((s) => (s.projectId ? [s.projectId] : []))))
         await reconcileSessionRepairs(projectId);
-      const live = new Set(sessions.map((session) => session.worktree));
+      const live = new Set(allSessions.map((session) => session.worktree));
+      backgroundPr.prune(live);
       sessionPrCache.prune(live);
       prunePrSummaryCache(live);
       pruneBranchCache(live);
@@ -545,10 +561,7 @@ export function createServerSessionOverview({
           continue;
         try {
           if (!(await worktreeExists(session.worktree))) continue;
-          await maybeDispatchPrRepairTurns(
-            session,
-            await sessionPrCache.get(session, { background: true }),
-          );
+          await maybeDispatchPrRepairTurns(session, await backgroundPrStatus(session));
         } catch (err) {
           app.log.warn({ err, sessionId: session.sessionId }, 'background PR repair check failed');
         }
@@ -576,7 +589,7 @@ export function createServerSessionOverview({
   const prActivityRefresh = createPrActivityRefresh({
     refresh: async (sessionId) => {
       const session = await deps.eventStore.getSession(sessionId);
-      if (prRepairStopped || session === undefined) return;
+      if (prRepairStopped || session === undefined || !(await backgroundPr.allows(session))) return;
       invalidateBranchCache(session.worktree);
       if (!(await prMarkerEnabled(session))) {
         resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/branches`);
@@ -609,12 +622,14 @@ export function createServerSessionOverview({
             const live = await Promise.all(
               sessions.map(async (session) => ({
                 session,
-                exists: await worktreeExists(session.worktree),
+                exists:
+                  (await backgroundPr.allows(session)) && (await worktreeExists(session.worktree)),
               })),
             );
             return live.filter(({ exists }) => exists).map(({ session }) => session);
           },
-          statusFor: (session) => sessionPrCache.get(session, { background: true }),
+          statusFor: backgroundPrStatus,
+          eligible: (session) => backgroundPr.allows(session),
           wasSent: (sessionId, marker) =>
             deps.eventStore.hasSessionAutomationMarker(sessionId, marker),
           markSent: (sessionId, marker) => deps.eventStore.markSessionAutomation(sessionId, marker),
@@ -639,11 +654,16 @@ export function createServerSessionOverview({
     (deps.branchPrStatus !== undefined || deps.branchPrStatusForBranches !== undefined);
   const refreshPrSummary = async (session: SessionRecord): Promise<void> => {
     const { worktree } = session;
-    if (!(await prMarkerEnabled(session)) || prSummaryInFlight.has(worktree)) return;
+    if (
+      !(await backgroundPr.allows(session)) ||
+      !(await prMarkerEnabled(session)) ||
+      prSummaryInFlight.has(worktree)
+    )
+      return;
     const generation = prSummaryGeneration.get(worktree) ?? 0;
     prSummaryInFlight.add(worktree);
     try {
-      const status = await sessionPrCache.get(session);
+      const status = await backgroundPrStatus(session);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;
       await maybeDispatchPrRepairTurns(session, status);
       if ((prSummaryGeneration.get(worktree) ?? 0) !== generation) return;

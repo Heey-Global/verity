@@ -1,3 +1,4 @@
+import { sessionPermitsBackgroundPr } from './pr-background-policy.js';
 import { type SessionRecord } from '@verity/store';
 import { type PullRequestStatus } from './forge-provider.js';
 import { repairTurnTerminated } from './repair-supervisor.js';
@@ -135,7 +136,8 @@ export function createPrRepairTurns(
     pr: PullRequestStatus,
     repair: PullRequestRepairKind,
   ): Promise<void> => {
-    if (!repair.applies(pr)) return;
+    if (!repair.applies(pr) || !(await sessionPermitsBackgroundPr(deps.eventStore, session)))
+      return;
     const { sessionId } = session;
     const scheduledMarker = `${repair.id}:${repair.key(sessionId, pr)}`;
     if (scheduledPrRepairTurns.has(scheduledMarker)) return;
@@ -166,6 +168,7 @@ export function createPrRepairTurns(
           if (sessionsBeingReaped.has(sessionId)) return;
           const currentSession = await deps.eventStore.getSession(sessionId);
           if (!currentSession || currentSession.projectId !== session.projectId) return;
+          if (!(await sessionPermitsBackgroundPr(deps.eventStore, currentSession))) return;
           const latest = await sessionPrStatus(currentSession).catch(() => null);
           if (latest === null || !repair.applies(latest)) return;
           const initiatedBy = await deps.eventStore.latestPromptInitiator(sessionId);
@@ -259,6 +262,12 @@ export function createPrRepairTurns(
             ownsMarker = true;
             preparingRepairDispatches.add(dispatchId);
           }
+          if (!(await sessionPermitsBackgroundPr(deps.eventStore, currentSession))) {
+            if (dispatchId) await deps.eventStore.repairs.cancelReservedDispatch(dispatchId);
+            else if (ownsMarker)
+              await deps.eventStore.deleteSessionAutomationMarker(sessionId, marker);
+            return;
+          }
           dispatchAttempted = true;
           const { accepted } = await conductor.dispatchTurnWhenIdle(
             sessionId,
@@ -266,25 +275,23 @@ export function createPrRepairTurns(
             undefined,
             {
               displayPrompt: repair.displayPrompt(latest.number),
-              ...(dispatchId
-                ? {
-                    durableDispatchId: dispatchId,
-                    validateSession: async (current: SessionRecord) => {
-                      if (
-                        current.planning === 'active' ||
-                        current.projectId !== session.projectId ||
-                        !(await canExecuteAs(initiatedBy?.userId, current.projectId))
-                      )
-                        return false;
-                      const observed = await sessionPrStatus(current);
-                      return (
-                        observed !== null &&
-                        repair.applies(observed) &&
-                        repair.key(sessionId, observed) === repair.key(sessionId, latest)
-                      );
-                    },
-                  }
-                : {}),
+              ...(dispatchId ? { durableDispatchId: dispatchId } : {}),
+              validateSession: async (current: SessionRecord) => {
+                if (
+                  !(await sessionPermitsBackgroundPr(deps.eventStore, current)) ||
+                  current.planning === 'active' ||
+                  current.projectId !== session.projectId ||
+                  !(await canExecuteAs(initiatedBy?.userId, current.projectId))
+                )
+                  return false;
+                const observed = await sessionPrStatus(current);
+                return (
+                  observed !== null &&
+                  repair.applies(observed) &&
+                  repair.key(sessionId, observed) === repair.key(sessionId, latest) &&
+                  (await sessionPermitsBackgroundPr(deps.eventStore, current))
+                );
+              },
               ...(initiatedBy ? { initiatedBy } : {}),
             },
           );
