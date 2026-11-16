@@ -159,3 +159,21 @@ it('defers enrollment credential adoption until URL persistence commits when lea
   );
   expect(getVerityBaseUrl()).toBe('https://joining.test');
 });
+
+it.each([null, 'https://previous.test'])(
+  'restores the previous persisted URL when demo exit fails before enrollment commits: %s',
+  async (previous) => {
+    if (previous !== null) await setVerityBaseUrl(previous);
+    await enterDemoMode();
+    const commit = jest.fn();
+    jest
+      .mocked(AsyncStorage.removeItem)
+      .mockRejectedValueOnce(new Error('Demo preference unavailable'));
+    await expect(setVerityBaseUrl('https://joining.test', undefined, commit)).rejects.toThrow(
+      'Demo preference unavailable',
+    );
+    expect(await AsyncStorage.getItem('verity.serverUrl')).toBe(previous);
+    expect(commit).not.toHaveBeenCalled();
+    expect(isDemoMode()).toBe(true);
+  },
+);

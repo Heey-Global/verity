@@ -136,10 +136,8 @@ export async function setVerityBaseUrl(
     if (isDemoMode()) await exitDemoMode(onCommit === undefined ? normalized : previous);
     signal?.throwIfAborted();
   } catch (error) {
-    if (signal?.aborted) {
-      if (previous === null) await AsyncStorage.removeItem(STORAGE_KEY);
-      else await AsyncStorage.setItem(STORAGE_KEY, previous);
-    }
+    if (previous === null) await AsyncStorage.removeItem(STORAGE_KEY);
+    else await AsyncStorage.setItem(STORAGE_KEY, previous);
     throw error;
   }
   // No asynchronous gap after the cancellation boundary: listeners observe
