@@ -601,3 +601,43 @@ it('queues removal when a pending join is revoked after its commit answer was lo
       ?.payload,
   ).toMatchObject({ membershipRef: person.team_membership_ref, reason: 'membership_removed' });
 });
+
+it.each(['expired', 'authority', 'unshareable'])(
+  'rechecks %s invitation conditions before rebinding a saved admission',
+  async (changed) => {
+    const created = await invite();
+    await redeem(created.secret);
+    if (changed === 'expired')
+      await ctx.db
+        .updateTable('project_invitations')
+        .set({ expires_at: new Date(0) })
+        .execute();
+    if (changed === 'authority')
+      await ctx.db
+        .updateTable('project_memberships')
+        .set({ can_manage: false })
+        .where('user_id', '=', ADMIN)
+        .execute();
+    if (changed === 'unshareable')
+      await ctx.db
+        .updateTable('projects')
+        .set({ kind: 'control_plane' })
+        .where('id', '=', 'p1')
+        .execute();
+    await expect(
+      team().admitJoin({
+        sessionId: 'resume-invalid',
+        invitationId: 'inv-1',
+        redemptionId: 'r1',
+        projectId: 'p1',
+        permissions: ['read', 'execute'],
+      }),
+    ).resolves.toBe('refused');
+    const original = await ctx.db
+      .selectFrom('team_join_admissions')
+      .select('session_id')
+      .where('redemption_id', '=', 'r1')
+      .executeTakeFirstOrThrow();
+    expect(original.session_id).toBe('session-r1');
+  },
+);

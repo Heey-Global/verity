@@ -419,3 +419,21 @@ it('releases terminal invitation progress so a replacement can be accepted', asy
     projectId: 'p1',
   });
 });
+
+it.each([new Error('Uplink unreachable'), new TeamJoinAdmissionError('unavailable')])(
+  'finishes with the saved bearer through pinned Core when bootstrap recovery fails: %s',
+  async (failure) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    admission.mockRejectedValueOnce(failure);
+    mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+    await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+    expect(mockJoin).toHaveBeenCalledTimes(1);
+    expect(tunnel.start).toHaveBeenCalledTimes(1);
+    expect(mockRemote).not.toHaveBeenCalled();
+  },
+);

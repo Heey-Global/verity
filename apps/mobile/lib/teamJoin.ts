@@ -172,18 +172,25 @@ async function joinTeamAttempt(
     dataUrl.pathname = '/data';
     let joined = progress.credential;
     const recoveryExpiresAt = progress.recoveryExpiresAt ?? progress.admission.expiresAt;
-    const useDirect = joined !== undefined && recoveryExpiresAt <= Date.now();
+    let useDirect = joined !== undefined && recoveryExpiresAt <= Date.now();
     try {
       // Recovery never redeems an invitation after the device credential was saved.
       if (joined !== undefined) {
         if (recoveryExpiresAt > Date.now()) {
-          admission = await (deps.admission ?? requestTeamJoinAdmission)({
-            uplinkOrigin: link.uplinkOrigin,
-            installationHandle: link.installationHandle,
-            invitationId: link.invitationId,
-            redemptionId: progress.admission.redemptionId,
-            signal: controller.signal,
-          });
+          try {
+            admission = await (deps.admission ?? requestTeamJoinAdmission)({
+              uplinkOrigin: link.uplinkOrigin,
+              installationHandle: link.installationHandle,
+              invitationId: link.invitationId,
+              redemptionId: progress.admission.redemptionId,
+              signal: controller.signal,
+            });
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            // The saved bearer can finish against pinned Core even if the
+            // short-lived bootstrap attachment is unavailable.
+            useDirect = true;
+          }
         }
       } else if (
         Math.min(link.expiresAt, saved === null ? admission.expiresAt : recoveryExpiresAt) <=

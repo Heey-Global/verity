@@ -335,8 +335,15 @@ export class ProjectTeamStore {
         (row.state === 'open' ||
           (row.state === 'redeemed' && row.redemption_id === input.redemptionId)) &&
         row.project_id === input.projectId &&
+        row.expires_at.getTime() > now.getTime() &&
+        (await this.managesProject(tx, row.project_id, row.inviter_user_id)) &&
         input.permissions.join(',') === (row.can_execute ? ['read', 'execute'] : ['read']).join(',')
       ) {
+        try {
+          await this.requireShareable(tx, row.project_id);
+        } catch {
+          return 'refused';
+        }
         input.signal?.throwIfAborted();
         await tx
           .updateTable('team_join_admissions')
