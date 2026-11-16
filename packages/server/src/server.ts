@@ -1,3 +1,5 @@
+import { createServerAuthority } from './server-authority.js';
+import { createServerAutomations } from './server-automations.js';
 import { createServerModels } from './server-models.js';
 import { createServerScheduling } from './server-scheduling.js';
 import { installRemoteControl } from './server-remote-control.js';
@@ -20,12 +22,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
-import type { AssistantToolDeps } from './assistant-tool.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerAuditRoutes } from './audit-routes.js';
-import { createAutomationExecutor } from './automation-executor.js';
-import { registerAutomationRoutes } from './automation-routes.js';
-import { startAutomationScheduler } from './automation-scheduler.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import { registerBackupRoutes } from './backup/routes.js';
 import {
@@ -123,7 +121,6 @@ import type { ProjectDeleteOutcome, PublicProjectRecord } from './server-types.j
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { emitSessionEvent } from './session-event-writer.js';
-import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerViewStateRoutes } from './view-state-routes.js';
@@ -139,7 +136,6 @@ import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
-  ProjectNotReadyError,
   isProjectSessionModel,
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
@@ -577,159 +573,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     (conductor as { drainOnShutdown?: () => Promise<void> }).drainOnShutdown?.(),
   );
 
-  // Session automations (ADR 0008): a recurring prompt bound to one ordinary
-  // session. Prompt-only runs need nothing but the conductor, which wakes a
-  // sleeping project for the turn itself; only a check script needs the
-  // project container directly.
-  const canExecuteAs = async (userId: string | null | undefined, projectId: string | null) => {
-    if (!userId) return deps.authRegistry?.isEnabled() !== true;
-    return (
-      projectId !== null &&
-      (await deps.eventStore.hasProjectPermission(userId, projectId, 'execute'))
-    );
-  };
-  // The user a running turn executes for: the `initiatedBy` on the prompt that opened it.
-  // `undefined` when the turn is not the session's running one or has no initiator.
-  const runningTurnInitiator = async (
-    sessionId: string,
-    turnId: string,
-  ): Promise<{ userId: string } | undefined> => {
-    const running = (await deps.eventStore.listRunningTurns()).find(
-      (t) => t.sessionId === sessionId,
-    );
-    if (running?.turnId !== turnId) return undefined;
-    const prompt = (await deps.eventStore.getEventsAfter(sessionId, running.promptSeq - 1, 1)).find(
-      (event) => event.seq === running.promptSeq,
-    )?.event;
-    return prompt?.t === 'prompt' ? prompt.initiatedBy : undefined;
-  };
-  // The assistant acts for the user behind its running turn, and only in granted projects.
-  // Reading and filing tasks follow the project routes, where administrators count as
-  // readers. Handing off starts a turn, so it needs the same execute permission as
-  // `canExecuteAs`, which every later tool call of that turn is checked against.
-  const assistantToolDeps: AssistantToolDeps = {
-    eventStore: deps.eventStore,
-    initiator: runningTurnInitiator,
-    permitted: async (userId, projectId, permission) => {
-      if (userId === undefined) return deps.authRegistry?.isEnabled() !== true;
-      if (permission === 'execute') return canExecuteAs(userId, projectId);
-      return (
-        (await deps.eventStore.isActiveAdministrator(userId)) ||
-        (await deps.eventStore.hasProjectPermission(userId, projectId, 'read'))
-      );
-    },
-    administrator: async (userId) =>
-      userId === undefined
-        ? deps.authRegistry?.isEnabled() !== true
-        : deps.eventStore.isActiveAdministrator(userId),
-  };
-  const automationExecutor = createAutomationExecutor({
-    isAuthorized: async (automation, session) => {
-      try {
-        return await canExecuteAs(automation.sponsorUserId, session.projectId);
-      } catch {
-        return false;
-      }
-    },
-    isCurrent: async (automation, snapshot) => {
-      const current = await deps.eventStore.getSessionAutomation(automation.sessionId);
-      const session = await deps.eventStore.getSession(automation.sessionId);
-      return (
-        current?.id === automation.id &&
-        current.status === 'enabled' &&
-        current.sponsorUserId === (automation.sponsorUserId ?? null) &&
-        session?.projectId === snapshot.projectId &&
-        session.worktree === snapshot.worktree
-      );
-    },
-    getSession: (sessionId) => deps.eventStore.getSession(sessionId),
-    getProject: (projectId) => deps.eventStore.getProject(projectId),
-    prepareProject: async (project) => {
-      if (project.state === 'active') return project;
-      if (
-        (project.state === 'sleeping' || project.state === 'waking') &&
-        deps.provisioner?.ensureProjectSandboxAwake
-      ) {
-        return deps.provisioner.ensureProjectSandboxAwake(project.id);
-      }
-      throw new ProjectNotReadyError();
-    },
-    beginProjectActivity: (projectId) => {
-      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(projectId) === false) return undefined;
-      return () => deps.provisioner?.endProjectSandboxActivity?.(projectId);
-    },
-    ...(deps.projectRuntime?.runAutomationScript && deps.projectCloneRoot
-      ? {
-          runScript: async ({ script, project, session, automation }) => {
-            const runtime = deps.projectRuntime;
-            const cloneRoot = deps.projectCloneRoot;
-            if (!runtime?.runAutomationScript || !cloneRoot) {
-              throw new Error('Check scripts are not available on this server.');
-            }
-            const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(
-              project.id,
-            );
-            try {
-              if (!(await canExecuteAs(automation.sponsorUserId, project.id)))
-                throw new Error('revoked');
-            } catch {
-              throw new ControlPlaneSessionAuthorityError(
-                'The automation sponsor no longer has execution permission.',
-              );
-            }
-            return runtime.runAutomationScript(
-              project,
-              settings ?? emptyProjectSettings(project.id),
-              {
-                workdir: containerPathFor(session.worktree, projectClonePath(cloneRoot, project)),
-                script,
-                timeoutMs: 120_000,
-                maxOutputBytes: 64 * 1024,
-              },
-            );
-          },
-        }
-      : {}),
-    appendNotice: async (sessionId, text) => {
-      await deps.eventStore.appendEvent(sessionId, { t: 'notice', text, role: 'agent' });
-    },
-    dispatchTurnWhenIdle: async (
-      sessionId,
-      prompt,
-      { model, displayPrompt, validateSession, initiatedBy },
-    ) =>
-      // A run that fires while the session's project is being torn down would
-      // start a turn against a worktree the purge is removing. Report it as not
-      // accepted; by the next slot the session is gone or usable again.
-      sessionsBeingReaped.has(sessionId)
-        ? { accepted: false }
-        : conductor.dispatchTurnWhenIdle(sessionId, prompt, model ? { model } : {}, {
-            displayPrompt,
-            validateSession,
-            ...(initiatedBy ? { initiatedBy } : {}),
-          }),
-    isModelAllowed: async (model, session) =>
-      session.projectId === null
-        ? (await availableModels()).models.includes(model)
-        : (await isConfiguredProjectSessionModel(model)) &&
-          (await projectAgentRejection(model, session.projectId)) === undefined,
-    // A sealed secret store or a project that is still being set up is not the
-    // automation's fault; those slots are skipped rather than counted toward the
-    // pause after repeated failures.
-    isSkippableError: (error) =>
-      error instanceof SealedError ||
-      error instanceof ProjectNotReadyError ||
-      error instanceof ControlPlaneSessionAuthorityError,
-  });
-
-  const automationScheduler = startAutomationScheduler({
-    store: deps.eventStore,
-    run: (automation) => automationExecutor.run(automation),
-    log: app.log,
-  });
-  lifecycle.onClose(() => {
-    automationScheduler.stop();
-  });
+  const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
+  const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
   const vulnerabilityService = createVulnerabilityScanService({
     logFailure: (data) => app.log.warn(data, 'verity: vulnerability scan job failed'),
@@ -1263,22 +1108,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
   registerMockupRoutes(app, { mockups: sessionMockups });
-  registerAutomationRoutes(app, {
-    eventStore: deps.eventStore,
-    checkScript: (automation) => automationExecutor.checkScript(automation),
-    // The same rules a turn's model must pass, checked once when the operator
-    // confirms rather than on every unattended run.
-    validateModel: async (model, session) => {
-      if (session.projectId !== null) {
-        if (!(await isConfiguredProjectSessionModel(model))) return PROJECT_MODEL_ERROR;
-        return (await projectAgentRejection(model, session.projectId)) ?? null;
-      }
-      return (await availableModels()).models.includes(model)
-        ? null
-        : 'That model is not available on this server.';
-    },
-    onAutomationsChanged: () => automationScheduler.wake(),
-  });
+  automations.installRoutes();
 
   registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
   registerProjectDnsRoute(app, { resolveDirect: deps.projectEgressResolve });
@@ -1407,12 +1237,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
+  const models = createServerModels(ctx);
   const {
     availableModels,
     projectAgentRejection,
     projectDefaultModel,
     isConfiguredProjectSessionModel,
-  } = createServerModels(ctx);
+  } = models;
 
   const {
     sharedProject,
