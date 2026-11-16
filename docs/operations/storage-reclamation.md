@@ -100,7 +100,11 @@ Entries are grouped by their path on the volume:
 The walk counts allocated blocks, counts a file with several hard links once,
 never follows symbolic links and does not enter another filesystem mounted
 inside the volume. A root that disappears or is replaced during a round starts
-the round over. The totals are estimates of a tree that changes while it is
+the round over. An entry or directory the Server cannot read, such as a
+sandbox-private home, is counted as unreadable and its contents are left out;
+the breakdown and the capacity sentence state how many. After 500,000 files with
+several hard links the walk stops remembering them and marks the breakdown
+approximate. The totals are estimates of a tree that changes while it is
 measured. They cover only the data volume: Docker images, containerd, native
 BuildKit and host paths such as Egress staging or host CI runners are not part
 of it. Runtime diagnostics expose the latest breakdown and the progress of the

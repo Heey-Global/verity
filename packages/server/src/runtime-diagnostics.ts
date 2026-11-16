@@ -193,6 +193,8 @@ const storageReclamationSchema = z.object({
           observedAt: timestamp,
           durationMs: number,
           entries: number,
+          unreadable: number,
+          approximate: z.boolean(),
           categories: z.record(z.string().max(40), number),
           regenerableBytes: number,
           protectedBytes: number,

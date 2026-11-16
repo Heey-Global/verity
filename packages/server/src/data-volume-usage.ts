@@ -40,6 +40,10 @@ const TIME_BUDGET_MS = 20_000;
 /** Spacing of the follow-up runs while a round is unfinished. */
 const CONTINUE_AFTER_MS = 15 * 60_000;
 const UNKNOWN_SHOWN = 10;
+/** Multi-link files remembered per round; beyond it they may be counted twice. */
+const LINKED_LIMIT = 500_000;
+/** Errors that leave one entry unmeasured without invalidating the round. */
+const SKIPPED = ['EACCES', 'EPERM', 'ELOOP', 'EIO', 'ENAMETOOLONG'];
 
 /** Category of a path given as segments relative to the volume root. */
 export function classifyDataVolumePath(segments: readonly string[]): Category {
@@ -81,6 +85,10 @@ export interface DataVolumeBreakdown {
   /** Run time spent on the round, excluding the pauses between runs. */
   durationMs: number;
   entries: number;
+  /** Directories and entries that could not be read; their contents are not counted. */
+  unreadable: number;
+  /** True when more multi-link files existed than were remembered: totals may count some twice. */
+  approximate: boolean;
   categories: Record<Category, number>;
   regenerableBytes: number;
   protectedBytes: number;
@@ -100,6 +108,8 @@ interface Round {
   startedAt: number;
   durationMs: number;
   entries: number;
+  unreadable: number;
+  approximate: boolean;
   categories: Record<Category, number>;
   unknown: Map<string, number>;
   /** `dev:ino` of files with several links, so each is counted once. */
@@ -134,8 +144,10 @@ export class DataVolumeUsage {
       entryBudget?: number;
       /** 0 disables continuation runs. */
       continueAfterMs?: number;
-      /** Test seam for filesystems a test cannot mount. */
+      /** Test seams for filesystems and permissions a test cannot create. */
       lstat?: typeof lstat;
+      readdir?: (path: string) => Promise<string[]>;
+      linkedLimit?: number;
     },
   ) {}
 
@@ -208,6 +220,8 @@ export class DataVolumeUsage {
         startedAt: started,
         durationMs: 0,
         entries: 0,
+        unreadable: 0,
+        approximate: false,
         categories: emptyCategories(),
         unknown: new Map(),
         linked: new Set(),
@@ -226,15 +240,16 @@ export class DataVolumeUsage {
       const top = round.stack[round.stack.length - 1]!;
       if (top.names === undefined) {
         try {
-          top.names = (await readdir(top.path)).sort();
+          top.names = (await (this.deps.readdir ?? readdir)(top.path)).sort();
         } catch (error) {
           // Removed or replaced since it was listed: nothing left to count. A
           // vanished root is not an empty volume; the round starts over.
-          if (
-            top.segments.length === 0 ||
-            !['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
-          )
+          const code = (error as NodeJS.ErrnoException).code ?? '';
+          if (top.segments.length === 0 || ![...SKIPPED, 'ENOENT', 'ENOTDIR'].includes(code))
             throw error;
+          // An unreadable directory, such as a sandbox-private home, is reported
+          // as unmeasured instead of discarding the whole round.
+          if (SKIPPED.includes(code)) round.unreadable++;
           round.stack.pop();
           continue;
         }
@@ -256,15 +271,18 @@ export class DataVolumeUsage {
       try {
         stat = await (this.deps.lstat ?? lstat)(path);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        throw error;
+        const code = (error as NodeJS.ErrnoException).code ?? '';
+        if (SKIPPED.includes(code)) round.unreadable++;
+        else if (code !== 'ENOENT') throw error;
+        continue;
       }
       // Another filesystem mounted inside the volume is not the volume.
       if (stat.dev !== round.device) continue;
       if (!stat.isDirectory() && stat.nlink > 1) {
         const key = `${stat.dev}:${stat.ino}`;
         if (round.linked.has(key)) continue;
-        round.linked.add(key);
+        if (round.linked.size < (this.deps.linkedLimit ?? LINKED_LIMIT)) round.linked.add(key);
+        else round.approximate = true;
       }
       const bytes = stat.blocks * 512;
       const category = classifyDataVolumePath(segments);
@@ -299,6 +317,8 @@ export class DataVolumeUsage {
       observedAt: new Date(at).toISOString(),
       durationMs: round.durationMs,
       entries: round.entries,
+      unreadable: round.unreadable,
+      approximate: round.approximate,
       categories: { ...round.categories },
       regenerableBytes: sum(REGENERABLE),
       protectedBytes: sum(PROTECTED),
@@ -326,7 +346,10 @@ export function describeDataVolumeCapacity(
   const text =
     ` Data volume as of ${usage.observedAt}: ${gib(usage.regenerableBytes)} regenerable` +
     ` (dependencies and caches), ${gib(usage.protectedBytes)} protected` +
-    ` (sources, history, homes, knowledge), ${gib(usage.unknownBytes)} unattributed.`;
+    ` (sources, history, homes, knowledge), ${gib(usage.unknownBytes)} unattributed` +
+    (usage.approximate ? ', approximate' : '') +
+    (usage.unreadable > 0 ? `; ${String(usage.unreadable)} unreadable entries not measured` : '') +
+    '.';
   if (
     shortfallBytes === undefined ||
     shortfallBytes <= 0 ||

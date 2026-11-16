@@ -171,6 +171,43 @@ describe('data volume usage', () => {
     expect(breakdown.categories.knowledge).toBe(0);
   });
 
+  // A sandbox-private directory the Server cannot read used to discard every
+  // round, leaving refusals at "not yet complete" for good.
+  it('reports unreadable entries as unmeasured and still finishes the round', async () => {
+    const f = fixture();
+    const denied = (path: string) =>
+      Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
+    const homes = join(f.root, 'runners/p/session-homes/h/.claude');
+    const turn = join(f.root, LAYOUT.turns);
+    const usage = new DataVolumeUsage({
+      root: f.root,
+      continueAfterMs: 0,
+      readdir: async (path) => {
+        if (path === homes) throw denied(path);
+        return (await import('node:fs/promises')).readdir(path);
+      },
+      lstat: (async (path: string) => {
+        if (path === turn) throw denied(path);
+        return lstat(path);
+      }) as typeof lstat,
+    });
+    const breakdown = await complete(usage);
+    expect(breakdown.unreadable).toBe(2);
+    expect(breakdown.categories.turns).toBeGreaterThan(0); // its directories still count
+    expect(usage.describe()).toContain('2 unreadable entries not measured');
+  });
+
+  it('marks the breakdown approximate once it stops remembering hard links', async () => {
+    const f = fixture();
+    const exact = await complete(new DataVolumeUsage({ root: f.root, continueAfterMs: 0 }));
+    expect(exact.approximate).toBe(false);
+    const bounded = await complete(
+      new DataVolumeUsage({ root: f.root, continueAfterMs: 0, linkedLimit: 0 }),
+    );
+    expect(bounded.approximate).toBe(true);
+    expect(bounded.categories.dependencies).toBeGreaterThan(exact.categories.dependencies);
+  });
+
   it('continues an unfinished round on its own and stops for shutdown', async () => {
     const f = fixture();
     const usage = new DataVolumeUsage({ root: f.root, entryBudget: 5, continueAfterMs: 5 });
@@ -224,6 +261,8 @@ describe('data volume capacity description', () => {
     observedAt: '2026-11-16T01:00:00.000Z',
     durationMs: 1,
     entries: 1,
+    unreadable: 0,
+    approximate: false,
     categories: {
       dependencies: regenerable,
       preservedDependencies: 0,

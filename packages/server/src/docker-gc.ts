@@ -1004,8 +1004,6 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
 
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
-/** One line for a build that is still refused after a build-capacity pass: what
- *  the pass freed, and what it had to keep, so a retry is not the only advice. */
 /** The bounded projection of a pass that runtime diagnostics expose. */
 export function dockerGcDiagnostics(report: DockerGcReport) {
   return {
@@ -1020,6 +1018,8 @@ export function dockerGcDiagnostics(report: DockerGcReport) {
   };
 }
 
+/** One line for a build that is still refused after a build-capacity pass: what
+ *  the pass freed, and what it had to keep, so a retry is not the only advice. */
 export function describeBuildCapacityReclamation(report: DockerGcReport): string {
   const layers =
     report.exclusiveImageLayerBytes === undefined
