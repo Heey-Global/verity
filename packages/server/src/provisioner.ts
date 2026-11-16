@@ -849,6 +849,7 @@ export interface LinkCloneToGitHubResult {
 
 export interface ProvisionerOptions {
   sandboxUpdateRecovery?: {
+    prepare?(): Promise<void>;
     capture(
       projectId: string,
     ): Promise<() => Promise<{ state: 'ready' | 'failed'; detail: string }>>;
@@ -900,9 +901,14 @@ export interface ProvisionerOptions {
   onSandboxWakeFallback?:
     ((event: { projectId: string; reason: SandboxWakeFallbackReason }) => void) | undefined;
   /** Fail-closed hook for generation-bound dependants such as public previews.
-   * Runs after validation/warnings but before the old sandbox is mutated. */
+   * Run beforeRetire under drained fences before mutating any dependant or sandbox. */
   withContainerReplace?:
-    (<T>(project: ProjectRecord, mutation: () => Promise<T>) => Promise<T>) | undefined;
+    | (<T>(
+        project: ProjectRecord,
+        mutation: () => Promise<T>,
+        beforeRetire?: () => Promise<void>,
+      ) => Promise<T>)
+    | undefined;
   /** Default image ref (centrally pinned, §19.5) for projects without an
    *  explicit `image_ref` override. */
   defaultImageRef: ProjectImageRefSource;
@@ -5268,9 +5274,7 @@ export class ProvisionerImpl implements Provisioner {
     opts: RecreateContainerOptions,
   ): Promise<ProjectRecord> {
     const project = await this.opts.store.getProject(projectId);
-    if (project === undefined) {
-      throw new ProvisioningError('project gone mid-recreate');
-    }
+    if (project === undefined) throw new ProvisioningError('project gone mid-recreate');
     const automatic =
       opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
     const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
@@ -5279,7 +5283,6 @@ export class ProvisionerImpl implements Provisioner {
       await this.sandboxRepairIntentWrites;
       throw new ProvisioningError('Automatic repair no longer authorized by project state');
     }
-
     if (!(opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile')) {
       this.forgetSandboxRepairIntent(projectId);
       await this.sandboxRepairIntentWrites;
@@ -5291,19 +5294,14 @@ export class ProvisionerImpl implements Provisioner {
     if (project.state === 'absent') {
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
     }
-
     // Reject missing protection infrastructure before retiring a usable Sandbox.
     await this.egressFor();
-
     const warning = await this.devcontainerWarningForProject(project);
     if (warning !== null && opts.confirmWarnings !== true) {
       throw new ProvisioningWarning([warning]);
     }
-
-    // A cacheless devcontainer build can take minutes. Complete it while the
-    // current container is still serving traffic; only retire that container
-    // after the replacement image exists. Keep that result: resolving again
-    // bypasses tag reuse for repository-root contexts and builds a second time.
+    // Build while the old container serves traffic; retain the result because resolving
+    // repository-root contexts again bypasses tag reuse and repeats the cacheless build.
     let containerPhaseOpts = opts;
     let rebuiltImage: ProjectImage | undefined;
     if (opts.forceRebuild === true) {
@@ -5323,9 +5321,8 @@ export class ProvisionerImpl implements Provisioner {
           process.env.VERITY_REGISTRY_AUTH,
         ]);
         const message = `devcontainer build failed: ${detail}`;
-        // The warning outlives this attempt until a later container start, and
-        // automatic retries do not replace it. Stamp it so it cannot be read as
-        // the outcome of whatever attempt is running when it is shown.
+        // Automatic retries retain this warning until a later container start.
+        // Timestamp it so it cannot be mistaken for a newer attempt's outcome.
         await this.opts.store.updateProjectState(
           project.id,
           project.state,
@@ -5338,7 +5335,6 @@ export class ProvisionerImpl implements Provisioner {
     }
     let containerPhaseStarted = false;
     let replacementStarted = false;
-
     // Prepare and pin the replacement while the current sandbox still serves traffic.
     // Registry failures must not strand it, and moved tags must not be resolved twice.
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
@@ -5366,9 +5362,10 @@ export class ProvisionerImpl implements Provisioner {
       ]);
       throw new ProvisioningError(`replacement image preparation failed: ${detail}`, cause);
     }
-
     let checkRecovery: (() => Promise<{ state: 'ready' | 'failed'; detail: string }>) | undefined;
     const replace = async (): Promise<ProjectRecord> => {
+      if (this.opts.sandboxUpdateRecovery && !checkRecovery)
+        throw new ProvisioningError('Service recovery capture must finish before replacement');
       this.resolveRelayClaudeGateway(project);
       const egress = await this.egressFor();
       await this.ensureSandboxRuntime(
@@ -5450,16 +5447,17 @@ export class ProvisionerImpl implements Provisioner {
         (this.sandboxReplacementGenerations.get(project.id) ?? 0) + 1,
       );
       await stopAndRemoveExistingContainer(this.opts.docker, project.containerName);
-
-      // Reuse the image prepared before retirement; retain forcePull's locking contract.
       containerPhaseStarted = true;
       return this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
     };
     try {
-      checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
+      await this.opts.sandboxUpdateRecovery?.prepare?.();
+      const capture = async () => {
+        checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
+      };
       const updated = await (this.opts.withContainerReplace
-        ? this.opts.withContainerReplace(project, replace)
-        : replace());
+        ? this.opts.withContainerReplace(project, replace, capture)
+        : capture().then(replace));
       if (checkRecovery)
         await this.sandboxUpdateTracker.checkRecovery(
           (this.opts.store as Partial<EventStore>).sandboxUpdateState,
@@ -5495,7 +5493,6 @@ export class ProvisionerImpl implements Provisioner {
       this.retiringSandboxes.delete(project.id);
     }
   }
-
   async provisionWarnings(projectId: string): Promise<string[]> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return [];

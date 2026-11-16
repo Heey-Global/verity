@@ -803,7 +803,6 @@ export class PreviewShareManager {
     }
   }
 
-  /** Validation must not revoke a public link for a move that will be refused. */
   async beginSessionMove(projectId: string): Promise<() => void> {
     return await this.acquireLifecycleLocks([`project:${projectId}`]);
   }
@@ -841,34 +840,35 @@ export class PreviewShareManager {
 
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
-      for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
-        if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.state !== 'active') {
-          await this.stop(share.id);
-          continue;
-        }
-        try {
-          await this.replaceConnector(share, true);
-        } catch (error) {
-          if (
-            typeof error !== 'object' ||
-            error === null ||
-            !removedUnreadyConnectorFailures.has(error)
-          )
-            throw error;
-          // The offline page is a courtesy to visitors, not a precondition of the
-          // mutation. A connector the edge refuses (an unknown share answers 404)
-          // failed every Repair of the project before its container was created.
-          // replaceConnector has already removed both connectors, so the link is
-          // simply unreachable until reconcile() brings one up again.
-          this.options.log?.warn(
-            { shareId: share.id, projectId, err: error },
-            'public preview stays unreachable during the project change: its offline connector did not start',
-          );
-        }
-      }
+      await this.retireProjectShares(projectId);
       return mutation();
     });
+  }
+
+  /** Call only while this project's lifecycle fence is held. */
+  async retireProjectShares(projectId: string): Promise<void> {
+    for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
+      if (!ACTIVE_STATES.includes(share.state)) continue;
+      if (share.state !== 'active') {
+        await this.stop(share.id);
+        continue;
+      }
+      try {
+        await this.replaceConnector(share, true);
+      } catch (error) {
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !removedUnreadyConnectorFailures.has(error)
+        )
+          throw error;
+        // An unavailable offline page must not prevent project repair.
+        this.options.log?.warn(
+          { shareId: share.id, projectId, err: error },
+          'public preview stays unreachable during the project change: its offline connector did not start',
+        );
+      }
+    }
   }
 
   async withDevServerMutation<T>(devServerId: string, mutation: () => Promise<T>): Promise<T> {

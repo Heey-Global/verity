@@ -20,16 +20,30 @@ export function createSandboxUpdateRecovery(input: {
 }) {
   const now = input.now ?? Date.now;
   const wait = input.wait ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  async function bounded<T>(work: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Service recovery capture deadline exceeded')),
+            input.timeoutMs ?? 120_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   return {
+    // Reconciliation can acquire preview lifecycle locks; prepare before fencing.
+    prepare: (): Promise<void> => bounded(Promise.resolve(input.local()?.reconcile())),
     async capture(
       this: void,
       projectId: string,
     ): Promise<() => Promise<SandboxUpdateRecoveryResult>> {
       const capture = async (): Promise<() => Promise<SandboxUpdateRecoveryResult>> => {
-        await input
-          .local()
-          ?.reconcile()
-          .catch(() => undefined);
         const instances = (
           await input.store.managedDevServers.listInstances({ projectId, desired: 'running' })
         ).filter(
@@ -122,20 +136,7 @@ export function createSandboxUpdateRecovery(input: {
           }
         };
       };
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          capture(),
-          new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(
-              () => reject(new Error('Service recovery capture deadline exceeded')),
-              input.timeoutMs ?? 120_000,
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      return bounded(capture());
     },
   };
 }

@@ -537,14 +537,18 @@ export class LocalPreviewManager {
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     const release = await this.beginSessionMove(projectId);
     try {
-      for (const share of this.listProject(projectId)) {
-        const port = this.portOf(share.id);
-        await this.release(share.id);
-        if (port !== undefined) this.reserved.add(port);
-      }
+      await this.retireProjectShares(projectId);
       return await mutation();
     } finally {
       release();
+    }
+  }
+  /** Call only while this project's mutation fence is held. */
+  async retireProjectShares(projectId: string): Promise<void> {
+    for (const share of this.listProject(projectId)) {
+      const port = this.portOf(share.id);
+      await this.release(share.id);
+      if (port !== undefined) this.reserved.add(port);
     }
   }
   async beginSessionMove(projectId: string): Promise<() => void> {

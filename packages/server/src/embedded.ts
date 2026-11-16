@@ -1,3 +1,4 @@
+import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
 import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { DeprovisionerImpl } from './deprovisioner.js';
@@ -1417,15 +1418,14 @@ export async function buildEmbeddedServer(
   const withPreviewProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
-  ): Promise<T> => {
-    const runPublic = () =>
-      previewShareManager
-        ? previewShareManager.withProjectMutation(projectId, mutation)
-        : mutation();
-    return localPreviewManager
-      ? localPreviewManager.withProjectMutation(projectId, runPublic)
-      : runPublic();
-  };
+    beforeRetire?: () => Promise<void>,
+  ): Promise<T> =>
+    mutatePreviewProject(
+      projectId,
+      mutation,
+      { local: localPreviewManager, public: previewShareManager },
+      beforeRetire,
+    );
   const withStorageProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
@@ -2909,9 +2909,11 @@ export async function buildEmbeddedServer(
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
-      withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
-        withPreviewProjectMutation(project.id, mutation),
-      // Per-project volume subpaths avoid sibling host-path knowledge.
+      withContainerReplace: <T>(
+        project: ProjectRecord,
+        mutation: () => Promise<T>,
+        beforeRetire?: () => Promise<void>,
+      ) => withPreviewProjectMutation(project.id, mutation, beforeRetire),
       ...(config.dataVolume !== undefined ? { dataVolume: config.dataVolume } : {}),
       ...(config.dataVolumeRoot !== undefined ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
       ...(config.runnerSupervisor !== undefined
@@ -2923,9 +2925,7 @@ export async function buildEmbeddedServer(
       ...(config.runnerSupervisorTrustedDefaultImage !== undefined
         ? { runnerSupervisorTrustedDefaultImage: config.runnerSupervisorTrustedDefaultImage }
         : {}),
-      // Sandbox runtime hardening (security review C1). Pass-through of the tunables;
-      // the provisioner applies the hardened defaults (CapDrop ALL, no-new-privileges,
-      // PidsLimit) whether or not these are set.
+      // Provisioner enforces hardened defaults for unset runtime limits.
       ...(config.sandboxPidsLimit !== undefined
         ? { sandboxPidsLimit: config.sandboxPidsLimit }
         : {}),

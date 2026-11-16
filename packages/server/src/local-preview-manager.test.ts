@@ -1,3 +1,4 @@
+import { withPreviewProjectMutation } from './preview-project-mutation.js';
 import { DockerError } from './docker.js';
 import { observeProjectActivity } from './project-idle-sleep.js';
 import { createSandboxUpdateRecovery } from './sandbox-update-recovery.js';
@@ -990,4 +991,129 @@ it('clears uncertain restore evidence when Docker confirms the sandbox is absent
   expect(restored.hasProjectShares('p1')).toBe(false);
   expect(restored.liveProjectShares('p1')).toEqual([]);
   expect(restored.list('s1')).toEqual([share]);
+});
+
+it('captures a concurrent public creation under both preview fences before retiring connectors', async () => {
+  const { manager, options } = fixture();
+  const localShare = await manager.create('s1', { targetPort: 3000 });
+  let publicShare: { id: string; state: string } | undefined;
+  let online = false;
+  Object.assign(options.store, {
+    listPublicPreviewShares: async () => (publicShare ? [publicShare] : []),
+    getPublicPreviewShare: async () => publicShare,
+    managedDevServers: { listInstances: async () => [] },
+  });
+  const publicManager = new PreviewShareManager({
+    ...options,
+    edge: {
+      create: async () => {
+        throw new Error('unused edge');
+      },
+      remove: async () => {},
+    },
+  });
+  let finishCreation!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const creationDone = new Promise<void>((resolve) => {
+    finishCreation = resolve;
+  });
+  // Retain the manager's real project lifecycle lock around a delayed creation.
+  vi.spyOn(
+    publicManager as unknown as { createTimed: () => Promise<unknown> },
+    'createTimed',
+  ).mockImplementation(async () => {
+    entered();
+    await creationDone;
+    publicShare = { id: 'late-public', state: 'active' };
+    online = true;
+    return publicShare;
+  });
+  vi.spyOn(publicManager, 'isOnline').mockImplementation(async () => online);
+  vi.spyOn(
+    publicManager as unknown as { replaceConnector: () => Promise<void> },
+    'replaceConnector',
+  ).mockImplementation(async () => {
+    online = false;
+  });
+  vi.spyOn(publicManager, 'reconcile').mockResolvedValue(undefined);
+  const creating = publicManager.create({ projectId: 'p1', pin: '123456', ttlSeconds: 3600 });
+  await started;
+  const recovery = createSandboxUpdateRecovery({
+    store: options.store,
+    local: () => manager,
+    public: () => publicManager,
+    devServers: () => undefined,
+    timeoutMs: 5,
+    pollMs: 1,
+  });
+  await recovery.prepare();
+  vi.spyOn(manager, 'reconcile').mockImplementation(async () => {
+    await publicManager.beginSessionMove('p1').then((release) => release());
+  });
+  const capture = vi.fn(async () => {
+    expect(manager.liveProjectShares('p1').map((share) => share.id)).toEqual([localShare.id]);
+    expect(online).toBe(true);
+    return recovery.capture('p1');
+  });
+  let check: Awaited<ReturnType<typeof recovery.capture>> | undefined;
+  const replacing = withPreviewProjectMutation(
+    'p1',
+    async () => {
+      expect(manager.liveProjectShares('p1')).toEqual([]);
+      expect(online).toBe(false);
+    },
+    { local: manager, public: publicManager },
+    async () => {
+      check = await capture();
+    },
+  );
+  await Promise.resolve();
+  expect(capture).not.toHaveBeenCalled();
+  finishCreation();
+  await creating;
+  await replacing;
+  expect(capture).toHaveBeenCalledOnce();
+  expect(await check!()).toMatchObject({
+    state: 'failed',
+    detail: expect.stringContaining('Public preview late-public is offline'),
+  });
+  // Recovery reconciliation reacquires the fence after replacement releases it.
+  const release = await publicManager.beginSessionMove('p1');
+  release();
+});
+
+it('releases both fences without retiring serving shares when recovery capture fails', async () => {
+  const { manager, options, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  Object.assign(options.store, { listPublicPreviewShares: async () => [] });
+  const publicManager = new PreviewShareManager({
+    ...options,
+    edge: {
+      create: async () => {
+        throw new Error('unused edge');
+      },
+      remove: async () => {},
+    },
+  });
+  const replace = vi.fn(async () => {});
+  await expect(
+    withPreviewProjectMutation(
+      'p1',
+      replace,
+      { local: manager, public: publicManager },
+      async () => {
+        throw new Error('identity capture failed');
+      },
+    ),
+  ).rejects.toThrow('identity capture failed');
+  expect(replace).not.toHaveBeenCalled();
+  expect(docker.removeContainer).not.toHaveBeenCalled();
+  expect(manager.liveProjectShares('p1').map((entry) => entry.id)).toEqual([share.id]);
+  const releaseLocal = await manager.beginSessionMove('p1');
+  const releasePublic = await publicManager.beginSessionMove('p1');
+  releasePublic();
+  releaseLocal();
 });

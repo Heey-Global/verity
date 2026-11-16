@@ -132,11 +132,16 @@ it('bounds a stalled pre-replacement capture without retiring the sandbox', asyn
   });
   const recovery = createSandboxUpdateRecovery({
     store: {
-      managedDevServers: { listInstances: async () => [] },
+      managedDevServers: {
+        listInstances: async () => {
+          await blocked;
+          return [];
+        },
+      },
       listPublicPreviewShares: async () => [],
     } as unknown as EventStore,
     devServers: () => undefined,
-    local: () => ({ reconcile: () => blocked }) as never,
+    local: () => undefined,
     public: () => undefined,
     timeoutMs: 5,
   });
@@ -153,4 +158,17 @@ it('rejects cached pre-replacement liveness when fresh discovery fails', async (
     state: 'failed',
     detail: expect.stringContaining('replacement discovery failed'),
   });
+});
+
+it('propagates preparation failures before stale local evidence can be captured', async () => {
+  const reconcile = vi.fn(async () => {
+    throw new Error('preview store unavailable');
+  });
+  const recovery = createSandboxUpdateRecovery({
+    store: {} as EventStore,
+    devServers: () => undefined,
+    local: () => ({ reconcile }) as never,
+    public: () => undefined,
+  });
+  await expect(recovery.prepare()).rejects.toThrow('preview store unavailable');
 });

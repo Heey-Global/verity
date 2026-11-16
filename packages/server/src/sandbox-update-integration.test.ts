@@ -316,3 +316,51 @@ it.each(['sleeping', 'absent'] as const)(
     expect((await ctx.store.sandboxUpdateState.list()).has('p')).toBe(false);
   },
 );
+
+it('prepares outside the mutation fence, captures before retirement and checks after release', async () => {
+  const events: string[] = [];
+  const f = await fixture(12, 0, {
+    sandboxUpdateRecovery: {
+      prepare: async () => {
+        events.push('prepare');
+      },
+      capture: async () => {
+        expect(events).toEqual(['prepare', 'fenced']);
+        events.push('capture');
+        return async () => {
+          expect(events).toEqual(['prepare', 'fenced', 'capture', 'retire', 'released']);
+          return { state: 'ready', detail: 'ready' };
+        };
+      },
+    },
+    withContainerReplace: async (_project, replace, beforeRetire) => {
+      events.push('fenced');
+      try {
+        await beforeRetire?.();
+        events.push('retire');
+        return await replace();
+      } finally {
+        events.push('released');
+      }
+    },
+  });
+  f.provisioner.attachProjectBusyProbe(async () => []);
+  await f.provisioner.recreateContainer('p');
+  expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state).toBe('ready');
+});
+
+it('refuses a legacy replacement hook that skips recovery capture before retiring the sandbox', async () => {
+  const capture = vi.fn(async () => async () => ({ state: 'ready' as const, detail: 'ready' }));
+  const f = await fixture(12, 0, {
+    sandboxUpdateRecovery: { capture },
+    withContainerReplace: async (_project, replace) => replace(),
+  });
+  f.provisioner.attachProjectBusyProbe(async () => []);
+  await expect(f.provisioner.recreateContainer('p')).rejects.toThrow(
+    'Service recovery capture must finish before replacement',
+  );
+  expect(capture).not.toHaveBeenCalled();
+  expect(
+    f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+  ).toBe(false);
+});
