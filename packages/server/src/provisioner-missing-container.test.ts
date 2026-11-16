@@ -1,8 +1,15 @@
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { createTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import type { ProjectState } from '@verity/store';
+import { DeprovisionerImpl } from './deprovisioner.js';
 import { DockerError } from './docker.js';
-import { CONTAINER_MISSING_REASON, MISSING_CONTAINER_REPAIR_GRACE_MS } from './project-state.js';
+import { SANDBOX_REPAIR_RETRY_MIN_MS } from './project-relay-migration.js';
+import {
+  CONTAINER_MISSING_REASON,
+  MISSING_CONTAINER_REPAIR_GRACE_MS,
+  PROJECT_TEARDOWN_REASON,
+  reconcileProjectContainerStates,
+} from './project-state.js';
 import {
   createProvisioner,
   defaultProjectRelay,
@@ -73,6 +80,60 @@ it.each([
 ] as const)('leaves %s alone', async (_, state, reason, elapsed) => {
   const project = await seed(state, reason);
   const provisioner = provisionerWithoutContainer(elapsed);
+  const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
+  await provisioner.reconcileRelays([project]);
+  expect(recreate).not.toHaveBeenCalled();
+});
+
+it('persists a failed missing-container repair and waits for its retry deadline', async () => {
+  const project = await seed('failed', CONTAINER_MISSING_REASON);
+  const now = Date.now() + MISSING_CONTAINER_REPAIR_GRACE_MS + 1;
+  const time = vi.spyOn(Date, 'now').mockReturnValue(now);
+  try {
+    const provisioner = provisionerWithoutContainer(0);
+    const recreate = vi
+      .spyOn(provisioner, 'recreateContainer')
+      .mockRejectedValue(new Error('create failed'));
+    await expect(provisioner.reconcileRelays([project])).rejects.toThrow('Relay migration failed');
+    const [intent] = await ctx.store.sandboxRepairIntents.list();
+    expect(intent).toMatchObject({ projectId: 'p', status: 'waiting', failures: 1 });
+    expect(intent!.retryAt.getTime()).toBe(now + SANDBOX_REPAIR_RETRY_MIN_MS);
+    // An unchanged missing reason must not admit a second recreate before its backoff.
+    await provisioner.reconcileRelays([project]);
+    expect(recreate).toHaveBeenCalledTimes(1);
+    time.mockReturnValue(intent!.retryAt.getTime());
+    await expect(provisioner.reconcileRelays([project])).rejects.toThrow('Relay migration failed');
+    expect(recreate).toHaveBeenCalledTimes(2);
+  } finally {
+    time.mockRestore();
+  }
+});
+
+it('preserves teardown intent after a revocation failure instead of recreating the container', async () => {
+  await seed('active');
+  const { client } = fakeDocker();
+  const revokeProject = vi.fn(async () => {
+    throw new Error('revocation unavailable');
+  });
+  const deprovisioner = new DeprovisionerImpl(
+    ctx.store,
+    ctx.db,
+    client,
+    '/unused',
+    () => false,
+    undefined,
+    { revokeProject } as unknown as ConstructorParameters<typeof DeprovisionerImpl>[6],
+  );
+  await expect(deprovisioner.deprovision('p', { purge: false })).rejects.toThrow(
+    'credential revocation failed',
+  );
+  const project = (await ctx.store.getProject('p'))!;
+  expect(project).toMatchObject({ state: 'failed', provisionError: PROJECT_TEARDOWN_REASON });
+  // Docker's running/absent observations must not erase an interrupted deletion, even after restart.
+  const updateState = vi.fn(ctx.store.updateProjectState.bind(ctx.store));
+  await reconcileProjectContainerStates([project], client, updateState);
+  expect(updateState).not.toHaveBeenCalled();
+  const provisioner = provisionerWithoutContainer(MISSING_CONTAINER_REPAIR_GRACE_MS * 10);
   const recreate = vi.spyOn(provisioner, 'recreateContainer').mockResolvedValue(project);
   await provisioner.reconcileRelays([project]);
   expect(recreate).not.toHaveBeenCalled();

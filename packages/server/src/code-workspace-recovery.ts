@@ -49,6 +49,10 @@ export function describeCodeWorkspaceFailure(error: unknown): Record<string, unk
   };
 }
 
+/** A symlinked or relocated clone root names the same directory by another path. */
+const same = async (a: string, b: string): Promise<boolean> =>
+  a === b || (await realpath(a).catch(() => a)) === (await realpath(b).catch(() => b));
+
 /** Where the converted session's code came from, in the order they are tried. */
 export type CodeWorkspaceSource = 'adopted' | 'journal' | 'branch' | 'origin' | 'fresh';
 
@@ -185,7 +189,15 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     const admin = join(clone, '.git', 'worktrees', basename(target));
     const gitdir = await readFile(join(admin, 'gitdir'), 'utf8').catch(() => null);
     // The entry must name this very checkout, never another one that shares its name.
-    if (gitdir === null || resolve(admin, gitdir.trim()) !== join(target, '.git')) return;
+    if (gitdir === null) return;
+    // The checkout is gone, so only its parent can be compared by real path.
+    const named = resolve(admin, gitdir.trim());
+    if (
+      basename(named) !== '.git' ||
+      basename(dirname(named)) !== basename(target) ||
+      !(await same(dirname(dirname(named)), dirname(target)))
+    )
+      return;
     if (await exists(target)) return;
     await rm(admin, { recursive: true, force: true });
   }
@@ -264,9 +276,6 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       !(await hasCodeContent(clone))
     )
       return null;
-    // A symlinked or relocated clone root names the same directory by another path.
-    const same = async (a: string, b: string) =>
-      a === b || (await realpath(a).catch(() => a)) === (await realpath(b).catch(() => b));
     if (!target || !(await same(dirname(target), join(clone, '.verity-sessions'))))
       throw new CodeWorkspaceUnavailableError(
         `${session.worktree} is outside project ${projectId}'s clone`,
@@ -346,11 +355,20 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     if (converted) return { restored: true, ...converted };
     const session = await deps.store.getSession(sessionId);
     if (!session || (await exists(session.worktree))) return { restored: false };
-    await deps.ensureWorkspace(session);
-    if (!(await exists(session.worktree)))
+    // The turn's own journal restore may win the race; the checkout being back is what counts.
+    const failure = await deps.ensureWorkspace(session).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    if (!(await exists(session.worktree))) {
+      if (failure !== undefined)
+        throw failure instanceof Error
+          ? failure
+          : new Error('workspace restore failed', { cause: failure });
       throw new CodeWorkspaceUnavailableError(
         `${session.worktree} is missing and has no recovery record`,
       );
+    }
     return { restored: true, worktree: session.worktree, source: 'journal' };
   }
 

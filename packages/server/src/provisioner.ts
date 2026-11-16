@@ -232,7 +232,7 @@ import {
   SANDBOX_REPAIR_RETRY_MAX_MS,
   SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
-import { owesMissingContainerRepair } from './project-state.js';
+import { automaticSandboxRepairAllowed, owesMissingContainerRepair } from './project-state.js';
 
 export interface ProjectRelayControl {
   start(binding: ProjectRelayBinding): Promise<ProjectRelayActivation>;
@@ -4589,8 +4589,7 @@ export class ProvisionerImpl implements Provisioner {
     // and is asked again on the next one.
     await this.restoreSandboxRepairIntents().catch((error: unknown) => failures.push(error));
     // Each project owns its own relay, network and container, so the migrations are
-    // independent: the shared bookkeeping below is keyed per project. Bounded concurrency
-    // keeps a fleet repair to its slowest batches while capping container creates.
+    // independent, with bookkeeping keyed per project and bounded container creates.
     // A repair resumes only where its own failure or a vanished container left the project; any
     // other state was chosen since, and an automatic recreate must not overrule it.
     const currentProjects = await Promise.all(
@@ -4603,6 +4602,7 @@ export class ProvisionerImpl implements Provisioner {
     const pending = currentProjects.filter(
       (project) =>
         project.kind !== 'control_plane' &&
+        automaticSandboxRepairAllowed(project) &&
         (project.state === 'active' ||
           (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id)) ||
           owesMissingContainerRepair(project, (this.opts.now ?? Date.now)())),
@@ -5319,7 +5319,7 @@ export class ProvisionerImpl implements Provisioner {
     const automatic =
       opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
     const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
-    if (automatic && !['active', 'failed'].includes(project.state)) {
+    if (automatic && !automaticSandboxRepairAllowed(project)) {
       this.forgetSandboxRepairIntent(projectId);
       await this.sandboxRepairIntentWrites;
       throw new ProvisioningError('Automatic repair no longer authorized by project state');
@@ -5444,7 +5444,7 @@ export class ProvisionerImpl implements Provisioner {
         const latestProject = await this.opts.store.getProject(project.id);
         if (
           !latestProject ||
-          !['active', 'failed'].includes(latestProject.state) ||
+          !automaticSandboxRepairAllowed(latestProject) ||
           (latestProject.imageOverrideRef ?? (await this.defaultImageRef())) !==
             automaticIntent.targetImageRef
         ) {

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import {
@@ -255,6 +255,13 @@ describe('legacy Documents session conversion', () => {
       source: 'journal',
     });
     expect(existsSync(f.target)).toBe(true);
+    // A turn's own journal restore can win the race and fail this one; the checkout is back.
+    rmSync(f.target, { recursive: true, force: true });
+    vi.mocked(f.deps.ensureWorkspace).mockImplementation(async (session) => {
+      mkdirSync(session.worktree, { recursive: true });
+      throw new Error('already restored by the turn');
+    });
+    await expect(recovery.restore('s')).resolves.toMatchObject({ restored: true });
   });
 
   it('leaves a local Documents project without commits in its Documents view', async () => {
@@ -357,6 +364,18 @@ describe('legacy Documents session conversion', () => {
     ]);
     rmSync(f.target, { recursive: true, force: true });
     // Git still lists the checkout and refuses its branch until that one entry goes.
+    const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
+    expect(result?.source).toBe('branch');
+    expect(head(f.target)).toBe('code-s');
+  });
+
+  it('also drops a stale entry whose gitdir Git recorded relative to it', async () => {
+    const f = fixture();
+    git(['-C', f.clone, 'worktree', 'add', '-qb', 'code-s', f.target, 'main']);
+    git(['-C', f.clone, 'worktree', 'lock', f.target]);
+    const admin = join(f.clone, '.git', 'worktrees', 'code-s');
+    writeFileSync(join(admin, 'gitdir'), `${relative(admin, join(f.target, '.git'))}\n`);
+    rmSync(f.target, { recursive: true, force: true });
     const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
     expect(result?.source).toBe('branch');
     expect(head(f.target)).toBe('code-s');

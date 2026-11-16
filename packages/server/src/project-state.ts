@@ -53,13 +53,24 @@ export async function reconcileProjectContainerStates(
 export const CONTAINER_STOPPED_REASON = 'Sandbox container stopped — Repair to restart it.';
 export const CONTAINER_MISSING_REASON = 'Sandbox container is missing — Repair to recreate it.';
 
-/** Longer than any deprovision teardown, which removes the container before the row
- *  becomes `absent`: within it a missing container may be one being torn down. */
+/** Persisted before teardown removes resources; reconciliation must not undo that intent. */
+export const PROJECT_TEARDOWN_REASON = 'Project teardown started — retry deletion to finish it.';
+
+export function automaticSandboxRepairAllowed(
+  project: Pick<ProjectRecord, 'state' | 'provisionError'>,
+): boolean {
+  return (
+    ['active', 'failed'].includes(project.state) &&
+    project.provisionError !== PROJECT_TEARDOWN_REASON
+  );
+}
+
+/** Let transient provisioning and state observations settle before automatic repair. */
 export const MISSING_CONTAINER_REPAIR_GRACE_MS = 15 * 60_000;
 
 /**
  * A Sandbox whose container vanished outside Verity: the state poll marked it, and the
- * mark has outlasted any teardown. Nothing else would ever recreate it, so the relay
+ * mark has outlasted the observation grace period. Nothing else would ever recreate it, so the relay
  * reconciler does, with its usual backoff; the manual Repair the reason names remains.
  */
 export function owesMissingContainerRepair(
@@ -102,7 +113,8 @@ async function reconcileProject(
   recoverInterruptedSleep?: (projectId: string) => Promise<ProjectRecord>,
   recoverInterruptedWake?: (projectId: string) => Promise<ProjectRecord>,
 ): Promise<ProjectRecord> {
-  if (project.kind === 'control_plane') return project;
+  if (project.kind === 'control_plane' || project.provisionError === PROJECT_TEARDOWN_REASON)
+    return project;
 
   if (project.state === 'cloning' || project.state === 'container_starting') {
     // Age off `stateChangedAt`, NOT `updatedAt`. Every writer that touches the
