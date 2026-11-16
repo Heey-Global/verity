@@ -282,6 +282,7 @@ export function installProjects(
     // the status is `converging` and the failure is plainly an earlier one.
     const failure = status.state === 'current' ? undefined : verdicts.lastFailures?.get(project.id);
     const scheduledTonight =
+      !unrepaired &&
       status.state === 'available' &&
       durable?.reasons.length &&
       durable.reasons.every((reason) => reason === 'dev_server' || reason === 'preview');

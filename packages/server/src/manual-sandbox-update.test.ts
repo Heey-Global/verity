@@ -115,6 +115,7 @@ it('reports overdue blockers immediately and does not reuse recovery from an old
     containerName: id,
     state: 'active',
   });
+  let exhausted = false;
   let status: SandboxUpdateStatus = { ...AVAILABLE_SANDBOX_UPDATE };
   let durable = {
     since: Date.now() - 25 * 60 * 60_000,
@@ -134,7 +135,11 @@ it('reports overdue blockers immediately and does not reuse recovery from an old
       status: async () => status,
       statusAll: async (projects) => new Map(projects.map((project) => [project.id, status])),
     },
-    provisioner: { provision: vi.fn(), sandboxUpdateStates: () => new Map([[id, durable]]) },
+    provisioner: {
+      provision: vi.fn(),
+      sandboxUpdateStates: () => new Map([[id, durable]]),
+      unrepairedSandboxes: () => new Set(exhausted ? [id] : []),
+    },
   });
   try {
     const response = await server.inject({ method: 'GET', url: `/projects/${id}` });
@@ -147,6 +152,13 @@ it('reports overdue blockers immediately and does not reuse recovery from an old
       overdue: true,
     });
     expect(update.recovery).toBeUndefined();
+    exhausted = true;
+    const stopped = (await server.inject({ method: 'GET', url: `/projects/${id}` })).json<{
+      project: { sandboxUpdate: SandboxUpdateStatus };
+    }>().project.sandboxUpdate;
+    expect(stopped.scheduledTonight).toBeUndefined();
+    expect(stopped.selfRepair).toBe('stalled');
+    exhausted = false;
     durable = { ...durable, reasons: [] };
     status = { ...status, state: 'current' };
     const current = (await server.inject({ method: 'GET', url: `/projects/${id}` })).json<{
