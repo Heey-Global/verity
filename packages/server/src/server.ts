@@ -1,3 +1,9 @@
+import {
+  createServerPush,
+  createServerPushRuntime,
+  startServerPush,
+  registerPushShutdown,
+} from './server-push.js';
 import { registerServerShutdownDrain, createServerQueueRecovery } from './server-queue-recovery.js';
 import { createServerAgentCredentials, createServerUsage } from './server-agent-credentials.js';
 import {
@@ -23,7 +29,6 @@ import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
-import type { SessionRecord } from '@verity/store';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
@@ -53,7 +58,6 @@ import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
-import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -62,11 +66,8 @@ import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
-import { createPushRouter, type PushRouter } from './push-router.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
-import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { registerServerSessionFiles } from './server-session-files.js';
@@ -208,21 +209,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     hasMeetingJob: (sessionId) => hasMeetingJob(sessionId),
     vulnerabilityService: () => vulnerabilityService,
   });
-  const pushSender =
-    typeof deps.pushSender === 'function' ? deps.pushSender(app.log) : deps.pushSender;
-  const describePushSession = async (session: SessionRecord): Promise<PushSessionContext> => {
-    const project = session.projectId
-      ? await deps.eventStore.getProject(session.projectId).catch(() => undefined)
-      : undefined;
-    return {
-      ...(project ? { project: `${project.owner}/${project.repo}` } : {}),
-      session: session.name?.trim() || `Session ${session.sessionId.slice(0, 8)}`,
-    };
-  };
-  const describePushSessionById = async (sessionId: string): Promise<PushSessionContext> => {
-    const session = await deps.eventStore.getSession(sessionId);
-    return session ? describePushSession(session) : {};
-  };
+  const { pushSender, describePushSession, describePushSessionById } = createServerPush(app, deps);
   const resources = new ResourceObserver();
   lifecycle.onClose(() => resources.close());
   const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
@@ -246,73 +233,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     deleteSession: createSessionDeletion({ app, deps }),
   };
   registerLiveSessionHints(app, ctx);
-  const pushRouter: PushRouter | undefined =
-    pushSender === undefined
-      ? undefined
-      : createPushRouter({
-          sender: pushSender,
-          presence: liveHub,
-          store: deps.eventStore,
-          logger: app.log,
-          ...(deps.pushEscalationMs === undefined ? {} : { escalationMs: deps.pushEscalationMs }),
-        });
-  lifecycle.onClose(() => {
-    pushRouter?.close();
-  });
-  const pushFirePoints: PushFirePoints | undefined =
-    pushRouter === undefined
-      ? undefined
-      : createPushFirePoints({
-          router: pushRouter,
-          logger: app.log,
-          describeSession: describePushSessionById,
-          getEvents: (sessionId) => deps.eventStore.getEvents(sessionId),
-          ...(deps.pushFirePointDebounceMs === undefined
-            ? {}
-            : { debounceMs: deps.pushFirePointDebounceMs }),
-        });
-  // Wiki maintenance runs in a quiet session per project that no list shows and
-  // that never notifies anyone; its results surface only as proposals to review.
-  // Filled from the store when the server is ready and as sessions are created.
-  const wikiMaintenanceSessions = new Set<string>();
-  const unsubscribePushFirePoints =
-    pushFirePoints === undefined
-      ? undefined
-      : deps.bus.subscribeAll((sessionId, event) => {
-          if (!wikiMaintenanceSessions.has(sessionId)) pushFirePoints.observe(sessionId, event);
-        });
+  const { pushRouter, pushFirePoints, wikiMaintenanceSessions, unsubscribePushFirePoints } =
+    createServerPushRuntime(app, ctx, { describePushSessionById });
   const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });
-  // Built here rather than in `embedded.ts` because this is where the single
-  // long-lived PushSender exists: a second instance would poll Expo receipts in
-  // parallel with this one, and the notifier needs delivery, not its own fleet.
-  //
-  // Absent without push (nothing to announce with), without a resolver (nothing
-  // to announce), without a controller (`POST /server/updates` answers 503, so the
-  // announcement would name an action this deployment cannot perform — the same
-  // mistake as announcing `incompatible`), or without a state path — see the dep's
-  // own note for why the last one disables it rather than defaulting.
-  const updateResolver = deps.serverUpdateResolver;
-  const updateController = deps.serverUpdateController;
-  const notifierStatePath = deps.serverUpdateNotifierStatePath;
-  const serverUpdateNotifier =
-    pushSender === undefined ||
-    updateResolver === undefined ||
-    updateController === undefined ||
-    notifierStatePath === undefined
-      ? undefined
-      : createServerUpdateNotifier({
-          resolve: () => updateResolver.resolve(),
-          // The same overlay `GET /server/updates` applies: availability alone
-          // reports no operation, so without this the notifier would announce a
-          // release while that release is being installed.
-          readOperation: () => updateController.readOperation(),
-          notify: (notification) => pushSender.send(notification),
-          statePath: notifierStatePath,
-          log: (message, error) =>
-            error === undefined ? app.log.info(message) : app.log.warn({ err: error }, message),
-        });
-  pushSender?.start();
-  serverUpdateNotifier?.start();
+  const serverUpdateNotifier = startServerPush(app, ctx);
   const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
     liveTickets.revokeDevice(deviceId);
     liveHub.revokeDevice(deviceId);
@@ -321,14 +245,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     detachStreamRevocation?.();
   });
 
-  lifecycle.onClose(async () => {
-    unsubscribePushFirePoints?.();
-    // Awaited, and before the sender it pushes through: a check still in flight
-    // would otherwise resolve the channel and send into a closing PushSender.
-    await serverUpdateNotifier?.close();
-    await pushFirePoints?.close();
-    await stopVulnerabilityPush();
-    await pushSender?.close();
+  registerPushShutdown(ctx, {
+    unsubscribePushFirePoints,
+    serverUpdateNotifier,
+    pushFirePoints,
+    stopVulnerabilityPush: () => stopVulnerabilityPush(),
   });
   registerServerShutdownDrain(ctx);
 
