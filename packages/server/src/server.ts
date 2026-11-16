@@ -1,3 +1,4 @@
+import { createServerAgentCredentials, createServerUsage } from './server-agent-credentials.js';
 import {
   createServerProjectRuntime,
   createServerProjectSandboxRuntime,
@@ -21,22 +22,14 @@ import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
-import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
-import { SealedError } from '@verity/store';
+import type { SessionRecord } from '@verity/store';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerAuditRoutes } from './audit-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import { registerBackupRoutes } from './backup/routes.js';
-import {
-  createClaudeOAuthTokenProvider,
-  createClaudeUsageService,
-  type ClaudeOAuthTokenProvider,
-} from './claudeUsage.js';
-import { createCodexUsageService } from './codexUsage.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import { registerGitSignRoute } from './git-sign-route.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
@@ -121,7 +114,6 @@ import {
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
   SERVER_VERSION,
-  hasVeritySettingsStore,
   veritySettingsStore,
   projectSettingsStore,
   isSleepLifecycleState,
@@ -412,36 +404,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const { projectActivity, isProjectBusy } = createServerProjectSandboxRuntime(ctx);
-  const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
-    const persist = async (): Promise<void> => {
-      if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-      await veritySettingsStore(deps.eventStore).updateVeritySettings(patch);
-    };
-    if (deps.persistAgentCredentials !== undefined) {
-      await deps.persistAgentCredentials(patch, persist);
-    } else {
-      await persist();
-    }
-  };
-  const persistPersonal = (
-    userId: string,
-    provider: ProviderConnectionKind,
-    write: () => Promise<void>,
-  ): Promise<void> => deps.persistPersonalProviderCredentials?.(userId, provider, write) ?? write();
-  const agentLogin =
-    deps.agentLogin ??
-    createProcessAgentLoginService({
-      updateSettings: storeAgentCredentials,
-      storePersonal: async (userId, provider, credential) => {
-        if (deps.secretCipher?.isSealed() === true) throw new SealedError();
-        await persistPersonal(userId, provider, () =>
-          deps.eventStore.userProviderConnections.set(userId, provider, { credential }),
-        );
-      },
-    });
-  lifecycle.onClose(() => {
-    agentLogin.close();
-  });
+  const { storeAgentCredentials, persistPersonal, agentLogin } = createServerAgentCredentials(ctx);
   // `sessionPrStatus` comes from the session overview further down, which itself
   // takes `maybeDispatchPrRepairTurns`, so the repair turns read it lazily.
   const {
@@ -496,47 +459,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
   // Real git worktree when injected (deployment); else an empty scratch dir.
   const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
-  const dbClaudeOAuthTokenProvider: ClaudeOAuthTokenProvider = hasVeritySettingsStore(
-    deps.eventStore,
-  )
-    ? createClaudeOAuthTokenProvider({
-        env: {},
-        credentialsPath: '/dev/null',
-        credentialsJsonProvider: async () => {
-          const credentialsJson = (await deps.eventStore.getVeritySettings())
-            ?.claudeCodeOauthCredentialsJson;
-          return typeof credentialsJson === 'string' && credentialsJson.trim().length > 0
-            ? credentialsJson
-            : undefined;
-        },
-        credentialsJsonUpdater: async (credentialsJson) => {
-          await storeAgentCredentials({ claudeCodeOauthCredentialsJson: credentialsJson });
-        },
-      })
-    : () => Promise.resolve(undefined);
-  const defaultClaudeOAuthTokenProvider = async (): Promise<string | undefined> => {
-    try {
-      return await dbClaudeOAuthTokenProvider();
-    } catch {
-      // Sealed or temporarily unavailable settings make the usage probe inert
-      // until a later poll can read the DB settings again. Do not fall back to
-      // process env / ~/.claude here: the server-side meter should reflect the
-      // centrally stored Verity login, not stale runtime state.
-      return undefined;
-    }
-  };
-  const claudeUsage =
-    deps.claudeUsage ??
-    createClaudeUsageService({
-      log: app.log,
-      tokenProvider: deps.claudeOAuthTokenProvider ?? defaultClaudeOAuthTokenProvider,
-    });
-  const codexUsage =
-    deps.codexUsage ??
-    createCodexUsageService({
-      log: app.log,
-      credentialProvider: deps.codexGatewayCredentialProvider,
-    });
+  const { dbClaudeOAuthTokenProvider, claudeUsage, codexUsage } = createServerUsage(
+    app,
+    ctx,
+    storeAgentCredentials,
+  );
   const meetingTranscripts = createMeetingTranscripts(app, deps);
   const { hasMeetingJob, cancelMeetingJobs } = meetingTranscripts;
 
