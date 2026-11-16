@@ -2,8 +2,15 @@ import { VerityApiError, VerityClient } from '@verity/mobile';
 import { CryptoDigestAlgorithm, digest, getRandomBytes } from 'expo-crypto';
 import { requireNativeModule } from 'expo-modules-core';
 
-import { clearStoredAuthState, setAuthToken } from './authToken';
+import { adoptStoredAuthToken, getStoredAuthTokenId, setAuthToken } from './authToken';
 import { setVerityBaseUrl } from './client';
+import { requestRemoteControlAdmission } from './remoteControlAdmission';
+import {
+  clearTeamJoinProgress,
+  loadTeamJoinProgress,
+  saveTeamJoinProgress,
+  type TeamJoinProgress,
+} from './teamJoinState';
 import { deviceLabel } from './deviceLabel';
 import { createPinnedFetch, verifyPairedIdentity } from './pinnedTransport';
 import {
@@ -21,24 +28,41 @@ function randomId(): string {
   return btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
 }
 
-/** The native tunnel Remote Control uses; a join borrows it for one enrollment. */
+/** A dedicated attachment that leaves the active server transport intact. */
 interface JoinTunnel {
-  start(dataUrl: string, ticket: string, sessionId: string, coreUrl: string): Promise<number>;
+  start(
+    dataUrl: string,
+    ticket: string,
+    sessionId: string,
+    coreUrl: string,
+    capability: 'team-bootstrap-v1' | 'remote-control-v1',
+  ): Promise<number>;
   stop(): Promise<void>;
 }
 
 export interface JoinTeamDeps {
   admission?: typeof requestTeamJoinAdmission;
   tunnel?: () => JoinTunnel;
+  signal?: AbortSignal;
+  onPhase?: (phase: 'saving' | 'confirming') => void;
 }
 
 export class TeamJoinError extends Error {
   constructor(
-    readonly reason: 'unavailable' | 'known_server' | 'identity',
+    readonly reason: 'unavailable' | 'known_server' | 'identity' | 'incompatible' | 'name',
     message: string,
   ) {
     super(message);
   }
+}
+
+export function teamJoinNameProblem(input: string): string | null {
+  const name = input.normalize('NFC').trim().replace(/\s+/gu, ' ');
+  if (name.length === 0) return 'Enter your name.';
+  if (name.length > 80) return 'Use 80 characters or fewer.';
+  if (/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(name))
+    return 'Use visible text without control or formatting characters.';
+  return null;
 }
 
 /**
@@ -49,123 +73,429 @@ export class TeamJoinError extends Error {
  * pairing does; neither Uplink nor the link's own claims prove anything. The
  * redemption is the one Uplink minted for this tunnel; the app never makes one.
  */
+let joiningInProgress = false;
 export async function joinTeam(
   link: TeamJoinLink,
   displayName: string,
   deps: JoinTeamDeps = {},
 ): Promise<{ projectId: string }> {
-  if (link.expiresAt <= Date.now()) throw new TeamJoinLinkError('expired');
-  // A server this app already uses keeps its own credential; a second one for
-  // the same server would sign this device in as someone else.
+  if (joiningInProgress) throw new Error('A join is already running.');
+  joiningInProgress = true;
+  try {
+    return await joinTeamAttempt(link, displayName, deps);
+  } finally {
+    joiningInProgress = false;
+  }
+}
+
+async function joinTeamAttempt(
+  link: TeamJoinLink,
+  displayName: string,
+  deps: JoinTeamDeps = {},
+): Promise<{ projectId: string }> {
+  let saved = await loadTeamJoinProgress();
+  if (saved !== null && saved.link.invitationId !== link.invitationId)
+    throw new Error('Finish the saved join before opening another invitation.');
+  if (saved !== null) link = saved.link;
+  if (saved?.credential === undefined) {
+    displayName = displayName.normalize('NFC').trim().replace(/\s+/gu, ' ');
+    const problem = teamJoinNameProblem(displayName);
+    if (problem !== null) throw new TeamJoinError('name', problem);
+    if (saved !== null && saved.displayName !== displayName) {
+      saved = { ...saved, displayName };
+      await saveTeamJoinProgress(saved);
+    }
+  }
+  if (saved?.credential === undefined && link.expiresAt <= Date.now())
+    throw new TeamJoinLinkError('expired');
+  const validateConnections = async (credential?: { tokenId: string }) => {
+    const profiles = [getServerProfile(), ...getOtherServerProfiles()];
+    for (const profile of profiles) {
+      if (profile === null) continue;
+      const sameServer = profile.serverId === link.serverId;
+      const sameAddress =
+        profile.activeUrl === link.coreOrigin ||
+        profile.endpoints?.some((endpoint) => endpoint.url === link.coreOrigin);
+      if (!sameServer && !sameAddress) continue;
+      if (!sameServer) throw new TeamJoinLinkError('invalid');
+      // Only our own partially activated credential may reuse a known server.
+      // Another account paired while joining was paused must never be replaced.
+      if (
+        credential === undefined ||
+        (await getStoredAuthTokenId(profile.activeUrl)) !== credential.tokenId
+      ) {
+        throw new TeamJoinError(
+          'known_server',
+          'This app is already connected to this server with another device access.',
+        );
+      }
+      if (
+        sameAddress &&
+        profile.activeUrl !== link.coreOrigin &&
+        (await getStoredAuthTokenId(link.coreOrigin)) !== credential.tokenId
+      )
+        throw new TeamJoinError(
+          'known_server',
+          'This address already has different device access.',
+        );
+    }
+  };
+  await validateConnections(saved?.credential);
   const known = [getServerProfile(), ...getOtherServerProfiles()];
-  if (known.some((profile) => profile?.serverId === link.serverId)) {
-    throw new TeamJoinError('known_server', 'This app is already connected to this server.');
-  }
-  // Credentials are kept per address: a link naming the address of another
-  // server this app uses would overwrite that server's credential.
-  if (
-    known.some((profile) =>
-      profile?.endpoints?.some((endpoint) => endpoint.url === link.coreOrigin),
-    )
-  ) {
-    throw new TeamJoinLinkError('invalid');
-  }
   const derived = await serverIdFor(link.identityKey, (bytes) =>
     digest(CryptoDigestAlgorithm.SHA256, bytes),
   );
   if (derived !== link.serverId) throw new TeamJoinLinkError('invalid');
 
-  let admission;
+  if (
+    known.filter(Boolean).length >= 16 &&
+    !known.some((profile) => profile?.serverId === link.serverId)
+  )
+    throw new Error('This app knows too many servers.');
+  const tunnel = (deps.tunnel ?? nativeJoinTunnel)();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  deps.signal?.addEventListener('abort', abort, { once: true });
+  if (deps.signal?.aborted) controller.abort();
+  const deadline = setTimeout(abort, 90_000);
   try {
-    admission = await (deps.admission ?? requestTeamJoinAdmission)({
-      uplinkOrigin: link.uplinkOrigin,
-      installationHandle: link.installationHandle,
-      invitationId: link.invitationId,
-    });
-  } catch (error) {
-    // Unknown, cancelled, expired and used invitations all read the same.
-    if (error instanceof TeamJoinAdmissionError && error.code === 'unavailable')
-      throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
-    throw error;
-  }
-  const tunnel = (
-    deps.tunnel ?? (() => requireNativeModule<JoinTunnel>('VerityRemoteControlTunnel'))
-  )();
-  const dataUrl = new URL(link.uplinkOrigin);
-  dataUrl.protocol = 'wss:';
-  dataUrl.pathname = '/data';
-  let port: number;
-  try {
-    port = await tunnel.start(dataUrl.href, admission.ticket, admission.sessionId, link.coreOrigin);
-  } finally {
-    admission.finish();
-  }
-
-  let joined;
-  try {
-    if (!Number.isInteger(port) || port < 1 || port > 65_535)
-      throw new Error('The join tunnel did not open.');
-    const pinnedFetch = createPinnedFetch(link.tlsPin, false, port);
-    const client = new VerityClient({
-      baseUrl: link.coreOrigin,
-      fetch: pinnedFetch,
-      uploadFetch: pinnedFetch,
-    });
-    const challenge = randomId();
-    const identity = await client.fetchPairingIdentity(challenge);
-    if (identity.identityKey !== link.identityKey)
-      throw new TeamJoinError('identity', 'The server is not the one that sent this invitation.');
-    await verifyPairedIdentity({
-      identityKey: link.identityKey,
-      expectedServerId: link.serverId,
-      serverId: identity.serverId,
-      challenge,
-      signature: identity.signature,
-    });
-    const request = {
-      invitationId: link.invitationId,
-      secret: link.secret,
-      redemptionId: admission.redemptionId,
-      displayName: displayName.trim(),
-      deviceLabel: deviceLabel(),
-    };
+    const requestedAt = Date.now();
+    let progress = saved;
+    let admission;
     try {
-      try {
-        joined = await client.joinTeam(request);
-      } catch (error) {
-        // A lost answer: the same redemption again is a replay, not a second join.
-        if (error instanceof VerityApiError) throw error;
-        joined = await client.joinTeam(request);
-      }
+      admission =
+        saved !== null
+          ? { ...saved.admission, finish() {} }
+          : await (deps.admission ?? requestTeamJoinAdmission)({
+              uplinkOrigin: link.uplinkOrigin,
+              installationHandle: link.installationHandle,
+              invitationId: link.invitationId,
+              signal: controller.signal,
+            });
     } catch (error) {
-      if (error instanceof VerityApiError && error.status === 410)
+      // Unknown, cancelled, expired and used invitations all read the same.
+      if (error instanceof TeamJoinAdmissionError && error.code === 'unavailable')
         throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
       throw error;
     }
-  } finally {
-    await tunnel.stop().catch(() => undefined);
-  }
+    if (progress === null) {
+      progress = {
+        version: 1,
+        // The attachment ticket is short-lived; reattachment retains the original
+        // ten-minute redemption window, conservatively measured before reservation.
+        recoveryExpiresAt: Math.min(link.expiresAt, requestedAt + 10 * 60_000),
+        link,
+        displayName: displayName.trim(),
+        admission: {
+          sessionId: admission.sessionId,
+          redemptionId: admission.redemptionId,
+          ticket: admission.ticket,
+          expiresAt: admission.expiresAt,
+        },
+      };
+      try {
+        await saveTeamJoinProgress(progress);
+      } catch (error) {
+        admission.finish();
+        throw error;
+      }
+    }
+    const dataUrl = new URL(link.uplinkOrigin);
+    dataUrl.protocol = 'wss:';
+    dataUrl.pathname = '/data';
+    let joined = progress.credential;
+    const recoveryExpiresAt = progress.recoveryExpiresAt ?? progress.admission.expiresAt;
+    let useDirect = joined !== undefined && recoveryExpiresAt <= Date.now();
+    try {
+      // Recovery never redeems an invitation after the device credential was saved.
+      if (joined !== undefined) {
+        if (recoveryExpiresAt > Date.now()) {
+          try {
+            admission = await (deps.admission ?? requestTeamJoinAdmission)({
+              uplinkOrigin: link.uplinkOrigin,
+              installationHandle: link.installationHandle,
+              invitationId: link.invitationId,
+              redemptionId: progress.admission.redemptionId,
+              signal: controller.signal,
+            });
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            // The saved bearer can finish against pinned Core even if the
+            // short-lived bootstrap attachment is unavailable.
+            useDirect = true;
+          }
+        }
+      } else if (
+        Math.min(link.expiresAt, saved === null ? admission.expiresAt : recoveryExpiresAt) <=
+        Date.now()
+      ) {
+        await clearTeamJoinProgress();
+        throw new TeamJoinError(
+          'unavailable',
+          'This invitation can no longer be used. Ask for a new invitation.',
+        );
+      }
+      if (saved !== null && joined === undefined) {
+        admission = await (deps.admission ?? requestTeamJoinAdmission)({
+          uplinkOrigin: link.uplinkOrigin,
+          installationHandle: link.installationHandle,
+          invitationId: link.invitationId,
+          redemptionId: progress.admission.redemptionId,
+          signal: controller.signal,
+        });
+      }
+      controller.signal.throwIfAborted();
+      const attach = async (
+        ticket: string,
+        sessionId: string,
+        capability: 'team-bootstrap-v1' | 'remote-control-v1',
+      ) => {
+        const starting = tunnel.start(dataUrl.href, ticket, sessionId, link.coreOrigin, capability);
+        void starting.then(
+          () => {
+            if (controller.signal.aborted) void tunnel.stop().catch(() => undefined);
+          },
+          () => undefined,
+        );
+        const port = await bounded(starting, controller.signal);
+        if (!Number.isInteger(port) || port < 1 || port > 65_535)
+          throw new Error('The join tunnel did not open.');
+        return port;
+      };
+      let port: number | undefined;
+      if (!useDirect) {
+        try {
+          port = await attach(admission.ticket, admission.sessionId, 'team-bootstrap-v1');
+        } catch (error) {
+          if (joined === undefined || controller.signal.aborted) throw error;
+          await tunnel.stop().catch(() => undefined);
+          useDirect = true;
+        }
+      }
+      admission.finish();
+      let transport = createPinnedFetch(link.tlsPin, false, port);
+      let fallback: 'none' | 'direct' | 'remote' =
+        joined === undefined ? 'none' : useDirect ? 'remote' : 'direct';
+      const pinnedFetch: typeof transport = async (input, init) => {
+        try {
+          return await transport(input, { ...init, signal: controller.signal });
+        } catch (error) {
+          if (fallback === 'none' || controller.signal.aborted) throw error;
+          if (fallback === 'direct') {
+            fallback = 'remote';
+            transport = createPinnedFetch(link.tlsPin, false);
+            try {
+              return await transport(input, { ...init, signal: controller.signal });
+            } catch (directError) {
+              if (controller.signal.aborted) throw directError;
+            }
+          }
+          fallback = 'none';
+          const remote = await requestRemoteControlAdmission({
+            uplinkOrigin: link.uplinkOrigin,
+            installationHandle: link.installationHandle,
+            signal: controller.signal,
+          });
+          try {
+            transport = createPinnedFetch(
+              link.tlsPin,
+              false,
+              await attach(remote.ticket, remote.sessionId, 'remote-control-v1'),
+            );
+          } finally {
+            remote.finish();
+          }
+          return transport(input, { ...init, signal: controller.signal });
+        }
+      };
+      const client = new VerityClient({
+        baseUrl: link.coreOrigin,
+        fetch: pinnedFetch,
+        uploadFetch: pinnedFetch,
+        getToken: () => joined?.token ?? null,
+      });
+      const challenge = randomId();
+      const identity = await client.fetchPairingIdentity(challenge);
+      if (identity.identityKey !== link.identityKey)
+        throw new TeamJoinError('identity', 'The server is not the one that sent this invitation.');
+      await verifyPairedIdentity({
+        identityKey: link.identityKey,
+        expectedServerId: link.serverId,
+        serverId: identity.serverId,
+        challenge,
+        signature: identity.signature,
+      });
+      try {
+        await client.people.teamJoinCapabilities();
+      } catch {
+        throw new TeamJoinError(
+          'incompatible',
+          'This server needs an update before this app can safely join.',
+        );
+      }
+      if (joined === undefined) {
+        const request = {
+          invitationId: link.invitationId,
+          secret: link.secret,
+          redemptionId: progress.admission.redemptionId,
+          displayName: progress.displayName,
+          deviceLabel: deviceLabel(),
+        };
+        try {
+          try {
+            joined = await client.joinTeam(request);
+          } catch (error) {
+            if (error instanceof VerityApiError || controller.signal.aborted) throw error;
+            if (
+              Math.min(link.expiresAt, saved === null ? admission.expiresAt : recoveryExpiresAt) <=
+              Date.now()
+            )
+              throw error;
+            joined = await client.joinTeam(request);
+          }
+          deps.onPhase?.('saving');
+          progress = {
+            ...progress,
+            link: { ...progress.link, secret: '' },
+            credential: joined,
+            admission: {
+              ...progress.admission,
+              expiresAt:
+                'completionExpiresAt' in joined
+                  ? Number(joined.completionExpiresAt)
+                  : progress.admission.expiresAt,
+            },
+          };
+          await saveTeamJoinProgress(progress);
+        } catch (error) {
+          if (error instanceof VerityApiError && error.status === 400)
+            throw new TeamJoinError('name', 'Check your name and try again.');
+          if (error instanceof VerityApiError && error.status === 410) {
+            await clearTeamJoinProgress();
+            throw new TeamJoinError('unavailable', 'This invitation can no longer be used.');
+          }
+          throw error;
+        }
+      }
+      if (saved?.credential === undefined) fallback = useDirect ? 'remote' : 'direct';
+      deps.onPhase?.('confirming');
+      let confirmed = false;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        controller.signal.throwIfAborted();
+        try {
+          const result = await client.people.completeTeamJoin();
+          if (result.projectId !== joined.projectId)
+            throw new TeamJoinError('identity', 'The server returned a different project.');
+          if (result.confirmed) {
+            confirmed = true;
+            break;
+          }
+        } catch (error) {
+          if (error instanceof VerityApiError && error.status === 410) {
+            await clearTeamJoinProgress();
+            throw new TeamJoinError(
+              'unavailable',
+              'This join can no longer be completed. Ask for a new invitation.',
+            );
+          }
+          if (error instanceof TeamJoinError || error instanceof VerityApiError || attempt === 11)
+            throw error;
+        }
+        await bounded(new Promise<void>((resolve) => setTimeout(resolve, 1500)), controller.signal);
+      }
+      if (!confirmed)
+        throw new Error('Membership is not confirmed yet. Your access is saved; try again.');
+    } catch (error) {
+      if (
+        error instanceof TeamJoinAdmissionError &&
+        error.code === 'unavailable' &&
+        joined === undefined
+      ) {
+        await clearTeamJoinProgress();
+        throw new TeamJoinError(
+          'unavailable',
+          'This invitation can no longer be used. Ask for a new invitation.',
+        );
+      }
+      throw error;
+    } finally {
+      admission.finish();
+      await tunnel.stop().catch(() => undefined);
+    }
+    controller.signal.throwIfAborted();
+    if (joined === undefined) throw new Error('No saved device credential.');
 
-  // A previous installation may have left credentials for this address behind.
-  await clearStoredAuthState(link.coreOrigin);
-  if (!(await setAuthToken(link.coreOrigin, joined.token, joined.tokenId)))
-    throw new Error('Could not save the device credential. Open the invitation again.');
-  const profile: VerityServerProfile = {
-    version: 1,
-    serverId: link.serverId,
-    identityKey: link.identityKey,
-    activeUrl: link.coreOrigin,
-    endpoints: [{ url: link.coreOrigin, transport: 'direct', tlsPin: link.tlsPin }],
-    remoteControl: {
+    await validateConnections(joined);
+    controller.signal.throwIfAborted();
+    if (!(await setAuthToken(link.coreOrigin, joined.token, joined.tokenId, false)))
+      throw new Error('Could not save the device credential. Open the invitation again.');
+    controller.signal.throwIfAborted();
+    const profile: VerityServerProfile = {
       version: 1,
-      installationId: link.installationId,
-      installationHandle: link.installationHandle,
-      uplinkOrigin: link.uplinkOrigin,
+      serverId: link.serverId,
+      identityKey: link.identityKey,
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin, transport: 'direct', tlsPin: link.tlsPin }],
+      remoteControl: {
+        version: 1,
+        installationId: link.installationId,
+        installationHandle: link.installationHandle,
+        uplinkOrigin: link.uplinkOrigin,
+      },
+      ...(link.display === undefined ? {} : { sharedBy: link.display.inviterName }),
+    };
+    // The server used so far stays known, so the app can switch back to it.
+    const credential = joined;
+    await activateServerProfile(profile, controller.signal, () =>
+      setVerityBaseUrl(link.coreOrigin, controller.signal, () =>
+        adoptStoredAuthToken(link.coreOrigin, credential.token, credential.tokenId),
+      ),
+    );
+    await clearTeamJoinProgress().catch(() => undefined);
+    return { projectId: joined.projectId };
+  } finally {
+    clearTimeout(deadline);
+    deps.signal?.removeEventListener('abort', abort);
+  }
+}
+
+function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error('Join interrupted. Saved progress can be continued.'));
+    signal.addEventListener('abort', abort, { once: true });
+    work
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', abort))
+      .catch(() => undefined);
+  });
+}
+
+export async function resumeTeamJoin(deps: JoinTeamDeps = {}): Promise<{ projectId: string }> {
+  const progress = await loadTeamJoinProgress();
+  if (progress === null) throw new Error('No saved join. Open a new invitation.');
+  return joinTeam(progress.link, progress.displayName, deps);
+}
+
+function nativeJoinTunnel(): JoinTunnel {
+  const native = requireNativeModule<{
+    startJoin?: (
+      url: string,
+      ticket: string,
+      sessionId: string,
+      core: string,
+      capability: string,
+    ) => Promise<number>;
+    stopJoin?: (sessionId: string) => Promise<void>;
+  }>('VerityRemoteControlTunnel');
+  if (!native.startJoin || !native.stopJoin)
+    throw new TeamJoinError('incompatible', 'Update this app before joining a project.');
+  let session = '';
+  return {
+    start: (url, ticket, sessionId, core, capability) => {
+      session = sessionId;
+      return native.startJoin!(url, ticket, sessionId, core, capability);
     },
-    ...(link.display === undefined ? {} : { sharedBy: link.display.inviterName }),
+    stop: () => native.stopJoin!(session),
   };
-  // The server used so far stays known, so the app can switch back to it.
-  await activateServerProfile(profile);
-  await setVerityBaseUrl(link.coreOrigin);
-  return { projectId: joined.projectId };
 }

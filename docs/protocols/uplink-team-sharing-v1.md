@@ -182,7 +182,7 @@ reset the persisted revocation floor.
    identity as specified above. Uplink cannot substitute a different project,
    role, device or instance in this exchange.
 4. In one local transaction the core consumes the invitation, stores membership
-   and device binding, and writes a `team.join.commit` outbox item. A unique
+   and device binding, without activating the person. Once the app durably stores the returned credential, a separate bearer-authorized completion writes the `team.join.commit` outbox item. A unique
    invitation/redemption constraint makes replay return the same receipt.
    Device credentials are delivered only inside the encrypted channel.
 5. The outbox retries until Uplink acknowledges. A timeout after the local commit

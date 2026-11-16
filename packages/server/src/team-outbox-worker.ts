@@ -4,6 +4,7 @@ import type { ProjectTeamStore, TeamOutboxEntry } from '@verity/store';
 
 type Team = Pick<
   ProjectTeamStore,
+  | 'clearExpiredJoinCredentials'
   | 'dueOperations'
   | 'failExhaustedOperations'
   | 'completeOperation'
@@ -112,6 +113,7 @@ export function createTeamOutboxWorker(deps: {
   };
 
   const tick = async (): Promise<void> => {
+    await deps.team.clearExpiredJoinCredentials(now());
     for (const operation of await deps.team.failExhaustedOperations(now()))
       deps.log?.warn(
         operation,

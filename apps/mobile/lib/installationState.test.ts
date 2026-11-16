@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { clearLegacyAuthState, clearStoredAuthState } from './authToken';
+import { clearTeamJoinProgress } from './teamJoinState';
 import { clearPairingSession } from './pairingSession';
 import { clearServerProfile, hydrateServerProfile } from './serverProfile';
 import { prepareInstallationState } from './installationState';
@@ -9,6 +10,7 @@ jest.mock('./authToken', () => ({
   clearLegacyAuthState: jest.fn(),
   clearStoredAuthState: jest.fn(),
 }));
+jest.mock('./teamJoinState', () => ({ clearTeamJoinProgress: jest.fn() }));
 jest.mock('./pairingSession', () => ({ clearPairingSession: jest.fn() }));
 jest.mock('./serverProfile', () => ({
   clearServerProfile: jest.fn(),
@@ -33,6 +35,7 @@ describe('installation state', () => {
 
     expect(clearServerProfile).toHaveBeenCalledTimes(1);
     expect(clearPairingSession).toHaveBeenCalledTimes(1);
+    expect(clearTeamJoinProgress).toHaveBeenCalledTimes(1);
     expect(clearStoredAuthState).toHaveBeenCalledTimes(2);
     expect(clearLegacyAuthState).toHaveBeenCalledTimes(1);
     expect(clearStoredAuthState).toHaveBeenNthCalledWith(1, 'https://direct.example');
@@ -47,6 +50,7 @@ describe('installation state', () => {
 
     expect(clearServerProfile).not.toHaveBeenCalled();
     expect(clearPairingSession).not.toHaveBeenCalled();
+    expect(clearTeamJoinProgress).not.toHaveBeenCalled();
     expect(clearStoredAuthState).not.toHaveBeenCalled();
     expect(clearLegacyAuthState).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem('verity.installation.v1')).toBe('1');
@@ -59,6 +63,7 @@ describe('installation state', () => {
 
     expect(clearServerProfile).not.toHaveBeenCalled();
     expect(clearPairingSession).not.toHaveBeenCalled();
+    expect(clearTeamJoinProgress).not.toHaveBeenCalled();
     expect(clearStoredAuthState).not.toHaveBeenCalled();
     expect(clearLegacyAuthState).not.toHaveBeenCalled();
   });

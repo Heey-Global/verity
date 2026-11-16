@@ -8,7 +8,7 @@
 
 The app connects to Uplink's admission WSS `/remote-control`. Uplink routes an opaque TLS stream through `/data` to Core and never terminates inner TLS. Uplink sees `installationHandle`, `invitationId` and opaque session/redemption IDs, but never the invitation secret, device key/proof, Core credential or project content. Core accepts only the `team-member` enrollment endpoint on this pending tunnel; ordinary project and administrator APIs remain unavailable. A ticket or redemption ID alone grants no Core authority. Team eligibility and Remote Control entitlement are independent.
 
-Only a negotiated `team-bootstrap-v1` capability permits these messages. Other admission profiles retain their existing behavior. The review fixtures and draft-7 schemas are in `scripts/team-bootstrap-contract/`. JSON Schema covers structural checks; consumers must also enforce the named `x-semanticChecks` for matching session IDs and conditional retry timing. All admission and control messages below are strict JSON objects: unknown fields, any duplicate object keys in the raw JSON frame, malformed numbers and frames above 64 KiB fail before authorization. IDs are ASCII `[A-Za-z0-9_-]`, 1–128 characters; generated session, redemption and ticket identifiers have at least 128 bits of randomness. Bootstrap timestamps are integer Unix **milliseconds**, matching the remote transport envelope. The team control operations outside this bootstrap profile retain integer epoch seconds.
+The legacy profile negotiates `team-bootstrap-v1`; safe-completion apps negotiate the additive `team-bootstrap-resume-v1` admission profile. Both use `team-bootstrap-v1` for Core control and data attachment. Other admission profiles retain their existing behavior. The review fixtures and draft-7 schemas are in `scripts/team-bootstrap-contract/`. JSON Schema covers structural checks; consumers must also enforce the named `x-semanticChecks` for matching session IDs and conditional retry timing. All admission and control messages below are strict JSON objects: unknown fields, any duplicate object keys in the raw JSON frame, malformed numbers and frames above 64 KiB fail before authorization. IDs are ASCII `[A-Za-z0-9_-]`, 1–128 characters; generated session, redemption and ticket identifiers have at least 128 bits of randomness. Bootstrap timestamps are integer Unix **milliseconds**, matching the remote transport envelope. The team control operations outside this bootstrap profile retain integer epoch seconds.
 
 ## One request, one bound session
 
@@ -62,7 +62,33 @@ The admission socket stays open until attachment succeeds or fails. App cancella
 
 If Uplink cannot admit the request, it replies on the app socket with `team.join.error` carrying `requestId` and one of `unavailable`, `rate_limited`, `limit_reached`, `protocol_unsupported`, `timeout`, `cancelled` or `internal`. Unknown handles, expired/cancelled invitations and absent entitlement all map to `unavailable` for unauthenticated callers. `rate_limited` may include `retryAfterMs` (1,000–60,000). No error text or timing reveals whether a particular invitation exists.
 
-Core's local join transaction consumes the invitation, stores the member/device binding and writes one `team.join.commit` outbox item as specified by the team contract. The member remains pending and has no project access until Uplink confirms that commit. The outbox retries with the same operation and redemption IDs; neither a lost acknowledgement nor a retry creates a second membership or seat. The durable redemption receipt persists through the proposed seven-day retry window (subject to joint T0 approval) after the short transport reservation ends. `member_limit_reached` is retryable while that receipt remains valid; Core keeps the member pending. After receipt expiry Uplink returns terminal `invitation_unavailable`, and Core fences the member and shows “invite again”. A removed membership returns terminal `revoked`. Post-commit recovery uses the separate same-device recovery flow; it never rebinds this transport reservation or creates another member.
+Core's local join transaction consumes the invitation and stores a pending
+member/device binding with a stable random credential. It does not enqueue
+activation. The app checks Core's completion capability first, persists the
+credential and verified binding in one encrypted keychain record, and only
+then authorizes `POST /team/join/complete` with that credential. Completion
+queues one `team.join.commit` under the invitation lock. An unsolicited
+confirmation before this step cannot activate the pending person. Pending
+bearers cannot use project or general account APIs.
+
+The `team-bootstrap-resume-v1` request uses the same `team.join.reserve`
+object with `capabilities: ["team-bootstrap-resume-v1"]`. Initial admission
+omits `redemptionId`; a retry supplies the saved original `redemptionId`.
+Uplink reattaches only after the old session ended, to that same invitation
+and redemption, within ten minutes of its original creation. It rechecks
+cancellation, expiry and reservation state and does not extend the window.
+Lost resumed-ticket delivery retains the original receipt. Core independently
+rebinds its saved admission without extending its expiry. No device credential
+or invitation secret is sent to Uplink, and the app never redeems an
+invitation after it has saved the device credential.
+
+The outbox retains its existing retry semantics. A saved, already authorized
+completion can be queried after admission expiry without creating a new
+operation. Active invitation replays remain forbidden. An expired
+unconfirmed admission with no saved credential requires a new invitation;
+cleanup never deletes a confirmed membership. Full physical-device transport
+verification remains a release gate; these changes do not enable production
+team sharing.
 
 ## Shared acceptance cases required before activation
 

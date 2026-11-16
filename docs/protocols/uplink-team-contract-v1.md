@@ -120,12 +120,36 @@ not a project membership. A seat is one person. Consequences:
 
 ### D7 Join tunnel routing
 
-The draft's version-2 connector preface and Core-UID socket are not
-implemented. Instead, Core binds the purpose to the admission decision: a
-tunnel accepted for a `team.join.pending` (capability `team-bootstrap-v1`) is
-attached to a restricted listener that serves only the team-member enrollment
-endpoint until enrollment completes. Ordinary project and administrator APIs
-are unreachable on that tunnel. Personal Remote Control tunnels are unchanged.
+Core binds the connector reservation to the accepted admission decision,
+including its session and redemption. There is no version-2 connector preface
+or separate Core-UID socket. The forwarded connection reaches Core's pinned
+HTTPS API; the global authorization policy denies project and administrator
+APIs to pending people. `/team/join/complete` independently checks the exact
+device bearer against its admission and membership in the database.
+
+The app negotiates `team-bootstrap-resume-v1` on admission. An optional
+`redemptionId` reattaches the original receipt after its previous transport
+ended, within ten minutes of the original reservation. It never creates a
+new redemption or extends that deadline. The `/data` capability and Core
+control frames remain `team-bootstrap-v1`. The redemption opens a transport,
+not an account: after storing its device credential the app only calls the
+bearer-authorized completion endpoint, never invitation redemption again.
+
+Core advertises `{ completion: 1 }` at `/team/join/capabilities` over the
+pinned, identity-verified channel. `/team/join` requires
+`completionProtocol: 1` and creates only a pending person and stable device
+credential. Its response includes `completionExpiresAt`. Only after the app
+has written and read back its keychain progress does it call
+`POST /team/join/complete`; this transaction queues the idempotent
+`team.join.commit`. A confirmation without that authorization cannot activate
+the person. Old clients receive an update-required error before redemption;
+new clients refuse older Core or Uplink admission implementations safely.
+
+A previously authorized completion remains queryable with that same device
+bearer after admission expiry, without enqueueing another operation. Active
+memberships survive cleanup and late errors. Beyond bootstrap reattachment,
+the app uses the pinned direct address or ordinary Remote Control if enabled;
+it keeps the saved credential when the server is unreachable.
 
 ### D8 Invitation list and cancellation
 

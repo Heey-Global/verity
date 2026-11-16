@@ -100,7 +100,13 @@ describe('project team calls', () => {
   });
 
   it('joins a team with the invitation it was handed', async () => {
-    const joined = { token: 't', tokenId: 'tid', userId: 'mia', projectId: 'p' };
+    const joined = {
+      completionExpiresAt: Date.now() + 600_000,
+      token: 't',
+      tokenId: 'tid',
+      userId: 'mia',
+      projectId: 'p',
+    };
     const { client, calls } = clientAnswering(joined);
     const request = {
       invitationId: 'inv',
@@ -110,7 +116,7 @@ describe('project team calls', () => {
     };
     await expect(client.joinTeam(request)).resolves.toEqual(joined);
     expect(calls[0]?.url).toBe('http://host/team/join');
-    expect(body(calls[0])).toEqual(request);
+    expect(body(calls[0])).toEqual({ ...request, completionProtocol: 1 });
   });
 });
 

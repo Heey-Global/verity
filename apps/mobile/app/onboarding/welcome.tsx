@@ -1,7 +1,7 @@
 // Preflight welcome. No server is selected yet, so this is deliberately not
 // part of the numbered setup wizard.
 import * as Application from 'expo-application';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { type Href, router } from 'expo-router';
 import { Alert, Image, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { StyleSheet } from 'react-native-unistyles';
 
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
 import { enterDemoMode } from '../../lib/demoMode';
+import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { Button } from '../../components/ui';
 
 const NEXT = '/onboarding/server-url' as Href;
@@ -20,6 +21,18 @@ export default function OnboardingWelcome() {
   const insets = useSafeAreaInsets();
   const version = runningReleaseVersion(Application.nativeApplicationVersion);
   const build = describeBuild();
+  const [hasSavedJoin, setHasSavedJoin] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void loadTeamJoinProgress()
+      .then((value) => {
+        if (active) setHasSavedJoin(value !== null);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
   const [startingDemo, setStartingDemo] = useState(false);
   return (
     <View style={styles.root}>
@@ -55,7 +68,7 @@ export default function OnboardingWelcome() {
             fullWidth
           />
           <Button
-            label="Join a shared project"
+            label={hasSavedJoin ? 'Continue joining' : 'Join a shared project'}
             variant="secondary"
             disabled={startingDemo}
             onPress={() => router.push(JOIN)}
