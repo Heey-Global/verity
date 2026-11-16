@@ -1,3 +1,4 @@
+import { installKnowledge } from './server-knowledge.js';
 import { installPreviews } from './server-previews.js';
 import { installRepositoryTools } from './server-repository-tools.js';
 import {
@@ -26,7 +27,6 @@ import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
-import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
@@ -37,12 +37,6 @@ import { registerBackupRoutes } from './backup/routes.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
-import { registerIntegrationRoutes } from './integrations/routes.js';
-import { knowledgeRef, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
-import { createKnowledgeImageQuery } from './knowledge-image-query.js';
-import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
-import { registerKnowledgeRoutes } from './knowledge-routes.js';
-import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { ResourceObserver } from './live/resource-observer.js';
 import { registerLogRoutes } from './log-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
@@ -108,7 +102,6 @@ import {
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
   SERVER_VERSION,
-  veritySettingsStore,
   projectSettingsStore,
   isSleepLifecycleState,
   isControlPlaneProject,
@@ -488,68 +481,9 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     afterProjectProvision,
     settleBackgroundProvision,
   });
-  if (deps.eventStore.knowledge !== undefined) {
-    registerKnowledgeSourceRoutes(app, {
-      knowledge: deps.eventStore.knowledge,
-      store: deps.eventStore,
-      ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
-    });
-    registerKnowledgeRoutes(app, {
-      knowledge: deps.eventStore.knowledge,
-    });
-  }
-  // Chat images get their text read by the project's default model in the
-  // background. Codex and OpenCode use direct model requests without agent tools.
-  const imageTextExtractor =
-    deps.refineCwd === undefined
-      ? undefined
-      : createImageTextExtractor({
-          query: createKnowledgeImageQuery({
-            fallback: (input) => conductor.query(input),
-            codexCredential: deps.codexGatewayCredentialProvider,
-            codexDefaultModel: async () =>
-              (await availableModels()).modelOrder?.find(
-                (id) => id.startsWith('codex/') && id !== CODEX_DEFAULT_MODEL,
-              ),
-            openCode: async () => {
-              const settings = await veritySettingsStore(deps.eventStore).getVeritySettings();
-              const baseUrl = settings?.opencodeBaseUrl?.trim();
-              const apiKey = settings?.opencodeApiKey?.trim();
-              return baseUrl && apiKey ? { baseUrl, apiKey } : undefined;
-            },
-          }),
-          cwd: deps.refineCwd,
-          modelFor: (projectId) => projectDefaultModel(projectId),
-          onError: (error, job) =>
-            app.log.warn(
-              { err: error, projectId: job.projectId, path: job.relativePath },
-              'verity: image text extraction failed',
-            ),
-        });
-  registerIntegrationRoutes(app, {
-    store: deps.eventStore.integrations,
-    onChatDay: (projectId, path, room) =>
-      noteWikiOccasion(
-        deps.eventStore,
-        {
-          projectId,
-          kind: 'chat',
-          ref: knowledgeRef(path),
-          title: `${room} · ${occasionTitle(path)}`,
-          reopen: true,
-        },
-        app.log,
-      ),
-    ...(deps.dataRoot !== undefined ? { dataRoot: deps.dataRoot } : {}),
-    ...(deps.matrixConnectorToken !== undefined
-      ? { connectorToken: deps.matrixConnectorToken }
-      : {}),
-    ...(deps.onMatrixConfigured !== undefined
-      ? { onMatrixConfigured: deps.onMatrixConfigured }
-      : {}),
-    ...(imageTextExtractor !== undefined
-      ? { extractImageText: (job: ImageTextJob) => void imageTextExtractor.enqueue(job) }
-      : {}),
+  installKnowledge(app, ctx, {
+    availableModels: () => availableModels(),
+    projectDefaultModel: (projectId) => projectDefaultModel(projectId),
   });
   registerHttpMcpConnectionRoutes(app, deps.eventStore, {
     browserRequestOrigin: deps.browserRequestOrigin,
