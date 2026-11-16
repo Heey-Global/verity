@@ -151,6 +151,8 @@ async function harness(
     transport?: BrokeredHttpStreamTransport;
     certificateFor?: (hostname: string) => Promise<PemCertificate>;
     turnCredentials?: TurnCredentials;
+    /** Whether the project is still unshared, so personless work may run. */
+    personlessAllowed?: boolean;
     personalTokens?: Record<string, string>;
     /** Serve a person's own sandbox instead of the project's default one. */
     sandboxUser?: string;
@@ -228,6 +230,7 @@ async function harness(
     ...(options.certificateFor ? { certificateFor: options.certificateFor } : {}),
     ...(options.resolveRepository ? { resolveRepository: options.resolveRepository } : {}),
     ...(options.turnCredentials ? { turnCredentials: options.turnCredentials } : {}),
+    personlessAllowed: async () => options.personlessAllowed ?? true,
     ...(options.authorizationRecheck ? { authorizationRecheck: options.authorizationRecheck } : {}),
     enabled: () => options.enabled ?? true,
     actions: () => options.actions ?? allActions,
@@ -733,6 +736,22 @@ describe('brokered forge TLS boundary', () => {
     expect(
       (await call(old.port, '/repos/acme/app/issues', `Bearer verity-broker-${current}`)).status,
     ).toBe(401);
+  });
+
+  // Nobody can tell whose work a personless turn is once members share the
+  // project; it must not push with the project's installation token for them.
+  it('refuses a badge without a person in a project shared with members', async () => {
+    const turns = createTurnCredentials();
+    const shared = await harness((_req, res) => res.end('ok'), {
+      turnCredentials: turns,
+      personlessAllowed: false,
+    });
+    const badge = turns.issue({ projectId: 'p1', sessionId: 's1', turnId: 't1', userId: null });
+    expect(
+      (await call(shared.port, '/repos/acme/app/issues', `Bearer verity-broker-${badge}`)).status,
+    ).toBe(401);
+    expect(shared.received).toEqual([]);
+    expect(shared.mint).not.toHaveBeenCalled();
   });
 
   // The person on the badge must reach the adapter; otherwise every turn would
