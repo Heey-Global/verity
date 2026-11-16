@@ -86,7 +86,13 @@ import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
-import { createLiveTickets, createServerLiveHub, installLive } from './server-live.js';
+import {
+  createLiveTickets,
+  createServerLiveHub,
+  installLive,
+  registerLiveResourceHints,
+  registerLiveSessionHints,
+} from './server-live.js';
 import { createServerApp, installHttpGuards } from './server-http.js';
 import { installOnboarding } from './server-onboarding.js';
 import {
@@ -225,21 +231,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     app.log,
   );
   lifecycle.onClose(() => unsubscribeAgentProcessLogging());
-  app.addHook('onResponse', (request, reply, done) => {
-    if (
-      reply.statusCode < 400 &&
-      request.routeOptions.url !== '/sessions/:id/debug/scroll' &&
-      (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) ||
-        request.url.startsWith('/github/app/manifest/callback') ||
-        request.url.startsWith('/github/app/manifest/installed'))
-    )
-      resources.invalidate(
-        request.method === 'PATCH' && request.routeOptions.url === '/sessions/:id'
-          ? `${request.url.split('?')[0]}/activity`
-          : request.url,
-      );
-    done();
-  });
+  registerLiveResourceHints(app, resources);
   const liveHub = createServerLiveHub(app, deps, { resources, lifecycle });
   const ctx: ServerContext = {
     app,
@@ -253,50 +245,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionsBeingReaped,
     deleteSession: createSessionDeletion({ app, deps }),
   };
-  const deletedSessionProjects = new WeakMap<object, string | null>();
-  app.addHook('preHandler', async (request) => {
-    if (request.method !== 'DELETE' || request.routeOptions.url !== '/sessions/:id') return;
-    const { id } = request.params as { id: string };
-    const session = await deps.eventStore.getSession(id);
-    if (session !== undefined) deletedSessionProjects.set(request, session.projectId);
-  });
-  // Session changes that are not events — a rename, a read marker, a queued or
-  // retracted turn, a permission decision, a deletion — reach overview
-  // subscribers as content-free hints. Every such change is an accepted mutation
-  // on a `/sessions/:id…` route, so one hook covers them all, including routes
-  // added later; session events themselves are hinted from the bus.
-  app.addHook('onSend', async (request, reply, payload) => {
-    if (reply.statusCode < 200 || reply.statusCode >= 300) return payload;
-    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') {
-      return payload;
-    }
-    const route = request.routeOptions.url ?? '';
-    if (route === '/sessions' && request.method === 'POST' && typeof payload === 'string') {
-      try {
-        const created = JSON.parse(payload) as { sessionId?: unknown };
-        if (typeof created.sessionId === 'string') {
-          liveHub.notify({ sessionId: created.sessionId, topics: ['session', 'status'] });
-        }
-      } catch {
-        // Not JSON: nothing to announce.
-      }
-      return payload;
-    }
-    if (!route.startsWith('/sessions/:id')) return payload;
-    const sessionId = (request.params as { id?: unknown } | undefined)?.id;
-    if (typeof sessionId !== 'string') return payload;
-    const deleted = route === '/sessions/:id' && request.method === 'DELETE';
-    // A session can change project (a move); forget its cached owner. A deleted
-    // one keeps it, so its members still hear that it is gone.
-    if (!deleted) liveHub.forgetSession(sessionId);
-    if (route === '/sessions/:id/project') await liveHub.recheckSession(sessionId);
-    liveHub.notify({
-      sessionId,
-      topics: ['session', 'status', 'activity'],
-      ...(deleted ? { deleted: true, projectId: deletedSessionProjects.get(request) } : {}),
-    });
-    return payload;
-  });
+  registerLiveSessionHints(app, ctx);
   const pushRouter: PushRouter | undefined =
     pushSender === undefined
       ? undefined
