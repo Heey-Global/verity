@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { realpath, rm, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
-import { projectForRepository, type EventStore, type ProjectRecord } from '@verity/store';
+import {
+  projectForRepository,
+  type EventStore,
+  type ProjectRecord,
+  type SessionRecord,
+} from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
@@ -10,6 +15,7 @@ import { isDocumentWorkspace } from './document-workspace.js';
 import { containerPathFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
+import type { SessionStorage } from './session-storage.js';
 
 /** Why a module checkout could not be opened. A closed set, so the category can
  *  reach the sandbox and the log without carrying git output, URLs or paths. */
@@ -122,18 +128,20 @@ async function repositoryInstructionsFile(worktree: string): Promise<boolean> {
 
 export function createSessionRepositories(deps: {
   store: EventStore;
+  sessionStorage?: Pick<SessionStorage, 'hasPendingWorkspaceRecovery'> | undefined;
   cloneRoot?: string | undefined;
   git?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
 }) {
   const pending = new Map<string, Promise<unknown>>();
   /** Documents remains intentional for local and control projects. Repository projects
    * must never expose either a Documents view or a missing directory as their checkout. */
-  const codeUnavailable = async (worktree: string, project: ProjectRecord | undefined) =>
+  const codeUnavailable = async (session: SessionRecord, project: ProjectRecord | undefined) =>
     project !== undefined &&
     project.kind !== 'local' &&
     project.kind !== 'control_plane' &&
-    (isDocumentWorkspace(worktree) ||
-      !(await stat(worktree).then(
+    (isDocumentWorkspace(session.worktree) ||
+      (await deps.sessionStorage?.hasPendingWorkspaceRecovery(session)) ||
+      !(await stat(session.worktree).then(
         (entry) => entry.isDirectory(),
         () => false,
       )));
@@ -142,7 +150,7 @@ export function createSessionRepositories(deps: {
     if (!session?.projectId) throw new Error('project session required');
     const project = await deps.store.getProject(session.projectId);
     const workspaces = await deps.store.listSessionRepositoryWorkspaces(sessionId);
-    const unavailable = await codeUnavailable(session.worktree, project);
+    const unavailable = await codeUnavailable(session, project);
     return {
       repositories: (
         await deps.store.listProjectRepositories(session.projectId, { includeRemoved: true })
@@ -185,7 +193,7 @@ export function createSessionRepositories(deps: {
           'repository not connected',
           'repository is not connected to this project',
         );
-      if (repository.isDefault && (await codeUnavailable(session.worktree, project)))
+      if (repository.isDefault && (await codeUnavailable(session, project)))
         throw new RepositoryCheckoutError(
           'code workspace unavailable',
           "This session's code workspace is unavailable; use Restore to recover its saved checkout.",

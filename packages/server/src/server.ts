@@ -278,7 +278,6 @@ import {
 import './fastify-augmentation.js';
 export type { ServerUpdateController } from './server-update-routes.js';
 export { VERITY_CONTROL_SESSION_NAME } from './verity-control-session-route.js';
-
 export type {
   ProjectSettingsRecord,
   PublicProjectRecord,
@@ -2238,6 +2237,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   const sessionRepositories = createSessionRepositories({
+    sessionStorage: deps.sessionStorage,
     store: deps.eventStore,
     cloneRoot: deps.projectCloneRoot,
     git: deps.sandboxGit,

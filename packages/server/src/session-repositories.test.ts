@@ -277,12 +277,23 @@ it('refuses to expose a missing ordinary checkout through repository open or lis
       listProjectRepositories: async () => [repository],
       listSessionRepositoryWorkspaces: async () => [],
     } as unknown as EventStore;
-    const service = createSessionRepositories({ store });
+    const recoveryPending = vi.fn(async () => false);
+    const service = createSessionRepositories({
+      store,
+      sessionStorage: { hasPendingWorkspaceRecovery: recoveryPending },
+    });
     await expect(service.open('s', 'd')).rejects.toMatchObject({
       reason: 'code workspace unavailable',
     });
     expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
     await mkdir(worktree);
+    recoveryPending.mockResolvedValue(true);
+    // Partial restore leaves a directory without a usable checkout.
+    await expect(service.open('s', 'd')).rejects.toMatchObject({
+      reason: 'code workspace unavailable',
+    });
+    expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
+    recoveryPending.mockResolvedValue(false);
     await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
   } finally {
     await rm(root, { recursive: true, force: true });
