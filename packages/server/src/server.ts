@@ -1,3 +1,4 @@
+import { createServerModels } from './server-models.js';
 import { createServerScheduling } from './server-scheduling.js';
 import { installRemoteControl } from './server-remote-control.js';
 import { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
@@ -11,7 +12,7 @@ import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
-import { CODEX_DEFAULT_MODEL, isCodexModel } from '@verity/session';
+import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
 import { SealedError, type ProjectRecord } from '@verity/store';
 import { randomUUID } from 'node:crypto';
@@ -57,11 +58,7 @@ import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
-import {
-  isModelAllowedForProject,
-  ProjectAgentNotAllowedError,
-  resolveProjectDefaultModel,
-} from './project-agent-policy.js';
+import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { containerPathFor } from './project-backend.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
@@ -99,7 +96,6 @@ import { createSessionDeletion, installSessionDeletion } from './server-session-
 import { installProjects } from './server-projects.js';
 import {
   installPeople,
-  modelAccounts,
   peopleDirectQueries,
   personalUsageProbes,
   sharedProjectPeople,
@@ -123,7 +119,7 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type { ModelList, ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
+import type { ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { emitSessionEvent } from './session-event-writer.js';
@@ -156,10 +152,7 @@ import {
   isSleepLifecycleState,
   publicProject,
   isControlPlaneProject,
-  CLAUDE_MODELS,
-  CLAUDE_MORE_MODELS,
   DEFAULT_MODEL,
-  sortModelIds,
   VERITY_CONTROL_PROJECT_ID,
   PROJECT_DELETE_SPAWN_WAIT_MS,
   makeBranch,
@@ -167,7 +160,6 @@ import {
 import './fastify-augmentation.js';
 export type { ServerUpdateController } from './server-update-routes.js';
 export { VERITY_CONTROL_SESSION_NAME } from './verity-control-session-route.js';
-
 export type {
   ProjectSettingsRecord,
   PublicProjectRecord,
@@ -1167,6 +1159,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
   });
   const sessionRepositories = createSessionRepositories({
+    sessionStorage: deps.sessionStorage,
     store: deps.eventStore,
     cloneRoot: deps.projectCloneRoot,
     git: deps.sandboxGit,
@@ -1414,111 +1407,12 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     },
   });
 
-  // The usable model set for the picker (ADR 0001 / #143): Claude and Codex are
-  // subscription-backed and therefore appear only when their login exists in Verity
-  // settings. OpenCode provider-qualified ids still come from the configured backend.
-  // This keeps the UI from offering engines that would immediately fail at runtime.
-  const availableModels = async (
-    options: { allowLegacyCodexFallback?: boolean; viewer?: string | undefined } = {},
-  ): Promise<ModelList> => {
-    const accounts = await modelAccounts(deps.eventStore, options.viewer);
-    const claudeConfigured = accounts.claude;
-    const codexConfigured = accounts.codex;
-    let dynamicModels: string[] = [];
-    if (deps.listModels) {
-      try {
-        dynamicModels = await deps.listModels();
-      } catch (error) {
-        app.log.error({ err: error }, 'verity: dynamic model list unavailable');
-      }
-    }
-    // OpenCode models are the person's own provider's, never the instance's for
-    // someone else.
-    dynamicModels = [
-      ...dynamicModels.filter((id) => !id.startsWith('verity/')),
-      ...accounts.openCode.map((model) => `verity/${model}`),
-    ];
-    const seen = new Set<string>();
-    const merged: string[] = [];
-    const codexModels: string[] = [];
-    let codexDefault: string | undefined;
-    const add = (id: string) => {
-      if (id.length === 0 || seen.has(id)) return;
-      seen.add(id);
-      merged.push(id);
-    };
-    if (claudeConfigured) for (const id of CLAUDE_MODELS) add(id);
-    for (const id of dynamicModels) {
-      if (typeof id !== 'string' || id.length === 0) continue;
-      if (isCodexModel(id)) {
-        if (codexConfigured && id !== CODEX_DEFAULT_MODEL && !seen.has(id)) {
-          codexDefault ??= id;
-          codexModels.push(id);
-          add(id);
-        }
-        continue;
-      }
-      if (!id.includes('/')) {
-        if (claudeConfigured) add(id);
-        continue;
-      }
-      add(id);
-    }
-    // Spawn callers can use the authenticated CLI default even when discovery fails.
-    // Keep it eligible when a project's rule excludes the global Claude default.
-    if (options.allowLegacyCodexFallback === true && codexConfigured && codexModels.length === 0) {
-      add(CODEX_DEFAULT_MODEL);
-    }
-    const models = sortModelIds(merged);
-    const modelOrder = [
-      ...models.filter((id) => !id.includes('/')),
-      ...codexModels,
-      ...models.filter((id) => id.includes('/') && !isCodexModel(id)),
-    ];
-    const fallbackDefault =
-      codexDefault ??
-      (options.allowLegacyCodexFallback === true && codexConfigured
-        ? CODEX_DEFAULT_MODEL
-        : models.find((model) => !model.startsWith('verity/')));
-    const moreModels = [...(claudeConfigured ? CLAUDE_MORE_MODELS : []), ...codexModels.slice(3)];
-    return {
-      models,
-      ...(codexModels.length > 0 ? { modelOrder } : {}),
-      ...(moreModels.length > 0 ? { moreModels } : {}),
-      ...(claudeConfigured && models.includes(DEFAULT_MODEL)
-        ? { default: DEFAULT_MODEL }
-        : fallbackDefault !== undefined
-          ? { default: fallbackDefault }
-          : {}),
-    };
-  };
-  /** Why the project's agent rule rejects `model`, or undefined when it is allowed. */
-  const projectAgentRejection = async (
-    model: string,
-    projectId: string,
-  ): Promise<string | undefined> => {
-    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-    return isModelAllowedForProject(model, settings)
-      ? undefined
-      : new ProjectAgentNotAllowedError(model).message;
-  };
-  /** The model a project's new work starts with, honouring its agent rule. */
-  const projectDefaultModel = async (projectId: string | null): Promise<string | undefined> => {
-    const available = await availableModels();
-    if (projectId === null) return available.default;
-    const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-    return resolveProjectDefaultModel(available, settings, isProjectSessionModel);
-  };
-  const isConfiguredProjectSessionModel = async (
-    model: string | undefined,
-    viewer?: string,
-  ): Promise<boolean> => {
-    if (!isProjectSessionModel(model)) return false;
-    if (model === undefined || !model.startsWith('verity/')) return true;
-    return (await modelAccounts(deps.eventStore, viewer)).openCode.includes(
-      model.slice('verity/'.length),
-    );
-  };
+  const {
+    availableModels,
+    projectAgentRejection,
+    projectDefaultModel,
+    isConfiguredProjectSessionModel,
+  } = createServerModels(ctx);
 
   const {
     sharedProject,

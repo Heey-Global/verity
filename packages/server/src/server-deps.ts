@@ -286,6 +286,11 @@ export interface ServerDeps {
   worktrees?: WorktreeProvisioner;
   sessionStorage?: SessionStorage | undefined;
   /**
+   * Late-bound by the session routes: converts a legacy Documents session before a
+   * turn starts, queued turns included, so none runs with its Documents view as cwd.
+   */
+  codeWorkspaceTurns?: { prepare?: (sessionId: string) => Promise<void> } | undefined;
+  /**
    * The repo-root checkout (e.g. `/work`) reserved for the human/main session —
    * NEVER provisioned or removed by the server (#105). Sessions never run here
    * (every spawn is an isolated worktree); this is purely a delete-time safety

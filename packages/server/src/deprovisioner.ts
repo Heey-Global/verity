@@ -8,6 +8,7 @@ import {
   sandboxIdentity,
   sandboxPersonTag,
 } from './sandbox-identity.js';
+import { PROJECT_TEARDOWN_REASON } from './project-state.js';
 import { backupLifecycle } from './backup/lifecycle.js';
 import { statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -128,6 +129,11 @@ export class DeprovisionerImpl implements Deprovisioner {
     project: ProjectRecord,
     opts: { purge: boolean },
   ): Promise<ProjectRecord> {
+    // A failed or interrupted deletion must never look like an accidentally lost container.
+    await withProjectLock(this.db, projectId, async (tx) => {
+      await updateProjectStateInTx(tx, projectId, 'failed', PROJECT_TEARDOWN_REASON);
+      await tx.deleteFrom('sandbox_repair_intents').where('project_id', '=', projectId).execute();
+    });
     // Best-effort teardown runs OUTSIDE the `SELECT … FOR UPDATE` lock — the
     // same rule the provision path follows (git clone + docker create/start are
     // unlocked, §19.3). Docker stop/remove can BLOCK for a long time on a stuck

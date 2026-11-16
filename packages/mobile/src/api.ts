@@ -6,6 +6,8 @@ import {
   type AgentLoginProvider,
 } from './people-api.js';
 export * from './people-api.js';
+export * from './session-workspace-api.js';
+import { sessionWorkspaceClient } from './session-workspace-api.js';
 export * from './backup-api.js';
 import {
   backupProbeJobSchema,
@@ -2117,6 +2119,8 @@ export const sessionDirectorySchema = z.object({
     })
     .optional(),
   codeAvailable: z.boolean().optional(),
+  /** The session's checkout is missing; the client offers to restore it. */
+  codeWorkspaceUnavailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
   root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
@@ -2151,19 +2155,6 @@ export interface BranchSwitchRequest {
   preview?: string;
   onDirty?: 'block' | 'stash' | 'commit';
 }
-
-const sessionMovedSchema = z.object({
-  projectId: z.string(),
-  worktree: z.string(),
-  branch: z.string(),
-  contextMode: z.literal('history-handoff'),
-  transferred: z.array(z.string()),
-  alreadyPresent: z.array(z.string()),
-  skipped: z.array(z.string()),
-  retainedWorktree: z.string(),
-  retainedBranch: z.string(),
-});
-export type SessionMoved = z.infer<typeof sessionMovedSchema>;
 
 const sessionRenamedSchema = z.object({
   sessionId: z.string().min(1),
@@ -2771,6 +2762,9 @@ export class VerityClient {
   readonly disconnectProviderConnection = this.people.disconnectProviderConnection;
   readonly setOwnProjectDefaultModel = this.people.setOwnProjectDefaultModel;
   readonly joinTeam = this.people.joinTeam;
+  private readonly workspaces = sessionWorkspaceClient((path, init) => this.request(path, init));
+  readonly moveSession = this.workspaces.moveSession;
+  readonly restoreSessionCodeWorkspace = this.workspaces.restoreSessionCodeWorkspace;
 
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
@@ -6266,20 +6260,6 @@ export class VerityClient {
       });
     }
     return parsed.data;
-  }
-
-  /** Rename a session (set its display name), or clear it by passing `null`.
-   * Returns the session id + the stored (trimmed) name the server echoes back. */
-  async moveSession(
-    id: string,
-    body: { project: string; operationId: string; onCommits?: 'block' | 'leave' },
-  ): Promise<SessionMoved> {
-    const response = await this.request(`/sessions/${encodeURIComponent(id)}/project`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return sessionMovedSchema.parse(await response.json());
   }
 
   /** End planning mode: `implement` starts the implementation of the latest plan as

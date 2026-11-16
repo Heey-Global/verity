@@ -56,7 +56,6 @@ import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
 import type { HistorySigningIdentity } from './sign-history.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
@@ -232,6 +231,7 @@ import {
   SANDBOX_REPAIR_RETRY_MAX_MS,
   SANDBOX_REPAIR_RETRY_MIN_MS,
 } from './project-relay-migration.js';
+import { automaticSandboxRepairAllowed, owesMissingContainerRepair } from './project-state.js';
 
 export interface ProjectRelayControl {
   start(binding: ProjectRelayBinding): Promise<ProjectRelayActivation>;
@@ -3509,24 +3509,8 @@ export class ProvisionerImpl implements Provisioner {
     }
     await this.serializeProjectCheckoutOperation(projectId, async () => {
       await this.doClone(project);
-      const sessions = await this.opts.store.listSessions();
-      for (const session of sessions) {
-        if (
-          session.projectId !== projectId ||
-          !session.worktree.split('/').includes('.verity-document-sessions')
-        )
-          continue;
-        const branch = `code-${session.sessionId}`;
-        const path = join(clonePath, '.verity-sessions', branch);
-        if (this.isDir(path)) continue;
-        await createGitWorktreeProvisioner({
-          repoDir: clonePath,
-          worktreeRoot: join(clonePath, '.verity-sessions'),
-          git: async (args) => {
-            await this.git(['-c', 'core.hooksPath=/dev/null', ...args]);
-          },
-        }).add(branch);
-      }
+      // Session recovery owns sibling creation, branch reuse and retirement journals.
+      // Preparing every legacy sibling here races recovery and can replace saved history.
     });
   }
 
@@ -4588,12 +4572,9 @@ export class ProvisionerImpl implements Provisioner {
     // and is asked again on the next one.
     await this.restoreSandboxRepairIntents().catch((error: unknown) => failures.push(error));
     // Each project owns its own relay, network and container, so the migrations are
-    // independent — only the shared bookkeeping below is touched, and that is
-    // per-project keys. Bounded concurrency keeps a real legacy/broken fleet repair
-    // to roughly its slowest batches while capping container creates on the host.
-    // A repair is resumed only for a project its own failure left `failed`. Any
-    // other state was chosen since — slept, deprovisioned, or being provisioned
-    // by someone else — and an automatic recreate must not overrule it.
+    // independent, with bookkeeping keyed per project and bounded container creates.
+    // A repair resumes only where its own failure or a vanished container left the project; any
+    // other state was chosen since, and an automatic recreate must not overrule it.
     const currentProjects = await Promise.all(
       projects.map(async (project) =>
         this.restoredInterruptedRepairs.has(project.id) && project.state === 'container_starting'
@@ -4604,8 +4585,10 @@ export class ProvisionerImpl implements Provisioner {
     const pending = currentProjects.filter(
       (project) =>
         project.kind !== 'control_plane' &&
+        automaticSandboxRepairAllowed(project) &&
         (project.state === 'active' ||
-          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
+          (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id)) ||
+          owesMissingContainerRepair(project, (this.opts.now ?? Date.now)())),
     );
     let cursor = 0;
     const migrateNext = async (): Promise<void> => {
@@ -4671,11 +4654,9 @@ export class ProvisionerImpl implements Provisioner {
           // A spent budget falls through as a plain `migrated` sandbox, which settles
           // it below: reported as stalled, left running, and no longer recreated.
           const imageUpdate = updateOffered && !imageUpdateSpent;
-          // A failed automatic recreate may already have removed the old container
-          // before its pull/create phase failed. `absent` normally means there is
-          // nothing for relay migration to do, but for a repair we explicitly owe it
-          // means "resume provisioning" — and creating a missing container cannot
-          // interrupt a live turn, so no busy deferral is needed.
+          // The container may be gone, removed by a failed recreate before its pull/create
+          // phase or outside Verity. For a repair we owe, `absent` means "resume provisioning",
+          // and creating a missing container cannot interrupt a live turn: no busy deferral.
           // Structural migration and relay health do not prove the sandbox
           // started. An owned failed repair still owes runtime recovery even
           // when its replacement already carries all migration metadata.
@@ -4688,7 +4669,9 @@ export class ProvisionerImpl implements Provisioner {
                 busy,
                 busyConfirmed: confirmed,
               })
-            : classification === 'absent' && this.pendingSandboxRepairRetries.has(project.id)
+            : classification === 'absent' &&
+                (this.pendingSandboxRepairRetries.has(project.id) ||
+                  owesMissingContainerRepair(project, (this.opts.now ?? Date.now)()))
               ? 'migrate'
               : decideMigrationAction({
                   classification:
@@ -5319,7 +5302,7 @@ export class ProvisionerImpl implements Provisioner {
     const automatic =
       opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
     const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
-    if (automatic && !['active', 'failed'].includes(project.state)) {
+    if (automatic && !automaticSandboxRepairAllowed(project)) {
       this.forgetSandboxRepairIntent(projectId);
       await this.sandboxRepairIntentWrites;
       throw new ProvisioningError('Automatic repair no longer authorized by project state');
@@ -5444,7 +5427,7 @@ export class ProvisionerImpl implements Provisioner {
         const latestProject = await this.opts.store.getProject(project.id);
         if (
           !latestProject ||
-          !['active', 'failed'].includes(latestProject.state) ||
+          !automaticSandboxRepairAllowed(latestProject) ||
           (latestProject.imageOverrideRef ?? (await this.defaultImageRef())) !==
             automaticIntent.targetImageRef
         ) {
