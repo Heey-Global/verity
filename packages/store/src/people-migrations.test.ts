@@ -94,9 +94,8 @@ describe('per-person migrations without the administrator row', () => {
     }
   }, 60_000);
 
-  // Without a sponsor an automation runs for no one, and a personless turn no
-  // longer gets the instance's credentials once a project has people of its own.
-  it("makes the project's creator the sponsor of automations that have none", async () => {
+  // A deleted sponsor must never transfer their work to the project creator.
+  it('preserves unsponsored automations, including those whose sponsor was deleted', async () => {
     const legacy = await createIsolatedTestDb();
     try {
       const migrator = new Migrator({ db: legacy.db, provider: migrationProvider });
@@ -110,6 +109,7 @@ describe('per-person migrations without the administrator row', () => {
       );
       await sql`insert into sessions (session_id, worktree, model, project_id) values
         ('legacy-automation', '/legacy-automation', 'test', 'scheduled'),
+        ('deleted-automation', '/deleted-automation', 'test', 'scheduled'),
         ('sponsored-automation', '/sponsored-automation', 'test', 'scheduled'),
         ('projectless-automation', '/projectless-automation', 'test', null)`.execute(legacy.db);
       await sql`insert into session_automations (id, session_id, name, status, schedule, prompt, sponsor_user_id) values
@@ -118,6 +118,14 @@ describe('per-person migrations without the administrator row', () => {
         ('projectless', 'projectless-automation', 'Projectless', 'enabled', '{}', 'check', null)`.execute(
         legacy.db,
       );
+      await sql`insert into users (id, role, status) values ('removed', 'member', 'active')`.execute(
+        legacy.db,
+      );
+      await sql`insert into session_automations (id, session_id, name, status, schedule, prompt, sponsor_user_id)
+        values ('deleted-sponsor', 'deleted-automation', 'Deleted sponsor', 'enabled', '{}', 'check', 'removed')`.execute(
+        legacy.db,
+      );
+      await sql`delete from users where id = 'removed'`.execute(legacy.db);
       expect((await migrator.migrateToLatest()).error).toBeUndefined();
 
       expect(
@@ -127,7 +135,8 @@ describe('per-person migrations without the administrator row', () => {
           .orderBy('id')
           .execute(),
       ).toEqual([
-        { id: 'legacy', sponsor_user_id: 'creator' },
+        { id: 'deleted-sponsor', sponsor_user_id: null },
+        { id: 'legacy', sponsor_user_id: null },
         { id: 'projectless', sponsor_user_id: null },
         { id: 'sponsored', sponsor_user_id: ADMIN },
       ]);

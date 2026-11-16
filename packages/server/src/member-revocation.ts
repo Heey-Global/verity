@@ -71,7 +71,9 @@ export function createMemberRevocation(deps: {
     });
     // Right after the turns: a cancelled turn can still be settling, and until
     // these go it could sign, push or reach the model as the removed person.
-    await step('turn badges', async () => deps.turnCredentials?.revokeUser(projectId, userId));
+    await step('turn badges', () =>
+      Promise.resolve(deps.turnCredentials?.revokeUser(projectId, userId)),
+    );
     await step('signing capability', async () =>
       deps.signingCapabilities?.revokeSandbox(projectId, userId),
     );
