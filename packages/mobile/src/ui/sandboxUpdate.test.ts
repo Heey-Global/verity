@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SandboxUpdate } from '../api.js';
+import { inboxItems } from './inbox.js';
+import { projectCardState } from './projectCardState.js';
+import type { ProjectRecord, SandboxUpdate } from '../api.js';
 import {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
@@ -384,3 +386,30 @@ it.each(['turn', 'dev_server', 'preview', 'unknown'] as const)(
     }
   },
 );
+
+it('keeps current-image recovery failures visible in project cards, inbox and alerts', () => {
+  const value = update({
+    state: 'current',
+    selfRepair: 'converging',
+    recovery: {
+      state: 'failed',
+      at: 1,
+      detail: 'web did not restart',
+    },
+  });
+  const project = {
+    id: 'p',
+    owner: 'test',
+    repo: 'web',
+    state: 'active',
+    provisionError: null,
+    sandboxUpdate: value,
+  } as ProjectRecord;
+  expect(sandboxUpdateNeedsAttention(value)).toBe(true);
+  expect(projectCardState(project).note?.label).toBe('Recovery failed');
+  expect(inboxItems({ sessions: [], projects: [project], now: 2 })[0]?.message).toContain(
+    'web did not restart',
+  );
+  expect(sandboxUpdateIndicator(value)?.label).toBe('Update recovery failed');
+  expect(sandboxUpdateAlertMessage(project, value)).toContain('web did not restart');
+});

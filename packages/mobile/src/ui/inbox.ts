@@ -8,6 +8,7 @@ import {
   isSecuritySandboxUpdate,
   sandboxUpdateBlockedInboxMessage,
   sandboxUpdateNeedsAttention,
+  sandboxUpdateSummary,
 } from './sandboxUpdate.js';
 import { sessionLabel } from './sessionLabel.js';
 import { permissionInputText } from './permissionInput.js';
@@ -503,9 +504,12 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
       key: key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
-      message: update.turnBlocked
-        ? sandboxUpdateBlockedInboxMessage(update)
-        : 'The sandbox could not update itself.',
+      message:
+        update.recovery?.state === 'failed'
+          ? sandboxUpdateSummary(update)!
+          : update.turnBlocked
+            ? sandboxUpdateBlockedInboxMessage(update)
+            : 'The sandbox could not update itself.',
       actions: [openProject],
     };
   }

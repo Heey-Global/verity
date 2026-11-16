@@ -33,6 +33,7 @@ import type { SandboxUpdate } from '../api.js';
 export function sandboxUpdateNeedsAttention(
   update: SandboxUpdate | undefined,
 ): update is SandboxUpdate {
+  if (update?.recovery?.state === 'failed') return true;
   if (update === undefined || update.state === 'current') return false;
   // Narrows away `undefined` only. It used to also promise `selfRepair: 'stalled'`,
   // which callers do read — and which is now one of two reasons to draw attention,
@@ -225,6 +226,7 @@ export function sandboxUpdateAlertMessage(
   project: { owner: string; repo: string },
   update: SandboxUpdate,
 ): string {
+  if (update.recovery?.state === 'failed') return sandboxUpdateSummary(update)!;
   if (update.overdue || update.scheduledTonight) return sandboxUpdateBlockedDetail(update);
   const security = isSecuritySandboxUpdate(update);
   const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
@@ -293,6 +295,8 @@ export function sandboxUpdateIndicator(
   update: SandboxUpdate | undefined,
 ): SandboxUpdateIndicator | undefined {
   if (!sandboxUpdateNeedsAttention(update)) return undefined;
+  if (update.recovery?.state === 'failed')
+    return { label: 'Update recovery failed', icon: 'alert-triangle', tone: 'attention' };
   const security = isSecuritySandboxUpdate(update);
   if (update.turnBlocked) {
     const label = sandboxUpdateWaitingLabel(update);
