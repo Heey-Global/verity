@@ -264,7 +264,10 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       !(await hasCodeContent(clone))
     )
       return null;
-    if (!target || dirname(target) !== join(clone, '.verity-sessions'))
+    // A symlinked or relocated clone root names the same directory by another path.
+    const same = async (a: string, b: string) =>
+      a === b || (await realpath(a).catch(() => a)) === (await realpath(b).catch(() => b));
+    if (!target || !(await same(dirname(target), join(clone, '.verity-sessions'))))
       throw new CodeWorkspaceUnavailableError(
         `${session.worktree} is outside project ${projectId}'s clone`,
       );

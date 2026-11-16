@@ -246,3 +246,20 @@ it('never hands out a legacy Documents view as the default repository checkout',
   });
   expect((await service.list('s')).repositories[0]?.workspace).toBeNull();
 });
+
+it('keeps the Documents view as the default workspace of a local project', async () => {
+  // Recovery leaves local Documents sessions where they are; refusing them would strand them.
+  const project = { id: 'p', kind: 'local', cloneDir: 'notes' };
+  const repository = { id: 'd', projectId: 'p', isDefault: true, removedAt: null };
+  const worktree = '/clones/notes/.verity-document-sessions/view';
+  const store = {
+    getSession: vi.fn(async () => ({ projectId: 'p', planning: 'implemented', worktree })),
+    getProject: vi.fn(async () => project),
+    getProjectRepository: vi.fn(async () => repository),
+    listProjectRepositories: vi.fn(async () => [repository]),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({ store, cloneRoot: '/clones', git: () => vi.fn() });
+  await expect(service.open('s', 'd')).resolves.toMatchObject({ workspace: { worktree } });
+  expect((await service.list('s')).repositories[0]?.workspace).toMatchObject({ worktree });
+});

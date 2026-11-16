@@ -126,9 +126,17 @@ export function createSessionRepositories(deps: {
   git?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
 }) {
   const pending = new Map<string, Promise<unknown>>();
+  /** A repository project's legacy Documents view stands where its checkout belongs.
+   *  Local and Verity Control projects keep their Documents view on purpose. */
+  const documentsInPlaceOfCode = (worktree: string, project: ProjectRecord | undefined) =>
+    isDocumentWorkspace(worktree) &&
+    project !== undefined &&
+    project.kind !== 'local' &&
+    project.kind !== 'control_plane';
   async function list(sessionId: string) {
     const session = await deps.store.getSession(sessionId);
     if (!session?.projectId) throw new Error('project session required');
+    const project = await deps.store.getProject(session.projectId);
     const workspaces = await deps.store.listSessionRepositoryWorkspaces(sessionId);
     return {
       repositories: (
@@ -138,7 +146,7 @@ export function createSessionRepositories(deps: {
         workspace:
           workspaces.find((workspace) => workspace.repositoryId === repository.id) ??
           // A legacy Documents view is not a checkout of the default repository.
-          (repository.isDefault && !isDocumentWorkspace(session.worktree)
+          (repository.isDefault && !documentsInPlaceOfCode(session.worktree, project)
             ? {
                 sessionId,
                 repositoryId: repository.id,
@@ -170,10 +178,10 @@ export function createSessionRepositories(deps: {
           'repository not connected',
           'repository is not connected to this project',
         );
-      if (repository.isDefault && isDocumentWorkspace(session.worktree))
+      if (repository.isDefault && documentsInPlaceOfCode(session.worktree, project))
         throw new RepositoryCheckoutError(
           'code workspace unavailable',
-          'this session works in a Documents view, not a checkout of the default repository',
+          'this session has no code workspace yet; Verity restores it before the next turn',
         );
       if (repository.isDefault)
         return {
