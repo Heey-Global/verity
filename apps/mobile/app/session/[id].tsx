@@ -7984,7 +7984,7 @@ function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest:
         ) : null}
         {descriptor.action === 'connect-account' ? (
           <Button
-            label="My AI accounts"
+            label="Your AI accounts"
             size="compact"
             onPress={() => router.push('/settings/ai-accounts')}
           />

@@ -25,7 +25,7 @@ export default function ConnectProviderScreen() {
     return (
       <SettingsMessage
         title="Not available"
-        subtitle="Open this from My AI accounts."
+        subtitle="Open this from Your AI accounts."
         screenTitle="Connect"
       />
     );
