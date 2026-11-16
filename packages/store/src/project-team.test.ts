@@ -570,3 +570,34 @@ it('retires encrypted replay secrets on confirmation and expiry while retaining 
     confirmed: true,
   });
 });
+
+it('holds Uplink demand while a redeemed join can still recover without an outbox commit', async () => {
+  const created = await invite();
+  const joined = await redeem(created.secret);
+  const operations = await team().dueOperations();
+  for (const operation of operations) await team().completeOperation(operation.operationId);
+  expect(await team().hasTeamWork()).toBe(true);
+  expect(await team().hasTeamWork(new Date(Date.now() + 11 * 60_000))).toBe(false);
+  await team().completeJoin(joined.token);
+  await team().confirmJoin('r1');
+  for (const operation of await team().dueOperations())
+    await team().completeOperation(operation.operationId);
+  expect(await team().hasTeamWork()).toBe(false);
+});
+
+it('queues removal when a pending join is revoked after its commit answer was lost', async () => {
+  const created = await invite();
+  const joined = await redeem(created.secret);
+  await team().completeJoin(joined.token);
+  const person = await ctx.db
+    .selectFrom('users')
+    .select('team_membership_ref')
+    .where('id', '=', joined.userId)
+    .executeTakeFirstOrThrow();
+  await team().revokeInvitation('p1', created.invitation.id);
+  expect(await team().confirmJoin('r1')).toBe(false);
+  expect(
+    (await team().dueOperations()).find((entry) => entry.kind === 'team.membership.remove')
+      ?.payload,
+  ).toMatchObject({ membershipRef: person.team_membership_ref, reason: 'membership_removed' });
+});

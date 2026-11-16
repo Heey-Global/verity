@@ -244,7 +244,7 @@ export class ProjectTeamStore {
       if (row.state === 'redeemed' && row.redeemed_by_user_id !== null) {
         const user = await tx
           .selectFrom('users')
-          .select('status')
+          .select(['status', 'team_membership_ref'])
           .where('id', '=', row.redeemed_by_user_id)
           .executeTakeFirst();
         if (user?.status !== 'disabled') return false;
@@ -253,6 +253,18 @@ export class ProjectTeamStore {
           .where('user_id', '=', row.redeemed_by_user_id)
           .execute();
         await tx.deleteFrom('auth_tokens').where('user_id', '=', row.redeemed_by_user_id).execute();
+        // The commit may already have consumed a seat while its answer was lost.
+        // Uplink's removal tombstone also fences a commit that arrives later.
+        if (user.team_membership_ref !== null)
+          await this.enqueue(
+            tx,
+            'team.membership.remove',
+            {
+              membershipRef: user.team_membership_ref,
+              reason: 'membership_removed',
+            },
+            now,
+          );
       } else if (!['creating', 'open'].includes(row.state)) return false;
       await tx
         .updateTable('project_invitations')
@@ -664,6 +676,18 @@ export class ProjectTeamStore {
       .limit(1)
       .executeTakeFirst();
     if (open !== undefined) return true;
+    const recovering = await this.db
+      .selectFrom('project_invitations as i')
+      .innerJoin('team_join_admissions as a', 'a.redemption_id', 'i.redemption_id')
+      .innerJoin('users as u', 'u.id', 'i.redeemed_by_user_id')
+      .select('i.id')
+      .where('i.state', '=', 'redeemed')
+      .where('u.status', '=', 'disabled')
+      .where('a.expires_at', '>', now)
+      .where('i.expires_at', '>', now)
+      .limit(1)
+      .executeTakeFirst();
+    if (recovering !== undefined) return true;
     const queued = await this.db
       .selectFrom('team_outbox')
       .select('operation_id')
