@@ -73,13 +73,13 @@ export function createSandboxUpdateRecovery(input: {
                   .public()
                   ?.reconcile()
                   .catch(() => undefined);
+                const verified = await input
+                  .devServers()
+                  ?.verifyRecoveryInstances(instances.map((instance) => instance.id));
                 const missing: string[] = [];
                 for (const before of instances) {
                   const instance = await input.store.managedDevServers.getInstance(before.id);
-                  if (
-                    instance?.state !== 'running' ||
-                    !input.devServers()?.hasVerifiedInstance(before.id)
-                  )
+                  if (instance?.state !== 'running' || !verified?.has(before.id))
                     missing.push(
                       `Dev server “${names.get(before.id)}” did not restart${instance?.detail ? `: ${instance.detail}` : ''}`,
                     );

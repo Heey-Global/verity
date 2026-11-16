@@ -107,6 +107,7 @@ import {
 } from './runner-cache-maintenance.js';
 import {
   retireStoppedContainers,
+  boundedContainerRetirement,
   retireCompletedUpdateContainers,
 } from './stopped-container-gc.js';
 import type { DockerGcReport } from './docker-gc.js';
@@ -5233,11 +5234,7 @@ export async function buildEmbeddedServer(
       const result = await retireStoppedContainers({
         docker: projectDocker,
         ...(cacheHelpersOnly || capacityOnly
-          ? {
-              cacheHelpersOnly,
-              maxHelperProjects: 8,
-              helperProjectOffset: cacheHelperProjectOffset,
-            }
+          ? boundedContainerRetirement(cacheHelpersOnly, cacheHelperProjectOffset)
           : {}),
         listProjects: () => eventStore.listProjects(),
         // Acquire lifecycle ownership before preview/storage barriers.

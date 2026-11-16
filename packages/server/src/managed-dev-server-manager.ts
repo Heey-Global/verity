@@ -1,3 +1,4 @@
+import { verifyRecoveryInstances } from './managed-dev-server-recovery.js';
 import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
 import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
@@ -195,6 +196,14 @@ export class ManagedDevServerManager {
 
   hasVerifiedInstance(instanceId: string): boolean {
     return this.liveness.verified(instanceId);
+  }
+
+  verifyRecoveryInstances(ids: readonly string[]): Promise<Set<string>> {
+    return verifyRecoveryInstances(
+      this.options,
+      (project, userId) => this.inSandbox(project, userId),
+      ids,
+    );
   }
 
   hasUnverifiedServers(projectId: string): boolean {

@@ -26,13 +26,19 @@ function fixture() {
   const wait = vi.fn(async (ms: number) => {
     time += ms;
   });
+  const verifyRecoveryInstances = vi.fn(async () => new Set(verified ? ['i'] : []));
   const capture = createSandboxUpdateRecovery({
     store,
     now: () => time,
     wait,
     timeoutMs: 10,
     pollMs: 5,
-    devServers: () => ({ tick: async () => {}, hasVerifiedInstance: () => verified }) as never,
+    devServers: () =>
+      ({
+        tick: async () => {},
+        hasVerifiedInstance: () => verified,
+        verifyRecoveryInstances,
+      }) as never,
     local: () =>
       ({
         reconcile: async () => {},
@@ -42,6 +48,7 @@ function fixture() {
   }).capture;
   return {
     instance,
+    verifyRecoveryInstances,
     capture,
     wait,
     setVerified: (value: boolean) => {
@@ -136,4 +143,14 @@ it('bounds a stalled pre-replacement capture without retiring the sandbox', asyn
   await expect(recovery.capture('p')).rejects.toThrow('capture deadline exceeded');
   release();
   await blocked;
+});
+
+it('rejects cached pre-replacement liveness when fresh discovery fails', async () => {
+  const f = fixture();
+  const check = await f.capture('p');
+  f.verifyRecoveryInstances.mockRejectedValue(new Error('replacement discovery failed'));
+  expect(await check()).toMatchObject({
+    state: 'failed',
+    detail: expect.stringContaining('replacement discovery failed'),
+  });
 });
