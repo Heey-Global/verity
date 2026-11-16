@@ -3,6 +3,7 @@ import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
 import { personalTurnRefusal, resolveTurnSandbox } from './turn-sandbox.js';
+import { personForCredential, personlessWorkAllowed } from './personless-credential.js';
 import {
   sandboxIdentity,
   sandboxNetworkName,
@@ -12,7 +13,7 @@ import {
 import { projectDefaultSandboxUser, recordedDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
-import { createDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
+import { createStoreDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
@@ -546,12 +547,7 @@ export async function buildEmbeddedServer(
     eventStore.getDopplerServiceTokenBytes();
   // ADR 0023 §3: a project's secrets resolve through the Doppler connection of the
   // person the work is for; see doppler-credential.ts.
-  const dopplerCredentialFor = createDopplerCredentials({
-    personal: (userId, projectId) =>
-      eventStore.userDopplerConnections.tokenBytes(userId, projectId),
-    instance: readBrokerDopplerCredential,
-    isAdministrator: (userId) => eventStore.isActiveAdministrator(userId),
-  });
+  const dopplerCredentialFor = createStoreDopplerCredentials(eventStore);
   /** The person a turn acts for while it runs; null for a turn without one. A turn
    *  that is no longer running resolves nothing. */
   const runningTurnPerson = async (sessionId: string, turnId: string): Promise<string | null> => {
@@ -2231,6 +2227,7 @@ export async function buildEmbeddedServer(
           certificate: forgeIdentity.certificate,
           capabilities: ghTokenCapabilities,
           turnCredentials,
+          personlessAllowed: (projectId) => personlessWorkAllowed(eventStore, projectId),
           resolveRepository: (binding, hostname, path) =>
             resolveForgeRepositoryBinding(eventStore, binding, hostname, path),
           allowsHost: async (authority) =>
@@ -4436,9 +4433,9 @@ export async function buildEmbeddedServer(
           ? false
           : brokeredHttpGrants.check({
               ...input,
-              // A turn without a person acts as the administrator, whose grants the
-              // pre-multi-user ones became; see doppler-credential.ts.
-              userId: input.userId ?? legacyAdministratorId,
+              // Work without a person holds the original sandbox's person's grants,
+              // only where personless-credential.ts allows it at all.
+              userId: await personForCredential(eventStore, input.projectId, input.userId),
               bindingId: input.bindingId ?? bindingId,
             });
       },
@@ -4606,7 +4603,7 @@ export async function buildEmbeddedServer(
           return brokeredHttpGrants.check({
             projectId,
             sessionId,
-            userId: initiator?.userId ?? legacyAdministratorId,
+            userId: await personForCredential(eventStore, projectId, initiator?.userId),
             bindingId,
             channel,
             ...target,

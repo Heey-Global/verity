@@ -529,3 +529,20 @@ migrations['0223_automation_sponsor_backfill'] = {
     // Which sponsors this filled in is not recorded; they stay.
   },
 };
+
+migrations['0224_managed_dev_server_legacy_approver'] = {
+  // Approvals given before 0221 recorded the approver were the administrator's,
+  // the only person a project had. Recording that here lets the Server compare
+  // an approval with the person starting the server, and never assume an
+  // unrecorded approver is anyone in particular.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`update managed_dev_servers set approved_by_user_id = '00000000-0000-4000-8000-000000000001'
+      where approved_by_user_id is null and approved_command is not null
+        and exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+  },
+  async down(): Promise<void> {
+    // Which approvers this filled in is not recorded; they stay.
+  },
+};

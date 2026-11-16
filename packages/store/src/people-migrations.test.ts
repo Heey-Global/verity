@@ -135,4 +135,34 @@ describe('per-person migrations without the administrator row', () => {
       await legacy.close();
     }
   }, 60_000);
+
+  // Before 0221 an approval recorded no approver; it was the administrator's. Left
+  // unrecorded it would admit nobody's start once the Server stops assuming that.
+  it('records the administrator as the approver of earlier dev server approvals', async () => {
+    const legacy = await createIsolatedTestDb();
+    try {
+      const migrator = new Migrator({ db: legacy.db, provider: migrationProvider });
+      expect((await migrator.migrateTo('0223_automation_sponsor_backfill')).error).toBeUndefined();
+      await sql`insert into projects (id, owner, repo, container_name, state)
+        values ('served', 'local', 'served', 'served', 'active')`.execute(legacy.db);
+      await sql`insert into managed_dev_servers (id, project_id, name, name_key, command, approved_command, approved_workdir)
+        values ('approved', 'served', 'api', 'api', 'node api.mjs', 'node api.mjs', '.'),
+               ('unapproved', 'served', 'web', 'web', 'node web.mjs', null, null)`.execute(
+        legacy.db,
+      );
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+      expect(
+        await legacy.db
+          .selectFrom('managed_dev_servers')
+          .select(['id', 'approved_by_user_id'])
+          .orderBy('id')
+          .execute(),
+      ).toEqual([
+        { id: 'approved', approved_by_user_id: ADMIN },
+        { id: 'unapproved', approved_by_user_id: null },
+      ]);
+    } finally {
+      await legacy.close();
+    }
+  }, 60_000);
 });
