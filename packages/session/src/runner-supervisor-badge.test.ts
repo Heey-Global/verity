@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import type { Backend } from './backend.js';
 import { InMemoryEventBus } from './bus.js';
-import type { RunnerFrameStore } from './file-tail-runner-client.js';
 import { SupervisorRunnerClient } from './runner-supervisor-client.js';
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -34,7 +33,7 @@ it('mints no badge for a launch that has no start attempt to retire it', async (
   const client = new SupervisorRunnerClient({ runnerSupervisorBackend: 'codex-acp' } as Backend, {
     securityPreflight: false,
     runtimeDir: runtime,
-    store: { ingestRunnerFrame: async () => ({ outcome: 'accepted' }) } as RunnerFrameStore,
+    store: { ingestRunnerFrame: async () => ({ outcome: 'accepted' }) },
     bus: new InMemoryEventBus(),
     turnCapabilities: {
       issue: (turnId) => {
