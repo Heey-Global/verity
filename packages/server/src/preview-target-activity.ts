@@ -42,7 +42,12 @@ export async function previewTargetIsLive(
     );
   }
   if (share.targetKind === 'static-folder' && share.staticPath) {
-    await probes.staticDirectory(target, session?.worktree, share.staticPath);
+    try {
+      await probes.staticDirectory(target, session?.worktree, share.staticPath);
+    } catch (error) {
+      if (confirmedInvalidDirectory(error)) return false;
+      throw error;
+    }
     return true;
   }
   if (share.devServerId) {
@@ -59,4 +64,17 @@ export async function previewTargetIsLive(
     share.targetPort !== null &&
     (await probes.sessionPort(target, session.worktree, share.targetPort))
   );
+}
+
+/** Permission/I/O failures leave evidence unknown; absence and unsafe paths do not. */
+function confirmedInvalidDirectory(error: unknown): boolean {
+  for (let depth = 0; depth < 8 && error instanceof Error; depth++, error = error.cause) {
+    if ('code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return true;
+    if (
+      error.message === 'unsafe static directory' ||
+      error.message === 'static path contains a symlink'
+    )
+      return true;
+  }
+  return false;
 }

@@ -93,7 +93,11 @@ it('reports overdue blockers immediately and does not reuse recovery from an old
     since: Date.now() - 25 * 60 * 60_000,
     reasons: ['dev_server'],
     reportedAt: Date.now(),
-    recovery: { state: 'ready' as const, at: 1, detail: 'Previous services recovered' },
+    recovery: {
+      state: 'ready' as 'ready' | 'failed',
+      at: 1,
+      detail: 'Previous services recovered',
+    },
   };
   const server = buildServer({
     eventStore: ctx.store,
@@ -123,6 +127,18 @@ it('reports overdue blockers immediately and does not reuse recovery from an old
     }>().project.sandboxUpdate;
     expect(current.recovery).toEqual(durable.recovery);
     expect(current.overdue).toBeUndefined();
+    durable.recovery = {
+      state: 'failed',
+      at: Date.now(),
+      detail: 'Replacement failed after retiring old container',
+    };
+    for (const state of ['unknown', 'available'] as const) {
+      status = { ...status, state };
+      const failed = (await server.inject({ method: 'GET', url: `/projects/${id}` })).json<{
+        project: { sandboxUpdate: SandboxUpdateStatus };
+      }>().project.sandboxUpdate;
+      expect(failed.recovery).toEqual(durable.recovery);
+    }
   } finally {
     await server.close();
   }

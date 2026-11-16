@@ -357,3 +357,15 @@ it('names the blocker after a missed nightly window instead of promising tonight
     'activity verification',
   );
 });
+
+it('shows replacement failures ahead of generic unknown-image repair status', () => {
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'unknown',
+        selfRepair: 'stalled',
+        recovery: { state: 'failed', at: 1, detail: 'Replacement failed' },
+      }),
+    ),
+  ).toBe('Update recovery failed — Replacement failed');
+});

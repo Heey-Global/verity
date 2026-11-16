@@ -129,12 +129,13 @@ export function sandboxUpdateBlockedInboxMessage(update: SandboxUpdate): string 
  * - `stalled`     — behind, and Verity has given up retrying.
  */
 export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string | null {
+  if (update?.recovery?.state === 'failed')
+    return `Update recovery failed — ${update.recovery.detail}`;
   if (update?.selfRepair === 'stalled' && update.state === 'unknown') {
     return 'Sandbox repair stuck — the sandbox could not be rebuilt';
   }
   if (update?.recovery) {
     if (update.recovery.state === 'checking') return 'Updated — checking dev servers and previews';
-    if (update.recovery.state === 'failed') return `Updated — ${update.recovery.detail}`;
     if (update.recovery.state === 'ready')
       return 'Updated — dev servers and previews are back online';
   }

@@ -90,8 +90,16 @@ describe('preview target activity', () => {
     f.share.staticPath = 'public';
     f.share.targetPort = null;
     expect(await f.live()).toBe(true);
-    f.probes.staticDirectory.mockRejectedValue(new Error('missing'));
-    await expect(f.live()).rejects.toThrow('missing');
+    f.probes.staticDirectory.mockRejectedValue(
+      new Error('invalid directory', {
+        cause: Object.assign(new Error('missing'), { code: 'ENOENT' }),
+      }),
+    );
+    expect(await f.live()).toBe(false);
+    f.probes.staticDirectory.mockRejectedValue(
+      Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+    );
+    await expect(f.live()).rejects.toThrow('permission denied');
   });
   it.each(['revoked', 'creating', 'revoking'] as const)('ignores %s intent', async (state) => {
     const f = fixture();

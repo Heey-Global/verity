@@ -5342,11 +5342,8 @@ export class ProvisionerImpl implements Provisioner {
     let containerPhaseStarted = false;
     let replacementStarted = false;
 
-    // Resolve/build and, for registry-backed images, pull the replacement while
-    // the current sandbox is still serving. A registry timeout must not turn a
-    // usable (if stale) sandbox into a missing one. Passing the resolved image
-    // into the container phase also pins the create to exactly what this
-    // preflight validated instead of resolving a possibly moved tag twice.
+    // Prepare and pin the replacement while the current sandbox still serves traffic.
+    // Registry failures must not strand it, and moved tags must not be resolved twice.
     const dirs = projectDirs(this.opts.hostCloneRoot, project);
     let replacementImage: ProjectImage;
     try {
@@ -5373,6 +5370,7 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`replacement image preparation failed: ${detail}`, cause);
     }
 
+    let checkRecovery: (() => Promise<{ state: 'ready' | 'failed'; detail: string }>) | undefined;
     const replace = async (): Promise<ProjectRecord> => {
       this.resolveRelayClaudeGateway(project);
       const egress = await this.egressFor();
@@ -5460,8 +5458,8 @@ export class ProvisionerImpl implements Provisioner {
       containerPhaseStarted = true;
       return this.runContainerPhase(project, true, containerPhaseOpts, replacementImage);
     };
-    const checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
     try {
+      checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
       const updated = await (this.opts.withContainerReplace
         ? this.opts.withContainerReplace(project, replace)
         : replace());

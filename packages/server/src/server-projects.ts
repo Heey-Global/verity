@@ -291,7 +291,9 @@ export function installProjects(
       ...(blocked && durable && Date.now() - durable.since >= 24 * 60 * 60_000
         ? { overdue: true }
         : {}),
-      ...(status.state === 'current' && durable?.recovery ? { recovery: durable.recovery } : {}),
+      ...((status.state === 'current' || durable?.recovery?.state === 'failed') && durable?.recovery
+        ? { recovery: durable.recovery }
+        : {}),
     };
     const withFailure =
       failure === undefined

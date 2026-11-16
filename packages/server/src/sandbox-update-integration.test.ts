@@ -1,3 +1,4 @@
+import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 import type { ProvisionerOptions } from './provisioner.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -219,4 +220,36 @@ it('persists recovery before retiring the old generation and records a failed re
   expect(persistedBeforeStop).toBe(true);
   expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state).toBe('failed');
   expect(check).not.toHaveBeenCalled();
+});
+
+it('restores the previous project status when recovery capture fails after a forced image rebuild', async () => {
+  const capture = vi.fn(async () => {
+    expect((await ctx.store.getProject('p'))?.provisionWarning).toBe(
+      PROJECT_IMAGE_REBUILDING_WARNING,
+    );
+    throw new Error('recovery capture timed out');
+  });
+  const f = await fixture(12, 0, { sandboxUpdateRecovery: { capture } });
+  await ctx.store.updateProjectState('p', 'active', null, 'Previous warning');
+  f.provisioner.attachProjectBusyProbe(async () => []);
+  await expect(f.provisioner.recreateContainer('p', { forceRebuild: true })).rejects.toThrow(
+    'recovery capture timed out',
+  );
+  expect(capture).toHaveBeenCalledExactlyOnceWith('p');
+  expect(f.internals.resolveOrBuildImage).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
+    true,
+    undefined,
+  );
+  expect(await ctx.store.getProject('p')).toMatchObject({
+    state: 'active',
+    provisionError: null,
+    provisionWarning: 'Previous warning',
+  });
+  expect(f.internals.runContainerPhase).not.toHaveBeenCalled();
+  expect(
+    f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+  ).toBe(false);
+  expect(f.provisioner.isProjectProvisioning('p')).toBe(false);
 });
