@@ -81,7 +81,7 @@ function RootTab({
       <Text
         variant="footnote"
         tone={active ? 'default' : 'muted'}
-        style={active ? styles.labelActive : null}
+        style={active ? styles.labelActive : undefined}
       >
         {label}
       </Text>

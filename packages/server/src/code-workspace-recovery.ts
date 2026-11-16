@@ -66,7 +66,7 @@ export interface CodeWorkspaceConversion {
 }
 
 /** Runs Git and returns its standard output. */
-export type GitOutputRunner = (args: readonly string[]) => Promise<string>;
+type GitOutputRunner = (args: readonly string[]) => Promise<string>;
 
 export interface CodeWorkspaceRecoveryDeps {
   store: Pick<EventStore, 'getSession' | 'getProject' | 'getSessionMove'> & {
