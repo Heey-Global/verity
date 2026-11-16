@@ -4583,6 +4583,10 @@ export class ProvisionerImpl implements Provisioner {
         (project.state === 'active' ||
           (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
     );
+    if (callbacks.updateAvailable === undefined)
+      for (const project of pending)
+        if (this.sandboxUpdateTracker.states.get(project.id)?.reasons.length)
+          imageDeferredThisPass.add(project.id);
     let cursor = 0;
     const migrateNext = async (): Promise<void> => {
       for (;;) {
@@ -4683,6 +4687,8 @@ export class ProvisionerImpl implements Provisioner {
             continue;
           }
           if (action !== 'migrate') {
+            if (classification === 'foreign' || classification === 'absent')
+              imageDeferredThisPass.delete(project.id);
             // failure streak is over regardless of what ended it (this reconciler, a
             // manual recreate, a deprovision) — and, crucially, this reconciler will
             // NOT come back for this project on its own: it acts on relay generation
@@ -4803,6 +4809,7 @@ export class ProvisionerImpl implements Provisioner {
           // so retract the report now rather than leaving it up for a tick.
           this.disconnectedSandboxes.delete(project.id);
           this.noteSandboxRebuilt(project.id);
+          imageDeferredThisPass.delete(project.id);
           if (classification === 'orphaned')
             callbacks.onRepaired?.(project.id, {
               interruptedTurn: busy,
@@ -4875,14 +4882,8 @@ export class ProvisionerImpl implements Provisioner {
     await Promise.all(
       Array.from({ length: Math.min(RELAY_MIGRATION_CONCURRENCY, pending.length) }, migrateNext),
     );
-    // Never a silent cap: a throttled pass looks exactly like a finished one from
-    // the outside — some sandboxes rebuilt, no errors — and reading that as "the
-    // fleet is repaired" is precisely the wrong conclusion while N projects are
-    // still drifted and waiting for the next tick. Named, not just counted: a count
-    // says the fleet is not done, the ids say which projects are still answering 502
-    // — the question anyone reading this line actually has. `attempted`, not
-    // `recreated`: the slot is charged when the recreate throws (see above), so a
-    // pass whose four rebuilds all failed would otherwise report four repairs.
+    // Name throttled projects: a completed pass may still leave drifted sandboxes.
+    // Count failed attempts too, so this message never implies successful repairs.
     if (driftThrottledThisPass.length > 0) {
       callbacks.onEnvDriftThrottled?.({
         deferred: driftThrottledThisPass.length,
@@ -4893,12 +4894,8 @@ export class ProvisionerImpl implements Provisioner {
     for (const projectId of this.orphanDeferrals.keys()) {
       if (!deferredThisPass.has(projectId)) this.orphanDeferrals.delete(projectId);
     }
-    // Same rewrite, same reason: the project that went idle and got its update is
-    // not in this pass's set, so the report retracts itself on the tick the wait
-    // ends rather than on the next restart. A project that merely dropped out of
-    // the pass — deprovisioned, no longer active, a provision in flight — also
-    // clears, which is the conservative direction for a claim that an operator has
-    // to act on.
+    // Retract ended waits, but failed update discovery cannot reset their clock.
+    // Successful discovery, completed replacement or terminal lifecycle state can.
     for (const projectId of this.imageUpdateDeferralsSince.keys()) {
       if (!imageDeferredThisPass.has(projectId)) {
         this.imageUpdateDeferralsSince.delete(projectId);

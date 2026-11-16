@@ -253,3 +253,32 @@ it('restores the previous project status when recovery capture fails after a for
   ).toBe(false);
   expect(f.provisioner.isProjectProvisioning('p')).toBe(false);
 });
+
+it('keeps the durable waiting clock through failed update discovery until a confirmed empty result', async () => {
+  const f = await fixture(12);
+  f.provisioner.attachProjectBusyProbe(async () => ['dev_server']);
+  const recreate = vi.spyOn(f.provisioner, 'recreateContainer').mockResolvedValue(f.project);
+  await f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set(['p']) });
+  const initial = (await ctx.store.sandboxUpdateState.list()).get('p');
+  expect(initial?.reasons).toEqual(['dev_server']);
+  await f.provisioner.reconcileRelays([f.project], {});
+  expect((await ctx.store.sandboxUpdateState.list()).get('p')).toEqual(initial);
+  expect(f.provisioner.sandboxUpdateStates().get('p')).toEqual(initial);
+  await f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set() });
+  expect((await ctx.store.sandboxUpdateState.list()).has('p')).toBe(false);
+  expect(f.provisioner.sandboxUpdateStates().has('p')).toBe(false);
+  expect(recreate).not.toHaveBeenCalled();
+});
+
+it.each(['sleeping', 'absent'] as const)(
+  'clears a wait when lifecycle becomes %s despite failed update discovery',
+  async (state) => {
+    const f = await fixture(12);
+    f.provisioner.attachProjectBusyProbe(async () => ['preview']);
+    await f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set(['p']) });
+    expect((await ctx.store.sandboxUpdateState.list()).has('p')).toBe(true);
+    await ctx.store.updateProjectState('p', state);
+    await f.provisioner.reconcileRelays([{ ...f.project, state }], {});
+    expect((await ctx.store.sandboxUpdateState.list()).has('p')).toBe(false);
+  },
+);
