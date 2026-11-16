@@ -3503,6 +3503,7 @@ export async function buildEmbeddedServer(
                 project?.state !== 'sleeping' ||
                 project.imageOverrideRef ||
                 managedDevServerManager?.hasRunningServers(projectId) ||
+                managedDevServerManager?.hasUnverifiedServers(projectId) ||
                 (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
                 (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
                   ['creating', 'active', 'revoking'].includes(share.state),
@@ -5212,13 +5213,15 @@ export async function buildEmbeddedServer(
           ? boundedContainerRetirement(cacheHelpersOnly, cacheHelperProjectOffset)
           : {}),
         listProjects: () => eventStore.listProjects(),
-        // Acquire lifecycle ownership before preview/storage barriers.
         withProjectMutation: (id, run) =>
           provisioner.withProjectExclusiveMutation(id, () =>
             withStorageProjectMutation(
               id,
               async () => {
-                if (managedDevServerManager?.hasRunningServers(id))
+                if (
+                  managedDevServerManager?.hasRunningServers(id) ||
+                  managedDevServerManager?.hasUnverifiedServers(id)
+                )
                   throw new Error('Managed dev server is active');
                 if (
                   (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
@@ -5339,7 +5342,6 @@ export async function buildEmbeddedServer(
       defaultSandboxUser: (projectId) => recordedDefaultSandboxUser(eventStore, projectId),
     });
   }
-
   if (
     provisioner !== undefined &&
     (config.runnerSupervisor === true || claudeEgressIdentity !== undefined)
@@ -5359,13 +5361,11 @@ export async function buildEmbeddedServer(
       reportReconcileError,
     );
   }
-
   // Last thing before the server object exists, because from here on the only way out is
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
   startTranscriptSweep();
   sessionCleanupWorker?.start();
-
   // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
   // teardown instead of double-closing the app/db.
   let closing: Promise<void> | undefined;

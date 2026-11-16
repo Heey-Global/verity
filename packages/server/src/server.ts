@@ -260,11 +260,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
       (sessionId === null
         ? deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
+          deps.managedDevServerManager?.hasUnverifiedServers(projectId) === true ||
           (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0
         : deps.managedDevServerManager?.hasRunningSessionServers(sessionId) === true ||
           (deps.localPreviewManager?.list(sessionId).length ?? 0) > 0),
   );
-  /** Register an admitted spawn; the returned callback releases it. */
   const beginProjectSpawn = (projectId: string): (() => void) => {
     let finish: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
