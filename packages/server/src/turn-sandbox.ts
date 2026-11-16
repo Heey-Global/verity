@@ -1,6 +1,6 @@
 import type { EventStore } from '@verity/store';
 import { personlessWorkAllowed, PERSONLESS_TURN_REFUSAL } from './personless-credential.js';
-import { projectDefaultSandboxUser } from './project-sandbox.js';
+import { originalSandboxUser, projectDefaultSandboxUser } from './project-sandbox.js';
 
 /** The sandbox a turn runs in (ADR 0023 §4). */
 export interface TurnSandbox {
@@ -69,4 +69,34 @@ export async function personalTurnRefusal(
   if (provider === undefined) return personalLoginMissing('claude');
   const own = await store.userProviderConnections.get(sandbox.userId, provider);
   return own === undefined ? personalLoginMissing(provider) : undefined;
+}
+
+/** The provider a Verity model id runs on. */
+export function turnProviderOf(model: string): TurnProvider {
+  return model.startsWith('codex/') ? 'codex' : model.startsWith('verity/') ? 'opencode' : 'claude';
+}
+
+/** Shown when a person in a shared project has no account for any usable model. */
+export const NO_PERSONAL_MODEL =
+  'Connect your own AI account in Verity to send messages in this shared project.';
+
+/**
+ * Why `viewer` may not choose `model` for their own turns in a project, or
+ * `undefined`: the same rule `personalTurnRefusal` applies when the turn starts,
+ * asked before anything is recorded, and without recording the project's
+ * original sandbox. Choosing a model their accounts cannot serve would only
+ * fail later, or fall back to a model someone else's account serves.
+ */
+export async function personModelRefusal(
+  store: Pick<EventStore, 'userProviderConnections' | 'projectSandboxes' | 'projectTeam'>,
+  projectId: string,
+  viewer: string,
+  model: string,
+): Promise<string | undefined> {
+  const owner = await originalSandboxUser(store, projectId);
+  return personalTurnRefusal(
+    store,
+    { userId: viewer, projectDefault: viewer === owner },
+    turnProviderOf(model),
+  );
 }

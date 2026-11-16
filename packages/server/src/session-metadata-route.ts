@@ -47,6 +47,13 @@ export interface SessionMetadataRouteDeps {
     viewer: string,
     model: string,
   ) => Promise<boolean>;
+  /** Why `viewer` may not choose `model` as their own; checked before anything is
+   *  recorded, so a choice their accounts cannot serve is never stored. */
+  personModelRefusal?: (
+    session: { projectId: string | null },
+    viewer: string,
+    model: string,
+  ) => Promise<string | undefined>;
 }
 
 /** Registers atomic session rename, favorite and backend/model handoff updates. */
@@ -88,6 +95,14 @@ export function registerSessionMetadataRoute(
       if (rejection !== undefined) {
         reply.code(400);
         return { error: rejection };
+      }
+    }
+
+    if (model !== undefined && current !== undefined && deps.personModelRefusal !== undefined) {
+      const refusal = await deps.personModelRefusal(current, viewerId(request), model);
+      if (refusal !== undefined) {
+        reply.code(400);
+        return { error: refusal };
       }
     }
 
