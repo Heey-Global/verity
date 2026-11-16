@@ -1,3 +1,5 @@
+import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
+import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
@@ -107,6 +109,7 @@ import {
 } from './runner-cache-maintenance.js';
 import {
   retireStoppedContainers,
+  boundedContainerRetirement,
   retireCompletedUpdateContainers,
 } from './stopped-container-gc.js';
 import type { DockerGcReport } from './docker-gc.js';
@@ -1325,12 +1328,7 @@ export async function buildEmbeddedServer(
     return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
   };
 
-  // Multi-repo fleet-registry provisioning (concept §19.3/#19.8, #174):
-  // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
-  // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
-  // the DB-backed GitHub App mint.
-  // Long image pulls (sandbox, toolkit, relay and preview images) report their
-  // progress here, rate-limited by the client.
+  // DB-backed GitHub App credentials and managed Docker infrastructure.
   const logDockerPull = (message: string): void => {
     console.info(`verity: ${message}`);
   };
@@ -1393,15 +1391,14 @@ export async function buildEmbeddedServer(
   const withPreviewProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
-  ): Promise<T> => {
-    const runPublic = () =>
-      previewShareManager
-        ? previewShareManager.withProjectMutation(projectId, mutation)
-        : mutation();
-    return localPreviewManager
-      ? localPreviewManager.withProjectMutation(projectId, runPublic)
-      : runPublic();
-  };
+    beforeRetire?: () => Promise<void>,
+  ): Promise<T> =>
+    mutatePreviewProject(
+      projectId,
+      mutation,
+      { local: localPreviewManager, public: previewShareManager },
+      beforeRetire,
+    );
   const withStorageProjectMutation = async <T>(
     projectId: string,
     mutation: () => Promise<T>,
@@ -1550,8 +1547,8 @@ export async function buildEmbeddedServer(
           dockerBaseUrl: config.dockerBaseUrl,
           listListeningProcesses,
         }).ensurePreviewTarget(project, port),
-      listSessionServers: (sessionId) =>
-        listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+      listSessionServers: (sessionId, options) =>
+        listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
       listListeningProcesses,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
@@ -2754,12 +2751,18 @@ export async function buildEmbeddedServer(
       undefined,
       '/run/verity-buildkit',
     );
-    const nativeEvidence = startNativeRetirementEvidence(
+    const retirementEvidence = startNativeRetirementEvidence(
       () => buildStorage?.retirementInventoryEmpty() === true,
     );
-    // Registered after app construction below.
-    stopNativeEvidence = () => nativeEvidence.stop();
+    stopNativeEvidence = () => retirementEvidence.stop();
     provisioner = new ProvisionerImpl({
+      ...sandboxUpdateLifecycleHooks({
+        store: eventStore,
+        devServers: () => managedDevServerManager,
+        local: () => localPreviewManager,
+        public: () => previewShareManager,
+        log: () => app.log,
+      }),
       beforeRunnerAdmission: async (project) => {
         await runPendingCleanup?.(project.id);
       },
@@ -2790,9 +2793,6 @@ export async function buildEmbeddedServer(
       projectTokenMint,
       forgeRepositoryAccess,
       veritySettings: () => eventStore.getVeritySettings(),
-      // Linking a local project to a repository that already has history publishes an
-      // import branch and opens the pull request that carries it onto the default
-      // branch — the token is the one-shot, target-scoped mint the link route made.
       openPullRequest: async (target, token, pr) => {
         const provider = await projectForgeProvider(eventStore, githubForge, {
           ...target,
@@ -2884,10 +2884,11 @@ export async function buildEmbeddedServer(
       onSandboxWakeFallback: (event) => {
         app.log.warn(event, 'verity: sleeping Sandbox requires cold wake fallback');
       },
-      withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
-        withPreviewProjectMutation(project.id, mutation),
-      // Named data volume (M16): per-project mounts become volume subpaths instead
-      // of host binds, so sibling sandboxes need no host-path knowledge.
+      withContainerReplace: <T>(
+        project: ProjectRecord,
+        mutation: () => Promise<T>,
+        beforeRetire?: () => Promise<void>,
+      ) => withPreviewProjectMutation(project.id, mutation, beforeRetire),
       ...(config.dataVolume !== undefined ? { dataVolume: config.dataVolume } : {}),
       ...(config.dataVolumeRoot !== undefined ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
       ...(config.runnerSupervisor !== undefined
@@ -2899,9 +2900,7 @@ export async function buildEmbeddedServer(
       ...(config.runnerSupervisorTrustedDefaultImage !== undefined
         ? { runnerSupervisorTrustedDefaultImage: config.runnerSupervisorTrustedDefaultImage }
         : {}),
-      // Sandbox runtime hardening (security review C1). Pass-through of the tunables;
-      // the provisioner applies the hardened defaults (CapDrop ALL, no-new-privileges,
-      // PidsLimit) whether or not these are set.
+      // Provisioner enforces hardened defaults for unset runtime limits.
       ...(config.sandboxPidsLimit !== undefined
         ? { sandboxPidsLimit: config.sandboxPidsLimit }
         : {}),
@@ -3038,8 +3037,8 @@ export async function buildEmbeddedServer(
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
           listListeningProcesses,
-          listSessionServers: (sessionId) =>
-            listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+          listSessionServers: (sessionId, options) =>
+            listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,
@@ -3501,6 +3500,7 @@ export async function buildEmbeddedServer(
                 project?.state !== 'sleeping' ||
                 project.imageOverrideRef ||
                 managedDevServerManager?.hasRunningServers(projectId) ||
+                managedDevServerManager?.hasUnverifiedServers(projectId) ||
                 (localPreviewManager?.listProject(projectId).length ?? 0) > 0 ||
                 (await eventStore.listPublicPreviewShares(projectId)).some((share) =>
                   ['creating', 'active', 'revoking'].includes(share.state),
@@ -5198,27 +5198,27 @@ export async function buildEmbeddedServer(
   if (projectDocker !== undefined && config.dockerGc !== false) {
     let nativeMaintenanceRequested: string | null = null;
     let cacheHelperProjectOffset = 0;
-    const retireProjectContainers = async (cacheHelpersOnly: boolean) => {
-      const removed = cacheHelpersOnly ? [] : await retireCompletedUpdateContainers(projectDocker);
+    const retireProjectContainers = async (cacheHelpersOnly: boolean, capacityOnly = false) => {
+      const removed =
+        cacheHelpersOnly || capacityOnly
+          ? []
+          : await retireCompletedUpdateContainers(projectDocker);
       if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
       const result = await retireStoppedContainers({
         docker: projectDocker,
-        ...(cacheHelpersOnly
-          ? {
-              cacheHelpersOnly: true,
-              maxHelperProjects: 8,
-              helperProjectOffset: cacheHelperProjectOffset,
-            }
+        ...(cacheHelpersOnly || capacityOnly
+          ? boundedContainerRetirement(cacheHelpersOnly, cacheHelperProjectOffset)
           : {}),
         listProjects: () => eventStore.listProjects(),
-        // Match helper execution: acquire lifecycle ownership before preview/storage
-        // barriers, and hold both until result collection/retention finishes.
         withProjectMutation: (id, run) =>
           provisioner.withProjectExclusiveMutation(id, () =>
             withStorageProjectMutation(
               id,
               async () => {
-                if (managedDevServerManager?.hasRunningServers(id))
+                if (
+                  managedDevServerManager?.hasRunningServers(id) ||
+                  managedDevServerManager?.hasUnverifiedServers(id)
+                )
                   throw new Error('Managed dev server is active');
                 if (
                   (localPreviewManager?.listProject(id).length ?? 0) > 0 ||
@@ -5229,11 +5229,11 @@ export async function buildEmbeddedServer(
                   throw new Error('Preview is active');
                 await run();
               },
-              { waitForIdle: !cacheHelpersOnly },
+              { waitForIdle: !cacheHelpersOnly && !capacityOnly },
             ),
           ),
       });
-      if (cacheHelpersOnly) cacheHelperProjectOffset += 8;
+      if (cacheHelpersOnly || capacityOnly) cacheHelperProjectOffset += 8;
       return {
         removed: [...removed, ...result.removed],
         errors: result.errors,
@@ -5244,9 +5244,6 @@ export async function buildEmbeddedServer(
       docker: projectDocker,
       log: app.log,
       ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-      // Free space is measured on the volume that actually fills up — the Verity
-      // data root shares the host filesystem with /var/lib/docker in the reference
-      // install, so this is the number that matters for disk-pressure escalation.
       ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
       // Read through the `let` on every pass, not captured once: the lifecycle is
       // constructed below this block, and its held set changes with every
@@ -5269,6 +5266,7 @@ export async function buildEmbeddedServer(
       },
       retireContainers: () => retireProjectContainers(false),
       retireCacheHelpers: () => retireProjectContainers(true),
+      retireCapacityContainers: () => retireProjectContainers(false, true),
       imageReferences,
       onProjectImageRemoved: (image) =>
         auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),
@@ -5341,7 +5339,6 @@ export async function buildEmbeddedServer(
       defaultSandboxUser: (projectId) => recordedDefaultSandboxUser(eventStore, projectId),
     });
   }
-
   if (
     provisioner !== undefined &&
     (config.runnerSupervisor === true || claudeEgressIdentity !== undefined)
@@ -5361,13 +5358,11 @@ export async function buildEmbeddedServer(
       reportReconcileError,
     );
   }
-
   // Last thing before the server object exists, because from here on the only way out is
   // the `return` below: everything that could still have thrown has run, so the caller is
   // guaranteed to receive the handle that can stop this walk.
   startTranscriptSweep();
   sessionCleanupWorker?.start();
-
   // Latch so a double SIGINT/SIGTERM (or any repeat call) coalesces onto one
   // teardown instead of double-closing the app/db.
   let closing: Promise<void> | undefined;

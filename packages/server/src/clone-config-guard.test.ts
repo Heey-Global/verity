@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type CloneConfigGit,
   defaultCloneConfigGit,
+  ensureCloneWorktreeConfig,
   inspectCloneWorktreeConfig,
   removeSessionWorktreeConfig,
   reportCloneWorktreeConfigs,
@@ -208,4 +209,49 @@ describe('reportCloneWorktreeConfigs', () => {
     expect(readFileSync(config, 'utf8')).toBe(before);
     expect(readdirSync(root).sort()).toEqual(['not-a-repo', 'other-repo', 'owner-repo']);
   });
+});
+
+it('repairs enabled main config.worktree without changing legitimate linked worktree config', async () => {
+  git(
+    '-C',
+    clone,
+    '-c',
+    'user.name=Fixture',
+    '-c',
+    'user.email=fixture@example.test',
+    'commit',
+    '--allow-empty',
+    '-qm',
+    'fixture',
+  );
+  const linked = join(root, 'linked');
+  git('-C', clone, 'worktree', 'add', '-qb', 'linked', linked);
+  git('config', '--file', config, 'extensions.worktreeConfig', 'true');
+  const linkedConfig = join(clone, '.git', 'worktrees', 'linked', 'config.worktree');
+  writeFileSync(linkedConfig, `[core]\nworktree = ${linked}\n`);
+  const before = readFileSync(linkedConfig);
+  const mainConfig = join(clone, '.git', 'config.worktree');
+  writeFileSync(mainConfig, '[core]\nworktree = /work/.verity-sessions/old\n');
+  const fileOnly: CloneConfigGit = async (args) => {
+    // Opening the poisoned repository fails on hosts where /work does not exist.
+    expect(args).toContain('--file');
+    expect(args).not.toContain('-C');
+    return defaultCloneConfigGit(args);
+  };
+  const options = {
+    clonePath: clone,
+    projectId: 'fixture',
+    backupRoot: join(root, 'backups'),
+    git: fileOnly,
+    fail: (message: string) => new Error(message),
+  };
+  await ensureCloneWorktreeConfig(options);
+  expect(await inspectCloneWorktreeConfig(clone, fileOnly)).toEqual({ kind: 'clean' });
+  expect(readFileSync(linkedConfig)).toEqual(before);
+  expect(git('-C', linked, 'rev-parse', '--show-toplevel').trim()).toBe(linked);
+  // A later writer must be repaired again, including the sandbox-only root spelling.
+  writeFileSync(mainConfig, '[core]\nworktree = /work\n');
+  await ensureCloneWorktreeConfig(options);
+  expect(await inspectCloneWorktreeConfig(clone, fileOnly)).toEqual({ kind: 'clean' });
+  expect(readFileSync(linkedConfig)).toEqual(before);
 });

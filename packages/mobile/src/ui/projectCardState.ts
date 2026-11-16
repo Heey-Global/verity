@@ -91,6 +91,7 @@ export function projectCardState(project: CardProject): ProjectCardState {
 /** A short name for what should be checked on a project that runs. */
 function runningWarning(project: CardProject): string | undefined {
   const update = project.sandboxUpdate;
+  if (update?.recovery?.state === 'failed') return 'Recovery failed';
   if (sandboxUpdateNeedsAttention(update))
     return update.turnBlocked ? 'Update waiting' : 'Update stuck';
   const warning = project.provisionWarning;

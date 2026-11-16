@@ -11,6 +11,7 @@ import {
 } from './message-projection.js';
 export { waitForMessageProjectionWork, waitForPendingMessageProjections };
 import { ProjectInquiryStore } from './project-inquiries.js';
+import { SandboxUpdateStateStore } from './sandbox-update-state.js';
 import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
 import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
@@ -152,7 +153,6 @@ export type MockupVerdict = 'open' | 'approved' | 'discarded';
  *  discarded and never as approved. */
 export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
   if (!Array.isArray(raw)) return [];
-  // A malformed entry is dropped rather than failing every load of the session.
   const entries = raw.filter(
     (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
       typeof entry === 'object' &&
@@ -299,8 +299,6 @@ export type ProjectKind = 'github' | 'forgejo' | 'control_plane' | 'local';
  *  and makes "is this project on GitHub yet" a single-column question. The
  *  leading underscores are forbidden by GitHub's account-name grammar, so this
  *  namespace cannot collide with an installation repository. */
-// Leading underscores make this impossible as a GitHub account name while
-// remaining safe in the DB, Docker names, and managed clone paths.
 export const LOCAL_PROJECT_OWNER = '__local__';
 
 /** Thrown when `(owner, repo)` is spoken for by a DIFFERENT project than the one
@@ -1283,8 +1281,6 @@ const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
  * there is no real instance to name. Excluded from the turn→instance binding check. */
 const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
 
-// PGlite has one physical connection, where advisory locks are re-entrant even
-// through different EventStore wrappers. Keep physical cleanup exclusive there too.
 const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
 
 /** The person a backend-state key is scoped to, or '' for the unscoped key. */
@@ -1604,6 +1600,7 @@ export class EventStore implements EventSink {
     this.projectInquiries = new ProjectInquiryStore(db);
     this.wikiOccasions = new WikiOccasionStore(db);
     this.wikiMaintenance = new WikiMaintenanceStore(db);
+    this.sandboxUpdateState = new SandboxUpdateStateStore(db);
     this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
@@ -1625,6 +1622,7 @@ export class EventStore implements EventSink {
   readonly wikiOccasions: WikiOccasionStore;
   readonly wikiMaintenance: WikiMaintenanceStore;
   /** Automatic Sandbox repairs still owed after a failed recreate. */
+  readonly sandboxUpdateState: SandboxUpdateStateStore;
   readonly sandboxRepairIntents: SandboxRepairIntentStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;

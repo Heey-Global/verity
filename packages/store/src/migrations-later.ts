@@ -557,3 +557,15 @@ migrations['0226_team_join_replay_device'] = {
       drop column device_token_id`.execute(db);
   },
 };
+
+migrations['0227_sandbox_update_state'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table sandbox_update_state (
+      project_id text primary key references projects(id) on delete cascade,
+      value jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table sandbox_update_state`.execute(db);
+  },
+};

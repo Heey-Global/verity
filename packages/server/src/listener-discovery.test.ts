@@ -2,10 +2,11 @@ import { PassThrough } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import type { EventStore, ProjectRecord } from '@verity/store';
+import type { EventStore, ProjectRecord, PublicPreviewShareRecord } from '@verity/store';
 import { InMemoryEventBus } from '@verity/session';
 import type { ListeningProcess } from './listening-ports.js';
 import { ListenerDiscovery } from './listener-discovery.js';
+import { PreviewShareManager, type PreviewShareManagerOptions } from './preview-share-manager.js';
 
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
@@ -556,4 +557,59 @@ describe('independent listener discovery', () => {
       discovery.close();
     }
   });
+});
+
+it('uses strict fresh evidence for shares while retaining cached discovery for the UI', async () => {
+  const project = {
+    id: 'p',
+    owner: 'org',
+    repo: 'repo',
+    containerName: 'sandbox',
+    state: 'active',
+  } as ProjectRecord;
+  const session = { sessionId: 's', projectId: 'p', worktree: '/data/org-repo/s' };
+  const store = {
+    getProject: async () => project,
+    getSession: async () => session,
+    listSessions: async () => [session],
+  } as unknown as EventStore;
+  const listener = { port: 3000, pid: 1, cwd: '/work/s', command: 'node', bind: 'any' as const };
+  const scan = vi.fn(async () => [listener]);
+  const discovery = new ListenerDiscovery({
+    eventStore: store,
+    bus: new InMemoryEventBus(),
+    hostCloneRoot: '/data',
+    scan,
+  });
+  try {
+    expect(await discovery.listSessionDevServers('s')).toHaveLength(1);
+    scan.mockResolvedValueOnce([]);
+    expect(await discovery.listSessionDevServers('s', { fresh: true })).toEqual([]);
+    expect(scan).toHaveBeenCalledTimes(2);
+    scan.mockResolvedValueOnce([listener]);
+    expect(await discovery.listSessionDevServers('s', { fresh: true })).toHaveLength(1);
+    const share = {
+      id: 'share',
+      projectId: 'p',
+      sessionId: 's',
+      managedInstanceId: null,
+      targetKind: 'dev-server',
+      targetPort: 3000,
+      state: 'active',
+      expiresAt: new Date('2030-01-01'),
+    } as PublicPreviewShareRecord;
+    const manager = new PreviewShareManager({
+      store,
+      docker: { inspectContainer: async () => ({ running: true }) },
+      listSessionServers: (sessionId: string, options?: { fresh?: boolean }) =>
+        discovery.listSessionDevServers(sessionId, options),
+    } as unknown as PreviewShareManagerOptions);
+    scan.mockRejectedValueOnce(new Error('runtime unavailable'));
+    await expect(manager.hasLiveTarget(share)).rejects.toThrow('runtime unavailable');
+    expect(scan).toHaveBeenCalledTimes(4);
+    // UI discovery can still show its last snapshot; share probes cannot renew it.
+    expect(await discovery.listSessionDevServers('s')).toHaveLength(1);
+  } finally {
+    discovery.close();
+  }
 });

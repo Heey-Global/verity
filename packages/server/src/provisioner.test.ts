@@ -11793,7 +11793,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT + 1);
   });
 
-  it('waits indefinitely for a busy project before updating its sandbox image', async () => {
+  it('deduplicates unverified busy deferrals without forcing an image update', async () => {
     const p = await seedActive('busy-image-update', 'dev-busy-image-update');
     const { client } = dockerInspecting({ 'dev-busy-image-update': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);
@@ -11808,7 +11808,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       });
     }
 
-    expect(deferred).toHaveBeenCalledTimes(ORPHAN_DEFER_TICK_LIMIT + 2);
+    expect(deferred).toHaveBeenCalledTimes(1);
     expect(recreate).not.toHaveBeenCalled();
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
     // Waiting is not yet worth reporting: these ticks take no measurable time, and
@@ -12480,7 +12480,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
         const remove = vi.spyOn(client, 'removeContainer');
         const before = makeProvisioner(client, {
           isHealthy: async () => false,
-          withContainerReplace: async (_project, replace) => {
+          withContainerReplace: async (_project, replace, preflight) => {
             if (change === 'cancel') await ctx.store.sandboxRepairIntents.clear(p.id);
             if (change === 'generation')
               inspect.labels = {
@@ -12488,6 +12488,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
                 'verity.container-generation': 'new-generation',
               };
             if (change === 'sleep') await ctx.store.updateProjectState(p.id, 'sleeping');
+            await preflight?.();
             return replace();
           },
         });
@@ -12636,15 +12637,14 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     });
     const provisioner = makeProvisioner(client, {
       isHealthy: async () => true,
-      // Hangs the recreate after it registers as in-flight, without needing the
-      // container phase to be faked out.
-      withContainerReplace: async (_project, replace) => {
+      // Pause the registered recreate before entering its container phase.
+      withContainerReplace: async (_project, replace, preflight) => {
         await replaceGate;
+        await preflight?.();
         return replace();
       },
     });
     provisioner.attachProjectBusyProbe(async () => false);
-
     await provisioner.reconcileRelays([p]);
     expect([...provisioner.unrepairedSandboxes()]).toEqual([p.id]);
 

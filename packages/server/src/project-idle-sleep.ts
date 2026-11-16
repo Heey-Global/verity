@@ -19,7 +19,13 @@ export type ProjectActivityReason = 'turn' | 'dev_server' | 'preview' | 'unknown
 /** A busy probe's answer: the legacy boolean, or the reasons (busy when any). */
 export interface ProjectActivityObservation {
   reason: ProjectActivityReason;
-  source: 'sessions' | 'dev_server' | 'local_preview' | 'public_preview' | 'busy_probe';
+  source:
+    | 'sessions'
+    | 'dev_server'
+    | 'local_preview'
+    | 'public_preview'
+    | 'busy_probe'
+    | 'dev_server_unverified';
   sessionId?: string;
   shareId?: string;
 }
@@ -49,8 +55,10 @@ export async function observeProjectActivity(input: {
   listSessions: () => Promise<readonly { projectId: string | null; sessionId: string }[]>;
   isTurnBusy: (sessionId: string) => boolean;
   hasRunningDevServers: () => boolean;
+  hasUnverifiedDevServers?: () => boolean;
   hasLocalPreviewShares: () => boolean;
   listShares: () => Promise<readonly PublicPreviewShareRecord[]>;
+  isShareTargetLive?: (share: PublicPreviewShareRecord) => Promise<boolean>;
 }): Promise<ProjectActivitySnapshot> {
   const observations: ProjectActivityObservation[] = [];
   try {
@@ -66,6 +74,8 @@ export async function observeProjectActivity(input: {
     observations.push({ reason: 'unknown', source: 'sessions' });
   }
   try {
+    if (input.hasUnverifiedDevServers?.())
+      observations.push({ reason: 'unknown', source: 'dev_server_unverified' });
     if (input.hasRunningDevServers())
       observations.push({ reason: 'dev_server', source: 'dev_server' });
   } catch {
@@ -79,7 +89,10 @@ export async function observeProjectActivity(input: {
   }
   try {
     for (const share of await input.listShares()) {
-      if (holdsSandbox(share))
+      if (
+        holdsSandbox(share) &&
+        (!input.isShareTargetLive || (await input.isShareTargetLive(share)))
+      )
         observations.push({
           reason: 'preview',
           source: 'public_preview',
@@ -100,12 +113,22 @@ function holdsSandbox(share: PublicPreviewShareRecord): boolean {
 /** The non-turn reasons a Sandbox is in use, in the order they are reported. */
 export async function persistentSandboxActivityReasons(input: {
   listShares: () => Promise<readonly PublicPreviewShareRecord[]>;
+  isShareTargetLive?: (share: PublicPreviewShareRecord) => Promise<boolean>;
   hasLocalPreviewShares?: () => boolean;
   hasRunningDevServers?: () => boolean;
 }): Promise<ProjectActivityReason[]> {
   const reasons: ProjectActivityReason[] = [];
   if (input.hasRunningDevServers?.()) reasons.push('dev_server');
-  if (input.hasLocalPreviewShares?.() || (await input.listShares()).some(holdsSandbox))
+  if (
+    input.hasLocalPreviewShares?.() ||
+    (
+      await Promise.all(
+        (await input.listShares())
+          .filter(holdsSandbox)
+          .map(async (share) => !input.isShareTargetLive || (await input.isShareTargetLive(share))),
+      )
+    ).some(Boolean)
+  )
     reasons.push('preview');
   return reasons;
 }

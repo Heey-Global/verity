@@ -76,6 +76,9 @@ export interface SandboxUpdateStatus {
    * A client must ignore members it does not know.
    */
   blockedBy: ProjectActivityReason[];
+  scheduledTonight?: boolean;
+  overdue?: boolean;
+  recovery?: { state: 'checking' | 'ready' | 'failed'; at: number; detail: string };
   /**
    * The most recent failed automatic recreate of this sandbox, with its time.
    *

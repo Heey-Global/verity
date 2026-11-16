@@ -921,9 +921,7 @@ describe('GET /sessions', () => {
     }
   });
 
-  // The server decides what holds back storage collection. A dev server or a
-  // preview must hold only its own session's worktree; holding the project kept
-  // every idle worktree on disk while any one session served something.
+  // Session servers hold their worktree; unknown project evidence holds orphan collection.
   it('holds storage collection for the session that serves, not its whole project', async () => {
     let blocked: ((projectId: string, sessionId: string | null) => boolean) | undefined;
     const server = buildServer({
@@ -937,6 +935,7 @@ describe('GET /sessions', () => {
       } as unknown as import('./session-storage.js').SessionStorage,
       managedDevServerManager: {
         hasRunningServers: (projectId: string) => projectId === 'p1',
+        hasUnverifiedServers: (projectId: string) => projectId === 'p4',
         hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
       } as unknown as import('./managed-dev-server-manager.js').ManagedDevServerManager,
       localPreviewManager: {
@@ -953,6 +952,7 @@ describe('GET /sessions', () => {
       expect(blocked!('p1', null)).toBe(true);
       expect(blocked!('p2', null)).toBe(true);
       expect(blocked!('p3', null)).toBe(false);
+      expect(blocked!('p4', null)).toBe(true);
     } finally {
       await server.close();
     }

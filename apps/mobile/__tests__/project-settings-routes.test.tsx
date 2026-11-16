@@ -300,6 +300,48 @@ describe('project settings — sandbox', () => {
     ).toBeOnTheScreen();
   });
 
+  it('keeps manual retry available when image discovery is unknown and repair stalled', async () => {
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'unknown',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: null,
+          currentRevision: null,
+          targetVersion: null,
+          targetRevision: null,
+          selfRepair: 'stalled',
+          turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: null,
+        },
+      },
+    };
+    const recreateProjectContainer = jest.fn().mockResolvedValue(detail.project);
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
+    render(<ProjectSandboxScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Update project sandbox(,|$)/));
+    expect(recreateProjectContainer).not.toHaveBeenCalled();
+    expect(screen.getByText('Update sandbox now?')).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByRole('button', { name: 'Update now' }).at(-1)!);
+    await waitFor(() =>
+      expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
+        confirmWarnings: true,
+        forceRebuild: false,
+        interruptServices: false,
+        cancelTurns: false,
+      }),
+    );
+  });
+
   it('dates an earlier failed update while a retry is running instead of reporting it stuck', async () => {
     // An earlier refusal shown without a time reads as the outcome of the retry
     // that is waiting for the build slot now.
@@ -344,57 +386,73 @@ describe('project settings — sandbox', () => {
     expect(screen.queryByText(/stuck/)).toBeNull();
   });
 
-  it('offers no Update button for an update a turn is holding off', async () => {
-    // The silent failure this guards: the Server refuses this recreate for as long
-    // as a turn runs (SBX-1), so an Update button here can only return a 409 that
-    // surfaces as "Could not update project" — the operator reads a fault where
-    // there is a turn, and pressing it again never helps. The dialog has to say
-    // what would move it and then offer nothing that would not.
-    const base = makeDetail();
-    const detail: ProjectDetail = {
-      ...base,
-      project: {
-        ...base.project,
-        state: 'active',
-        sandboxUpdate: {
-          state: 'available',
-          kind: 'normal',
-          category: 'software',
-          reason: null,
-          current: null,
-          target: null,
-          currentVersion: '1.22.1',
-          currentRevision: null,
-          targetVersion: '2.9.2',
-          targetRevision: null,
-          selfRepair: 'stalled',
-          turnBlocked: true,
-          blockedBy: ['turn'],
-          lastRepairFailure: null,
+  it.each([false, true])(
+    'gates turn cancellation on server support (%s) and confirmation',
+    async (supported) => {
+      const base = makeDetail();
+      const detail: ProjectDetail = {
+        ...base,
+        project: {
+          ...base.project,
+          state: 'active',
+          sandboxUpdate: {
+            state: 'available',
+            kind: 'normal',
+            category: 'software',
+            reason: null,
+            current: null,
+            target: null,
+            currentVersion: '1.22.1',
+            currentRevision: null,
+            targetVersion: '2.9.2',
+            targetRevision: null,
+            selfRepair: 'stalled',
+            turnBlocked: true,
+            blockedBy: ['turn'],
+            lastRepairFailure: null,
+          },
         },
-      },
-    };
-    const recreateProjectContainer = jest.fn();
-    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
-    render(<ProjectSandboxScreen />);
+      };
+      const recreateProjectContainer = jest.fn();
+      mockCreateVerityClient.mockReturnValue(
+        makeClient({
+          detail,
+          recreateProjectContainer,
+          getHealth: jest
+            .fn()
+            .mockResolvedValue({ status: 'ok', sandboxServiceInterruptionSupported: supported }),
+        }),
+      );
+      const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+      render(<ProjectSandboxScreen />);
 
-    expect(
-      await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
-    ).toBeOnTheScreen();
-    fireEvent.press(screen.getByLabelText(/^Update project sandbox(,|$)/));
-
-    const [title, message, buttons] = alert.mock.calls[0];
-    expect(title).toBe('Update waiting for a turn');
-    expect(message).toContain('cancel the turn first');
-    // Only an acknowledgement, no action button: nothing on this path may reach
-    // the route that would 409 — or, if SBX-1 ever stopped holding, kill the turn
-    // the message just promised was safe.
-    expect(buttons).toBeUndefined();
-    expect(screen.queryByText('Update project?')).toBeNull();
-    expect(recreateProjectContainer).not.toHaveBeenCalled();
-    alert.mockRestore();
-  });
+      expect(
+        await screen.findByText('Update waiting for a turn to finish — cancel it to update now'),
+      ).toBeOnTheScreen();
+      fireEvent.press(screen.getByLabelText(/^Update project sandbox(,|$)/));
+      expect(recreateProjectContainer).not.toHaveBeenCalled();
+      if (supported) {
+        expect(screen.getByText('Cancel turn and update?')).toBeOnTheScreen();
+        fireEvent.press(screen.getAllByRole('button', { name: 'Cancel turn and update' }).at(-1)!);
+        await waitFor(() =>
+          expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
+            confirmWarnings: true,
+            forceRebuild: false,
+            interruptServices: true,
+            cancelTurns: true,
+          }),
+        );
+        expect(alert).not.toHaveBeenCalled();
+      } else {
+        const [title, message, buttons] = alert.mock.calls[0];
+        expect(title).toBe('Update waiting');
+        expect(message).toContain('does not support updating during activity');
+        expect(buttons).toBeUndefined();
+        expect(recreateProjectContainer).not.toHaveBeenCalled();
+      }
+      alert.mockRestore();
+    },
+  );
 
   // The Sandbox screen is where Start/Repair/Update live, so the finding and
   // the action that answers it are on the same surface.
@@ -610,6 +668,8 @@ describe('project settings — sandbox', () => {
       expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
         confirmWarnings: true,
         forceRebuild: true,
+        interruptServices: false,
+        cancelTurns: false,
       }),
     );
   });
