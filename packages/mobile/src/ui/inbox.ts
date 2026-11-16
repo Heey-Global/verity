@@ -501,7 +501,10 @@ function projectHealthItem(project: ProjectRecord): InboxItem | undefined {
     const update = project.sandboxUpdate;
     return {
       ...base,
-      key: key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
+      key:
+        update.recovery?.state === 'failed'
+          ? key('update-recovery', `${update.recovery.state}:${update.recovery.at}`)
+          : key('update', update.targetRevision ?? update.targetVersion ?? update.target ?? ''),
       tag: isSecuritySandboxUpdate(update) ? 'Security update' : 'Update',
       context: 'Sandbox',
       message:

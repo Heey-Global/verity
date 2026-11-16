@@ -5264,14 +5264,14 @@ export class ProvisionerImpl implements Provisioner {
     const automatic =
       opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile';
     const automaticIntent = automatic ? this.automaticRepairAttemptContext.getStore() : undefined;
+    if (!automatic && opts.initiator?.kind !== 'session') {
+      this.forgetSandboxRepairIntent(projectId);
+      await this.sandboxRepairIntentWrites;
+    }
     if (automatic && !automaticSandboxRepairAllowed(project)) {
       this.forgetSandboxRepairIntent(projectId);
       await this.sandboxRepairIntentWrites;
       throw new ProvisioningError('Automatic repair no longer authorized by project state');
-    }
-    if (!(opts.initiator?.kind === 'system' && opts.initiator.trigger === 'sandbox_reconcile')) {
-      this.forgetSandboxRepairIntent(projectId);
-      await this.sandboxRepairIntentWrites;
     }
     await this.assertNoRunnerCacheMaintenance(projectId);
     if (project.state === 'cloning' || project.state === 'container_starting')

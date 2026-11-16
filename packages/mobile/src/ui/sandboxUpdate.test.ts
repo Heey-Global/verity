@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { inboxItems } from './inbox.js';
+import { inboxItems, inboxView } from './inbox.js';
 import { projectCardState } from './projectCardState.js';
 import type { ProjectRecord, SandboxUpdate } from '../api.js';
 import {
@@ -412,4 +412,51 @@ it('keeps current-image recovery failures visible in project cards, inbox and al
   );
   expect(sandboxUpdateIndicator(value)?.label).toBe('Update recovery failed');
   expect(sandboxUpdateAlertMessage(project, value)).toContain('web did not restart');
+});
+
+it('does not reuse a dismissed blocked-update key for a later recovery failure', () => {
+  const blocked: ProjectRecord = {
+    containerName: 'c',
+    kind: 'github',
+    imageRef: null,
+    createdAt: '2026-10-01T00:00:00Z',
+    updatedAt: '2026-11-03T09:00:00Z',
+    id: 'p',
+    owner: 'test',
+    repo: 'web',
+    state: 'active',
+    provisionError: null,
+    sandboxUpdate: update({ turnBlocked: true }),
+    inboxDismissed: [],
+  };
+  const key = inboxItems({ sessions: [], projects: [blocked], now: 1 })[0]!.key;
+  const dismissed = { ...blocked, inboxDismissed: [key] };
+  expect(inboxView({ sessions: [], projects: [dismissed], now: 2 }).visible).toHaveLength(0);
+  const failed = {
+    ...dismissed,
+    sandboxUpdate: update({
+      state: 'current',
+      recovery: {
+        state: 'failed',
+        at: 3,
+        detail: 'web did not restart',
+      },
+    }),
+  };
+  const view = inboxView({ sessions: [], projects: [failed], now: 4 });
+  expect(view.visible).toHaveLength(1);
+  const next = {
+    ...failed,
+    sandboxUpdate: {
+      ...failed.sandboxUpdate,
+      recovery: {
+        state: 'failed' as const,
+        at: 5,
+        detail: 'web did not restart',
+      },
+    },
+  };
+  expect(inboxItems({ sessions: [], projects: [next], now: 6 })[0]!.key).not.toBe(
+    view.visible[0]!.key,
+  );
 });

@@ -1,3 +1,4 @@
+import { storageRefusedTurnRepair } from './sandbox-storage-retry.js';
 import { withPreviewProjectMutation } from './preview-project-mutation.js';
 import { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 import type { ProvisionerOptions } from './provisioner.js';
@@ -513,3 +514,32 @@ it.each(['turn', 'window'] as const)(
     ).toBe(false);
   },
 );
+
+it('retains the owed turn repair through retry preparation and restart without an image update', async () => {
+  const f = await fixture(12);
+  f.provisioner.attachProjectBusyProbe(async () => []);
+  const intent = storageRefusedTurnRepair({
+    projectId: 'p',
+    sourceGeneration: 'generation-1',
+    targetImageRef: 'target',
+    failures: 1,
+    now: new Date(2026, 10, 16, 11).getTime(),
+    error: 'capacity',
+  });
+  await ctx.store.sandboxRepairIntents.record(intent);
+  vi.spyOn(f.internals, 'resolveOrBuildImage').mockImplementationOnce(async () => {
+    expect((await ctx.store.sandboxRepairIntents.list())[0]).toEqual(intent);
+    throw new Error('Server stopped during preparation');
+  });
+  await expect(
+    f.provisioner.repairSandboxForTurn('p', 'session', undefined, {
+      requireFreshAgentGatewayIdentity: true,
+    }),
+  ).rejects.toThrow('Server stopped during preparation');
+  expect((await ctx.store.sandboxRepairIntents.list())[0]).toEqual(intent);
+  const restarted = await fixture(12);
+  restarted.provisioner.attachProjectBusyProbe(async () => []);
+  await restarted.provisioner.reconcileRelays([restarted.project], { updateAvailable: new Set() });
+  expect(restarted.internals.runContainerPhase).toHaveBeenCalledOnce();
+  expect(await ctx.store.sandboxRepairIntents.list()).toEqual([]);
+});
