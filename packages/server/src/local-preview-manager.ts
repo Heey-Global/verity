@@ -1,3 +1,4 @@
+import { localTargetConfirmedMissing } from './local-preview-activity.js';
 import {
   PreviewNetworkProtectionError,
   assertPreviewNetworkSupported,
@@ -54,6 +55,7 @@ export interface LocalPreviewManagerOptions extends Omit<PreviewShareManagerOpti
 /** Durable share intent survives resource shutdown and is restored on activation. */
 export class LocalPreviewManager {
   private readonly active = new Map<string, ActiveShare>();
+  private readonly unverifiedTargets = new Set<string>();
   private readonly reserved = new Set<number>();
   private readonly durableIds = new Set<string>();
   private readonly durable = new Map<string, LocalPreviewShareRecord>();
@@ -146,7 +148,22 @@ export class LocalPreviewManager {
     return [...this.active.values()].some((state) => state.connectorId === id);
   }
   /** Includes managed targets for recovery checks, without counting their intent as activity. */
+  private assertVerifiedTargets(projectId: string): void {
+    for (const id of this.unverifiedTargets) {
+      const saved = this.durable.get(id);
+      if (
+        (saved?.projectId ?? this.active.get(id)?.share.projectId) === projectId &&
+        !this.stopping.has(id) &&
+        !this.stopped.has(id)
+      )
+        throw new Error('local preview target could not be verified');
+    }
+  }
   liveProjectShares(projectId: string): LocalPreviewShare[] {
+    this.assertVerifiedTargets(projectId);
+    return this.readyProjectShares(projectId);
+  }
+  private readyProjectShares(projectId: string): LocalPreviewShare[] {
     return [...this.active.values()]
       .filter(
         (state) =>
@@ -160,7 +177,8 @@ export class LocalPreviewManager {
       .map((state) => state.share);
   }
   hasProjectShares(projectId: string): boolean {
-    return this.liveProjectShares(projectId).some(
+    this.assertVerifiedTargets(projectId);
+    return this.readyProjectShares(projectId).some(
       (share) => !this.durable.get(share.id)?.managedInstanceId,
     );
   }
@@ -404,6 +422,7 @@ export class LocalPreviewManager {
         throw new PreviewShareConflictError('project changed during preview creation');
       state.provisioning = false;
       state.ready = true;
+      this.unverifiedTargets.delete(id);
       return state.share;
     } catch (error) {
       state.provisioning = false;
@@ -414,6 +433,7 @@ export class LocalPreviewManager {
   }
   async stop(id: string): Promise<boolean> {
     this.stopped.add(id);
+    this.unverifiedTargets.delete(id);
     this.stopping.add(id);
     try {
       await this.options.store.revokeLocalPreviewShare(id);
@@ -428,6 +448,7 @@ export class LocalPreviewManager {
   }
   private async stopInner(id: string): Promise<boolean> {
     this.stopped.add(id);
+    this.unverifiedTargets.delete(id);
     const saved =
       (await this.options.store.listLocalPreviewShares()).find((share) => share.id === id) ??
       this.durable.get(id);
@@ -607,6 +628,8 @@ export class LocalPreviewManager {
         );
       } catch (error) {
         if (error instanceof PreviewNetworkProtectionError) await this.stop(saved.id);
+        else if (localTargetConfirmedMissing(error)) this.unverifiedTargets.delete(saved.id);
+        else this.unverifiedTargets.add(saved.id);
         // An unavailable inspection cannot authorize a connector restore either.
         continue;
       }
@@ -633,8 +656,10 @@ export class LocalPreviewManager {
             instance.lastRunCommand,
             instance.lastRunWorkdir,
           ))
-        )
+        ) {
+          this.unverifiedTargets.delete(saved.id);
           continue;
+        }
         if (instance.sandboxPort !== saved.targetPort) {
           await this.options.store.updateLocalPreviewShareTarget(saved.id, instance.sandboxPort);
           saved.targetPort = instance.sandboxPort;
@@ -668,6 +693,8 @@ export class LocalPreviewManager {
           await this.stop(saved.id);
           continue;
         }
+        if (!localTargetConfirmedMissing(error)) this.unverifiedTargets.add(saved.id);
+        else this.unverifiedTargets.delete(saved.id);
         if (!this.stopping.has(saved.id)) this.reserved.add(saved.networkPort);
       } finally {
         this.restoring.delete(saved.id);
@@ -694,6 +721,7 @@ export class LocalPreviewManager {
         continue;
       }
       if (project.state !== 'active') {
+        this.unverifiedTargets.delete(state.share.id);
         await this.release(state.share.id);
         this.reserved.add(state.port);
         continue;
@@ -724,6 +752,7 @@ export class LocalPreviewManager {
             instance.lastRunWorkdir,
           ))
         ) {
+          this.unverifiedTargets.delete(state.share.id);
           await this.release(state.share.id);
           this.reserved.add(state.port);
           continue;
@@ -740,6 +769,7 @@ export class LocalPreviewManager {
           !state.connectorId ||
           !(await this.options.docker.inspectContainer(state.connectorId)).running
         ) {
+          this.unverifiedTargets.delete(state.share.id);
           await this.release(state.share.id);
           this.reserved.add(state.port);
           continue;
@@ -760,6 +790,7 @@ export class LocalPreviewManager {
           }
         }
         delete state.missingSince;
+        this.unverifiedTargets.delete(state.share.id);
       } catch (error) {
         if (error instanceof PreviewNetworkProtectionError) {
           await this.stop(state.share.id);
@@ -769,11 +800,19 @@ export class LocalPreviewManager {
           const processes = await this.options
             .listListeningProcesses?.(project)
             .catch(() => undefined);
-          if (processes?.some((process) => process.port === state.share.targetPort)) {
+          if (
+            localTargetConfirmedMissing(error) &&
+            processes?.some((process) => process.port === state.share.targetPort)
+          ) {
             await this.stop(state.share.id);
             continue;
           }
         }
+        if (!localTargetConfirmedMissing(error)) {
+          this.unverifiedTargets.add(state.share.id);
+          continue;
+        }
+        this.unverifiedTargets.delete(state.share.id);
         state.missingSince ??= Date.now();
         state.ready = false;
       }

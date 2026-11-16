@@ -1,9 +1,17 @@
+import { DockerError } from './docker.js';
+import { observeProjectActivity } from './project-idle-sleep.js';
+import { createSandboxUpdateRecovery } from './sandbox-update-recovery.js';
+import type { EventStore } from '@verity/store';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { PreviewEdge } from '@verity/preview-tunnel';
 import { LocalPreviewManager, type LocalPreviewManagerOptions } from './local-preview-manager.js';
 import { containerGenerationOf } from './project-relay-migration.js';
-import { PreviewShareManager, PreviewNetworkProtectionError } from './preview-share-manager.js';
+import {
+  PreviewShareManager,
+  PreviewNetworkProtectionError,
+  PreviewShareConflictError,
+} from './preview-share-manager.js';
 
 const managers: LocalPreviewManager[] = [];
 afterEach(async () => {
@@ -159,7 +167,7 @@ it('revokes immediately when another process takes over the target', async () =>
   const { manager, options } = fixture();
   const share = await manager.create('s1', { targetPort: 3000 });
   vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValueOnce(
-    new Error('ownership changed'),
+    new PreviewShareConflictError('nothing in this session listens on that port'),
   );
   options.listListeningProcesses = async () => [
     { port: 3000, pid: 42, cwd: '/other-session', command: 'node', bind: 'any' },
@@ -860,7 +868,7 @@ it('counts only live local targets while keeping offline URLs available for reco
   const share = await manager.create('s1', { targetPort: 3000 });
   expect(manager.hasProjectShares('p1')).toBe(true);
   vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValueOnce(
-    new Error('target gone'),
+    new PreviewShareConflictError('nothing in this session listens on that port'),
   );
   await manager.reconcile();
   expect(manager.hasProjectShares('p1')).toBe(false);
@@ -889,4 +897,97 @@ it('exempts managed local shares from activity while retaining their URL', async
   });
   expect(manager.hasProjectShares('p1')).toBe(false);
   expect(manager.list('s1')).toEqual([share]);
+});
+
+it.each([false, true])(
+  'fences activity and capture for unknown targets (managed: %s)',
+  async (managed) => {
+    const { manager, docker, options } = fixture();
+    Object.assign(options.store, {
+      managedDevServers: {
+        getInstance: async () => ({
+          id: 'managed',
+          serverId: 'web',
+          sessionId: 's1',
+          projectId: 'p1',
+          localAccess: true,
+          desired: 'running',
+          sandboxPort: 3000,
+          networkPort: 18100,
+          lastRunCommand: 'npm start',
+          lastRunWorkdir: '.',
+        }),
+        isApproved: async () => true,
+        listInstances: async () => [],
+      },
+    });
+    const share = await manager.create('s1', {
+      targetPort: 3000,
+      ...(managed ? { managedInstanceId: 'managed', networkPort: 18100 } : {}),
+    });
+    // A second known-live share must not mask the first one's uncertain target.
+    await manager.create('s2', { targetPort: 3001 });
+    const prepare = vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget');
+    const healthy = await prepare('s2', { targetPort: 3001 });
+    prepare.mockImplementation(async (sessionId) => {
+      if (sessionId === 's1') throw new Error('runtime listener inspection timed out');
+      return healthy;
+    });
+    await manager.reconcile();
+    expect(() => manager.hasProjectShares('p1')).toThrow('could not be verified');
+    const activity = await observeProjectActivity({
+      projectId: 'p1',
+      listSessions: async () => [],
+      isTurnBusy: () => false,
+      hasRunningDevServers: () => false,
+      hasLocalPreviewShares: () => manager.hasProjectShares('p1'),
+      listShares: async () => [],
+    });
+    expect(activity.observations).toEqual([{ reason: 'unknown', source: 'local_preview' }]);
+    const recovery = createSandboxUpdateRecovery({
+      store: {
+        managedDevServers: { listInstances: async () => [] },
+        listPublicPreviewShares: async () => [],
+      } as unknown as EventStore,
+      devServers: () => undefined,
+      public: () => undefined,
+      local: () => manager,
+    });
+    await expect(recovery.capture('p1')).rejects.toThrow('could not be verified');
+    expect(manager.list('s1')).toEqual([share]);
+    expect(docker.removeContainer).not.toHaveBeenCalled();
+    prepare.mockResolvedValue(healthy);
+    await manager.reconcile();
+    expect(manager.hasProjectShares('p1')).toBe(true);
+  },
+);
+
+it('keeps a serving connector and marks activity unknown on transient Docker failure', async () => {
+  const { manager, docker } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  docker.inspectContainer.mockRejectedValueOnce(new Error('Docker timed out'));
+  await manager.reconcile();
+  expect(() => manager.hasProjectShares('p1')).toThrow('could not be verified');
+  expect(manager.list('s1')).toEqual([share]);
+  expect(docker.removeContainer).not.toHaveBeenCalled();
+  await manager.reconcile();
+  expect(manager.hasProjectShares('p1')).toBe(true);
+});
+
+it('clears uncertain restore evidence when Docker confirms the sandbox is absent', async () => {
+  const { manager, docker, options } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.close();
+  const restored = new LocalPreviewManager(options);
+  managers.push(restored);
+  docker.inspectContainer.mockRejectedValueOnce(new Error('Docker unavailable'));
+  await restored.reconcile();
+  expect(() => restored.hasProjectShares('p1')).toThrow('could not be verified');
+  docker.inspectContainer.mockRejectedValueOnce(
+    new DockerError({ kind: 'container_not_found', id: 'sandbox' }),
+  );
+  await restored.reconcile();
+  expect(restored.hasProjectShares('p1')).toBe(false);
+  expect(restored.liveProjectShares('p1')).toEqual([]);
+  expect(restored.list('s1')).toEqual([share]);
 });
