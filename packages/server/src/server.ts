@@ -1,3 +1,4 @@
+import { installPreviews } from './server-previews.js';
 import { installRepositoryTools } from './server-repository-tools.js';
 import {
   createServerPush,
@@ -43,18 +44,11 @@ import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-t
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
 import { ResourceObserver } from './live/resource-observer.js';
-import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import { registerLogRoutes } from './log-routes.js';
-import {
-  registerManagedDevServerAgentRoute,
-  registerManagedDevServerRoutes,
-} from './managed-dev-server-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
-import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
-import { registerProjectDnsRoute } from './project-dns-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
@@ -480,24 +474,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerMockupRoutes(app, { mockups: sessionMockups });
   automations.installRoutes();
 
-  registerManagedDevServerRoutes(app, { manager: deps.managedDevServerManager });
-  registerProjectDnsRoute(app, { resolveDirect: deps.projectEgressResolve });
-  registerManagedDevServerAgentRoute(app, {
-    manager: deps.managedDevServerManager,
-    capabilities: deps.ghTokenCapabilities,
-    eventStore: deps.eventStore,
-  });
-  registerLocalPreviewRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.localPreviewManager ? { manager: deps.localPreviewManager } : {}),
-    ...(deps.previewSharingCapability ? { publicSharing: deps.previewSharingCapability } : {}),
-  });
-  registerPreviewShareRoutes(app, {
-    eventStore: deps.eventStore,
-    ...(deps.listenerDiscovery ? { listenerDiscovery: deps.listenerDiscovery } : {}),
-    ...(deps.localPreviewManager ? { localManager: deps.localPreviewManager } : {}),
-    ...(deps.previewShareManager ? { manager: deps.previewShareManager } : {}),
-  });
+  installPreviews(app, ctx);
 
   const { advancedModeEnabled, ensureVerityControlProject } = installProjects(app, ctx, {
     presentProject,
