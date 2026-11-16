@@ -24,6 +24,8 @@ const WEEK = 7 * 24 * 60 * 60_000;
  *  the session's own lockfile by `verity-dependencies install`; edits made
  *  directly inside them are not kept. */
 const IDLE_DEPENDENCIES = 3 * 24 * 60 * 60_000;
+/** Spacing of the follow-up passes after one stopped at its 60-second budget. */
+const CONTINUE_AFTER = 15 * 60_000;
 const inputs =
   /(^|\/)(package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|pnpm-workspace.yaml|\.npmrc)$/;
 export interface SessionStoragePassSummary {
@@ -33,6 +35,7 @@ export interface SessionStoragePassSummary {
   dependenciesRemoved: number;
   worktreesRetired: number;
   blockers: number;
+  sessions: SessionCoverage;
   /** The most frequent blocker reasons, most frequent first. */
   topBlockers: Array<{ reason: string; count: number }>;
 }
@@ -49,11 +52,44 @@ function summarizePass(
     dependenciesRemoved: report.dependenciesRemoved.length,
     worktreesRetired: report.worktreesRetired.length,
     blockers: report.blockers.length,
+    sessions: { ...report.sessions },
     topBlockers: [...counts]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([reason, count]) => ({ reason, count })),
   };
+}
+
+/** The bounded projection of a pass that runtime diagnostics expose. */
+export function sessionStorageDiagnostics(report: SessionStorageReport) {
+  return {
+    observedAt: report.observedAt,
+    completed: report.completed === true,
+    sessions: { ...report.sessions },
+    dependenciesRemoved: report.dependenciesRemoved.length,
+    worktreesRetired: report.worktreesRetired.length,
+    comparedDependencyBytes: report.comparedDependencyBytes,
+    worktreeSampledBytes: report.worktreeSampledBytes,
+    dependencySampledBytes: report.dependencySampledBytes,
+    usageComplete: report.usageComplete,
+    dryRun: report.dryRun,
+    blockers: report.blockers
+      .slice(0, 100)
+      .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
+  };
+}
+
+interface SessionCoverage {
+  /** Sessions of collectable projects when the pass started. */
+  total: number;
+  /** Sessions the pass reached before it finished or stopped at its budget. */
+  visited: number;
+  /** Held by a dev server, preview, spawn or project teardown. */
+  held: number;
+  /** No recorded activity, so no idle age can be established. */
+  noActivity: number;
+  /** Running a turn, moving or in a meeting job: the claim was refused. */
+  busy: number;
 }
 
 export interface SessionStorageReport {
@@ -63,6 +99,10 @@ export interface SessionStorageReport {
   dependenciesRemoved: string[];
   worktreesRetired: string[];
   blockers: Array<{ path: string; reason: string }>;
+  /** Sessions this pass reached and how many of them it could not work on.
+   *  A skipped session is not a blocker on a path, but a pass that skips the
+   *  same sessions every time reclaims nothing from them. */
+  sessions: SessionCoverage;
   comparedDependencyBytes: number;
   worktreeSampledBytes: number | null;
   dependencySampledBytes: number | null;
@@ -201,6 +241,29 @@ async function linksOnly(modules: string): Promise<boolean> {
   return true;
 }
 
+/** Beside `verity-dependencies-preserved` in a worktree's Git directory, so it
+ *  goes with the worktree: when this collector first saw each preserved copy. */
+const PRESERVED_JOURNAL = 'verity-dependencies-preserved.observed.json';
+async function readObservations(path: string): Promise<Record<string, number>> {
+  try {
+    const stat = await lstat(path);
+    // A journal that is not a regular file is replaced, never read through.
+    if (!stat.isFile()) return {};
+    const value = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value).filter(
+        ([name, at]) =>
+          PRESERVED_COPY.test(name) && typeof at === 'number' && Number.isFinite(at) && at > 0,
+      ),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    // A corrupt journal restarts the window; it never shortens it.
+    if (error instanceof SyntaxError) return {};
+    throw error;
+  }
+}
 const PRESERVED_COPY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 export async function compareDependencyTrees(
@@ -282,6 +345,8 @@ export class SessionStorage {
   private flight: Promise<void> | undefined;
   private readonly shutdown = new AbortController();
   private projectCursor: string | undefined;
+  private passStartedAt = 0;
+  private continuation: ReturnType<typeof setTimeout> | undefined;
   private readonly sessionCursors = new Map<string, string>();
   lastReport?: SessionStorageReport;
   constructor(
@@ -302,6 +367,9 @@ export class SessionStorage {
       now?: () => number;
       dryRun?: boolean;
       gitRoot?: string;
+      /** Delay before a pass cut short at its budget continues on its own;
+       *  0 disables continuation. */
+      continueAfterMs?: number;
       /** One line per pass. Without it a pass that removes nothing and one that
        *  never finishes look the same from outside. */
       log?: (summary: SessionStoragePassSummary) => void;
@@ -517,18 +585,36 @@ export class SessionStorage {
   }
   stop(): Promise<void> {
     this.shutdown.abort();
+    clearTimeout(this.continuation);
+    this.continuation = undefined;
     return this.flight ?? Promise.resolve();
   }
   runOnce(): Promise<void> {
     if (this.shutdown.signal.aborted) return Promise.resolve();
     if (this.flight) return this.flight;
+    clearTimeout(this.continuation);
+    this.continuation = undefined;
     const startedAt = Date.now();
     this.flight = this.sweep().finally(() => {
       this.flight = undefined;
       const report = this.lastReport;
       if (report && this.deps.log) this.deps.log(summarizePass(report, Date.now() - startedAt));
+      // The daily maintenance pass alone reached only the sessions one budget
+      // covers, so a project with many sessions was collected over weeks. A
+      // pass cut short continues on its own, spaced so it stays a small share
+      // of the time, until one reaches every project.
+      if (report && !report.completed && !this.shutdown.signal.aborted) this.scheduleContinuation();
     });
     return this.flight;
+  }
+  private scheduleContinuation(): void {
+    const delay = this.deps.continueAfterMs ?? CONTINUE_AFTER;
+    if (delay <= 0 || this.continuation !== undefined) return;
+    this.continuation = setTimeout(() => {
+      this.continuation = undefined;
+      void this.runOnce().catch(() => undefined);
+    }, delay);
+    this.continuation.unref?.();
   }
   private async sweep(): Promise<void> {
     if (!this.claim) return;
@@ -539,6 +625,7 @@ export class SessionStorage {
       dependenciesRemoved: [],
       worktreesRetired: [],
       blockers: [],
+      sessions: { total: 0, visited: 0, held: 0, noActivity: 0, busy: 0 },
       comparedDependencyBytes: 0,
       worktreeSampledBytes: null,
       dependencySampledBytes: null,
@@ -546,8 +633,12 @@ export class SessionStorage {
       dryRun: this.deps.dryRun ?? false,
     };
     this.lastReport = report;
+    this.passStartedAt = now;
     const projects = await this.deps.listProjects();
     const sessions = await this.deps.listSessions();
+    report.sessions.total = sessions.filter((s) =>
+      projects.some((p) => p.id === s.projectId && p.kind !== 'control_plane'),
+    ).length;
     // A pass stops at its budget. Starting the next one where this one stopped
     // (past the entry it was working on) lets every session be reached in turn,
     // instead of the same first entries consuming every budget.
@@ -563,10 +654,17 @@ export class SessionStorage {
       for (const session of owned) {
         if (signal.aborted) return;
         this.sessionCursors.set(project.id, session.sessionId);
-        if (this.blocked(project.id, session.sessionId)) continue;
+        report.sessions.visited++;
+        if (this.blocked(project.id, session.sessionId)) {
+          report.sessions.held++;
+          continue;
+        }
         const activity = await this.deps.activity(session.sessionId);
-        if (activity === null) continue;
-        await this.claim(session.sessionId, async () => {
+        if (activity === null) {
+          report.sessions.noActivity++;
+          continue;
+        }
+        const claimed = await this.claim(session.sessionId, async () => {
           try {
             await this.deps.mutate(
               project.id,
@@ -600,6 +698,7 @@ export class SessionStorage {
             });
           }
         });
+        if (!claimed.ran) report.sessions.busy++;
       }
       if (!signal.aborted) this.sessionCursors.delete(project.id);
       // Orphans are registered Git worktrees, never directory-name guesses.
@@ -712,16 +811,21 @@ export class SessionStorage {
   ): Promise<void> {
     const root = await this.safeRoot(project, path);
     const firstRemoval = report.dependenciesRemoved.length;
-    try {
-      await this.reclaimPreservedDependencies(root, path, git, report, signal, idleDependencies);
-      if (idleDependencies) await this.removeIdleDependencies(path, git, report);
-    } catch (error) {
-      signal.throwIfAborted();
-      report.blockers.push({
-        path,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
+    // Separate steps: a preserved copy that fails must not keep the private
+    // installation of an idle session in place, nor the other way round.
+    for (const step of [
+      () => this.reclaimPreservedDependencies(root, path, git, report, signal, idleDependencies),
+      () => (idleDependencies ? this.removeIdleDependencies(path, git, report) : Promise.resolve()),
+    ])
+      try {
+        await step();
+      } catch (error) {
+        signal.throwIfAborted();
+        report.blockers.push({
+          path,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     try {
       await this.reclaimContents(project, path, sessionId, git, report, signal, retireWorktree);
     } finally {
@@ -740,7 +844,11 @@ export class SessionStorage {
    * worktree Git directory before activating a new one, as recovery for local
    * package edits, and never removes it. A copy whose files are byte-identical
    * to the central installation named by its own receipt holds no such edits
-   * and is removed; any other copy is kept and reported.
+   * and is removed. Any other copy is kept for {@link IDLE_DEPENDENCIES} after
+   * this collector first saw it, and then removed like the copies of an idle
+   * session: the central store keeps only a few identities, so a copy from an
+   * older one can never be compared again, and a session that is never idle
+   * for three days would otherwise keep every copy it ever made.
    */
   private async reclaimPreservedDependencies(
     root: string,
@@ -758,49 +866,84 @@ export class SessionStorage {
     if (dirname(gitDir) !== join(root, '.git', 'worktrees') || (await realpath(gitDir)) !== gitDir)
       throw new Error('Worktree Git directory is unknown or symlinked');
     const preserved = join(gitDir, 'verity-dependencies-preserved');
-    if (!(await exists(preserved))) return;
+    const journal = join(gitDir, PRESERVED_JOURNAL);
+    if (!(await exists(preserved))) {
+      if (!this.deps.dryRun && (await exists(journal))) await rm(journal);
+      return;
+    }
     if ((await realpath(preserved)) !== preserved)
       throw new Error('Preserved dependency directory is symlinked');
-    for (const entry of await readdir(preserved, { withFileTypes: true })) {
-      signal.throwIfAborted();
-      if (!entry.isDirectory() || !PRESERVED_COPY.test(entry.name)) continue;
-      const copy = join(preserved, entry.name);
-      if (idle) {
-        // The session has been idle past the dependency window: no copy is kept.
-        if (!this.deps.dryRun) await rm(copy, { recursive: true });
-        report.dependenciesRemoved.push(copy);
-        continue;
-      }
+    const seen = await readObservations(journal);
+    const observed: Record<string, number> = {};
+    const now = this.passStartedAt;
+    const discard = async (copy: string): Promise<void> => {
       try {
-        const receipt = await optionalFile(join(copy, '.verity-install.json'));
-        const identity = (JSON.parse(receipt ?? 'null') as { identity?: unknown } | null)?.identity;
-        if (typeof identity !== 'string' || !/^[a-f0-9]{64}$/u.test(identity))
-          throw new Error('Preserved dependencies have no installation receipt');
-        const central = join(root, '.git', 'verity-dependencies', identity, 'node_modules');
-        if (!(await exists(central)) || (await realpath(central)) !== central)
-          throw new Error('Central installation for preserved dependencies is unavailable');
-        const before = await lstat(copy);
-        const bytes = await compareDependencyTrees(
-          copy,
-          central,
-          signal,
-          { local: copy, shared: central },
-          'content-free',
-        );
-        signal.throwIfAborted();
-        const latest = await lstat(copy);
-        if (latest.ino !== before.ino || latest.dev !== before.dev)
-          throw new Error('Dependency root changed');
-        report.comparedDependencyBytes += bytes;
         if (!this.deps.dryRun) await rm(copy, { recursive: true });
         report.dependenciesRemoved.push(copy);
       } catch (error) {
-        signal.throwIfAborted();
+        // One copy that cannot be removed must not keep the others in place.
         report.blockers.push({
           path: copy,
           reason: error instanceof Error ? error.message : String(error),
         });
       }
+    };
+    let reachedAll = false;
+    try {
+      for (const entry of await readdir(preserved, { withFileTypes: true })) {
+        signal.throwIfAborted();
+        if (!entry.isDirectory() || !PRESERVED_COPY.test(entry.name)) continue;
+        const copy = join(preserved, entry.name);
+        // A clock that moved backwards must not extend the window indefinitely.
+        const since = Math.min(seen[entry.name] ?? now, now);
+        observed[entry.name] = since;
+        // Idle sessions keep no copy; others keep one only for the same window.
+        if (idle || now - since >= IDLE_DEPENDENCIES) {
+          await discard(copy);
+          if (!(await exists(copy))) delete observed[entry.name];
+          continue;
+        }
+        try {
+          const receipt = await optionalFile(join(copy, '.verity-install.json'));
+          const identity = (JSON.parse(receipt ?? 'null') as { identity?: unknown } | null)
+            ?.identity;
+          if (typeof identity !== 'string' || !/^[a-f0-9]{64}$/u.test(identity))
+            throw new Error('Preserved dependencies have no installation receipt');
+          const central = join(root, '.git', 'verity-dependencies', identity, 'node_modules');
+          if (!(await exists(central)) || (await realpath(central)) !== central)
+            throw new Error('Central installation for preserved dependencies is unavailable');
+          const before = await lstat(copy);
+          const bytes = await compareDependencyTrees(
+            copy,
+            central,
+            signal,
+            { local: copy, shared: central },
+            'content-free',
+          );
+          signal.throwIfAborted();
+          const latest = await lstat(copy);
+          if (latest.ino !== before.ino || latest.dev !== before.dev)
+            throw new Error('Dependency root changed');
+          report.comparedDependencyBytes += bytes;
+          if (!this.deps.dryRun) await rm(copy, { recursive: true });
+          report.dependenciesRemoved.push(copy);
+          delete observed[entry.name];
+        } catch (error) {
+          signal.throwIfAborted();
+          report.blockers.push({
+            path: copy,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      reachedAll = true;
+    } finally {
+      // Keep first observations of copies not yet reached when a pass stops at
+      // its budget or fails, so an interrupted pass never resets their clock.
+      const next = { ...(reachedAll ? {} : seen), ...observed };
+      // Rewrite only on change: continuation passes would otherwise sync every journal.
+      if (!this.deps.dryRun && JSON.stringify(next) !== JSON.stringify(seen))
+        await atomicJson(journal, next);
     }
   }
   /** Removes the private top-level installation of a session idle past

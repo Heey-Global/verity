@@ -307,6 +307,89 @@ def verified_release(root, target):
     return release
 
 
+RELEASES = 'opt/verity-egress-releases'
+# Published releases kept beside the current and the prepared one, newest first,
+# so an earlier bundle stays available to roll back to.
+RETAINED_RELEASES = 2
+
+
+def release_references(root):
+    """Executable, working directory and arguments of every process on the host.
+
+    Managed units start bundle code as ``/opt/verity-egress/node``; the kernel
+    reports that executable by its resolved release path, so a process keeps
+    the bundle it started from even after the link has moved on.
+
+    An unreadable process table raises: without it no release can be shown unused."""
+    references = []
+    for entry in (root / 'proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            references.append((entry / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace'))
+            for name in ('exe', 'cwd'):
+                try:
+                    references.append(os.readlink(entry / name))
+                except FileNotFoundError:
+                    pass  # kernel threads and zombies have neither
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # exited while listed
+    return references
+
+
+def prune_releases(root, keep):
+    """Remove published releases nothing can still need; callers hold install.lock.
+
+    Every provisioning run published one more read-only bundle and nothing removed
+    them. The current link target, ``keep``, the newest others, any release a live
+    process names and everything an unfinished transaction journal names stay.
+    Returns the removed identities."""
+    releases = root / RELEASES
+    if releases.is_symlink() or not releases.is_dir():
+        return []
+    journal = root / JOURNAL
+    if journal.exists() or journal.is_symlink():
+        return []  # recovery restores its previous release and needs its target
+    current = root / 'opt/verity-egress'
+    if current.is_symlink():
+        keep = {*keep, os.readlink(current)}
+    elif current.exists():
+        return []
+    # Compare identities, not link text: a relative or differently rooted link
+    # must never make the live bundle a candidate.
+    keep = {Path(path).name for path in keep}
+    published, retired = [], []
+    for path in releases.iterdir():
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+            continue
+        if path.name.startswith('.retired-'):
+            retired.append(path)  # withdrawn by an earlier run that stopped mid-removal
+        elif re.fullmatch('[a-f0-9]{64}', path.name) and path.name not in keep:
+            published.append((info.st_mtime, path))
+    published.sort(key=lambda item: item[0], reverse=True)
+    candidates = [path for _, path in published[RETAINED_RELEASES:]]
+    if not candidates and not retired:
+        return []
+    references = release_references(root)
+    removed = []
+    for path in candidates:
+        if any('/' + RELEASES + '/' + path.name in reference for reference in references):
+            continue
+        withdrawn = releases / ('.retired-' + secrets.token_hex(8))
+        # Withdraw atomically first: no reader can resolve a half-removed release.
+        os.rename(path, withdrawn)
+        base.sync_directory(releases)
+        retired.append(withdrawn)
+        removed.append(path.name)
+    for path in retired:
+        for directory in [path, *(item for item in path.rglob('*') if item.is_dir() and not item.is_symlink())]:
+            directory.chmod(0o700)
+        shutil.rmtree(path)
+    base.sync_directory(releases)
+    return removed
+
+
 def clear_transaction(root):
     (root / JOURNAL).unlink()
     base.sync_directory((root / JOURNAL).parent)
@@ -765,6 +848,10 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             write_status(root, gid, 'controller_failed')
             error.egress_failure = base.failure_diagnostic(error, 'recovery_failed', 'recovery')
             raise
+        try:
+            prune_releases(root, {str(release)})
+        except Exception:
+            pass  # Collection never blocks provisioning; the next run retries it.
         # tmpfiles recreates the bind-mounted runtime path at boot, even while the
         # native profile remains unsupported and the controller stays disabled.
         tmpfiles = root / 'etc/tmpfiles.d/verity-egress.conf'

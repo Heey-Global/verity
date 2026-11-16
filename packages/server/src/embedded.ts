@@ -99,7 +99,7 @@ import {
 } from './storage-reclamation.js';
 import { registerStorageReclamationRoutes } from './storage-reclamation-routes.js';
 import { startNativeRetirementEvidence } from './native-buildkit.js';
-import { SessionStorage } from './session-storage.js';
+import { SessionStorage, sessionStorageDiagnostics } from './session-storage.js';
 import { sessionStorageAccess } from './session-storage-access.js';
 import { RunnerCacheStorage } from './runner-cache-storage.js';
 import {
@@ -3973,21 +3973,7 @@ export async function buildEmbeddedServer(
                 retainedContainers: lastDockerGcReport.retainedContainers,
               }
             : null,
-          worktrees: report
-            ? {
-                observedAt: report.observedAt,
-                dependenciesRemoved: report.dependenciesRemoved.length,
-                worktreesRetired: report.worktreesRetired.length,
-                comparedDependencyBytes: report.comparedDependencyBytes,
-                worktreeSampledBytes: report.worktreeSampledBytes,
-                dependencySampledBytes: report.dependencySampledBytes,
-                usageComplete: report.usageComplete,
-                dryRun: report.dryRun,
-                blockers: report.blockers
-                  .slice(0, 100)
-                  .map((b) => ({ path: b.path, reason: b.reason.slice(0, 500) })),
-              }
-            : null,
+          worktrees: report ? sessionStorageDiagnostics(report) : null,
           runnerCaches: runnerCacheStorage?.lastReport ?? null,
           databaseBytes,
           nativeBuildkit,
