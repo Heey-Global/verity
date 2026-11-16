@@ -93,4 +93,46 @@ describe('per-person migrations without the administrator row', () => {
       await current.close();
     }
   }, 60_000);
+
+  // Without a sponsor an automation runs for no one, and a personless turn no
+  // longer gets the instance's credentials once a project has people of its own.
+  it("makes the project's creator the sponsor of automations that have none", async () => {
+    const legacy = await createIsolatedTestDb();
+    try {
+      const migrator = new Migrator({ db: legacy.db, provider: migrationProvider });
+      expect((await migrator.migrateTo('0222_google_owner_without_default')).error).toBeUndefined();
+      await sql`insert into users (id, role, status) values ('creator', 'member', 'active')`.execute(
+        legacy.db,
+      );
+      await sql`insert into projects (id, owner, repo, container_name, state, created_by_user_id)
+        values ('scheduled', 'local', 'scheduled', 'scheduled', 'active', 'creator')`.execute(
+        legacy.db,
+      );
+      await sql`insert into sessions (session_id, worktree, model, project_id) values
+        ('legacy-automation', '/legacy-automation', 'test', 'scheduled'),
+        ('sponsored-automation', '/sponsored-automation', 'test', 'scheduled'),
+        ('projectless-automation', '/projectless-automation', 'test', null)`.execute(legacy.db);
+      await sql`insert into session_automations (id, session_id, name, status, schedule, prompt, sponsor_user_id) values
+        ('legacy', 'legacy-automation', 'Legacy', 'enabled', '{}', 'check', null),
+        ('sponsored', 'sponsored-automation', 'Sponsored', 'enabled', '{}', 'check', ${ADMIN}),
+        ('projectless', 'projectless-automation', 'Projectless', 'enabled', '{}', 'check', null)`.execute(
+        legacy.db,
+      );
+      expect((await migrator.migrateToLatest()).error).toBeUndefined();
+
+      expect(
+        await legacy.db
+          .selectFrom('session_automations')
+          .select(['id', 'sponsor_user_id'])
+          .orderBy('id')
+          .execute(),
+      ).toEqual([
+        { id: 'legacy', sponsor_user_id: 'creator' },
+        { id: 'projectless', sponsor_user_id: null },
+        { id: 'sponsored', sponsor_user_id: ADMIN },
+      ]);
+    } finally {
+      await legacy.close();
+    }
+  }, 60_000);
 });

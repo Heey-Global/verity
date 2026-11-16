@@ -513,3 +513,19 @@ migrations['0222_google_owner_without_default'] = {
     // The default was a migration aid, not part of the data; nothing to restore.
   },
 };
+
+migrations['0223_automation_sponsor_backfill'] = {
+  // Automations created before sponsors were recorded run for no one. With
+  // people of their own in a project, a turn without a person may no longer
+  // borrow the instance's credentials, so these would stop. The project's
+  // creator set them up — the only person a project had then — and becomes
+  // their sponsor; each run is still checked against that person's rights.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`update session_automations a set sponsor_user_id = p.created_by_user_id
+      from sessions s join projects p on p.id = s.project_id
+      where s.session_id = a.session_id and a.sponsor_user_id is null`.execute(db);
+  },
+  async down(): Promise<void> {
+    // Which sponsors this filled in is not recorded; they stay.
+  },
+};
