@@ -120,8 +120,9 @@ unit_stopped() {
   done <<<"$reply"
   [[ ($load = loaded || $load = not-found) && ($active = inactive || $active = failed) ]]
 }
-# Every launcher holds the installer lock while it submits, so no stage below
-# can gain a running job between this check and its removal.
+# Every launcher holds the installer lock from its start, through staging and
+# submission, until it exits, so no stage below is being written or can gain a
+# running job between this check and its removal.
 compact_stopped_stages() {
   local dir name
   for dir in /var/lib/verity-egress/provision/*; do

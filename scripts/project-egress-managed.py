@@ -351,6 +351,9 @@ def prune_releases(root, keep):
         keep = {*keep, os.readlink(current)}
     elif current.exists():
         return []
+    # Compare identities, not link text: a relative or differently rooted link
+    # must never make the live bundle a candidate.
+    keep = {Path(path).name for path in keep}
     published, retired = [], []
     for path in releases.iterdir():
         info = path.lstat()
@@ -358,7 +361,7 @@ def prune_releases(root, keep):
             continue
         if path.name.startswith('.retired-'):
             retired.append(path)  # withdrawn by an earlier run that stopped mid-removal
-        elif re.fullmatch('[a-f0-9]{64}', path.name) and str(path) not in keep:
+        elif re.fullmatch('[a-f0-9]{64}', path.name) and path.name not in keep:
             published.append((info.st_mtime, path))
     published.sort(key=lambda item: item[0], reverse=True)
     candidates = [path for _, path in published[RETAINED_RELEASES:]]

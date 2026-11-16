@@ -161,6 +161,20 @@ class ManagedTests(unittest.TestCase):
         self.assertEqual(remaining, sorted([current.name, old[4].name, old[3].name]))
         self.assertEqual((self.root / 'opt/verity-egress').resolve(), current)
 
+    def test_current_release_is_kept_however_old_and_however_linked(self):
+        self.process_table()
+        self.provision()
+        current = (self.root / 'opt/verity-egress').resolve()
+        os.utime(current, (1, 1))
+        link = self.root / 'opt/verity-egress'
+        link.unlink()
+        link.symlink_to(os.path.relpath(current, link.parent))
+        old = [self.old_release(str(age), age) for age in range(4)]
+        managed.prune_releases(self.root, set())
+        self.assertTrue(current.exists())
+        self.assertEqual(sorted(p.name for p in (self.root / managed.RELEASES).iterdir()),
+                         sorted([current.name, old[3].name, old[2].name]))
+
     def test_release_named_by_a_running_process_is_kept(self):
         self.provision()
         old = [self.old_release(str(age), age) for age in range(4)]
