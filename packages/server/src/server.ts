@@ -1,3 +1,4 @@
+import { installWikiMaintenance } from './server-wiki-maintenance.js';
 import { createServerVulnerabilities } from './server-vulnerabilities.js';
 import { createServerAuthority } from './server-authority.js';
 import { createServerAutomations } from './server-automations.js';
@@ -18,7 +19,6 @@ import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
 import { SealedError, type ProjectRecord } from '@verity/store';
-import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProcessAgentLoginService } from './agent-login.js';
@@ -39,7 +39,7 @@ import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
-import { knowledgeRef, hasProjectWiki, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
+import { knowledgeRef, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -78,15 +78,7 @@ import { createServerUpdateNotifier } from './self-update/server-update-notifier
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { registerServerSessionFiles } from './server-session-files.js';
-import { parseSpawnRequestBody } from './session-create-schema.js';
 import { WikiProposals } from './wiki-proposals.js';
-import {
-  startWikiMaintenanceTrigger,
-  WIKI_MAINTENANCE_DISPLAY_PROMPT,
-  WIKI_MAINTENANCE_PROMPT,
-  WIKI_MAINTENANCE_SESSION_NAME,
-  type WikiMaintenanceTrigger,
-} from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { type ServerContext } from './server-context.js';
 import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
@@ -1379,74 +1371,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   installOnboarding(app, ctx, { spawn: sessionCreate.spawn });
 
-  // Wiki maintenance runs when something new happened in a project (see
-  // wiki-maintenance-trigger.ts and docs/knowledge.md).
-  if (deps.dataRoot !== undefined) {
-    const dataRoot = deps.dataRoot;
-    let wikiMaintenance: WikiMaintenanceTrigger | undefined;
-    app.addHook('onReady', async () => {
-      try {
-        for (const id of await deps.eventStore.wikiMaintenance.sessionIds())
-          wikiMaintenanceSessions.add(id);
-      } catch (err) {
-        // The session list reads them again on every load; the runs still start.
-        app.log.warn({ err }, 'wiki maintenance sessions could not be read');
-      }
-      wikiMaintenance = startWikiMaintenanceTrigger({
-        store: deps.eventStore,
-        hasWiki: (projectId) => hasProjectWiki(dataRoot, projectId),
-        isProjectBusy: (projectId) => isProjectBusy(projectId),
-        ensureSession: async (project) => {
-          const known = (await deps.eventStore.wikiMaintenance.get(project.id))?.sessionId;
-          const existing = known ? await deps.eventStore.getSession(known) : undefined;
-          if (existing?.projectId === project.id) {
-            wikiMaintenanceSessions.add(existing.sessionId);
-            return existing.sessionId;
-          }
-          // Hidden before it exists, so no list or notification ever sees it.
-          const sessionId = randomUUID();
-          wikiMaintenanceSessions.add(sessionId);
-          const created = await sessionCreate.spawn(
-            parseSpawnRequestBody({
-              projectId: project.id,
-              sessionId,
-              name: WIKI_MAINTENANCE_SESSION_NAME,
-            }),
-            app.log,
-          );
-          if (!('sessionId' in created.result)) {
-            wikiMaintenanceSessions.delete(sessionId);
-            return undefined;
-          }
-          try {
-            await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
-          } catch (err) {
-            // Unrecorded, it would show up in lists after a restart and never be reused.
-            await ctx.deleteSession(sessionId).catch(() => false);
-            throw err;
-          }
-          return sessionId;
-        },
-        dispatch: (sessionId) =>
-          sessionsBeingReaped.has(sessionId)
-            ? Promise.resolve({ accepted: false })
-            : conductor.dispatchTurnWhenIdle(
-                sessionId,
-                WIKI_MAINTENANCE_PROMPT,
-                {},
-                {
-                  displayPrompt: WIKI_MAINTENANCE_DISPLAY_PROMPT,
-                  validateSession: (session) =>
-                    deps.eventStore.wikiMaintenance.isSession(session.sessionId),
-                },
-              ),
-        log: app.log,
-      });
-    });
-    lifecycle.onClose(async () => {
-      await wikiMaintenance?.stop();
-    });
-  }
+  installWikiMaintenance(app, ctx, {
+    spawn: sessionCreate.spawn,
+    isProjectBusy,
+    wikiMaintenanceSessions,
+  });
 
   installSessionRoutes(app, ctx, {
     sessionOverview: {
