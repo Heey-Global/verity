@@ -18,7 +18,7 @@ import {
   type ProjectRelaySandbox,
   type ProjectRelaySandboxRef,
 } from './project-relay-lifecycle.js';
-import { projectDefaultSandboxUser } from './project-sandbox.js';
+import { originalSandboxUser, projectDefaultSandboxUser } from './project-sandbox.js';
 import {
   projectNetworkName,
   sandboxIdentity,
@@ -4436,7 +4436,7 @@ export class ProvisionerImpl implements Provisioner {
     );
     return {
       projectId: project.id,
-      userId: sandbox?.userId ?? (await projectDefaultSandboxUser(this.opts.store, project.id)),
+      userId: sandbox?.userId ?? (await originalSandboxUser(this.opts.store, project.id)),
       projectDefault: sandbox?.projectDefault ?? true,
       ...(egress === undefined ? {} : { egress }),
       forgeConnectionId: project.forgeConnectionId ?? null,
@@ -5175,7 +5175,7 @@ export class ProvisionerImpl implements Provisioner {
   async sleepPersonalSandbox(projectId: string, userId: string): Promise<void> {
     const project = await this.opts.store.getProject(projectId);
     if (project === undefined) return;
-    if ((await projectDefaultSandboxUser(this.opts.store, projectId)) === userId) return;
+    if ((await originalSandboxUser(this.opts.store, projectId)) === userId) return;
     const run = this.memberSandboxRun(project, userId);
     // Never while it is being started; the start would race the stop.
     if (this.personalSandboxStarts.has(run.key)) return;

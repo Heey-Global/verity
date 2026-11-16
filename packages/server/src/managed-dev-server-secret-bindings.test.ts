@@ -517,5 +517,19 @@ describe('managed servers with secret bindings', () => {
 
     runningFor = undefined;
     await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('no running turn');
+
+    // An approval nobody is recorded for is no one's: it no longer counts as the
+    // installation's administrator's, which would start it with their secrets
+    // unreviewed. Earlier approvals got their approver by migration instead.
+    await manager.approve('s1', 'api', {
+      command: entry.command,
+      workdir: '.',
+      secretBindings,
+      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
+    });
+    const administrator = '00000000-0000-4000-8000-000000000001';
+    await expect(manager.restart('s1', 'api', 'operator', administrator)).rejects.toThrow(
+      'approve this server yourself',
+    );
   });
 });

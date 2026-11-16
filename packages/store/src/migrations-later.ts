@@ -54,10 +54,22 @@ migrations['0207_google_account_owners'] = {
   // the same address gets their own row instead of replacing the first one's
   // credentials. Project service connections become per member: each member
   // chooses their own account for a project.
+  //
+  // Like 0208 and later, the backfill names the administrator only where that
+  // row exists. A foreign-key default would be validated against every existing
+  // row and abort the upgrade of an installation without it; rows no one can
+  // own are dropped, as no person could reach them anyway. No default remains,
+  // so a writer that forgets the owner fails instead of handing the account or
+  // choice to the administrator.
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table google_accounts add column owner_user_id text
-      not null default '00000000-0000-4000-8000-000000000001'
       references users(id) on delete cascade`.execute(db);
+    await sql`update google_accounts set owner_user_id = '00000000-0000-4000-8000-000000000001'
+      where exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+    await sql`delete from google_accounts where owner_user_id is null`.execute(db);
+    await sql`alter table google_accounts alter column owner_user_id set not null`.execute(db);
     await sql`drop index google_accounts_email`.execute(db);
     await sql`create unique index google_accounts_owner_email
       on google_accounts(owner_user_id, lower(email))`.execute(db);
@@ -66,10 +78,15 @@ migrations['0207_google_account_owners'] = {
       on google_accounts(owner_user_id, subject) where subject is not null`.execute(db);
 
     await sql`alter table project_google_connections add column user_id text
-      not null default '00000000-0000-4000-8000-000000000001'
       references users(id) on delete cascade`.execute(db);
+    await sql`update project_google_connections set user_id = '00000000-0000-4000-8000-000000000001'
+      where exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
     await sql`update project_google_connections c set user_id = a.owner_user_id
       from google_accounts a where a.id = c.account_id`.execute(db);
+    await sql`delete from project_google_connections where user_id is null`.execute(db);
+    await sql`alter table project_google_connections alter column user_id set not null`.execute(db);
     await sql`alter table project_google_connections
       drop constraint project_google_connections_pkey`.execute(db);
     await sql`alter table project_google_connections
@@ -367,8 +384,14 @@ migrations['0217_user_project_last_model'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`alter table user_project_preferences add column last_model text`.execute(db);
     // 0216 copied the project default to the administrator, whose it was. Left in
-    // place it would keep choosing a model for everyone else in the project.
-    await sql`update project_settings set default_model = null`.execute(db);
+    // place it would keep choosing a model for everyone else in the project. Only
+    // a default 0216 actually copied is retired: without the administrator row it
+    // copied none, and clearing it would lose the project's only record of it.
+    await sql`update project_settings s set default_model = null
+      where exists (select 1 from user_project_preferences p
+        where p.project_id = s.project_id
+          and p.user_id = '00000000-0000-4000-8000-000000000001'
+          and p.default_model is not distinct from s.default_model)`.execute(db);
   },
   async down(db: Kysely<unknown>): Promise<void> {
     await sql`alter table user_project_preferences drop column last_model`.execute(db);
@@ -478,7 +501,44 @@ migrations['0221_managed_dev_server_approver'] = {
   },
 };
 
-migrations['0222_sandbox_update_state'] = {
+migrations['0222_google_owner_without_default'] = {
+  // 0207 first gave both owner columns the administrator as default. On an
+  // installation that already ran it, a writer that left the owner out would
+  // still hand the Google account or project choice to the administrator.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table google_accounts alter column owner_user_id drop default`.execute(db);
+    await sql`alter table project_google_connections alter column user_id drop default`.execute(db);
+  },
+  async down(): Promise<void> {
+    // The default was a migration aid, not part of the data; nothing to restore.
+  },
+};
+
+migrations['0223_automation_sponsor_backfill'] = {
+  // NULL also results from deleting a sponsor (ON DELETE SET NULL). Without
+  // provenance it cannot authorize work under the project's creator.
+  async up(): Promise<void> {},
+  async down(): Promise<void> {},
+};
+
+migrations['0224_managed_dev_server_legacy_approver'] = {
+  // Approvals given before 0221 recorded the approver were the administrator's,
+  // the only person a project had. Recording that here lets the Server compare
+  // an approval with the person starting the server, and never assume an
+  // unrecorded approver is anyone in particular.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`update managed_dev_servers set approved_by_user_id = '00000000-0000-4000-8000-000000000001'
+      where approved_by_user_id is null and approved_command is not null
+        and exists (select 1 from users where id = '00000000-0000-4000-8000-000000000001')`.execute(
+      db,
+    );
+  },
+  async down(): Promise<void> {
+    // Which approvers this filled in is not recorded; they stay.
+  },
+};
+
+migrations['0225_sandbox_update_state'] = {
   async up(db: Kysely<unknown>): Promise<void> {
     await sql`create table sandbox_update_state (
       project_id text primary key references projects(id) on delete cascade,

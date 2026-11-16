@@ -1239,9 +1239,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isConfiguredProjectSessionModel,
   } = models;
 
-  const { sharedProject, personSessionModel, projectPeopleNames } = sharedProjectPeople(ctx, {
-    availableModels,
-  });
+  const {
+    sharedProject,
+    personSessionModel,
+    projectPeopleNames,
+    choosePersonModel,
+    personalModelRefusal,
+  } = sharedProjectPeople(ctx, { availableModels });
   installSessionReads(app, ctx, {
     hasMeetingJob,
     sessionOverview: {
@@ -1361,18 +1365,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     isModelAllowed: isProjectSessionModel,
     projectModelError: PROJECT_MODEL_ERROR,
     projectAgentRejection: (model, projectId) => projectAgentRejection(model, projectId),
-    // In a shared project a model switch is the person's own: it changes the model
-    // their turns run on, without interrupting anyone else's.
-    choosePersonModel: async (session, viewer, model) => {
-      if (!(await sharedProject(session.projectId))) return false;
-      await deps.eventStore.userProviderConnections.setSessionModel(
-        session.sessionId,
-        viewer,
-        model,
-      );
-      await deps.eventStore.userProviderConnections.setLastModel(viewer, session.projectId!, model);
-      return true;
-    },
+    choosePersonModel,
+    personModelRefusal: personalModelRefusal,
   });
   // Advance a session's "last seen" mark for the overview unread dot (#387). The
   // client sends the `eventCount` it just observed when the operator opened the

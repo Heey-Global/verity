@@ -18,6 +18,7 @@ import { selectedOpenCodeModels } from './opencode-model-selection.js';
 import { isModelAllowedForProject } from './project-agent-policy.js';
 import { preselectModel } from './session-create-route.js';
 import { legacyAdministratorId } from './view-state-routes.js';
+import { personModelRefusal } from './turn-sandbox.js';
 import {
   isProjectSessionModel,
   veritySettingsStore,
@@ -169,7 +170,38 @@ export function sharedProjectPeople(
     }
     return names;
   };
-  return { sharedProject, personSessionModel, projectPeopleNames };
+  /**
+   * In a shared project a model switch is the person's own: it changes the model
+   * their turns run on, without interrupting anyone else's. Answers false
+   * elsewhere, where the session-wide switch applies.
+   */
+  const choosePersonModel = async (
+    session: { sessionId: string; projectId: string | null },
+    viewer: string,
+    model: string,
+  ): Promise<boolean> => {
+    if (!(await sharedProject(session.projectId))) return false;
+    const preferences = deps.eventStore.userProviderConnections;
+    await preferences.setSessionModel(session.sessionId, viewer, model);
+    await preferences.setLastModel(viewer, session.projectId!, model);
+    return true;
+  };
+  /** Why `viewer` may not choose `model` as their own in a shared session. */
+  const personalModelRefusal = async (
+    session: { projectId: string | null },
+    viewer: string,
+    model: string,
+  ): Promise<string | undefined> =>
+    (await sharedProject(session.projectId))
+      ? personModelRefusal(deps.eventStore, session.projectId!, viewer, model)
+      : undefined;
+  return {
+    sharedProject,
+    personSessionModel,
+    projectPeopleNames,
+    choosePersonModel,
+    personalModelRefusal,
+  };
 }
 
 /** Direct model queries on the accounts of the person the work is for. */
@@ -252,6 +284,10 @@ export function installPeople(
     sleepSandbox: deps.provisioner?.sleepPersonalSandbox?.bind(deps.provisioner),
     stopDevServers: (projectId, userId) =>
       deps.managedDevServerManager?.stopForPerson(projectId, userId) ?? Promise.resolve(),
+    turnCredentials: deps.turnCredentials,
+    signingCapabilities: deps.signingCapabilities,
+    ghTokenCapabilities: deps.ghTokenCapabilities,
+    claudeEgressIdentity: deps.claudeEgressIdentity,
     onError: (step, error) =>
       app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
   });

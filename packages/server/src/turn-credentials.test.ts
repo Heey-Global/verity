@@ -48,6 +48,19 @@ describe('turn credentials', () => {
     expect(turns.resolve({ projectId: 'p2', token: other })?.projectId).toBe('p2');
   });
 
+  // A removed member's running turn would otherwise keep signing and pushing as
+  // them for up to a day; everyone else's turns in the project keep working.
+  it("drops only the removed person's badges in that project", () => {
+    const turns = createTurnCredentials();
+    const removed = turns.issue(binding);
+    const colleague = turns.issue({ ...binding, turnId: 't2', userId: 'maria' });
+    const elsewhere = turns.issue({ ...binding, projectId: 'p2' });
+    turns.revokeUser('p1', 'lena');
+    expect(turns.resolve({ projectId: 'p1', token: removed })).toBeUndefined();
+    expect(turns.resolve({ projectId: 'p1', token: colleague })?.userId).toBe('maria');
+    expect(turns.resolve({ projectId: 'p2', token: elsewhere })?.userId).toBe('lena');
+  });
+
   it('refuses to grow without bound', () => {
     const turns = createTurnCredentials({ capacity: 2 });
     turns.issue(binding);

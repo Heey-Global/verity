@@ -2,7 +2,6 @@ import { verifyRecoveryInstances } from './managed-dev-server-recovery.js';
 import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
 import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
-import { legacyAdministratorId } from './view-state-routes.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
 import {
@@ -876,8 +875,9 @@ export class ManagedDevServerManager {
   /**
    * Secrets resolve through the starter's own connection (ADR 0023 §3): they
    * start it only on a command they approved themselves, never on another
-   * person's approval. An approval from before projects had people was the
-   * administrator's.
+   * person's approval. Approvals from before the approver was recorded were
+   * assigned to the administrator by migration; one still without an approver
+   * admits no person's start.
    */
   private assertOwnApproval(
     entry: ManagedDevServerRecord,
@@ -888,7 +888,7 @@ export class ManagedDevServerManager {
       by !== 'recovery' &&
       person !== null &&
       entry.secretBindings.length > 0 &&
-      (entry.approvedBy ?? legacyAdministratorId) !== person
+      entry.approvedBy !== person
     )
       throw new ManagedDevServerError(
         'Review and approve this server yourself before starting it with its secrets.',
