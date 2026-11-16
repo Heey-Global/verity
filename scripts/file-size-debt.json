@@ -23,7 +23,7 @@
   "packages/server/src/github.test.ts": 1659,
   "packages/server/src/mcp-gateway-route.test.ts": 3174,
   "packages/server/src/preview-share-manager.test.ts": 3285,
-  "packages/server/src/preview-share-manager.ts": 2159,
+  "packages/server/src/preview-share-manager.ts": 2158,
   "packages/server/src/provisioner.test.ts": 13774,
   "packages/server/src/provisioner.ts": 8153,
   "packages/server/src/runner-boundary-attestation.test.ts": 1611,

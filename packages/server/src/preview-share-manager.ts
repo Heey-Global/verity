@@ -173,10 +173,7 @@ export interface PreviewShareManagerOptions {
     contents?: string;
   }>;
   listArtifactDirectory?: (path: string) => Promise<string[]>;
-  /** One line per create and per stop, carrying how long each step took. A
-   * link that takes ten seconds is otherwise one opaque request: the Uplink
-   * round trip, the connector start and the wait for its edge connection all
-   * sit behind the same spinner. */
+  /** Report create/stop step durations to distinguish Uplink, start and readiness delays. */
   log?: Pick<Console, 'info' | 'warn'>;
   /** Called once a share has ended, revoked or expired. Managed dev servers stop
    *  when their last access ends (concept 2.6). */
@@ -193,11 +190,7 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
-  /**
-   * The project as seen from the sandbox a preview targets: a managed server's
-   * person's sandbox, else the original one. Its container and network are the
-   * ones a connector must reach, and no other sandbox's network is joined.
-   */
+  /** Resolve the owning sandbox before joining its container/network. */
   async previewSandbox(
     project: ProjectRecord,
     managedInstanceId: string | null | undefined,
@@ -363,7 +356,9 @@ export class PreviewShareManager {
         projectClonePath(this.options.hostCloneRoot, project),
       );
     } catch {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     let processes: ListeningProcess[];
     try {
@@ -1490,13 +1485,15 @@ export class PreviewShareManager {
     ) {
       throw new PreviewShareConflictError('project is outside Verity storage');
     }
-    const clone = await realpath(clonePath).catch(() => {
-      throw new PreviewShareConflictError('project checkout does not exist');
+    const clone = await realpath(clonePath).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('project checkout does not exist', { cause });
     });
     if (!worktree) return clone;
     const source = resolve(worktree);
-    const canonical = await realpath(source).catch(() => undefined);
-    const within = canonical ? relative(clone, canonical).split('\\').join('/') : undefined;
+    const canonical = await realpath(source).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('session worktree does not exist', { cause });
+    });
+    const within = relative(clone, canonical).split('\\').join('/');
     if (
       canonical !== source ||
       !within ||
@@ -1504,7 +1501,9 @@ export class PreviewShareManager {
       within.startsWith('../') ||
       posix.isAbsolute(within)
     ) {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     return source;
   }
