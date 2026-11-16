@@ -72,7 +72,7 @@ export async function personalTurnRefusal(
 }
 
 /** The provider a Verity model id runs on. */
-export function turnProviderOf(model: string): TurnProvider {
+function turnProviderOf(model: string): TurnProvider {
   return model.startsWith('codex/') ? 'codex' : model.startsWith('verity/') ? 'opencode' : 'claude';
 }
 

@@ -8,7 +8,7 @@ export const PERSONLESS_TURN_REFUSAL =
   "members, so no one's credentials can be used for it. Send the message again from " +
   'your own account in Verity.';
 
-export class PersonlessTurnRefusedError extends Error {
+class PersonlessTurnRefusedError extends Error {
   constructor() {
     super(PERSONLESS_TURN_REFUSAL);
     this.name = 'PersonlessTurnRefusedError';
