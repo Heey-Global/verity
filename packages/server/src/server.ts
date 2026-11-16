@@ -1,17 +1,13 @@
-import websocketPlugin, { type WebSocket } from '@fastify/websocket';
-import Fastify, {
+import {
   type FastifyBaseLogger,
-  type FastifyHttpsOptions,
   type FastifyInstance,
   type FastifyReply,
   type FastifyRequest,
-  type FastifyServerOptions,
 } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import {
   createSessionRepositories,
-  removeSessionRepositoryWorkspaces,
   registerSessionRepositoriesRoutes,
 } from './session-repositories.js';
 import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
@@ -28,35 +24,18 @@ import {
   schedulingPush,
 } from './scheduling-notices.js';
 import { createSchedulingTool } from './scheduling-tool.js';
-import compressPlugin from '@fastify/compress';
-import rateLimitPlugin from '@fastify/rate-limit';
-import { LIVE_TICKET_PROTOCOL_PREFIX, type AgentEvent } from '@verity/events';
+import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL, isCodexModel } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
-import { measureLatencyPhase, SealedError, type ProjectRecord } from '@verity/store';
-import { randomBytes, randomUUID } from 'node:crypto';
-import type { Server as HttpsServer } from 'node:https';
+import { SealedError, type ProjectRecord } from '@verity/store';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ZodError } from 'zod';
 import { createProcessAgentLoginService } from './agent-login.js';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import type { AssistantToolDeps } from './assistant-tool.js';
 import { registerAttachmentRoute } from './attachment-route.js';
-import {
-  attentionSignals,
-  type AttentionSignal,
-  type SecretStatus,
-  type UpdaterProbe,
-} from './attention.js';
 import { registerAuditRoutes } from './audit-routes.js';
-import {
-  browserOriginAllowed,
-  cookieCredential,
-  requestCredential,
-  setBrowserSession,
-  wsOriginAllowed,
-} from './auth.js';
 import { createAutomationExecutor } from './automation-executor.js';
 import { registerAutomationRoutes } from './automation-routes.js';
 import { startAutomationScheduler } from './automation-scheduler.js';
@@ -67,26 +46,18 @@ import {
   createClaudeUsageService,
   type ClaudeOAuthTokenProvider,
 } from './claudeUsage.js';
-import { createCodexUsageService, type CodexUsageHealth } from './codexUsage.js';
+import { createCodexUsageService } from './codexUsage.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
-import { createDocumentWorkspaceProvisioner, isDocumentWorkspace } from './document-workspace.js';
 import { registerGitSignRoute } from './git-sign-route.js';
 import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
-import {
-  knowledgeRef,
-  noteDeletedSession,
-  hasProjectWiki,
-  noteWikiOccasion,
-  occasionTitle,
-} from './wiki-occasions.js';
+import { knowledgeRef, hasProjectWiki, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
 import { registerKnowledgeSourceRoutes } from './knowledge-source-routes.js';
-import { LiveHub } from './live/live-hub.js';
 import { ResourceObserver } from './live/resource-observer.js';
 import { registerLocalPreviewRoutes } from './local-preview-routes.js';
 import { registerLogRoutes } from './log-routes.js';
@@ -94,16 +65,13 @@ import {
   registerManagedDevServerAgentRoute,
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
-import { registerMessageSearchRoute } from './message-search-route.js';
 import { registerPackageInstallRoute } from './package-install-route.js';
 import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
-import { authorizePairedRoute } from './paired-route-policy.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import {
-  filterModelListForProject,
   isModelAllowedForProject,
   ProjectAgentNotAllowedError,
   resolveProjectDefaultModel,
@@ -126,12 +94,6 @@ import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
-import { registerRequestLatencyDiagnostics } from './request-latency.js';
-import {
-  declaredNonOperatorKeys,
-  missingLockoutKeys,
-  nonOperatorRequestKey,
-} from './route-scopes.js';
 import { createServerUpdateNotifier } from './self-update/server-update-notifier.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
@@ -146,8 +108,8 @@ import {
   type WikiMaintenanceTrigger,
 } from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
-import { createServerLifecycle, type ServerContext } from './server-context.js';
-import { createSessionDeletion } from './server-session-deletion.js';
+import { type ServerContext } from './server-context.js';
+import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
 import { installProjects } from './server-projects.js';
 import {
   installPeople,
@@ -161,40 +123,28 @@ import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
+import { createLiveTickets, createServerLiveHub, installLive } from './server-live.js';
+import { createServerApp, installHttpGuards } from './server-http.js';
 import { installOnboarding } from './server-onboarding.js';
+import {
+  installSessionHistory,
+  installSessionList,
+  installSessionReads,
+} from './server-session-reads.js';
 import { installSettings } from './server-settings.js';
 import {
   createMeetingTranscripts,
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type {
-  ModelList,
-  ProjectDeleteOutcome,
-  PublicProjectRecord,
-  SessionDetail,
-} from './server-types.js';
-import { registerServerUpdateRoutes, type ServerUpdateController } from './server-update-routes.js';
+import type { ModelList, ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
+import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
-import {
-  createSessionDeletionManager,
-  type SessionDeletionPayload,
-  deletionDeadline,
-  SessionDeletionDeadlineError,
-} from './session-deletion.js';
-import { registerSessionDeleteRoute } from './session-delete-route.js';
 import { emitNotice, emitSessionEvent } from './session-event-writer.js';
-import { sessionGoogleStatus } from './session-google-status.js';
 import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
-import { parseScrollDiagnostic, registerSessionHistoryRoutes } from './session-history-routes.js';
-import { registerSessionListRoute } from './session-list-route.js';
 import { registerSessionMetadataRoute } from './session-metadata-route.js';
-import { recentSessionDiagnostics } from './session-observation.js';
-import { registerSessionOrderRoute } from './session-order-route.js';
-import { registerSessionReadRoutes } from './session-read-routes.js';
 import { registerSessionSeenRoute } from './session-seen-route.js';
 import { registerViewStateRoutes } from './view-state-routes.js';
-import { permissionEventAwaitsInput } from './status.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
@@ -205,12 +155,7 @@ import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
 import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
-import { isWebAppRequest } from './web-app.js';
-import {
-  createGitWorktreeProvisioner,
-  createScratchProvisioner,
-  RepositoryHasNoCommitsError,
-} from './worktree.js';
+import { createScratchProvisioner } from './worktree.js';
 import {
   ProjectNotReadyError,
   isProjectSessionModel,
@@ -229,16 +174,9 @@ import {
   CLAUDE_MORE_MODELS,
   DEFAULT_MODEL,
   sortModelIds,
-  DEFAULT_HISTORY_PAGE,
-  DEFAULT_BODY_LIMIT_BYTES,
-  PROJECTION_TAIL,
   VERITY_CONTROL_PROJECT_ID,
   PROJECT_DELETE_SPAWN_WAIT_MS,
   makeBranch,
-  redactScrollDiagnosticEvent,
-  redactScrollDiagnosticData,
-  WS_LIVE_PATH,
-  BINARY_UPLOAD_ROUTES,
 } from './server-support.js';
 import './fastify-augmentation.js';
 export type { ServerUpdateController } from './server-update-routes.js';
@@ -278,173 +216,13 @@ export {
 } from './server-support.js';
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
-  const liveTickets = new Map<
-    string,
-    { expiresAt: number; deviceId: string; userId: string; credential: string | undefined }
-  >();
-  const liveTicketTtlMs = 30_000;
-  const mintLiveTicket = (
-    deviceId: string,
-    userId: string,
-    credential?: string,
-  ): { ticket: string; expiresAt: string } => {
-    const now = Date.now();
-    for (const [ticket, record] of liveTickets) {
-      if (record.expiresAt <= now) liveTickets.delete(ticket);
-    }
-    while (liveTickets.size >= 1024) liveTickets.delete(liveTickets.keys().next().value!);
-    const ticket = randomBytes(32).toString('base64url');
-    const expiresAt = now + liveTicketTtlMs;
-    liveTickets.set(ticket, { expiresAt, deviceId, userId, credential });
-    return { ticket, expiresAt: new Date(expiresAt).toISOString() };
-  };
-  const consumeLiveTicket = (
-    protocolHeader: string | undefined,
-  ): { deviceId: string; userId: string; credential: string | undefined } | undefined => {
-    const offered = (protocolHeader ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .find((value) => value.startsWith(LIVE_TICKET_PROTOCOL_PREFIX));
-    if (offered === undefined) return undefined;
-    const ticket = offered.slice(LIVE_TICKET_PROTOCOL_PREFIX.length);
-    const record = liveTickets.get(ticket);
-    if (record === undefined) return undefined;
-    liveTickets.delete(ticket);
-    if (record.expiresAt <= Date.now() || !deps.authRegistry?.isKnownId?.(record.deviceId))
-      return undefined;
-    return { deviceId: record.deviceId, userId: record.userId, credential: record.credential };
-  };
+  const liveTickets = createLiveTickets(deps);
   // Search projection is an eventually-consistent read model. Start/resume its
   // bounded backfill independently of requests; live event appends schedule it too.
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
     deps.eventStore.scheduleMessageProjection();
   }
-  // What a route gets when it declares no `bodyLimit` of its own: enough for the
-  // metadata-shaped JSON that is all every route here takes, and nothing like
-  // enough for a base64 upload.
-  //
-  // This used to be sized from the two upload caps, so it was ~71 MB for every
-  // route in the server. Bulk is now declared where it is needed — see
-  // TURN_BODY_LIMIT_BYTES and MEETING_TRANSCRIPT_BODY_LIMIT_BYTES, alongside the
-  // limits the knowledge source routes already declare above this default and
-  // the far tighter ones the pairing and secret routes set below it. What that
-  // removes is not a leak but a ceiling: a buffered base64 body costs about
-  // three times its own size at once (the body, the string `JSON.parse` produces
-  // from it, the Buffer the handler decodes back), so a global 71 MB meant any
-  // route at all could be made to cost ~237 MB of peak memory.
-  //
-  // Raising this back to cover some new large-body route is the mistake to avoid:
-  // it would restore that ceiling everywhere to serve one endpoint. Give the
-  // route its own limit instead. Routes streaming to disk need neither — the
-  // `application/octet-stream` parser below hands them the raw stream and no body
-  // limit applies.
-  const bodyLimit = DEFAULT_BODY_LIMIT_BYTES;
-  const loggerOption: NonNullable<FastifyServerOptions['logger']> = deps.logger
-    ? {
-        serializers: {
-          req(request: {
-            method: string;
-            url: string;
-            hostname?: string | undefined;
-            ip?: string | undefined;
-            socket?: { remotePort?: number | undefined } | undefined;
-          }) {
-            return {
-              method: request.method,
-              url:
-                request.url.split('?', 1)[0] === '/app/mcp/oauth/callback'
-                  ? '/app/mcp/oauth/callback'
-                  : request.url,
-              hostname: request.hostname ?? '',
-              remoteAddress: request.ip ?? '',
-              remotePort: request.socket?.remotePort ?? 0,
-            };
-          },
-        },
-      }
-    : false;
-  const app: FastifyInstance =
-    deps.https === undefined
-      ? Fastify({ logger: loggerOption, bodyLimit })
-      : Fastify({
-          logger: loggerOption,
-          bodyLimit,
-          https: deps.https,
-        } satisfies FastifyHttpsOptions<HttpsServer>);
-  if (deps.logger) registerRequestLatencyDiagnostics(app);
-  app.decorateRequest('localUserId', null);
-  const lifecycle = createServerLifecycle(app);
-  // Derives the auth gate's pre-auth exception set from the routes this instance
-  // actually registers; the gate that consumes it is far below, next to the rest
-  // of the auth logic. It is attached HERE, in the same statement group as the
-  // instance itself, because `onRoute` is not retroactive — unlike `onRequest` it
-  // sees only routes registered after it. Adjacent to the constructor there is no
-  // "before" to get wrong: no route can exist yet. Anywhere else and a future
-  // route hoisted above it would silently lose its exemption and 401.
-  // `preAuthKeys` holds `"METHOD /pathname"`, so a sibling method on an exempt
-  // pathname is not exempt. See route-scopes.ts.
-  const preAuthKeys = new Set<string>();
-  app.addHook('onRoute', (route) => {
-    for (const key of declaredNonOperatorKeys(route)) preAuthKeys.add(key);
-  });
-  // Defence in depth for the routes whose loss locks the operator out entirely
-  // rather than breaking a feature: refuse to come up instead of 401-ing the
-  // on-ramp that mints the operator bearer. See LOCKOUT_CRITICAL_KEYS.
-  app.addHook('onReady', (done) => {
-    const missing = missingLockoutKeys(preAuthKeys);
-    done(
-      missing.length === 0
-        ? undefined
-        : new Error(
-            `verity: pre-auth exemption missing for ${missing.join(', ')} — the onRoute hook that derives them must precede every route registration`,
-          ),
-    );
-  });
-  // Install the limiter's manual API. The auth hook below invokes it only after
-  // a protected request has failed bearer-token verification.
-  app.register(rateLimitPlugin, { global: false });
-  // Opt in only large history reads: global compression would also transform
-  // credential responses and opaque brokered HTTP payloads.
-  app.register(compressPlugin, {
-    global: false,
-    globalDecompression: false,
-    encodings: ['gzip', 'deflate'],
-  });
-  let checkInvalidBearer: ReturnType<FastifyInstance['createRateLimit']> | undefined;
-
-  // Session file uploads are streamed directly to disk. Returning the raw request
-  // stream from this parser intentionally avoids Fastify's buffered body limit.
-  app.addContentTypeParser('application/octet-stream', (_request, payload, done) => {
-    done(null, payload);
-  });
-  // …but the mobile app cannot guarantee that header. Its upload body is a
-  // file-backed Blob, and expo/fetch overwrites our explicit
-  // `application/octet-stream` with the picked file's own MIME type, so a PDF
-  // arrives as `application/pdf` and used to die on Fastify's 415 before the
-  // route ever ran. Declare the media type these routes actually receive instead
-  // of trying to match it: they stream whatever bytes they are given straight to
-  // disk and read the real type from the file name or an explicit parameter, so
-  // the header carries no information for them.
-  //
-  // A catch-all `'*'` parser would not be enough. Fastify seeds `application/json`
-  // and `text/plain` parsers that win over it by exact match, so a picked .json or
-  // .txt file would still be buffered and parsed into an object or string, and the
-  // handler's `pipeline(request.body, …)` would fail on a body that is no longer a
-  // stream. Rewriting the header sidesteps parser precedence entirely and leaves
-  // every other route on Fastify's own 415 for a body it cannot parse.
-  //
-  // `onRequest` runs after routing and before parsing, so both the matched route
-  // and the header are available here. A request with no content-type is left
-  // alone so Fastify keeps short-circuiting an empty body to the handler.
-  app.addHook('onRequest', (request, _reply, done) => {
-    if (
-      request.headers['content-type'] !== undefined &&
-      BINARY_UPLOAD_ROUTES.has(request.routeOptions.url ?? '')
-    ) {
-      request.headers['content-type'] = 'application/octet-stream';
-    }
-    done();
-  });
+  const { app, lifecycle, preAuthKeys } = createServerApp(deps);
   // Resolve the conductor: a factory is called with the app logger so its
   // background-failure sink can log through it (chicken/egg: the conductor is
   // built before the routes, but the logger exists once `app` does).
@@ -669,69 +447,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       );
     done();
   });
-  const liveHub = new LiveHub({
-    watchResource: (identity, resource, changed) =>
-      resources.watch(
-        identity.userId ?? '',
-        resource,
-        async (target) => {
-          if (
-            deps.authRegistry?.isEnabled() === true &&
-            (!identity.credential || !deps.authRegistry.verify(identity.credential))
-          )
-            return { statusCode: 401, body: '' };
-          const response = await app.inject({
-            method: 'GET',
-            url: target.path,
-            headers: {
-              ...(identity.credential ? { authorization: `Bearer ${identity.credential}` } : {}),
-              ...(target.ownerToken ? { 'x-meeting-owner-token': target.ownerToken } : {}),
-            },
-          });
-          return { statusCode: response.statusCode, body: response.body };
-        },
-        changed,
-      ),
-    bus: deps.bus,
-    store: {
-      getSession: async (sessionId) => {
-        const session = await deps.eventStore.getSession(sessionId);
-        return session === undefined
-          ? undefined
-          : { sessionId: session.sessionId, projectId: session.projectId };
-      },
-      getEventsAfter: (sessionId, afterSeq, limit) =>
-        deps.eventStore.getEventsAfter(sessionId, afterSeq, limit),
-    },
-    access: {
-      // Without the auth gate there is one operator and no identity to scope by.
-      canReadSession: async (userId, session) =>
-        userId === undefined ||
-        (await authorizePairedRoute(deps.eventStore, userId, 'GET', '/sessions/:id', {
-          id: session.sessionId,
-        })) === 'allow',
-      overviewScope: async (userId) => {
-        if (userId === undefined) return { all: true };
-        const [projectIds, administrator] = await Promise.all([
-          deps.eventStore.listReadableProjectIds(userId),
-          deps.eventStore.isActiveAdministrator(userId),
-        ]);
-        return { all: false, projectIds: new Set(projectIds), unassigned: administrator };
-      },
-      isActiveUser: (userId) => deps.eventStore.isActiveLocalUser(userId),
-    },
-    logger: app.log,
-  });
-  const unsubscribeSessionChanges = deps.sessionChanges?.subscribe((sessionId, change) => {
-    liveHub.notify({
-      sessionId,
-      topics: change === 'name' ? ['session'] : ['activity', 'status'],
-    });
-  });
-  lifecycle.onClose(() => {
-    unsubscribeSessionChanges?.();
-    liveHub.close();
-  });
+  const liveHub = createServerLiveHub(app, deps, { resources, lifecycle });
   const ctx: ServerContext = {
     app,
     deps,
@@ -936,9 +652,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   pushSender?.start();
   serverUpdateNotifier?.start();
   const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
-    for (const [ticket, record] of liveTickets) {
-      if (record.deviceId === deviceId) liveTickets.delete(ticket);
-    }
+    liveTickets.revokeDevice(deviceId);
     liveHub.revokeDevice(deviceId);
   });
   lifecycle.onClose(() => {
@@ -1415,197 +1129,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const meetingTranscripts = createMeetingTranscripts(app, deps);
   const { hasMeetingJob, cancelMeetingJobs } = meetingTranscripts;
 
-  // Single error boundary: never reflect internal/driver/zod details to the
-  // client. Invalid input → 400; everything else → a generic 500 (the real
-  // error is logged server-side via Fastify's logger when enabled).
-  app.setErrorHandler((error, request, reply) => {
-    if (error instanceof ZodError) {
-      request.log.warn(
-        {
-          issues: error.issues.map((issue) => ({
-            code: issue.code,
-            path: issue.path,
-            message: issue.message,
-          })),
-          bodyType: typeof request.body,
-          bodyConstructor:
-            request.body !== null && request.body !== undefined
-              ? request.body.constructor?.name
-              : null,
-        },
-        'verity: invalid request',
-      );
-      reply.code(400);
-      return { error: 'invalid request' };
-    }
-    // A sealed secret store surfaces as a clean 503 (not a 500): the operation
-    // touched a secret while no key is loaded. Clients (mobile onboarding) read
-    // this to prompt for the master password via /secret/unlock.
-    if (error instanceof SealedError) {
-      reply.code(503);
-      return { error: 'secret store is sealed', status: 'sealed' as const };
-    }
-    if (error instanceof RepositoryHasNoCommitsError) {
-      request.log.warn(error, 'verity: session base repository is empty');
-      reply.code(409);
-      return { error: error.message };
-    }
-    // Fastify's own client errors carry a 4xx statusCode (415 unsupported media
-    // type, 413 payload too large, malformed-JSON 400, …). Surface the code —
-    // it's a client mistake they can fix — but with a generic message so no
-    // internal detail leaks. 5xx and uncoded errors fall through to a 500.
-    const status = (error as { statusCode?: number }).statusCode;
-    if (typeof status === 'number' && status >= 400 && status < 500) {
-      const clientError = error as Error;
-      request.log.warn(
-        {
-          status,
-          errorType: clientError.constructor?.name,
-          message: clientError.message,
-          bodyType: typeof request.body,
-          bodyConstructor:
-            request.body !== null && request.body !== undefined
-              ? request.body.constructor?.name
-              : null,
-        },
-        'verity: invalid client request',
-      );
-      reply.code(status);
-      return { error: 'invalid request' };
-    }
-    request.log.error(error);
-    reply.code(500);
-    return { error: 'internal error' };
-  });
-
-  // ── Global auth gate (audit finding C1) ───────────────────────────────────
-  // Every route requires a valid per-device bearer token EXCEPT the routes
-  // declared in `NON_OPERATOR_ROUTES` — the health probe, the master-password
-  // lifecycle (the on-ramp that mints the token), the onboarding status probe,
-  // the GitHub manifest URLs GitHub's browser must reach, the webhook, and the
-  // sandbox-facing `/internal/*` brokers. Registering the check as a global
-  // `onRequest` hook — rather than per route — means a newly added route is
-  // protected by default; you must consciously declare it to expose it.
-  //
-  // The gate only enforces once a master password is configured (registry
-  // enabled). Env-key/headless deployments have no interactive credential and
-  // keep the previous open behaviour, relying on network isolation.
-  //
-  // The exception set used to be written out here as a second, conditional list
-  // that had to stay in step with the equally conditional route registrations.
-  // It is now `preAuthKeys`, derived from the routes this instance actually
-  // registers by the `onRoute` hook attached next to the Fastify constructor
-  // above — see there for why it cannot live at this point in the file.
-  app.addHook('onRequest', async (request, reply) => {
-    // Match on the concrete pathname (query stripped) plus the request method; no
-    // pre-auth route carries a path param, so an exact-set lookup is sufficient
-    // and avoids depending on Fastify's route-pattern internals. That is no longer
-    // an assumption a reader has to hold: the `onRoute` hook above refuses to
-    // register a declared exception whose url has a param or wildcard.
-    const pathname = request.url.split('?', 1)[0] ?? request.url;
-    // Network-origin gate for `/internal/*` (audit H1 follow-up), enforced BEFORE
-    // and independent of the auth gate: when an internal listener is wired, these
-    // routes are reachable only on that non-published socket. On the public/LAN
-    // port the guard fails, so they 404 as if they don't exist here — the broker
-    // is thus off the LAN entirely, on top of its own broker-token check.
-    if (
-      deps.internalPathGuard !== undefined &&
-      pathname.startsWith('/internal/') &&
-      !deps.internalPathGuard(request)
-    ) {
-      // send()+return so the request lifecycle STOPS here — a bare `return payload`
-      // from an async onRequest hook does not reliably short-circuit the handler.
-      return reply.code(404).send({ error: 'not found' });
-    }
-    const registry = deps.authRegistry;
-    if (deps.webAppDir !== undefined && isWebAppRequest(request)) return;
-    if (
-      cookieCredential(request) !== undefined &&
-      !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
-      !browserOriginAllowed(request, deps.browserRequestOrigin?.(request))
-    ) {
-      return reply.code(403).send({ error: 'invalid origin' });
-    }
-    if (registry === undefined || !registry.isEnabled()) return;
-    if (preAuthKeys.has(nonOperatorRequestKey(request.method, pathname, request.routeOptions.url)))
-      return;
-    const websocketStream =
-      (request.headers.upgrade ?? '').toLowerCase() === 'websocket' && WS_LIVE_PATH.test(pathname);
-    const cookieToken = cookieCredential(request);
-    if (cookieToken !== undefined && !registry.isBrowserToken(cookieToken)) {
-      if (websocketStream) return;
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
-    const token = requestCredential(request);
-    if (registry.verify(token)) {
-      if (cookieToken !== undefined && token === cookieToken) setBrowserSession(reply, cookieToken);
-      const userId = registry.resolveUserId(token);
-      if (userId === undefined) return reply.code(401).send({ error: 'unauthorized' });
-      request.localUserId = userId;
-      const access = await measureLatencyPhase('request_authorization', () =>
-        authorizePairedRoute(
-          deps.eventStore,
-          userId,
-          request.method,
-          request.routeOptions.url ?? pathname,
-          (request.params ?? {}) as Record<string, unknown>,
-        ),
-      );
-      if (access === 'not_found') return reply.code(404).send({ error: 'not found' });
-      if (access === 'forbidden') return reply.code(403).send({ error: 'forbidden' });
-      return;
-    }
-    // A genuine WebSocket upgrade to the live route cannot take a normal HTTP
-    // 401 from here — reply.send() on an in-flight `@fastify/websocket` handshake
-    // does not abort it cleanly (it hangs). That ONE route's handler enforces the
-    // same token check itself (1008 close; see GET /live), so let it
-    // through. Scoped to the actual WS path AND a real upgrade so a spoofed
-    // `Upgrade: websocket` header on any other route still gets the 401 below.
-    if (websocketStream) {
-      return;
-    }
-    checkInvalidBearer ??= app.createRateLimit({ max: 100, timeWindow: '1 minute' });
-    const limit = await checkInvalidBearer(request);
-    if (!limit.isAllowed && limit.isExceeded) {
-      reply.header('retry-after', String(limit.ttlInSeconds));
-      return reply.code(429).send({ error: 'too many unauthorized requests' });
-    }
-    // send()+return — a bare `return { error }` from an async onRequest hook is
-    // DISCARDED by Fastify (the route handler still runs and its body is sent with
-    // this 401 status, a full auth bypass). Only reply.send() sets reply.sent and
-    // actually short-circuits the lifecycle. See the /internal guard above.
-    return reply.code(401).send({ error: 'unauthorized' });
-  });
-
-  lifecycle.onClose(() => {
-    deps.authRegistry?.dispose?.();
-  });
-
-  // Record activity after the response, outside the authorization hook. `touch`
-  // resolves the bearer token through the registry and ignores unknown values;
-  // its per-device throttle keeps this universal lifecycle hook to at most one
-  // database write every five minutes for each paired device.
-  app.addHook('onResponse', (request, _reply, done) => {
-    deps.authRegistry?.touch(requestCredential(request));
-    done();
-  });
-
-  // A ticket request can fail before its handler runs; record only the route
-  // pattern and status so bearer tokens and single-use tickets never enter logs.
-  app.addHook('onResponse', (request, reply, done) => {
-    const route = request.routeOptions.url;
-    if (route === '/live/ticket' || route === '/api/remote-control/descriptor') {
-      request.log.info(
-        {
-          stage: route === '/live/ticket' ? 'live_ticket' : 'descriptor',
-          statusCode: reply.statusCode,
-          elapsedMs: reply.elapsedTime,
-        },
-        'mobile connection diagnostic request completed',
-      );
-    }
-    done();
-  });
+  installHttpGuards(app, ctx, { preAuthKeys });
 
   if (deps.backup) {
     lifecycle.onClose(() => deps.backup!.close());
@@ -1850,135 +1374,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     vulnerabilitySessions,
   });
 
-  // Project list / status badges + token totals — a read-time projection over
-  // each session's event log, served through `summarizeSessions` so the whole
-  // list costs a fixed number of queries over the narrow projection slice rather
-  // than one full-log hydration per session.
-  /**
-   * The at-rest-encryption state, as `GET /secret/status` reports it. Shared
-   * with the attention probe below so the two can never disagree about what
-   * "sealed" means — the whole point of the banner is that it says the same
-   * thing the status endpoint would have.
-   *
-   * Costs nothing on a healthy Server: `isSealed()` is in memory and the store
-   * is only consulted once the answer is already "sealed".
-   */
-  const readSecretStatus = async (): Promise<SecretStatus> => {
-    const cipher = deps.secretCipher;
-    if (cipher === undefined) return 'unmanaged';
-    if (!cipher.isSealed()) return 'unlocked';
-    const meta = await deps.eventStore.getSecretKeyMeta();
-    return meta === undefined ? 'uninitialized' : 'sealed';
-  };
-
-  /**
-   * The Updater's state, cached, and refreshed OFF the request path.
-   *
-   * This is the one part of the attention probe that costs a round trip — over
-   * the Updater's Unix control socket, whose request timeout is
-   * `UPDATER_REQUEST_TIMEOUT_MS` (2 s). The session list is polled every 2 s per
-   * device, so probing inline would (a) put 30 socket calls a minute per device
-   * on the Updater and (b), far worse, make a HUNG Updater add up to two seconds
-   * to every session-list response. A health signal that degrades the screen it
-   * rides on is not worth having.
-   *
-   * So: a request reads the last known answer and never waits for a new one. The
-   * refresh is single-flighted and only the very first call awaits it, because
-   * only that one has nothing to report yet. The conditions this detects last
-   * minutes or hours; a snapshot up to {@link UPDATER_PROBE_TTL_MS} old costs
-   * nothing in fidelity.
-   */
-  const UPDATER_PROBE_TTL_MS = 15_000;
-  let updaterProbe: UpdaterProbe | undefined;
-  let updaterProbedAt = 0;
-  let updaterProbeInFlight: Promise<void> | undefined;
-  const refreshUpdaterProbe = (controller: ServerUpdateController): Promise<void> => {
-    updaterProbeInFlight ??= controller
-      .readOperation()
-      .then(
-        (operation) => ({ kind: 'reachable' as const, operation }),
-        (): UpdaterProbe => ({ kind: 'unreachable' as const }),
-      )
-      .then((probe) => {
-        updaterProbe = probe;
-        updaterProbedAt = Date.now();
-      })
-      .finally(() => {
-        updaterProbeInFlight = undefined;
-      });
-    return updaterProbeInFlight;
-  };
-
-  /**
-   * Server-level conditions worth interrupting the operator for, computed from
-   * what `/secret/status` and `/server/updates` already know. Never throws: a
-   * failure to probe must not take the session list down with it, so an
-   * unreadable probe degrades to "nothing to report" for that one condition.
-   */
-  let codexHealthReadFailed = false;
-  const collectAttention = async (): Promise<AttentionSignal[]> => {
-    const secretStatus = await readSecretStatus().catch((): SecretStatus => 'unmanaged');
-    const controller = deps.serverUpdateController;
-    let updater: UpdaterProbe = { kind: 'unmanaged' };
-    if (controller !== undefined) {
-      const refresh =
-        Date.now() - updaterProbedAt >= UPDATER_PROBE_TTL_MS
-          ? refreshUpdaterProbe(controller)
-          : undefined;
-      if (updaterProbe === undefined) await refresh;
-      updater = updaterProbe ?? { kind: 'unmanaged' };
-    }
-    // Read, never probed: `health()` reports what the last quota refresh already
-    // learned, so the list poll cannot be slowed or broken by the usage endpoint.
-    // Caught anyway — an injected probe is somebody else's code, and this file
-    // promises attention can never be the reason `/sessions` fails.
-    let usage: CodexUsageHealth | undefined;
-    try {
-      const read: unknown = codexUsage.health();
-      // Shape-checked, not just try/caught: an injected probe that returns null
-      // satisfies no type at runtime, and `attentionSignals` would throw on it
-      // OUTSIDE this guard — taking the session list down by the one path this
-      // block exists to close.
-      usage = typeof read === 'object' && read !== null ? (read as CodexUsageHealth) : undefined;
-      // Cleared on the way out, so the latch is once per OUTAGE rather than once
-      // per process: a second, unrelated failure months later still gets a warning.
-      codexHealthReadFailed = false;
-    } catch (err) {
-      // Warned once, then quiet: this runs on a 2 s poll per device, and every
-      // other failure path in the probe is rate-limited by its own backoff.
-      if (codexHealthReadFailed) app.log.debug({ err }, 'verity: codex usage health read failed');
-      else app.log.warn({ err }, 'verity: codex usage health read failed; omitting from attention');
-      codexHealthReadFailed = true;
-    }
-    return attentionSignals({ secretStatus, updater, codexUsage: usage, now: Date.now() });
-  };
-
-  registerSessionOrderRoute(app, { store: deps.eventStore });
-  registerSessionListRoute(app, {
-    store: deps.eventStore,
-    visibleTo: async (viewer) => {
-      if (await deps.eventStore.isActiveAdministrator(viewer)) return { all: true };
-      return {
-        all: false,
-        projectIds: new Set(await deps.eventStore.listReadableProjectIds(viewer)),
-        unassigned: false,
-      };
-    },
-    prunePrSummaryCache,
-    pruneBranchCache,
-    summarizeSessions,
-    collectAttention,
-    // From the store, so a session another server generation created is hidden
-    // too; the local set covers one created moments ago and not yet recorded.
-    hiddenSessionIds: async () => {
-      const recorded = await deps.eventStore.wikiMaintenance.sessionIds();
-      for (const id of recorded) wikiMaintenanceSessions.add(id);
-      for (const id of wikiMaintenanceSessions) recorded.add(id);
-      return recorded;
-    },
+  const { readSecretStatus } = installSessionList(app, ctx, {
+    codexUsage,
+    wikiMaintenanceSessions,
+    sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
   });
-
-  registerMessageSearchRoute(app, { eventStore: deps.eventStore });
 
   // Both probes are cached, backed off and never throw. An unconfigured provider
   // simply contributes nothing.
@@ -2379,87 +1779,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { sharedProject, personSessionModel, projectPeopleNames } = sharedProjectPeople(ctx, {
     availableModels,
   });
-  registerSessionReadRoutes(app, {
-    getGoogleStatus: async (id, viewer) =>
-      (await deps.eventStore.getSession(id))
-        ? sessionGoogleStatus(deps.eventStore, id, viewer)
-        : undefined,
-    listModels: async (projectId, viewer) => {
-      const available = await availableModels({ viewer });
-      if (projectId === undefined) return available;
-      const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(projectId);
-      // The default offered is the person's own for this project, within its agent rule.
-      const own =
-        viewer === undefined
-          ? null
-          : await deps.eventStore.userProviderConnections.projectDefaultModel(viewer, projectId);
-      return filterModelListForProject(
-        available,
-        settings === undefined || settings === null ? settings : { ...settings, defaultModel: own },
-        isProjectSessionModel,
-      );
+  installSessionReads(app, ctx, {
+    hasMeetingJob,
+    sessionOverview: {
+      emptyProjectionFacts,
+      projectionEventsFor,
+      latestRateLimitsFromSequenced,
+      liveStatusFromProjection,
+      sessionResumable,
     },
-    getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
-      const session = await deps.eventStore.getSession(id);
-      if (!session) return undefined;
-      // Opening a session hits this route first, and the transcript arrives over a
-      // separate paged read — so hydrating the whole log here bought nothing but
-      // latency in front of the first paint. The header's status, usage,
-      // rate-limit and count fields all come out of the projection slice.
-      const facts =
-        (await deps.eventStore.listSessionProjectionFacts([id], PROJECTION_TAIL)).get(id) ??
-        emptyProjectionFacts();
-      const events = await projectionEventsFor(id, facts);
-      // As in `summarizeSessionWithFacts`: the quota states come from their own
-      // read, because the newest one for a window can predate any tail.
-      const rateLimits = latestRateLimitsFromSequenced(facts.rateLimitEvents);
-      const rateLimit = rateLimits[0];
-      const pendingLinks = (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
-      const pendingPermissions = [
-        ...new Set([...conductor.pendingPermissions(id), ...pendingLinks]),
-      ];
-      // Status needs log presence independently of the filtered unread count.
-      const projectedStatus = liveStatusFromProjection(
-        id,
-        events,
-        facts.lastEventSeq === 0 ? 0 : 1,
-      );
-      const status =
-        pendingLinks.length > 0
-          ? 'awaiting_input'
-          : projectedStatus === 'awaiting_input' &&
-              permissionEventAwaitsInput(events) &&
-              pendingPermissions.length === 0
-            ? conductor.isBusy(id)
-              ? 'running'
-              : 'completed'
-            : projectedStatus;
-      const ownModel = await personSessionModel(session, viewer);
-      const people = await projectPeopleNames(session.projectId);
-      return {
-        ...session,
-        // In a shared session the composer shows the viewer's own model, and each
-        // message can be labelled with its sender's name.
-        ...(ownModel === undefined ? {} : { model: ownModel }),
-        ...(people === undefined ? {} : { people, viewerUserId: viewer }),
-        ...(await deps.eventStore.viewState.sessionView(viewer, id)),
-        googleStatus: await sessionGoogleStatus(deps.eventStore, id, viewer ?? undefined),
-        status,
-        pendingPermissions,
-        ...(status === 'awaiting_input' && pendingPermissions.length > 0
-          ? { permissionAwaitingInput: true as const }
-          : {}),
-        usage: facts.usage,
-        ...(rateLimit ? { rateLimit } : {}),
-        ...(rateLimits.length > 0 ? { rateLimits } : {}),
-        resumable: await sessionResumable(session),
-        eventCount: facts.eventCount,
-        agentTextCounterVersion: 'agent-text-v2',
-        lastActivityAt: facts.lastActivityAt,
-        busy: conductor.isBusy(id) || hasMeetingJob(id),
-        queued: conductor.queuedItems(id),
-      };
-    },
+    availableModels,
+    personSessionModel,
+    projectPeopleNames,
   });
 
   const { directQueryFor, instanceClaudeServes } = peopleDirectQueries(ctx, availableModels);
@@ -2526,152 +1857,15 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   // forever (immutable). 404 for an unknown hash.
   registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
 
-  // Lightweight live activity for a session, polled by the app for the "working"
-  // indicator + persistent "waiting" messages. `busy` = the conductor is in-flight
-  // OR the event log still derives `running` (an open background task — sub-agent /
-  // `run_in_background` — the conductor stopped tracking once its turn settled, e.g.
-  // a crashed/non-live backend between re-invocations). The `isBusy` term is kept
-  // FIRST and un-suppressed so a turn parked on a permission prompt (`awaiting_input`,
-  // still in-flight) stays busy, and — because `||` short-circuits — the hot
-  // actively-working path never pays the event-log read. It also carries the
-  // worktree's live branch (#110) so the header label auto-updates on an
-  // external/agent `git checkout`; both reads are best-effort — on any failure the
-  // poll falls back to raw `isBusy` and omits name/branch, never a 500.
-  app.register((instance, _opts, done) => {
-    registerSessionHistoryRoutes(instance, {
-      activity: async (reply, id) => {
-        const pendingLinks =
-          (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
-        const base = {
-          busy: conductor.isBusy(id) || hasMeetingJob(id),
-          queued: conductor.queuedItems(id),
-          pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
-          modelSwitchPending:
-            conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
-          // Busy for a reason the operator cannot see otherwise: a stop that could not
-          // establish the worker exited keeps the session RESERVED (nothing is running
-          // for them) until termination is confirmed. Without this the state is
-          // indistinguishable from an endlessly working turn.
-          terminationUnconfirmed: conductor.hasUnconfirmedTermination(id),
-        };
-        try {
-          const session = await deps.eventStore.getSession(id);
-          if (!session) {
-            activityBusyCache.delete(id);
-            reply.code(404);
-            return { error: `session ${id} not found` };
-          }
-          // In-flight OR log-derived running (open background task). The cached
-          // projection also separates input waits from active background work. Carry
-          // the display name so the header reflects an auto-generated (or externally
-          // renamed) title within a poll, without a remount. `branch` is still gated on
-          // the branch-switching dep (a git read).
-          // The durable mutation marker gates projection hydration. An unchanged
-          // log reuses its pure busy result; live conductor fields above and the
-          // session's metadata and branch below still update on every poll.
-          //
-          // Log hydration exists specifically for a background task that outlived
-          // conductor tracking. Neutral notices (including meeting progress) are
-          // not turns and must not make an otherwise-finished session busy forever.
-          const log = await activityLogBusy(id);
-          const busy = base.busy || log.busy;
-          const awaiting =
-            base.pendingPermissions.length > 0 ||
-            (AWAITING.has(log.status) && !log.waitingPermission);
-          const activityAnimating =
-            busy && !base.terminationUnconfirmed && (!awaiting || log.openTasks);
-          const branches = await branchesForSession(session);
-          const branch = branches
-            ? await currentBranchCached(branches, session.worktree)
-            : undefined;
-          return {
-            ...base,
-            busy,
-            activityAnimating,
-            name: session.name,
-            ...(branch !== undefined ? { branch } : {}),
-            // Polled with the rest so the planning bar follows an agent that starts
-            // planning mid-turn, not only the operator's own taps.
-            ...(session.planning !== undefined ? { planning: session.planning } : {}),
-            planningRevision: session.planningRevision,
-            planningPlan: session.planningPlan,
-            // The status bar follows the review the same way, including decisions
-            // made on another device.
-            mockupReview: session.mockupReview ?? null,
-          };
-        } catch {
-          return base; // unknown session / git hiccup → raw isBusy, omit name+branch, keep the poll alive
-        }
-      },
-      recordScrollDiagnostic: async (reply, id, body) => {
-        const session = await deps.eventStore.getSession(id);
-        if (!session) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-        const diagnostic = parseScrollDiagnostic(body);
-        app.log.info(
-          {
-            sessionId: id,
-            projectId: session.projectId,
-            scroll: {
-              event: redactScrollDiagnosticEvent(diagnostic.event),
-              seq: diagnostic.seq,
-              at: diagnostic.at,
-              data: redactScrollDiagnosticData(diagnostic.data),
-            },
-          },
-          'verity: mobile scroll diagnostic',
-        );
-        return { ok: true };
-      },
-      // Backward-paginated history: the newest `limit` events with seq < `beforeSeq`
-      // (omit for the most recent page), ascending, plus `hasMore`. Lets the app open
-      // a long session with only its tail and fetch older turns on scroll-up, instead
-      // of replaying the whole event log. Live updates still arrive over the WS stream.
-      boundedHistory: async (reply, id, beforeSeq, snapshotSeq, eventOffset) => {
-        if (!(await deps.eventStore.getSession(id))) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-        try {
-          return await deps.eventStore.getBoundedHistory(id, beforeSeq, snapshotSeq, eventOffset);
-        } catch (error) {
-          if (!(error instanceof RangeError)) throw error;
-          reply.code(400);
-          return { error: 'invalid history offset' };
-        }
-      },
-      history: async (reply, id, limit, beforeSeq) => {
-        const session = await deps.eventStore.getSession(id);
-        if (!session) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-        return deps.eventStore.getEventsBeforeSeq(id, limit ?? DEFAULT_HISTORY_PAGE, beforeSeq);
-      },
-      diagnostics: async (reply, id) => {
-        const session = await deps.eventStore.getSession(id);
-        if (!session) {
-          reply.code(404);
-          return { error: `session ${id} not found` };
-        }
-        // Diagnostics are scalar metadata only; the transcript and raw agent output
-        // never cross this endpoint.
-        const diagnostics = [];
-        let beforeSeq: number | undefined;
-        // A sparse or older session may have no diagnostics at all. Bound the
-        // backward scan independently of the number of matches.
-        for (let pageNumber = 0; pageNumber < 10 && diagnostics.length < 100; pageNumber += 1) {
-          const page = await deps.eventStore.getEventsBeforeSeq(id, 500, beforeSeq);
-          diagnostics.unshift(...recentSessionDiagnostics(page.events, 100));
-          if (!page.hasMore || page.events.length === 0) break;
-          beforeSeq = page.events[0]?.seq;
-        }
-        return diagnostics.slice(-100);
-      },
-    });
-    done();
+  installSessionHistory(app, ctx, {
+    hasMeetingJob,
+    sessionOverview: {
+      activityBusyCache,
+      activityLogBusy,
+      AWAITING,
+      branchesForSession,
+      currentBranchCached,
+    },
   });
 
   // Edit a session's registry metadata: rename it (set/clear its display name)
@@ -2729,257 +1923,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   registerSessionSeenRoute(app, { store: deps.eventStore });
   registerViewStateRoutes(app, { store: deps.eventStore });
 
-  // Permanently delete a session: drop its durable log (events + transcript
-  // lines + the session row, transactionally) and remove its isolated worktree
-  // from disk. A session with a turn in flight AT REQUEST TIME is refused with
-  // 409 (same idle guard as the branch-switch route) so the operator doesn't
-  // delete a session out from under a running `--resume` process. NB: this does
-  // not close the narrow TOCTOU where a `POST /turns` is accepted in the window
-  // between this check and the row delete — that turn's background append would
-  // then violate the events FK and surface via onTurnError. Acceptable for the
-  // single-operator v1 (one human, the delete is modal-gated); a per-session
-  // delete-vs-dispatch lock in the conductor would close it (follow-up). 404 for
-  // an unknown id. Worktree removal is best-effort: a session whose worktree was
-  // already cleaned up (resumable=false) still deletes cleanly, and the repo-root
-  // checkout (`workspaceDir`, e.g. `/work`) is NEVER removed (safety guard #105).
-  const deletionRequestIds = new Map<string, string>();
-  const sessionDeletions = createSessionDeletionManager({
-    store: deps.eventStore,
-    fence: (id) => conductor.beginSessionDeletion?.(id),
-    terminationConfirmed: (id) => conductor.isDeletionTerminationConfirmed?.(id) ?? false,
-    stop: async (id) => {
-      if (conductor.stopForDeletion) return conductor.stopForDeletion(id);
-      // Compatibility with custom conductors: inability to prove termination parks
-      // physical cleanup, but must not prevent a durable logical deletion.
-      return false;
-    },
-    capture: async (session) => ({
-      session: {
-        sessionId: session.sessionId,
-        worktree: session.worktree,
-        projectId: session.projectId,
-        model: session.model,
-      },
-      ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
-        ? {
-            legacyArtifactsRequired: true,
-            artifactBindings: (
-              await deps.eventStore.getSessionBackendStates(session.sessionId)
-            ).map(({ backend, backendSessionId }) => ({ backend, backendSessionId })),
-          }
-        : {}),
-      previewIds: (await deps.eventStore.listLocalPreviewShares())
-        .filter((share) => share.sessionId === session.sessionId)
-        .map((share) => share.id),
-      ...(deps.managedDevServerManager
-        ? { managed: await deps.managedDevServerManager.captureSessionCleanup(session.sessionId) }
-        : {}),
-      ...(await (async () => {
-        const marker = (await deps.eventStore.listRunningTurns()).find(
-          (turn) => turn.sessionId === session.sessionId,
-        );
-        return marker?.turnId && marker.startCommandId
-          ? { runnerIdentity: { turnId: marker.turnId, startCommandId: marker.startCommandId } }
-          : {};
-      })()),
-    }),
-    prepare: async (id) => {
-      await deps.queueSessionArtifacts?.(id);
-    },
-    ...(!deps.queueSessionArtifacts && deps.purgeSessionArtifacts
-      ? {
-          beforeDelete: async (id: string, payload: SessionDeletionPayload) => {
-            await deps.purgeSessionArtifacts!(id, payload.artifactBindings ?? []);
-          },
-        }
-      : {}),
-    releasePublications: async (payload) => {
-      for (const shareId of payload.previewIds) await deps.localPreviewManager?.stop(shareId);
-      await deps.localPreviewManager?.stopSession(payload.session.sessionId);
-      if (
-        payload.managed &&
-        deps.managedDevServerManager &&
-        (await deps.managedDevServerManager.cleanupDeletedSession(payload.managed)) !== 'clean'
-      )
-        return false;
-      return true;
-    },
-    confirmTermination: async (payload) => {
-      const { session } = payload;
-      if (
-        conductor.isDeletionWorktreeBusy?.(session.sessionId) ||
-        !deps.cleanupDeletedSessionRuntime
-      )
-        return false;
-      const outcome = await deps.cleanupDeletedSessionRuntime(session.sessionId, session.projectId);
-      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
-      return outcome === 'absent' || (outcome === 'clean' && payload.runnerIdentity !== undefined);
-    },
-    cleanup: async (payload, terminationConfirmed) => {
-      const { session } = payload;
-      deps.scheduleSessionCleanup?.();
-      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
-      // Successful privileged home deletion kills/fences exact workers. A missing
-      // DB marker after cascade is not evidence that a process has exited.
-      if (deps.cleanupDeletedSessionRuntime) {
-        const result = await deps.cleanupDeletedSessionRuntime(
-          session.sessionId,
-          session.projectId,
-        );
-        if (result === 'deferred') return false;
-        if (result === 'not-applicable' && !terminationConfirmed) return false;
-        if (result === 'clean' && !terminationConfirmed && !payload.runnerIdentity) return false;
-      } else if (!terminationConfirmed) return false;
-      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
-      conductor.closeSession?.(session.sessionId);
-      let cleanupWorktrees = worktrees;
-      if (session.projectId !== null && deps.projectCloneRoot !== undefined) {
-        const project = await deps.eventStore.getProject(session.projectId);
-        if (project !== undefined && !isControlPlaneProject(project)) {
-          const projectClone = projectClonePath(deps.projectCloneRoot, project);
-          await removeSessionRepositoryWorkspaces(projectClone, session.sessionId);
-          cleanupWorktrees =
-            isDocumentWorkspace(session.worktree) && deps.dataRoot
-              ? createDocumentWorkspaceProvisioner(deps.dataRoot, project.id, projectClone)
-              : (deps.projectWorktrees?.(project, projectClone) ??
-                createGitWorktreeProvisioner({
-                  repoDir: projectClone,
-                  worktreeRoot: join(projectClone, '.verity-sessions'),
-                }));
-        }
-      }
-      if (conductor.isDeletionWorktreeBusy?.(session.sessionId)) return false;
-      if (
-        (await deps.eventStore.listSessions()).some((owner) => owner.worktree === session.worktree)
-      )
-        return false;
-      if (session.worktree !== deps.workspaceDir) await cleanupWorktrees.remove(session.worktree);
-      return true;
-    },
-    report: (sessionId, phase, outcome, elapsedMs, error) => {
-      app.log.info(
-        {
-          sessionId,
-          reqId: deletionRequestIds.get(sessionId),
-          phase,
-          outcome,
-          elapsedMs,
-          ...(error === undefined
-            ? {}
-            : { errorKind: error instanceof Error ? error.name : 'unknown' }),
-        },
-        'verity: session delete phase',
-      );
-    },
-  });
-  lifecycle.every(30_000, () => {
-    void sessionDeletions
-      .resume()
-      .catch((error: unknown) =>
-        app.log.warn({ err: error }, 'verity: session deletion retry failed'),
-      );
-  });
-  app.addHook('onReady', () => {
-    void sessionDeletions
-      .resume()
-      .catch((error: unknown) =>
-        app.log.warn({ err: error }, 'verity: session deletion recovery failed'),
-      );
-  });
-  lifecycle.onClose(() => sessionDeletions.close());
-
-  registerSessionDeleteRoute(app, {
-    remove: async (request, reply, id, force, options) => {
-      if (conductor.isMovingSession?.(id)) {
-        reply.code(409);
-        return { error: 'Wait for the session move to finish before deleting.' };
-      }
-      request.log.info(
-        { sessionId: id, phase: 'lookup', outcome: 'started' },
-        'verity: session delete phase',
-      );
-      const session = await deletionDeadline(deps.eventStore.getSession(id), 15_000).then(
-        (session) => {
-          request.log.info(
-            { sessionId: id, phase: 'lookup', outcome: 'completed' },
-            'verity: session delete phase',
-          );
-          return session;
-        },
-        (error: unknown) => {
-          request.log.info(
-            {
-              sessionId: id,
-              phase: 'lookup',
-              outcome: error instanceof SessionDeletionDeadlineError ? 'deadline' : 'failed',
-            },
-            'verity: session delete phase',
-          );
-          throw error;
-        },
-      );
-      if (!session) {
-        reply.code(404);
-        return { error: `session ${id} not found` };
-      }
-      // Meeting jobs can enter a non-cancellable delivery phase. Never tear
-      // their session or worktree down through force-delete; the dedicated
-      // cancel route is the only operation that knows whether the job can still
-      // be stopped safely.
-      if (hasMeetingJob(id)) {
-        reply.code(409);
-        return { error: `session ${id} has an active meeting job — stop it before deleting` };
-      }
-      if (!force && conductor.isBusy(id)) {
-        reply.code(409);
-        return { error: `session ${id} is busy — finish the turn before deleting it` };
-      }
-      deletionRequestIds.set(id, request.id);
-      // Read before the transcript goes with the session; only once deletion is admitted.
-      const noteForWiki = () =>
-        noteDeletedSession(deps.eventStore, session, options?.keepForWiki === true, request.log);
-      try {
-        if (force) {
-          await noteForWiki();
-          return await sessionDeletions.remove(session);
-        }
-        let removal: ReturnType<typeof sessionDeletions.remove> | undefined;
-        const admission = await conductor.tryRunExclusive(id, async () => {
-          let release!: () => void;
-          const admitted = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          await noteForWiki();
-          removal = sessionDeletions.remove(session, release);
-          // The HTTP deadline must not release an unfinished admission operation.
-          void removal.catch(() => undefined);
-          await Promise.race([
-            admitted,
-            sessionDeletions.waitForLogical(id).catch(() => undefined),
-          ]);
-        });
-        if (!admission.ran) {
-          reply.code(409);
-          return { error: `session ${id} is busy — finish the turn before deleting it` };
-        }
-        return await removal;
-      } catch (error) {
-        request.log.warn(
-          { errorKind: error instanceof Error ? error.name : 'unknown', sessionId: id },
-          'verity: session deletion deferred',
-        );
-        reply.code(503).header('retry-after', '5');
-        return {
-          error:
-            error instanceof SessionDeletionDeadlineError
-              ? error.message
-              : 'Session deletion could not be completed; retry shortly',
-        };
-      } finally {
-        if (deletionRequestIds.get(id) === request.id) deletionRequestIds.delete(id);
-      }
-    },
-  });
+  installSessionDeletion(app, ctx, { worktrees, hasMeetingJob });
 
   const sessionCreate = registerSessionCreateRoute(app, {
     eventStore: deps.eventStore,
@@ -3169,65 +2113,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     personSessionModel,
   });
 
-  // The app-wide live connection: one WebSocket per paired device carrying the
-  // multiplexed session streams, overview hints, foreground presence and
-  // in-app alerts (`packages/server/src/live/live-hub.ts`).
-  app.register(websocketPlugin);
-  app.register((instance, _opts, done) => {
-    instance.post('/live/ticket', async (request, reply) => {
-      const registry = deps.authRegistry;
-      if (registry === undefined || !registry.isEnabled()) {
-        // Without the auth gate the socket needs no ticket; answer one anyway so
-        // the client has a single connect path.
-        return {
-          ticket: randomBytes(32).toString('base64url'),
-          expiresAt: new Date().toISOString(),
-        };
-      }
-      const deviceId = registry.resolveId(requestCredential(request));
-      if (deviceId === undefined || !request.localUserId) {
-        return reply.code(401).send({ error: 'unauthorized' });
-      }
-      return mintLiveTicket(deviceId, request.localUserId, requestCredential(request));
-    });
-
-    instance.get('/live', { websocket: true }, (socket: WebSocket, request) => {
-      if (
-        cookieCredential(request) !== undefined &&
-        !browserOriginAllowed(request, deps.browserRequestOrigin?.(request))
-      ) {
-        socket.close(1008, 'origin not allowed');
-        return;
-      }
-      const browserCookie = cookieCredential(request);
-      if (
-        browserCookie !== undefined &&
-        deps.authRegistry?.isBrowserToken(browserCookie) !== true
-      ) {
-        socket.close(1008, 'unauthorized');
-        return;
-      }
-      // Defence-in-depth against cross-site WebSocket hijacking: when an Origin
-      // allowlist is configured, a browser-supplied Origin must match it. A
-      // native client sends no Origin and passes.
-      if (!wsOriginAllowed(deps.wsAllowedOrigins, request.headers.origin)) {
-        socket.close(1008, 'origin not allowed');
-        return;
-      }
-      const registry = deps.authRegistry;
-      if (registry?.isEnabled() !== true) {
-        liveHub.attach(socket, {});
-        return;
-      }
-      const identity = consumeLiveTicket(request.headers['sec-websocket-protocol']);
-      if (identity === undefined) {
-        socket.close(1008, 'unauthorized');
-        return;
-      }
-      liveHub.attach(socket, identity);
-    });
-    done();
-  });
+  installLive(app, ctx, { tickets: liveTickets });
 
   return app;
 }
