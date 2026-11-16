@@ -183,7 +183,6 @@ import {
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
-
 import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1448,10 +1447,11 @@ export async function buildEmbeddedServer(
       ? new UplinkControlClient({
           url: config.publicPreviews.uplinkUrl,
           // Team v1 is only used once the service selects it in welcome, and
-          // only offered where an invited person can also join: through the
-          // same connector Remote Control uses for its tunnel.
+          // only offered where an invited person can join through the Remote Control connector.
           offerTeam: remoteConnector !== undefined,
-          admitTeamJoin: (pending) => eventStore.projectTeam.admitJoin(pending),
+          admitTeamJoin: (pending, signal) =>
+            eventStore.projectTeam.admitJoin({ ...pending, signal }),
+          rollbackTeamJoin: (pending) => eventStore.projectTeam.rollbackJoinAdmission(pending),
           ...(config.publicPreviews.expectedInstallationId === undefined
             ? {}
             : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),

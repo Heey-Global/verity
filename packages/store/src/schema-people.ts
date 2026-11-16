@@ -85,6 +85,8 @@ interface TeamJoinAdmissionsTable {
   /** Minted by Uplink; the join accepts no other. */
   redemption_id: string;
   decision: 'accepted' | 'refused';
+  device_token_encrypted: ColumnType<string | null, string | null | undefined, string | null>;
+  device_token_id: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<Date, string | undefined, never>;
   expires_at: ColumnType<Date, string | Date, never>;
 }
@@ -95,9 +97,10 @@ interface TeamOutboxTable {
   payload: ColumnType<unknown, string, string>;
   attempts: ColumnType<number, number | undefined, number>;
   next_attempt_at: ColumnType<Date, string | Date | undefined, string | Date>;
-  give_up_at: ColumnType<Date, string | Date, never>;
+  give_up_at: ColumnType<Date, string | Date, string | Date>;
   created_at: ColumnType<Date, string | undefined, never>;
   done_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
+  failed_at: ColumnType<Date | null, string | Date | null | undefined, string | Date | null>;
 }
 
 interface SessionUserModelsTable {

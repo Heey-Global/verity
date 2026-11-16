@@ -119,6 +119,7 @@ describe('team join tunnel on Core', () => {
         projectId: PENDING.projectId,
         permissions: PENDING.permissions,
       }),
+      expect.any(AbortSignal),
     );
     expect(f.reserved).toEqual(['team-bootstrap-v1']);
     f.uplink.socket.send(JSON.stringify(ticket()));
@@ -137,7 +138,7 @@ describe('team join tunnel on Core', () => {
     expect(f.data[0]!.socket.readyState).toBe(WebSocket.OPEN);
   });
 
-  it('refuses a join Core does not admit, and never reserves a tunnel for it', async () => {
+  it('releases the reserved tunnel when Core refuses the admission', async () => {
     const f = await fixture(async () => 'refused');
     f.uplink.socket.send(JSON.stringify(PENDING));
     await vi.waitFor(() =>
@@ -147,7 +148,7 @@ describe('team join tunnel on Core', () => {
         code: 'unavailable',
       }),
     );
-    expect(f.reserved).toEqual([]);
+    expect(f.reserved).toEqual(['team-bootstrap-v1']);
   });
 
   it('opens no tunnel for a ticket naming another redemption', async () => {
