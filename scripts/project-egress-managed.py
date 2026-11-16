@@ -850,7 +850,7 @@ def provision(source, relay=None, authority=None, gid=65531, root=Path('/'), run
             raise
         try:
             prune_releases(root, {str(release)})
-        except (OSError, ValueError):
+        except Exception:
             pass  # Collection never blocks provisioning; the next run retries it.
         # tmpfiles recreates the bind-mounted runtime path at boot, even while the
         # native profile remains unsupported and the controller stays disabled.

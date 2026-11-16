@@ -940,8 +940,10 @@ export class SessionStorage {
     } finally {
       // Keep first observations of copies not yet reached when a pass stops at
       // its budget or fails, so an interrupted pass never resets their clock.
-      if (!this.deps.dryRun)
-        await atomicJson(journal, { ...(reachedAll ? {} : seen), ...observed });
+      const next = { ...(reachedAll ? {} : seen), ...observed };
+      // Rewrite only on change: continuation passes would otherwise sync every journal.
+      if (!this.deps.dryRun && JSON.stringify(next) !== JSON.stringify(seen))
+        await atomicJson(journal, next);
     }
   }
   /** Removes the private top-level installation of a session idle past

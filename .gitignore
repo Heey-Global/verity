@@ -86,3 +86,4 @@ coverage
 /apps/mobile/profiling-artifacts/
 
 /apps/mobile/dist-cpu-profile/
+__pycache__/

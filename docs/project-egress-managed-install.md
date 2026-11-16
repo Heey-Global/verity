@@ -62,7 +62,8 @@ completed success stays idempotent and any retry stages a complete payload
 again. Each launch also does this for the stages of other operations whose
 host job the systemd manager reports as stopped or unknown; a running,
 starting or unobservable job keeps its stage. Every launcher holds the
-installation lock while it submits work, so no job can start in between.
+installation lock from its start, through staging and submission, until it
+exits, so no other stage is being written or can start a job in between.
 A launch that fails keeps its own payload for an immediate retry; a later launch
 of another operation compacts it like any stopped stage, and a retry after that
 stages afresh.

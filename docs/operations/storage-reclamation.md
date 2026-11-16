@@ -51,7 +51,8 @@ keeps only a few identities, so such a copy can never be compared again, and a
 session that is never idle for three days would otherwise keep every copy it
 ever made. Recover a local package edit from a copy within that window. A
 corrupt, symlinked or future-dated record restarts the window; it never
-shortens it. Dry runs neither remove copies nor write the record.
+shortens it. Dry runs neither remove copies nor write the record, so they
+never report a copy as expired.
 
 A session without a turn for three days gives up its private top-level
 `node_modules` and every preserved copy, whatever their contents: both are
