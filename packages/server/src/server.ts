@@ -1,3 +1,7 @@
+import {
+  createServerProjectRuntime,
+  createServerProjectSandboxRuntime,
+} from './server-project-runtime.js';
 import { installWikiMaintenance } from './server-wiki-maintenance.js';
 import { createServerVulnerabilities } from './server-vulnerabilities.js';
 import { createServerAuthority } from './server-authority.js';
@@ -5,7 +9,7 @@ import { createServerAutomations } from './server-automations.js';
 import { createServerModels } from './server-models.js';
 import { createServerScheduling } from './server-scheduling.js';
 import { installRemoteControl } from './server-remote-control.js';
-import { type FastifyBaseLogger, type FastifyInstance } from 'fastify';
+import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
 import {
@@ -18,7 +22,7 @@ import { registerUserContextRoutes } from './user-context-routes.js';
 import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
-import { SealedError, type ProjectRecord } from '@verity/store';
+import { SealedError } from '@verity/store';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProcessAgentLoginService } from './agent-login.js';
@@ -60,12 +64,6 @@ import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
-import {
-  PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
-  observeProjectActivity,
-  startProjectIdleSleepScheduler,
-  type ProjectActivitySnapshot,
-} from './project-idle-sleep.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
@@ -108,7 +106,6 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type { ProjectDeleteOutcome } from './server-types.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { emitSessionEvent } from './session-event-writer.js';
@@ -118,14 +115,12 @@ import { registerViewStateRoutes } from './view-state-routes.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
-import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
   isProjectSessionModel,
   PROJECT_MODEL_ERROR,
   UNKNOWN_SANDBOX_UPDATE,
   SERVER_VERSION,
-  startProjectRelayMigrationScheduler,
   hasVeritySettingsStore,
   veritySettingsStore,
   projectSettingsStore,
@@ -133,7 +128,6 @@ import {
   isControlPlaneProject,
   DEFAULT_MODEL,
   VERITY_CONTROL_PROJECT_ID,
-  PROJECT_DELETE_SPAWN_WAIT_MS,
   makeBranch,
 } from './server-support.js';
 import './fastify-augmentation.js';
@@ -206,166 +200,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     dispatchTurn: dispatchServerTurn,
   });
   const sessionMockups = createSessionMockups({ eventStore: deps.eventStore });
-  // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
-  // quiesces a project's sessions and the moment its purge has removed the clone
-  // root, nothing may start work on the project or its sessions: a turn
-  // dispatched into that window writes into a worktree being deleted, and a
-  // spawn adds a session the delete has already listed. The project row cannot
-  // carry the flag — hiding it before the deprovision succeeded would take a
-  // project whose container is still running out of the overview — so the
-  // window lives here, in the process that owns both the conductor and the
-  // teardown. Both sets are cleared in the route's `finally`, so a failed
-  // teardown hands the sessions back rather than stranding them.
-  const projectsBeingDeleted = new Set<string>();
-  const sessionsBeingReaped = new Set<string>();
-  // In-flight `DELETE /projects/:id`, by project id. A second request for the
-  // same project — an impatient double tap, a client retry — joins the first
-  // rather than starting a second teardown beside it: two deprovisions of one
-  // project would race each other over the same container and clone root, and
-  // the exclusion above is keyed by id, so whichever request finished first
-  // would clear the other's flags mid-purge and reopen the window they close.
-  // Joining also means both callers get the same answer, which a double tap
-  // should get.
-  const projectDeletesInFlight = new Map<string, Promise<ProjectDeleteOutcome>>();
-  // Spawns that passed the teardown guard, by project id. The guard only keeps
-  // NEW spawns out; one already past it is still creating its worktree inside
-  // the clone root the purge is about to remove. The delete waits for these to
-  // settle before it tears anything down, so the two never overlap on the
-  // filesystem. (The store lock in `createSession` covers only the row: it stops
-  // such a spawn from leaving a session behind, not from writing a directory.)
-  const projectSpawnsInFlight = new Map<string, Set<Promise<void>>>();
-  deps.sessionStorage?.bind(
-    (id, run) =>
-      conductor.isMovingSession(id) || sessionsBeingReaped.has(id) || hasMeetingJob(id)
-        ? Promise.resolve({ ran: false as const })
-        : conductor.tryRunExclusive(id, run),
-    // A teardown or a spawn creating a worktree holds the whole project. A dev
-    // server or preview holds only the worktree of the session that runs it:
-    // blocking the project instead left every idle session's worktree in place
-    // for as long as any one session kept a server up. Orphaned registrations
-    // (`sessionId` null) belong to no session, so any server or preview there
-    // still defers that pass.
-    (projectId, sessionId) =>
-      projectsBeingDeleted.has(projectId) ||
-      (projectSpawnsInFlight.get(projectId)?.size ?? 0) > 0 ||
-      (sessionId === null
-        ? deps.managedDevServerManager?.hasRunningServers(projectId) === true ||
-          (deps.localPreviewManager?.listProject(projectId).length ?? 0) > 0
-        : deps.managedDevServerManager?.hasRunningSessionServers(sessionId) === true ||
-          (deps.localPreviewManager?.list(sessionId).length ?? 0) > 0),
-  );
-  /** Register an admitted spawn; the returned callback releases it. */
-  const beginProjectSpawn = (projectId: string): (() => void) => {
-    let finish: () => void = () => undefined;
-    const settled = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    const pending = projectSpawnsInFlight.get(projectId) ?? new Set<Promise<void>>();
-    pending.add(settled);
-    projectSpawnsInFlight.set(projectId, pending);
-    return () => {
-      pending.delete(settled);
-      if (pending.size === 0) projectSpawnsInFlight.delete(projectId);
-      finish();
-    };
-  };
-  /** Wait for the spawns admitted before the teardown flag went up. Bounded: the
-   *  wait is for an HTTP handler that is creating a worktree, not for anything
-   *  open-ended, so exceeding the budget means something is wedged. Returns
-   *  `false` in that case and the delete gives up rather than purging the clone
-   *  root out from under a live worktree operation — the caller can retry, and
-   *  the flag it holds meanwhile keeps further spawns out. */
-  const settleProjectSpawns = async (
-    projectId: string,
-    log: FastifyBaseLogger,
-  ): Promise<boolean> => {
-    const pending = projectSpawnsInFlight.get(projectId);
-    if (pending === undefined || pending.size === 0) return true;
-    const expired = Symbol('spawn-wait-timeout');
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const result = await Promise.race([
-      Promise.all([...pending]),
-      new Promise<typeof expired>((resolve) => {
-        timer = setTimeout(
-          () => resolve(expired),
-          deps.projectDeleteSpawnWaitMs ?? PROJECT_DELETE_SPAWN_WAIT_MS,
-        );
-      }),
-    ]);
-    if (timer !== undefined) clearTimeout(timer);
-    if (result !== expired) return true;
-    log.error(
-      { projectId, pending: pending.size },
-      'verity: refusing to tear a project down with a spawn still in flight',
-    );
-    return false;
-  };
-  /** Provisioning outlives the request that started it — the clone and the image
-   *  build take minutes, and `DELETE /projects/:id` deliberately does not wait
-   *  for one (it would block the delete for just as long). So the provision
-   *  compensates on the way out instead: if the project it just built is gone or
-   *  hidden by now, tear that work down again rather than leaving a live
-   *  container and clone behind a row nobody can see. */
-  const discardProvisionOfDeletedProject = async (projectId: string): Promise<boolean> => {
-    // Join a teardown that is running right now, so this purge does not race the
-    // delete's own over the same container and clone root.
-    await projectDeletesInFlight.get(projectId)?.catch(() => undefined);
-    let project: ProjectRecord | undefined;
-    try {
-      project = await deps.eventStore.getProject(projectId);
-    } catch (error) {
-      // A failed read is not evidence that the project is gone, and what follows
-      // removes a container and a clone — so keep what was just provisioned and
-      // say loudly that nobody checked it. Leaking a container the operator can
-      // still see and delete beats purging a live project on a hiccup.
-      app.log.error(
-        { err: error, projectId },
-        'verity: cannot tell whether a provisioned project was deleted meanwhile',
-      );
-      return false;
-    }
-    if (project !== undefined && project.hiddenAt === null) return false;
-    app.log.warn({ projectId }, 'verity: discarding a project provisioned into its own deletion');
-    try {
-      await deps.deprovisioner?.deprovision(projectId, { purge: true });
-    } catch (error) {
-      app.log.error({ err: error, projectId }, 'verity: discarding the provisioned project failed');
-    }
-    return true;
-  };
-  const afterProjectProvision = async (
-    projectId: string,
-    scanAfterStart = false,
-  ): Promise<void> => {
-    if (await discardProvisionOfDeletedProject(projectId)) return;
-    if (scanAfterStart) {
-      void scanStartedProjectIfNeeded(projectId, {
-        store: deps.eventStore.vulnerabilityScans,
-        getProject: (id) => deps.eventStore.getProject(id),
-        service: vulnerabilityService,
-      }).catch((error: unknown) =>
-        app.log.warn({ err: error, projectId }, 'Vulnerability scan after project start failed'),
-      );
-    }
-  };
-  /** Settle a provision the caller is not waiting on (the routes answer `202` and
-   *  let the worker clone and build in the background). Either outcome ends at
-   *  the discard check: a provision that failed halfway can still have left a
-   *  container or a clone behind, and if the project went away meanwhile that
-   *  debris belongs to nobody. */
-  const settleBackgroundProvision = (
-    projectId: string,
-    provision: Promise<unknown>,
-    onError: (error: unknown) => void,
-  ): void => {
-    void provision.then(
-      () => afterProjectProvision(projectId, true),
-      async (error: unknown) => {
-        onError(error);
-        await discardProvisionOfDeletedProject(projectId);
-      },
-    );
-  };
+  const {
+    projectsBeingDeleted,
+    sessionsBeingReaped,
+    projectDeletesInFlight,
+    beginProjectSpawn,
+    settleProjectSpawns,
+    afterProjectProvision,
+    settleBackgroundProvision,
+  } = createServerProjectRuntime(app, deps, conductor, {
+    hasMeetingJob: (sessionId) => hasMeetingJob(sessionId),
+    vulnerabilityService: () => vulnerabilityService,
+  });
   const pushSender =
     typeof deps.pushSender === 'function' ? deps.pushSender(app.log) : deps.pushSender;
   const describePushSession = async (session: SessionRecord): Promise<PushSessionContext> => {
@@ -568,72 +414,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     fixPullRequest: (session) => sessionPrCache.get(session),
   });
 
-  // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
-  // any bound session, a running dev server, or a shared preview? Used to refuse
-  // tearing a sandbox out from under them, and to name which one is waiting.
-  const projectActivity = async (
-    projectId: string,
-    exceptSessionIds?: ReadonlySet<string>,
-  ): Promise<ProjectActivitySnapshot> =>
-    observeProjectActivity({
-      projectId,
-      exceptSessionIds,
-      listSessions: () => deps.eventStore.listSessions(),
-      isTurnBusy: (sessionId) => conductor.isBusy(sessionId),
-      listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
-      hasLocalPreviewShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
-      hasRunningDevServers: () =>
-        deps.managedDevServerManager?.hasRunningServers(projectId) ?? false,
-    });
-  const isProjectBusy = async (
-    projectId: string,
-    exceptSessionIds?: ReadonlySet<string>,
-  ): Promise<boolean> =>
-    (await projectActivity(projectId, exceptSessionIds)).observations.length > 0;
-  // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
-  // project network, deferring around in-flight turns via the same busy probe.
-  const stopProjectRelayMigrationScheduler = startProjectRelayMigrationScheduler(
-    deps,
-    app.log,
-    projectActivity,
-  );
-  lifecycle.onClose(() => {
-    stopProjectRelayMigrationScheduler();
-  });
-  const idleSleepScheduler =
-    deps.provisioner?.sleepProject === undefined
-      ? undefined
-      : startProjectIdleSleepScheduler({
-          listProjects: () => deps.eventStore.listProjects(),
-          isBusy: isProjectBusy,
-          ...(deps.provisioner.projectSandboxLastActivityAt === undefined
-            ? {}
-            : {
-                lastActivityAt: deps.provisioner.projectSandboxLastActivityAt.bind(
-                  deps.provisioner,
-                ),
-              }),
-          sleepProject: deps.provisioner.sleepProject.bind(deps.provisioner),
-          idleMs: PROJECT_SANDBOX_IDLE_TIMEOUT_MS,
-          onSlept: (projectId) => app.log.info({ projectId }, 'idle project Sandbox slept'),
-          onError: (projectId, err) =>
-            app.log.warn(
-              { projectId, err },
-              projectId === undefined
-                ? 'idle project Sandbox sweep failed'
-                : 'idle project Sandbox sleep deferred',
-            ),
-          onSweep: (projects) => {
-            const summary = deps.projectSandboxLifecycleTelemetry?.summaryIfDue(projects);
-            if (summary !== undefined) {
-              app.log.info(summary, 'project Sandbox lifecycle summary');
-            }
-          },
-        });
-  deps.projectSandboxLifecycleTelemetry?.attachSink((event) => {
-    app.log.info(event, 'project Sandbox lifecycle transition');
-  });
-  lifecycle.onClose(() => idleSleepScheduler?.stop());
+  const { projectActivity, isProjectBusy } = createServerProjectSandboxRuntime(ctx);
   const storeAgentCredentials = async (patch: VeritySettingsPatch): Promise<void> => {
     const persist = async (): Promise<void> => {
       if (deps.secretCipher?.isSealed() === true) throw new SealedError();
