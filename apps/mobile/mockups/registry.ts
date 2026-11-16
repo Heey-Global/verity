@@ -1,3 +1,4 @@
+import { sandboxUpdatesSpec } from './sandbox-updates';
 import { aiAccountsSpec } from './ai-accounts';
 import { connectionStatusSpec } from './connection-status';
 import { sessionStabilitySpec } from './session-stability';
@@ -18,6 +19,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
+  sandboxUpdatesSpec,
   aiAccountsSpec,
   sessionStabilitySpec,
   connectionStatusSpec,

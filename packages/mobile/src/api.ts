@@ -607,7 +607,6 @@ const sandboxUpdateSchema = z.object({
   // send the field, and reading that as "converging" is exactly right (it is a
   // Server that still reconciles, it just cannot report the verdict).
   selfRepair: z.enum(['converging', 'stalled']).default('converging'),
-  // Whether the update is waiting on a turn rather than on Verity. The reconciler
   // never interrupts a live turn to swap a usable sandbox's image, so a project
   // that never goes idle waits forever — and the server sets this once that wait
   // is long enough to be worth naming, alongside the `stalled` above.
@@ -618,6 +617,11 @@ const sandboxUpdateSchema = z.object({
   // so the app names the right remedy. Read as plain strings: members a newer
   // Server adds are ignored by the helpers rather than failing the project list.
   blockedBy: z.array(z.string()).default([]),
+  scheduledTonight: z.boolean().optional(),
+  overdue: z.boolean().optional(),
+  recovery: z
+    .object({ state: z.enum(['checking', 'ready', 'failed']), at: z.number(), detail: z.string() })
+    .optional(),
   // The most recent failed automatic recreate, with its time, so an earlier
   // failure cannot read as the outcome of the attempt running now. Defaulted for
   // the same reason as the fields above.
@@ -1445,6 +1449,7 @@ export const healthSchema = z.object({
    *  recreates from the cached image, so the operator waits out a "rebuild"
    *  that rebuilt nothing. Absent → treat as unsupported and hide the action. */
   imageRebuildSupported: z.boolean().optional(),
+  sandboxServiceInterruptionSupported: z.boolean().optional(),
 });
 export type Health = z.infer<typeof healthSchema>;
 
@@ -2322,11 +2327,10 @@ export interface ProjectProvisionOptions {
 }
 
 export interface RecreateProjectContainerOptions extends ProjectProvisionOptions {
-  /** Rebuild the project's derived devcontainer image rather than reusing the
-   *  cached tag. Only the explicit "Rebuild image" action sets this: the
-   *  ordinary update recreates the container on the image it already has, which
-   *  is what keeps it fast. */
+  /** Rebuild the derived devcontainer image instead of reusing its cached tag. */
   forceRebuild?: boolean;
+  interruptServices?: boolean;
+  cancelTurns?: boolean;
 }
 
 /** A non-2xx response from the server. `status` lets the UI map 404→not-found,
@@ -5860,16 +5864,11 @@ export class VerityClient {
     id: string,
     opts: RecreateProjectContainerOptions = {},
   ): Promise<ProjectRecord> {
-    // Send only the flags that are set, and no body at all when neither is, so
-    // the no-flag request stays byte-identical to what it sent before
-    // `forceRebuild` existed. Note this is NOT a compatibility guard for the
-    // flag itself: the server's body schema is non-strict, so an older server
-    // strips an unknown `forceRebuild` and recreates from the cached image
-    // without complaining. `healthSchema.imageRebuildSupported` is what gates
-    // the action — see there.
-    const body: { confirmWarnings?: boolean; forceRebuild?: boolean } = {};
+    const body: RecreateProjectContainerOptions = {};
     if (opts.confirmWarnings === true) body.confirmWarnings = true;
     if (opts.forceRebuild === true) body.forceRebuild = true;
+    if (opts.interruptServices === true) body.interruptServices = true;
+    if (opts.cancelTurns === true) body.cancelTurns = true;
     const res = await this.request(
       `/verity-control/projects/${encodeURIComponent(id)}/recreate-container`,
       {

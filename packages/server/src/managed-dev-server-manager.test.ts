@@ -247,10 +247,30 @@ describe('managed dev servers', () => {
     await manager.start('s1', 'Demo', 'agent');
     expect(manager.hasRunningSessionServers('s1')).toBe(true);
     expect(manager.hasRunningSessionServers('s2')).toBe(false);
-    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
     await manager.stop('s1', 'Demo');
     await manager.tick();
     expect(manager.hasRunningSessionServers('s1')).toBe(false);
+  });
+
+  it('expires listener evidence when supervision stops and invalidates a vanished listener', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    const run = sandbox.started[0]!;
+    sandbox.listen(run.instanceId, Number(run.env.PORT));
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasUnverifiedServers('p1')).toBe(false);
+    now += 6_001;
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    sandbox.listeners.splice(0);
+    await manager.tick();
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
   });
 
   it('starts an entry with its own port and reports running only once the port answers', async () => {
@@ -496,7 +516,8 @@ describe('managed dev servers', () => {
     await ctx.store.updateProjectState('p1', 'sleeping');
     await manager.start('s1', 'Demo', 'agent');
     expect(await instanceOf()).toMatchObject({ state: 'starting', detail: 'Waking sandbox…' });
-    expect(manager.hasRunningServers('p1')).toBe(true);
+    expect(manager.hasRunningServers('p1')).toBe(false);
+    expect(manager.hasUnverifiedServers('p1')).toBe(true);
     expect(wake).toHaveBeenCalledWith('p1', 's1');
     expect(sandbox.started).toHaveLength(0);
     await vi.waitFor(async () => expect((await ctx.store.getProject('p1'))?.state).toBe('active'));

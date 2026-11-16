@@ -1,3 +1,4 @@
+import { runDockerGc } from './docker-gc.js';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
@@ -740,4 +741,40 @@ describe('scheduled cache-helper retention', () => {
       property.initializer.parameters[0]?.name.getText(source),
     );
   });
+});
+
+// Capacity admission must use the same safety decision as daily retirement.
+it('capacity retires only policy-approved sandboxes then releases their unreferenced image', async () => {
+  const f = fixture();
+  f.docker.listContainers.mockImplementation(async () => [...f.containers]);
+  f.containers.push({
+    id: 'foreign',
+    imageId: 'foreign-image',
+    state: 'exited',
+    names: ['foreign'],
+  });
+  f.docker.removeStoppedContainer.mockImplementation(async (id) => {
+    f.containers.splice(
+      f.containers.findIndex((c) => c.id === id),
+      1,
+    );
+  });
+  const removeImage = vi.fn(async () => {});
+  const report = await runDockerGc(
+    {
+      docker: { ...f.docker, removeImage } as unknown as DockerClient,
+      log: { info: () => undefined, warn: () => undefined },
+      now: () => now,
+      policy: { keepReleaseImagesPerRepo: 1 },
+      retireCapacityContainers: () => retireStoppedContainers(f.input),
+    },
+    'build-capacity',
+  );
+  expect(f.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('sandbox');
+  expect(report.containersRemoved).toEqual(['verity-p']);
+  expect(report.retainedContainers).toContainEqual({
+    name: 'foreign',
+    reason: 'No project identity; outside managed ownership',
+  });
+  expect(removeImage).toHaveBeenCalledExactlyOnceWith('old');
 });

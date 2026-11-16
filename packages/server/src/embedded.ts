@@ -1,3 +1,4 @@
+import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
@@ -1352,12 +1353,7 @@ export async function buildEmbeddedServer(
     return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
   };
 
-  // Multi-repo fleet-registry provisioning (concept §19.3/#19.8, #174):
-  // Docker client + ProvisionerImpl + DeprovisionerImpl — wired when a
-  // dockerBaseUrl and hostCloneRoot are configured. Git auth comes exclusively from
-  // the DB-backed GitHub App mint.
-  // Long image pulls (sandbox, toolkit, relay and preview images) report their
-  // progress here, rate-limited by the client.
+  // DB-backed GitHub App credentials and managed Docker infrastructure.
   const logDockerPull = (message: string): void => {
     console.info(`verity: ${message}`);
   };
@@ -2779,12 +2775,18 @@ export async function buildEmbeddedServer(
       undefined,
       '/run/verity-buildkit',
     );
-    const nativeEvidence = startNativeRetirementEvidence(
+    const retirementEvidence = startNativeRetirementEvidence(
       () => buildStorage?.retirementInventoryEmpty() === true,
     );
-    // Registered after app construction below.
-    stopNativeEvidence = () => nativeEvidence.stop();
+    stopNativeEvidence = () => retirementEvidence.stop();
     provisioner = new ProvisionerImpl({
+      ...sandboxUpdateLifecycleHooks({
+        store: eventStore,
+        devServers: () => managedDevServerManager,
+        local: () => localPreviewManager,
+        public: () => previewShareManager,
+        log: () => app.log,
+      }),
       beforeRunnerAdmission: async (project) => {
         await runPendingCleanup?.(project.id);
       },
@@ -2815,9 +2817,6 @@ export async function buildEmbeddedServer(
       projectTokenMint,
       forgeRepositoryAccess,
       veritySettings: () => eventStore.getVeritySettings(),
-      // Linking a local project to a repository that already has history publishes an
-      // import branch and opens the pull request that carries it onto the default
-      // branch — the token is the one-shot, target-scoped mint the link route made.
       openPullRequest: async (target, token, pr) => {
         const provider = await projectForgeProvider(eventStore, githubForge, {
           ...target,
@@ -2911,8 +2910,7 @@ export async function buildEmbeddedServer(
       },
       withContainerReplace: <T>(project: ProjectRecord, mutation: () => Promise<T>) =>
         withPreviewProjectMutation(project.id, mutation),
-      // Named data volume (M16): per-project mounts become volume subpaths instead
-      // of host binds, so sibling sandboxes need no host-path knowledge.
+      // Per-project volume subpaths avoid sibling host-path knowledge.
       ...(config.dataVolume !== undefined ? { dataVolume: config.dataVolume } : {}),
       ...(config.dataVolumeRoot !== undefined ? { dataVolumeRoot: config.dataVolumeRoot } : {}),
       ...(config.runnerSupervisor !== undefined
@@ -5226,21 +5224,23 @@ export async function buildEmbeddedServer(
   if (projectDocker !== undefined && config.dockerGc !== false) {
     let nativeMaintenanceRequested: string | null = null;
     let cacheHelperProjectOffset = 0;
-    const retireProjectContainers = async (cacheHelpersOnly: boolean) => {
-      const removed = cacheHelpersOnly ? [] : await retireCompletedUpdateContainers(projectDocker);
+    const retireProjectContainers = async (cacheHelpersOnly: boolean, capacityOnly = false) => {
+      const removed =
+        cacheHelpersOnly || capacityOnly
+          ? []
+          : await retireCompletedUpdateContainers(projectDocker);
       if (!provisioner?.withProjectExclusiveMutation) return { removed, errors: [] };
       const result = await retireStoppedContainers({
         docker: projectDocker,
-        ...(cacheHelpersOnly
+        ...(cacheHelpersOnly || capacityOnly
           ? {
-              cacheHelpersOnly: true,
+              cacheHelpersOnly,
               maxHelperProjects: 8,
               helperProjectOffset: cacheHelperProjectOffset,
             }
           : {}),
         listProjects: () => eventStore.listProjects(),
-        // Match helper execution: acquire lifecycle ownership before preview/storage
-        // barriers, and hold both until result collection/retention finishes.
+        // Acquire lifecycle ownership before preview/storage barriers.
         withProjectMutation: (id, run) =>
           provisioner.withProjectExclusiveMutation(id, () =>
             withStorageProjectMutation(
@@ -5257,11 +5257,11 @@ export async function buildEmbeddedServer(
                   throw new Error('Preview is active');
                 await run();
               },
-              { waitForIdle: !cacheHelpersOnly },
+              { waitForIdle: !cacheHelpersOnly && !capacityOnly },
             ),
           ),
       });
-      if (cacheHelpersOnly) cacheHelperProjectOffset += 8;
+      if (cacheHelpersOnly || capacityOnly) cacheHelperProjectOffset += 8;
       return {
         removed: [...removed, ...result.removed],
         errors: result.errors,
@@ -5272,9 +5272,6 @@ export async function buildEmbeddedServer(
       docker: projectDocker,
       log: app.log,
       ...(config.dockerGcPolicy !== undefined ? { policy: config.dockerGcPolicy } : {}),
-      // Free space is measured on the volume that actually fills up — the Verity
-      // data root shares the host filesystem with /var/lib/docker in the reference
-      // install, so this is the number that matters for disk-pressure escalation.
       ...(config.dataVolumeRoot !== undefined ? { dataRoot: config.dataVolumeRoot } : {}),
       // Read through the `let` on every pass, not captured once: the lifecycle is
       // constructed below this block, and its held set changes with every
@@ -5297,6 +5294,7 @@ export async function buildEmbeddedServer(
       },
       retireContainers: () => retireProjectContainers(false),
       retireCacheHelpers: () => retireProjectContainers(true),
+      retireCapacityContainers: () => retireProjectContainers(false, true),
       imageReferences,
       onProjectImageRemoved: (image) =>
         auditRecorder.imageRemoved({ imageRef: image.ref, imageId: image.imageId }),

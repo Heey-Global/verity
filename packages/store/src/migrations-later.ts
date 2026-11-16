@@ -477,3 +477,15 @@ migrations['0221_managed_dev_server_approver'] = {
     await sql`alter table managed_dev_servers drop column approved_by_user_id`.execute(db);
   },
 };
+
+migrations['0222_sandbox_update_state'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table sandbox_update_state (
+      project_id text primary key references projects(id) on delete cascade,
+      value jsonb not null
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table sandbox_update_state`.execute(db);
+  },
+};

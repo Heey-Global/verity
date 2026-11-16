@@ -854,3 +854,39 @@ it.each(['local creation', 'public lifecycle'] as const)(
     expect(mutation).toHaveBeenCalledOnce();
   },
 );
+
+it('counts only live local targets while keeping offline URLs available for recovery', async () => {
+  const { manager } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  expect(manager.hasProjectShares('p1')).toBe(true);
+  vi.spyOn(PreviewShareManager.prototype, 'prepareLocalTarget').mockRejectedValueOnce(
+    new Error('target gone'),
+  );
+  await manager.reconcile();
+  expect(manager.hasProjectShares('p1')).toBe(false);
+  expect(manager.list('s1')).toEqual([share]);
+  await manager.reconcile();
+  await manager.reconcile();
+  expect(manager.hasProjectShares('p1')).toBe(true);
+  expect(manager.list('s1')).toEqual([share]);
+});
+
+it('does not count a durable link while its project resources are released', async () => {
+  const { manager } = fixture();
+  const share = await manager.create('s1', { targetPort: 3000 });
+  await manager.withProjectMutation('p1', async () => {
+    expect(manager.hasProjectShares('p1')).toBe(false);
+    expect(manager.list('s1')).toEqual([share]);
+  });
+});
+
+it('exempts managed local shares from activity while retaining their URL', async () => {
+  const { manager } = fixture();
+  const share = await manager.create('s1', {
+    targetPort: 3000,
+    managedInstanceId: 'managed',
+    networkPort: 18100,
+  });
+  expect(manager.hasProjectShares('p1')).toBe(false);
+  expect(manager.list('s1')).toEqual([share]);
+});

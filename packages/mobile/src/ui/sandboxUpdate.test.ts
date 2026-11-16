@@ -324,3 +324,36 @@ describe('what holds a blocked update', () => {
     });
   });
 });
+
+it('describes the fixed nightly schedule and recovery after the image is current', () => {
+  expect(sandboxUpdateSummary(update({ scheduledTonight: true }))).toContain(
+    '03:00–05:00 server time',
+  );
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'current',
+        recovery: { state: 'ready', at: 1, detail: 'All services recovered' },
+      }),
+    ),
+  ).toContain('back online');
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'current',
+        recovery: { state: 'failed', at: 1, detail: 'web did not restart' },
+      }),
+    ),
+  ).toContain('web did not restart');
+});
+
+it('names the blocker after a missed nightly window instead of promising tonight', () => {
+  expect(
+    sandboxUpdateSummary(
+      update({ scheduledTonight: true, overdue: true, blockedBy: ['dev_server'] }),
+    ),
+  ).toBe('Update missed its nightly window — still waiting for a running dev server');
+  expect(sandboxUpdateSummary(update({ overdue: true, blockedBy: ['unknown'] }))).toContain(
+    'activity verification',
+  );
+});

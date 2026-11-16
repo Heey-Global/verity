@@ -1,3 +1,7 @@
+import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
+import { previewTargetIsLive } from './preview-target-activity.js';
 import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
   PreviewShareConflictError,
@@ -179,66 +183,6 @@ export interface PreviewShareManagerOptions {
   onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
 }
 
-/** Records the milliseconds spent in each named step, in the order they ran. */
-type PhaseTimer = {
-  mark(phase: string): void;
-  readonly phasesMs: Record<string, number>;
-  readonly lastPhase: string | undefined;
-  totalMs(): number;
-};
-
-function phaseTimer(): PhaseTimer {
-  const startedAt = performance.now();
-  let last = startedAt;
-  let lastPhase: string | undefined;
-  const phasesMs: Record<string, number> = {};
-  return {
-    mark(phase) {
-      const now = performance.now();
-      phasesMs[phase] = Math.round(now - last);
-      last = now;
-      lastPhase = phase;
-    },
-    phasesMs,
-    get lastPhase() {
-      return lastPhase;
-    },
-    totalMs: () => Math.round(performance.now() - startedAt),
-  };
-}
-
-export interface CreatePreviewShareInput {
-  managedInstanceId?: string | undefined;
-  projectId?: string;
-  sessionId?: string;
-  devServerId?: string;
-  staticPath?: string;
-  /** A port something in the session's worktree listens on; requires `sessionId`. */
-  targetPort?: number;
-  pin: string;
-  ttlSeconds: number;
-}
-
-export interface PublicPreviewShare {
-  managedInstanceId: string | null;
-  pinLocked?: boolean;
-  id: string;
-  projectId: string;
-  devServerId: string | null;
-  targetKind: 'dev-server' | 'static-folder';
-  targetPort: number | null;
-  staticPath: string | null;
-  sessionId: string | null;
-  state: PublicPreviewShareState;
-  publicOrigin: string | null;
-  pin: string;
-  expiresAt: Date;
-  revokedAt: Date | null;
-  failure: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export class PreviewShareManager {
   private readonly creations = new Map<string, Promise<void>>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
@@ -306,6 +250,25 @@ export class PreviewShareManager {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
     return { project, session, generation, staticMount };
+  }
+
+  /** Kept separate from share existence so offline URLs never hold a sandbox awake. */
+  hasLiveTarget(share: PublicPreviewShareRecord): Promise<boolean> {
+    return previewTargetIsLive(share, this.options, {
+      sandbox: (project, id) => this.previewSandbox(project, id),
+      sessionPort: (project, worktree, port) => this.sessionPortReachable(project, worktree, port),
+      staticDirectory: async (project, worktree, path) => {
+        await this.validateStaticDirectory(await this.staticSourceRoot(project, worktree), path);
+      },
+    });
+  }
+
+  async isOnline(share: PublicPreviewShareRecord): Promise<boolean> {
+    if (!share.connectorContainerId || !(await this.hasLiveTarget(share))) return false;
+    const connector = await this.options.docker
+      .inspectContainer(share.connectorContainerId)
+      .catch(() => undefined);
+    return connector?.running === true && !connector.env?.includes('VERITY_PREVIEW_OFFLINE=1');
   }
 
   isAvailable(): boolean {

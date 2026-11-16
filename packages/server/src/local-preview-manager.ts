@@ -145,8 +145,24 @@ export class LocalPreviewManager {
     if (shareId && (this.active.has(shareId) || this.durableIds.has(shareId))) return true;
     return [...this.active.values()].some((state) => state.connectorId === id);
   }
+  /** Includes managed targets for recovery checks, without counting their intent as activity. */
+  liveProjectShares(projectId: string): LocalPreviewShare[] {
+    return [...this.active.values()]
+      .filter(
+        (state) =>
+          state.share.projectId === projectId &&
+          state.ready &&
+          !state.missingSince &&
+          state.share.expiresAt.getTime() > Date.now() &&
+          !this.stopping.has(state.share.id) &&
+          !this.stopped.has(state.share.id),
+      )
+      .map((state) => state.share);
+  }
   hasProjectShares(projectId: string): boolean {
-    return this.visibleShares().some((share) => share.projectId === projectId);
+    return this.liveProjectShares(projectId).some(
+      (share) => !this.durable.get(share.id)?.managedInstanceId,
+    );
   }
   async create(
     sessionId: string,

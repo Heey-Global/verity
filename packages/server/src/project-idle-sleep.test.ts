@@ -296,3 +296,16 @@ describe('structured project activity', () => {
     expect(recreateRefusalMessage('p1', ['unknown'])).not.toContain('preview');
   });
 });
+
+it('reports unverified dev servers as unknown rather than running', async () => {
+  const activity = await observeProjectActivity({
+    projectId: 'p',
+    listSessions: async () => [],
+    isTurnBusy: () => false,
+    hasRunningDevServers: () => false,
+    hasUnverifiedDevServers: () => true,
+    hasLocalPreviewShares: () => false,
+    listShares: async () => [],
+  });
+  expect(activity.observations).toEqual([{ reason: 'unknown', source: 'dev_server_unverified' }]);
+});

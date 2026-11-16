@@ -86,6 +86,8 @@ export function sandboxUpdateWaitingLabel(update: SandboxUpdate): string {
 /** Why a blocked update cannot be applied now, and what would let it — for the
  *  dialog behind the project's Update button. */
 export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
+  if (update.scheduledTonight)
+    return 'Verity will update between 03:00 and 05:00, server time. To update sooner, open Sandbox settings and choose Update now. Dev servers restart automatically; share URLs and PINs stay the same.';
   switch (sandboxUpdateBlocker(update)) {
     case 'turn':
       return 'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.';
@@ -100,6 +102,8 @@ export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
 
 /** One line for the inbox item of a blocked update. */
 export function sandboxUpdateBlockedInboxMessage(update: SandboxUpdate): string {
+  if (update.scheduledTonight)
+    return 'A sandbox update is scheduled for tonight; dev servers and previews restart with their existing URLs.';
   switch (sandboxUpdateBlocker(update)) {
     case 'turn':
       return 'A sandbox update waits for the running turn to finish.';
@@ -128,7 +132,26 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
   if (update?.selfRepair === 'stalled' && update.state === 'unknown') {
     return 'Sandbox repair stuck — the sandbox could not be rebuilt';
   }
+  if (update?.recovery) {
+    if (update.recovery.state === 'checking') return 'Updated — checking dev servers and previews';
+    if (update.recovery.state === 'failed') return `Updated — ${update.recovery.detail}`;
+    if (update.recovery.state === 'ready')
+      return 'Updated — dev servers and previews are back online';
+  }
   if (update === undefined || update.state !== 'available') return null;
+  if (update.overdue) {
+    const blocker = sandboxUpdateBlocker(update);
+    const waiting =
+      blocker === 'turn'
+        ? 'a running turn'
+        : blocker === 'dev_server'
+          ? 'a running dev server'
+          : blocker === 'preview'
+            ? 'a shared preview'
+            : 'activity verification';
+    return `Update missed its nightly window — still waiting for ${waiting}`;
+  }
+  if (update.scheduledTonight) return 'Scheduled for tonight · 03:00–05:00 server time';
   const security = isSecuritySandboxUpdate(update);
   // Ahead of `stalled`: the Server raises both flags for a blocked update, and of
   // the two sentences only this one says what would actually move it.
@@ -197,6 +220,7 @@ export function sandboxUpdateAlertMessage(
   project: { owner: string; repo: string },
   update: SandboxUpdate,
 ): string {
+  if (update.scheduledTonight) return sandboxUpdateBlockedDetail(update);
   const security = isSecuritySandboxUpdate(update);
   const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
   // A blocked update is not a failure and must not be described as one: Verity is

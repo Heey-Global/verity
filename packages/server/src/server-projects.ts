@@ -268,7 +268,10 @@ export function installProjects(
     // reassuring spinner forever; one that does know reads the flag and names the
     // remedy. `available` only: a blocked update the checker cannot even see is
     // not something to report a turn about.
-    const blocked = status.state === 'available' && verdicts.turnBlocked.has(project.id);
+    const durable = deps.provisioner?.sandboxUpdateStates?.().get(project.id);
+    const blocked =
+      status.state === 'available' &&
+      (verdicts.turnBlocked.has(project.id) || !!durable?.reasons.length);
     const unrepaired =
       verdicts.unrepaired.has(project.id) &&
       (status.state === 'available' || (project.state === 'failed' && status.state === 'unknown'));
@@ -278,6 +281,18 @@ export function installProjects(
     // Carried with its time whatever the verdict: while a retry waits or builds,
     // the status is `converging` and the failure is plainly an earlier one.
     const failure = status.state === 'current' ? undefined : verdicts.lastFailures?.get(project.id);
+    const scheduledTonight =
+      status.state === 'available' &&
+      durable?.reasons.length &&
+      durable.reasons.every((reason) => reason === 'dev_server' || reason === 'preview');
+    status = {
+      ...status,
+      ...(scheduledTonight ? { scheduledTonight: true } : {}),
+      ...(blocked && durable && Date.now() - durable.since >= 24 * 60 * 60_000
+        ? { overdue: true }
+        : {}),
+      ...(status.state === 'current' && durable?.recovery ? { recovery: durable.recovery } : {}),
+    };
     const withFailure =
       failure === undefined
         ? status
@@ -290,7 +305,12 @@ export function installProjects(
       ...withFailure,
       selfRepair: 'stalled',
       turnBlocked: blocked,
-      blockedBy: blocked ? [...(verdicts.blockers?.get(project.id) ?? [])] : [],
+      blockedBy: blocked
+        ? [...(durable?.reasons ?? verdicts.blockers?.get(project.id) ?? [])].filter(
+            (reason): reason is import('./project-idle-sleep.js').ProjectActivityReason =>
+              ['turn', 'dev_server', 'preview', 'unknown'].includes(reason),
+          )
+        : [],
     };
   };
   const sandboxRepairVerdicts = (): SandboxRepairVerdicts => ({
@@ -964,20 +984,28 @@ export function installProjects(
         reply.code(409);
         return { error: `project ${id} is already provisioning` };
       }
-      // SBX-1: refuse to recreate a sandbox with a turn in flight — recreate
-      // stops+removes the container and would kill the running docker-exec agent
-      // mid-turn. Operator cancels or waits, then retries.
-      const activity = activityReasons(await projectActivity(id));
+      const body = parseRecreateContainerBody(request.body);
+      let snapshot = await projectActivity(id);
+      if (body?.cancelTurns === true) {
+        for (const observation of snapshot.observations) {
+          if (observation.reason === 'turn' && observation.sessionId)
+            await conductor.cancelTurn(observation.sessionId);
+        }
+        snapshot = await projectActivity(id);
+      }
+      const activity = activityReasons(snapshot).filter(
+        (reason) => !body?.interruptServices || !['dev_server', 'preview'].includes(reason),
+      );
       if (activity.length > 0) {
         reply.code(409);
         return { error: recreateRefusalMessage(id, activity) };
       }
-      const body = parseRecreateContainerBody(request.body);
       let updated: ProjectRecord;
       try {
         updated = await recreateContainer(project.id, {
           confirmWarnings: body?.confirmWarnings === true,
           forceRebuild: body?.forceRebuild === true,
+          ...(body?.interruptServices === true ? { interruptServices: true } : {}),
           initiator: { kind: 'user', userId: request.localUserId },
         });
         await afterProjectProvision(project.id);

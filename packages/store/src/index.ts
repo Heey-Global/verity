@@ -1,3 +1,4 @@
+export { SandboxUpdateStateStore, type SandboxUpdateState } from './sandbox-update-state.js';
 export {
   ProjectEgressStore,
   ProjectEgressError,

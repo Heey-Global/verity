@@ -217,15 +217,12 @@ export {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
-  // Search projection is an eventually-consistent read model. Start/resume its
-  // bounded backfill independently of requests; live event appends schedule it too.
+  // Resume the bounded search backfill independently of requests.
   if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
     deps.eventStore.scheduleMessageProjection();
   }
   const { app, lifecycle, preAuthKeys } = createServerApp(deps);
-  // Resolve the conductor: a factory is called with the app logger so its
-  // background-failure sink can log through it (chicken/egg: the conductor is
-  // built before the routes, but the logger exists once `app` does).
+  // The conductor factory needs the app logger for background failures.
   const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
   deps.onConductorReady?.(conductor);
   const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
@@ -251,14 +248,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const sessionMockups = createSessionMockups({ eventStore: deps.eventStore });
   // Teardown exclusion for `DELETE /projects/:id`. Between the moment that route
   // quiesces a project's sessions and the moment its purge has removed the clone
-  // root, nothing may start work on the project or its sessions: a turn
-  // dispatched into that window writes into a worktree being deleted, and a
-  // spawn adds a session the delete has already listed. The project row cannot
-  // carry the flag — hiding it before the deprovision succeeded would take a
-  // project whose container is still running out of the overview — so the
-  // window lives here, in the process that owns both the conductor and the
-  // teardown. Both sets are cleared in the route's `finally`, so a failed
-  // teardown hands the sessions back rather than stranding them.
+  // root, turns and session spawns must not enter worktrees being deleted.
+  // Keep the window here: hiding the project row before deprovision succeeds
+  // would hide a still-running container. Both sets clear in the route's
+  // `finally`, handing sessions back after a failed teardown.
   const projectsBeingDeleted = new Set<string>();
   const sessionsBeingReaped = new Set<string>();
   // In-flight `DELETE /projects/:id`, by project id. A second request for the
@@ -935,9 +928,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     await vulnerabilityService.stop();
   });
 
-  // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
-  // any bound session, a running dev server, or a shared preview? Used to refuse
-  // tearing a sandbox out from under them, and to name which one is waiting.
+  // Recreate and sleep share the same activity evidence.
   const projectActivity = async (
     projectId: string,
     exceptSessionIds?: ReadonlySet<string>,
@@ -949,6 +940,10 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       isTurnBusy: (sessionId) => conductor.isBusy(sessionId),
       listShares: () => deps.eventStore.listPublicPreviewShares(projectId),
       hasLocalPreviewShares: () => deps.localPreviewManager?.hasProjectShares(projectId) ?? false,
+      hasUnverifiedDevServers: () =>
+        deps.managedDevServerManager?.hasUnverifiedServers(projectId) ?? false,
+      isShareTargetLive: (share) =>
+        deps.previewShareManager?.hasLiveTarget(share) ?? Promise.resolve(false),
       hasRunningDevServers: () =>
         deps.managedDevServerManager?.hasRunningServers(projectId) ?? false,
     });
@@ -957,8 +952,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     exceptSessionIds?: ReadonlySet<string>,
   ): Promise<boolean> =>
     (await projectActivity(projectId, exceptSessionIds)).observations.length > 0;
-  // Stage 5: converge any pre-relay shared-network sandbox onto its relay +
-  // project network, deferring around in-flight turns via the same busy probe.
+  // Migrate legacy networks using the same activity barrier.
   const stopProjectRelayMigrationScheduler = startProjectRelayMigrationScheduler(
     deps,
     app.log,
