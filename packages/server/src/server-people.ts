@@ -1,3 +1,4 @@
+import type { administratorProviderConnections } from './administrator-provider-connections.js';
 import { fetchOpenCodeModels } from './opencode-model-catalog.js';
 import { registerProviderConnectionRoutes } from './provider-connection-routes.js';
 import { registerProjectTeamRoutes } from './project-team-routes.js';
@@ -253,8 +254,10 @@ export function installPeople(
   {
     agentLogin,
     persistPersonal,
+    administratorAccounts,
   }: {
     agentLogin: AgentLoginService;
+    administratorAccounts: ReturnType<typeof administratorProviderConnections>;
     persistPersonal: (
       userId: string,
       provider: ProviderConnectionKind,
@@ -273,6 +276,7 @@ export function installPeople(
   registerProviderConnectionRoutes(app, {
     store: deps.eventStore,
     agentLogin,
+    administratorAccounts,
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
     listOpenCodeModels: (baseUrl, apiKey) => fetchOpenCodeModels(baseUrl, apiKey),
     persist: persistPersonal,

@@ -284,6 +284,7 @@ export type ClientOverrides = {
   completeHttpMcpOAuth?: jest.Mock;
   listIntegrations?: jest.Mock;
   listProviderLimits?: jest.Mock;
+  listProviderConnections?: jest.Mock;
   disconnectAgentLogin?: jest.Mock;
 };
 
@@ -310,6 +311,9 @@ export function makeClient(status: SecretStatus, opts: ClientOverrides = {}): Ve
       opts.startReturnPathDiagnostics ?? notImplemented('startReturnPathDiagnostics'),
     stopReturnPathDiagnostics:
       opts.stopReturnPathDiagnostics ?? notImplemented('stopReturnPathDiagnostics'),
+    listProviderConnections:
+      opts.listProviderConnections ??
+      jest.fn().mockResolvedValue({ connections: [], usesInstanceLogins: true }),
     getVeritySettings:
       opts.getVeritySettings ?? jest.fn().mockResolvedValue(opts.settings ?? makeSettings()),
     getSigningKey:

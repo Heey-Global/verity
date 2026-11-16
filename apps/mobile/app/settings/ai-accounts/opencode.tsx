@@ -7,6 +7,8 @@ import { useMemo, useState } from 'react';
 
 import { SettingsMessage, SettingsScaffold } from '../../../components/settings/SettingsChrome';
 import { Button, Card, TextField } from '../../../components/ui';
+import { AdministratorOpenCodeSettingsView } from '../../../components/settings/AdministratorOpenCodeSettings';
+import { PersonalAiProviderBoundary } from '../../../components/settings/PersonalAiProviderBoundary';
 import { createVerityClient } from '../../../lib/client';
 
 export default function OpenCodeAccountScreen() {
@@ -20,7 +22,15 @@ export default function OpenCodeAccountScreen() {
       />
     );
   }
-  return <OpenCodeAccountView client={client} />;
+  return (
+    <PersonalAiProviderBoundary
+      client={client}
+      provider="opencode"
+      personal={<OpenCodeAccountView client={client} />}
+    >
+      <AdministratorOpenCodeSettingsView client={client} />
+    </PersonalAiProviderBoundary>
+  );
 }
 
 export function OpenCodeAccountView({

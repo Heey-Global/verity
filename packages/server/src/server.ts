@@ -252,7 +252,8 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
 
   const { projectActivity, isProjectBusy } = createServerProjectSandboxRuntime(ctx);
-  const { storeAgentCredentials, persistPersonal, agentLogin } = createServerAgentCredentials(ctx);
+  const { storeAgentCredentials, persistPersonal, agentLogin, administratorAccounts } =
+    createServerAgentCredentials(ctx);
   // `sessionPrStatus` comes from the session overview further down, which itself
   // takes `maybeDispatchPrRepairTurns`, so the repair turns read it lazily.
   const {
@@ -385,7 +386,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   installRepositoryTools(app, ctx);
   registerUserContextRoutes(app, deps.eventStore.userContext);
-  installPeople(ctx, { agentLogin, persistPersonal });
+  installPeople(ctx, { agentLogin, persistPersonal, administratorAccounts });
   if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
   registerProjectMemoryRoute(app, {
     ...(deps.mcpGateway === undefined

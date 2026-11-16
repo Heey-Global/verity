@@ -167,7 +167,7 @@ describe('ProviderUsageGroup', () => {
     expect(screen.getByText('Agent usage')).toBeOnTheScreen();
     expect(screen.getByText('5-hour window · 72% used')).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('link', { name: 'Codex settings' }));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services/codex');
+    expect(mockPush).toHaveBeenCalledWith('/settings/ai-accounts/codex');
   });
 });
 
