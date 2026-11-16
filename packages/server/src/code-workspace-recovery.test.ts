@@ -176,6 +176,7 @@ describe('legacy Documents session conversion', () => {
       git(['-C', f.clone, 'checkout', '-q', 'main']);
       git(['-C', f.clone, 'branch', '-D', 'code-s']);
       if (uncached) git(['-C', f.clone, 'update-ref', '-d', 'refs/remotes/origin/code-s']);
+      else git(['-C', f.clone, 'update-ref', 'refs/remotes/origin/code-s', 'main']);
       const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
       expect(result?.source).toBe('origin');
       expect(readFileSync(join(f.target, 'pushed.ts'), 'utf8')).toBe('pushed\n');

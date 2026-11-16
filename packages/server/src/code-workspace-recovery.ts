@@ -92,6 +92,8 @@ export interface CodeWorkspaceRecoveryDeps {
   closeBackends: (sessionId: string) => Promise<void>;
   afterCommit?: ((sessionId: string, retainedWorktree: string) => Promise<void>) | undefined;
   git?: GitOutputRunner | undefined;
+  /** Network Git uses the project's authenticated sandbox runner when configured. */
+  remoteGit?: ((project: ProjectRecord, clone: string) => GitOutputRunner) | undefined;
 }
 
 /** Prefix of the conversion's move key; a retry resumes the same reservation. */
@@ -125,13 +127,18 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       () => false,
     );
 
-  async function hasRemoteBranch(clone: string, branch: string): Promise<boolean> {
-    if (await hasRef(clone, `refs/remotes/origin/${branch}`)) return true;
-    const remotes = await git(['-C', clone, 'remote']);
-    if (!remotes.split(/\s+/u).includes('origin')) return false;
+  async function hasRemoteBranch(
+    project: ProjectRecord,
+    clone: string,
+    branch: string,
+  ): Promise<boolean> {
+    const cached = await hasRef(clone, `refs/remotes/origin/${branch}`);
+    const remoteGit = deps.remoteGit?.(project, clone) ?? git;
+    const remotes = await remoteGit(['-C', clone, 'remote']);
+    if (!remotes.split(/\s+/u).includes('origin')) return cached;
     // A new clone may have no tracking ref for saved session work. An unreachable
     // origin proves nothing about that work and must never allow a fresh branch.
-    const remote = await git([
+    const remote = await remoteGit([
       '-C',
       clone,
       'ls-remote',
@@ -139,8 +146,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       'origin',
       `refs/heads/${branch}`,
     ]);
-    if (!remote.trim()) return false;
-    await git([
+    if (!remote.trim()) return cached;
+    await remoteGit([
       '-C',
       clone,
       'fetch',
@@ -193,7 +200,7 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       `refs/heads/${branch}`,
     ))
       ? ['branch', await addExistingBranchWorktree(options, branch)]
-      : (await hasRemoteBranch(clone, branch))
+      : (await hasRemoteBranch(project, clone, branch))
         ? ['origin', await addExistingBranchWorktree(options, branch, `origin/${branch}`)]
         : [
             'fresh',

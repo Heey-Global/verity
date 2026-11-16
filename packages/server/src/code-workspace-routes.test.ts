@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { InMemoryEventBus, type Backend, type RunTurnOptions } from '@verity/session';
 import { createIsolatedTestDb } from '@verity/store/testing';
 import { expect, it, vi } from 'vitest';
+import type { ServerDeps } from './server-deps.js';
 import { buildControlPlane } from './app.js';
 
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
@@ -19,10 +20,12 @@ async function harness({
   repository,
   model = 'm',
   configured = true,
+  sandboxGit,
 }: {
   repository: boolean;
   model?: string;
   configured?: boolean;
+  sandboxGit?: ServerDeps['sandboxGit'];
 }) {
   const ctx = await createIsolatedTestDb();
   const dataRoot = await mkdtemp(join(tmpdir(), 'code-workspace-routes-'));
@@ -64,6 +67,7 @@ async function harness({
     dataRoot,
     projectCloneRoot: configured ? cloneRoot : undefined,
     conductor: { backend, codexBackend: backend },
+    ...(sandboxGit ? { sandboxGit } : {}),
     logger: false,
   });
   return {
@@ -242,6 +246,46 @@ it('records a successful Restore on the session event stream', async () => {
       expect.arrayContaining([
         expect.objectContaining({ t: 'notice', text: 'Code workspace restored.' }),
       ]),
+    );
+  } finally {
+    await h.close();
+  }
+});
+
+it('uses project-authenticated Git for remote recovery rather than the host credential scope', async () => {
+  const remote = vi.fn(async (args: readonly string[]) => {
+    if (args.includes('remote')) return 'origin\n';
+    if (args.includes('ls-remote'))
+      return `${git(['-C', args[1]!, 'rev-parse', 'HEAD']).trim()}\trefs/heads/code-s\n`;
+    if (args.includes('fetch')) {
+      git(['-C', args[1]!, 'update-ref', 'refs/remotes/origin/code-s', 'HEAD']);
+      return '';
+    }
+    throw new Error('unexpected remote operation');
+  });
+  const sandboxGit = vi.fn(() => remote);
+  const h = await harness({ repository: true, sandboxGit });
+  try {
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/sessions/s/code-workspace/restore',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ source: 'origin' });
+    expect(remote).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        'fetch',
+        '--no-tags',
+        'origin',
+        'refs/heads/code-s:refs/remotes/origin/code-s',
+      ]),
+    );
+    expect(sandboxGit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'p' }),
+      expect.any(String),
+    );
+    expect(remote).toHaveBeenCalledWith(
+      expect.arrayContaining(['ls-remote', '--heads', 'origin', 'refs/heads/code-s']),
     );
   } finally {
     await h.close();

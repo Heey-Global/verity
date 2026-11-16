@@ -40,6 +40,7 @@ export function installCodeWorkspaces(
     store: deps.eventStore,
     cloneRoot: deps.projectCloneRoot,
     dataRoot: deps.dataRoot,
+    remoteGit: deps.sandboxGit,
     defaultBranch: async (projectId) =>
       (await projectSettingsStore(deps.eventStore).getProjectSettings(projectId))?.defaultBranch ??
       'main',
