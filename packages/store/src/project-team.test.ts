@@ -535,3 +535,38 @@ it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
     });
   },
 );
+
+it('retires encrypted replay secrets on confirmation and expiry while retaining completion bindings', async () => {
+  const created = await invite();
+  await admit('r1');
+  const joined = await redeem(created.secret);
+  await team().completeJoin(joined.token);
+  await team().clearExpiredJoinCredentials(new Date(Date.now() + 11 * 60_000));
+  const expired = await ctx.db
+    .selectFrom('team_join_admissions')
+    .select(['device_token_encrypted', 'device_token_id'])
+    .where('redemption_id', '=', 'r1')
+    .executeTakeFirstOrThrow();
+  expect(expired).toEqual({ device_token_encrypted: null, device_token_id: joined.tokenId });
+  await expect(team().completeJoin(joined.token)).resolves.toEqual({
+    projectId: 'p1',
+    confirmed: false,
+  });
+  // Simulate a retained copy from before expiry cleanup to exercise confirmation independently.
+  await ctx.db
+    .updateTable('team_join_admissions')
+    .set({ device_token_encrypted: 'retained-copy' })
+    .where('redemption_id', '=', 'r1')
+    .execute();
+  await team().confirmJoin('r1');
+  const confirmed = await ctx.db
+    .selectFrom('team_join_admissions')
+    .select('device_token_encrypted')
+    .where('redemption_id', '=', 'r1')
+    .executeTakeFirstOrThrow();
+  expect(confirmed.device_token_encrypted).toBeNull();
+  await expect(team().completeJoin(joined.token)).resolves.toEqual({
+    projectId: 'p1',
+    confirmed: true,
+  });
+});

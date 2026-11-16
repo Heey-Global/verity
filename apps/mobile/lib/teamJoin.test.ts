@@ -385,3 +385,13 @@ it('does not switch profiles when cancelled during final credential storage', as
   expect(mockSetBaseUrl).not.toHaveBeenCalled();
   expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
 });
+
+it('does not adopt credentials or switch the base URL after cancellation during profile activation', async () => {
+  const controller = new AbortController();
+  mockSaveProfile.mockImplementationOnce(async () => {
+    controller.abort();
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  expect(mockSetBaseUrl).not.toHaveBeenCalled();
+  expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
+});

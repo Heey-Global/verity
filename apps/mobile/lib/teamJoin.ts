@@ -370,7 +370,8 @@ async function joinTeamAttempt(
       ...(link.display === undefined ? {} : { sharedBy: link.display.inviterName }),
     };
     // The server used so far stays known, so the app can switch back to it.
-    await activateServerProfile(profile);
+    await activateServerProfile(profile, controller.signal);
+    controller.signal.throwIfAborted();
     adoptStoredAuthToken(link.coreOrigin, joined.token, joined.tokenId);
     await setVerityBaseUrl(link.coreOrigin);
     await clearTeamJoinProgress().catch(() => undefined);

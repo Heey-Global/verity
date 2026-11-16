@@ -165,4 +165,26 @@ describe('several servers', () => {
     expect(getOtherServerProfiles()).toEqual([]);
     expect(getServerProfile()?.serverId).toBe(other.serverId);
   });
+  it.each([1, 2, 3])(
+    'restores the previous connection when cancelled during activation write %s',
+    async (cancelAt) => {
+      const mine = profileFromPairing(pairing, pairing.suggestedUrl);
+      await saveServerProfile(mine);
+      await hydrateServerProfile();
+      const controller = new AbortController();
+      let writes = 0;
+      (SecureStore.setItemAsync as jest.Mock).mockImplementation(
+        async (key: string, value: string) => {
+          stored.set(key, value);
+          if (++writes === cancelAt) controller.abort();
+        },
+      );
+      await expect(activateServerProfile(other, controller.signal)).rejects.toThrow();
+      expect(getServerProfile()?.serverId).toBe(mine.serverId);
+      expect(getOtherServerProfiles()).toEqual([]);
+      await hydrateServerProfile();
+      expect(getServerProfile()?.serverId).toBe(mine.serverId);
+      expect(getOtherServerProfiles()).toEqual([]);
+    },
+  );
 });

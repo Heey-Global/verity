@@ -238,18 +238,41 @@ export function getOtherServerProfiles(): readonly VerityServerProfile[] {
  * Make a known or new server the active one. The previously active server is
  * kept among the others, so the app can switch back to it.
  */
-export async function activateServerProfile(profile: VerityServerProfile): Promise<void> {
+export async function activateServerProfile(
+  profile: VerityServerProfile,
+  signal?: AbortSignal,
+): Promise<void> {
   const next = validateServerProfile(profile);
+  signal?.throwIfAborted();
   const previous = currentProfile;
+  const previousOthers = otherProfiles;
   const others = otherProfiles.filter((entry) => entry.serverId !== next.serverId);
   if (previous !== null && previous.serverId !== next.serverId) others.unshift(previous);
   if (others.length >= MAX_PROFILES) throw new Error('This app knows too many servers.');
   // Three writes, each leaving both servers stored somewhere: first the others
   // with the new one still among them, then the new active one, then the
   // others without it. An interruption leaves a duplicate, never a lost server.
-  await writeOthers([...others, next]);
-  await saveServerProfile(next);
-  await writeOthers(others);
+  try {
+    await writeOthers([...others, next]);
+    signal?.throwIfAborted();
+    await saveServerProfile(next);
+    signal?.throwIfAborted();
+    await writeOthers(others);
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (signal?.aborted) {
+      // A cancelled enrollment must restore the active profile even if its
+      // keychain write completed after navigation left the joining screen.
+      if (previous === null) {
+        await SecureStore.deleteItemAsync(PROFILE_KEY);
+        currentProfile = null;
+      } else {
+        await saveServerProfile(previous);
+      }
+      await writeOthers(previousOthers);
+    }
+    throw error;
+  }
 }
 
 /** Forget a server that is not the active one. */

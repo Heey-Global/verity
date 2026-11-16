@@ -706,6 +706,11 @@ export class ProjectTeamStore {
         .executeTakeFirst();
       if (pending === undefined) return false;
       await tx
+        .updateTable('team_join_admissions')
+        .set({ device_token_encrypted: null })
+        .where('redemption_id', '=', redemptionId)
+        .execute();
+      await tx
         .updateTable('users')
         .set({ status: 'active' })
         .where('id', '=', row.redeemed_by_user_id)
@@ -803,6 +808,16 @@ export class ProjectTeamStore {
         );
       return { lastProject };
     });
+  }
+
+  /** Retire replay secrets after their window without removing completion bindings. */
+  async clearExpiredJoinCredentials(now = new Date()): Promise<void> {
+    await this.db
+      .updateTable('team_join_admissions')
+      .set({ device_token_encrypted: null })
+      .where('expires_at', '<=', now)
+      .where('device_token_encrypted', 'is not', null)
+      .execute();
   }
 
   /** Team operations due for delivery to Uplink, oldest first. */
