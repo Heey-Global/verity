@@ -241,7 +241,8 @@ export interface ForgeDiscoveryPage {
 
 export interface ForgeProvider {
   discover?(ref: ForgeRepoRef, page: number): Promise<ForgeDiscoveryPage>;
-  repositoryPrService?(ref: ForgeRepoRef): ForgePrService;
+  /** Opaque scope changes with credentials and explicit status invalidation. */
+  repositoryPrService?(ref: ForgeRepoRef, observationScope?: object): ForgePrService;
   readonly id: ForgeProviderId;
   readonly capabilities: ForgeCapabilities;
   /** The repository a git remote URL points at on this forge, or null for any other host. */
@@ -331,6 +332,8 @@ export interface ForgePrService {
 }
 
 export interface PullRequestStatus {
+  /** A failed observation, distinct from a healthy pipeline with no CI checks. */
+  observationFailed?: boolean;
   /** Permission of the configured credential, independent of conflict/CI status. */
   viewerCanMerge?: boolean;
   number: number;

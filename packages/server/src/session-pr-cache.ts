@@ -44,6 +44,7 @@ interface ReadOptions {
 function foregroundInterval(entry: Entry): number {
   const { status } = entry;
   if (status === null) return 5_000;
+  if (status.phase !== 'open') return 300_000;
   if (status.pipeline === 'running' || status.pipeline === 'pending') return 15_000;
   if (waitingForChecks(entry)) return 15_000;
   // Green but GitHub is still computing mergeability: the merge button waits on it.
@@ -57,6 +58,7 @@ function foregroundInterval(entry: Entry): number {
 
 function interval(entry: Entry, background: boolean): number {
   if (entry.failures > 0) return Math.min(300_000, 30_000 * 2 ** (entry.failures - 1));
+  if (entry.status !== null && entry.status.phase !== 'open') return 300_000;
   if (!background) return foregroundInterval(entry);
   if (entry.status === null) return Math.min(300_000, 30_000 * 2 ** (entry.quietReads - 1));
   if (entry.status.pipeline === 'running' || entry.status.pipeline === 'pending') return 30_000;
@@ -66,7 +68,12 @@ function interval(entry: Entry, background: boolean): number {
 
 function unavailable(status: PullRequestStatus | null): PullRequestStatus | null {
   if (status === null) return null;
-  const result = { ...status, pipeline: 'unknown' as const, mergeable: null };
+  const result = {
+    ...status,
+    pipeline: 'unknown' as const,
+    mergeable: null,
+    observationFailed: true,
+  };
   delete result.mergeState;
   result.checks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
   return result;
@@ -145,12 +152,10 @@ export function createSessionPrCache(options: {
       let failures = 0;
       try {
         status = await (readOptions.load?.() ?? options.load(session));
-        if (
-          status?.pipeline === 'unknown' &&
-          status.mergeable === null &&
-          status.mergeState === undefined
-        )
+        if (status?.observationFailed === true) {
+          status = unavailable(status);
           failures = Math.min(5, (previous?.failures ?? 0) + 1);
+        }
       } catch {
         status = unavailable(previous?.status ?? null);
         failures = Math.min(5, (previous?.failures ?? 0) + 1);

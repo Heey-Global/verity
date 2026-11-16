@@ -1,5 +1,12 @@
 import { ForgeMergePermissionError, isForgeMergePermissionDenied } from './forge-provider.js';
 import { execFile } from 'node:child_process';
+import { ForgeObservationError } from './forge-observation-error.js';
+import {
+  GitHubPollCache,
+  githubRetryDeadline,
+  readGitHubPollingToken,
+  type GitHubPollingCooldown,
+} from './github-poll-cache.js';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { GitOutput } from './branches.js';
@@ -86,7 +93,11 @@ export interface GitHubPrServiceOptions {
    * rate-limited installation token from being hammered by every UI poll. */
   failureBackoffMs?: number;
   /** Returns mutable failure state shared by services for the same repository. */
-  failureCooldownFor?: (owner: string, repo: string) => { until: number; inFlight?: Promise<void> };
+  failureCooldownFor?: (owner: string, repo: string, credential?: string) => GitHubPollingCooldown;
+  /** Bound server readers must distinguish an unavailable observation from no PR. */
+  reportObservationErrors?: boolean;
+  /** Distinguishes token mints with different permission sets in one repository. */
+  tokenScope?: string;
   /** Per-request timeout in ms (default 8s) so a hung GitHub connection can't stall
    * the branches endpoint past the platform's socket default. A timeout aborts the
    * fetch, which degrades to null like any other failure. */
@@ -261,14 +272,19 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
   // Resolve the repo identity once and memoize it (the origin remote is stable).
   const identity = opts.identity ?? makeIdentityResolver(git, opts.repoDir);
 
-  const cache = new Map<string, { status: PullRequestStatus | null; at: number }>();
-  const lastCacheByBranch = new Map<string, { status: PullRequestStatus | null; at: number }>();
-  const localFailureCooldown: { until: number; inFlight?: Promise<void> } = { until: 0 };
+  const cache = new GitHubPollCache<string, { status: PullRequestStatus | null; at: number }>();
+  const localFailureCooldowns = new GitHubPollCache<
+    string,
+    { until: number; inFlight?: Promise<void> }
+  >(512, (value) => value.inFlight !== undefined);
+  const localRateLimitCooldown: GitHubPollingCooldown = { until: 0 };
+  let lastCredential: string | undefined;
+  let rateLimitDeadline = 0;
   // Conditional REST responses do not consume the primary GitHub rate limit when
   // GitHub answers 304. PR polling repeatedly reads the same small set of URLs, so
   // retaining each response's ETag avoids spending several requests per session on
   // unchanged data while preserving the existing refresh cadence.
-  const responseCache = new Map<string, { etag: string; body: unknown }>();
+  const responseCache = new GitHubPollCache<string, { etag: string; body: unknown }>();
   const credentialId = (token: string): string =>
     createHash('sha256').update(token).digest('base64url');
   const emptyChecks = { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 };
@@ -287,7 +303,10 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       if (res.status === 304 && cachedResponse !== undefined) {
         return { ok: true, body: cachedResponse.body };
       }
-      if (!res.ok) return { ok: false, body: null };
+      if (!res.ok) {
+        rateLimitDeadline = Math.max(rateLimitDeadline, githubRetryDeadline(res, now()));
+        return { ok: false, body: null };
+      }
       const body = await res.json();
       const etag = res.headers?.get('etag');
       if (etag !== undefined && etag !== null && etag !== '') {
@@ -649,9 +668,31 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     if (branch === '') return null;
     const id = await identity();
     if (id === null) return null;
-    let cached = lastCacheByBranch.get(branch);
+    const tokenState =
+      opts.failureCooldownFor?.(
+        id.owner,
+        id.repo,
+        opts.tokenScope ? `mint:${opts.tokenScope}` : undefined,
+      ) ?? localRateLimitCooldown;
+    const token = opts.asyncToken
+      ? await readGitHubPollingToken(
+          tokenState,
+          async () => (await opts.asyncToken!(id.owner, id.repo)) ?? resolveToken(),
+          now,
+          failureBackoffMs,
+        )
+      : resolveToken();
+    const credential =
+      token === undefined ? (lastCredential ?? 'unavailable') : credentialId(token);
+    if (token !== undefined) lastCredential = credential;
+    const cacheKey = `${credential}\0${branch}`;
+    const cached = cache.get(cacheKey);
     const unavailableCachedStatus = (): PullRequestStatus | null => {
-      if (cached?.status === undefined || cached.status === null) return null;
+      if (cached?.status === undefined || cached.status === null) {
+        if (opts.reportObservationErrors)
+          throw new ForgeObservationError('unavailable', 'pull-status');
+        return null;
+      }
       // Drop every live signal, `mergeState` included: while GitHub is unreachable we
       // can't know whether a cached conflict still stands, and a stale `dirty` would
       // keep the conflict UI red (and re-arm the repair automation) on no evidence.
@@ -660,30 +701,41 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       return {
         ...stale,
         pipeline: 'unknown',
+        observationFailed: true,
         checks: emptyChecks,
         mergeable: null,
       };
     };
-    const failureCooldown = opts.failureCooldownFor?.(id.owner, id.repo) ?? localFailureCooldown;
-    if (now() < failureCooldown.until) {
+    let localFailureCooldown = localFailureCooldowns.get(credential);
+    if (!localFailureCooldown) {
+      localFailureCooldown = { until: 0 };
+      localFailureCooldowns.set(credential, localFailureCooldown);
+    }
+    const failureCooldown =
+      opts.failureCooldownFor?.(id.owner, id.repo, credential) ?? localFailureCooldown;
+    const rateLimitCooldown =
+      opts.failureCooldownFor?.(id.owner, id.repo) ?? localRateLimitCooldown;
+    if (now() < Math.max(failureCooldown.until, rateLimitCooldown.until)) {
       return unavailableCachedStatus();
     }
+    const recoveryCooldown =
+      rateLimitCooldown.until > failureCooldown.until ? rateLimitCooldown : failureCooldown;
     let releaseProbe: (() => void) | undefined;
     let probe: Promise<void> | undefined;
     // Normal refreshes remain concurrent. Only the first request after an expired
     // failure cooldown becomes the recovery probe; waiters either observe its new
     // cooldown or are released together when it succeeds and resets `until`.
-    if (failureCooldown.until > 0) {
-      while (failureCooldown.inFlight !== undefined) {
-        await failureCooldown.inFlight;
-        if (now() < failureCooldown.until) return unavailableCachedStatus();
-        if (failureCooldown.until === 0) break;
+    if (recoveryCooldown.until > 0) {
+      while (recoveryCooldown.inFlight !== undefined) {
+        await recoveryCooldown.inFlight;
+        if (now() < recoveryCooldown.until) return unavailableCachedStatus();
+        if (recoveryCooldown.until === 0) break;
       }
-      if (failureCooldown.until > 0) {
+      if (recoveryCooldown.until > 0) {
         probe = new Promise<void>((resolve) => {
           releaseProbe = resolve;
         });
-        failureCooldown.inFlight = probe;
+        recoveryCooldown.inFlight = probe;
       }
     }
     try {
@@ -691,30 +743,21 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
         failureCooldown.until = Math.max(failureCooldown.until, now() + failureBackoffMs);
         return unavailableCachedStatus();
       };
-      let token: string | undefined;
-      if (opts.asyncToken !== undefined) {
-        try {
-          token = await opts.asyncToken(id.owner, id.repo);
-        } catch {
-          // Fall through to the explicitly configured legacy token source.
-        }
-      }
-      token ??= resolveToken();
       if (token === undefined) {
         return opts.asyncToken === undefined ? (cached?.status ?? null) : tokenUnavailable();
       }
-      const cacheKey = `${credentialId(token)}\0${branch}`;
-      cached = cache.get(cacheKey);
       if (cached !== undefined) {
         const ttl = cached.status === null ? negativeTtlMs : ttlMs;
         if (now() - cached.at < ttl) return cached.status;
       }
       const result = await lookup(id, branch, token);
+      if (rateLimitDeadline > now())
+        rateLimitCooldown.until = Math.max(rateLimitCooldown.until, rateLimitDeadline);
+      else rateLimitDeadline = 0;
       if (result.ok) {
-        if (probe !== undefined) failureCooldown.until = 0;
+        if (probe !== undefined) recoveryCooldown.until = 0;
         const entry = { status: result.status, at: now() };
         cache.set(cacheKey, entry);
-        lastCacheByBranch.set(branch, entry);
         return result.status;
       }
       // Do not keep presenting an old in-progress count as live forever when GitHub
@@ -723,8 +766,8 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
       failureCooldown.until = Math.max(failureCooldown.until, now() + failureBackoffMs);
       return unavailableCachedStatus();
     } finally {
-      if (probe !== undefined && failureCooldown.inFlight === probe) {
-        delete failureCooldown.inFlight;
+      if (probe !== undefined && recoveryCooldown.inFlight === probe) {
+        delete recoveryCooldown.inFlight;
       }
       releaseProbe?.();
     }
@@ -798,7 +841,6 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           const mergedAt = (body as Record<string, unknown>).merged_at;
           if (typeof mergedAt !== 'string' || mergedAt.length === 0) return false;
           cache.clear();
-          lastCacheByBranch.clear();
           responseCache.clear();
           return true;
         } catch {
@@ -823,7 +865,6 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
           return false;
         }
         cache.clear();
-        lastCacheByBranch.clear();
         responseCache.clear();
         return true;
       } catch (error) {

@@ -14,6 +14,7 @@ import {
 } from './github.js';
 import { listProjectGitHubIssues } from './project-github-issues.js';
 import { createGitHubRepositoryOperations } from './github-repository-operations.js';
+import { GitHubPollCache, type GitHubPollingCooldown } from './github-poll-cache.js';
 
 export interface GitHubForgeProviderOptions {
   /** Cached repository-scoped installation token used for PR, release and broker calls. */
@@ -40,16 +41,20 @@ export interface GitHubForgeProviderOptions {
  */
 export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): ForgeProvider {
   const fetchOpt = opts.fetch !== undefined ? { fetch: opts.fetch } : {};
-  const prServices = new Map<string, ForgePrService>();
+  const prServices = new GitHubPollCache<string, ForgePrService>(200);
   // Share cooldowns between session worktrees of the SAME repository without
   // pausing unrelated projects that may use a different GitHub installation.
-  const prFailureCooldowns = new Map<string, { until: number; inFlight?: Promise<void> }>();
-  const discoveryFailureCooldowns = new Map<string, number>();
+  const prFailureCooldowns = new GitHubPollCache<string, GitHubPollingCooldown>(
+    512,
+    (value) => value.inFlight !== undefined || value.tokenRead !== undefined,
+  );
+  const discoveryFailureCooldowns = new GitHubPollCache<string, number>();
   const prFailureCooldownFor = (
     owner: string,
     repo: string,
-  ): { until: number; inFlight?: Promise<void> } => {
-    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+    credential?: string,
+  ): GitHubPollingCooldown => {
+    const key = JSON.stringify([owner.toLowerCase(), repo.toLowerCase(), credential ?? null]);
     let cooldown = prFailureCooldowns.get(key);
     if (cooldown === undefined) {
       cooldown = { until: 0 };
@@ -59,7 +64,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   };
   // Owner/repo comes from the `origin` remote and needs no token, so identities stay
   // available on deployments without GitHub App credentials.
-  const identities = new Map<string, () => Promise<ForgeRepoRef | null>>();
+  const identities = new GitHubPollCache<string, () => Promise<ForgeRepoRef | null>>(200);
   const installation = createGitHubInstallationService({
     asyncToken: opts.installationToken,
     ...fetchOpt,
@@ -69,7 +74,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
     ...fetchOpt,
   });
 
-  const repositoryServices = new Map<string, ForgePrService>();
+  const repositoryServices = new GitHubPollCache<string, ForgePrService>(200);
   return {
     async discover(ref, page) {
       const cooldown = prFailureCooldownFor(ref.owner, ref.repo);
@@ -200,6 +205,8 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           repoDir: '',
           // Repository reads are cached by the shared, mutation-invalidated status layer.
           ttlMs: 0,
+          reportObservationErrors: true,
+          tokenScope: 'repository-status',
           identity: () => Promise.resolve(ref),
           asyncToken: (owner, repo) =>
             (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({ owner, repo }),
@@ -237,6 +244,7 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
       if (svc === undefined) {
         svc = createGitHubPrService({
           repoDir,
+          tokenScope: 'project',
           asyncToken: (owner, repo) => opts.projectTokenMint({ owner, repo }),
           ...(opts.prStatusTtlMs !== undefined ? { ttlMs: opts.prStatusTtlMs } : {}),
           failureCooldownFor: prFailureCooldownFor,

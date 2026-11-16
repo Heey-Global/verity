@@ -110,11 +110,8 @@ import {
 } from './stopped-container-gc.js';
 import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
-import {
-  selectBranchStatus,
-  createForgeStatusCache,
-  type ForgeStatusIdentity,
-} from './forge-status-cache.js';
+import { selectBranchStatus } from './forge-status-cache.js';
+import { createProjectForgeStatusReader } from './project-forge-status.js';
 import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
@@ -1157,29 +1154,10 @@ export async function buildEmbeddedServer(
     }
     return githubForge;
   };
-  const sharedForgeStatus = createForgeStatusCache();
-  const statusScopes = new Map<string, ForgeStatusIdentity>();
-  const statusIdentity = async (
-    project: ProjectRecord,
-    provider: NonNullable<Awaited<ReturnType<typeof projectForgeProvider>>>,
-  ): Promise<ForgeStatusIdentity> => {
-    const token = await provider.mintProjectToken(project);
-    if (!token) throw new Error('Forge credentials unavailable');
-    const authority = `${project.forgeConnectionId ?? 'github'}:${createHash('sha256').update(token).digest('hex')}`;
-    return { authority, owner: project.owner, repo: project.repo };
-  };
-  /** `remember` records the identity as the project's status scope; a project's
-   *  additional repositories share its id, so only its default repository does. */
-  const readProjectStatus = async (project: ProjectRecord, branch: string, remember = true) => {
-    if (project.kind === 'local' || project.kind === 'control_plane') return null;
-    const provider = await projectForgeProvider(eventStore, githubForge, project);
-    if (!provider?.repositoryPrService) return null;
-    const identity = await statusIdentity(project, provider);
-    if (remember) statusScopes.set(project.id, identity);
-    return sharedForgeStatus.read(identity, branch, () =>
-      provider.repositoryPrService!(project).prStatusForBranch(branch),
+  const { readProjectStatus, statusIdentity, invalidateStatus, invalidateProjectStatus } =
+    createProjectForgeStatusReader((project) =>
+      projectForgeProvider(eventStore, githubForge, project),
     );
-  };
   const isDefaultRepository = async (project: ProjectRecord) => {
     const stored = await eventStore.getProject(project.id);
     return (
@@ -1243,7 +1221,7 @@ export async function buildEmbeddedServer(
       } finally {
         // A failed cache invalidation must not turn a completed merge into an error.
         await statusIdentity(project, provider)
-          .then((identity) => sharedForgeStatus.invalidate(identity))
+          .then(invalidateStatus)
           .catch(() => undefined);
       }
     },
@@ -4066,10 +4044,7 @@ export async function buildEmbeddedServer(
     branchPr: async (b: string, wt: string) =>
       (await forgeForWorktree(wt))?.prServiceFor(wt).prForBranch(b) ?? null,
     branchPrStatus: readWorktreeStatus,
-    invalidateProjectPrStatus: (projectId) => {
-      const scope = statusScopes.get(projectId);
-      if (scope) sharedForgeStatus.invalidate(scope);
-    },
+    invalidateProjectPrStatus: invalidateProjectStatus,
     branchPrStatusForBranches: async (bs: readonly string[], wt: string) => {
       const values = [];
       for (const branch of bs) values.push(await readWorktreeStatus(branch, wt));

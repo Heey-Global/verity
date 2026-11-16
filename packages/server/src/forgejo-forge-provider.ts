@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { ForgeObservationError } from './forge-observation-error.js';
+import { createForgejoStatusReads } from './forgejo-status-cache.js';
 import { ForgeMergePermissionError } from './forge-provider.js';
 import type { ProjectRecord } from '@verity/store';
 import type {
@@ -149,72 +152,96 @@ export function createForgejoForgeProvider(options: {
       ...(pull.merge_commit_sha ? { mergeCommitSha: pull.merge_commit_sha } : {}),
       baseRef: pull.base.ref,
       baseSha: pull.base.sha,
-      pipeline: checks.failed
-        ? 'failure'
-        : running
-          ? 'running'
-          : checks.pending
-            ? 'pending'
-            : incomplete
-              ? 'unknown'
+      ...(incomplete ? { observationFailed: true } : {}),
+      pipeline: incomplete
+        ? 'unknown'
+        : checks.failed
+          ? 'failure'
+          : running
+            ? 'running'
+            : checks.pending
+              ? 'pending'
               : checks.total
                 ? 'success'
                 : 'unknown',
-      checks,
-      mergeable: pull.state === 'open' && !pull.merged && pull.mergeable === true ? true : null,
+      checks: incomplete
+        ? { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 }
+        : checks,
+      mergeable:
+        !incomplete && pull.state === 'open' && !pull.merged && pull.mergeable === true
+          ? true
+          : null,
       mergeState:
-        pull.state === 'open' && !pull.merged && pull.mergeable === true ? 'clean' : 'unknown',
+        !incomplete && pull.state === 'open' && !pull.merged && pull.mergeable === true
+          ? 'clean'
+          : 'unknown',
     };
   };
-  // All branches share a repository snapshot and per-SHA checks. The API's
-  // base/head lookup requires a known base; PRs may target any base branch.
-  const cache = new Map<string, { until: number; value: Promise<unknown> }>();
-  const cached = <T>(key: string, load: () => Promise<T>): Promise<T> => {
-    const prior = cache.get(key);
-    if (prior && prior.until > Date.now()) return prior.value as Promise<T>;
-    const entry = { until: Infinity, value: Promise.resolve<unknown>(undefined).then(load) };
-    if (cache.size >= 200) cache.delete(cache.keys().next().value!);
-    cache.set(key, entry);
-    void entry.value.then(
-      () => {
-        entry.until = Date.now() + 2_000;
-      },
-      () => {
-        entry.until = Date.now() + 5_000;
-      },
-    );
-    return entry.value;
-  };
-  const service = (repoDir: string, boundRef?: ForgeRepoRef): ForgePrService => {
-    const read = <T>(key: string, load: () => Promise<T>): Promise<T> =>
-      boundRef ? load() : cached(key, load);
+  const snapshots = createForgejoStatusReads();
+  const service = (
+    repoDir: string,
+    boundRef?: ForgeRepoRef,
+    observationScope?: object,
+  ): ForgePrService => {
     const lookup = async (branch: string) => {
       try {
         const ref = boundRef ?? (await options.identityFor(repoDir)());
         if (!ref) return null;
-        const pulls = await read(`pulls:${coordinate(ref)}`, () =>
-          pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
+        const token = await options.token();
+        if (!token) throw new ForgeObservationError('credentials', 'pulls');
+        const credential = createHash('sha256').update(token).digest('hex');
+        const reads = snapshots.repository(observationScope, credential, coordinate(ref));
+        const result = await reads.observe(
+          async () => {
+            const read = <T>(key: string, load: () => Promise<T>) =>
+              reads.read(key, load, !boundRef || observationScope !== undefined);
+            const pulls = await read('pulls', () =>
+              pages<ForgejoPull>(`${coordinate(ref)}/pulls?state=all`),
+            );
+            const pull = pulls
+              .filter(
+                (row) =>
+                  row.head.ref === branch &&
+                  row.head.repo?.full_name?.toLowerCase() ===
+                    `${ref.owner}/${ref.repo}`.toLowerCase(),
+              )
+              .sort(
+                (a, b) =>
+                  Number(a.state !== 'open') - Number(b.state !== 'open') ||
+                  (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
+              )[0];
+            return pull
+              ? await read(`status:${pull.number}:${pull.head.sha}:${pull.updated_at ?? ''}`, () =>
+                  status(ref, pull),
+                )
+              : null;
+          },
+          (value) => value?.observationFailed === true,
+          unavailable,
         );
-        const pull = pulls
-          .filter(
-            (row) =>
-              row.head.ref === branch &&
-              row.head.repo?.full_name?.toLowerCase() === `${ref.owner}/${ref.repo}`.toLowerCase(),
-          )
-          .sort(
-            (a, b) =>
-              Number(a.state !== 'open') - Number(b.state !== 'open') ||
-              (b.updated_at ?? '').localeCompare(a.updated_at ?? ''),
-          )[0];
-        return pull
-          ? await read(
-              `status:${coordinate(ref)}:${pull.number}:${pull.head.sha}:${pull.updated_at ?? ''}`,
-              () => status(ref, pull),
-            )
-          : null;
+        // Transport credentials are resolved independently; rotation during a read
+        // must not leave a response cached under the previous authority.
+        if ((await options.token()) !== token) {
+          snapshots.clear();
+          throw new ForgeObservationError('credentials', 'credential-changed');
+        }
+        return result;
       } catch (error) {
-        if (unavailable(error)) capabilities.pullRequests = false;
-        return null;
+        if (unavailable(error)) {
+          capabilities.pullRequests = false;
+          return null;
+        }
+        if (error instanceof ForgeObservationError) throw error;
+        throw new ForgeObservationError(
+          error instanceof ForgejoRequestError && error.status === 401
+            ? 'credentials'
+            : error instanceof ForgejoRequestError && error.status === 403
+              ? 'forbidden'
+              : error instanceof ForgejoRequestError && error.status === 429
+                ? 'rate-limit'
+                : 'unavailable',
+          'pulls',
+        );
       }
     };
     return {
@@ -268,7 +295,7 @@ export function createForgejoForgeProvider(options: {
             Do: method,
             ...(expectedHeadSha ? { head_commit_id: expectedHeadSha } : {}),
           });
-          cache.clear();
+          snapshots.clear();
           return true;
         } catch (error) {
           if (error instanceof ForgeMergePermissionError) throw error;
@@ -289,7 +316,7 @@ export function createForgejoForgeProvider(options: {
     identityFor: options.identityFor,
     mintProjectToken: options.token,
     prServiceFor: service,
-    repositoryPrService: (ref) => service('', ref),
+    repositoryPrService: (ref, observationScope) => service('', ref, observationScope),
     async discover(ref, page) {
       const pulls = await transport.json<ForgejoPull[]>(
         `${coordinate(ref)}/pulls?state=open&limit=30&page=${page}`,
@@ -312,6 +339,7 @@ export function createForgejoForgeProvider(options: {
     },
     openPullRequest: async (ref, _token, pull) => {
       const row = await transport.json<ForgejoPull>(`${coordinate(ref)}/pulls`, 'POST', pull);
+      snapshots.clear();
       return { number: row.number, url: row.html_url };
     },
     listRepositories: () => transport.repositories(),

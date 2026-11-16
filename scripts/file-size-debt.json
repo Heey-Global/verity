@@ -19,7 +19,7 @@
   "packages/server/src/docker.test.ts": 3287,
   "packages/server/src/docker.ts": 2675,
   "packages/server/src/embedded.test.ts": 3672,
-  "packages/server/src/embedded.ts": 5450,
+  "packages/server/src/embedded.ts": 5425,
   "packages/server/src/github.test.ts": 1659,
   "packages/server/src/mcp-gateway-route.test.ts": 3174,
   "packages/server/src/preview-share-manager.test.ts": 3285,
