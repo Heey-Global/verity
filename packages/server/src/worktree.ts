@@ -1157,6 +1157,52 @@ function safeReaddir(dir: string): Dirent[] {
   }
 }
 
+/** Lock, relativize and link a checkout git just registered so it behaves like any session worktree. */
+function manageNewWorktree(repoDir: string, worktreePath: string, worktreeName: string): void {
+  relativizeWorktreeGitdir(repoDir, worktreePath, worktreeName);
+  // Protect the registration before dependency preparation can take time.
+  const adminDir = join(repoDir, '.git', 'worktrees', worktreeName);
+  if (existsSync(adminDir)) {
+    writeFileSync(join(adminDir, 'locked'), 'Verity session: managed by server\n');
+  }
+  // Give the worktree its own first-party workspace symlinks so cross-package
+  // resolution stays isolated to this checkout instead of leaking to the
+  // source repo's `packages/*` (whatever branch it's on).
+  linkWorkspacePackages(repoDir, worktreePath);
+  // Repos that keep their app (and its deps) in a subdirectory get no help
+  // from the up-walk to `<repoDir>/node_modules` — link those trees in too.
+  mirrorNestedNodeModules(repoDir, worktreePath);
+}
+
+/**
+ * Check out a branch that already exists — or, with `startRef`, start it there — as a
+ * managed session worktree. Recovery uses this where `add` would refuse the branch.
+ */
+export async function addExistingBranchWorktree(
+  opts: Pick<GitWorktreeOptions, 'repoDir' | 'worktreeRoot' | 'git'>,
+  branch: string,
+  startRef?: string,
+): Promise<string> {
+  const git = opts.git ?? defaultGitRunner;
+  mkdirSync(opts.worktreeRoot, { recursive: true });
+  const worktreeName = dirNameFor(branch);
+  const worktreePath = join(opts.worktreeRoot, worktreeName);
+  await git([
+    '-C',
+    opts.repoDir,
+    'worktree',
+    'add',
+    ...(startRef ? ['-b', branch, worktreePath, startRef] : [worktreePath, branch]),
+  ]);
+  manageNewWorktree(opts.repoDir, worktreePath, worktreeName);
+  try {
+    reregisterPrunedWorktrees(opts.repoDir, dirname(worktreePath));
+  } catch {
+    // ignore — an unrecorded checkout is only less recoverable, never broken
+  }
+  return worktreePath;
+}
+
 export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): WorktreeProvisioner {
   const baseBranch = opts.baseBranch ?? 'HEAD';
   const git = opts.git ?? defaultGitRunner;
@@ -1196,19 +1242,7 @@ export function createGitWorktreeProvisioner(opts: GitWorktreeOptions): Worktree
         );
       }
       await git(['-C', opts.repoDir, 'worktree', 'add', worktreePath, '-b', branch, base]);
-      relativizeWorktreeGitdir(opts.repoDir, worktreePath, worktreeName);
-      // Protect the registration before dependency preparation can take time.
-      const adminDir = join(opts.repoDir, '.git', 'worktrees', worktreeName);
-      if (existsSync(adminDir)) {
-        writeFileSync(join(adminDir, 'locked'), 'Verity session: managed by server\n');
-      }
-      // Give the worktree its own first-party workspace symlinks so cross-package
-      // resolution stays isolated to this checkout instead of leaking to the
-      // source repo's `packages/*` (whatever branch it's on).
-      linkWorkspacePackages(opts.repoDir, worktreePath);
-      // Repos that keep their app (and its deps) in a subdirectory get no help
-      // from the up-walk to `<repoDir>/node_modules` — link those trees in too.
-      mirrorNestedNodeModules(opts.repoDir, worktreePath);
+      manageNewWorktree(opts.repoDir, worktreePath, worktreeName);
       // When we branched off a freshly-fetched tip (`base === 'FETCH_HEAD'`), FF
       // the LOCAL base ref up to it too, so a later `main...HEAD` review scope /
       // status chip / `git diff main...` isn't measured against a stale local
