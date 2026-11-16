@@ -1,3 +1,4 @@
+import { reserveRemoteAdmission } from './remote-session-admission.js';
 import {
   DIAGNOSTICS_CAPABILITY,
   DIAGNOSTICS_V2_CAPABILITY,
@@ -52,7 +53,6 @@ import {
   PreviewShareRemovalQueuedError,
   UPLINK_SHARE_ERROR_CODES,
 } from './preview-share-manager.js';
-
 const PROTOCOL_VERSION = 1;
 const HEARTBEAT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -79,12 +79,10 @@ const MAX_REMOTE_SESSION_FRAME_BYTES = 16 * 1024;
 const REMOTE_CHANNEL = 'remote';
 const MAX_REMOTE_RESERVATIONS = 4;
 export const UPLINK_CONTROL_URL = 'wss://uplink.verity.build/control';
-
 /** Identity refusals remain terminal until an explicit retry. Capacity and
  * protocol refusals use slower back-off while established Remote access still
  * needs recovery; initial and explicit rights checks have a fixed budget. */
 const IDENTITY_REJECTS: ReadonlySet<string> = new Set(['unknown_key', 'revoked', 'expired']);
-
 interface SettingsStore extends EventStore {
   getVeritySettings(): Promise<VeritySettingsRecord | undefined>;
   updateVeritySettings(patch: VeritySettingsPatch): Promise<VeritySettingsRecord>;
@@ -136,7 +134,11 @@ export interface UplinkControlClientOptions {
    * Core's stored decision on a team join's tunnel; it must be durable before
    * it resolves, since `session.accept` is its acknowledgement.
    */
-  admitTeamJoin?: (pending: TeamJoinPending) => Promise<'accepted' | 'refused'>;
+  admitTeamJoin?: (
+    pending: TeamJoinPending,
+    signal: AbortSignal,
+  ) => Promise<'accepted' | 'refused'>;
+  rollbackTeamJoin?: (pending: TeamJoinPending) => Promise<void>;
   log?: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -1824,47 +1826,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       ...(join === undefined ? {} : { joinRedemptionId: join.redemptionId }),
     };
     this.remoteSessions.set(request.sessionId, session);
-    if (join !== undefined) {
-      // Durable before the accept: `session.accept` acknowledges this decision.
-      let decision: 'accepted' | 'refused';
-      try {
-        decision = (await this.options.admitTeamJoin?.(join)) ?? 'refused';
-      } catch {
-        decision = 'refused';
-      }
-      if (decision !== 'accepted' || this.remoteSessions.get(request.sessionId) !== session) {
-        if (this.remoteSessions.get(request.sessionId) === session)
-          this.releaseRemoteSession(request.sessionId, 'team join refused');
-        return refuse('unavailable');
-      }
-    }
-    let result: RemoteConnectorReservation | 'unavailable' | 'limit_reached';
-    let handedOff = false;
-    let released = false;
-    let removeAbortListener: () => void = () => undefined;
-    try {
-      const reservation = this.options.reserveRemoteConnector(request, controller.signal);
-      // The callback may settle after timeout. Release that late result instead of
-      // restoring a session whose admission binding is already gone.
-      void reservation
-        .then((late) => {
-          if (controller.signal.aborted && typeof late !== 'string' && !handedOff && !released) {
-            released = true;
-            late.release('late reservation');
-          }
-        })
-        .catch(() => undefined);
-      const aborted = new Promise<'unavailable'>((resolve) => {
-        const onAbort = () => resolve('unavailable');
-        controller.signal.addEventListener('abort', onAbort, { once: true });
-        removeAbortListener = () => controller.signal.removeEventListener('abort', onAbort);
-      });
-      result = await Promise.race([reservation, aborted]);
-    } catch {
-      result = 'unavailable';
-    } finally {
-      removeAbortListener();
-    }
+    const result = await reserveRemoteAdmission(this.options, request, controller.signal, join);
     if (
       this.remoteSessions.get(request.sessionId) !== session ||
       controller.signal.aborted ||
@@ -1874,8 +1836,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         : !this.teamNegotiated() || !this.features.has('team-sharing')) ||
       Date.now() >= request.decisionExpiresAt
     ) {
-      if (typeof result !== 'string' && !released) {
-        released = true;
+      if (typeof result !== 'string') {
         result.release('remote admission expired');
       }
       if (this.remoteSessions.get(request.sessionId) === session) {
@@ -1894,7 +1855,6 @@ export class UplinkControlClient implements PreviewEdgeControl {
       if (this.remoteSessions.get(request.sessionId) === session)
         this.releaseRemoteSession(request.sessionId, 'remote connector closed');
     });
-    handedOff = true;
     session.deadlineTimer = setTimeout(
       () => this.releaseRemoteSession(request.sessionId, 'remote ticket was not delivered'),
       60_000,

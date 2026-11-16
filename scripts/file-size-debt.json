@@ -40,7 +40,7 @@
   "packages/server/src/server-projects.test.ts": 3958,
   "packages/server/src/server-sessions.test.ts": 3715,
   "packages/server/src/uplink-control-client.test.ts": 3380,
-  "packages/server/src/uplink-control-client.ts": 2123,
+  "packages/server/src/uplink-control-client.ts": 2083,
   "packages/server/src/worktree.test.ts": 1761,
   "packages/session/src/acp-backend.ts": 1666,
   "packages/session/src/acp-claude-backend.test.ts": 2232,
