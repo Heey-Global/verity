@@ -62,3 +62,10 @@ it('retires expired invitation material without discarding a saved device creden
   await saveTeamJoinProgress(saved);
   await expect(loadTeamJoinProgress()).resolves.toEqual(saved);
 });
+
+it('retains a lost-response redemption after attachment expiry until its recovery deadline', async () => {
+  const saved = { ...progress(), recoveryExpiresAt: Date.now() + 120_000 };
+  saved.admission.expiresAt = Date.now() - 1;
+  await saveTeamJoinProgress(saved);
+  await expect(loadTeamJoinProgress()).resolves.toEqual(saved);
+});

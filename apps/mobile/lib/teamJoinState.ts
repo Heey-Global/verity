@@ -20,6 +20,7 @@ const schema = z.object({
   }),
   displayName: z.string().min(1).max(80),
   admission: z.object({ sessionId: text, redemptionId: text, ticket: text, expiresAt: z.number() }),
+  recoveryExpiresAt: z.number().optional(),
   credential: z.object({ token: text, tokenId: text, projectId: text }).optional(),
 });
 export type TeamJoinProgress = z.infer<typeof schema>;
@@ -32,7 +33,8 @@ export async function loadTeamJoinProgress(): Promise<TeamJoinProgress | null> {
   const progress = schema.parse(JSON.parse(raw));
   if (
     progress.credential === undefined &&
-    Math.min(progress.link.expiresAt, progress.admission.expiresAt) <= Date.now()
+    Math.min(progress.link.expiresAt, progress.recoveryExpiresAt ?? progress.admission.expiresAt) <=
+      Date.now()
   ) {
     await clearTeamJoinProgress();
     throw new Error('The recovery window has ended. Ask for a new invitation.');

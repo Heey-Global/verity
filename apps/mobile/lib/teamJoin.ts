@@ -126,6 +126,7 @@ async function joinTeamAttempt(
   if (deps.signal?.aborted) controller.abort();
   const deadline = setTimeout(abort, 90_000);
   try {
+    const requestedAt = Date.now();
     let progress = saved;
     let admission;
     try {
@@ -147,6 +148,9 @@ async function joinTeamAttempt(
     if (progress === null) {
       progress = {
         version: 1,
+        // The attachment ticket is short-lived; reattachment retains the original
+        // ten-minute redemption window, conservatively measured before reservation.
+        recoveryExpiresAt: Math.min(link.expiresAt, requestedAt + 10 * 60_000),
         link,
         displayName: displayName.trim(),
         admission: {
@@ -167,11 +171,12 @@ async function joinTeamAttempt(
     dataUrl.protocol = 'wss:';
     dataUrl.pathname = '/data';
     let joined = progress.credential;
-    const useDirect = joined !== undefined && progress.admission.expiresAt <= Date.now();
+    const recoveryExpiresAt = progress.recoveryExpiresAt ?? progress.admission.expiresAt;
+    const useDirect = joined !== undefined && recoveryExpiresAt <= Date.now();
     try {
       // Recovery never redeems an invitation after the device credential was saved.
       if (joined !== undefined) {
-        if (progress.admission.expiresAt > Date.now()) {
+        if (recoveryExpiresAt > Date.now()) {
           admission = await (deps.admission ?? requestTeamJoinAdmission)({
             uplinkOrigin: link.uplinkOrigin,
             installationHandle: link.installationHandle,
@@ -180,7 +185,10 @@ async function joinTeamAttempt(
             signal: controller.signal,
           });
         }
-      } else if (Math.min(link.expiresAt, admission.expiresAt) <= Date.now()) {
+      } else if (
+        Math.min(link.expiresAt, saved === null ? admission.expiresAt : recoveryExpiresAt) <=
+        Date.now()
+      ) {
         await clearTeamJoinProgress();
         throw new TeamJoinError(
           'unavailable',
@@ -281,7 +289,11 @@ async function joinTeamAttempt(
             joined = await client.joinTeam(request);
           } catch (error) {
             if (error instanceof VerityApiError || controller.signal.aborted) throw error;
-            if (Math.min(link.expiresAt, admission.expiresAt) <= Date.now()) throw error;
+            if (
+              Math.min(link.expiresAt, saved === null ? admission.expiresAt : recoveryExpiresAt) <=
+              Date.now()
+            )
+              throw error;
             joined = await client.joinTeam(request);
           }
           deps.onPhase?.('saving');
@@ -337,10 +349,12 @@ async function joinTeamAttempt(
       admission.finish();
       await tunnel.stop().catch(() => undefined);
     }
+    controller.signal.throwIfAborted();
     if (joined === undefined) throw new Error('No saved device credential.');
 
     if (!(await setAuthToken(link.coreOrigin, joined.token, joined.tokenId, false)))
       throw new Error('Could not save the device credential. Open the invitation again.');
+    controller.signal.throwIfAborted();
     const profile: VerityServerProfile = {
       version: 1,
       serverId: link.serverId,

@@ -79,11 +79,14 @@ export function JoinView({
       .then((progress) => {
         if (mounted.current && progress !== null) setPhase({ kind: 'resume', link: progress.link });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (mounted.current)
           setPhase({
             kind: 'enter',
-            problem: 'Could not read saved join progress. Try reopening this screen.',
+            problem:
+              error instanceof Error
+                ? error.message
+                : 'Could not read saved join progress. Try reopening this screen.',
           });
       });
     return () => {

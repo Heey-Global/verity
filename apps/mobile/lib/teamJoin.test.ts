@@ -348,3 +348,40 @@ it('keeps the saved server binding when the same invitation id is supplied with 
     false,
   );
 });
+
+it('retains the redemption beyond ticket expiry while the original recovery window remains', async () => {
+  const controller = new AbortController();
+  mockJoin.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  const saved = mockProgress.current as {
+    admission: { expiresAt: number };
+    recoveryExpiresAt: number;
+  };
+  saved.admission.expiresAt = Date.now() - 1;
+  expect(saved.recoveryExpiresAt).toBeGreaterThan(Date.now());
+  mockJoin.mockResolvedValue({
+    token: 'device-token',
+    tokenId: 't1',
+    projectId: 'p1',
+    completionExpiresAt: Date.now() + 60_000,
+  });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  expect(admission).toHaveBeenLastCalledWith(
+    expect.objectContaining({ redemptionId: 'redemption_from_uplink' }),
+  );
+});
+
+it('does not switch profiles when cancelled during final credential storage', async () => {
+  const controller = new AbortController();
+  mockSetToken.mockImplementationOnce(async () => {
+    controller.abort();
+    return true;
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  expect(mockSaveProfile).not.toHaveBeenCalled();
+  expect(mockSetBaseUrl).not.toHaveBeenCalled();
+  expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
+});

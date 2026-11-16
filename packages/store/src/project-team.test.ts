@@ -480,3 +480,58 @@ it('keeps a saved credential across reattachment but refuses expired, revoked an
   expect(await team().confirmJoin('r1')).toBe(false);
   expect((await team().listMembers('p1')).map((member) => member.userId)).toEqual([ADMIN]);
 });
+
+// PGlite serializes transactions; this interleaving needs separate PostgreSQL connections.
+it.skipIf(!process.env.VERITY_TEST_SHARED_POSTGRES_URL)(
+  'keeps the admission when tunnel rollback races credential redemption',
+  async () => {
+    const created = await invite();
+    await admit('r1');
+    let selected!: () => void;
+    const selection = new Promise<void>((resolve) => {
+      selected = resolve;
+    });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const admissionQueries = new Set<unknown>();
+    const db = ctx.db.withPlugin({
+      transformQuery(args) {
+        if (
+          args.node.kind === 'SelectQueryNode' &&
+          JSON.stringify(args.node).includes('team_join_admissions')
+        )
+          admissionQueries.add(args.queryId);
+        return args.node;
+      },
+      async transformResult(args) {
+        if (admissionQueries.delete(args.queryId)) {
+          selected();
+          await held;
+        }
+        return args.result;
+      },
+    });
+    const redemption = new ProjectTeamStore(
+      db,
+      createSecretCipher('cd'.repeat(32)),
+    ).redeemInvitation({
+      invitationId: 'inv-1',
+      secret: created.secret,
+      redemptionId: 'r1',
+      displayName: 'Lena',
+    });
+    await selection;
+    const rollback = team().rollbackJoinAdmission({ sessionId: 'session-r1', redemptionId: 'r1' });
+    // Give the second connection time to attempt deletion while redemption holds its row.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    release();
+    const joined = await redemption;
+    await rollback;
+    await expect(team().completeJoin(joined.token)).resolves.toEqual({
+      projectId: 'p1',
+      confirmed: false,
+    });
+  },
+);

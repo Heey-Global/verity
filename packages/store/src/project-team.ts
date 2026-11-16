@@ -472,6 +472,7 @@ export class ProjectTeamStore {
         .select(['invitation_id', 'expires_at', 'device_token_encrypted', 'device_token_id'])
         .where('redemption_id', '=', input.redemptionId)
         .where('decision', '=', 'accepted')
+        .forUpdate()
         .executeTakeFirst();
       if (
         admission === undefined ||
