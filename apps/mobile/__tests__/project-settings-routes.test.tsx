@@ -300,6 +300,48 @@ describe('project settings — sandbox', () => {
     ).toBeOnTheScreen();
   });
 
+  it('keeps manual retry available when image discovery is unknown and repair stalled', async () => {
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'unknown',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: null,
+          currentRevision: null,
+          targetVersion: null,
+          targetRevision: null,
+          selfRepair: 'stalled',
+          turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: null,
+        },
+      },
+    };
+    const recreateProjectContainer = jest.fn().mockResolvedValue(detail.project);
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail, recreateProjectContainer }));
+    render(<ProjectSandboxScreen />);
+    fireEvent.press(await screen.findByLabelText(/^Update project sandbox(,|$)/));
+    expect(recreateProjectContainer).not.toHaveBeenCalled();
+    expect(screen.getByText('Update sandbox now?')).toBeOnTheScreen();
+    fireEvent.press(screen.getAllByRole('button', { name: 'Update now' }).at(-1)!);
+    await waitFor(() =>
+      expect(recreateProjectContainer).toHaveBeenCalledWith('p/1', {
+        confirmWarnings: true,
+        forceRebuild: false,
+        interruptServices: false,
+        cancelTurns: false,
+      }),
+    );
+  });
+
   it('dates an earlier failed update while a retry is running instead of reporting it stuck', async () => {
     // An earlier refusal shown without a time reads as the outcome of the retry
     // that is waiting for the build slot now.

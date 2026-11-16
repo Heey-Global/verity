@@ -487,7 +487,7 @@ function SandboxSection({
               </Text>
             </View>
             {updateFailure ? <Text style={styles.footnote}>{updateFailure}</Text> : null}
-            {update?.state === 'available' ? (
+            {update?.state === 'available' || update?.selfRepair === 'stalled' ? (
               <View style={styles.selfStart}>
                 <Button
                   label={
