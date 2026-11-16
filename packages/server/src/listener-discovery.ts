@@ -60,7 +60,10 @@ export class ListenerDiscovery {
     this.timer.unref();
   }
 
-  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
+  async listSessionDevServers(
+    sessionId: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<SessionDevServer[]> {
     const session = await this.options.eventStore.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
     const project = await this.options.eventStore.getProject(session.projectId);
@@ -69,8 +72,9 @@ export class ListenerDiscovery {
     await this.watch(project);
     let processes: ListeningProcess[];
     try {
-      processes = await this.scan(project);
-    } catch {
+      processes = await this.scan(project, options.fresh);
+    } catch (error) {
+      if (options.fresh) throw error;
       const healthy = this.healthy.get(project.id);
       processes = healthy?.containerName === project.containerName ? healthy.processes : [];
     }

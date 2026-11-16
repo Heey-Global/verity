@@ -222,6 +222,8 @@ export interface DockerGcDeps {
   }>;
   /** Bounded, non-waiting helper retention under lifecycle/storage barriers. */
   retireCacheHelpers?: DockerGcDeps['retireContainers'];
+  /** Same stopped-container policy, with non-waiting storage barriers. */
+  retireCapacityContainers?: DockerGcDeps['retireContainers'];
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 
@@ -238,6 +240,9 @@ export interface DockerGcReport {
    *  reclaimed: the Engine counts shared layers once per image, so two generations
    *  sharing a base double-count it. Fine for logging, not for accounting. */
   estimatedImageBytes: number;
+  /** Exclusive layers only; shared layers may free additional space. */
+  exclusiveImageLayerBytes?: number;
+  measuredFreeBytesDelta?: number;
   volumesRemoved: number;
   /** Orphaned buildx builder state volumes removed this pass. */
   builderVolumesRemoved: number;
@@ -587,7 +592,7 @@ export async function runDockerGc(
 
   if (capacityOnly && !deps.imagesOnly) {
     try {
-      const retired = await deps.retireCacheHelpers?.();
+      const retired = await (deps.retireCapacityContainers ?? deps.retireCacheHelpers)?.();
       if (retired) {
         report.containersRemoved.push(...retired.removed);
         if (retired.retained) report.retainedContainers = retired.retained;
@@ -607,6 +612,10 @@ export async function runDockerGc(
     const listContainers = docker.listContainers.bind(docker);
     try {
       const sweep = async (projectImages?: DerivedImageSnapshot): Promise<void> => {
+        const usage = await docker.imageDiskUsage?.().catch(() => undefined);
+        const removedImageIds = new Set<string>();
+        let exclusiveBytes = 0;
+        let completeUsage = usage !== undefined;
         const [images, containers] = await Promise.all([listImages(), listContainers()]);
         const inUseImageIds = new Set(containers.map((container) => container.imageId));
         const stopped = containers.filter((c) =>
@@ -653,6 +662,22 @@ export async function runDockerGc(
             await docker.removeImage(entry.ref);
             report.imagesRemoved.push(entry.ref);
             report.estimatedImageBytes += entry.size;
+            if (!removedImageIds.has(entry.imageId)) {
+              const bytes = usage?.get(entry.imageId);
+              if (bytes === undefined) completeUsage = false;
+              else {
+                // Removing a reference can merely untag an image whose other
+                // references still retain every layer. Count only vanished IDs.
+                const remaining = await listImages().catch(() => undefined);
+                if (!remaining) completeUsage = false;
+                else if (!remaining.some((image) => image.id === entry.imageId)) {
+                  removedImageIds.add(entry.imageId);
+                  exclusiveBytes += bytes;
+                }
+              }
+            }
+            if (completeUsage) report.exclusiveImageLayerBytes = exclusiveBytes;
+            else delete report.exclusiveImageLayerBytes;
             if (entry.ref.startsWith(DEVCONTAINER_IMAGE_PREFIX)) {
               // The image is gone either way; a failed report is not a failed removal.
               try {
@@ -802,6 +827,15 @@ export async function runDockerGc(
     }
   }
   phaseDone('buildCache');
+  if (freeBytes !== undefined) {
+    try {
+      const after = await (deps.freeBytes?.() ??
+        (deps.dataRoot ? probeFreeBytes(deps.dataRoot) : Promise.resolve(undefined)));
+      if (after !== undefined) report.measuredFreeBytesDelta = after - freeBytes;
+    } catch {
+      // Measurement failure cannot erase an already completed reclamation report.
+    }
+  }
 
   log.info(
     {
@@ -858,11 +892,9 @@ const DOCKER_GC_PRESSURE_CHECK_MS = 10 * 60_000;
 const DOCKER_GC_PRESSURE_MIN_SPACING_MS = 30 * 60_000;
 
 /** `full` is the maintenance pass. `build-capacity` serves a build waiting for
- *  storage: only the steps that free build capacity, image removal and build
- *  cache pruning. The maintenance steps before them (runner caches, session
- *  worktrees, stopped helpers) talk to Sandboxes and helper containers and
- *  routinely took longer than the waiting build may wait, so a build never
- *  waited long enough to reach the steps that could have admitted it. */
+ *  storage: policy-eligible stopped containers, images and build cache. Runner
+ *  caches and worktrees stay outside this bounded pass; their maintenance can
+ *  outlast the waiting build's admission deadline. */
 export type DockerGcScope = 'full' | 'build-capacity';
 
 export interface DockerGcScheduler {
@@ -970,11 +1002,28 @@ const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 /** One line for a build that is still refused after a build-capacity pass: what
  *  the pass freed, and what it had to keep, so a retry is not the only advice. */
 export function describeBuildCapacityReclamation(report: DockerGcReport): string {
+  const layers =
+    report.exclusiveImageLayerBytes === undefined
+      ? 'exclusive layer bytes unavailable'
+      : `${gib(report.exclusiveImageLayerBytes)} exclusive layers (lower bound)`;
   const freed =
-    `Reclamation removed ${String(report.imagesRemoved.length)} image(s) (about ` +
-    `${gib(report.estimatedImageBytes)}) and ${gib(report.buildCacheBytes)} of build cache.`;
+    `Reclamation removed ${String(report.containersRemoved?.length ?? 0)} container(s) and ` +
+    `${String(report.imagesRemoved.length)} image(s) (${gib(report.estimatedImageBytes)} apparent upper bound; ${layers}), ` +
+    `plus ${gib(report.buildCacheBytes)} of build cache.`;
+  const measured =
+    report.measuredFreeBytesDelta === undefined
+      ? ''
+      : ` Filesystem free-space change: ${gib(report.measuredFreeBytesDelta)} (includes concurrent activity).`;
   const pins = report.stoppedContainerPins;
-  return pins.images > 0
-    ? `${freed} ${gib(pins.estimatedBytes)} of images stay for ${String(pins.containers)} stopped container(s).`
-    : freed;
+  const protectedReasons = [
+    ...new Set(report.retainedContainers?.map((entry) => entry.reason) ?? []),
+  ].slice(0, 5);
+  return (
+    freed +
+    measured +
+    (pins.images > 0
+      ? ` Protected: ${gib(pins.estimatedBytes)} apparent image bytes pinned by ${String(pins.containers)} stopped container(s).`
+      : '') +
+    (protectedReasons.length ? ` Retained: ${protectedReasons.join('; ')}.` : '')
+  );
 }

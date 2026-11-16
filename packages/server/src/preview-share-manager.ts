@@ -1,3 +1,7 @@
+import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
+import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
+import { previewTargetIsLive, previewConnectorIsLive } from './preview-target-activity.js';
 import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
   PreviewShareConflictError,
@@ -118,6 +122,7 @@ export interface PreviewEdgeControl {
   onSharingDisabled?(listener: () => void): () => void;
 }
 
+type ListenerRead = { fresh?: boolean };
 export interface PreviewShareManagerOptions {
   /**
    * The container and network of the sandbox a managed dev server runs in: its
@@ -144,15 +149,15 @@ export interface PreviewShareManagerOptions {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
-  /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
-   *  which leaves session dev servers undiscoverable rather than guessed. */
-  listSessionServers?: (sessionId: string) => Promise<SessionDevServer[]>;
+  /** Missing runtime discovery leaves listeners unverified. */
+  listSessionServers?: (sessionId: string, options?: ListenerRead) => Promise<SessionDevServer[]>;
   prepareTargetPort?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     port: number,
   ) => Promise<number>;
   listListeningProcesses?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    options?: ListenerRead,
   ) => Promise<ListeningProcess[]>;
   now?: () => Date;
   connectorReadyTimeoutMs?: number;
@@ -169,74 +174,10 @@ export interface PreviewShareManagerOptions {
     contents?: string;
   }>;
   listArtifactDirectory?: (path: string) => Promise<string[]>;
-  /** One line per create and per stop, carrying how long each step took. A
-   * link that takes ten seconds is otherwise one opaque request: the Uplink
-   * round trip, the connector start and the wait for its edge connection all
-   * sit behind the same spinner. */
+  /** Report create/stop step durations to distinguish Uplink, start and readiness delays. */
   log?: Pick<Console, 'info' | 'warn'>;
-  /** Called once a share has ended, revoked or expired. Managed dev servers stop
-   *  when their last access ends (concept 2.6). */
+  /** Ends managed access when its last share ends (concept 2.6). */
   onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
-}
-
-/** Records the milliseconds spent in each named step, in the order they ran. */
-type PhaseTimer = {
-  mark(phase: string): void;
-  readonly phasesMs: Record<string, number>;
-  readonly lastPhase: string | undefined;
-  totalMs(): number;
-};
-
-function phaseTimer(): PhaseTimer {
-  const startedAt = performance.now();
-  let last = startedAt;
-  let lastPhase: string | undefined;
-  const phasesMs: Record<string, number> = {};
-  return {
-    mark(phase) {
-      const now = performance.now();
-      phasesMs[phase] = Math.round(now - last);
-      last = now;
-      lastPhase = phase;
-    },
-    phasesMs,
-    get lastPhase() {
-      return lastPhase;
-    },
-    totalMs: () => Math.round(performance.now() - startedAt),
-  };
-}
-
-export interface CreatePreviewShareInput {
-  managedInstanceId?: string | undefined;
-  projectId?: string;
-  sessionId?: string;
-  devServerId?: string;
-  staticPath?: string;
-  /** A port something in the session's worktree listens on; requires `sessionId`. */
-  targetPort?: number;
-  pin: string;
-  ttlSeconds: number;
-}
-
-export interface PublicPreviewShare {
-  managedInstanceId: string | null;
-  pinLocked?: boolean;
-  id: string;
-  projectId: string;
-  devServerId: string | null;
-  targetKind: 'dev-server' | 'static-folder';
-  targetPort: number | null;
-  staticPath: string | null;
-  sessionId: string | null;
-  state: PublicPreviewShareState;
-  publicOrigin: string | null;
-  pin: string;
-  expiresAt: Date;
-  revokedAt: Date | null;
-  failure: string | null;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 export class PreviewShareManager {
@@ -249,11 +190,7 @@ export class PreviewShareManager {
     this.now = options.now ?? (() => new Date());
   }
 
-  /**
-   * The project as seen from the sandbox a preview targets: a managed server's
-   * person's sandbox, else the original one. Its container and network are the
-   * ones a connector must reach, and no other sandbox's network is joined.
-   */
+  /** Resolve the owning sandbox before joining its container/network. */
   async previewSandbox(
     project: ProjectRecord,
     managedInstanceId: string | null | undefined,
@@ -306,6 +243,22 @@ export class PreviewShareManager {
       throw new PreviewShareConflictError('nothing in this session listens on that port');
     }
     return { project, session, generation, staticMount };
+  }
+
+  /** Kept separate from share existence so offline URLs never hold a sandbox awake. */
+  hasLiveTarget(share: PublicPreviewShareRecord): Promise<boolean> {
+    return previewTargetIsLive(share, this.options, {
+      sandbox: (project, id) => this.previewSandbox(project, id),
+      sessionPort: (project, worktree, port) => this.sessionPortReachable(project, worktree, port),
+      staticDirectory: async (project, worktree, path) => {
+        await this.validateStaticDirectory(await this.staticSourceRoot(project, worktree), path);
+      },
+    });
+  }
+
+  async isOnline(share: PublicPreviewShareRecord): Promise<boolean> {
+    if (!share.connectorContainerId || !(await this.hasLiveTarget(share))) return false;
+    return previewConnectorIsLive(this.options.docker, share.connectorContainerId);
   }
 
   isAvailable(): boolean {
@@ -389,6 +342,7 @@ export class PreviewShareManager {
   private async sessionServers(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
+    options: { fresh?: boolean } = {},
   ): Promise<SessionDevServer[]> {
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) {
       throw new PreviewShareConflictError('dev server discovery is not configured');
@@ -400,21 +354,21 @@ export class PreviewShareManager {
         projectClonePath(this.options.hostCloneRoot, project),
       );
     } catch {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     let processes: ListeningProcess[];
     try {
-      processes = await this.options.listListeningProcesses(project);
+      processes = await this.options.listListeningProcesses(project, options);
     } catch {
-      // A stopped sandbox or a timed-out exec is a state to report, not a 500
-      // carrying raw runner output.
+      // Probe failures remain unknown without exposing raw runner output.
       throw new PreviewShareConflictError('could not inspect the project sandbox');
     }
     return sessionDevServers(processes, sandboxWorktree);
   }
 
-  /** The connector dials the sandbox over the project network, so a listener
-   *  bound to loopback only would publish a link that can never answer. */
+  /** Only publish ports reachable over the project network or prepared forwarding. */
   private async sessionPortReachable(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
@@ -426,8 +380,8 @@ export class PreviewShareManager {
         )
       : undefined;
     const servers = session
-      ? await this.options.listSessionServers!(session.sessionId)
-      : await this.sessionServers(project, worktree);
+      ? await this.options.listSessionServers!(session.sessionId, { fresh: true })
+      : await this.sessionServers(project, worktree, { fresh: true });
     return servers.some(
       (server) =>
         server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
@@ -559,7 +513,7 @@ export class PreviewShareManager {
     }
     if (
       managed &&
-      !(await this.options.listListeningProcesses?.(project))?.some(
+      !(await this.options.listListeningProcesses?.(project, { fresh: true }))?.some(
         (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
       )
     )
@@ -849,7 +803,6 @@ export class PreviewShareManager {
     }
   }
 
-  /** Validation must not revoke a public link for a move that will be refused. */
   async beginSessionMove(projectId: string): Promise<() => void> {
     return await this.acquireLifecycleLocks([`project:${projectId}`]);
   }
@@ -887,34 +840,35 @@ export class PreviewShareManager {
 
   async withProjectMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
     return this.withLifecycleLocks([`project:${projectId}`], async () => {
-      for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
-        if (!ACTIVE_STATES.includes(share.state)) continue;
-        if (share.state !== 'active') {
-          await this.stop(share.id);
-          continue;
-        }
-        try {
-          await this.replaceConnector(share, true);
-        } catch (error) {
-          if (
-            typeof error !== 'object' ||
-            error === null ||
-            !removedUnreadyConnectorFailures.has(error)
-          )
-            throw error;
-          // The offline page is a courtesy to visitors, not a precondition of the
-          // mutation. A connector the edge refuses (an unknown share answers 404)
-          // failed every Repair of the project before its container was created.
-          // replaceConnector has already removed both connectors, so the link is
-          // simply unreachable until reconcile() brings one up again.
-          this.options.log?.warn(
-            { shareId: share.id, projectId, err: error },
-            'public preview stays unreachable during the project change: its offline connector did not start',
-          );
-        }
-      }
+      await this.retireProjectShares(projectId);
       return mutation();
     });
+  }
+
+  /** Call only while this project's lifecycle fence is held. */
+  async retireProjectShares(projectId: string): Promise<void> {
+    for (const share of await this.options.store.listPublicPreviewShares(projectId)) {
+      if (!ACTIVE_STATES.includes(share.state)) continue;
+      if (share.state !== 'active') {
+        await this.stop(share.id);
+        continue;
+      }
+      try {
+        await this.replaceConnector(share, true);
+      } catch (error) {
+        if (
+          typeof error !== 'object' ||
+          error === null ||
+          !removedUnreadyConnectorFailures.has(error)
+        )
+          throw error;
+        // An unavailable offline page must not prevent project repair.
+        this.options.log?.warn(
+          { shareId: share.id, projectId, err: error },
+          'public preview stays unreachable during the project change: its offline connector did not start',
+        );
+      }
+    }
   }
 
   async withDevServerMutation<T>(devServerId: string, mutation: () => Promise<T>): Promise<T> {
@@ -1320,7 +1274,8 @@ export class PreviewShareManager {
     let generation = share.containerGeneration;
     if (sandbox !== undefined && instance.state === 'running' && instance.desired === 'running') {
       const currentGeneration = containerGenerationOf(sandbox);
-      const listeners = (await this.options.listListeningProcesses?.(project)) ?? [];
+      const listeners =
+        (await this.options.listListeningProcesses?.(project, { fresh: true })) ?? [];
       offline =
         !sandbox.running ||
         !currentGeneration ||
@@ -1527,13 +1482,15 @@ export class PreviewShareManager {
     ) {
       throw new PreviewShareConflictError('project is outside Verity storage');
     }
-    const clone = await realpath(clonePath).catch(() => {
-      throw new PreviewShareConflictError('project checkout does not exist');
+    const clone = await realpath(clonePath).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('project checkout does not exist', { cause });
     });
     if (!worktree) return clone;
     const source = resolve(worktree);
-    const canonical = await realpath(source).catch(() => undefined);
-    const within = canonical ? relative(clone, canonical).split('\\').join('/') : undefined;
+    const canonical = await realpath(source).catch((cause: unknown) => {
+      throw new PreviewShareConflictError('session worktree does not exist', { cause });
+    });
+    const within = relative(clone, canonical).split('\\').join('/');
     if (
       canonical !== source ||
       !within ||
@@ -1541,7 +1498,9 @@ export class PreviewShareManager {
       within.startsWith('../') ||
       posix.isAbsolute(within)
     ) {
-      throw new PreviewShareConflictError('session worktree is outside the project checkout');
+      throw new PreviewShareConflictError('session worktree is outside the project checkout', {
+        cause: new Error('unsafe static directory'),
+      });
     }
     return source;
   }

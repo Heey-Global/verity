@@ -1,3 +1,4 @@
+import { readImageDiskUsage } from './docker-image-disk-usage.js';
 import { dockerNetworkSchema, type DockerNetwork } from './project-network-cleanup.js';
 import { normalizeSecurityOptions } from './docker-security-options.js';
 /**
@@ -11,8 +12,7 @@ import { normalizeSecurityOptions } from './docker-security-options.js';
  * a container create reports the image is missing (ADR 0003 R6 / #299), so a
  * fresh host doesn't need an out-of-band `docker pull` first.
  *
- * Same `HttpFetch` injection form as {@link githubService} so tests supply a
- * fake without constructing a real HTTP client. The base URL comes from
+ * Injectable `HttpFetch` supports transport fixtures. The base URL comes from
  * `VERITY_DOCKER_BASE_URL` and selects one of two transports:
  *  - **HTTP socket-proxy** (default, §17 fleet deployment) — an `http://`/
  *    `https://` URL like `http://127.0.0.1:9234/v1.41`. Routed through the
@@ -27,11 +27,7 @@ import { normalizeSecurityOptions } from './docker-security-options.js';
  *    Parse convention: `unix://<socket-path>[:<api-version-path>]`. The
  *    optional API-version suffix is everything after the LAST `:/` in the URL
  *    (it must start with `/`, e.g. `/v1.41`); the part before it is the
- *    absolute host path of the socket. Examples:
- *      - `unix:///var/run/docker.sock`          → sock `/var/run/docker.sock`, no version prefix
- *      - `unix:///var/run/docker.sock:/v1.41`   → sock `/var/run/docker.sock`, prefix `/v1.41`
- *    A colon that is NOT followed by `/` (rare in socket paths) is treated as
- *    part of the path, so ordinary socket paths without a version parse cleanly.
+ *    absolute host path of the socket, e.g. `unix:///var/run/docker.sock:/v1.41`.
  *
  * Errors are mapped to a small typed set so the {@link Provisioner} (slice 3)
  * can route `404/409/500` differently than a network failure. The caller
@@ -207,6 +203,7 @@ export interface DockerClient {
    *  to find superseded devcontainer image generations. Optional so pre-existing
    *  test fakes stay valid; the real {@link createDockerClient} always provides it. */
   listImages?(): Promise<DockerImageSummary[]>;
+  imageDiskUsage?(): Promise<ReadonlyMap<string, number>>;
   /** Remove an image by ref (Engine `DELETE /images/{ref}`). 404 → already gone
    *  (no-op, so a concurrent sweep is safe). A 409 — the daemon refuses because a
    *  container still references it — surfaces as a typed `conflict` DockerError
@@ -2368,11 +2365,13 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         ? json.NCPU
         : undefined;
     },
+    imageDiskUsage: () =>
+      readImageDiskUsage(async () => {
+        const res = await callDocker(doFetch, `${base}/system/df`, 'GET', timeoutMs);
+        if (!res.ok) throw await toDockerError(res);
+        return res.json();
+      }),
     imageExists: async (ref) => {
-      // GET /images/{ref}/json — 200 = present, 404 = absent (the daemon reports
-      // a missing image as 404, distinct from a real API/network fault). Any
-      // other non-2xx surfaces as a typed DockerError so the caller can fail
-      // loudly rather than mis-reading a 5xx as "image absent" and rebuilding.
       const res = await callDocker(
         doFetch,
         `${base}/images/${encodeURIComponent(ref)}/json`,

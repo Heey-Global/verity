@@ -590,6 +590,32 @@ class GuestCommandEvidenceTests(unittest.TestCase):
 
 
 class ReplacementRecoveryTests(unittest.TestCase):
+    def test_replacement_waits_only_for_transient_activity_verification_and_is_bounded(self):
+        import urllib.error
+        from unittest.mock import Mock, patch
+        spec = importlib.util.spec_from_file_location('verification_guest', Path(__file__).with_name('boot-guest.py'))
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+        def refusal(code, detail):
+            error = ValueError(detail)
+            error.__cause__ = urllib.error.HTTPError('http://fixture', code, detail, {}, None)
+            return error
+        pending = refusal(409, 'activity could not be confirmed idle')
+        with patch.object(guest, 'descriptor', return_value={'projectId': 'p'}), patch.object(guest.time, 'sleep') as sleep:
+            with patch.object(guest, 'api', side_effect=[pending, {'ok': True}]) as api:
+                self.assertEqual(guest.replace_when_verified('token'), {'ok': True})
+                self.assertEqual(api.call_count, 2)
+                sleep.assert_called_once_with(0.5)
+            for error in (refusal(403, 'forbidden'), refusal(409, 'turn is running')):
+                with patch.object(guest, 'api', side_effect=error) as api:
+                    with self.assertRaises(ValueError):
+                        guest.replace_when_verified('token')
+                    api.assert_called_once()
+            with patch.object(guest, 'api', side_effect=pending) as api, patch.object(guest.time, 'monotonic', side_effect=[0, 31]):
+                with self.assertRaises(ValueError):
+                    guest.replace_when_verified('token')
+                api.assert_called_once()
+
     def test_stopped_packet_generation_uses_authenticated_replacement(self):
         import json
         import tempfile

@@ -151,6 +151,7 @@ export function storageHold(input: {
   devServers:
     | {
         hasRunningServers(projectId: string): boolean;
+        hasUnverifiedServers(projectId: string): boolean;
         hasRunningSessionServers(sessionId: string): boolean;
       }
     | undefined;
@@ -166,7 +167,8 @@ export function storageHold(input: {
   if (
     sessionId
       ? input.devServers?.hasRunningSessionServers(sessionId)
-      : input.devServers?.hasRunningServers(projectId)
+      : input.devServers?.hasRunningServers(projectId) ||
+        input.devServers?.hasUnverifiedServers(projectId)
   )
     return 'Managed dev server is active';
   const local = sessionId

@@ -167,13 +167,16 @@ export function startProjectRelayMigrationScheduler(
           log.warn({ err }, 'sandbox update discovery failed');
           return undefined;
         });
-      const updateAvailable = new Set(
-        [...(updateStatuses?.entries() ?? [])]
-          .filter(([, status]) => status.state === 'available')
-          .map(([projectId]) => projectId),
-      );
+      const updateAvailable =
+        updateStatuses === undefined
+          ? undefined
+          : new Set(
+              [...updateStatuses.entries()]
+                .filter(([, status]) => status.state === 'available')
+                .map(([projectId]) => projectId),
+            );
       await reconcileRelays?.(projects, {
-        updateAvailable,
+        ...(updateAvailable === undefined ? {} : { updateAvailable }),
         // `activity` names what holds the sandbox — a turn, a dev server or a
         // shared preview — because each one ends differently, and a log that
         // always said "turn" sent readers looking for turns that did not exist.

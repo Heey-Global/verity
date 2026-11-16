@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SandboxUpdate } from '../api.js';
+import { inboxItems, inboxView } from './inbox.js';
+import { projectCardState } from './projectCardState.js';
+import type { ProjectRecord, SandboxUpdate } from '../api.js';
 import {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
@@ -323,4 +325,138 @@ describe('what holds a blocked update', () => {
       tone: 'danger',
     });
   });
+});
+
+it('describes the fixed nightly schedule and recovery after the image is current', () => {
+  expect(sandboxUpdateSummary(update({ scheduledTonight: true }))).toContain(
+    '03:00–05:00 server time',
+  );
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'current',
+        recovery: { state: 'ready', at: 1, detail: 'All services recovered' },
+      }),
+    ),
+  ).toContain('back online');
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'current',
+        recovery: { state: 'failed', at: 1, detail: 'web did not restart' },
+      }),
+    ),
+  ).toContain('web did not restart');
+});
+
+it('names the blocker after a missed nightly window instead of promising tonight', () => {
+  expect(
+    sandboxUpdateSummary(
+      update({ scheduledTonight: true, overdue: true, blockedBy: ['dev_server'] }),
+    ),
+  ).toBe('Update missed its nightly window — still waiting for a running dev server');
+  expect(sandboxUpdateSummary(update({ overdue: true, blockedBy: ['unknown'] }))).toContain(
+    'activity verification',
+  );
+});
+
+it('shows replacement failures ahead of generic unknown-image repair status', () => {
+  expect(
+    sandboxUpdateSummary(
+      update({
+        state: 'unknown',
+        selfRepair: 'stalled',
+        recovery: { state: 'failed', at: 1, detail: 'Replacement failed' },
+      }),
+    ),
+  ).toBe('Update recovery failed — Replacement failed');
+});
+
+it.each(['turn', 'dev_server', 'preview', 'unknown'] as const)(
+  'reports overdue %s updates consistently when also scheduled tonight',
+  (blocker) => {
+    const value = update({ scheduledTonight: true, overdue: true, blockedBy: [blocker] });
+    for (const message of [
+      sandboxUpdateBlockedDetail(value),
+      sandboxUpdateBlockedInboxMessage(value),
+      sandboxUpdateAlertMessage({ owner: 'test', repo: 'project' }, value),
+    ]) {
+      expect(message).toContain('missed its nightly window');
+      expect(message).not.toMatch(/scheduled for tonight|will update between/i);
+    }
+  },
+);
+
+it('keeps current-image recovery failures visible in project cards, inbox and alerts', () => {
+  const value = update({
+    state: 'current',
+    selfRepair: 'converging',
+    recovery: {
+      state: 'failed',
+      at: 1,
+      detail: 'web did not restart',
+    },
+  });
+  const project = {
+    id: 'p',
+    owner: 'test',
+    repo: 'web',
+    state: 'active',
+    provisionError: null,
+    sandboxUpdate: value,
+  } as ProjectRecord;
+  expect(sandboxUpdateNeedsAttention(value)).toBe(true);
+  expect(projectCardState(project).note?.label).toBe('Recovery failed');
+  expect(inboxItems({ sessions: [], projects: [project], now: 2 })[0]?.message).toContain(
+    'web did not restart',
+  );
+  expect(sandboxUpdateIndicator(value)?.label).toBe('Update recovery failed');
+  expect(sandboxUpdateAlertMessage(project, value)).toContain('web did not restart');
+});
+
+it('does not reuse a dismissed blocked-update key for a later recovery failure', () => {
+  const blocked: ProjectRecord = {
+    containerName: 'c',
+    kind: 'github',
+    imageRef: null,
+    createdAt: '2026-10-01T00:00:00Z',
+    updatedAt: '2026-11-03T09:00:00Z',
+    id: 'p',
+    owner: 'test',
+    repo: 'web',
+    state: 'active',
+    provisionError: null,
+    sandboxUpdate: update({ turnBlocked: true }),
+    inboxDismissed: [],
+  };
+  const key = inboxItems({ sessions: [], projects: [blocked], now: 1 })[0]!.key;
+  const dismissed = { ...blocked, inboxDismissed: [key] };
+  expect(inboxView({ sessions: [], projects: [dismissed], now: 2 }).visible).toHaveLength(0);
+  const failed = {
+    ...dismissed,
+    sandboxUpdate: update({
+      state: 'current',
+      recovery: {
+        state: 'failed',
+        at: 3,
+        detail: 'web did not restart',
+      },
+    }),
+  };
+  const view = inboxView({ sessions: [], projects: [failed], now: 4 });
+  expect(view.visible).toHaveLength(1);
+  const next = {
+    ...failed,
+    sandboxUpdate: {
+      ...failed.sandboxUpdate,
+      recovery: {
+        state: 'failed' as const,
+        at: 5,
+        detail: 'web did not restart',
+      },
+    },
+  };
+  expect(inboxItems({ sessions: [], projects: [next], now: 6 })[0]!.key).not.toBe(
+    view.visible[0]!.key,
+  );
 });

@@ -1,4 +1,5 @@
 import { teamJoinRecoverySpec } from './team-join-recovery';
+import { sandboxUpdatesSpec } from './sandbox-updates';
 import { aiAccountsSpec } from './ai-accounts';
 import { codeWorkspaceSpec } from './code-workspace';
 import { connectionStatusSpec } from './connection-status';
@@ -21,6 +22,7 @@ import { wikiMaintenanceSpec } from './wiki-maintenance';
 /** Every spec with mockups. A new spec folder is added here. */
 export const MOCKUP_SPECS: readonly MockupSpec[] = [
   teamJoinRecoverySpec,
+  sandboxUpdatesSpec,
   aiAccountsSpec,
   codeWorkspaceSpec,
   sessionStabilitySpec,

@@ -1,3 +1,4 @@
+import { runDockerGc } from './docker-gc.js';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
@@ -12,6 +13,7 @@ import {
   retireCompletedHostPreparationJobs,
   retireCompletedUpdateContainers,
   retireStoppedContainers,
+  boundedContainerRetirement,
 } from './stopped-container-gc.js';
 
 const now = Date.parse('2026-10-30T12:00:00Z');
@@ -740,4 +742,97 @@ describe('scheduled cache-helper retention', () => {
       property.initializer.parameters[0]?.name.getText(source),
     );
   });
+});
+
+// Capacity admission must use the same safety decision as daily retirement.
+it('capacity retires only policy-approved sandboxes then releases their unreferenced image', async () => {
+  const f = fixture();
+  f.docker.listContainers.mockImplementation(async () => [...f.containers]);
+  f.containers.push({
+    id: 'foreign',
+    imageId: 'foreign-image',
+    state: 'exited',
+    names: ['foreign'],
+  });
+  f.docker.removeStoppedContainer.mockImplementation(async (id) => {
+    f.containers.splice(
+      f.containers.findIndex((c) => c.id === id),
+      1,
+    );
+  });
+  const removeImage = vi.fn(async () => {});
+  const report = await runDockerGc(
+    {
+      docker: { ...f.docker, removeImage } as unknown as DockerClient,
+      log: { info: () => undefined, warn: () => undefined },
+      now: () => now,
+      policy: { keepReleaseImagesPerRepo: 1 },
+      retireCapacityContainers: () => retireStoppedContainers(f.input),
+    },
+    'build-capacity',
+  );
+  expect(f.docker.removeStoppedContainer).toHaveBeenCalledExactlyOnceWith('sandbox');
+  expect(report.containersRemoved).toEqual(['verity-p']);
+  expect(report.retainedContainers).toContainEqual({
+    name: 'foreign',
+    reason: 'No project identity; outside managed ownership',
+  });
+  expect(removeImage).toHaveBeenCalledExactlyOnceWith('old');
+});
+
+it('rotates bounded stopped-container candidates without bypassing retention policy', async () => {
+  const f = fixture();
+  f.containers.splice(
+    0,
+    1,
+    ...Array.from({ length: 20 }, (_, index) => ({
+      ...f.sandbox,
+      id: `candidate-${String(index).padStart(2, '0')}`,
+      names: [`candidate-${String(index)}`],
+    })),
+  );
+  const visited = new Set<string>();
+  const options = boundedContainerRetirement(false, 0);
+  for (let offset = 0; offset < f.containers.length; offset += options.maxStoppedContainers) {
+    f.docker.removeStoppedContainer.mockClear();
+    await retireStoppedContainers({ ...f.input, ...boundedContainerRetirement(false, offset) });
+    expect(f.docker.removeStoppedContainer.mock.calls.length).toBeLessThanOrEqual(
+      options.maxStoppedContainers,
+    );
+    for (const [id] of f.docker.removeStoppedContainer.mock.calls) visited.add(id);
+  }
+  expect(visited.size).toBe(f.containers.length);
+});
+
+it('capacity reaches image reclamation after a bounded generic-container batch', async () => {
+  const f = fixture();
+  f.containers.splice(
+    0,
+    1,
+    ...Array.from({ length: 20 }, (_, index) => ({
+      ...f.sandbox,
+      id: `candidate-${String(index).padStart(2, '0')}`,
+      names: [`candidate-${String(index)}`],
+    })),
+  );
+  const images = await f.docker.listImages();
+  images.push(
+    { ...images[0]!, id: 'spare-old', repoTags: ['verity-devc-spare:old'] },
+    { ...images[1]!, id: 'spare-new', repoTags: ['verity-devc-spare:new'] },
+  );
+  const removeImage = vi.fn(async () => {});
+  const options = boundedContainerRetirement(false, 0);
+  const report = await runDockerGc(
+    {
+      docker: { ...f.docker, removeImage } as unknown as DockerClient,
+      log: { info: () => undefined, warn: () => undefined },
+      policy: { keepImagesPerRepo: 1 },
+      now: () => now,
+      retireCapacityContainers: () => retireStoppedContainers({ ...f.input, ...options }),
+    },
+    'build-capacity',
+  );
+  expect(f.docker.inspectContainer).toHaveBeenCalledTimes(options.maxStoppedContainers);
+  expect(report.containersRemoved).toHaveLength(options.maxStoppedContainers);
+  expect(removeImage).toHaveBeenCalledWith('verity-devc-spare:old');
 });

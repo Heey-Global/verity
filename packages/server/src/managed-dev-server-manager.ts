@@ -1,3 +1,5 @@
+import { verifyRecoveryInstances } from './managed-dev-server-recovery.js';
+import { ManagedDevServerLiveness } from './managed-dev-server-liveness.js';
 import type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 export type { ManagedInstanceView, ManagedServerView } from './managed-dev-server-views.js';
 import { PreviewNetworkProtectionError } from './preview-network-policy.js';
@@ -170,7 +172,7 @@ export class ManagedDevServerManager {
   /** Last periodic status check per running instance (log trimming). */
   private readonly checkedAt = new Map<string, number>();
   /** Projects with an instance that should be running; they must not sleep. */
-  private activeProjects = new Set<string>();
+  private readonly liveness: ManagedDevServerLiveness;
   /** Sessions with such an instance; storage collection leaves their worktrees alone. */
   private activeSessions = new Set<string>();
   private readonly deletingSessions = new Set<string>();
@@ -180,6 +182,7 @@ export class ManagedDevServerManager {
 
   constructor(private readonly options: ManagedDevServerManagerOptions) {
     this.now = options.now ?? Date.now;
+    this.liveness = new ManagedDevServerLiveness(this.now, 3 * MONITOR_INTERVAL_MS);
     this.timer = setInterval(() => void this.tick(), MONITOR_INTERVAL_MS);
     this.timer.unref?.();
     void this.refreshReserved();
@@ -187,7 +190,23 @@ export class ManagedDevServerManager {
 
   /** Running entries keep the sandbox awake, as an active share does (ADR 0020). */
   hasRunningServers(projectId: string): boolean {
-    return this.activeProjects.has(projectId);
+    return this.liveness.running(projectId);
+  }
+
+  hasVerifiedInstance(instanceId: string): boolean {
+    return this.liveness.verified(instanceId);
+  }
+
+  verifyRecoveryInstances(ids: readonly string[]): Promise<Set<string>> {
+    return verifyRecoveryInstances(
+      this.options,
+      (project, userId) => this.inSandbox(project, userId),
+      ids,
+    );
+  }
+
+  hasUnverifiedServers(projectId: string): boolean {
+    return this.liveness.unverified(projectId);
   }
 
   /** Whether a server should be running in this person's own sandbox (ADR 0023 §4). */
@@ -218,8 +237,8 @@ export class ManagedDevServerManager {
     return this.activeSessions.has(sessionId);
   }
 
-  private markActive(projectId: string, sessionId: string): void {
-    this.activeProjects.add(projectId);
+  private markActive(projectId: string, sessionId: string, instanceId: string): void {
+    this.liveness.want(instanceId, projectId);
     this.activeSessions.add(sessionId);
   }
 
@@ -916,7 +935,7 @@ export class ManagedDevServerManager {
             : new Date(this.now()),
       });
       await this.assertStartAllowed(sessionId);
-      this.markActive(project.id, sessionId);
+      this.markActive(project.id, sessionId, instance.id);
       void this.options
         .wakeSandbox(project.id, sessionId)
         .catch((error: unknown) =>
@@ -979,7 +998,7 @@ export class ManagedDevServerManager {
       // Already up after a wake: drop the marker so supervision stops relaunching.
       if (instance.detail === WAKING_DETAIL)
         await this.servers.updateInstance(instance.id, { detail: null });
-      this.markActive(project.id, sessionId);
+      this.markActive(project.id, sessionId, instance.id);
       return;
     }
     if (
@@ -1080,7 +1099,7 @@ export class ManagedDevServerManager {
       });
       return;
     }
-    this.markActive(project.id, sessionId);
+    this.markActive(project.id, sessionId, instance.id);
     await this.servers.updateInstance(instance.id, {
       desired: 'running',
       state: 'starting',
@@ -1129,6 +1148,7 @@ export class ManagedDevServerManager {
     instance: ManagedDevServerInstanceRecord,
     detail: string | null,
   ): Promise<void> {
+    this.liveness.remove(instance.id);
     await this.servers.updateInstance(instance.id, { desired: 'stopped' });
     try {
       await this.unpublish(instance);
@@ -1304,7 +1324,7 @@ export class ManagedDevServerManager {
     const byProject = new Map<string, ManagedDevServerInstanceRecord[]>();
     for (const instance of instances)
       byProject.set(instance.projectId, [...(byProject.get(instance.projectId) ?? []), instance]);
-    this.activeProjects = new Set(byProject.keys());
+    this.liveness.reconcile(instances);
     this.activeSessions = new Set(instances.map((instance) => instance.sessionId));
     for (const [projectId, group] of byProject) {
       try {
@@ -1330,10 +1350,9 @@ export class ManagedDevServerManager {
     const processesIn = (target: ProjectRecord): Promise<ListeningProcess[]> => {
       let listing = listings.get(target.containerName);
       if (listing === undefined) {
-        listing =
-          target.containerName === project.containerName
-            ? this.options.runtime.listListeningProcesses(target)
-            : this.options.runtime.listListeningProcesses(target).catch(() => []);
+        // Cached discovery must never renew the short activity-evidence lease.
+        listing = this.options.runtime.listListeningProcesses(target, { fresh: true });
+        if (target.containerName !== project.containerName) listing = listing.catch(() => []);
         listings.set(target.containerName, listing);
       }
       return listing;
@@ -1387,6 +1406,7 @@ export class ManagedDevServerManager {
       const tagged = processes.filter((process) => process.instanceId === instance.id);
       const onPort = tagged.find((process) => process.port === instance.sandboxPort);
       if (onPort) {
+        this.liveness.verify(instance.id);
         this.missingSince.delete(instance.id);
         if (this.now() - (this.checkedAt.get(instance.id) ?? 0) > 60_000) {
           // The status check also trims an oversized log; once a minute is enough.
@@ -1403,6 +1423,7 @@ export class ManagedDevServerManager {
         await this.publish(project, entry, current);
         continue;
       }
+      this.liveness.invalidate(instance.id);
       const status = await this.options.runtime
         .managedServerStatus(target, instance.id)
         .catch(() => ({ alive: true, exitCode: null }));
