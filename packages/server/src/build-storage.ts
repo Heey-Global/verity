@@ -23,6 +23,11 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { ProtectedBuildFailure } from './project-egress-build-error.js';
 import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
+import {
+  builderAdmissionMessage,
+  readBuilderAdmissionState,
+  type BuilderAdmissionState,
+} from './builder-admission.js';
 
 const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
@@ -250,53 +255,6 @@ export interface BuildStorageLease {
   dispose(): void;
 }
 
-/**
- * What the host has provisioned for build admission. The host builder
- * installation creates the lock and the lease directory together before any
- * snapshotter maintenance can run, so a directory with neither marks a host
- * whose builder predates managed admission, not one in maintenance.
- */
-export type BuilderAdmissionState =
-  | { state: 'provisioned' }
-  | { state: 'migration-pending' }
-  | { state: 'not-provisioned' }
-  | { state: 'incomplete'; missing: string[] };
-
-const NOT_PROVISIONED_MESSAGE =
-  "This host's devcontainer builder predates managed build admission, so builds run without host storage admission. Re-run the verified Verity installer once on the host to provision it.";
-
-export function builderAdmissionMessage(admission: BuilderAdmissionState): string {
-  switch (admission.state) {
-    case 'provisioned':
-      return 'Managed build admission is provisioned.';
-    case 'migration-pending':
-      return 'Builder migration recovery is pending; new builds wait until the host verifies the previous worker.';
-    case 'not-provisioned':
-      return NOT_PROVISIONED_MESSAGE;
-    case 'incomplete':
-      return `Managed build admission is incomplete (missing ${admission.missing.join(', ')}); re-run the verified Verity installer once on the host.`;
-  }
-}
-
-export function readBuilderAdmissionState(directory: string): BuilderAdmissionState {
-  const present = (name: string) => {
-    try {
-      lstatSync(join(directory, name));
-      return true;
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      // Unreadable is not absent: never relax admission on an error we cannot classify.
-      throw cause;
-    }
-  };
-  if (present('migration-pending')) return { state: 'migration-pending' };
-  const markers = ['build-admission.lock', 'leases'];
-  const missing = markers.filter((name) => !present(name));
-  if (missing.length === 0) return { state: 'provisioned' };
-  if (missing.length === markers.length) return { state: 'not-provisioned' };
-  return { state: 'incomplete', missing };
-}
-
 export interface HostStorageEvidence {
   /** Lowest measured free bytes across the host roots, when any was measured. */
   availableBytes?: number;
@@ -399,6 +357,12 @@ export class BuildStorage {
   setReclaimer(reclaim: () => Promise<string | void>): void {
     this.reclaimer = reclaim;
   }
+
+  /** Appended to a refusal: whether reclaiming regenerable data could cover the shortfall. */
+  setCapacityDescriber(describe: (shortfallBytes: number) => string): void {
+    this.capacityDescriber = describe;
+  }
+  private capacityDescriber: ((shortfallBytes: number) => string) | undefined;
 
   private held = false;
   /** Builds waiting for this Server's one lease, first come first served. */
@@ -531,7 +495,9 @@ export class BuildStorage {
           (unresolvedBytes > 0
             ? ` ${Math.ceil(unresolvedBytes / GiB)} GiB of that is held by ${this.unresolved.length} earlier build attempt(s) whose end is not yet confirmed (${this.unresolved.map((entry) => entry.attempt).join(', ')}); they are released automatically once the builder confirms they ended.`
             : '') +
-          ' Retry after capacity is available or configure an estimate supported by bounded build measurements.',
+          ' Retry after capacity is available or configure an estimate supported by bounded build measurements.' +
+          (this.capacityDescriber?.(Math.max(0, bytes + this.policy.reserveBytes - available)) ??
+            ''),
       );
     }
   }

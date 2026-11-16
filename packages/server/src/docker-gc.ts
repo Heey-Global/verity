@@ -214,6 +214,8 @@ export interface DockerGcDeps {
    *  time, neither of which can see a provision whose sandbox does not exist yet;
    *  wire it wherever both the GC and the lifecycle are available. */
   beforeSweep?: () => Promise<void>;
+  /** Appended to the low-disk warning: what the data volume holds. */
+  describeCapacity?: () => string;
   onReport?: (report: DockerGcReport) => void;
   retireContainers?: () => Promise<{
     removed: string[];
@@ -976,7 +978,10 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
           ? await probeFreeBytes(deps.dataRoot)
           : undefined;
     if (freeBytes === undefined || freeBytes >= policy.lowDiskFreeBytes) return;
-    deps.log.warn({ freeBytes }, 'docker gc running early: free disk space is low');
+    deps.log.warn(
+      { freeBytes, capacity: deps.describeCapacity?.().trim() },
+      'docker gc running early: free disk space is low',
+    );
     await pass();
   };
 
@@ -1001,6 +1006,20 @@ const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
 /** One line for a build that is still refused after a build-capacity pass: what
  *  the pass freed, and what it had to keep, so a retry is not the only advice. */
+/** The bounded projection of a pass that runtime diagnostics expose. */
+export function dockerGcDiagnostics(report: DockerGcReport) {
+  return {
+    observedAt: report.observedAt,
+    containersRemoved: report.containersRemoved.slice(0, 100),
+    imagesRemoved: report.imagesRemoved.length,
+    lowDisk: report.lowDisk,
+    errors: report.errors.length,
+    stoppedContainerPins: report.stoppedContainerPins,
+    keptImageReasons: report.keptImageReasons,
+    retainedContainers: report.retainedContainers,
+  };
+}
+
 export function describeBuildCapacityReclamation(report: DockerGcReport): string {
   const layers =
     report.exclusiveImageLayerBytes === undefined

@@ -1,10 +1,6 @@
 import { nativeRetirementSchema, runnerCacheReclamationSchema } from '@verity/events';
-import {
-  builderAdmissionMessage,
-  readBuilderAdmissionState,
-  readHostStorageEvidence,
-  type UnresolvedBuildAttempt,
-} from './build-storage.js';
+import { builderAdmissionMessage, readBuilderAdmissionState } from './builder-admission.js';
+import { readHostStorageEvidence, type UnresolvedBuildAttempt } from './build-storage.js';
 import { request as httpRequest } from 'node:http';
 import { open, stat, statfs } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -188,6 +184,26 @@ const storageReclamationSchema = z.object({
     })
     .nullable(),
   runnerCaches: runnerCacheReclamationSchema.nullable().optional(),
+  // Optional: diagnostics from servers before the data-volume breakdown omit it.
+  dataVolume: z
+    .object({
+      complete: z
+        .object({
+          startedAt: timestamp,
+          observedAt: timestamp,
+          durationMs: number,
+          entries: number,
+          categories: z.record(z.string().max(40), number),
+          regenerableBytes: number,
+          protectedBytes: number,
+          unknownBytes: number,
+          unknown: z.array(z.object({ name: z.string().max(255), bytes: number })).max(10),
+        })
+        .nullable(),
+      round: z.object({ startedAt: timestamp, entries: number }).nullable(),
+    })
+    .nullable()
+    .optional(),
   databaseBytes: number.nullable(),
   nativeBuildkit: nativeRetirementSchema.nullable(),
   activeBuildkitBytes: number.nullable(),

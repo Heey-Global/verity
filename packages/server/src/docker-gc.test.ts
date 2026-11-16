@@ -907,6 +907,34 @@ describe('startDockerGcScheduler', () => {
     }
   });
 
+  // A low-disk warning that named only free space could not say whether any
+  // pass would ever relieve the disk.
+  it('names what the data volume holds in the low-disk warning', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    try {
+      const warn = vi.fn();
+      const scheduler = startDockerGcScheduler(
+        deps(fakeDocker({}), {
+          log: { ...silentLog, warn } as unknown as DockerGcDeps['log'],
+          now: () => Date.now(),
+          freeBytes: () => Promise.resolve(5 * 1024 ** 3),
+          policy: { lowDiskFreeBytes: 40 * 1024 ** 3 },
+          describeCapacity: () => ' Data volume as of then: 1.0 GiB regenerable.',
+        }),
+      );
+      // Boot pass at 5 minutes; the probe may run again 30 minutes after it.
+      await vi.advanceTimersByTimeAsync(45 * 60_000);
+      scheduler.stop();
+      expect(warn).toHaveBeenCalledWith(
+        { freeBytes: 5 * 1024 ** 3, capacity: 'Data volume as of then: 1.0 GiB regenerable.' },
+        'docker gc running early: free disk space is low',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('exposes runOnce as a timer-free seam', async () => {
     vi.useFakeTimers();
     try {
