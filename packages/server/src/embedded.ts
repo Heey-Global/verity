@@ -4038,10 +4038,10 @@ export async function buildEmbeddedServer(
     ...(config.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: config.wsAllowedOrigins } : {}),
     signingCapabilities,
     turnCredentials,
+    claudeEgressIdentity,
     githubUserAuthorization,
-    // When a dedicated internal listener is configured, gate `/internal/*` to it
-    // (the public listener 404s those paths). main.ts starts that listener and
-    // tags its sockets; this predicate reads the tag. Omit → no gate.
+    // With a dedicated internal listener (main.ts starts it and tags its sockets),
+    // only it serves `/internal/*`; the public one 404s them. Omit → no gate.
     ...(config.internalPort !== undefined ? { internalPathGuard: requestArrivedInternally } : {}),
     // `configuredCodexModels` stands in for the catalogue as well as for itself: the
     // refresh timer only runs when `codexModels` was left unset, and that is precisely

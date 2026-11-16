@@ -1,5 +1,10 @@
 import type { EventStore } from '@verity/store';
 
+import type { ClaudeEgressIdentityService } from './claude-egress-identity.js';
+import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
+import type { SigningCapabilityRegistry } from './signing-capability.js';
+import type { TurnCredentials } from './turn-credentials.js';
+
 type Store = Pick<
   EventStore,
   | 'getSession'
@@ -14,9 +19,12 @@ type Store = Pick<
  * End a removed member's access to a project at once (ADR 0023 §6). Their
  * membership is already gone, so every new request is refused by the route
  * policy; this ends what they started before: queued turns are deleted for
- * good, running ones cancelled, their membership-scoped connections deleted
- * and their own sandbox put to sleep. Each step runs even when another fails,
- * and nothing here is restored by a restart.
+ * good, running ones cancelled, their turn badges, their sandbox's signing and
+ * GitHub capabilities and its egress certificate revoked, their
+ * membership-scoped connections deleted and their own sandbox put to sleep.
+ * The authority is revoked on its own rather than left to the sleep, because a
+ * sandbox that is already asleep has nothing to stop and still holds it. Each
+ * step runs even when another fails, and nothing here is restored by a restart.
  */
 export function createMemberRevocation(deps: {
   store: Store;
@@ -25,6 +33,10 @@ export function createMemberRevocation(deps: {
   sleepSandbox?: ((projectId: string, userId: string) => Promise<void>) | undefined;
   /** Stops the dev servers the person last ran, so supervision does not wake them again. */
   stopDevServers?: ((projectId: string, userId: string) => Promise<void>) | undefined;
+  turnCredentials?: Pick<TurnCredentials, 'revokeUser'> | undefined;
+  signingCapabilities?: Pick<SigningCapabilityRegistry, 'revokeSandbox'> | undefined;
+  ghTokenCapabilities?: Pick<GhTokenCapabilityRegistry, 'revokeSandbox'> | undefined;
+  claudeEgressIdentity?: Pick<ClaudeEgressIdentityService, 'revokeSandbox'> | undefined;
   onError?: (step: string, error: unknown) => void;
 }) {
   return async (projectId: string, userId: string): Promise<void> => {
@@ -57,6 +69,18 @@ export function createMemberRevocation(deps: {
         if (initiator?.userId === userId) await deps.cancelTurn(running.sessionId);
       }
     });
+    // Right after the turns: a cancelled turn can still be settling, and until
+    // these go it could sign, push or reach the model as the removed person.
+    await step('turn badges', async () => deps.turnCredentials?.revokeUser(projectId, userId));
+    await step('signing capability', async () =>
+      deps.signingCapabilities?.revokeSandbox(projectId, userId),
+    );
+    await step('GitHub capability', async () =>
+      deps.ghTokenCapabilities?.revokeSandbox(projectId, userId),
+    );
+    await step('egress certificate', async () =>
+      deps.claudeEgressIdentity?.revokeSandbox({ projectId, userId }),
+    );
     await step('Doppler connection', () =>
       deps.store.userDopplerConnections.delete(userId, projectId),
     );

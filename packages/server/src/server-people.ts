@@ -252,6 +252,10 @@ export function installPeople(
     sleepSandbox: deps.provisioner?.sleepPersonalSandbox?.bind(deps.provisioner),
     stopDevServers: (projectId, userId) =>
       deps.managedDevServerManager?.stopForPerson(projectId, userId) ?? Promise.resolve(),
+    turnCredentials: deps.turnCredentials,
+    signingCapabilities: deps.signingCapabilities,
+    ghTokenCapabilities: deps.ghTokenCapabilities,
+    claudeEgressIdentity: deps.claudeEgressIdentity,
     onError: (step, error) =>
       app.log.warn({ err: error, step }, "verity: ending a removed member's access was incomplete"),
   });

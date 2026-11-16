@@ -533,7 +533,11 @@ export interface ServerDeps {
    *  one renewal serves both. Defaults to a store-backed instance. */
   githubUserAuthorization?: GitHubUserAuthorization | undefined;
   /** Per-turn sandbox credentials; resolve a calling turn and its person. */
-  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
+  turnCredentials?: Pick<TurnCredentials, 'resolve' | 'revokeUser'> | undefined;
+  /** Sandbox client certificates; a removed member's is revoked with their access. */
+  claudeEgressIdentity?:
+    | Pick<import('./claude-egress-identity.js').ClaudeEgressIdentityService, 'revokeSandbox'>
+    | undefined;
   /** Network-origin guard for `/internal/*` routes (audit H1 follow-up). When set,
    *  a request to any `/internal/*` path is 404'd unless this predicate returns
    *  true — wired to {@link requestArrivedInternally} so the commit-signing broker

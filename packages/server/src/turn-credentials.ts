@@ -35,6 +35,9 @@ export interface TurnCredentials {
   release(token: string): void;
   /** Drop every credential of a project, e.g. when its container is retired. */
   revokeProject(projectId: string): void;
+  /** Drop every credential of one person's turns in a project, e.g. when they
+   *  are removed from it: a turn still running must not keep acting for them. */
+  revokeUser(projectId: string, userId: string): void;
 }
 
 /** The longest a supervised turn may run (24 h) plus slack for its settle path. */
@@ -150,6 +153,13 @@ export function createTurnCredentials(options?: {
       let changed = false;
       for (const [digest, entry] of byDigest)
         if (entry.projectId === projectId) changed = byDigest.delete(digest) || changed;
+      if (changed) save();
+    },
+    revokeUser(projectId, userId) {
+      let changed = false;
+      for (const [digest, entry] of byDigest)
+        if (entry.projectId === projectId && entry.userId === userId)
+          changed = byDigest.delete(digest) || changed;
       if (changed) save();
     },
   };
