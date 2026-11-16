@@ -133,8 +133,18 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
         (out) => out.trim(),
         () => '',
       );
+      // A separate repository here would send commits and pushes elsewhere.
+      const common = async (dir: string) =>
+        git(['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir']).then(
+          (out) => realpath(out.trim()),
+          () => '',
+        );
       // Anything else at this path belongs to someone; it is never replaced.
-      if (!top || (await realpath(top)) !== (await realpath(target)))
+      if (
+        !top ||
+        (await realpath(top)) !== (await realpath(target)) ||
+        (await common(target)) !== (await common(clone))
+      )
         throw new CodeWorkspaceUnavailableError(
           `${target} exists but is not this session's Git checkout`,
         );

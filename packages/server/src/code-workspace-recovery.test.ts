@@ -196,6 +196,16 @@ describe('legacy Documents session conversion', () => {
     expect(f.session().worktree).toBe(f.view);
   });
 
+  it('refuses a separate repository at the checkout path', async () => {
+    const f = fixture();
+    // Its own repository, not a worktree of the clone: commits would go elsewhere.
+    git(['init', '-q', '-b', `code-s`, f.target]);
+    await expect(createCodeWorkspaceRecovery(f.deps).convert('s')).rejects.toThrow(
+      CodeWorkspaceUnavailableError,
+    );
+    expect(f.session().worktree).toBe(f.view);
+  });
+
   it('is idempotent and leaves code sessions alone', async () => {
     const f = fixture();
     const recovery = createCodeWorkspaceRecovery(f.deps);

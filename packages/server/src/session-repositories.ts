@@ -173,7 +173,7 @@ export function createSessionRepositories(deps: {
       if (repository.isDefault && isDocumentWorkspace(session.worktree))
         throw new RepositoryCheckoutError(
           'code workspace unavailable',
-          'this session has no code workspace yet; Verity restores it before the next turn',
+          'this session works in a Documents view, not a checkout of the default repository',
         );
       if (repository.isDefault)
         return {
