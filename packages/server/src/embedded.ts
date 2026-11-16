@@ -1573,8 +1573,8 @@ export async function buildEmbeddedServer(
           dockerBaseUrl: config.dockerBaseUrl,
           listListeningProcesses,
         }).ensurePreviewTarget(project, port),
-      listSessionServers: (sessionId) =>
-        listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+      listSessionServers: (sessionId, options) =>
+        listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
       listListeningProcesses,
       edge: uplinkControl,
       // The same deferred logger as the client's: this manager is built just as
@@ -3062,8 +3062,8 @@ export async function buildEmbeddedServer(
           ...(config.agentSeedHostPath ? { agentSeedHostPath: config.agentSeedHostPath } : {}),
           isDevServerRunning: () => Promise.resolve(false),
           listListeningProcesses,
-          listSessionServers: (sessionId) =>
-            listenerDiscovery?.listSessionDevServers(sessionId) ?? Promise.resolve([]),
+          listSessionServers: (sessionId, options) =>
+            listenerDiscovery?.listSessionDevServers(sessionId, options) ?? Promise.resolve([]),
           prepareTargetPort: (project, port) =>
             new DockerProjectRuntime({
               resolveUser: resolvePreviewUser,

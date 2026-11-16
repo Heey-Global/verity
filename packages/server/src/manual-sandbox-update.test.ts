@@ -28,13 +28,15 @@ describe('manual sandbox update authorization', () => {
     return { recreateContainer, provisioner: { provision: vi.fn(), recreateContainer } };
   }
 
-  it('cancels an explicitly confirmed turn and rechecks activity before interrupting services', async () => {
+  it('waits for acknowledged cancellation to settle before interrupting services', async () => {
     const id = 'manual-update';
     const { provisioner, recreateContainer } = await setup(id);
     let busy = true;
     isBusy.mockImplementation(() => busy);
     const cancelTurn = vi.fn(async () => {
-      busy = false;
+      setTimeout(() => {
+        busy = false;
+      }, 75);
       return true;
     });
     const server = buildServer({
@@ -59,6 +61,31 @@ describe('manual sandbox update authorization', () => {
       await server.close();
     }
   });
+
+  it('refuses an acknowledged cancellation that never settles', async () => {
+    const id = 'manual-unsettled-ack';
+    const { provisioner, recreateContainer } = await setup(id);
+    isBusy.mockReturnValue(true);
+    const cancelTurn = vi.fn(async () => true);
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor: { ...conductor, cancelTurn } as unknown as typeof conductor,
+      provisioner,
+    });
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: `/verity-control/projects/${id}/recreate-container`,
+        payload: { interruptServices: true, cancelTurns: true },
+      });
+      expect(response.statusCode).toBe(409);
+      expect(cancelTurn).toHaveBeenCalledWith(id);
+      expect(recreateContainer).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  }, 15_000);
 
   it('refuses replacement when cancellation has not settled the turn', async () => {
     const id = 'manual-still-busy';

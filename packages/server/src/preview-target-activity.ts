@@ -38,7 +38,9 @@ async function previewTargetEvidence(
       instance.state !== 'running'
     )
       return false;
-    return ((await options.listListeningProcesses?.(target)) ?? []).some(
+    if (!options.listListeningProcesses)
+      throw new Error('managed preview listener discovery is unavailable');
+    return (await options.listListeningProcesses(target, { fresh: true })).some(
       (listener) => listener.instanceId === instance.id && listener.port === instance.sandboxPort,
     );
   }

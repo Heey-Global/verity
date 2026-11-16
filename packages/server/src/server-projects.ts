@@ -989,11 +989,32 @@ export function installProjects(
       const body = parseRecreateContainerBody(request.body);
       let snapshot = await projectActivity(id);
       if (body?.cancelTurns === true) {
+        const cancelled = new Set<string>();
         for (const observation of snapshot.observations) {
-          if (observation.reason === 'turn' && observation.sessionId)
-            await conductor.cancelTurn(observation.sessionId);
+          if (
+            observation.reason === 'turn' &&
+            observation.sessionId &&
+            (await conductor.cancelTurn(observation.sessionId))
+          )
+            cancelled.add(observation.sessionId);
         }
-        snapshot = await projectActivity(id);
+        // Cancellation acknowledges the request before the runner releases its fence.
+        // Allow the bounded stop watchdog to settle, then retain the full activity guard.
+        const deadline = Date.now() + 9_000;
+        do {
+          snapshot = await projectActivity(id);
+          if (
+            !snapshot.observations.some(
+              (observation) =>
+                observation.reason === 'turn' &&
+                observation.sessionId !== undefined &&
+                cancelled.has(observation.sessionId),
+            ) ||
+            Date.now() >= deadline
+          )
+            break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } while (Date.now() < deadline);
       }
       const activity = activityReasons(snapshot).filter(
         (reason) => !body?.interruptServices || !['dev_server', 'preview'].includes(reason),

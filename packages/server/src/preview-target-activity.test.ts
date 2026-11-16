@@ -75,10 +75,20 @@ describe('preview target activity', () => {
     vi.mocked(f.options.isDevServerRunning).mockResolvedValue(false);
     expect(await f.live()).toBe(false);
   });
+  it('treats unwired managed listener evidence as unknown, not offline', async () => {
+    const f = fixture();
+    f.share.managedInstanceId = 'm';
+    delete f.options.listListeningProcesses;
+    await expect(f.live()).rejects.toThrow('listener discovery is unavailable');
+  });
   it('checks tagged managed listener ownership and port', async () => {
     const f = fixture();
     f.share.managedInstanceId = 'm';
     expect(await f.live()).toBe(true);
+    expect(f.options.listListeningProcesses).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'p' }),
+      { fresh: true },
+    );
     vi.mocked(f.options.listListeningProcesses!).mockResolvedValue([
       { instanceId: 'other', port: 3000 },
     ] as never);

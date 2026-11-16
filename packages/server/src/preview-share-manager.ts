@@ -122,6 +122,7 @@ export interface PreviewEdgeControl {
   onSharingDisabled?(listener: () => void): () => void;
 }
 
+type ListenerRead = { fresh?: boolean };
 export interface PreviewShareManagerOptions {
   /**
    * The container and network of the sandbox a managed dev server runs in: its
@@ -148,15 +149,15 @@ export interface PreviewShareManagerOptions {
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>;
     devServer: NonNullable<Awaited<ReturnType<EventStore['getDevServer']>>>;
   }) => Promise<boolean>;
-  /** Lists the sandbox's TCP listeners; absent where no project runtime exists,
-   *  which leaves session dev servers undiscoverable rather than guessed. */
-  listSessionServers?: (sessionId: string) => Promise<SessionDevServer[]>;
+  /** Missing runtime discovery leaves listeners unverified. */
+  listSessionServers?: (sessionId: string, options?: ListenerRead) => Promise<SessionDevServer[]>;
   prepareTargetPort?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     port: number,
   ) => Promise<number>;
   listListeningProcesses?: (
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
+    options?: ListenerRead,
   ) => Promise<ListeningProcess[]>;
   now?: () => Date;
   connectorReadyTimeoutMs?: number;
@@ -175,8 +176,7 @@ export interface PreviewShareManagerOptions {
   listArtifactDirectory?: (path: string) => Promise<string[]>;
   /** Report create/stop step durations to distinguish Uplink, start and readiness delays. */
   log?: Pick<Console, 'info' | 'warn'>;
-  /** Called once a share has ended, revoked or expired. Managed dev servers stop
-   *  when their last access ends (concept 2.6). */
+  /** Ends managed access when its last share ends (concept 2.6). */
   onShareEnded?: (share: { id: string; managedInstanceId: string | null }) => void;
 }
 
@@ -342,6 +342,7 @@ export class PreviewShareManager {
   private async sessionServers(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
+    options: { fresh?: boolean } = {},
   ): Promise<SessionDevServer[]> {
     if (!this.options.listListeningProcesses || !this.options.hostCloneRoot) {
       throw new PreviewShareConflictError('dev server discovery is not configured');
@@ -359,17 +360,15 @@ export class PreviewShareManager {
     }
     let processes: ListeningProcess[];
     try {
-      processes = await this.options.listListeningProcesses(project);
+      processes = await this.options.listListeningProcesses(project, options);
     } catch {
-      // A stopped sandbox or a timed-out exec is a state to report, not a 500
-      // carrying raw runner output.
+      // Probe failures remain unknown without exposing raw runner output.
       throw new PreviewShareConflictError('could not inspect the project sandbox');
     }
     return sessionDevServers(processes, sandboxWorktree);
   }
 
-  /** The connector dials the sandbox over the project network, so a listener
-   *  bound to loopback only would publish a link that can never answer. */
+  /** Only publish ports reachable over the project network or prepared forwarding. */
   private async sessionPortReachable(
     project: NonNullable<Awaited<ReturnType<EventStore['getProject']>>>,
     worktree: string,
@@ -381,8 +380,8 @@ export class PreviewShareManager {
         )
       : undefined;
     const servers = session
-      ? await this.options.listSessionServers!(session.sessionId)
-      : await this.sessionServers(project, worktree);
+      ? await this.options.listSessionServers!(session.sessionId, { fresh: true })
+      : await this.sessionServers(project, worktree, { fresh: true });
     return servers.some(
       (server) =>
         server.port === port && (server.reachable || this.options.prepareTargetPort !== undefined),
@@ -514,7 +513,7 @@ export class PreviewShareManager {
     }
     if (
       managed &&
-      !(await this.options.listListeningProcesses?.(project))?.some(
+      !(await this.options.listListeningProcesses?.(project, { fresh: true }))?.some(
         (listener) => listener.instanceId === managed.id && listener.port === managed.sandboxPort,
       )
     )
@@ -1275,7 +1274,8 @@ export class PreviewShareManager {
     let generation = share.containerGeneration;
     if (sandbox !== undefined && instance.state === 'running' && instance.desired === 'running') {
       const currentGeneration = containerGenerationOf(sandbox);
-      const listeners = (await this.options.listListeningProcesses?.(project)) ?? [];
+      const listeners =
+        (await this.options.listListeningProcesses?.(project, { fresh: true })) ?? [];
       offline =
         !sandbox.running ||
         !currentGeneration ||

@@ -798,7 +798,7 @@ export class LocalPreviewManager {
         }
         if (state.share.targetPort !== null) {
           const processes = await this.options
-            .listListeningProcesses?.(project)
+            .listListeningProcesses?.(project, { fresh: true })
             .catch(() => undefined);
           if (
             localTargetConfirmedMissing(error) &&
