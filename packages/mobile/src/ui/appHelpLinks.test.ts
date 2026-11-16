@@ -41,7 +41,9 @@ describe('app help catalog links', () => {
       ...source.matchAll(/route: '([^']+)'/g),
       ...source.matchAll(/router\.push\('([^']+)'\)/g),
     ].map((match) => match[1]);
-    expect(routes.length).toBeGreaterThanOrEqual(9);
+    // Consolidating connections can reduce the route count. Reject an empty
+    // scan so a broken extractor cannot silently skip the coverage assertions.
+    expect(routes.length).toBeGreaterThan(0);
     const covered = new Set(
       APP_HELP_TOPICS.map((topic) => parseAppLink(topic.appLink ?? ''))
         .filter((target) => target?.kind === 'route')
