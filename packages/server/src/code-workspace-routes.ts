@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   CodeWorkspaceUnavailableError,
   createCodeWorkspaceRecovery,
+  describeCodeWorkspaceFailure,
   type CodeWorkspaceRecovery,
 } from './code-workspace-recovery.js';
 import type { ServerContext } from './server-context.js';
@@ -72,7 +73,10 @@ export function installCodeWorkspaces(
       );
       return result;
     } catch (error) {
-      request.log.warn({ err: error, sessionId: id }, 'verity: session code workspace unavailable');
+      request.log.warn(
+        { ...describeCodeWorkspaceFailure(error), sessionId: id },
+        'verity: session code workspace unavailable',
+      );
       reply.code(409);
       return codeWorkspaceUnavailable(
         error instanceof CodeWorkspaceUnavailableError

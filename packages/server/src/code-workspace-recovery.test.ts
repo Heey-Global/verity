@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import {
   CodeWorkspaceUnavailableError,
+  describeCodeWorkspaceFailure,
   createCodeWorkspaceRecovery,
   type CodeWorkspaceRecoveryDeps,
 } from './code-workspace-recovery.js';
@@ -256,6 +257,39 @@ describe('legacy Documents session conversion', () => {
     });
     await expect(recovery.convert('s')).resolves.toBeNull();
     expect(f.session().worktree).toBe(f.view);
+  });
+
+  it('leaves a local project whose commits hold no code in its Documents view', async () => {
+    const f = fixture();
+    // Committed agent instructions alone: the Files panel still calls this Documents.
+    const clone = join(f.dir, 'clones', 'notes');
+    mkdirSync(clone, { recursive: true });
+    git(['init', '-q', '-b', 'main', clone]);
+    writeFileSync(join(clone, 'AGENTS.md'), '# Notes\n');
+    git(['-C', clone, 'add', '-A']);
+    git(['-C', clone, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init']);
+    const project = { id: 'p', owner: 'o', repo: 'r', kind: 'local', cloneDir: 'notes' };
+    const recovery = createCodeWorkspaceRecovery({
+      ...f.deps,
+      store: { ...f.deps.store, getProject: async () => project as unknown as ProjectRecord },
+    });
+    await expect(recovery.convert('s')).resolves.toBeNull();
+    expect(f.session().worktree).toBe(f.view);
+  });
+
+  it('logs a failed Git step without its command line or credentials', () => {
+    const failure = Object.assign(
+      new Error('Command failed: git fetch https://x:ghp_secret@host/r'),
+      {
+        code: 128,
+        stderr: 'fatal: unable to access https://x:ghp_secret@host/r',
+      },
+    );
+    const fields = describeCodeWorkspaceFailure(
+      new CodeWorkspaceUnavailableError('restore failed', 'unrecoverable', { cause: failure }),
+    );
+    expect(JSON.stringify(fields)).not.toContain('ghp_secret');
+    expect(fields).toMatchObject({ reason: 'unrecoverable', cause: { exitCode: 128 } });
   });
 
   it("converts at the conductor's own turn start even behind a queued turn", async () => {

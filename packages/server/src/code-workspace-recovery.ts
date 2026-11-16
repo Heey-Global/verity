@@ -2,7 +2,7 @@ import type { EventStore, ProjectRecord, SessionMoveStore, SessionRecord } from 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath, rm } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
   documentViewForSession,
@@ -10,8 +10,9 @@ import {
   isDocumentWorkspace,
 } from './document-workspace.js';
 import { containerPathFor } from './project-backend.js';
-import { legacySessionCodePath } from './project-code.js';
+import { hasCodeContent, legacySessionCodePath } from './project-code.js';
 import { projectClonePath } from './provisioner.js';
+import { describeCheckoutFailure } from './session-repositories.js';
 import { addExistingBranchWorktree, type WorktreeProvisioner } from './worktree.js';
 
 const execFileAsync = promisify(execFile);
@@ -31,6 +32,21 @@ export class CodeWorkspaceUnavailableError extends Error {
     super(message, options);
     this.name = 'CodeWorkspaceUnavailableError';
   }
+}
+
+/**
+ * Log fields for a failed recovery. A Git failure's own message is its full command
+ * line, and its output can carry a remote URL with credentials after a fetch; only
+ * the redacted, bounded detail of a checkout failure is logged.
+ */
+export function describeCodeWorkspaceFailure(error: unknown): Record<string, unknown> {
+  if (!(error instanceof CodeWorkspaceUnavailableError))
+    return { cause: describeCheckoutFailure(error) };
+  return {
+    message: error.message,
+    reason: error.reason,
+    ...(error.cause !== undefined ? { cause: describeCheckoutFailure(error.cause) } : {}),
+  };
 }
 
 /** Where the converted session's code came from, in the order they are tried. */
@@ -158,8 +174,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
   async function dropStaleRegistration(clone: string, target: string): Promise<void> {
     const admin = join(clone, '.git', 'worktrees', basename(target));
     const gitdir = await readFile(join(admin, 'gitdir'), 'utf8').catch(() => null);
-    // Host, container or relative form: the entry must name this very checkout.
-    if (gitdir === null || !gitdir.trim().endsWith(`/${basename(target)}/.git`)) return;
+    // The entry must name this very checkout, never another one that shares its name.
+    if (gitdir === null || resolve(admin, gitdir.trim()) !== join(target, '.git')) return;
     if (await exists(target)) return;
     await rm(admin, { recursive: true, force: true });
   }
@@ -231,6 +247,13 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       );
     }
     const target = legacySessionCodePath(session.worktree, sessionId);
+    // The Files panel's rule: a local project is a code project only once it holds code.
+    if (
+      project.kind === 'local' &&
+      !(target && (await hasCodeContent(target))) &&
+      !(await hasCodeContent(clone))
+    )
+      return null;
     if (!target || dirname(target) !== join(clone, '.verity-sessions'))
       throw new CodeWorkspaceUnavailableError(
         `${session.worktree} is outside project ${projectId}'s clone`,

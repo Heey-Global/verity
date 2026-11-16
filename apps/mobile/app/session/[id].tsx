@@ -5366,7 +5366,7 @@ function SessionFilesSheet({
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
         setCodeAvailable(dir.codeAvailable ?? true);
-        setCodeMissing(dir.codeWorkspaceUnavailable === true);
+        if (root === 'worktree') setCodeMissing(dir.codeWorkspaceUnavailable === true);
         if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
         if (
           !initialFilePath &&

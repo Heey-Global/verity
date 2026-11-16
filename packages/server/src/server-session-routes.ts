@@ -21,7 +21,10 @@ import {
 } from './branches.js';
 import { type PushFirePoints } from './push-fire-points.js';
 import { SandboxUnavailableError } from './sandbox-git.js';
-import { CodeWorkspaceUnavailableError } from './code-workspace-recovery.js';
+import {
+  CodeWorkspaceUnavailableError,
+  describeCodeWorkspaceFailure,
+} from './code-workspace-recovery.js';
 import { codeWorkspaceUnavailable, installCodeWorkspaces } from './code-workspace-routes.js';
 import { registerServerSessionMove } from './server-session-move.js';
 import { type ServerContext } from './server-context.js';
@@ -296,7 +299,10 @@ export function installSessionRoutes(
         // The turn start converts a legacy Documents session; one it cannot convert
         // never runs with the Documents view standing in for its checkout.
         if (error instanceof CodeWorkspaceUnavailableError) {
-          request.log.warn({ err: error, sessionId: id }, 'verity: turn without code workspace');
+          request.log.warn(
+            { ...describeCodeWorkspaceFailure(error), sessionId: id },
+            'verity: turn without code workspace',
+          );
           reply.code(409);
           return codeWorkspaceUnavailable(error);
         }
