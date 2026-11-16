@@ -2889,10 +2889,10 @@ describe('ProvisionerImpl (#174)', () => {
       }
     },
   );
-
-  it('retains existing local history and legacy Documents while allocating code worktrees', async () => {
+  it('retains local history and leaves missing legacy code siblings to session recovery', async () => {
     const root = mkdtempSync(join(tmpdir(), 'local-code-resume-'));
-    const id = randomUUID();
+    const id = randomUUID(),
+      sessionId = randomUUID();
     await ctx.store.upsertProject({
       id,
       ...baseInput,
@@ -2918,7 +2918,7 @@ describe('ProvisionerImpl (#174)', () => {
       'initial',
     ]);
     const head = execFileSync('git', ['-C', clone, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-    const sessionId = randomUUID();
+    execFileSync('git', ['-C', clone, 'branch', `code-${sessionId}`]);
     const view = join(clone, '.verity-document-sessions', 'existing');
     mkdirSync(view, { recursive: true });
     writeFileSync(join(view, 'note.md'), 'keep');
@@ -2939,7 +2939,7 @@ describe('ProvisionerImpl (#174)', () => {
         head,
       );
       expect(readFileSync(join(view, 'note.md'), 'utf8')).toBe('keep');
-      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(true);
+      expect(existsSync(join(clone, '.verity-sessions', `code-${sessionId}`, '.git'))).toBe(false);
       expect((await ctx.store.getSession(sessionId))?.worktree).toBe(view);
     } finally {
       rmSync(root, { recursive: true, force: true });

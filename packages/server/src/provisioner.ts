@@ -56,7 +56,6 @@ import type { BuildDiagnosticStore } from './build-diagnostics.js';
 import type { DerivedImageReferences } from './derived-image-references.js';
 import { createSignedEmptyCommit, createSignedMergeCommit } from './signed-bootstrap.js';
 import type { HistorySigningIdentity } from './sign-history.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
 import { mkdir as mkdirDocumentRoot } from 'node:fs/promises';
 import { FORGE_PROXY_CA_FILE } from './brokered-forge-proxy.js';
 import { DEVCONTAINER_BUILDER_SOCKET_DIRECTORY } from './self-update/deployment-spec.js';
@@ -3510,24 +3509,8 @@ export class ProvisionerImpl implements Provisioner {
     }
     await this.serializeProjectCheckoutOperation(projectId, async () => {
       await this.doClone(project);
-      const sessions = await this.opts.store.listSessions();
-      for (const session of sessions) {
-        if (
-          session.projectId !== projectId ||
-          !session.worktree.split('/').includes('.verity-document-sessions')
-        )
-          continue;
-        const branch = `code-${session.sessionId}`;
-        const path = join(clonePath, '.verity-sessions', branch);
-        if (this.isDir(path)) continue;
-        await createGitWorktreeProvisioner({
-          repoDir: clonePath,
-          worktreeRoot: join(clonePath, '.verity-sessions'),
-          git: async (args) => {
-            await this.git(['-c', 'core.hooksPath=/dev/null', ...args]);
-          },
-        }).add(branch);
-      }
+      // Session recovery owns sibling creation, branch reuse and retirement journals.
+      // Preparing every legacy sibling here races recovery and can replace saved history.
     });
   }
 

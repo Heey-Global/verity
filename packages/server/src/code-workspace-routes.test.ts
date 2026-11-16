@@ -9,6 +9,7 @@ import { expect, it, vi } from 'vitest';
 import type { ServerDeps } from './server-deps.js';
 import { buildControlPlane } from './app.js';
 import { SessionStorage } from './session-storage.js';
+import { createProvisioner, fakeDocker } from './provisioner.test-helper.js';
 
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
 const git = (args: string[]) =>
@@ -23,12 +24,14 @@ async function harness({
   model = 'm',
   configured = true,
   kind = 'github',
+  prepareLocal = false,
   sandboxGit,
 }: {
   repository: boolean;
   model?: string;
   configured?: boolean;
   kind?: 'github' | 'local';
+  prepareLocal?: boolean;
   sandboxGit?: ServerDeps['sandboxGit'];
 }) {
   const ctx = await createIsolatedTestDb();
@@ -80,6 +83,19 @@ async function harness({
       pr: async () => null,
     }),
     conductor: { backend, codexBackend: backend },
+    ...(prepareLocal
+      ? {
+          provisioner: createProvisioner({
+            store: ctx.store,
+            db: ctx.db,
+            docker: fakeDocker().client,
+            projectTokenMint: async () => undefined,
+            defaultImageRef: 'image:test',
+            hostCloneRoot: cloneRoot,
+            prepareLocalWorkspace: undefined,
+          }),
+        }
+      : {}),
     ...(sandboxGit ? { sandboxGit } : {}),
     logger: false,
   });
@@ -385,3 +401,24 @@ it('keeps a local Documents-only project in Documents without offering Restore',
     await h.close();
   }
 });
+
+it.each(['restore', 'turn'])(
+  'recovers a surviving local branch through real preparation on %s',
+  async (action) => {
+    const h = await harness({ repository: true, kind: 'local', prepareLocal: true });
+    try {
+      git(['-C', h.clone, 'branch', 'code-s']);
+      const response = await h.app.inject(
+        action === 'restore'
+          ? { method: 'POST', url: '/sessions/s/code-workspace/restore' }
+          : { method: 'POST', url: '/sessions/s/turns', payload: { prompt: 'Continue' } },
+      );
+      expect(response.statusCode).toBe(action === 'restore' ? 200 : 202);
+      if (action === 'turn') await vi.waitFor(() => expect(h.cwd).toHaveBeenCalledWith(h.target));
+      expect(git(['-C', h.target, 'branch', '--show-current']).trim()).toBe('code-s');
+      expect((await h.ctx.store.getSession('s'))?.worktree).toBe(h.target);
+    } finally {
+      await h.close();
+    }
+  },
+);
