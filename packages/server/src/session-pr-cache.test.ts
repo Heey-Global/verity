@@ -343,3 +343,50 @@ describe('shared session PR cache', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 });
+
+it.each(['closed', 'merged'] as const)(
+  'holds %s PRs with stale running checks for five minutes',
+  async (phase) => {
+    let now = 0;
+    const load = vi.fn(async () => ({ ...pr, phase }));
+    const cache = createSessionPrCache({ load, now: () => now });
+    await cache.get(session);
+    now = 30_000;
+    await cache.get(session);
+    await cache.get(session, { background: true });
+    now = 299_999;
+    await cache.get(session);
+    expect(load).toHaveBeenCalledTimes(1);
+    now = 300_000;
+    await cache.get(session, { background: true });
+    expect(load).toHaveBeenCalledTimes(2);
+  },
+);
+
+it('does not mistake successfully read unknown CI for an outage', async () => {
+  let now = 0;
+  const load = vi.fn(async () => ({
+    ...pr,
+    pipeline: 'unknown' as const,
+    checks: { completed: 0, total: 0, successful: 0, failed: 0, pending: 0 },
+  }));
+  const cache = createSessionPrCache({ load, now: () => now });
+  for (now = 0; now <= 60_000; now += 15_000) await cache.get(session);
+  expect(load).toHaveBeenCalledTimes(5);
+});
+
+it('keeps explicit observation failures non-actionable and backed off', async () => {
+  let now = 0;
+  const load = vi.fn(async () => ({
+    ...pr,
+    pipeline: 'failure' as const,
+    mergeState: 'dirty' as const,
+    observationFailed: true,
+  }));
+  const cache = createSessionPrCache({ load, now: () => now });
+  expect(await cache.get(session)).toMatchObject({ pipeline: 'unknown', observationFailed: true });
+  expect(await cache.get(session)).not.toHaveProperty('mergeState');
+  now = 15_000;
+  await cache.get(session);
+  expect(load).toHaveBeenCalledTimes(1);
+});

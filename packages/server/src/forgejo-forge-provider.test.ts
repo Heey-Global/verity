@@ -167,11 +167,11 @@ it('cools down failed repository scans instead of repeating requests on every po
   const { provider, json } = fixture();
   json.mockRejectedValue(new ForgejoRequestError(500));
   const service = provider.prServiceFor('/checkout');
-  await service.prStatusForBranch('feature');
-  await service.prStatusForBranch('feature');
+  await expect(service.prStatusForBranch('feature')).rejects.toThrow('Repository observation');
+  await expect(service.prStatusForBranch('feature')).rejects.toThrow('Repository observation');
   expect(json).toHaveBeenCalledTimes(1);
-  vi.advanceTimersByTime(5_001);
-  await service.prStatusForBranch('feature');
+  vi.advanceTimersByTime(30_001);
+  await expect(service.prStatusForBranch('feature')).rejects.toThrow('Repository observation');
   expect(json).toHaveBeenCalledTimes(2);
 });
 
