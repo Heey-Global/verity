@@ -241,7 +241,8 @@ export interface ForgeDiscoveryPage {
 
 export interface ForgeProvider {
   discover?(ref: ForgeRepoRef, page: number): Promise<ForgeDiscoveryPage>;
-  repositoryPrService?(ref: ForgeRepoRef): ForgePrService;
+  /** Opaque scope changes with credentials and explicit status invalidation. */
+  repositoryPrService?(ref: ForgeRepoRef, observationScope?: object): ForgePrService;
   readonly id: ForgeProviderId;
   readonly capabilities: ForgeCapabilities;
   /** The repository a git remote URL points at on this forge, or null for any other host. */
@@ -302,17 +303,18 @@ export class ForgeMergePermissionError extends Error {
  * header can show `PR #N` alongside the branch-derived `Issue #N`. Independent of
  * the issue chip: a branch may have a PR but no parseable issue, or vice versa.
  *
- * Degrades gracefully to `null` on every failure path (no token, no GitHub remote,
- * API error, branch with no open PR) — the header simply shows no PR chip and never
- * errors. Results are cached per branch with a TTL so the branch endpoint can be hit
- * repeatedly without hammering the API / burning rate limit.
+ * Best-effort header helpers degrade gracefully to `null`. Repository-bound single
+ * observations can report failures explicitly so status caches distinguish an
+ * unavailable provider from a branch without a PR. Results are cached per branch
+ * with a TTL to avoid hammering the API / burning rate limit.
  */
 export interface ForgePrService {
   /** The open PR number whose head is `branch`, or null if there's no open PR / the
    *  lookup couldn't run. Never throws. Cached per branch for the configured TTL. */
   prForBranch(branch: string): Promise<number | null>;
-  /** Compact live status for the open PR whose head is `branch`, or null if absent /
-   * unavailable. Includes title, URL and aggregate check-run counts for the head SHA. */
+  /** Compact status for the PR whose head is `branch`, or null if absent. Bound
+   * readers may throw on unavailable observations; status caches provide safe
+   * degraded results. Includes title, URL and check-run counts for the head SHA. */
   prStatusForBranch(branch: string): Promise<PullRequestStatus | null>;
   /**
    * The PR that best represents a session spanning SEVERAL branches (issue: the PR
@@ -331,6 +333,8 @@ export interface ForgePrService {
 }
 
 export interface PullRequestStatus {
+  /** A failed observation, distinct from a healthy pipeline with no CI checks. */
+  observationFailed?: boolean;
   /** Permission of the configured credential, independent of conflict/CI status. */
   viewerCanMerge?: boolean;
   number: number;

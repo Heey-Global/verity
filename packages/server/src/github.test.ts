@@ -1277,7 +1277,7 @@ describe('createGitHubPrService', () => {
     await expect(firstLookup).resolves.toBeNull();
     await expect(secondLookup).resolves.toBeNull();
     expect(secondToken).not.toHaveBeenCalled();
-    expect(cooldown.until).toBe(3001);
+    expect((cooldown as { tokenUntil?: number }).tokenUntil).toBe(3001);
   });
 
   it('marks cached checks unknown and backs off when normal token minting fails', async () => {
