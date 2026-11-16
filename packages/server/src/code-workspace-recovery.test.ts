@@ -16,12 +16,23 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+// Fresh fixture repositories have no hooks and global config is off. A push must not
+// carry a hooks override at all: the sandbox git guard refuses every such push.
 const git = (args: string[]) =>
-  execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-    env,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  execFileSync(
+    'git',
+    [
+      ...(args.includes('push') ? [] : ['-c', 'core.hooksPath=/dev/null']),
+      '-c',
+      'commit.gpgsign=false',
+      ...args,
+    ],
+    {
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
 
 interface Move {
   source_worktree: string;
@@ -286,5 +297,24 @@ describe('legacy Documents session conversion', () => {
     await recovery.beforeTurn('s', { starting: true });
     await expect(restore).rejects.toMatchObject({ reason: 'busy' });
     expect(f.session().worktree).toBe(f.target);
+  });
+
+  it('checks the branch out again after its locked checkout was deleted outside Git', async () => {
+    const f = fixture();
+    git(['-C', f.clone, 'worktree', 'add', '-qb', 'code-s', f.target, 'main']);
+    git([
+      '-C',
+      f.clone,
+      'worktree',
+      'lock',
+      '--reason',
+      'Verity session: managed by server',
+      f.target,
+    ]);
+    rmSync(f.target, { recursive: true, force: true });
+    // Git still lists the checkout and refuses its branch until that one entry goes.
+    const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
+    expect(result?.source).toBe('branch');
+    expect(head(f.target)).toBe('code-s');
   });
 });

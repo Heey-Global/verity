@@ -1,8 +1,8 @@
 import type { EventStore, ProjectRecord, SessionMoveStore, SessionRecord } from '@verity/store';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstat, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { lstat, readFile, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   documentViewForSession,
@@ -126,6 +126,7 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     }
     await deps.ensureWorkspace({ ...session, worktree: target });
     if (await exists(target)) return 'journal';
+    await dropStaleRegistration(clone, target);
     const options = {
       repoDir: clone,
       worktreeRoot: dirname(target),
@@ -147,6 +148,20 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
     // The session row is about to name `target`; a checkout anywhere else would strand it.
     if (created !== target) throw new Error(`Unexpected code workspace path ${created}`);
     return source;
+  }
+
+  /**
+   * A checkout deleted outside Git leaves its registration, locked like every session
+   * worktree, and Git then refuses to check its branch out again. Only that one entry
+   * goes: the branch and its commits stay, and the directory is already gone.
+   */
+  async function dropStaleRegistration(clone: string, target: string): Promise<void> {
+    const admin = join(clone, '.git', 'worktrees', basename(target));
+    const gitdir = await readFile(join(admin, 'gitdir'), 'utf8').catch(() => null);
+    // Host, container or relative form: the entry must name this very checkout.
+    if (gitdir === null || !gitdir.trim().endsWith(`/${basename(target)}/.git`)) return;
+    if (await exists(target)) return;
+    await rm(admin, { recursive: true, force: true });
   }
 
   /** Publish what the old view still holds; copy only what could not be published. */
@@ -282,7 +297,8 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
         'the session is busy; its code workspace is restored when the current turn ends',
         'busy',
       );
-    await deps.afterCommit?.(sessionId, legacy.worktree);
+    // The conversion is durable by now; a stale cache or overview only refreshes later.
+    await deps.afterCommit?.(sessionId, legacy.worktree).catch(() => undefined);
     return claim.value;
   }
 
@@ -322,8 +338,9 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
           return;
         throw error instanceof CodeWorkspaceUnavailableError
           ? error
-          : new CodeWorkspaceUnavailableError(
-              `the code workspace could not be restored: ${(error as Error).message}`,
+          : // Git output can carry credentials from a fetch; it stays in the server log.
+            new CodeWorkspaceUnavailableError(
+              'the code workspace could not be restored; the server log names the cause',
               'unrecoverable',
               { cause: error },
             );

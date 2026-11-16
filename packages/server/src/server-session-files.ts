@@ -257,11 +257,12 @@ export function registerServerSessionFiles(
         ? await deps.eventStore.getProject(session.projectId)
         : undefined;
       if (project?.kind === 'control_plane') return false;
-      if (project?.kind !== 'local')
-        // A missing checkout is reported, so the client can offer to restore it.
-        return isDirectory(
-          legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree,
-        );
+      if (project?.kind !== 'local') {
+        // A legacy session's checkout is restorable; an ordinary session's is reported
+        // by its turn, which restores a retired checkout from its journal.
+        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+        return legacy ? isDirectory(legacy) : true;
+      }
       const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
       if (await hasCodeContent(code)) return true;
       return deps.projectCloneRoot
@@ -313,7 +314,7 @@ export function registerServerSessionFiles(
           project &&
           project.kind !== 'local' &&
           project.kind !== 'control_plane' &&
-          (legacy !== undefined || !(await isDirectory(session.worktree)))
+          legacy !== undefined
         )
           throw new SessionFileRootUnavailableError(
             "This session's code workspace is unavailable. Restore it to continue.",

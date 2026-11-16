@@ -77,9 +77,12 @@ export function installCodeWorkspaces(
       return codeWorkspaceUnavailable(
         error instanceof CodeWorkspaceUnavailableError
           ? error
-          : new CodeWorkspaceUnavailableError((error as Error).message, 'unrecoverable', {
-              cause: error,
-            }),
+          : // Git output can carry credentials from a fetch; it stays in the log above.
+            new CodeWorkspaceUnavailableError(
+              'the code workspace could not be restored; the server log names the cause',
+              'unrecoverable',
+              { cause: error },
+            ),
       );
     }
   });
