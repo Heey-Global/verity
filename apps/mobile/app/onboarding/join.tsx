@@ -299,7 +299,7 @@ export function JoinView({
     );
   }
   const accept = () => {
-    if (name.trim() !== '') run(phase.link, false);
+    if (name.trim() !== '' && name.trim().length <= 80) run(phase.link, false);
   };
   return (
     <Frame
@@ -308,7 +308,7 @@ export function JoinView({
           <Button
             label="Join project"
             onPress={accept}
-            disabled={name.trim() === ''}
+            disabled={name.trim() === '' || name.trim().length > 80}
             loading={joining}
             fullWidth
           />
@@ -325,7 +325,16 @@ export function JoinView({
       <Group>
         <Row leading={{ icon: 'folder', quiet: true }} title={`The project “${projectName}”`} />
       </Group>
-      <TextField label="Your name in the team" value={name} onChangeText={setName} />
+      <TextField
+        label="Your name in the team"
+        value={name}
+        onChangeText={setName}
+        error={
+          name.trim().length > 80
+            ? { title: 'Name is too long', message: 'Use 80 characters or fewer.' }
+            : undefined
+        }
+      />
       {phase.problem ? <SystemNotice intent="needsSetup" title={phase.problem} /> : null}
     </Frame>
   );

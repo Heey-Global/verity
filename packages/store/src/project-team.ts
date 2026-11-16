@@ -841,7 +841,7 @@ export class ProjectTeamStore {
     });
   }
 
-  /** Retire replay secrets after their window without removing completion bindings. */
+  /** Retire expired replay secrets and fence joins that never authorized completion. */
   async clearExpiredJoinCredentials(now = new Date()): Promise<void> {
     await this.db
       .updateTable('team_join_admissions')
@@ -849,6 +849,60 @@ export class ProjectTeamStore {
       .where('expires_at', '<=', now)
       .where('device_token_encrypted', 'is not', null)
       .execute();
+    const expired = await this.db
+      .selectFrom('project_invitations as i')
+      .innerJoin('team_join_admissions as a', 'a.redemption_id', 'i.redemption_id')
+      .innerJoin('users as u', 'u.id', 'i.redeemed_by_user_id')
+      .select('i.id')
+      .where('i.state', '=', 'redeemed')
+      .where('u.status', '=', 'disabled')
+      .where(
+        sql<boolean>`not exists (select 1 from team_outbox o where o.kind = 'team.join.commit' and o.payload::jsonb ->> 'redemptionId' = i.redemption_id)`,
+      )
+      .where((eb) => eb.or([eb('a.expires_at', '<=', now), eb('i.expires_at', '<=', now)]))
+      .limit(20)
+      .execute();
+    for (const candidate of expired) {
+      await this.db.transaction().execute(async (tx) => {
+        // Completion takes the same lock: cleanup cannot erase an authorization
+        // queued after the expiry scan but before this transaction acquired it.
+        const row = await tx
+          .selectFrom('project_invitations')
+          .select(['state', 'redemption_id', 'redeemed_by_user_id'])
+          .where('id', '=', candidate.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (row?.state !== 'redeemed' || row.redeemed_by_user_id === null) return;
+        const authorized = await tx
+          .selectFrom('team_outbox')
+          .select('operation_id')
+          .where('kind', '=', 'team.join.commit')
+          .where(sql<string>`payload::jsonb ->> 'redemptionId'`, '=', row.redemption_id)
+          .executeTakeFirst();
+        if (authorized !== undefined) return;
+        const person = await tx
+          .selectFrom('users')
+          .select('status')
+          .where('id', '=', row.redeemed_by_user_id)
+          .executeTakeFirst();
+        if (person?.status !== 'disabled') return;
+        await tx
+          .updateTable('project_invitations')
+          .set({ state: 'failed' })
+          .where('id', '=', candidate.id)
+          .execute();
+        await tx
+          .updateTable('team_join_admissions')
+          .set({ device_token_encrypted: null })
+          .where('redemption_id', '=', row.redemption_id)
+          .execute();
+        await tx
+          .deleteFrom('project_memberships')
+          .where('user_id', '=', row.redeemed_by_user_id)
+          .execute();
+        await tx.deleteFrom('auth_tokens').where('user_id', '=', row.redeemed_by_user_id).execute();
+      });
+    }
   }
 
   /** Team operations due for delivery to Uplink, oldest first. */

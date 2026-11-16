@@ -140,3 +140,14 @@ describe('joinRedirect', () => {
     expect(joinRedirect(valid.replace('verity.build', 'evil.example'))).toBeUndefined();
   });
 });
+
+it('keeps an overlong name editable before starting enrollment', async () => {
+  const props = views({ initialLink: valid });
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'x'.repeat(81));
+  expect(screen.getByText('Use 80 characters or fewer.')).toBeOnTheScreen();
+  expect(screen.getByLabelText('Join project')).toBeDisabled();
+  expect(props.join).not.toHaveBeenCalled();
+  fireEvent.changeText(screen.getByLabelText('Your name in the team'), 'Lena');
+  fireEvent.press(screen.getByLabelText('Join project'));
+  await waitFor(() => expect(props.join).toHaveBeenCalled());
+});

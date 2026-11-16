@@ -638,3 +638,27 @@ it.each(['expired', 'authority', 'unshareable'])(
     expect(original.session_id).toBe('session-r1');
   },
 );
+
+it('fences expired redemptions that never authorized completion without hiding the failed invitation', async () => {
+  const created = await invite();
+  const joined = await redeem(created.secret);
+  await team().clearExpiredJoinCredentials(new Date(Date.now() + 11 * 60_000));
+  expect(
+    (await team().listInvitations('p1')).find((entry) => entry.id === created.invitation.id)?.state,
+  ).toBe('failed');
+  expect(
+    await ctx.db
+      .selectFrom('auth_tokens')
+      .select('id')
+      .where('user_id', '=', joined.userId)
+      .execute(),
+  ).toEqual([]);
+  expect(
+    await ctx.db
+      .selectFrom('project_memberships')
+      .select('user_id')
+      .where('user_id', '=', joined.userId)
+      .execute(),
+  ).toEqual([]);
+  expect(await team().confirmJoin('r1')).toBe(false);
+});
