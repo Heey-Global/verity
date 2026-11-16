@@ -20,6 +20,7 @@ export interface PullRequestReadyMonitorOptions {
   /** Whoever ran the session's last turn; the PR is their work. */
   initiatorOf?(sessionId: string): string | undefined | Promise<string | undefined>;
   listSessions(): Promise<SessionRecord[]>;
+  eligible?(session: SessionRecord): Promise<boolean>;
   statusFor(session: SessionRecord): Promise<PullRequestStatus | null>;
   wasSent(sessionId: string, marker: string): Promise<boolean>;
   markSent(sessionId: string, marker: string): Promise<boolean>;
@@ -75,6 +76,7 @@ export function startPullRequestReadyMonitor(
   const pending = new Set<string>();
 
   const inspect = async (session: SessionRecord): Promise<void> => {
+    if (options.eligible && !(await options.eligible(session))) return;
     const pr = await options.statusFor(session);
     if (!isReady(pr)) return;
     const marker = pullRequestReadyMarker(pr);
@@ -85,8 +87,14 @@ export function startPullRequestReadyMonitor(
     try {
       const context = await options.describeSession(session);
       const initiatorUserId = await options.initiatorOf?.(session.sessionId);
+      if (options.eligible && !(await options.eligible(session))) return;
       claim = await options.claimAttempt(session.sessionId, marker, Date.now());
       if (claim === undefined) return;
+      if (options.eligible && !(await options.eligible(session))) {
+        await options.finishAttempt(session.sessionId, marker, claim, 'unattempted', Date.now());
+        claim = undefined;
+        return;
+      }
       const outcome = await options.router.notify({
         key: `pr-ready:${session.sessionId}`,
         sessionId: session.sessionId,

@@ -273,3 +273,48 @@ describe('pull request ready push', () => {
     await expect(monitor.stop()).resolves.toBeUndefined();
   });
 });
+
+it.each(['before-read', 'during-read', 'during-claim'] as const)(
+  'honors project pause %s without spending notification delivery',
+  async (pauseAt) => {
+    let allowed = pauseAt !== 'before-read';
+    const sender = fakeSender();
+    const statusFor = vi.fn(async () => {
+      if (pauseAt === 'during-read') allowed = false;
+      return READY;
+    });
+    const finishAttempt = vi.fn(async () => undefined);
+    const markSent = vi.fn(async () => true);
+    const monitor = startPullRequestReadyMonitor({
+      eligible: async () => allowed,
+      router: routerFor(sender),
+      listSessions: async () => [SESSION],
+      statusFor,
+      wasSent: async () => false,
+      markSent,
+      claimAttempt: async () => {
+        if (pauseAt === 'during-claim') allowed = false;
+        return 'claim';
+      },
+      finishAttempt,
+      describeSession: async () => ({}),
+      pollMs: 60_000,
+    });
+    try {
+      await monitor.runOnce();
+      expect(statusFor).toHaveBeenCalledTimes(pauseAt === 'before-read' ? 0 : 1);
+      expect(sender.send.mock.calls).toHaveLength(0);
+      expect(markSent).not.toHaveBeenCalled();
+      if (pauseAt === 'during-claim')
+        expect(finishAttempt).toHaveBeenCalledWith(
+          SESSION.sessionId,
+          pullRequestReadyMarker(READY),
+          'claim',
+          'unattempted',
+          expect.any(Number),
+        );
+    } finally {
+      await monitor.stop();
+    }
+  },
+);
