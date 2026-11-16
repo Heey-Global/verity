@@ -1,3 +1,4 @@
+import { installRepositoryTools } from './server-repository-tools.js';
 import {
   createServerPush,
   createServerPushRuntime,
@@ -20,10 +21,6 @@ import { installRemoteControl } from './server-remote-control.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
-import {
-  createSessionRepositories,
-  registerSessionRepositoriesRoutes,
-} from './session-repositories.js';
 import { registerVulnerabilityFixRoute } from './vulnerability-fix.js';
 import { registerProjectContextRoutes } from './project-context-routes.js';
 import { registerUserContextRoutes } from './user-context-routes.js';
@@ -37,8 +34,6 @@ import { registerAuditRoutes } from './audit-routes.js';
 import { createBackupAlertNotifier } from './backup/alert-notifier.js';
 import { registerBackupRoutes } from './backup/routes.js';
 import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
-import { registerGitSignRoute } from './git-sign-route.js';
-import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
@@ -54,8 +49,6 @@ import {
   registerManagedDevServerAgentRoute,
   registerManagedDevServerRoutes,
 } from './managed-dev-server-routes.js';
-import { registerPackageInstallRoute } from './package-install-route.js';
-import { registerPackageArtifactRoutes } from './package-artifact-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
@@ -64,7 +57,6 @@ import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
 import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
-import { registerProjectRepoRoute } from './project-repo-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerPushTokenRoute } from './push-token-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
@@ -397,48 +389,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // Declared further down; read only when a request arrives.
     availableModels: () => availableModels(),
   });
-  registerGitSignRoute(app, {
-    eventStore: deps.eventStore,
-    ...(deps.signingCapabilities !== undefined
-      ? { signingCapabilities: deps.signingCapabilities }
-      : {}),
-    ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
-    ...(deps.sshSign !== undefined ? { sshSign: deps.sshSign } : {}),
-  });
-  registerGitHubTokenRoute(app);
-  if (deps.ghTokenCapabilities !== undefined) {
-    registerPackageArtifactRoutes(app, { capabilities: deps.ghTokenCapabilities });
-  }
-  registerPackageInstallRoute(app, {
-    store: deps.eventStore,
-    conductor,
-    appendNotice: async (sessionId, text) => {
-      await emitSessionEvent(deps.eventStore, deps.bus, sessionId, {
-        t: 'notice',
-        text,
-        role: 'agent',
-      });
-    },
-    ...(deps.ghTokenCapabilities !== undefined ? { capabilities: deps.ghTokenCapabilities } : {}),
-  });
-  const sessionRepositories = createSessionRepositories({
-    sessionStorage: deps.sessionStorage,
-    store: deps.eventStore,
-    cloneRoot: deps.projectCloneRoot,
-    git: deps.sandboxGit,
-  });
-  registerSessionRepositoriesRoutes(app, sessionRepositories);
-  if (deps.ghTokenCapabilities !== undefined && deps.projectRepository !== undefined) {
-    registerProjectRepoRoute(app, {
-      capabilities: deps.ghTokenCapabilities,
-      getProject: (projectId) => deps.eventStore.getProject(projectId),
-      repositoryFor: deps.projectRepository,
-      store: deps.eventStore,
-      openRepository: sessionRepositories.openForSandbox,
-      currentRepositoryBranch: sessionRepositories.currentBranch,
-      getSession: (id) => deps.eventStore.getSession(id),
-    });
-  }
+  installRepositoryTools(app, ctx);
   registerUserContextRoutes(app, deps.eventStore.userContext);
   installPeople(ctx, { agentLogin, persistPersonal });
   if (deps.dataRoot) registerProjectContextRoutes(app, deps.eventStore, deps.dataRoot);
