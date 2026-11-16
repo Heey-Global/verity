@@ -7,6 +7,7 @@ describe('original administrator AI accounts', () => {
     const update = vi.fn();
     const accounts = administratorProviderConnections(
       {
+        getVeritySettings: async () => undefined,
         getVeritySettingsRaw: async () =>
           ({
             claudeCodeOauthCredentialsJson: 'enc:v1:claude',
@@ -38,7 +39,7 @@ describe('original administrator AI accounts', () => {
   it('uses the original persistence and refresh pipeline for changes and disconnects', async () => {
     const update = vi.fn().mockResolvedValue(undefined);
     const accounts = administratorProviderConnections(
-      { getVeritySettingsRaw: async () => undefined },
+      { getVeritySettings: async () => undefined, getVeritySettingsRaw: async () => undefined },
       update,
     );
     await accounts.set('claude', { credential: 'renewed' });
@@ -57,4 +58,47 @@ describe('original administrator AI accounts', () => {
       opencodeDisabledModels: null,
     });
   });
+});
+
+it('materializes OpenCode changes and disconnects, restoring a failed change', async () => {
+  let settings = {
+    opencodeBaseUrl: 'https://old.example/v1',
+    opencodeApiKey: 'old-key',
+    opencodeModels: 'old-model',
+    opencodeDisabledModels: null,
+  };
+  const update = vi.fn(async (patch) => {
+    settings = { ...settings, ...patch };
+  });
+  const changed = vi.fn(async () => undefined);
+  const accounts = administratorProviderConnections(
+    {
+      getVeritySettings: async () => settings as never,
+      getVeritySettingsRaw: async () => settings as never,
+    },
+    update,
+    changed,
+  );
+  await accounts.set('opencode', {
+    credential: 'new-key',
+    baseUrl: 'https://new.example/v1',
+    models: 'new-model',
+  });
+  expect(changed).toHaveBeenLastCalledWith(
+    expect.objectContaining({ opencodeApiKey: 'new-key', opencodeModels: 'new-model' }),
+  );
+  changed.mockRejectedValueOnce(new Error('cannot materialize'));
+  await expect(
+    accounts.set('opencode', {
+      credential: 'bad-key',
+      baseUrl: 'https://bad.example/v1',
+      models: 'bad-model',
+    }),
+  ).rejects.toThrow('cannot materialize');
+  expect(settings.opencodeApiKey).toBe('new-key');
+  expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ opencodeApiKey: 'new-key' }));
+  await accounts.delete('opencode');
+  expect(changed).toHaveBeenLastCalledWith(
+    expect.objectContaining({ opencodeApiKey: null, opencodeModels: null }),
+  );
 });

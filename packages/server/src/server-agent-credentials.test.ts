@@ -38,3 +38,34 @@ it('saves administrator sign-ins through the existing refresh boundary and membe
   expect(set).toHaveBeenCalledWith('member', 'codex', { credential: 'member-login' });
   expect(refreshBoundary).toHaveBeenCalledTimes(1);
 });
+
+it('connects administrator OpenCode writes to the live materialization callback', async () => {
+  let settings = {};
+  const changed = vi.fn();
+  const credentials = createServerAgentCredentials({
+    deps: {
+      eventStore: {
+        getVeritySettingsRaw: async () => settings,
+        getVeritySettings: async () => settings,
+        updateVeritySettings: async (patch: object) => {
+          settings = { ...settings, ...patch };
+        },
+        updateTranscribeBackendMode: vi.fn(),
+      },
+      onOpenCodeSettingsChanged: changed,
+    },
+    lifecycle: { onClose: vi.fn() },
+  } as unknown as ServerContext);
+  await credentials.administratorAccounts.set('opencode', {
+    credential: 'key',
+    baseUrl: 'https://llm.example/v1',
+    models: 'model',
+  });
+  expect(changed).toHaveBeenCalledWith(
+    expect.objectContaining({
+      opencodeBaseUrl: 'https://llm.example/v1',
+      opencodeModels: 'model',
+      opencodeApiKey: 'key',
+    }),
+  );
+});

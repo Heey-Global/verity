@@ -44,6 +44,7 @@ function harness() {
   const administratorAccounts = administratorProviderConnections(
     {
       getVeritySettingsRaw: async () => instance as never,
+      getVeritySettings: async () => instance as never,
     },
     updateInstance,
   );
@@ -198,6 +199,18 @@ it('exposes original administrator logins only to their owner and disconnects th
       opencodeDisabledModels: null,
     });
     expect(stored.size).toBe(0);
+  } finally {
+    await app.close();
+  }
+});
+
+it('keeps another administrator on their own accounts rather than the original administrator controls', async () => {
+  const { app, stored } = harness();
+  stored.set('admin/claude', { credential: 'another-admin' });
+  try {
+    const response = await as(app, 'admin', 'GET', '/me/provider-connections');
+    expect(response.json().usesInstanceLogins).toBe(false);
+    expect(response.json().connections).toEqual([expect.objectContaining({ provider: 'claude' })]);
   } finally {
     await app.close();
   }

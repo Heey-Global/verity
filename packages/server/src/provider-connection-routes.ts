@@ -11,7 +11,7 @@ import type { administratorProviderConnections } from './administrator-provider-
 import type { AgentLoginService } from './agent-login.js';
 import { viewerId } from './view-state-routes.js';
 
-type Store = Pick<EventStore, 'userProviderConnections' | 'isActiveAdministrator'>;
+type Store = Pick<EventStore, 'userProviderConnections'>;
 
 const loginProvider = z.object({ provider: z.enum(['claude', 'codex']) }).strict();
 const anyProvider = z.object({ provider: z.enum(['claude', 'codex', 'opencode']) }).strict();
@@ -59,12 +59,10 @@ export function registerProviderConnectionRoutes(
   app.get('/me/provider-connections', async (request, reply) => {
     reply.header('cache-control', 'no-store');
     const userId = viewerId(request);
-    const [connections, administrator] = await Promise.all([
-      deps.administratorAccounts.owns(userId)
-        ? deps.administratorAccounts.status()
-        : deps.store.userProviderConnections.status(userId),
-      deps.store.isActiveAdministrator(userId),
-    ]);
+    const ownsInstance = deps.administratorAccounts.owns(userId);
+    const connections = ownsInstance
+      ? await deps.administratorAccounts.status()
+      : await deps.store.userProviderConnections.status(userId);
     return {
       connections: connections.map((connection) => ({
         provider: connection.provider,
@@ -73,7 +71,7 @@ export function registerProviderConnectionRoutes(
         updatedAt: connection.updatedAt.toISOString(),
       })),
       // The administrator's turns fall back to the instance login, which was theirs.
-      usesInstanceLogins: administrator,
+      usesInstanceLogins: ownsInstance,
     };
   });
 

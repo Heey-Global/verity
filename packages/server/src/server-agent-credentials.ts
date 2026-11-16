@@ -28,6 +28,7 @@ export function createServerAgentCredentials(ctx: ServerContext) {
   const administratorAccounts = administratorProviderConnections(
     deps.eventStore,
     storeAgentCredentials,
+    deps.onOpenCodeSettingsChanged,
   );
   const persistPersonal = (
     userId: string,
