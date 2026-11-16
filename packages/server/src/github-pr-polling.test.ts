@@ -75,6 +75,21 @@ it('rotates credentials during an outage without returning the old PR identity',
   expect(unavailable).toMatchObject({ observationFailed: true });
 });
 
+it('uses the configured legacy credential when the token broker rejects', async () => {
+  const fetch = vi.fn<HttpFetch>().mockResolvedValue(response([{ number: 9 }]));
+  const service = createGitHubPrService({
+    repoDir: '',
+    identity,
+    asyncToken: async () => {
+      throw new Error('broker offline');
+    },
+    token: 'legacy-fixture',
+    fetch,
+  });
+  expect(await service.prStatusForBranch('feature')).toMatchObject({ number: 9 });
+  expect(fetch.mock.calls[0]?.[1]?.headers?.Authorization).toBe('Bearer legacy-fixture');
+});
+
 it('preserves an explicit rate limit when credentials rotate', async () => {
   let token = 'old';
   const fetch = vi.fn<HttpFetch>().mockResolvedValue(response({}, 429, { 'retry-after': '120' }));

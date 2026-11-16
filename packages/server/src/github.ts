@@ -677,7 +677,13 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     const token = opts.asyncToken
       ? await readGitHubPollingToken(
           tokenState,
-          async () => (await opts.asyncToken!(id.owner, id.repo)) ?? resolveToken(),
+          async () => {
+            try {
+              return (await opts.asyncToken!(id.owner, id.repo)) ?? resolveToken();
+            } catch {
+              return resolveToken();
+            }
+          },
           now,
           failureBackoffMs,
         )
