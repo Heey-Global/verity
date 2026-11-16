@@ -283,6 +283,27 @@ it('keeps the durable waiting clock through failed update discovery until a conf
   expect(recreate).not.toHaveBeenCalled();
 });
 
+it('keeps an offered update wait through repeated classification failures until discovery clears it', async () => {
+  const f = await fixture(12);
+  f.provisioner.attachProjectBusyProbe(async () => ['dev_server']);
+  await f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set(['p']) });
+  const initial = (await ctx.store.sandboxUpdateState.list()).get('p');
+  expect(initial?.reasons).toEqual(['dev_server']);
+  vi.mocked(f.internals.classifyProjectSandbox).mockRejectedValue(new Error('inspect failed'));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(
+      f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set(['p']) }),
+    ).rejects.toThrow();
+    expect((await ctx.store.sandboxUpdateState.list()).get('p')).toEqual(initial);
+    expect(f.provisioner.sandboxUpdateStates().get('p')).toEqual(initial);
+  }
+  await expect(
+    f.provisioner.reconcileRelays([f.project], { updateAvailable: new Set() }),
+  ).rejects.toThrow();
+  expect((await ctx.store.sandboxUpdateState.list()).has('p')).toBe(false);
+  expect(f.provisioner.sandboxUpdateStates().has('p')).toBe(false);
+});
+
 it.each(['sleeping', 'absent'] as const)(
   'clears a wait when lifecycle becomes %s despite failed update discovery',
   async (state) => {

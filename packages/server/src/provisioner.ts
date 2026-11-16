@@ -4583,10 +4583,12 @@ export class ProvisionerImpl implements Provisioner {
         (project.state === 'active' ||
           (project.state === 'failed' && this.pendingSandboxRepairRetries.has(project.id))),
     );
-    if (callbacks.updateAvailable === undefined)
-      for (const project of pending)
-        if (this.sandboxUpdateTracker.states.get(project.id)?.reasons.length)
-          imageDeferredThisPass.add(project.id);
+    for (const project of pending)
+      if (
+        (callbacks.updateAvailable?.has(project.id) ?? true) &&
+        this.sandboxUpdateTracker.states.get(project.id)?.reasons.length
+      )
+        imageDeferredThisPass.add(project.id);
     let cursor = 0;
     const migrateNext = async (): Promise<void> => {
       for (;;) {
@@ -4894,8 +4896,6 @@ export class ProvisionerImpl implements Provisioner {
     for (const projectId of this.orphanDeferrals.keys()) {
       if (!deferredThisPass.has(projectId)) this.orphanDeferrals.delete(projectId);
     }
-    // Retract ended waits, but failed update discovery cannot reset their clock.
-    // Successful discovery, completed replacement or terminal lifecycle state can.
     for (const projectId of this.imageUpdateDeferralsSince.keys()) {
       if (!imageDeferredThisPass.has(projectId)) {
         this.imageUpdateDeferralsSince.delete(projectId);
