@@ -1,7 +1,7 @@
 import type { ProjectActivityReason } from './project-idle-sleep.js';
 
 /** A fixed quiet window avoids another setting; use the server's local clock. */
-export function inSandboxUpdateWindow(now: number): boolean {
+function inSandboxUpdateWindow(now: number): boolean {
   const hour = new Date(now).getHours();
   return hour >= 3 && hour < 5;
 }
