@@ -65,3 +65,25 @@ it('starts a fresh wait after recovery and never lets telemetry fail a healthy u
   expect(tracker.states.get('p')?.since).toBe(10000);
   expect(tracker.states.get('p')?.recovery).toBeUndefined();
 });
+it('terminates a recovery interrupted by server restart and persists its concrete outcome', async () => {
+  const saved = {
+    since: 10,
+    reasons: [],
+    reportedAt: 10,
+    recovery: { state: 'checking' as const, at: 10, detail: 'Checking' },
+  };
+  let persisted: unknown;
+  const tracker = new SandboxUpdateTracker();
+  await tracker.restore({
+    list: async () => new Map([['p', saved]]),
+    set: async (_id, state) => {
+      persisted = state;
+    },
+    clear: async () => {},
+  });
+  expect(tracker.states.get('p')?.recovery).toMatchObject({
+    state: 'failed',
+    detail: expect.stringContaining('server restart'),
+  });
+  expect(persisted).toEqual(tracker.states.get('p'));
+});

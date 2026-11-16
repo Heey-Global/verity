@@ -21,7 +21,10 @@ export function createSandboxUpdateRecovery(input: {
   const now = input.now ?? Date.now;
   const wait = input.wait ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   return {
-    async capture(projectId: string): Promise<() => Promise<SandboxUpdateRecoveryResult>> {
+    async capture(
+      this: void,
+      projectId: string,
+    ): Promise<() => Promise<SandboxUpdateRecoveryResult>> {
       await input
         .local()
         ?.reconcile()

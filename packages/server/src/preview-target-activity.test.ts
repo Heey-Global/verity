@@ -1,3 +1,4 @@
+import { observeProjectActivity, activityReasons } from './project-idle-sleep.js';
 import type { PublicPreviewShareRecord } from '@verity/store';
 import { describe, expect, it, vi } from 'vitest';
 import type { PreviewShareManagerOptions } from './preview-share-manager.js';
@@ -15,6 +16,7 @@ function fixture() {
     managedInstanceId: null,
   } as PublicPreviewShareRecord;
   const project = { id: 'p', containerName: 'sandbox', state: 'active' };
+  const inspectContainer = vi.fn(async () => ({ running: true }));
   const options = {
     store: {
       getProject: async () => project,
@@ -31,7 +33,7 @@ function fixture() {
         }),
       },
     },
-    docker: { inspectContainer: vi.fn(async () => ({ running: true })) },
+    docker: { inspectContainer },
     now: () => new Date('2026-11-16'),
     isDevServerRunning: vi.fn(async () => true),
     listListeningProcesses: vi.fn(async () => [{ instanceId: 'm', port: 3000 }]),
@@ -41,7 +43,13 @@ function fixture() {
     sessionPort: vi.fn(async () => true),
     staticDirectory: vi.fn(async () => {}),
   };
-  return { share, options, probes, live: () => previewTargetIsLive(share, options, probes) };
+  return {
+    share,
+    options,
+    probes,
+    inspectContainer,
+    live: () => previewTargetIsLive(share, options, probes),
+  };
 }
 
 describe('preview target activity', () => {
@@ -56,7 +64,7 @@ describe('preview target activity', () => {
   });
   it('does not mistake an online offline-page connector for a live sandbox target', async () => {
     const f = fixture();
-    vi.mocked(f.options.docker.inspectContainer).mockResolvedValue({ running: false } as never);
+    f.inspectContainer.mockResolvedValue({ running: false });
     expect(await f.live()).toBe(false);
     expect(f.probes.sessionPort).not.toHaveBeenCalled();
   });
@@ -83,19 +91,34 @@ describe('preview target activity', () => {
     f.share.targetPort = null;
     expect(await f.live()).toBe(true);
     f.probes.staticDirectory.mockRejectedValue(new Error('missing'));
-    expect(await f.live()).toBe(false);
+    await expect(f.live()).rejects.toThrow('missing');
   });
   it.each(['revoked', 'creating', 'revoking'] as const)('ignores %s intent', async (state) => {
     const f = fixture();
     f.share.state = state;
     expect(await f.live()).toBe(false);
   });
-  it('ignores expired shares and failed probes', async () => {
+  it('ignores expiry but propagates unavailable evidence as unknown activity', async () => {
     const f = fixture();
     f.share.expiresAt = new Date('2020-01-01');
     expect(await f.live()).toBe(false);
     f.share.expiresAt = new Date('2030-01-01');
     f.probes.sessionPort.mockRejectedValue(new Error('runtime unavailable'));
-    expect(await f.live()).toBe(false);
+    await expect(f.live()).rejects.toThrow('runtime unavailable');
   });
+});
+
+it('protects a serving preview when runtime evidence cannot be obtained', async () => {
+  const f = fixture();
+  f.probes.sessionPort.mockRejectedValue(new Error('runtime unavailable'));
+  const activity = await observeProjectActivity({
+    projectId: 'p',
+    listSessions: async () => [],
+    isTurnBusy: () => false,
+    hasRunningDevServers: () => false,
+    hasLocalPreviewShares: () => false,
+    listShares: async () => [f.share],
+    isShareTargetLive: () => f.live(),
+  });
+  expect(activityReasons(activity)).toEqual(['unknown']);
 });

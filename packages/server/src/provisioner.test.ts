@@ -11797,7 +11797,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
     expect(recreate).toHaveBeenCalledTimes(IMAGE_UPDATE_RECREATE_LIMIT + 1);
   });
 
-  it('waits indefinitely for a busy project before updating its sandbox image', async () => {
+  it('deduplicates unverified busy deferrals without forcing an image update', async () => {
     const p = await seedActive('busy-image-update', 'dev-busy-image-update');
     const { client } = dockerInspecting({ 'dev-busy-image-update': migratedInspect(p.id) });
     const provisioner = makeProvisioner(client);
@@ -11812,7 +11812,7 @@ describe('reconcileRelays + provision hard-stop (Stage 5 legacy migration)', () 
       });
     }
 
-    expect(deferred).toHaveBeenCalledTimes(ORPHAN_DEFER_TICK_LIMIT + 2);
+    expect(deferred).toHaveBeenCalledTimes(1);
     expect(recreate).not.toHaveBeenCalled();
     expect([...provisioner.unrepairedSandboxes()]).toEqual([]);
     // Waiting is not yet worth reporting: these ticks take no measurable time, and

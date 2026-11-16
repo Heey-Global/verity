@@ -35,7 +35,18 @@ export class SandboxUpdateTracker {
   private restored = false;
   async restore(store: StateStore | undefined): Promise<void> {
     if (this.restored) return;
-    if (store) for (const [id, state] of await store.list()) this.states.set(id, state);
+    if (store)
+      for (const [id, state] of await store.list()) {
+        if (state.recovery?.state === 'checking') {
+          state.recovery = {
+            state: 'failed',
+            at: Date.now(),
+            detail: 'Recovery check interrupted by server restart; verify dev servers and previews',
+          };
+          await store.set(id, state);
+        }
+        this.states.set(id, state);
+      }
     this.restored = true;
   }
   async defer(
