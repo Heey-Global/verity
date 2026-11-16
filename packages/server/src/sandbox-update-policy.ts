@@ -106,6 +106,33 @@ export class SandboxUpdateTracker {
       detail: 'Update started; checking service recovery after replacement',
     });
   }
+  /** Journal before interruption, then recheck after the durable write. */
+  async authorizeRecovery<T>(
+    store: StateStore | undefined,
+    id: string,
+    authorize: () => Promise<T>,
+  ): Promise<T> {
+    await this.restore(store);
+    const previous = this.states.get(id);
+    await authorize();
+    await this.beginRecovery(store, id);
+    const checking = this.states.get(id);
+    try {
+      return await authorize();
+    } catch (cause) {
+      // A refusal before retirement must preserve the original waiting clock.
+      if (this.states.get(id) === checking) {
+        if (previous) {
+          await store?.set(id, previous);
+          this.states.set(id, previous);
+        } else {
+          await store?.clear(id);
+          this.states.delete(id);
+        }
+      }
+      throw cause;
+    }
+  }
   async checkRecovery(
     store: StateStore | undefined,
     id: string,

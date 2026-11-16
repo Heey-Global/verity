@@ -20,6 +20,7 @@ afterAll(async () => {
   await ctx.close();
 });
 beforeEach(async () => {
+  vi.restoreAllMocks();
   await truncateAll(ctx.db);
 });
 
@@ -414,6 +415,99 @@ it.each(['turn', 'unknown', 'window'] as const)(
     expect(retirePublic).not.toHaveBeenCalled();
     expect(releaseLocal).toHaveBeenCalledOnce();
     expect(releasePublic).toHaveBeenCalledOnce();
+    expect(
+      f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+    ).toBe(false);
+  },
+);
+
+it.each(['local', 'public'] as const)(
+  'journals recovery before %s retirement and persists its failure',
+  async (failing) => {
+    const check = vi.fn(async () => ({ state: 'ready' as const, detail: 'ready' }));
+    const retire = async (kind: 'local' | 'public') => {
+      expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery?.state).toBe(
+        'checking',
+      );
+      if (kind === failing) throw new Error(`${kind} connector retirement failed`);
+    };
+    const f = await fixture(3, 0, {
+      sandboxUpdateRecovery: { capture: async () => check },
+      withContainerReplace: (project, replace, beforeRetire) =>
+        withPreviewProjectMutation(
+          project.id,
+          replace,
+          {
+            local: {
+              beginSessionMove: async () => () => {},
+              retireProjectShares: () => retire('local'),
+            },
+            public: {
+              beginSessionMove: async () => () => {},
+              retireProjectShares: () => retire('public'),
+            },
+          },
+          beforeRetire,
+        ),
+    });
+    f.provisioner.attachProjectBusyProbe(async () => ['preview']);
+    await expect(
+      f.provisioner.recreateContainer('p', {
+        interruptServices: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      }),
+    ).rejects.toThrow(`${failing} connector retirement failed`);
+    expect((await ctx.store.sandboxUpdateState.list()).get('p')?.recovery).toMatchObject({
+      state: 'failed',
+      detail: expect.stringContaining(`${failing} connector retirement failed`),
+    });
+    expect(check).not.toHaveBeenCalled();
+    expect(
+      f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
+    ).toBe(false);
+  },
+);
+
+it.each(['turn', 'window'] as const)(
+  'restores the original wait when %s changes during recovery persistence',
+  async (change) => {
+    let reasons: ProjectActivityReason[] = ['preview'];
+    const retire = vi.fn(async () => {});
+    const f = await fixture(4, 59, {
+      sandboxUpdateRecovery: {
+        capture: async () => async () => ({ state: 'ready', detail: 'ready' }),
+      },
+      withContainerReplace: (project, replace, beforeRetire) =>
+        withPreviewProjectMutation(
+          project.id,
+          replace,
+          {
+            local: { beginSessionMove: async () => () => {}, retireProjectShares: retire },
+            public: { beginSessionMove: async () => () => {}, retireProjectShares: retire },
+          },
+          beforeRetire,
+        ),
+    });
+    f.provisioner.attachProjectBusyProbe(async () => reasons);
+    const initial = { since: Date.now() - 25 * 60 * 60_000, reasons: ['preview'], reportedAt: 1 };
+    await ctx.store.sandboxUpdateState.set('p', initial);
+    const set = ctx.store.sandboxUpdateState.set.bind(ctx.store.sandboxUpdateState);
+    vi.spyOn(ctx.store.sandboxUpdateState, 'set').mockImplementation(async (id, state) => {
+      await set(id, state);
+      if (state.recovery?.state === 'checking') {
+        if (change === 'turn') reasons = ['turn'];
+        else f.setTime(5);
+      }
+    });
+    await expect(
+      f.provisioner.recreateContainer('p', {
+        interruptServices: true,
+        initiator: { kind: 'system', trigger: 'sandbox_reconcile' },
+      }),
+    ).rejects.toThrow('busy');
+    expect(retire).not.toHaveBeenCalled();
+    expect((await ctx.store.sandboxUpdateState.list()).get('p')).toEqual(initial);
+    expect(f.provisioner.sandboxUpdateStates().get('p')).toEqual(initial);
     expect(
       f.calls.some((call) => call.method === 'stopContainer' || call.method === 'removeContainer'),
     ).toBe(false);

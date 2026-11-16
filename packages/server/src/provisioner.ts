@@ -5286,20 +5286,15 @@ export class ProvisionerImpl implements Provisioner {
       await this.sandboxRepairIntentWrites;
     }
     await this.assertNoRunnerCacheMaintenance(projectId);
-    if (project.state === 'cloning' || project.state === 'container_starting') {
+    if (project.state === 'cloning' || project.state === 'container_starting')
       throw new ProvisioningError(`project ${projectId} is already provisioning`);
-    }
-    if (project.state === 'absent') {
+    if (project.state === 'absent')
       throw new ProvisioningError(`project ${projectId} is absent; provision it instead`);
-    }
     // Reject missing protection infrastructure before retiring a usable Sandbox.
     await this.egressFor();
     const warning = await this.devcontainerWarningForProject(project);
-    if (warning !== null && opts.confirmWarnings !== true) {
-      throw new ProvisioningWarning([warning]);
-    }
-    // Build while the old container serves traffic; retain the result because resolving
-    // repository-root contexts again bypasses tag reuse and repeats the cacheless build.
+    if (warning !== null && opts.confirmWarnings !== true) throw new ProvisioningWarning([warning]);
+    // Retain cacheless builds so repository-root contexts do not build twice.
     let containerPhaseOpts = opts;
     let rebuiltImage: ProjectImage | undefined;
     if (opts.forceRebuild === true) {
@@ -5319,8 +5314,7 @@ export class ProvisionerImpl implements Provisioner {
           process.env.VERITY_REGISTRY_AUTH,
         ]);
         const message = `devcontainer build failed: ${detail}`;
-        // Automatic retries retain this warning until a later container start.
-        // Timestamp it so it cannot be mistaken for a newer attempt's outcome.
+        // Timestamp retained warnings so they cannot be mistaken for a newer attempt.
         await this.opts.store.updateProjectState(
           project.id,
           project.state,
@@ -5361,7 +5355,8 @@ export class ProvisionerImpl implements Provisioner {
       throw new ProvisioningError(`replacement image preparation failed: ${detail}`, cause);
     }
     let checkRecovery: (() => Promise<{ state: 'ready' | 'failed'; detail: string }>) | undefined;
-    let preflightComplete = false;
+    let preflightComplete = false,
+      recoveryStarted = false;
     const beforeRetire = async () => {
       checkRecovery = await this.opts.sandboxUpdateRecovery?.capture(project.id);
       this.resolveRelayClaudeGateway(project);
@@ -5405,23 +5400,33 @@ export class ProvisionerImpl implements Provisioner {
           throw new ProvisioningError('Automatic repair generation or target changed');
         }
       }
-      // Recheck activity and the window after image preparation, under the mutation barrier.
-      const activity = await this.probeProjectBusy(project.id);
-      const override =
-        opts.interruptServices === true &&
-        canInterruptSandboxServices(activity.reasons) &&
-        (!automatic || nightlySandboxUpdate((this.opts.now ?? Date.now)(), activity.reasons));
-      if ((automatic || opts.interruptServices) && activity.busy && !override) {
-        const current = await this.opts.docker
-          .inspectContainer(project.containerName)
-          .catch((error: unknown) => {
-            if (error instanceof DockerError && error.kind === 'container_not_found') return null;
-            throw error;
-          });
-        // A proven missing container has no running work to interrupt.
-        if (current !== null)
-          throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
-      }
+      const authorize = async () => {
+        const activity = await this.probeProjectBusy(project.id);
+        const override =
+          opts.interruptServices === true &&
+          canInterruptSandboxServices(activity.reasons) &&
+          (!automatic || nightlySandboxUpdate((this.opts.now ?? Date.now)(), activity.reasons));
+        if ((automatic || opts.interruptServices) && activity.busy && !override) {
+          const current = await this.opts.docker
+            .inspectContainer(project.containerName)
+            .catch((error: unknown) => {
+              if (error instanceof DockerError && error.kind === 'container_not_found') return null;
+              throw error;
+            });
+          // A proven missing container has no running work to interrupt.
+          if (current !== null)
+            throw new ProvisioningError(`project ${project.id} is busy; automatic repair deferred`);
+        }
+        return { activity, override };
+      };
+      const { activity, override } = checkRecovery
+        ? await this.sandboxUpdateTracker.authorizeRecovery(
+            (this.opts.store as Partial<EventStore>).sandboxUpdateState,
+            project.id,
+            authorize,
+          )
+        : await authorize();
+      recoveryStarted = checkRecovery !== undefined;
       if (override)
         try {
           this.opts.onSandboxServiceInterruption?.(
@@ -5437,11 +5442,6 @@ export class ProvisionerImpl implements Provisioner {
     const replace = async (): Promise<ProjectRecord> => {
       if (!preflightComplete || (this.opts.sandboxUpdateRecovery && !checkRecovery))
         throw new ProvisioningError('Replacement requires service capture and preflight');
-      if (checkRecovery)
-        await this.sandboxUpdateTracker.beginRecovery(
-          (this.opts.store as Partial<EventStore>).sandboxUpdateState,
-          project.id,
-        );
       await this.retireEgressGeneration(project.id);
       replacementStarted = true;
       this.retiringSandboxes.add(project.id);
@@ -5468,7 +5468,7 @@ export class ProvisionerImpl implements Provisioner {
         );
       return updated;
     } catch (cause) {
-      if (checkRecovery && preflightComplete)
+      if (recoveryStarted)
         await this.sandboxUpdateTracker.failRecovery(
           (this.opts.store as Partial<EventStore>).sandboxUpdateState,
           project.id,
