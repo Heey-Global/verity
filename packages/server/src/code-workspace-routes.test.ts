@@ -105,6 +105,13 @@ it('reports an unrecoverable code workspace instead of falling back to Documents
       codeAvailable: false,
       codeWorkspaceUnavailable: true,
     });
+    // A sheet opened on Documents learns it too, or its Code tab and Restore stay disabled.
+    const documents = await h.app.inject({
+      method: 'GET',
+      url: '/sessions/s/files?root=documents',
+    });
+    expect(documents.statusCode).toBe(200);
+    expect(documents.json()).toMatchObject({ root: 'documents', codeWorkspaceUnavailable: true });
     const restore = await h.app.inject({
       method: 'POST',
       url: '/sessions/s/code-workspace/restore',

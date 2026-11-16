@@ -366,15 +366,19 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.get('/sessions/:id/files', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const { root, path } = sessionFileQuery.parse(request.query);
-    if (root === 'worktree' && deps.workspaceKind) {
-      // A missing checkout lists as empty and unavailable, so the client can offer to
-      // restore it instead of showing an error or quietly switching to Documents.
-      const unavailable = await deps.resolveRoot(id, root).then(
+    // Every listing reports a missing checkout, so a sheet opened on Documents still
+    // offers the Code tab and its Restore instead of disabling it.
+    const codeWorkspaceUnavailable =
+      deps.workspaceKind !== undefined &&
+      (await deps.resolveRoot(id, 'worktree').then(
         () => false,
         (error: unknown) =>
           error instanceof SessionFileRootUnavailableError && error.status === 409,
-      );
-      if (unavailable)
+      ));
+    if (root === 'worktree' && deps.workspaceKind) {
+      // A missing checkout lists as empty and unavailable, so the client can offer to
+      // restore it instead of showing an error or quietly switching to Documents.
+      if (codeWorkspaceUnavailable)
         return {
           root,
           path: '',
@@ -398,6 +402,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
           ...listed,
           workspaceKind: await deps.workspaceKind(id),
           codeAvailable: await deps.codeAvailable?.(id),
+          ...(codeWorkspaceUnavailable ? { codeWorkspaceUnavailable } : {}),
           documentStatus: await deps.documentStatus?.(id),
         }
       : listed;
