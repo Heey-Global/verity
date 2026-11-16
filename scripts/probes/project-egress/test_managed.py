@@ -129,6 +129,81 @@ class ManagedTests(unittest.TestCase):
             self.provision()
         self.assertNotIn(('/usr/bin/systemctl', 'start', managed.SERVICE), self.calls)
 
+    def old_release(self, label, age):
+        files = {name: self.source.joinpath(name).read_bytes() + label.encode() for name in managed.ASSETS}
+        identity = managed.base.digest(b''.join(name.encode() + files[name] for name in managed.ASSETS))
+        release = self.root / managed.RELEASES / identity
+        managed.prepare_release(release, files)
+        os.utime(release, (1_000_000 + age, 1_000_000 + age))
+        return release
+
+    def process_table(self, *commands):
+        proc = self.root / 'proc'
+        proc.mkdir(exist_ok=True)
+        for pid, command in enumerate(commands, start=100):
+            (proc / str(pid)).mkdir()
+            (proc / str(pid) / 'cmdline').write_bytes(command.encode().replace(b' ', b'\0'))
+        (proc / 'self').mkdir(exist_ok=True)
+
+    # Every provisioning run published another read-only bundle of about 200 MiB
+    # and nothing ever removed one, so a host collected dozens.
+    def test_provisioning_keeps_current_prepared_and_newest_releases_only(self):
+        self.process_table()
+        self.provision()
+        current = (self.root / 'opt/verity-egress').resolve()
+        old = [self.old_release(str(age), age) for age in range(5)]
+        withdrawn = self.root / managed.RELEASES / '.retired-0123456789abcdef'
+        (withdrawn / 'nested').mkdir(parents=True)
+        (withdrawn / 'nested' / 'node').write_text('left by an interrupted run')
+        (withdrawn / 'nested').chmod(0o555)
+        self.provision()
+        remaining = sorted(path.name for path in (self.root / managed.RELEASES).iterdir())
+        self.assertEqual(remaining, sorted([current.name, old[4].name, old[3].name]))
+        self.assertEqual((self.root / 'opt/verity-egress').resolve(), current)
+
+    def test_release_named_by_a_running_process_is_kept(self):
+        self.provision()
+        old = [self.old_release(str(age), age) for age in range(4)]
+        self.process_table('/usr/bin/node ' + str(old[0] / 'project-egress-host-main.mjs') + ' deny')
+        managed.prune_releases(self.root, set())
+        self.assertTrue(old[0].exists())
+        self.assertFalse(old[1].exists())
+
+    def test_unreadable_process_table_or_pending_journal_removes_nothing(self):
+        self.provision()
+        old = [self.old_release(str(age), age) for age in range(4)]
+        # No process table: no release can be shown unused.
+        self.assertEqual(self.provision()['available'], True)
+        self.assertTrue(all(path.exists() for path in old))
+        self.process_table()
+        journal = self.root / managed.JOURNAL
+        journal.write_text('{}')
+        self.assertEqual(managed.prune_releases(self.root, set()), [])
+        self.assertTrue(all(path.exists() for path in old))
+        journal.unlink()
+        self.assertEqual(len(managed.prune_releases(self.root, set())), 2)
+
+    def test_release_pruning_never_follows_links_or_foreign_entries(self):
+        self.process_table()
+        self.provision()
+        outside = Path(self.temp.name) / 'outside'
+        outside.mkdir()
+        (outside / 'keep').write_text('keep')
+        releases = self.root / managed.RELEASES
+        (releases / ('f' * 64)).symlink_to(outside)
+        (releases / 'not-a-release').mkdir()
+        old = [self.old_release(str(age), age) for age in range(3)]
+        managed.prune_releases(self.root, set())
+        self.assertEqual((outside / 'keep').read_text(), 'keep')
+        self.assertTrue((releases / ('f' * 64)).is_symlink())
+        self.assertTrue((releases / 'not-a-release').is_dir())
+        self.assertFalse(old[0].exists())
+        (self.root / 'opt/verity-egress').unlink()
+        (self.root / 'opt/verity-egress').mkdir()
+        self.old_release('x', -1)
+        self.old_release('y', -2)
+        self.assertEqual(managed.prune_releases(self.root, set()), [])
+
     def test_prior_release_without_protected_assets_remains_recoverable(self):
         files = {name: self.source.joinpath(name).read_bytes() for name in managed.LEGACY_ASSETS}
         identity = managed.base.digest(b''.join(name.encode() + files[name] for name in managed.LEGACY_ASSETS))

@@ -97,19 +97,57 @@ wait_for_result() {
     esac
   done
 }
+# Every completed operation used to keep its full staged release (about 200 MiB)
+# forever. Only the stopped job's receipt is needed afterwards: `attempt` and
+# `result.json` keep a completed success idempotent. Readiness is withdrawn
+# first, so a retry interrupted mid-removal stages afresh instead of launching
+# a partial payload. Removal never follows links and never fails provisioning.
+compact_stage() {
+  local dir=$1
+  [[ -d $dir && ! -L $dir ]] || return 0
+  rm -f -- "$dir/ready"
+  sync -f "$dir" 2>/dev/null || true
+  find "$dir" -mindepth 1 -maxdepth 1 ! -name attempt ! -name result.json -exec rm -rf -- {} + \
+    2>/dev/null || true
+}
+# True only when the manager positively reports the unit as stopped or unknown.
+unit_stopped() {
+  local reply key value load='' active=''
+  reply=$(timeout --kill-after=1s 5s systemctl show --property=LoadState --property=ActiveState "$1" 2>/dev/null) ||
+    [[ $reply == *'LoadState=not-found'* ]] || return 1
+  while IFS='=' read -r key value; do
+    case $key in ActiveState) active=$value ;; LoadState) load=$value ;; esac
+  done <<<"$reply"
+  [[ ($load = loaded || $load = not-found) && ($active = inactive || $active = failed) ]]
+}
+# Every launcher holds the installer lock while it submits, so no stage below
+# can gain a running job between this check and its removal.
+compact_stopped_stages() {
+  local dir name
+  for dir in /var/lib/verity-egress/provision/*; do
+    name=${dir##*/}
+    [[ $name =~ ^[a-f0-9]{24}$ && $name != "$identifier" && -d $dir && ! -L $dir ]] || continue
+    [[ -e $dir/ready || -e $dir/release || -e $dir/config || -e $dir/apply.sh ]] || continue
+    unit_stopped "verity-egress-provision-$name.service" || continue
+    compact_stage "$dir"
+  done
+}
 # A host oneshot outlives a disconnected Docker job. Never rewrite its input.
 [[ ! -L /var/lib/verity-egress/provision && ! -L $stage ]] || die 'unsafe staging directory'
 observe
 if [[ $state = active || $state = activating || $state = deactivating || $state = reloading ]]; then
   wait_for_result
+  compact_stage "$stage"
   exit
 fi
 phase=staging
 install -d -m 0700 /var/lib/verity-egress/provision
+compact_stopped_stages
 if [[ -f $stage/attempt && ! -L $stage/attempt ]]; then
   read_attempt
   if valid_result && jq -e '.exitCode == 0 and .available == true' "$stage/result.json" >/dev/null; then
     [[ $state != failed ]] || fail host_failed
+    compact_stage "$stage"
     exit 0
   fi
 fi
@@ -212,6 +250,7 @@ if timeout --kill-after=1s 10s systemd-run --quiet --collect --unit="$unit" --se
   --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
   /bin/bash "$stage/apply.sh" >/dev/null 2>&1; then
   wait_for_result
+  compact_stage "$stage"
 else
   status=$?
   failure=start_unverified

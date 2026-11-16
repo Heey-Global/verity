@@ -52,6 +52,32 @@ must keep their existing connectivity. Existing protected generations can lose
 connectivity during controller renewal; successful recovery requires fresh
 authenticated admission, not replay of an old grant.
 
+## Host storage
+
+Each provisioning operation stages a private copy of the release, its helpers and
+configuration under `/var/lib/verity-egress/provision/<operation>`. Once the
+operation's host job has stopped, the launcher removes that payload, its
+readiness marker first, and keeps only `attempt` and `result.json`, so a
+completed success stays idempotent and any retry stages a complete payload
+again. Each launch also does this for the stages of other operations whose
+host job the systemd manager reports as stopped or unknown; a running,
+starting or unobservable job keeps its stage. Every launcher holds the
+installation lock while it submits work, so no job can start in between.
+A launch that fails keeps its own payload for an immediate retry; a later launch
+of another operation compacts it like any stopped stage, and a retry after that
+stages afresh.
+
+Provisioning also publishes one read-only bundle per release under
+`/opt/verity-egress-releases`. Under the installation lock, after any
+interrupted transaction has been recovered, provisioning removes published
+bundles other than the current link target, the bundle being prepared and the
+two newest others, which stay available for rollback. It removes nothing while
+a transaction journal exists, keeps any bundle a running process names in its
+executable, working directory or arguments, and removes nothing when the
+process table cannot be read. A bundle is renamed out of the way before it is
+deleted; a removal interrupted by a crash is completed on the next run. Neither
+step ever blocks provisioning, and neither is a reason to run the installer.
+
 The earlier experimental offline installer remains a separate fixture tool. Its
 Docker-stop transaction is not used by automatic provisioning. An installation
 created with its `Upholds` dependency requires a separately verified migration;
