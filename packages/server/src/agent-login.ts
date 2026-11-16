@@ -28,9 +28,12 @@ export interface AgentLoginPublic {
 }
 
 export interface AgentLoginService {
-  start(provider: AgentLoginProvider): Promise<AgentLoginPublic>;
-  get(sessionId: string): Promise<AgentLoginPublic>;
-  submitCode(sessionId: string, code: string): Promise<AgentLoginPublic>;
+  /** `owner` makes the login a person's own (ADR 0023 §3): only that person can
+   *  read or finish it, and it is stored as their connection. Without one it is
+   *  the instance login, stored in the instance settings. */
+  start(provider: AgentLoginProvider, owner?: string): Promise<AgentLoginPublic>;
+  get(sessionId: string, requester?: string): Promise<AgentLoginPublic>;
+  submitCode(sessionId: string, code: string, requester?: string): Promise<AgentLoginPublic>;
   close(): void;
 }
 
@@ -38,6 +41,8 @@ export type AgentLoginSettingsUpdater = (patch: VeritySettingsPatch) => Promise<
 
 interface LoginSession {
   id: string;
+  /** The person whose own login this is; undefined for the instance login. */
+  owner: string | undefined;
   provider: AgentLoginProvider;
   status: AgentLoginStatus;
   verificationUri: string | null;
@@ -256,6 +261,10 @@ function markFromOutput(session: LoginSession): void {
 
 export function createProcessAgentLoginService(options: {
   updateSettings: AgentLoginSettingsUpdater;
+  /** Stores a person's own login as their connection (ADR 0023 §3). */
+  storePersonal?:
+    | ((userId: string, provider: AgentLoginProvider, credential: string) => Promise<void>)
+    | undefined;
   sessionTtlMs?: number;
 }): AgentLoginService {
   const sessions = new Map<string, LoginSession>();
@@ -285,16 +294,19 @@ export function createProcessAgentLoginService(options: {
   const maybeComplete = async (session: LoginSession): Promise<void> => {
     // A credential file can appear before the CLI finishes writing its other state.
     if (session.child || session.status === 'complete' || session.status === 'failed') return;
-    if (session.provider === 'codex') {
-      const authJson = readCodexAuthJson(session);
-      if (!authJson) return;
-      await options.updateSettings({ codexAuthJson: authJson });
+    const credential =
+      session.provider === 'codex'
+        ? readCodexAuthJson(session)
+        : readClaudeCredentialsJson(session);
+    if (!credential) return;
+    if (session.owner !== undefined) {
+      if (options.storePersonal === undefined)
+        throw new Error('personal provider logins are not available');
+      await options.storePersonal(session.owner, session.provider, credential);
+    } else if (session.provider === 'codex') {
+      await options.updateSettings({ codexAuthJson: credential });
     } else {
-      const credentialsJson = readClaudeCredentialsJson(session);
-      if (!credentialsJson) return;
-      await options.updateSettings({
-        claudeCodeOauthCredentialsJson: credentialsJson,
-      });
+      await options.updateSettings({ claudeCodeOauthCredentialsJson: credential });
     }
     session.status = 'complete';
     session.configured = true;
@@ -308,7 +320,15 @@ export function createProcessAgentLoginService(options: {
     clearTimeout(session.cleanupTimer);
   };
 
-  const start = (provider: AgentLoginProvider): Promise<AgentLoginPublic> => {
+  const owned = (sessionId: string, requester: string | undefined): LoginSession => {
+    const session = sessions.get(sessionId);
+    // Someone else's login reads as absent: its code would let them bind the
+    // account to their own connection.
+    if (!session || session.owner !== requester) throw new Error('login session not found');
+    return session;
+  };
+
+  const start = (provider: AgentLoginProvider, owner?: string): Promise<AgentLoginPublic> => {
     const binary = provider === 'codex' ? 'codex' : 'claude';
     if (!commandAvailable(binary)) {
       return Promise.resolve({
@@ -345,6 +365,7 @@ export function createProcessAgentLoginService(options: {
 
     const session: LoginSession = {
       id,
+      owner,
       provider,
       status: 'starting',
       verificationUri: null,
@@ -441,16 +462,18 @@ export function createProcessAgentLoginService(options: {
 
   return {
     start,
-    async get(sessionId: string): Promise<AgentLoginPublic> {
-      const session = sessions.get(sessionId);
-      if (!session) throw new Error('login session not found');
+    async get(sessionId: string, requester?: string): Promise<AgentLoginPublic> {
+      const session = owned(sessionId, requester);
       markFromOutput(session);
       await maybeComplete(session);
       return toPublic(session);
     },
-    async submitCode(sessionId: string, code: string): Promise<AgentLoginPublic> {
-      const session = sessions.get(sessionId);
-      if (!session) throw new Error('login session not found');
+    async submitCode(
+      sessionId: string,
+      code: string,
+      requester?: string,
+    ): Promise<AgentLoginPublic> {
+      const session = owned(sessionId, requester);
       if (session.provider !== 'claude') throw new Error('provider does not accept a pasted code');
       const trimmed = code.trim();
       if (trimmed.length === 0) throw new Error('code is required');

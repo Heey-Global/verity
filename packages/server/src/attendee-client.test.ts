@@ -1,6 +1,10 @@
 import { createHmac } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
-import { normalizeAttendeeTranscript, verifyAttendeeSignature } from './attendee-client.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  AttendeeClient,
+  normalizeAttendeeTranscript,
+  verifyAttendeeSignature,
+} from './attendee-client.js';
 
 describe('Attendee transcript ingestion', () => {
   it('verifies sorted JSON signatures and rejects altered content', () => {
@@ -45,4 +49,27 @@ describe('Attendee transcript ingestion', () => {
     expect(late.speakerTurns[0]?.start).toBe(0);
     expect(late.timedWords[0]?.start).toBe(0);
   });
+});
+
+it('keeps completed utterances when a provider snapshot includes pending transcription', async () => {
+  const pending = {
+    speaker_uuid: 'alice',
+    timestamp_ms: 1000,
+    duration_ms: 500,
+    transcription: null,
+  };
+  const completed = { ...pending, timestamp_ms: 2000, transcription: { transcript: 'Hello' } };
+  const fetcher = vi.fn<typeof fetch>();
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify([pending, completed])));
+  fetcher.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify([{ ...pending, transcription: { transcript: 'Earlier' } }, completed]),
+    ),
+  );
+  const client = new AttendeeClient('test-key', fetcher);
+  expect(await client.transcript('bot')).toEqual([completed]);
+  expect((await client.transcript('bot')).map((item) => item.transcription.transcript)).toEqual([
+    'Earlier',
+    'Hello',
+  ]);
 });

@@ -150,6 +150,7 @@ function dockerErrorCause(kind: DockerError['kind']): UpdateAttemptCause {
       return 'network-timeout';
     case 'image_not_found':
     case 'container_not_found':
+    case 'address_pool_exhausted':
     case 'conflict':
     case 'other':
       return 'docker';

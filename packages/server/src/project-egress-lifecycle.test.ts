@@ -1,3 +1,4 @@
+import { generationNetworkIdentity } from './project-network-cleanup.js';
 import { expect, it, vi } from 'vitest';
 import { ProjectEgressHost, type ProjectEgressHostState } from './project-egress-host.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
@@ -7,7 +8,13 @@ function fixture() {
   let state: ProjectEgressHostState = { version: 1, records: [] };
   const starts = vi.fn(async () => {});
   const apply = vi.fn(async () => {});
+  const createEgressNetwork = vi.fn(async () => ({ id: 'a'.repeat(64) }));
   const deps = {
+    allocateNetwork: async (identity: { projectId: string; generation: string }) => ({
+      ...identity,
+      ...generationNetworkIdentity(identity.projectId, identity.generation),
+      networkId: (await createEgressNetwork()).id,
+    }),
     save: async (value: ProjectEgressHostState) => {
       state = value;
     },
@@ -18,7 +25,6 @@ function fixture() {
     stopContainer: async () => {},
   };
   const host = new ProjectEgressHost(state, deps);
-  const createEgressNetwork = vi.fn(async () => ({ id: 'a'.repeat(64) }));
   const lifecycle = new ProjectEgressLifecycle((command) => host.execute(command), {
     createEgressNetwork,
   });

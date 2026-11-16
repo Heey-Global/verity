@@ -19,9 +19,15 @@ const sourcePath = z
       ),
   );
 
+const singleLine = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(/^[^\p{Cc}]*$/u, 'must be a single line without control characters');
+
 /**
  * Agents read and write project knowledge as files under `/knowledge`; this tool
- * brokers the two writes that cross read-only knowledge mount boundaries.
+ * brokers the writes that cross read-only knowledge mount boundaries.
  */
 export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
   z
@@ -77,6 +83,64 @@ export const knowledgeToolRequestSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('propose_wiki'),
+      mode: z.enum(['inline', 'maintenance']),
+      logKind: z.enum(['setup', 'ingest', 'chat', 'merge', 'lint']).optional(),
+      title: z.string().trim().min(1).max(160),
+      // Sources and summaries become lines of log.md and the review: one line each.
+      sources: z.array(singleLine.max(512)).min(1).max(20),
+      changes: z
+        .array(
+          z
+            .object({
+              path: singleLine.max(512),
+              content: z.string().max(100_000),
+              summary: singleLine.max(500),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(20)
+        .refine(
+          (changes) =>
+            changes.reduce((total, change) => total + change.content.length, 0) <= 400_000,
+          'a proposal holds at most 400,000 characters of page content',
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('read_wiki_page'),
+      // Relative to /knowledge; list a directory or read one text file.
+      path: z.string().trim().min(1).max(512),
+      list: z.boolean().optional(),
+      offset: z.number().int().min(0).max(4_000_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('read_wiki_occasions'),
+      // Without an id: the open occasions. With one: its text from `offset` on.
+      id: z.string().trim().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('close_wiki_occasions'),
+      // Each read version: an occasion reopened since keeps its newer text open.
+      occasions: z
+        .array(
+          z
+            .object({ id: z.string().trim().min(1).max(100), createdAt: z.string().datetime() })
+            .strict(),
+        )
+        .min(1)
+        .max(50),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('publish_shared'),
       path: z.string().trim().min(1).max(512),
       sharedPath: z.string().trim().min(1).max(512).optional(),
@@ -99,7 +163,10 @@ export const KNOWLEDGE_TOOL_DESCRIPTION =
   'Publish an insight from this project to Shared when the user explicitly asks to make it shared, global, or available to every project. Each publication requires a separate approval. ' +
   'For publish_shared, path is relative to the session Documents working copy when supplied, otherwise `/knowledge/insights`; sharedPath is relative to `/knowledge/shared/insights` and defaults to the same path. ' +
   'A conflicting destination is never overwritten silently: reread it and retry with its expectedDigest only when reconciling the existing shared insight. ' +
-  'Read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
+  'Propose Wiki changes with propose_wiki instead of writing them when the user has not confirmed the concrete change: mode inline offers one change in chat at a natural conclusion (at most one per answer), mode maintenance is for maintenance runs. Each change names a Wiki page path (relative to `/knowledge/insights`, Markdown, never log.md or decisions), its complete new content and a one-line summary; sources cite the knowledge paths or URLs it rests on. The server records the base version and appends log.md when a person applies it; changes already applied, rejected or proposed are skipped. ' +
+  "In a Wiki maintenance run, read_wiki_occasions without id lists what happened in the project since the last run (oldest first); with an id it returns that occasion and a page of its kept text from offset, with nextOffset while more follows. close_wiki_occasions marks the read versions (id and createdAt as listed) done after their proposals were made; it also drops their kept text. Both work only in the project's maintenance session. " +
+  'Use read_wiki_page to read a relevant text file by its /knowledge-relative path (insights, sources, .text, or shared equivalents); set list to true to list a directory. Follow nextOffset for bounded pages. Maintenance runs use this tool instead of filesystem tools. ' +
+  'Outside maintenance runs, read knowledge through ordinary filesystem tools. Write project documents in the session Documents working copy when one is supplied; Verity publishes it automatically.';
 
 export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   'When the user explicitly confirms a project decision, record it in the current turn using verity_knowledge record_decision, without requiring a separate save request. Preserve the stated rationale and confirmation reference; do not treat suggestions or hypotheses as decisions. Ask before storing sensitive information or disputed interpretations. Look up related decisions first and use predecessor id and digest only when replacement is confirmed; ask when the relationship is uncertain. Acknowledge persistence only after the tool succeeds, linking its returned path. Before answering project decision questions, use lookup_decisions to read relevant current records and cite their document paths and provenance. Surface unresolved conflicts, invalid records, missing evidence and persistence errors. Recognition and retrieval still depend on the model; a successful receipt proves storage only. ' +
@@ -107,9 +174,10 @@ export const KNOWLEDGE_CONTEXT_INSTRUCTIONS =
   '`/knowledge/sources`, with documents and meeting artifacts in separate subfolders. ' +
   'When asked to move an existing worktree file into Sources, use `verity_knowledge` with `import_source`, verify the result, then remove the original and update references. Use nested destination paths to organize imports; use `create_source_folder` for empty folders and `move_source` to reorganize existing project Sources files. ' +
   'Create and revise project documents in the session Documents working copy when a path is supplied. Verity publishes those changes automatically; `/knowledge/insights` is then read-only. Without a Documents working copy, use the writable `/knowledge/insights` folder. ' +
-  'When work produces a durable, reusable conclusion grounded in project sources, create or update ' +
-  'a concise Markdown insight without asking first. Prefer improving an existing insight over creating ' +
-  'a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +
+  'Change Wiki content only when the user explicitly asks or confirms the concrete change; when work ' +
+  'produces a durable, reusable conclusion grounded in project sources, offer it as a Wiki change and ' +
+  'ask. Load the wiki-maintain skill before setting up or changing the Wiki. Prefer improving an existing ' +
+  'insight over creating a duplicate, cite the relevant source paths, and clearly mark uncertainty. Do not save routine ' +
   'progress, transient state, unsupported speculation, or secrets. Ask before saving sensitive personal ' +
   'information or a disputed interpretation as durable knowledge. ' +
   'Files shared with every project are available read-only at `/knowledge/shared`, organized into ' +

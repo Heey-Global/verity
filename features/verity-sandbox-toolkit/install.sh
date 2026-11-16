@@ -36,9 +36,9 @@ printf '%s\n' "$TIMEZONE" > /etc/timezone
 
 # ─── Version pins (defaults mirror devcontainer-feature.json) ─────────────
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.316}"
+CLAUDE_CODE_VERSION="${CLAUDECODEVERSION:-2.1.323}"
 # renovate: datasource=npm depName=@agentclientprotocol/claude-agent-acp
-CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.99.1}"
+CLAUDE_ACP_VERSION="${CLAUDEACPVERSION:-0.106.0}"
 # renovate: datasource=github-releases depName=cli/cli
 GH_VERSION="${GHVERSION:-2.100.0}"
 # renovate: datasource=github-releases depName=DopplerHQ/cli
@@ -48,11 +48,11 @@ GITLEAKS_VERSION="${GITLEAKSVERSION:-8.30.1}"
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION="${OSVSCANNERVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@openai/codex
-CODEX_VERSION="${CODEXVERSION:-0.166.0}"
+CODEX_VERSION="${CODEXVERSION:-0.168.0}"
 # renovate: datasource=npm depName=@agentclientprotocol/codex-acp
-CODEX_ACP_VERSION="${CODEXACPVERSION:-2.5.0}"
+CODEX_ACP_VERSION="${CODEXACPVERSION:-2.6.0}"
 # renovate: datasource=npm depName=@opencode/cli
-OPENCODE_VERSION="${OPENCODEVERSION:-2.2.5}"
+OPENCODE_VERSION="${OPENCODEVERSION:-2.2.7}"
 RUNNER_UID="${RUNNERUID:-1101}"
 RUNTIME_GID="${RUNTIMEGID:-1101}"
 INSTALL_RUNNER_SUPERVISOR="${INSTALLRUNNERSUPERVISOR:-false}"
@@ -487,7 +487,7 @@ WRITTEN_PATHS+=("$GITCONFIG")
 # .gitignore. Git auto-loads ~/.config/git/ignore (no core.excludesFile).
 GIT_IGNORE_DIR="$REMOTE_HOME/.config/git"
 mkdir -p "$GIT_IGNORE_DIR"
-printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
+printf '%s\n' '.gh-token' '.env' '.agents/.last-code-review-sha' '.agents/.last-code-review-run' '.agents/.local-checks-skip' > "$GIT_IGNORE_DIR/ignore"
 # Chown only the git subdir we own — NOT the `.config` parent, which on an
 # arbitrary base (python:3.12 etc.) may already hold other tooling whose
 # ownership a recursive chown would silently clobber.
@@ -533,6 +533,7 @@ install -m 0755 "$FEATURE_DIR/bin/verity-agent-run" /usr/local/bin/verity-agent-
 install -d /opt/verity/package-managers /usr/local/lib/verity
 install -m 0644 "$FEATURE_DIR/bin/verity-package-artifacts.mjs" /usr/local/lib/verity/verity-package-artifacts.mjs
 install -m 0644 "$FEATURE_DIR/bin/verity-package-policy.mjs" /usr/local/lib/verity/verity-package-policy.mjs
+install -m 0644 "$FEATURE_DIR/bin/verity-npm-preflight.mjs" /usr/local/lib/verity/verity-npm-preflight.mjs
 install -m 0755 "$FEATURE_DIR/bin/verity-package-install.mjs" /usr/local/lib/verity/verity-package-install.mjs
 for PACKAGE_MANAGER in npm pnpm yarn bun pip uv; do
   printf '#!/bin/sh\nexec node /usr/local/lib/verity/verity-package-install.mjs %s "$@"\n' "$PACKAGE_MANAGER" > "/opt/verity/package-managers/$PACKAGE_MANAGER"

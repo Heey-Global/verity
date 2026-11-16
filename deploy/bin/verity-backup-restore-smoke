@@ -26,6 +26,15 @@ cleanup() {
   local status=$?
   trap - EXIT
   # Never print the private input or installer output, even on an assertion failure.
+  # Stop a pending preparation and the docker client it is running before the
+  # removals below. A request the daemon already accepted can still complete;
+  # that only matters until the disposable hosted runner is discarded.
+  local pid
+  for pid in "${preparing[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
   for name in "$original" "$first_fresh" "$second"; do
     host_docker rm -f "$name" >/dev/null 2>&1 || true
     host_docker volume rm "$name-data" >/dev/null 2>&1 || true
@@ -33,9 +42,14 @@ cleanup() {
   rm -rf -- "$work"
   exit "$status"
 }
+declare -A preparing=()
 trap cleanup EXIT
-start_host() {
-  daemon_name=$1
+# Loading the multi-GiB candidate into a fresh daemon takes about a minute, so
+# the next host is prepared in the background while the current one is still
+# under test. A preparation touches only its own daemon, volume and socket
+# directory, and its result is adopted only after it succeeded (finish_host).
+prepare_host() {
+  local daemon_name=$1 socket daemon_id digest
   [[ $daemon_name = "$original" || $daemon_name = "$fresh" || $daemon_name = "$second" ]]
   local socket_dir="$work/${daemon_name##*-}"
   mkdir -m 0700 "$socket_dir"
@@ -72,6 +86,27 @@ start_host() {
   host_docker cp "$repo_root/.github/scripts/backup-restore-diagnostics.mjs" "$daemon_name:$root/backup-restore-diagnostics.mjs"
   host_docker cp "$repo_root/scripts/backup-restore-content.mjs" "$daemon_name:$root/backup-restore-content.mjs"
   host_docker cp "$repo_root/.github/scripts/backup-restore-device-trust.mjs" "$daemon_name:$root/backup-restore-device-trust.mjs"
+  printf '%s\n%s\n' "$daemon_id" "$digest" >"$socket_dir.ready"
+}
+begin_host() {
+  [[ -z ${preparing[$1]:-} && ! -e $work/${1##*-} ]]
+  prepare_host "$1" >"$work/${1##*-}.prepare.log" 2>&1 &
+  preparing[$1]=$!
+}
+finish_host() {
+  local name=$1 status=0
+  [[ -n ${preparing[$name]:-} ]]
+  wait "${preparing[$name]}" || status=$?
+  unset "preparing[$name]"
+  cat "$work/${name##*-}.prepare.log" >&2
+  if [[ $status != 0 ]]; then
+    echo "restore fixture host ${name##*-} preparation failed (exit $status)" >&2
+    exit 1
+  fi
+  daemon_name=$name
+  socket="unix://$work/${name##*-}/docker.sock"
+  { read -r daemon_id && read -r digest; } <"$work/${name##*-}.ready"
+  [[ -n $daemon_id && $digest =~ ^ghcr.io/heey-global/verity/verity-server@sha256:[a-f0-9]{64}$ ]]
 }
 run_driver() {
   local action=$1 fault=${2:-} job='' phase=''
@@ -125,9 +160,13 @@ prepare_reviewed() {
   run_driver advance
 }
 
-start_host "$original"
+begin_host "$original"
+finish_host "$original"
 original_id=$daemon_id
 original_digest=$digest
+# Prepared while the original captures; it is adopted only after the original
+# host is gone, so the restore below still runs without it.
+begin_host "$fresh"
 run_driver capture
 echo '--- recovery: actual ENOSPC on a private destination'
 run_driver destination-full
@@ -139,7 +178,7 @@ host_docker cp "$original:$root/unsupported-release.tar" "$work/unsupported-rele
 # This deletes the source database, source projects, original identity and local deduplication index.
 host_docker rm -f "$original" >/dev/null
 host_docker volume rm "$original-data" >/dev/null
-start_host "$fresh"
+finish_host "$fresh"
 [[ $daemon_id != "$original_id" && $digest = "$original_digest" ]]
 host_docker cp "$work/copied/." "$fresh:$root"
 inner load --input "$work/unsupported-release.tar" >/dev/null
@@ -322,6 +361,7 @@ run_driver verify-rotated-api
 run_driver retired-identity
 
 echo '--- recovery: interrupted rollback refences resumed managed writers'
+begin_host "$second"
 new_identity=1
 prepare_reviewed
 run_driver advance
@@ -351,7 +391,7 @@ mapfile -t parked_containers < <(inner ps -q)
 if (( ${#parked_containers[@]} )); then inner stop "${parked_containers[@]}" >/dev/null; fi
 fresh=$second
 new_identity=0
-start_host "$fresh"
+finish_host "$fresh"
 [[ $daemon_id != "$first_daemon_id" && $daemon_id != "$original_id" ]]
 host_docker cp "$work/copied/." "$fresh:$root"
 host_docker cp "$work/peer-repositories" "$fresh:$root/peer-repositories"

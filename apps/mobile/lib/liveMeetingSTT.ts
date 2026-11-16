@@ -9,7 +9,28 @@ export interface STTEngine {
   available: boolean;
 }
 
-export type STTEvent =
+export type STTEvent = STTEventBody & {
+  journalMeetingId?: string;
+  journalSequence?: number;
+  recordedAt?: number;
+  audioThrough?: number;
+};
+
+export type MeetingCaptureHealth = {
+  kind: 'health';
+  microphone: 'running' | 'paused' | 'stalled';
+  transcription: 'listening' | 'paused';
+  persistence: 'saved';
+  audioSeconds: number;
+  lastAudioAt: number | null;
+  lastTranscriptAt: number | null;
+};
+
+type STTEventBody =
+  | { kind: 'activity-status'; available: boolean }
+  | MeetingCaptureHealth
+  | { kind: 'gap'; at: number; message: string }
+  | { kind: 'buffer-status'; state: 'failed'; message: string }
   | {
       kind: 'status';
       state: 'preparing' | 'downloading' | 'listening' | 'paused' | 'stopped' | 'failed';
@@ -37,6 +58,30 @@ export type STTEvent =
   | { kind: 'speaker-status'; state: 'loading' | 'ready' | 'unavailable'; message?: string };
 
 interface NativeLiveSTT {
+  configureMeeting?(
+    meetingId: string,
+    sessionId: string,
+    startedAt: number,
+    audioSafetyBuffer: boolean,
+  ): Promise<void>;
+  currentCapture?(): Promise<{ meetingId: string; state: string } | null>;
+  journalMeetings?(): Promise<Array<{ meetingId: string }>>;
+  readMeetingJournal?(
+    meetingId: string,
+    after: number,
+    limit: number,
+  ): Promise<Array<{ meetingId: string; sequence: number; event: STTEvent }>>;
+  acknowledgeMeetingJournal?(meetingId: string, through: number): Promise<void>;
+  pendingAudioBuffers?(): Promise<
+    Array<{ meetingId: string; locale: string; segments: number; duration: number }>
+  >;
+  recoverAudioBuffer?(
+    meetingId: string,
+    confirmedThrough: number,
+  ): Promise<RecoveredAudioSegment[]>;
+  discardAudioBuffer?(meetingId: string): Promise<void>;
+  discardMeetingData?(meetingId: string): Promise<void>;
+  acknowledgeAudioRecovery?(meetingId: string, segmentIds: string[]): Promise<void>;
   engines(): Promise<STTEngine[]>;
   start(
     engine: STTEngineId,
@@ -48,6 +93,13 @@ interface NativeLiveSTT {
   pause(): Promise<void>;
   resume(): Promise<void>;
   addListener(event: 'onSTTEvent', listener: (event: STTEvent) => void): { remove(): void };
+}
+
+export interface RecoveredAudioSegment {
+  id: string;
+  text: string;
+  start: number;
+  end: number;
 }
 
 export const liveMeetingSTT =

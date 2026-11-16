@@ -1,4 +1,4 @@
-import { breadcrumbSegments, pdfFileName, renameProblem } from './sessionFileUi';
+import { fileDeletionBatch, breadcrumbSegments, pdfFileName, renameProblem } from './sessionFileUi';
 
 describe('pdfFileName', () => {
   // The share sheet shows this name; a doubled or missing extension reads as a
@@ -44,4 +44,18 @@ describe('renameProblem', () => {
       expect(renameProblem(name, 'a.md', siblings)).not.toBeNull();
     }
   });
+});
+
+it('retries only pending files after a partial deletion failure', async () => {
+  const remove = jest
+    .fn()
+    .mockResolvedValueOnce(undefined)
+    .mockRejectedValueOnce(new Error('temporarily busy'))
+    .mockResolvedValueOnce(undefined);
+  const batch = fileDeletionBatch(['first.md', 'second.md'], remove);
+  await expect(batch.run()).rejects.toThrow('temporarily busy');
+  expect(batch.deleted).toEqual(['first.md']);
+  await batch.run();
+  expect(remove.mock.calls.map(([path]) => path)).toEqual(['first.md', 'second.md', 'second.md']);
+  expect(batch.deleted).toEqual(['first.md', 'second.md']);
 });

@@ -4,7 +4,7 @@ import { startRuntimeDiagnostics, setRuntimeDiagnosticsScreen } from '../lib/run
 // Stack. The header colors come from the live theme via useUnistyles; the app is
 // locked to the dark theme (unistyles `initialTheme: 'dark'`, not OS-adaptive).
 // Component styles use StyleSheet.create.
-import { QuickCaptureBubble } from '../components/QuickCaptureBubble';
+import { VerityBubble } from '../components/VerityBubble';
 import { BrowserAlertHost } from '../components/ui/BrowserAlertHost';
 import { installBrowserAlerts } from '../lib/browserAlerts';
 
@@ -27,6 +27,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Icon } from '../components/Icon';
 import { ActiveMeetingOverlay } from '../components/ActiveMeetingOverlay';
 import { ServerUpdateBanner } from '../components/ServerUpdateBanner';
+import { ConnectionStatusBar } from '../components/ConnectionStatusBar';
 import { DemoBanner } from '../components/DemoBanner';
 import { startLiveMeetingSync } from '../lib/liveMeetingSync';
 import { KeyCommands } from '../components/KeyCommands';
@@ -43,6 +44,7 @@ import { restoreUnprotectedAuthToken } from '../lib/authToken';
 import { applyStartupUpdate, downloadAppUpdate } from '../lib/automaticUpdates';
 import { getVerityBaseUrl, hydrateVerityBaseUrl } from '../lib/client';
 import { isDemoMode, useDemoRevision } from '../lib/demoMode';
+import { restoreOtherServerCredentials, useServerRevision } from '../lib/serverSwitch';
 import { isDemoShowcase } from '../lib/demoShowcase';
 // One subpath per weight: the package root would pull all eighteen Inter
 // files (about 6 MB) into the bundle, not just the four the theme uses.
@@ -55,8 +57,8 @@ import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
 import { useFonts } from '@expo-google-fonts/inter/useFonts';
 import { adjustFontScale, hydrateFontScale } from '../lib/fontZoom';
 import { prepareInstallationState } from '../lib/installationState';
-import { showsMessageSearch } from '../lib/headerRoutes';
-import { dispatchTaskVoiceShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
+import { showsMessageSearch, usesExpandedHeaderTitle } from '../lib/headerRoutes';
+import { dispatchVerityShortcut, dispatchVoiceShortcut } from '../lib/voiceShortcut';
 import { NO_WINDOW_CONTROLS_INSET, type WindowControlsInset } from '../lib/windowControls';
 
 // The app is dark-only. Force the native interface style to dark AT RUNTIME so all
@@ -77,6 +79,7 @@ export default function RootLayout() {
   useEffect(() => startRuntimeDiagnostics(), []);
   const { theme } = useUnistyles();
   const demoRevision = useDemoRevision();
+  const serverRevision = useServerRevision();
   // Learn the iPad keyboard type app-wide (see hardwareKeyboard.ts) so opening a
   // session can autofocus the composer on the first try when a hardware keyboard is
   // attached. No-op off iPad.
@@ -128,6 +131,7 @@ export default function RootLayout() {
         await hydrateVerityBaseUrl().catch(() => undefined);
         if (!isDemoMode() && Platform.OS !== 'web') {
           await restoreUnprotectedAuthToken(getVerityBaseUrl()).catch(() => undefined);
+          await restoreOtherServerCredentials().catch(() => undefined);
         }
       }
       if (active) setHydrated(true);
@@ -150,7 +154,7 @@ export default function RootLayout() {
     );
   }
 
-  return <HydratedRoot key={demoRevision} />;
+  return <HydratedRoot key={`${String(demoRevision)}:${String(serverRevision)}`} />;
 }
 
 function HydratedRoot() {
@@ -217,7 +221,7 @@ function HydratedRoot() {
       onSearch={handleSearchShortcut}
       onVoice={(action) => {
         if (action === 'task') {
-          dispatchTaskVoiceShortcut();
+          dispatchVerityShortcut();
           return;
         }
         if (pathname === '/' || pathname.startsWith('/session/')) dispatchVoiceShortcut();
@@ -275,6 +279,7 @@ function HydratedRoot() {
                 name="project/[id]/settings/model"
                 options={{ title: 'Default model' }}
               />
+              <Stack.Screen name="project/[id]/settings/design" options={{ title: 'Design' }} />
               <Stack.Screen name="new" options={{ title: 'New agent' }} />
               <Stack.Screen name="new-project" options={{ title: 'New project' }} />
               {/* Settings is a flat stack of sibling routes, not a nested layout:
@@ -336,6 +341,8 @@ function HydratedRoot() {
               <Stack.Screen name="secure-device" options={{ headerShown: false }} />
               {/* The onboarding wizard renders its own header/progress (#320). */}
               <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+              {/* Spec mockups (apps/mobile/mockups); demo mode only, see the route. */}
+              <Stack.Screen name="mockups/[spec]/[mockup]" options={{ title: 'Mockup' }} />
             </Stack>
             {isDemoMode() ? (
               // Product images are rendered from the showcase; the banner would
@@ -346,7 +353,7 @@ function HydratedRoot() {
             ) : (
               <>
                 <ActiveMeetingOverlay />
-                <QuickCaptureBubble />
+                <VerityBubble />
               </>
             )}
             <BrowserAlertHost />
@@ -395,7 +402,7 @@ function AppHeader({
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const isHome = route.name === 'index';
-  const isSettingsRoute = route.name.includes('settings');
+  const expandedTitle = usesExpandedHeaderTitle(route.name);
   // iPadOS 26 draws the window controls over the header's top-left corner without
   // reserving any safe area for them, so the row is pushed clear of whatever the
   // window's corners claim (zero everywhere else — see components/WindowControls).
@@ -481,7 +488,7 @@ function AppHeader({
               hitSlop={8}
             >
               <Icon name="chevron-left" size={28} color={theme.colors.text} />
-              {back.title && !isSettingsRoute ? (
+              {back.title && !expandedTitle ? (
                 <Text style={styles.headerBackTitle} numberOfLines={1}>
                   {back.title}
                 </Text>
@@ -493,7 +500,7 @@ function AppHeader({
           style={[
             styles.headerTitle,
             isHome ? styles.headerTitleHome : null,
-            isSettingsRoute ? styles.headerTitleSettings : null,
+            expandedTitle ? styles.headerTitleExpanded : null,
           ]}
           numberOfLines={1}
           accessibilityRole="header"
@@ -535,6 +542,8 @@ function AppHeader({
           onDismiss={serverUpdateBanner.dismissible ? bannerDismissal.dismiss : undefined}
         />
       ) : null}
+      {/* Every screen with a header shows the server's reachability here, once. */}
+      <ConnectionStatusBar />
     </View>
   );
 }
@@ -589,10 +598,16 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.text,
     ...theme.typography.title,
   },
-  headerTitleSettings: {
+  headerTitleExpanded: {
     flex: 3,
   },
+  // The wordmark takes only its own width, so the two sides split the rest
+  // evenly and it stays centred. The overview's usage rings (its `headerRight`)
+  // then centre themselves in the whole span between wordmark and search,
+  // not in the right third of the row.
   headerTitleHome: {
+    flex: 0,
+    flexShrink: 0,
     color: theme.colors.signature,
   },
   headerIconButton: {

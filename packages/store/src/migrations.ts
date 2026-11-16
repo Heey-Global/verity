@@ -3,6 +3,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import type { Migration, MigrationProvider } from 'kysely/migration';
 import type { Database } from './schema.js';
+import { laterMigrations } from './migrations-later.js';
 import {
   backfillInlineAttachments,
   backfillToolResultImages,
@@ -5305,3 +5306,281 @@ migrations['0192_session_deletion_worktrees'] = {
     await sql`alter table session_deletions drop column worktree`.execute(db);
   },
 };
+
+migrations['0193_design_mockup_review'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings
+      add column design_level text not null default 'on_request'
+        check (design_level in ('off', 'on_request', 'required'))`.execute(db);
+    // One review round per session at a time: the screens the agent presented, each
+    // with the reviewer's verdict. The revision keeps a device from deciding a round
+    // the agent has already replaced.
+    await sql`alter table sessions
+      add column mockup_review text
+        check (mockup_review in ('pending', 'revising', 'approved')),
+      add column mockup_revision integer not null default 0 check (mockup_revision >= 0),
+      add column mockup_screens jsonb`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table sessions
+      drop column mockup_screens,
+      drop column mockup_revision,
+      drop column mockup_review`.execute(db);
+    await sql`alter table project_settings drop column design_level`.execute(db);
+  },
+};
+
+migrations['0194_assistant_requests'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // One row per message or answer sent to the assistant from a device. The
+    // client-minted id makes a replayed delivery (Watch queue, app restart)
+    // return the first outcome instead of starting a second turn, and the
+    // partial unique index lets only one device answer a given question.
+    await sql`create table assistant_requests (
+      request_id text primary key,
+      session_id text not null references sessions(session_id) on delete cascade,
+      user_id text not null,
+      kind text not null check (kind in ('message', 'answer')),
+      question_id text,
+      state text not null default 'pending' check (state in ('pending', 'accepted')),
+      created_at timestamptz not null default now(),
+      check ((kind = 'answer') = (question_id is not null))
+    )`.execute(db);
+    await sql`create unique index assistant_requests_one_answer
+      on assistant_requests(session_id, question_id) where kind = 'answer'`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table assistant_requests`.execute(db);
+  },
+};
+
+migrations['0195_vulnerability_fixes'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table vulnerability_fixes (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text not null,
+      finding_keys text not null,
+      pending_keys text not null default '[]',
+      accepted boolean not null default false,
+      failed boolean not null default false
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table vulnerability_fixes`.execute(db);
+  },
+};
+
+migrations['0196_project_repositories'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    // The default repository remains in projects: upgrading never moves an existing
+    // clone, worktree, branch or PR association. These rows describe extra modules.
+    await sql`create table project_repositories (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      name text not null,
+      kind text not null check (kind in ('github', 'forgejo')),
+      owner text not null,
+      repo text not null,
+      forge_connection_id text,
+      default_branch text,
+      removed_at timestamptz,
+      check (id not like 'default:%')
+    )`.execute(db);
+    await sql`create unique index project_repositories_active_identity
+      on project_repositories(project_id, coalesce(forge_connection_id, ''), kind, lower(owner), lower(repo))
+      where removed_at is null`.execute(db);
+    await sql`create table session_repository_workspaces (
+      session_id text not null references sessions(session_id) on delete cascade,
+      repository_id text not null,
+      project_id text not null references projects(id) on delete cascade,
+      worktree text not null unique,
+      branch text not null,
+      pull_request jsonb,
+      created_at timestamptz not null default now(),
+      primary key (session_id, repository_id)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_repository_workspaces`.execute(db);
+    await sql`drop table project_repositories`.execute(db);
+  },
+};
+
+migrations['0197_project_inquiries'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table project_inquiry_grants (
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      enabled boolean not null default true,
+      created_at timestamptz not null default now(),
+      primary key(source_project_id,target_project_id),
+      check(source_project_id <> target_project_id)
+    )`.execute(db);
+    // Keep the target boundary after source deletion; only deleting the target removes it.
+    await sql`create table project_inquiry_sessions (
+      source_session_id text not null,
+      target_project_id text not null references projects(id) on delete cascade,
+      target_session_id text not null unique references sessions(session_id) on delete cascade,
+      change_approved boolean not null default false,
+      primary key(source_session_id,target_project_id)
+    )`.execute(db);
+    // Target IDs are reserved before provisioning; session deletion removes matching requests.
+    await sql`create table project_inquiries (
+      id text primary key,
+      source_session_id text not null references sessions(session_id) on delete cascade,
+      target_session_id text not null,
+      source_project_id text not null references projects(id) on delete cascade,
+      target_project_id text not null references projects(id) on delete cascade,
+      title text not null,
+      body text not null,
+      kind text not null check(kind in ('question','change')),
+      status text not null check(status in ('provisioning','pending','approved','rejected','queued','answered','blocked')),
+      created_at timestamptz not null default now(),
+      answer text,
+      answer_delivered boolean not null default false,
+      user_id text,
+      decided_by text
+    )`.execute(db);
+    await sql`create index project_inquiries_delivery on project_inquiries(status,created_at)`.execute(
+      db,
+    );
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table project_inquiries`.execute(db);
+    await sql`drop table project_inquiry_sessions`.execute(db);
+    await sql`drop table project_inquiry_grants`.execute(db);
+  },
+};
+
+migrations['0198_project_repository_instances'] = {
+  // A repository may back several projects. Every existing project keeps
+  // instance 1, so its identity, clone and container stay exactly as before;
+  // another project for the same repository takes the next instance.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column repository_instance integer not null default 1
+      check (repository_instance >= 1)`.execute(db);
+    await sql`alter table project_identity_claims add column repository_instance integer not null
+      default 1 check (repository_instance >= 1)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq
+      on projects(forge_scope, owner, repo, repository_instance)`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo, repository_instance)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    // Rolling back would merge projects that share a repository; refuse instead.
+    await sql`do $$ begin
+      if exists (select 1 from projects where repository_instance > 1)
+        or exists (select 1 from project_identity_claims where repository_instance > 1) then
+        raise exception 'projects share a repository; remove the additional projects first';
+      end if;
+    end $$`.execute(db);
+    await sql`alter table project_identity_claims drop constraint project_identity_claims_pkey,
+      add primary key(forge_scope, owner, repo)`.execute(db);
+    await sql`drop index projects_forge_repo_uniq`.execute(db);
+    await sql`create unique index projects_forge_repo_uniq on projects(forge_scope, owner, repo)`.execute(
+      db,
+    );
+    await sql`alter table project_identity_claims drop column repository_instance`.execute(db);
+    await sql`alter table projects drop column repository_instance`.execute(db);
+  },
+};
+
+migrations['0199_session_pr_visibility'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table session_pr_visibility (
+      session_id text not null references sessions(session_id) on delete cascade,
+      worktree text not null,
+      pr_url text not null,
+      fingerprint text not null,
+      hidden boolean not null default false,
+      primary key (session_id, worktree, pr_url)
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table session_pr_visibility`.execute(db);
+  },
+};
+
+migrations['0200_wiki_occasions'] = {
+  // What happened in a project that its Wiki may need to reflect. A row stays
+  // open until a maintenance run has read it; closing it drops any text kept
+  // for that run, such as the messages of a session deleted as done.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_occasions (
+      id text primary key,
+      project_id text not null references projects(id) on delete cascade,
+      kind text not null check(kind in ('source','meeting','decision','chat','session','merge')),
+      ref text not null,
+      title text not null,
+      body text,
+      created_at timestamptz not null default now(),
+      closed_at timestamptz,
+      unique(project_id,kind,ref)
+    )`.execute(db);
+    await sql`create index wiki_occasions_open on wiki_occasions(project_id,created_at)
+      where closed_at is null`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_occasions`.execute(db);
+  },
+};
+
+migrations['0201_project_description'] = {
+  // One line under the project's name on its page, written by its managers.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings add column description text
+      check (char_length(description) <= 200)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table project_settings drop column description`.execute(db);
+  },
+};
+
+migrations['0202_wiki_maintenance'] = {
+  // One row per project whose Wiki was maintained: the quiet session the runs
+  // happen in and when the last run started. The session is hidden from every
+  // list; deleting it only means the next run creates a new one.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`create table wiki_maintenance (
+      project_id text primary key references projects(id) on delete cascade,
+      session_id text unique references sessions(session_id) on delete set null,
+      last_run_at timestamptz
+    )`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop table wiki_maintenance`.execute(db);
+  },
+};
+
+migrations['0203_trusted_cli_output_listing'] = {
+  // Lets an agent whose wait for a secret command was cut off find the run
+  // again: list its own session's retained records, newest first.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table trusted_cli_outputs
+      add column started_at timestamptz not null default now()`.execute(db);
+    await sql`create index trusted_cli_outputs_owner
+      on trusted_cli_outputs(project_id, session_id, started_at)`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`drop index trusted_cli_outputs_owner`.execute(db);
+    await sql`alter table trusted_cli_outputs drop column started_at`.execute(db);
+  },
+};
+
+migrations['0204_project_name'] = {
+  // A project's own name, independent of the repositories it connects. Every
+  // existing project keeps the name the app showed it under: its repository
+  // (or, for a local project, directory) name. Connecting, disconnecting or
+  // syncing repositories never writes it; only a rename does.
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects add column name text
+      check (char_length(btrim(name)) between 1 and 200)`.execute(db);
+    await sql`update projects set name = repo`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table projects drop column name`.execute(db);
+  },
+};
+
+Object.assign(migrations, laterMigrations);

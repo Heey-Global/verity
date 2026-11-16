@@ -1,9 +1,14 @@
+import { protectedBuildCommand } from './project-egress-build.js';
+import { protectedBuildFailure } from './project-egress-build-error.js';
+import { DockerError } from './docker.js';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { createServer, type Server } from 'node:http';
 import { lstat, chmod } from 'node:fs/promises';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { ProjectEgressHealthError } from './project-egress-health.js';
-import type { ProjectEgressHost } from './project-egress-host.js';
+import type { ProtectedBuildHost } from './project-egress-build.js';
+import { projectEgressHostRequest, type ProjectEgressHost } from './project-egress-host.js';
 
 /** Bind only below a pre-created, root-owned runtime directory. There is no TCP
  * listener and no endpoint accepting raw commands. The bearer key is projected
@@ -13,6 +18,7 @@ export async function listenProjectEgressHost(options: {
   directory: string;
   token: string;
   controller: ProjectEgressHost;
+  builds?: ProtectedBuildHost;
 }): Promise<Server> {
   if (!/^[a-f0-9]{64}$/u.test(options.token)) throw new Error('Invalid host control key');
   const directory = await lstat(options.directory);
@@ -36,7 +42,10 @@ export async function listenProjectEgressHost(options: {
         request.resume();
         return;
       }
-      if (request.method !== 'POST' || request.url !== '/v1/command') {
+      if (
+        request.method !== 'POST' ||
+        !(request.url === '/v1/command' || (request.url === '/v1/build' && options.builds))
+      ) {
         response.writeHead(404).end();
         request.resume();
         return;
@@ -47,6 +56,8 @@ export async function listenProjectEgressHost(options: {
         return;
       }
       pending++;
+      const correlationId = randomUUID();
+      let operation = 'invalid';
       void (async () => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -60,18 +71,53 @@ export async function listenProjectEgressHost(options: {
           }
           chunks.push(buffer);
         }
-        const result = await options.controller.execute(
-          JSON.parse(Buffer.concat(chunks).toString('utf8')),
-        );
+        const controller = request.url === '/v1/build' ? options.builds! : options.controller;
+        const input: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (request.url === '/v1/command') {
+          const parsed = projectEgressHostRequest.safeParse(input);
+          if (parsed.success) operation = parsed.data.operation;
+        }
+        if (request.url === '/v1/build') {
+          const parsed = protectedBuildCommand.safeParse(input);
+          if (parsed.success) operation = parsed.data.operation;
+        }
+        const result = await controller.execute(input);
         response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(result));
       })()
         .catch((error: unknown) => {
+          const poolExhausted =
+            error instanceof DockerError && error.kind === 'address_pool_exhausted';
+          const buildFailure =
+            request.url === '/v1/build'
+              ? {
+                  ...protectedBuildFailure(error),
+                  ...(poolExhausted ? { reason: 'address_pool_exhausted' as const } : {}),
+                  correlationId,
+                }
+              : undefined;
+          if (buildFailure)
+            console.warn('verity: protected build operation refused', {
+              operation,
+              ...buildFailure,
+            });
+          if (error instanceof ProjectEgressInventoryError) {
+            console.warn('verity: inventory command refused', {
+              operation,
+              reason: error.reason,
+              correlationId,
+            });
+          }
           // Do not disclose commands, paths or daemon inspection data to the client.
           if (!response.headersSent) response.writeHead(409);
           response.end(
             JSON.stringify({
               error: 'host operation refused',
-              ...(error instanceof ProjectEgressHealthError ? { reason: error.reason } : {}),
+              ...(buildFailure ?? (poolExhausted ? { reason: 'address_pool_exhausted' } : {})),
+              ...(error instanceof ProjectEgressInventoryError ? { correlationId } : {}),
+              ...(error instanceof ProjectEgressHealthError ||
+              error instanceof ProjectEgressInventoryError
+                ? { reason: error.reason }
+                : {}),
             }),
           );
         })

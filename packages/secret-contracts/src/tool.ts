@@ -440,7 +440,7 @@ export const trustedCliRequestSchema = z
       .min(1)
       .max(MAX_TRUSTED_CLI_SECRETS)
       .describe(
-        'Every secret this one command needs, each with the environment variable that carries it. Two entries may not name the same variable.',
+        'At least one secret is required; use the normal command tool for commands without secrets. Every secret this one command needs, each with the environment variable that carries it. Two entries may not name the same variable.',
       ),
     command: z
       .array(
@@ -463,7 +463,7 @@ export const trustedCliRequestSchema = z
         message: 'command executable must be absolute',
       })
       .describe(
-        'Executable and arguments as separate tokens — ["/usr/bin/example-cli", "get", "items"], never one string. ' +
+        'Executable and arguments as separate tokens — ["/usr/bin/example-cli", "get", "items"], never one string. Tokens must not contain control characters, including newlines and tabs; use single-line inline code or an approved entryScript. ' +
           'No shell runs, so "$VAR", quotes, pipes, redirects and globs reach the program literally; to pass the ' +
           'secret write the variable name the program itself expands, or use `injection: "file"`. ' +
           'The executable must be root-owned and not group- or world-writable, which rules out anything you wrote ' +
@@ -515,7 +515,8 @@ export const TRUSTED_CLI_TOOL_DESCRIPTION =
   'List every secret the command needs in `secrets`; a CLI that wants a key id, an issuer id and a private key gets all three from one call. Do not ask for a combined JSON alias and do not try to split one. ' +
   'There is no implicit shell. The executable and each argument are separate tokens, and the executable must be an installed root-owned program. A worktree entry script is allowed only when `entryScript` names its absolute path, SHA-256, and loading mode; Verity shows and verifies them. Use `loading: "isolated"` only when the script needs no mutable worktree files; Verity denies those reads and may reuse approval. Use `loading: "dynamic"` for imports, sourced files, and other worktree reads; scoped approval accepts that those files may change. Ordinary CLIs, inline eval, stdin, and modules also support once, session, and 30-day project approval bound to the exact invocation and execution directory. ' +
   'With `injection: "file"` Verity writes the secret to /run/verity-runner/secrets/<env>; because nothing expands `$VAR`, the argument has to spell that path out in full, in whichever form the tool takes. ' +
-  'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only.';
+  'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only. ' +
+  'If this call is cut off before it returns, do not run the command again: call verity_secret_read_output without invocationId to find the run and read its status and output. A run missing from that list either never started or its record expired or was evicted; tell the user before running it again.';
 
 export const secretCatalogToolRequestSchema = z
   .object({

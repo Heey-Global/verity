@@ -23,8 +23,11 @@ reload restores the previous configuration. A private ownership record binds the
 managed relay registration to its runtime binary and complete tree. A subsequent
 runtime upgrade may migrate only that exact verified registration; a foreign or
 changed registration remains a collision. Unrelated relay registrations and
-bpffs unit/filesystem collisions are refused. Persistent bpffs uses a fixed mount
-unit and a private root-owned pin directory recreated through tmpfiles. Controller
+bpffs unit/filesystem collisions are refused. The preparer requires the bpffs API
+filesystem mounted by systemd at `/sys/fs/bpf`; systemd rejects a separate mount
+unit for this path. Upgrades remove only the exact obsolete Verity mount unit and
+its known enablement link, without unmounting bpffs. The private root-owned pin
+directory is recreated through tmpfiles. Controller
 startup rechecks the exact profile and package versions; a changed kernel/runtime
 or artifact cannot silently inherit a prior acceptance.
 
@@ -103,7 +106,10 @@ canonical egress mounts remain explicitly pending. No fabricated update journal,
 manual target-helper invocation or signature substitution authorizes this path.
 
 The first assessment supports native systemd on little-endian x86_64 Ubuntu 24.04
-or 26.04 with rootful Docker 29.9.2 and live restore disabled. It verifies the
+or 26.04 with rootful Docker 29.8.0, 29.9.2 or 29.9.3 and live restore disabled.
+These are assessment candidates, not accepted production profiles; the descriptor binds the
+exact observed Docker version and rejects version drift. Provisioning does not
+upgrade or restart Docker. It verifies the
 release-owned Node/controller/BPF artifacts and runtime pins, the complete gVisor
 runtime tree, exact runtime arguments and package identities. Missing allowlisted
 prerequisites are installed at exact versions selected from authenticated distro
@@ -129,3 +135,23 @@ update/reboot and failure-recovery checks with independent packet observations.
 Local tests and experimental boot lifecycle evidence do not prove this complete
 signed Staging route. Production acceptance additionally requires reviewed retained
 evidence and a release-owned exact profile exercised through production admission.
+
+### Assessment failure and retry contract
+
+Assessment authorization uses the same bounded deployment identifier contract as
+managed deployment state (including installer-generated `ubuntu-<hex8>` IDs).
+The private grant written before a job runs is not completion. Assessment
+preflight failure persists a fixed public reason code and exits unsuccessfully,
+so the Updater cannot mark that assessment completed. Raw exception text is
+never copied into public diagnostics. Codes distinguish invalid assessment
+authority, unsupported Docker host configuration, missing package candidates and
+missing project/relay runtimes.
+
+Only completion markers with `completionVersion: 2` suppress reconciliation.
+Older markers may represent swallowed preflight failures and are retried through
+a new deterministic installed-assessment operation identity. The host wrapper
+retains its private job result; retries preserve the control key and host state.
+The normal signed update delivers the repair. No manual host preparation or
+Docker upgrade is required for the listed assessment candidates. A successful
+installation still requires authenticated service readiness and actual Staging
+traffic acceptance before any production compatibility claim.

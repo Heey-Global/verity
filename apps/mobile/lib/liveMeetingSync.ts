@@ -6,7 +6,9 @@ import {
   currentMeeting,
   endMeeting,
   pauseMeeting,
+  releaseMeeting,
   resumeMeeting,
+  recoverNativeMeetings,
   subscribeMeeting,
 } from './liveMeetingSession';
 import {
@@ -18,12 +20,208 @@ import {
   importChanges,
   pendingMeetings,
   pendingNotes,
+  meetingUploadFailure,
+  saveMeetingUploadFailure,
+  clearMeetingUploadFailure,
+  type MeetingRecord,
 } from './liveMeetingStore';
 
 const flushing = new Map<string, Promise<void>>();
 let handlingCommand = false;
 let followedRemote: { serverId: string; sessionId: string; meetingId: string } | null = null;
 const followListeners = new Set<(value: typeof followedRemote) => void>();
+export interface MeetingSyncFailure {
+  message: string;
+  status: number;
+  serverFinalized?: boolean;
+}
+const syncFailures = new Map<string, MeetingSyncFailure>();
+const failureListeners = new Set<() => void>();
+const failureKey = (serverId: string, id: string) => JSON.stringify([serverId, id]);
+
+export function getMeetingSyncFailure(serverId: string, id: string): MeetingSyncFailure | null {
+  return syncFailures.get(failureKey(serverId, id)) ?? null;
+}
+
+export function subscribeMeetingSyncFailure(listener: () => void): () => void {
+  failureListeners.add(listener);
+  return () => {
+    failureListeners.delete(listener);
+  };
+}
+
+function publishFailure(serverId: string, id: string, failure: MeetingSyncFailure | null): void {
+  const key = failureKey(serverId, id);
+  if (JSON.stringify(syncFailures.get(key) ?? null) === JSON.stringify(failure)) return;
+  if (failure) syncFailures.set(key, failure);
+  else syncFailures.delete(key);
+  for (const listener of failureListeners) listener();
+}
+
+const uploadFailureMessage =
+  'The server could not accept the saved transcript. Your local copy is kept.';
+// A 401 is about this device's credential, not the meeting: the app re-authenticates and
+// the upload goes through on a later attempt. Blocking it instead left the meeting's
+// final state unsent, so the server kept showing it as running on every device.
+const permanentUploadError = (error: unknown): error is VerityApiError =>
+  error instanceof VerityApiError && [400, 403, 404, 409, 413, 422].includes(error.status);
+
+async function uploadMeeting(
+  client: VerityClient,
+  serverId: string,
+  meeting: Awaited<ReturnType<typeof pendingMeetings>>[number],
+): Promise<void> {
+  let blocked = await meetingUploadFailure(serverId, meeting.id);
+  if (blocked?.status === 401 && blocked.revision >= 0) {
+    // Recorded by an earlier version that treated 401 as permanent: retry it like an
+    // explicit retry would, keeping a confirmed server finalization.
+    blocked = { ...blocked, revision: -1 };
+    await saveMeetingUploadFailure(serverId, meeting.id, blocked);
+  }
+  if (blocked?.status)
+    publishFailure(serverId, meeting.id, { ...blocked, message: uploadFailureMessage });
+  // Heartbeats and new speech advance revisions too; they do not repair validation/auth.
+  // A terminal snapshot following a server-finalized conflict is allowed through once.
+  if (
+    blocked &&
+    blocked.revision >= 0 &&
+    !(blocked.status === 409 && meeting.state !== 'active' && blocked.revision !== meeting.revision)
+  )
+    throw new Error(uploadFailureMessage);
+  try {
+    await client.putLiveMeeting(meeting);
+  } catch (error) {
+    if (permanentUploadError(error) && !isDiscardedError(error)) {
+      const failure = {
+        revision: meeting.revision,
+        status: error.status,
+        serverFinalized: blocked?.serverFinalized ?? false,
+      };
+      await saveMeetingUploadFailure(serverId, meeting.id, failure);
+      publishFailure(serverId, meeting.id, { ...failure, message: uploadFailureMessage });
+      // Finalizing elsewhere never authorizes this recorder to reopen the meeting.
+      if (error.code === 'meeting_finalized') {
+        const current = currentMeeting();
+        if (
+          current?.id === meeting.id &&
+          current.serverId === serverId &&
+          current.state === 'active'
+        )
+          await endMeeting(meeting.id);
+      }
+    }
+    throw error;
+  }
+  await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
+  await clearMeetingUploadFailure(serverId, meeting.id);
+  publishFailure(serverId, meeting.id, null);
+}
+
+/** Explicit retry preserves the durable outbox and retries only after prior uploads settle. */
+export async function retryMeetingSync(sessionId: string, meetingId: string): Promise<void> {
+  const serverId = getActiveMeetingServerId();
+  if (!serverId) throw new Error('Connect to this meeting’s server to retry sync.');
+  await flushing.get(serverId)?.catch(() => undefined);
+  const previous = await meetingUploadFailure(serverId, meetingId);
+  if (previous) await saveMeetingUploadFailure(serverId, meetingId, { ...previous, revision: -1 });
+  await flushOwnerMeeting(serverId, meetingId);
+  await syncMeetingSession(sessionId);
+}
+
+/** Ends server state only; this never claims to stop another device's microphone. */
+export async function finalizeMeetingOnServer(sessionId: string, meetingId: string): Promise<void> {
+  const serverId = getActiveMeetingServerId();
+  const client = createVerityClient();
+  if (!serverId || !client) throw new Error('Connect to this meeting’s server to end it there.');
+  const current = currentMeeting();
+  if (current?.id === meetingId && current.state === 'active')
+    throw new Error('Stop recording on this device before ending the meeting on the server.');
+  await client.finalizeLiveMeeting(sessionId, meetingId);
+  await recordServerFinalization(serverId, meetingId);
+}
+
+// Meetings whose stop this device sent to their recorder, until it finished or was ended.
+const stopsSentHere = new Set<string>();
+
+type MeetingControl = Awaited<ReturnType<VerityClient['getLiveMeetingCommands']>>;
+
+/** True when the newest command is a stop that its recorder refused or cannot pick up. */
+function stopStranded(control: MeetingControl): boolean {
+  const latest = control.commands[0];
+  if (latest?.action !== 'stop') return false;
+  return latest.state === 'failed' || (latest.state === 'pending' && !control.recorderOnline);
+}
+
+async function endOnServer(client: VerityClient, sessionId: string, meetingId: string) {
+  await finalizeMeetingOnServer(sessionId, meetingId);
+  // Kept until the server confirmed, so a failed end is tried again on the next refresh.
+  stopsSentHere.delete(meetingId);
+  await syncMeetingSession(sessionId, client).catch(() => undefined);
+}
+
+/**
+ * Stops a meeting this device is not recording. An online meeting is left by its bot. A
+ * reachable recorder is asked to stop, so it keeps its last audio and uploads the final
+ * transcript. Without one the server ends the meeting itself: a stop command that no device
+ * runs would leave the meeting running on every device, with no way to end it.
+ */
+export async function stopMeetingElsewhere(
+  meeting: Pick<MeetingRecord, 'id' | 'sessionId' | 'engine'>,
+  suppliedClient?: VerityClient,
+): Promise<'online' | 'requested' | 'ended'> {
+  const client = suppliedClient ?? createVerityClient();
+  if (!client) throw new Error('Connect to the server to stop this meeting.');
+  if (meeting.engine === 'attendee') {
+    await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+    return 'online';
+  }
+  const control = await client.getLiveMeetingCommands(meeting.sessionId, meeting.id);
+  const latest = control.commands[0];
+  if (control.recorderOnline) {
+    // A reachable recorder stops itself and keeps its last audio. A stop it is about to pick
+    // up is kept rather than repeated; one it refused is ended on the server by the next
+    // refresh (`readMeetingControl`), once this device has asked for itself.
+    if (!(latest?.action === 'stop' && latest.state === 'pending'))
+      await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
+    stopsSentHere.add(meeting.id);
+    return 'requested';
+  }
+  await endOnServer(client, meeting.sessionId, meeting.id);
+  return 'ended';
+}
+
+/**
+ * Reads a meeting's remote-control state for a device that is not recording it. A stop sent
+ * from this device that cannot finish on the recorder is ended on the server here; the
+ * result then reports `serverEnded` and no pending command.
+ */
+export async function readMeetingControl(
+  client: VerityClient,
+  sessionId: string,
+  meetingId: string,
+): Promise<MeetingControl & { serverEnded: boolean }> {
+  const control = await client.getLiveMeetingCommands(sessionId, meetingId);
+  if (!stopsSentHere.has(meetingId)) return { ...control, serverEnded: false };
+  if (stopStranded(control)) {
+    await endOnServer(client, sessionId, meetingId);
+    return { ...control, commands: [], serverEnded: true };
+  }
+  if (control.commands[0]?.action !== 'stop' || control.commands[0].state === 'completed')
+    stopsSentHere.delete(meetingId);
+  return { ...control, serverEnded: false };
+}
+
+async function recordServerFinalization(serverId: string, meetingId: string): Promise<void> {
+  const failure = await meetingUploadFailure(serverId, meetingId);
+  if (failure) {
+    await saveMeetingUploadFailure(serverId, meetingId, { ...failure, serverFinalized: true });
+    publishFailure(serverId, meetingId, {
+      ...failure,
+      serverFinalized: true,
+      message: uploadFailureMessage,
+    });
+  }
+}
 
 export function followRemoteMeeting(sessionId: string, meetingId: string): void {
   const serverId = getActiveMeetingServerId();
@@ -84,6 +282,8 @@ export async function discardFinishedMeeting(
     }
   }
   await deleteMeeting(meeting.id, meeting.serverId ?? null);
+  // Its server copy is gone: polling it would only answer 404 from now on.
+  releaseMeeting(meeting.id);
 }
 
 function flushMeetingOutbox(serverId: string): Promise<void> {
@@ -96,8 +296,7 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
     let firstError: unknown = null;
     for (const meeting of await pendingMeetings(serverId)) {
       try {
-        await client.putLiveMeeting(meeting);
-        await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
+        await uploadMeeting(client, serverId, meeting);
       } catch (error) {
         // Discarded elsewhere: retrying would fail forever, so this copy goes too.
         // A failed local delete must not stop the rest of the outbox.
@@ -110,6 +309,11 @@ function flushMeetingOutbox(serverId: string): Promise<void> {
     }
     for (const { sessionId, note } of await pendingNotes(serverId)) {
       try {
+        // A rejected parent may not exist remotely; keep its notes local until recovery.
+        if (await meetingUploadFailure(serverId, note.meetingId)) {
+          firstError ??= new Error(uploadFailureMessage);
+          continue;
+        }
         await client.putLiveMeetingNote(sessionId, note);
         await acknowledgeNote(serverId, note.id, note.revision);
       } catch (error) {
@@ -156,6 +360,10 @@ export async function syncMeetingSession(
     changes.notes,
     changes.deletedMeetingIds,
   );
+  // Discarded on another device: a finished meeting held here must not keep being polled.
+  for (const id of changes.deletedMeetingIds) {
+    if (currentMeeting()?.serverId === serverId) releaseMeeting(id);
+  }
   return { pending: pending || (await hasPendingMeetingSync(serverId, sessionId)) };
 }
 
@@ -164,16 +372,18 @@ async function flushOwnerMeeting(serverId: string, id: string): Promise<void> {
   const client = createVerityClient();
   if (!client) throw new Error('Server unavailable.');
   for (const meeting of (await pendingMeetings(serverId)).filter((item) => item.id === id)) {
-    await client.putLiveMeeting(meeting);
-    await acknowledgeMeeting(serverId, meeting.id, meeting.revision);
+    await uploadMeeting(client, serverId, meeting);
   }
 }
 
 async function handleOwnerCommands(suppliedClient?: VerityClient): Promise<void> {
   if (handlingCommand) return;
   const meeting = currentMeeting();
+  // Remote commands steer a recorder; an ended one has nothing left to obey, and its server
+  // copy may already be deleted.
   if (
     !meeting ||
+    meeting.state === 'ended' ||
     !meeting.ownerToken ||
     !meeting.serverId ||
     meeting.serverId !== getActiveMeetingServerId()
@@ -205,7 +415,21 @@ async function handleOwnerCommands(suppliedClient?: VerityClient): Promise<void>
       } catch (reason) {
         error = String(reason);
       }
-      if (!error) await flushOwnerMeeting(meeting.serverId, meeting.id);
+      if (!error) {
+        try {
+          await flushOwnerMeeting(meeting.serverId, meeting.id);
+        } catch {
+          if (command.action === 'stop') {
+            try {
+              await client.finalizeLiveMeeting(meeting.sessionId, meeting.id);
+              await recordServerFinalization(meeting.serverId, meeting.id);
+            } catch {
+              error =
+                'Recording stopped locally, but the server end could not be confirmed. Retry from the meeting.';
+            }
+          } else error = 'The recording changed locally, but its status could not be synced.';
+        }
+      }
       await client.acknowledgeLiveMeetingCommand(
         meeting.sessionId,
         meeting.id,
@@ -224,6 +448,7 @@ export function startLiveMeetingSync(): () => void {
   let running = true;
   let ticking = false;
   let client = createVerityClient();
+  let lastBackgroundFlush = 0;
   const tick = async () => {
     if (!running || ticking || AppState.currentState !== 'active') return;
     ticking = true;
@@ -258,12 +483,19 @@ export function startLiveMeetingSync(): () => void {
       meeting?.sessionId,
       meeting?.id,
       meeting?.ownerToken,
+      meeting?.state === 'ended',
     ]);
     if (key !== watchedKey) {
       watchedKey = key;
       detach();
       detach = () => {};
-      if (client && meeting?.ownerToken && meeting.serverId === getActiveMeetingServerId()) {
+      if (
+        client &&
+        meeting &&
+        meeting.state !== 'ended' &&
+        meeting.ownerToken &&
+        meeting.serverId === getActiveMeetingServerId()
+      ) {
         const path = `/sessions/${encodeURIComponent(meeting.sessionId)}/live-meetings/${encodeURIComponent(meeting.id)}/commands`;
         detach = subscribeLiveRefresh(client, tick, (value) => value === path, [
           { path, ownerToken: meeting.ownerToken },
@@ -271,7 +503,13 @@ export function startLiveMeetingSync(): () => void {
       }
     }
     const serverId = getActiveMeetingServerId();
-    if (serverId) void flushMeetingOutbox(serverId).catch(() => undefined);
+    const background = AppState.currentState !== 'active';
+    // Reuse the paired transport while audio keeps the process alive. This is best effort;
+    // the native journal remains authoritative when JavaScript or the connection is suspended.
+    if (serverId && (!background || Date.now() - lastBackgroundFlush >= 10_000)) {
+      if (background) lastBackgroundFlush = Date.now();
+      void flushMeetingOutbox(serverId).catch(() => undefined);
+    }
   };
   const detachMeeting = subscribeMeeting(bindMeeting);
   const detachBase = subscribeVerityBaseUrl(() => {
@@ -281,9 +519,14 @@ export function startLiveMeetingSync(): () => void {
     void tick();
   });
   const appState = AppState.addEventListener('change', (state) => {
-    if (state === 'active') void tick();
+    if (state === 'active')
+      void recoverNativeMeetings()
+        .then(tick)
+        .catch(() => undefined);
   });
-  void tick();
+  void recoverNativeMeetings()
+    .then(tick)
+    .catch(() => undefined);
   return () => {
     running = false;
     clearInterval(timer);

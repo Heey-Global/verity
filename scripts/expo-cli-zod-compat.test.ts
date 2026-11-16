@@ -13,20 +13,22 @@ try {
   if (process.env.VERITY_REQUIRE_MOBILE_NATIVE === '1') throw error;
 }
 let cliRequire: NodeJS.Require;
-let PluginSchema: z.ZodType;
-let DevToolsPluginOutputSchema: z.ZodType;
-let createMCPDevToolsExtensionSchema: (plugin: unknown) => z.ZodObject;
+let PluginSchema: unknown;
+let DevToolsPluginOutputSchema: unknown;
+let validate: (schema: unknown, data: unknown) => void;
+let createMCPDevToolsExtensionSchema: (plugin: unknown, zod: typeof z) => z.ZodObject;
 
 // A major-version override must retain the CLI's plugin and MCP contracts.
 describe.skipIf(cliManifest === undefined)('Expo CLI Zod override', () => {
   beforeAll(() => {
     cliRequire = createRequire(cliManifest!);
     ({ PluginSchema, DevToolsPluginOutputSchema } = cliRequire(
-      './build/src/start/server/DevToolsPlugin.schema.js',
-    ) as { PluginSchema: z.ZodType; DevToolsPluginOutputSchema: z.ZodType });
+      './build/src/start/server/devtools/DevToolsPlugin.schema.js',
+    ) as { PluginSchema: unknown; DevToolsPluginOutputSchema: unknown });
     ({ createMCPDevToolsExtensionSchema } = cliRequire(
-      './build/src/start/server/createMCPDevToolsExtensionSchema.js',
-    ) as { createMCPDevToolsExtensionSchema: (plugin: unknown) => z.ZodObject });
+      './build/src/start/server/mcp/createMCPDevToolsExtensionSchema.js',
+    ) as { createMCPDevToolsExtensionSchema: (plugin: unknown, zod: typeof z) => z.ZodObject });
+    ({ validate } = cliRequire('@expo/schema-utils') as { validate: typeof validate });
   });
   it('resolves the root Zod and excludes the vulnerable nested copy', () => {
     expect(cliRequire.resolve('zod')).toBe(require.resolve('zod'));
@@ -51,9 +53,9 @@ describe.skipIf(cliManifest === undefined)('Expo CLI Zod override', () => {
         ],
       },
     };
-    expect(PluginSchema.safeParse(plugin).success).toBe(true);
-    expect(PluginSchema.safeParse({ ...plugin, packageName: '' }).success).toBe(false);
-    const schema = createMCPDevToolsExtensionSchema(plugin);
+    expect(() => validate(PluginSchema, plugin)).not.toThrow();
+    expect(() => validate(PluginSchema, { ...plugin, packageName: '' })).toThrow();
+    const schema = createMCPDevToolsExtensionSchema(plugin, z);
     expect(schema.safeParse({ command: 'inspect', count: 1 }).success).toBe(true);
     for (const input of [
       { command: 'missing' },
@@ -71,15 +73,19 @@ describe.skipIf(cliManifest === undefined)('Expo CLI Zod override', () => {
   });
 
   it('accepts plugin output variants and rejects invalid output', () => {
-    expect(
-      DevToolsPluginOutputSchema.safeParse([
+    expect(() =>
+      validate(DevToolsPluginOutputSchema, [
         { type: 'text', text: 'ok', level: 'info' },
         { type: 'image', url: 'https://example.com/image' },
         { type: 'audio', url: 'https://example.com/audio' },
-      ]).success,
-    ).toBe(true);
-    expect(DevToolsPluginOutputSchema.safeParse([{ type: 'image', url: 'invalid' }]).success).toBe(
-      false,
-    );
+      ]),
+    ).not.toThrow();
+    for (const output of [
+      [{ type: 'image', url: 'invalid' }],
+      [{ type: 'text', text: 'missing level' }],
+      [{ type: 'video', url: 'https://example.com/video' }],
+    ]) {
+      expect(() => validate(DevToolsPluginOutputSchema, output)).toThrow();
+    }
   });
 });

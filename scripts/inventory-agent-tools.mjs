@@ -17,15 +17,17 @@ for (const capability of AGENT_CAPABILITIES) {
       ? capability.value === 'lookup_decisions'
         ? 'knowledge-query'
         : 'knowledge-ingest'
-      : domain === 'memory'
-        ? 'memory-curate'
-        : domain === 'planning'
-          ? 'planning'
-          : domain === 'tasks'
-            ? 'tasks'
-            : domain === 'app'
-              ? 'app-help'
-              : null;
+      : domain === 'wiki'
+        ? 'wiki-maintain'
+        : domain === 'memory'
+          ? 'memory-curate'
+          : domain === 'planning'
+            ? 'planning'
+            : domain === 'tasks'
+              ? 'tasks'
+              : domain === 'app'
+                ? 'app-help'
+                : null;
   /** @type {Record<string, string>} */
   const connectors = {
     gmail: 'gmail',

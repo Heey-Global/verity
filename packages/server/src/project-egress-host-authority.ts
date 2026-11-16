@@ -125,7 +125,11 @@ export async function egressHostDestinationAllowed(
       for (const subnet of network.IPAM.Config ?? []) {
         if (!subnet.Subnet) continue;
         const range = ipaddr.parseCIDR(subnet.Subnet);
-        if (candidate.kind() === range[0].kind() && candidate.match(range)) return false;
+        if (candidate instanceof ipaddr.IPv4 && range[0] instanceof ipaddr.IPv4) {
+          if (candidate.match(range[0], range[1])) return false;
+        } else if (candidate instanceof ipaddr.IPv6 && range[0] instanceof ipaddr.IPv6) {
+          if (candidate.match(range[0], range[1])) return false;
+        }
       }
   }
   return true;
@@ -166,4 +170,103 @@ export function verifyEgressHostAuthorityReady(
 ): void {
   if (authority === undefined || authority.managedInventoryComplete === false)
     throw new ProjectEgressHealthError('mandatory_inventory_incomplete');
+}
+
+/** Complete host-owned exclusion snapshot for the temporary public build policy.
+ * Even globally addressed connected LANs and Docker networks are not Internet.
+ */
+export async function egressBuildProtectedNetworks(
+  io = {
+    addresses: async () =>
+      (
+        await promisify(execFile)('/sbin/ip', ['-j', 'address', 'show'], {
+          timeout: 1000,
+          maxBuffer: 2 * 1024 * 1024,
+        })
+      ).stdout,
+    docker: projectEgressHostDocker,
+    routes: async () =>
+      JSON.stringify(
+        (
+          await Promise.all(
+            ['-4', '-6'].map(async (family) => {
+              const result = await promisify(execFile)(
+                '/sbin/ip',
+                ['-j', family, 'route', 'show', 'table', 'all'],
+                { timeout: 1000, maxBuffer: 2 * 1024 * 1024 },
+              );
+              return z.array(z.unknown()).parse(JSON.parse(result.stdout));
+            }),
+          )
+        ).flat(),
+      ),
+  },
+): Promise<{ blocked: string[]; uplinks: string[] }> {
+  const interfaces = z
+    .array(
+      z.object({
+        addr_info: z.array(
+          z.object({ local: z.string(), prefixlen: z.number().int().nonnegative() }),
+        ),
+      }),
+    )
+    .parse(JSON.parse(await io.addresses()));
+  const result: string[] = [];
+  const add = (value: string) => {
+    if (result.length >= 30000) throw new Error('Build network inventory too large');
+    const parsed = ipaddr.parseCIDR(value);
+    result.push(`${parsed[0].toString()}/${parsed[1]}`);
+  };
+  for (const item of interfaces)
+    for (const address of item.addr_info) add(`${address.local}/${address.prefixlen}`);
+  const ids = (await io.docker('network', 'ls', '-q', '--no-trunc'))
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (!ids.length || ids.length > 10000 || ids.some((id) => !/^[a-f0-9]{64}$/u.test(id)))
+    throw new Error('Invalid build network inventory');
+  for (let offset = 0; offset < ids.length; offset += 64) {
+    const batch = ids.slice(offset, offset + 64);
+    const networks = z
+      .array(
+        z.object({
+          Id: z.string(),
+          IPAM: z.object({
+            Config: z.array(z.object({ Subnet: z.string().optional() })).nullable(),
+          }),
+        }),
+      )
+      .parse(JSON.parse(await io.docker('network', 'inspect', ...batch)));
+    if (
+      networks.length !== batch.length ||
+      networks.some((network, index) => network.Id !== batch[index])
+    )
+      throw new Error('Incomplete build network inventory');
+    for (const network of networks)
+      for (const subnet of network.IPAM.Config ?? []) if (subnet.Subnet) add(subnet.Subnet);
+  }
+  const routes = z
+    .array(
+      z.object({
+        dst: z.string().optional(),
+        dev: z.string().optional(),
+        type: z.string().optional(),
+      }),
+    )
+    .parse(JSON.parse(await io.routes()));
+  const uplinks = [
+    ...new Set(
+      routes
+        .filter((route) => route.dst === 'default' && (!route.type || route.type === 'unicast'))
+        .map((route) =>
+          z
+            .string()
+            .regex(/^[a-zA-Z0-9_.:-]{1,15}$/u)
+            .parse(route.dev),
+        ),
+    ),
+  ];
+  if (!uplinks.length || uplinks.some((dev) => !dev || !/^[a-zA-Z0-9_.:-]{1,15}$/u.test(dev)))
+    throw new Error('Missing build Internet route');
+  return { blocked: [...new Set(result)], uplinks };
 }

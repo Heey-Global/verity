@@ -809,6 +809,7 @@ export async function markManagedStagingAssessment(
       image,
       operationId,
       completed,
+      ...(completed ? { completionVersion: 2 } : {}),
     });
   } finally {
     await root.close();

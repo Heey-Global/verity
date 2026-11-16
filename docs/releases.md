@@ -15,6 +15,23 @@ merges do not approve a release.
 | Mobile native | Release Please PR, then production promotion PR | Separate Staging and production TestFlight binaries; approved production build verified for internal TestFlight testing |
 | Mobile OTA | Staging Release Please PR, then rolling production promotion PR per runtime | Separate Staging OTA and a specific approved production EAS update group |
 
+## Update helper container retention
+
+Successful runtime and project-network signature verification containers are
+removed before subsequent preparation starts. Installation containers remain
+available until completion is verified so interrupted host work can be resumed.
+After committed cutover and successful companion reconciliation, the Updater
+also removes successful helpers belonging to that exact update, and stopped or
+never-started Compose bootstrap containers for its deployment. Reconciliation leaves failed or
+ambiguous host helpers and helpers from other update attempts intact.
+Cleanup uses non-forcing removal for reconciliation and preserves volumes.
+
+This change ships in the Server release, including its bundled Updater. Prompt
+verification cleanup applies when the installed Updater contains the fix;
+changing the target image alone does not alter predecessor behavior. The
+successor's companion reconciliation can clean its committed update's successful
+leftovers. No sandbox toolkit release is required for this change.
+
 ## Runtime renewal recovery compatibility
 
 The runtime renewal fix explicitly authorizes Docker's `label=disable` security
@@ -35,11 +52,45 @@ verified. After an external Repair, update status rechecks the target's declared
 service capabilities and exact Docker runtime registrations before offering a
 fresh attempt. The journal's failure record remains intact.
 
+Project network protection provisioning uses a separate host service. Its bounded
+helper exposes the direct systemd manager socket, not the system D-Bus socket.
+`systemd-run --wait` requires the latter even as root, so the helper submits the
+service without that option and observes its state and an atomic result instead.
+Each launch has a persisted identity; resumed helpers observe running host work
+without restarting it, and completion must match that launch. A missing result,
+failed service or expired wait never establishes successful restoration. A
+successful invocation that reports an unsupported native profile remains distinct
+from available network protection and is not cached as ready.
+
+The provisioning payload is bundled in the target image. Hosts affected by the
+system-bus mismatch need a newly approved signed target containing the correction;
+changing source code does not alter an already published target. Improved
+Updater error classification takes effect once the installed Updater contains
+that change. Provisioning errors then identify the job, stage and exit status and,
+when a matching helper diagnostic is available, an allowlisted phase and code.
+Raw helper errors and private configuration are not included in those diagnostics.
+Local fixture tests do not establish a successful live update: verify the actual
+server version and host network-protection readiness after an authorized retry.
+
 Startup recovery refuses to create a bootstrap Server beside an existing managed
 generation. If the Gateway has lost its persisted selection, a promoted or
 rolled-back journal can restore its confirmed Server identity after validating
 it against the sealed deployment; ambiguous state remains an explicit error.
 The Gateway already restores its persisted backend before opening its listener.
+
+## Staging Network protection assessment repair
+
+Automatic Staging assessment now accepts installer-generated managed deployment
+identifiers and Docker 29.8.0 alongside 29.9.2 without upgrading or restarting
+Docker. Exact runtime, artifact and host identity checks remain required; this is
+not production profile acceptance. The provisioner prepares the reviewed relay
+runtime after admission.
+
+Failed assessments expose fixed precondition diagnostics and fail the host job
+instead of recording successful completion. Installed-state reconciliation retries
+legacy completion markers using a new operation identity. Deliver the repair
+through a normal signed server update; actual readiness and allowed/blocked
+traffic must still be verified on the updated Staging host.
 
 ## Network protection retrofit readiness
 

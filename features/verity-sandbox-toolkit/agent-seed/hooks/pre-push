@@ -7,6 +7,23 @@
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# Git exports GIT_DIR to hooks, and in a session worktree it points into the
+# repository every session shares. Every helper below (lint, format, review,
+# dependency preparation and whatever they start) would inherit it; a nested
+# `git init` that also sets a work tree then writes `core.worktree` into the
+# shared config and re-points the main checkout for every session. Drop the
+# location variables once git finds the same repository from the worktree
+# root without them, which is the case for every ordinary push.
+HOOK_GIT_DIR=$(git rev-parse --absolute-git-dir 2>/dev/null || echo "")
+if [ -n "$HOOK_GIT_DIR" ] && [ -d "$REPO_ROOT" ] &&
+  [ "$(
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+    cd "$REPO_ROOT" && git rev-parse --absolute-git-dir 2>/dev/null
+  )" = "$HOOK_GIT_DIR" ]; then
+  unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+  cd "$REPO_ROOT"
+fi
 MARKER="${VERITY_CODE_REVIEW_MARKER:-${REPO_ROOT}/.agents/.last-code-review-sha}"
 BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -133,6 +150,38 @@ if [ "${#TIPS[@]}" -eq 0 ] && [ -z "$STDIN_REFS" ]; then
   REVIEW_TIPS=("HEAD")
 fi
 
+# A turn that signs must not publish anyone's unsigned commits. The git wrapper
+# re-signs the checked-out branch before pushing it (ADR 0023 §3); this catches
+# every other ref the push names, and a wrapper that could not run. Only for a
+# turn with a person and with signing enabled, like the wrapper.
+if [ -n "${VERITY_TURN_CAPABILITY:-}" ] && [ -n "${GIT_COMMITTER_EMAIL:-}" ] &&
+  [ "$(git config --bool commit.gpgsign 2>/dev/null || true)" = "true" ]; then
+  UNSIGNED=""
+  for tip in "${TIPS[@]}"; do
+    while read -r sha; do
+      [ -n "$sha" ] || continue
+      if ! git cat-file commit "$sha" | sed '/^$/q' | grep -q '^gpgsig'; then
+        UNSIGNED="${UNSIGNED} $(git log -1 --format='%h (%an)' "$sha")"
+      fi
+    done < <(git rev-list "$tip" --not --remotes 2>/dev/null || true)
+  done
+  if [ -n "$UNSIGNED" ]; then
+    cat >&2 <<EOF
+============================================================
+PUSH BLOCKED - unsigned commits
+
+Unsigned:${UNSIGNED}
+
+Pushing the checked-out branch re-signs these with your key. Push it from
+that branch, or re-sign the commits on the ref you push:
+
+    git rebase --rebase-merges --force-rebase --gpg-sign <base>
+============================================================
+EOF
+    exit 2
+  fi
+fi
+
 # Recover ancestry before scanning: fetched ancestors must be covered by the
 # secret gate too. No lint or review gate runs before the secret scan.
 REVIEW_BASE_HELPER="${0%/*}/../bin/verity-review-base.sh"
@@ -255,9 +304,9 @@ EOF
     DEPENDENCIES_READY=false
     if DEPENDENCIES_BIN=$(resolve_sibling verity-dependencies); then
       if "$DEPENDENCIES_BIN" status; then DEPENDENCIES_READY=true; fi
-    elif [ -d "${REPO_ROOT}/node_modules" ]; then
-      # Compatibility with older seeds; new seeds always ship the helper.
-      DEPENDENCIES_READY=true
+    else
+      echo "PUSH BLOCKED - dependency helper missing; rebuild the container to restore managed central preparation." >&2
+      exit 2
     fi
     if [ "$DEPENDENCIES_READY" != true ]; then
       if ! LOCAL_CHECKS_BIN=$(resolve_sibling verity-local-checks); then
@@ -279,22 +328,10 @@ EOF
         LOCAL_CHECKS="skip"
       else
         echo "pre-push: preparing dependencies automatically for lint and format…" >&2
-        if [ -n "${DEPENDENCIES_BIN:-}" ]; then
-          if ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" install) ||
-             ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" status); then
-            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
-            exit 2
-          fi
-        else
-          if [ -f "${REPO_ROOT}/package-lock.json" ] || [ -f "${REPO_ROOT}/npm-shrinkwrap.json" ]; then
-            INSTALL_ACTION=ci
-          else
-            INSTALL_ACTION=install
-          fi
-          if ! (cd "$REPO_ROOT" && npm "$INSTALL_ACTION" --ignore-scripts); then
-            echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
-            exit 2
-          fi
+        if ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" install) ||
+           ! (cd "$REPO_ROOT" && "$DEPENDENCIES_BIN" status); then
+          echo "PUSH BLOCKED - dependency preparation failed; fix the installation error above and retry." >&2
+          exit 2
         fi
       fi
     fi
@@ -484,8 +521,8 @@ this same base:
     # Fix findings or decline them with a reason; re-run after a fix changes HEAD.
     verity-code-review mark
 
-Do not reach for 'mark' on its own — it records the marker without
-reviewing anything.
+Do not reach for 'mark' on its own — it accepts only a HEAD that a completed
+'run' in this checkout reviewed.
 ============================================================
 EOF
   exit 2
@@ -526,8 +563,9 @@ reviewed HEAD. Re-run the review first if a fix changed HEAD:
 
     verity-code-review mark
 
-'mark' writes the marker without verifying anything, so marking without running
-the review turns this gate green on a diff nobody read.
+'mark' accepts only the HEAD the last completed 'run' reviewed, but it cannot
+check the triage: marking without reading the findings turns this gate green on
+a diff nobody assessed.
 
 The marker is ${MARKER}. See AGENTS.md "Commits And PRs" for the
 runtime-neutral review contract.

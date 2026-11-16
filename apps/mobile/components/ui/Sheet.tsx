@@ -4,21 +4,27 @@ import {
   Animated,
   Modal,
   PanResponder,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
   Text,
   View,
+  InteractionManager,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Icon } from '../Icon';
+import { Icon, type IconName } from '../Icon';
 import { Button } from './Button';
+import { Group, ToggleRow } from './Card';
 
 // How far the sheet has to be dragged down before letting go closes it.
 const DISMISS_DISTANCE = 80;
+// How close to the end an anchored sheet counts as "at the newest entry".
+const FOLLOW_DISTANCE = 48;
 
 /**
  * The one bottom sheet (docs/design-system.md § 5.6): a single scrim, a grab
@@ -35,18 +41,43 @@ export function Sheet({
   footer,
   showClose = true,
   dismissible = true,
+  titleLeading,
+  headerAction,
+  anchorEnd = false,
 }: {
   visible: boolean;
   title: string;
+  /** A mark before the title, such as Verity's V on her panel. */
+  titleLeading?: ReactNode;
+  /** One icon button before the close control. */
+  headerAction?: ReactNode;
   onClose: () => void;
   children?: ReactNode;
   footer?: ReactNode;
   showClose?: boolean;
   dismissible?: boolean;
+  /** A conversation: opens at its newest entry and follows new ones while the
+   *  reader is at the end, without pulling back someone reading further up. */
+  anchorEnd?: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const { theme } = useUnistyles();
   const drag = useRef(new Animated.Value(0)).current;
+  const scroll = useRef<ScrollView>(null);
+  // Until the reader scrolls away from the end, growing content keeps it in view.
+  const following = useRef(true);
+  const placed = useRef(false);
+  const settleFollowing = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    following.current =
+      contentSize.height - contentOffset.y - layoutMeasurement.height < FOLLOW_DISTANCE;
+  };
+  useEffect(() => {
+    if (!visible) {
+      following.current = true;
+      placed.current = false;
+    }
+  }, [visible]);
   const close = () => {
     if (dismissible) onClose();
   };
@@ -103,9 +134,11 @@ export function Sheet({
           <View {...pan.panHandlers} style={styles.grabArea}>
             <View style={styles.handle} />
             <View style={styles.header}>
+              {titleLeading}
               <Text style={styles.title} accessibilityRole="header">
                 {title}
               </Text>
+              {headerAction}
               {showClose ? (
                 <Pressable
                   onPress={close}
@@ -123,10 +156,25 @@ export function Sheet({
           {/* Tall content scrolls so the footer action stays reachable, also
               above the keyboard. */}
           <ScrollView
+            ref={scroll}
             style={styles.scroll}
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
             bounces={false}
+            {...(anchorEnd
+              ? {
+                  // Only where the reader stops scrolling decides; the sheet's own
+                  // animated scroll to the end must not switch following off.
+                  onScrollEndDrag: settleFollowing,
+                  onMomentumScrollEnd: settleFollowing,
+                  onContentSizeChange: () => {
+                    if (!following.current) return;
+                    // The first placement jumps; later growth scrolls visibly.
+                    scroll.current?.scrollToEnd({ animated: placed.current });
+                    placed.current = true;
+                  },
+                }
+              : {})}
           >
             {children}
           </ScrollView>
@@ -134,6 +182,30 @@ export function Sheet({
         </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
+  );
+}
+
+/** An icon button beside a sheet's close control, drawn like it. */
+export function SheetHeaderButton({
+  icon,
+  accessibilityLabel,
+  onPress,
+}: {
+  icon: IconName;
+  accessibilityLabel: string;
+  onPress: () => void;
+}) {
+  const { theme } = useUnistyles();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      hitSlop={8}
+      style={styles.close}
+    >
+      <Icon name={icon} size={16} color={theme.colors.textMuted} />
+    </Pressable>
   );
 }
 
@@ -150,6 +222,7 @@ export function ConfirmSheet({
   message,
   confirmLabel,
   destructive = false,
+  option,
   onConfirm,
   onCancel,
 }: {
@@ -161,6 +234,8 @@ export function ConfirmSheet({
   /** A verb: "Turn off", "Remove key". */
   confirmLabel: string;
   destructive?: boolean;
+  /** One switch below the message for a choice that goes with the action. */
+  option?: ConfirmOption & { value: boolean; onValueChange: (value: boolean) => void };
   onConfirm: () => void | Promise<void>;
   onCancel: () => void;
 }) {
@@ -217,17 +292,40 @@ export function ConfirmSheet({
       }
     >
       <Text style={styles.message}>{message}</Text>
+      {option ? (
+        <Group>
+          <ToggleRow
+            title={option.title}
+            subtitle={option.subtitle}
+            value={option.value}
+            onValueChange={option.onValueChange}
+            disabled={running}
+          />
+        </Group>
+      ) : null}
     </Sheet>
   );
 }
 
-/** What a confirmation asks; `onConfirm` may be async (see `ConfirmSheet`). */
+/** A switch offered with a confirmation, on or off when the sheet opens. */
+export type ConfirmOption = { title: string; subtitle?: string | undefined; initial?: boolean };
+
+/**
+ * What a confirmation asks; `onConfirm` may be async (see `ConfirmSheet`) and
+ * receives the option's final value when one was offered.
+ */
 export type ConfirmRequest = {
   title: string;
   message: string;
   confirmLabel: string;
   destructive?: boolean;
-  onConfirm: () => void | Promise<void>;
+  option?: ConfirmOption;
+  /**
+   * Asked right after another sheet was closed: it appears once that sheet has
+   * faded out, since iOS does not present a modal while another is dismissed.
+   */
+  afterSheet?: boolean;
+  onConfirm: (option: boolean) => void | Promise<void>;
 };
 
 /**
@@ -239,9 +337,32 @@ export type ConfirmRequest = {
 export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   const [visible, setVisible] = useState(false);
+  const [chosen, setChosen] = useState(false);
+  const pending = useRef<() => void>(undefined);
+  useEffect(() => () => pending.current?.(), []);
   const confirm = useCallback((next: ConfirmRequest) => {
+    pending.current?.();
     setRequest(next);
-    setVisible(true);
+    setChosen(next.option?.initial ?? false);
+    if (!next.afterSheet) {
+      setVisible(true);
+      return;
+    }
+    // Whichever comes first: the fade-out settled, or a fallback a little longer
+    // than the fade, so a lingering interaction cannot keep it from appearing.
+    let shown = false;
+    const show = () => {
+      if (shown) return;
+      shown = true;
+      setVisible(true);
+    };
+    const task = InteractionManager.runAfterInteractions(show);
+    const fallback = setTimeout(show, 350);
+    pending.current = () => {
+      shown = true;
+      task.cancel();
+      clearTimeout(fallback);
+    };
   }, []);
   const sheet =
     request === null ? null : (
@@ -251,8 +372,11 @@ export function useConfirm(): [(request: ConfirmRequest) => void, ReactNode] {
         message={request.message}
         confirmLabel={request.confirmLabel}
         destructive={request.destructive ?? false}
+        {...(request.option
+          ? { option: { ...request.option, value: chosen, onValueChange: setChosen } }
+          : {})}
         onConfirm={async () => {
-          await request.onConfirm();
+          await request.onConfirm(chosen);
           setVisible(false);
         }}
         onCancel={() => setVisible(false)}

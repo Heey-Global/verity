@@ -64,20 +64,36 @@ export {
   type ProjectBadge,
   type ProjectTone,
 } from './ui/projectBadge.js';
-export { projectDisplayName, projectRepoRef } from './ui/projectName.js';
+export {
+  hasActionableToolkitDrift,
+  projectAgentMark,
+  projectCardState,
+  shortProvisionReason,
+  type ProjectCardNote,
+  type ProjectCardState,
+  type ProjectCardStateKind,
+} from './ui/projectCardState.js';
+export { projectDisplayName, projectRepoRef, projectTitle } from './ui/projectName.js';
 export {
   isSecuritySandboxUpdate,
   sandboxUpdateAlertMessage,
+  sandboxUpdateBlockedDetail,
+  sandboxUpdateBlockedInboxMessage,
+  sandboxUpdateBlocker,
+  type SandboxUpdateBlocker,
   sandboxUpdateIndicator,
   type SandboxUpdateIndicator,
+  sandboxUpdateLastFailure,
   sandboxUpdateNeedsAttention,
   sandboxUpdateSummary,
+  sandboxUpdateWaitingLabel,
 } from './ui/sandboxUpdate.js';
 export {
   agentEventDescriptor,
   type AgentEventDescriptor,
   type AgentEventTone,
 } from './ui/agentEvent.js';
+export { splitNoticeText } from './ui/systemNotice.js';
 export {
   APP_LINK_PROJECT_SETTINGS_PAGES,
   APP_LINK_SCHEME,
@@ -118,6 +134,9 @@ export {
   isPlanImplementationPermission,
   planProposalHeadline,
   planProposalContent,
+  planProposalCounts,
+  planDecisionAnswer,
+  planDecisionAnswers,
   planProposalFullyRepresented,
   planView,
   type PlanEntry,
@@ -156,6 +175,7 @@ export {
   inboxDismissedKeys,
   inboxItems,
   inboxSummary,
+  alsoWaiting,
   inboxView,
   MEETING_LEAD_MS,
   type InboxAction,
@@ -202,6 +222,14 @@ export {
   type BrokeredJwtClaimSummary,
 } from './ui/brokeredHttpSummary.js';
 export { spellOutBidiControls } from './ui/bidi.js';
+export { workOrder } from './ui/workOrder.js';
+export {
+  permissionSummary,
+  trustedCliCommandLine,
+  trustedCliRiskSentence,
+  type PermissionLine,
+  type PermissionSummary,
+} from './ui/permissionSummary.js';
 export { permissionInputText } from './ui/permissionInput.js';
 export {
   knowledgePublishSummary,
@@ -295,6 +323,15 @@ export {
   type AttentionKind,
 } from './ui/attention.js';
 export {
+  sessionAgentMark,
+  sessionTile,
+  type SessionAgentMark,
+  type SessionTile,
+  type SessionTileGlyph,
+  type SessionTileResult,
+  type SessionTileTone,
+} from './ui/sessionTile.js';
+export {
   isPullRequestCheckingMergeability,
   isPullRequestConflicted,
   pullRequestMergeButton,
@@ -356,6 +393,8 @@ export {
   projectRuntimeStartedSchema,
   projectSettingsSchema,
   PROJECT_AGENTS,
+  PROJECT_DESIGN_LEVELS,
+  mockupReviewSchema,
   projectStateSchema,
   automationScheduleSchema,
   sessionAutomationSchema,
@@ -403,8 +442,13 @@ export {
   type ProjectRuntimeLogs,
   type ProjectRuntimeStarted,
   type ProjectSettings,
+  type ProjectProfile,
+  type ProjectProfilePatch,
   type ProjectSettingsPatch,
   type ProjectAgent,
+  type ProjectDesignLevel,
+  type MockupReview,
+  type MockupReviewScreen,
   type ProjectLifecycleState,
   type ProjectState,
   type MessageSearchResult,
@@ -416,6 +460,8 @@ export {
   type SessionCreateResult,
   type SessionDetail,
   type SessionDirectory,
+  type RecentSharedKnowledge,
+  type RecentSharedKnowledgeList,
   type SessionFileContent,
   type SessionFileEntry,
   type SessionFileRoot,
@@ -448,6 +494,7 @@ export type {
   UserTextMessage,
 } from './happy/message.js';
 export { formatChoiceAnswer, type ChoicesOption, type RiskClass } from '@verity/events';
+export type { PlanDecision } from '@verity/events';
 export { PROJECT_IMAGE_REBUILDING_WARNING } from '@verity/events';
 export { END_PLANNING_TOOL, START_PLANNING_TOOL, planningToolName } from '@verity/events';
 export {
@@ -496,8 +543,15 @@ export {
   type ProjectSettingsDraft,
 } from './projectSettings.js';
 export { secretStatusSchema, type SecretStatus } from './api.js';
+export {
+  providerConnectionsSchema,
+  type ProviderConnection,
+  type ProviderConnectionKind,
+  type ProviderConnections,
+} from './api.js';
 export type {
   ActiveLiveMeetings,
+  OnlineMeetingStatus,
   CalendarWatch,
   SchedulingRequestView,
   UpcomingMeeting,
@@ -666,7 +720,7 @@ export {
 } from './tasks.js';
 export { TaskQueue, type TaskQueueState } from './taskQueue.js';
 
-export { type ProjectGitHubIssues, type ProjectGitHubIssue } from './api.js';
+export { type ProjectGitHubIssues, type ProjectGitHubIssue, type RepositoryIssues } from './api.js';
 export {
   cancelSessionSwitch,
   exportSessionSwitchTimings,
@@ -701,6 +755,10 @@ export {
   type FindingGroup,
   type PackageFindingGroup,
   packageFixPrompt,
+  vulnerabilityFixSelection,
+  vulnerabilityFindingKey,
+  VULNERABILITY_FIX_MESSAGE,
+  type VulnerabilityFixSelection,
   vulnerabilityFixPrompt,
   type VulnerabilityFinding,
   type VulnerabilitySettings,
@@ -719,5 +777,79 @@ export type {
 } from './audit.js';
 
 export { qaAssignmentView } from './ui/qaAssignment.js';
+export {
+  mockupBarView,
+  mockupProgress,
+  mockupRoundView,
+  type MockupBarView,
+  type MockupRoundView,
+  type MockupScreenView,
+  type MockupVerdict,
+} from './ui/mockups.js';
 
 export { projectEgressPolicySchema, type ProjectEgressPolicy } from './projectEgress.js';
+export type {
+  AssistantConversation,
+  AssistantConversationItem,
+  AssistantDelivery,
+  AssistantQuestion,
+} from '@verity/events';
+
+export {
+  type ProjectRepository,
+  type ProjectInquiry,
+  type RepositoryInstructions,
+} from './projectCollaboration.js';
+export {
+  PULL_REQUEST_STATES,
+  pullRequestAction,
+  pullRequestCounts,
+  pullRequestSummary,
+  type ProjectPullRequest,
+  type PullRequestCounts,
+  type PullRequestState,
+  type RepositoryPullRequests,
+} from './projectPullRequests.js';
+export {
+  resolveKnowledgeLink,
+  WIKI_INDEX,
+  WIKI_LOG,
+  type KnowledgePath,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+  type WikiReviewItem,
+  type WikiTopic,
+} from '@verity/events';
+
+export {
+  sessionWorkSections,
+  sessionAgentWorking,
+  sessionWorkActive,
+  retainWorkMembers,
+  WORK_PROBLEM_LABELS,
+  type SessionWorkEntry,
+  type SessionWorkSections,
+} from './ui/sessionWork.js';
+export {
+  invitationLinkFieldsSchema,
+  projectTeamSchema,
+  type InvitationLinkFields,
+  type TeamJoined,
+  type ProjectInvitation as TeamInvitation,
+  type ProjectMember,
+  type ProjectTeam,
+} from './api.js';
+export {
+  CONNECTION_RETRY_DELAYS,
+  ConnectionMonitor,
+  SERVER_MAINTENANCE_MESSAGE,
+  connectionFailureKind,
+  isAbortError,
+  type ConnectionFailureKind,
+  type ConnectionReporter,
+  type ServerConnectionState,
+} from './connection.js';

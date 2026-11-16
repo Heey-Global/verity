@@ -395,6 +395,8 @@ export const AVAILABLE_SANDBOX_UPDATE: SandboxUpdateStatus = {
   targetRevision: null,
   selfRepair: 'converging',
   turnBlocked: false,
+  blockedBy: [],
+  lastRepairFailure: null,
 };
 
 /**

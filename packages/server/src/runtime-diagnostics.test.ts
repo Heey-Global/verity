@@ -600,30 +600,66 @@ it('judges storage evidence freshness when it reads the report', async () => {
 
 // An unconfirmed build attempt no longer blocks every build, so what it still holds, and
 // the output of the build that failed, have to be visible where an operator looks.
-it('reports build storage reservations and the selected project’s last build failure', async () => {
+it.each(['build-export', 'protected-build'] as const)(
+  'reports %s storage reservations and the selected project’s last build failure',
+  async (operation) => {
+    const read = createRuntimeDiagnostics({
+      now: () => now,
+      buildStorageReservations: () => [
+        {
+          attempt: 'attempt-HS9hLo',
+          operation,
+          startedAt: new Date(now).toISOString(),
+          reservedBytes: 24 * 1024 ** 3,
+          reason: 'remote build/import termination is not yet confirmed',
+        },
+      ],
+      projectBuildFailure: (projectId) =>
+        projectId === 'p1'
+          ? { recordedAt: new Date(now).toISOString(), tail: 'ERROR: failed to solve: pip' }
+          : undefined,
+    });
+    const all = await read({});
+    expect(all.buildStorageReservations).toEqual([
+      expect.objectContaining({ attempt: 'attempt-HS9hLo', reservedBytes: 24 * 1024 ** 3 }),
+    ]);
+    expect(all.projectBuildFailure).toBeUndefined();
+    expect((await read({ projectId: 'p1' })).projectBuildFailure?.tail).toContain('pip');
+    expect((await read({ projectId: 'p2' })).projectBuildFailure).toBeUndefined();
+  },
+);
+
+// A build waiting for the single build slot is otherwise indistinguishable from a
+// hung one; the holder and its start make the difference visible.
+it('reports which build holds the build slot, and omits an idle queue', async () => {
+  const held = createRuntimeDiagnostics({
+    now: () => now,
+    buildQueue: () => ({
+      holder: { label: 'heey-global/verity', since: now - 60_000 },
+      waiting: 1,
+    }),
+  });
+  expect((await held({})).buildQueue).toEqual({
+    holder: { build: 'heey-global/verity', since: new Date(now - 60_000).toISOString() },
+    waiting: 1,
+  });
+  const idle = createRuntimeDiagnostics({ now: () => now, buildQueue: () => ({ waiting: 0 }) });
+  expect((await idle({})).buildQueue).toBeUndefined();
+});
+
+// A read scoped to one project must not reveal another project's repository.
+it('names the holding build only to an unscoped read or a read for the same project', async () => {
   const read = createRuntimeDiagnostics({
     now: () => now,
-    buildStorageReservations: () => [
-      {
-        attempt: 'attempt-HS9hLo',
-        operation: 'build-export',
-        startedAt: new Date(now).toISOString(),
-        reservedBytes: 24 * 1024 ** 3,
-        reason: 'remote build/import termination is not yet confirmed',
-      },
-    ],
-    projectBuildFailure: (projectId) =>
-      projectId === 'p1'
-        ? { recordedAt: new Date(now).toISOString(), tail: 'ERROR: failed to solve: pip' }
-        : undefined,
+    buildQueue: () => ({
+      holder: { label: 'heey-global/verity', projectId: 'p-verity', since: now },
+      waiting: 1,
+    }),
   });
-  const all = await read({});
-  expect(all.buildStorageReservations).toEqual([
-    expect.objectContaining({ attempt: 'attempt-HS9hLo', reservedBytes: 24 * 1024 ** 3 }),
-  ]);
-  expect(all.projectBuildFailure).toBeUndefined();
-  expect((await read({ projectId: 'p1' })).projectBuildFailure?.tail).toContain('pip');
-  expect((await read({ projectId: 'p2' })).projectBuildFailure).toBeUndefined();
+  expect((await read({ projectId: 'p-verity' })).buildQueue?.holder?.build).toBe(
+    'heey-global/verity',
+  );
+  expect((await read({ projectId: 'p-k8s' })).buildQueue?.holder?.build).toBe('another project');
 });
 
 it('retains storage pinning reasons through the diagnostics schema', async () => {

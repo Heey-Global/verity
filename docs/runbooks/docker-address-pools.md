@@ -132,3 +132,58 @@ the conflicting network.
 - [Docker daemon address pools and validation](https://docs.docker.com/reference/cli/dockerd/)
 - [Docker network removal prerequisites](https://docs.docker.com/reference/cli/docker/network/rm/)
 - [Compose down and volume behavior](https://docs.docker.com/reference/cli/docker/compose/down/)
+
+## Address pool exhaustion
+
+Docker may refuse network creation with `all predefined address pools have been
+fully subnetted` or `could not find an available, non-overlapping IPv4 address
+pool`. This is exhaustion of available **subnets**, even when each project uses
+only two container addresses. Large default `/16` and `/20` allocations can
+consume the default pools with a few dozen projects. A bridge marked `linkdown`
+or containers marked `exited` do not establish that a network is abandoned.
+
+Use the route and network inventory above to choose a non-overlapping pool and
+smaller per-network allocations, such as `/24`. The operator owns this choice;
+Verity does not choose a private range or rewrite daemon configuration. Cleanup
+cannot replace capacity planning: active projects and retained sleeping Sandboxes
+continue to reserve their networks. Configuring a new pool leaves existing
+networks and their routes unchanged.
+
+Verity removes proven-owned empty legacy project networks during deprovisioning
+and retries abandoned-network cleanup through its periodic lifecycle reconciler.
+It preserves active and transitional projects, retained sleeping Sandboxes,
+foreign networks, incomplete inventory, and networks still referenced by running
+or stopped containers. Cleanup uses immutable network IDs and never forces an
+endpoint disconnect. Failures are reported and retried on subsequent passes.
+
+For protected generations the trusted host service records allocation intent
+before creating the network. Its periodic cleanup recovers interrupted creation
+and removes retired networks only after checking the exact binding and all
+container references. An allocation must establish the verified Sandbox/relay
+transport within five minutes; an expired allocation rejects starts and is
+retired on the next cleanup pass. This also reclaims completed allocations whose
+response was lost before the Server could use them. Successfully connected
+Sandboxes have no allocation deadline, including while sleeping. Abandoned
+allocations may reclaim stopped containers with matching project, generation and
+network ownership even when a Server died before registering their IDs.
+Docker housekeeping runs outside the global host admission queue; inventory
+fallback reads have explicit count and elapsed-time budgets. Incomplete or slow
+inventory defers deletion rather than extending the queue indefinitely. Explicit retirement also permits removal of its recorded,
+verified, stopped containers; retirement during host restoration alone does not
+permit container deletion. Permanent denial and retirement records remain after
+network deletion, so stale generations cannot regain authority. Old unregistered
+networks without a durable creation intent are left intact: a name prefix alone
+is not sufficient evidence to delete them.
+
+Deploy the matching host service before using the updated protected-network
+allocation flow. An older service rejects the new allocation operation; the
+Server must not fall back to creating an unregistered protected network. Host
+state now includes allocation intents and cleanup progress; preserve that state
+and use a compatible host service when recovering or rolling back a deployment.
+
+Verify after rollout that repeated project provisioning/removal and generation
+replacement stop increasing the abandoned-network count, that sleeping projects
+still wake, and that a new project starts successfully. Logs containing `project
+network cleanup deferred` identify resources that require another pass or an
+ownership/inventory investigation. Do not delete retired-generation records or
+firewall rules to make cleanup appear successful.

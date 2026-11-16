@@ -4,7 +4,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ForgeRepositoryOperations } from './forge-provider.js';
-import { ForgejoRequestError, ForgejoTransport } from './forgejo-transport.js';
+import {
+  assertForgejoApiPath,
+  ForgejoRequestError,
+  ForgejoTransport,
+} from './forgejo-transport.js';
 import {
   createForgejoRepositoryOperations,
   withoutWipPrefix,
@@ -38,6 +42,29 @@ interface Forge {
   comments: { number: number; body: string }[];
   /** Write requests the fake received, as `METHOD path`. */
   writes: string[];
+  /** Repository contents by `ref:path`; `dir` is a directory, `large` a file
+   *  the API lists without inlining its content. */
+  files: Map<string, string | { dir: true } | { large: true } | { symlink: string }>;
+  /** Branches that exist; a ref outside this set answers 404 like a lost one. */
+  branches: Set<string>;
+}
+
+/** The contents API answer GitHub and Forgejo share, or undefined for a 404. */
+function contentsRow(forge: Forge, path: string): unknown {
+  const match = /\/contents\/(.+)\?ref=(.+)$/u.exec(path);
+  if (!match) return undefined;
+  const file = forge.files.get(`${decodeURIComponent(match[2]!)}:${decodeURIComponent(match[1]!)}`);
+  if (file === undefined) return undefined;
+  if (typeof file === 'object' && 'dir' in file) return [{ type: 'file', name: 'nested.md' }];
+  if (typeof file === 'object' && 'symlink' in file)
+    return { type: 'symlink', target: file.symlink };
+  if (typeof file === 'object') return { type: 'file', encoding: 'none', content: '', sha: 'big' };
+  return {
+    type: 'file',
+    encoding: 'base64',
+    content: Buffer.from(file).toString('base64'),
+    sha: `sha-${file.length}`,
+  };
 }
 
 function emptyForge(): Forge {
@@ -86,6 +113,8 @@ function emptyForge(): Forge {
     ],
     comments: [],
     writes: [],
+    files: new Map(),
+    branches: new Set(['main', 'release/2', 'develop']),
   };
 }
 
@@ -106,10 +135,29 @@ function forgejoFake(forge: Forge): ForgeRepositoryOperations {
     base: { ref: pull.base },
   });
   vi.spyOn(transport, 'json').mockImplementation((path: string, method = 'GET', body?: unknown) => {
+    // The real transport refuses some paths before any request; the fake must
+    // too, or a path Forgejo never receives would pass here.
+    try {
+      assertForgejoApiPath(path);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     const input = body as Record<string, string> | undefined;
     if (method !== 'GET') forge.writes.push(`${method} ${path}`);
     const base = '/repos/team/site';
     if (path === base) return Promise.resolve({ default_branch: 'main' });
+    if (path.startsWith(`${base}/contents/`)) {
+      const row = contentsRow(forge, path);
+      return row === undefined
+        ? Promise.reject(new ForgejoRequestError(404))
+        : Promise.resolve(row);
+    }
+    if (path.startsWith(`${base}/branches/`)) {
+      const branch = decodeURIComponent(path.slice(`${base}/branches/`.length));
+      return forge.branches.has(branch)
+        ? Promise.resolve({ name: branch })
+        : Promise.reject(new ForgejoRequestError(404));
+    }
     if (path === `${base}/pulls` && method === 'POST') {
       const pull: Pull = {
         number: forge.pulls.length + 10,
@@ -191,6 +239,16 @@ function githubFake(forge: Forge): ForgeRepositoryOperations {
     if (method !== 'GET') forge.writes.push(`${method} ${path}`);
     const base = '/repos/team/site';
     if (path === base) return respond(200, { default_branch: 'main' });
+    if (path.startsWith(`${base}/contents/`)) {
+      const row = contentsRow(forge, path);
+      return row === undefined ? respond(404, { message: 'Not Found' }) : respond(200, row);
+    }
+    if (path.startsWith(`${base}/branches/`)) {
+      const branch = decodeURIComponent(path.slice(`${base}/branches/`.length));
+      return forge.branches.has(branch)
+        ? respond(200, { name: branch })
+        : respond(404, { message: 'Branch not found' });
+    }
     if (path === '/graphql') {
       const id = (input!.variables as { id: string }).id;
       const pull = forge.pulls.find((entry) => `PR_${entry.number}` === id);
@@ -317,6 +375,48 @@ describe.each([
     const forge = emptyForge();
     await make(forge).commentOnIssue(3, 'On it');
     expect(forge.comments).toEqual([{ number: 3, body: 'On it' }]);
+  });
+
+  it('reads a file at a ref, and tells an absent file from one it cannot show', async () => {
+    const forge = emptyForge();
+    forge.files.set('main:AGENTS.md', 'Run the tests.\nÜmlaut kept.');
+    forge.files.set('release/2:AGENTS.md', 'Release rules.');
+    forge.files.set('main:docs', { dir: true });
+    forge.files.set('main:huge.md', { large: true });
+    const ops = make(forge);
+    expect(await ops.readFile('AGENTS.md', 'main')).toEqual({
+      content: 'Run the tests.\nÜmlaut kept.',
+      revision: 'sha-27',
+    });
+    // The ref is part of the request: another branch's file is another answer.
+    expect(await ops.readFile('AGENTS.md', 'release/2')).toMatchObject({
+      content: 'Release rules.',
+    });
+    expect(await ops.readFile('AGENTS.md', 'develop')).toBeNull();
+    // A 404 for a branch that does not exist (or a repository the token cannot
+    // see) is not "no AGENTS.md" and must not be reported as one.
+    await expect(ops.readFile('AGENTS.md', 'gone')).rejects.toThrow(/not found/u);
+    expect(await ops.readFile('docs', 'main')).toBeNull();
+    // Shown as empty, an uninlined file would read as "no rules" — it must fail.
+    await expect(ops.readFile('huge.md', 'main')).rejects.toThrow(/did not return its content/u);
+  });
+
+  it('follows one symlink inside the repository and refuses one that leaves it', async () => {
+    const forge = emptyForge();
+    forge.files.set('main:AGENTS.md', { symlink: 'docs/CLAUDE (1).md' });
+    forge.files.set('main:docs/CLAUDE (1).md', 'Shared rules.');
+    forge.files.set('release/2:AGENTS.md', { symlink: '../outside.md' });
+    forge.files.set('develop:AGENTS.md', { symlink: 'LINK.md' });
+    forge.files.set('develop:LINK.md', { symlink: 'AGENTS.md' });
+    const ops = make(forge);
+    expect(await ops.readFile('AGENTS.md', 'main')).toMatchObject({ content: 'Shared rules.' });
+    await expect(ops.readFile('AGENTS.md', 'release/2')).rejects.toThrow(/symlink/u);
+    await expect(ops.readFile('AGENTS.md', 'develop')).rejects.toThrow(/symlink/u);
+    forge.files.set('main:LINKED.md', { symlink: 'docs' });
+    forge.files.set('main:docs', { dir: true });
+    forge.files.set('main:DANGLING.md', { symlink: 'nowhere.md' });
+    await expect(ops.readFile('LINKED.md', 'main')).rejects.toThrow(/symlink/u);
+    await expect(ops.readFile('DANGLING.md', 'main')).rejects.toThrow(/symlink/u);
   });
 });
 

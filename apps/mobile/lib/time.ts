@@ -72,6 +72,22 @@ export function formatResetDisplay(
   return `${day} ${time}`;
 }
 
+/**
+ * How long until an epoch-seconds instant, in the two largest units: "45m",
+ * "1h 9m", "3d 12h". A moment already reached reads "now". Whole minutes are
+ * rounded up, so a reset 30 seconds away still reads "1m" rather than "0m".
+ */
+export function formatTimeUntil(epochSeconds: number, nowMs: number = Date.now()): string {
+  const minutes = Math.ceil((epochSeconds * 1000 - nowMs) / 60_000);
+  if (!Number.isFinite(minutes) || minutes <= 0) return 'now';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`;
+  return `${rest}m`;
+}
+
 // Whether two Date instants fall on the same local calendar day.
 function sameLocalDay(a: Date, b: Date): boolean {
   return (

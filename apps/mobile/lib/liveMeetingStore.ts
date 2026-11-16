@@ -1,5 +1,13 @@
 import type * as SQLite from 'expo-sqlite';
-import type { STTEngineId } from './liveMeetingSTT';
+import type { MeetingCaptureHealth, RecoveredAudioSegment, STTEngineId } from './liveMeetingSTT';
+import { liveMeetingSTT } from './liveMeetingSTT';
+import type { MeetingJournalEnvelope } from './liveMeetingJournal';
+import {
+  emptyNativeMeetingState,
+  reduceNativeMeetingEvent,
+  type NativeMeetingState,
+} from './liveMeetingNativeState';
+import { transcriptText } from './liveMeetingSTTTranscript';
 import { getRandomBytesAsync } from 'expo-crypto';
 import type { LiveMeeting, LiveMeetingNote } from '@verity/mobile';
 import { getActiveMeetingServerId } from './client';
@@ -31,6 +39,8 @@ export interface MeetingRecord {
   /** In memory only: names speakers introduced themselves with, awaiting confirmation. */
   speakerNameSuggestions?: SpeakerNameSuggestion[];
   error: string | null;
+  captureHealth?: MeetingCaptureHealth;
+  captureGaps?: Array<{ at: number; message: string }>;
   ownerToken?: string | null;
   revision?: number;
   syncedRevision?: number;
@@ -109,6 +119,7 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       ['speaker_names', "TEXT NOT NULL DEFAULT '{}'"],
       ['speaker_corrections', "TEXT NOT NULL DEFAULT '[]'"],
       ['speaker_merges', "TEXT NOT NULL DEFAULT '{}'"],
+      ['native_state', 'TEXT'],
     ]) {
       if (!meetingColumns.some((column) => column.name === name))
         await connection.execAsync(`ALTER TABLE meetings ADD COLUMN ${name} ${definition}`);
@@ -146,6 +157,12 @@ async function db(): Promise<SQLite.SQLiteDatabase> {
       await connection.execAsync('DROP TABLE meeting_sync_cursors');
     await connection.execAsync(
       'CREATE TABLE IF NOT EXISTS meeting_sync_cursors (server_id TEXT NOT NULL, session_id TEXT NOT NULL, cursor INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(server_id, session_id))',
+    );
+    await connection.execAsync(
+      'CREATE TABLE IF NOT EXISTS meeting_audio_recovery (meeting_id TEXT NOT NULL, segment_id TEXT NOT NULL, PRIMARY KEY(meeting_id, segment_id))',
+    );
+    await connection.execAsync(
+      'CREATE TABLE IF NOT EXISTS meeting_upload_failures (server_id TEXT NOT NULL, meeting_id TEXT NOT NULL, revision INTEGER NOT NULL, status INTEGER NOT NULL, server_finalized INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(server_id, meeting_id))',
     );
     // A process exit ends capture even when iOS has no chance to send a final status.
     await connection.runAsync(
@@ -331,8 +348,9 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     revision: number;
     synced_revision: number;
     capture_status: MeetingRecord['captureStatus'];
+    native_state?: string | null;
   }>(
-    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, title, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
+    'SELECT id, session_id, server_id, engine, started_at, ended_at, state, transcript, title, error, owner_token, revision, synced_revision, capture_status, expected_participants, speaker_turns, timed_words, speaker_names, speaker_corrections, speaker_merges, native_state FROM meetings WHERE session_id = ? AND (server_id IS ? OR server_id IS NULL) ORDER BY (server_id IS NULL), started_at DESC',
     sessionId,
     serverId,
   );
@@ -357,7 +375,140 @@ export async function listMeetings(sessionId: string): Promise<MeetingRecord[]> 
     revision: row.revision,
     syncedRevision: row.synced_revision,
     captureStatus: row.capture_status,
+    captureGaps: row.native_state ? (JSON.parse(row.native_state) as NativeMeetingState).gaps : [],
   }));
+}
+
+/** Only owned meetings of the connected server are exposed to native recovery UI. */
+export async function ownedMeeting(id: string): Promise<MeetingRecord | null> {
+  const row = await (
+    await db()
+  ).getFirstAsync<{ session_id: string }>(
+    'SELECT session_id FROM meetings WHERE id = ? AND owner_token IS NOT NULL AND server_id IS ?',
+    id,
+    getActiveMeetingServerId(),
+  );
+  if (!row) return null;
+  return (
+    (await listMeetings(row.session_id)).find(
+      (meeting) => meeting.id === id && meeting.ownerToken,
+    ) ?? null
+  );
+}
+
+let nativeWrites: Promise<unknown> = Promise.resolve();
+
+/** Commit the cursor and its derived state together; a crash before native ack is a harmless replay. */
+export function persistNativeMeetingEvent(
+  envelope: MeetingJournalEnvelope,
+): Promise<NativeMeetingState> {
+  const run = nativeWrites
+    .catch(() => undefined)
+    .then(async () => {
+      const connection = await db();
+      let saved!: NativeMeetingState;
+      await connection.withExclusiveTransactionAsync(async (transaction) => {
+        const row = await transaction.getFirstAsync<{
+          native_state: string | null;
+          expected_participants: number | null;
+        }>(
+          'SELECT native_state, expected_participants FROM meetings WHERE id = ? AND owner_token IS NOT NULL',
+          envelope.meetingId,
+        );
+        if (!row) throw new Error('The native recording has no owned local meeting.');
+        const previous = row.native_state
+          ? (JSON.parse(row.native_state) as NativeMeetingState)
+          : emptyNativeMeetingState;
+        saved = reduceNativeMeetingEvent(
+          previous,
+          envelope.sequence,
+          envelope.event,
+          row.expected_participants ?? 4,
+        );
+        if (saved === previous) return;
+        // Replayed preparation/listening events cannot resurrect a process which has already ended.
+        await transaction.runAsync(
+          'UPDATE meetings SET native_state = ?, transcript = ?, timed_words = ?, speaker_turns = ?, capture_status = ?, error = ?, state = COALESCE(?, state), ended_at = CASE WHEN ? IS NOT NULL THEN ? ELSE ended_at END, last_active_at = ?, revision = revision + 1 WHERE id = ? AND owner_token IS NOT NULL',
+          JSON.stringify(saved),
+          transcriptText(saved.transcript),
+          JSON.stringify(saved.words),
+          JSON.stringify(saved.turns),
+          saved.captureStatus,
+          saved.error,
+          saved.terminal ?? null,
+          saved.terminal ?? null,
+          saved.endedAt ?? Date.now(),
+          saved.recordedAt ?? Date.now(),
+          envelope.meetingId,
+        );
+      });
+      return saved;
+    });
+  nativeWrites = run;
+  return run;
+}
+
+export async function nativeMeetingState(id: string): Promise<NativeMeetingState | null> {
+  const row = await (
+    await db()
+  ).getFirstAsync<{ native_state: string | null }>(
+    'SELECT native_state FROM meetings WHERE id = ? AND owner_token IS NOT NULL',
+    id,
+  );
+  return row?.native_state ? (JSON.parse(row.native_state) as NativeMeetingState) : null;
+}
+
+/** Native activity actions may outlive the React tree; only a live native capture can reactivate it. */
+export async function restoreNativeCapture(
+  id: string,
+  status: NonNullable<MeetingRecord['captureStatus']>,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    "UPDATE meetings SET state = 'active', ended_at = NULL, capture_status = ?, revision = revision + 1 WHERE id = ? AND owner_token IS NOT NULL",
+    status,
+    id,
+  );
+}
+
+export async function persistRecoveredAudio(
+  id: string,
+  segments: RecoveredAudioSegment[],
+): Promise<void> {
+  const connection = await db();
+  await connection.withExclusiveTransactionAsync(async (transaction) => {
+    const row = await transaction.getFirstAsync<{ transcript: string; state: string }>(
+      'SELECT transcript, state FROM meetings WHERE id = ? AND owner_token IS NOT NULL AND server_id IS ?',
+      id,
+      getActiveMeetingServerId(),
+    );
+    if (!row || row.state === 'active')
+      throw new Error('End this local meeting before recovering audio.');
+    let text = row.transcript;
+    for (const segment of segments) {
+      const exists = await transaction.getFirstAsync<{ segment_id: string }>(
+        'SELECT segment_id FROM meeting_audio_recovery WHERE meeting_id = ? AND segment_id = ?',
+        id,
+        segment.id,
+      );
+      if (exists) continue;
+      if (segment.text.trim()) {
+        // Keep uncertain original text visible; recovery is explicitly attributed to its saved audio range.
+        text += `\n\n[Recovered audio ${segment.start.toFixed(1)}–${segment.end.toFixed(1)}s]\n${segment.text.trim()}`;
+      }
+      await transaction.runAsync(
+        'INSERT INTO meeting_audio_recovery (meeting_id, segment_id) VALUES (?, ?)',
+        id,
+        segment.id,
+      );
+    }
+    await transaction.runAsync(
+      'UPDATE meetings SET transcript = ?, revision = revision + 1 WHERE id = ?',
+      text,
+      id,
+    );
+  });
 }
 
 export async function listNotes(meetingId: string): Promise<MeetingNote[]> {
@@ -525,6 +676,63 @@ export async function acknowledgeMeeting(
   );
 }
 
+export interface MeetingUploadFailure {
+  revision: number;
+  status: number;
+  serverFinalized: boolean;
+}
+
+/** Keep rejected revisions across relaunch without storing response bodies or credentials. */
+export async function meetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+): Promise<MeetingUploadFailure | null> {
+  const row = await (
+    await db()
+  ).getFirstAsync<{
+    revision: number;
+    status: number;
+    server_finalized: number;
+  }>(
+    'SELECT revision, status, server_finalized FROM meeting_upload_failures WHERE server_id = ? AND meeting_id = ?',
+    serverId,
+    meetingId,
+  );
+  return row
+    ? { revision: row.revision, status: row.status, serverFinalized: row.server_finalized === 1 }
+    : null;
+}
+
+export async function saveMeetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+  failure: MeetingUploadFailure,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'INSERT INTO meeting_upload_failures (server_id, meeting_id, revision, status, server_finalized) VALUES (?, ?, ?, ?, ?) ON CONFLICT(server_id, meeting_id) DO UPDATE SET revision=excluded.revision, status=excluded.status, server_finalized=MAX(meeting_upload_failures.server_finalized, excluded.server_finalized)',
+    serverId,
+    meetingId,
+    failure.revision,
+    failure.status,
+    failure.serverFinalized ? 1 : 0,
+  );
+}
+
+export async function clearMeetingUploadFailure(
+  serverId: string,
+  meetingId: string,
+): Promise<void> {
+  await (
+    await db()
+  ).runAsync(
+    'DELETE FROM meeting_upload_failures WHERE server_id = ? AND meeting_id = ?',
+    serverId,
+    meetingId,
+  );
+}
+
 export async function acknowledgeNote(
   serverId: string,
   id: string,
@@ -575,10 +783,10 @@ async function removeMeetingRows(
   id: string,
   serverId: string | null,
 ): Promise<void> {
-  const owned = await connection.getFirstAsync<{ id: string }>(
+  const owned = await connection.getFirstAsync<{ id: string; owner_token?: string | null }>(
     serverId === null
-      ? 'SELECT id FROM meetings WHERE id = ?'
-      : 'SELECT id FROM meetings WHERE id = ? AND server_id = ?',
+      ? 'SELECT id, owner_token FROM meetings WHERE id = ?'
+      : 'SELECT id, owner_token FROM meetings WHERE id = ? AND server_id = ?',
     ...(serverId === null ? [id] : [id, serverId]),
   );
   if (!owned) {
@@ -590,7 +798,10 @@ async function removeMeetingRows(
     );
     return;
   }
+  if (owned.owner_token) await liveMeetingSTT?.discardMeetingData?.(id);
   await connection.runAsync('DELETE FROM meeting_notes WHERE meeting_id = ?', id);
+  await connection.runAsync('DELETE FROM meeting_audio_recovery WHERE meeting_id = ?', id);
+  await connection.runAsync('DELETE FROM meeting_upload_failures WHERE meeting_id = ?', id);
   await connection.runAsync('DELETE FROM meetings WHERE id = ?', id);
 }
 
@@ -628,7 +839,9 @@ export async function importChanges(
           speaker_names=excluded.speaker_names, speaker_corrections=excluded.speaker_corrections,
           speaker_merges=excluded.speaker_merges,
           revision=excluded.revision, synced_revision=excluded.revision
-        WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND meetings.revision < excluded.revision`,
+        WHERE meetings.server_id = excluded.server_id AND meetings.owner_token IS NULL AND
+          (meetings.revision < excluded.revision OR
+           (meetings.revision = excluded.revision AND meetings.state != 'ended' AND excluded.state = 'ended'))`,
         meeting.id,
         sessionId,
         serverId,

@@ -1,16 +1,20 @@
+import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../Icon';
 import { tint } from './tint';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'text' | 'destructive';
-export type ButtonSize = 'large' | 'compact';
+export type ButtonVariant = 'primary' | 'secondary' | 'answer' | 'text' | 'destructive';
+export type ButtonSize = 'large' | 'compact' | 'small';
 
 /**
  * The one button (docs/design-system.md § 5.1). Primary is tonal — a quiet cyan
  * fill, never a glow — and a screen has at most one. Destructive is outlined in
- * `attention` and is only ever the confirming action of a confirmation.
+ * `attention` and is only ever the confirming action of a confirmation. Answer
+ * is outlined in `action` without the primary's tonal fill: a list row's
+ * in-place answer, which has to read as tappable without competing with the
+ * screen's one primary.
  *
  * Loading keeps the label, puts a spinner in front of it and locks the button,
  * so a second tap cannot run the action twice and the button does not jump.
@@ -50,7 +54,7 @@ export function Button({
       ? theme.colors.actionLabel
       : variant === 'secondary'
         ? theme.colors.text
-        : variant === 'text'
+        : variant === 'text' || variant === 'answer'
           ? theme.colors.action
           : theme.colors.attention;
   return (
@@ -63,7 +67,7 @@ export function Button({
       accessibilityState={{ disabled: locked, busy: loading }}
       style={({ pressed }) => [
         styles.base,
-        size === 'compact' ? styles.compact : styles.large,
+        size === 'compact' ? styles.compact : size === 'small' ? styles.small : styles.large,
         styles[variant],
         fullWidth ? styles.fullWidth : null,
         disabled ? styles.disabled : null,
@@ -73,30 +77,38 @@ export function Button({
       {loading ? (
         <ActivityIndicator size="small" color={color} testID="button-spinner" />
       ) : icon !== undefined ? (
-        <Icon name={icon} size={size === 'compact' ? 16 : 18} color={color} />
+        <Icon name={icon} size={size === 'large' ? 18 : 16} color={color} />
       ) : null}
-      <Text style={[styles.label, size === 'compact' ? styles.labelCompact : null, { color }]}>
+      <Text
+        style={[
+          styles.label,
+          size === 'compact' ? styles.labelCompact : size === 'small' ? styles.labelSmall : null,
+          { color },
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
   );
 }
 
+/** What an icon button shows: a Feather symbol, or a brand mark in its place. */
+type IconButtonFace =
+  | { icon: IconName; mark?: undefined }
+  /** A brand mark drawn instead of a symbol, such as Verity's V on a hand-over. */
+  | { mark: ReactNode; icon?: undefined };
+
 /** A square button with a single symbol, the same corners as every control. */
-export function IconButton({
-  icon,
-  onPress,
-  accessibilityLabel,
-  disabled = false,
-  active = false,
-}: {
-  icon: IconName;
-  onPress: () => void;
-  /** Required: an icon alone says nothing to VoiceOver. */
-  accessibilityLabel: string;
-  disabled?: boolean;
-  active?: boolean;
-}) {
+export function IconButton(
+  props: IconButtonFace & {
+    onPress: () => void;
+    /** Required: an icon alone says nothing to VoiceOver. */
+    accessibilityLabel: string;
+    disabled?: boolean;
+    active?: boolean;
+  },
+) {
+  const { onPress, accessibilityLabel, disabled = false, active = false } = props;
   const { theme } = useUnistyles();
   return (
     <Pressable
@@ -115,7 +127,15 @@ export function IconButton({
       ]}
     >
       <View pointerEvents="none">
-        <Icon name={icon} size={18} color={active ? theme.colors.action : theme.colors.textMuted} />
+        {props.icon !== undefined ? (
+          <Icon
+            name={props.icon}
+            size={18}
+            color={active ? theme.colors.action : theme.colors.textMuted}
+          />
+        ) : (
+          props.mark
+        )}
       </View>
     </Pressable>
   );
@@ -135,18 +155,30 @@ const styles = StyleSheet.create((theme) => ({
   // No alignSelf: in a row the parent centers it; in a column, place it in a row
   // to keep it as wide as its label.
   compact: { minHeight: 36, paddingHorizontal: theme.spacing.md + 2 },
+  // An answer under a list row: secondary to the row it belongs to, so it is
+  // lighter than a card's compact button and never draws the eye first.
+  small: { minHeight: 32, paddingHorizontal: theme.spacing.md },
   fullWidth: { alignSelf: 'stretch' },
   primary: {
     backgroundColor: tint(theme.colors.action, 'fill'),
     borderColor: tint(theme.colors.action, 'border'),
   },
   secondary: { backgroundColor: theme.colors.surfaceAlt, borderColor: theme.colors.border },
+  answer: {
+    backgroundColor: theme.colors.surfaceAlt,
+    borderColor: tint(theme.colors.action, 'border'),
+  },
   text: { paddingHorizontal: theme.spacing.xs, minHeight: 44 },
   destructive: { borderColor: tint(theme.colors.attention, 'border') },
   disabled: { opacity: 0.4 },
   pressed: { opacity: 0.8 },
   label: { ...theme.typography.button },
   labelCompact: { fontSize: theme.typography.bodySmall.fontSize },
+  labelSmall: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: theme.typography.subtitle.fontSize,
+    lineHeight: theme.typography.subtitle.lineHeight,
+  },
   icon: {
     width: 40,
     height: 40,

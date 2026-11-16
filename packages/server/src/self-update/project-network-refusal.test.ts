@@ -176,13 +176,18 @@ describe('a managed deployment refuses project networks', () => {
     });
     // Both creation verbs leave membership unchanged: ensureNetwork is the
     // legacy path; createEgressNetwork creates a fresh deny-only generation bridge.
-    // Pinning the complete creation-only set catches additions such as a
+    // Inspection and removal support ownership-checked cleanup without joining
+    // containers or forcibly disconnecting endpoints.
+    // Pinning the complete creation/inspection/removal set catches additions such as a
     // `connectNetwork`, an `addContainerToNetwork` — where a list of forbidden
     // names would only catch the ones someone thought of. A membership call
     // named without `network` at all, or hidden inside an existing method, would
     // still get past this; the spec pin above is what stops it landing.
     expect(Object.keys(client).filter((verb) => /network/i.test(verb))).toEqual([
       'ensureNetwork',
+      'inspectNetwork',
+      'listNetworks',
+      'removeNetwork',
       'createEgressNetwork',
     ]);
   });

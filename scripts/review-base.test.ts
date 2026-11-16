@@ -28,7 +28,7 @@ const roots: string[] = [];
 function git(repo: string, ...args: string[]): string {
   return execFileSync('git', ['-C', repo, ...args], { env, encoding: 'utf8' }).trim();
 }
-function fixture(distance = 2): { repo: string; base: string; upstream: string } {
+function fixture(distance = 2) {
   const root = mkdtempSync(join(tmpdir(), 'verity-review-base-'));
   roots.push(root);
   const upstream = join(root, 'upstream');
@@ -69,7 +69,20 @@ function fixture(distance = 2): { repo: string; base: string; upstream: string }
   writeFileSync(join(repo, 'changed.ts'), 'export const value = 1;\n');
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'local change');
-  return { repo, base, upstream };
+  // These tests exercise history recovery and check selection, independently
+  // of dependency inventory validation (covered by dependency-reuse.test.ts).
+  const tooling = join(root, 'tooling');
+  mkdirSync(join(tooling, 'hooks'), { recursive: true });
+  mkdirSync(join(tooling, 'bin'));
+  const fixtureHook = join(tooling, 'hooks', 'pre-push');
+  writeFileSync(fixtureHook, readFileSync(hook), { mode: 0o755 });
+  writeFileSync(join(tooling, 'bin', 'verity-dependencies'), '#!/bin/sh\n[ "$1" = status ]\n', {
+    mode: 0o755,
+  });
+  writeFileSync(join(tooling, 'bin', 'verity-review-base.sh'), readFileSync(helper), {
+    mode: 0o755,
+  });
+  return { repo, base, upstream, fixtureHook };
 }
 function resolve(
   repo: string,
@@ -229,7 +242,7 @@ describe('bounded review base recovery', () => {
     expect(git(repo, 'rev-parse', '--is-shallow-repository')).toBe('true');
   });
   it.each([false, true])('runs scoped checks after recovery, with failed remote=%s', (failed) => {
-    const { repo } = fixture();
+    const { repo, fixtureHook } = fixture();
     if (failed) git(repo, 'remote', 'set-url', 'origin', join(repo, 'missing'));
     mkdirSync(join(repo, 'node_modules'));
     writeFileSync(join(repo, 'node_modules', '.package-lock.json'), '{"packages":{}}');
@@ -241,7 +254,7 @@ describe('bounded review base recovery', () => {
       '#!/bin/sh\necho secret-scanned >&2\nif [ "$1" = range ]; then git log --format=%s "$2..$3" >&2; fi\nexit 0\n',
       { mode: 0o755 },
     );
-    const result = spawnSync(hook, [], {
+    const result = spawnSync(fixtureHook, [], {
       cwd: repo,
       env: { ...env, VERITY_SECRET_SCAN_BIN: scan },
       encoding: 'utf8',
@@ -288,7 +301,7 @@ describe('bounded review base recovery', () => {
     expect(result.stdout).toContain('changed.ts');
   });
   it.each(['config', 'multiple refs'])('keeps full checks for %s', (mode) => {
-    const { repo } = fixture();
+    const { repo, fixtureHook } = fixture();
     if (mode === 'config') {
       writeFileSync(
         join(repo, 'package.json'),
@@ -309,7 +322,7 @@ describe('bounded review base recovery', () => {
       mode === 'multiple refs'
         ? `refs/heads/feature ${head} refs/heads/feature ${zero}\nrefs/heads/other ${head} refs/heads/other ${zero}\n`
         : undefined;
-    const result = spawnSync(hook, [], {
+    const result = spawnSync(fixtureHook, [], {
       cwd: repo,
       env: { ...env, VERITY_SECRET_SCAN_BIN: scan },
       input,

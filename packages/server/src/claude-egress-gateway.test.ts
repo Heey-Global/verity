@@ -67,7 +67,7 @@ describe('Claude egress HTTPS gateway handler', () => {
 
     expect(result).toEqual({ status: 200, body: '{"ok":true}' });
     expect(seenBody).toBe('{"prompt":"hello"}');
-    expect(accessToken).toHaveBeenCalledWith(PROJECT_ID);
+    expect(accessToken).toHaveBeenCalledWith(PROJECT_ID, expect.anything());
     expect(JSON.stringify(result)).not.toContain('server-only-token');
   });
 
@@ -108,7 +108,7 @@ describe('Claude egress HTTPS gateway handler', () => {
         body: '{}',
       }),
     ).resolves.toEqual({ status: 200, body: '{"input_tokens":42}' });
-    expect(accessToken).toHaveBeenCalledWith(PROJECT_ID);
+    expect(accessToken).toHaveBeenCalledWith(PROJECT_ID, expect.anything());
     expect(forward).toHaveBeenCalledOnce();
   });
 
@@ -335,7 +335,7 @@ describe('Claude egress HTTPS gateway handler', () => {
 
     expect(result.status).toBe(200);
     // The credential was minted for the PEER's project, not any fixed config.
-    expect(accessToken).toHaveBeenCalledWith('project-42');
+    expect(accessToken).toHaveBeenCalledWith('project-42', expect.anything());
     expect(accessToken).not.toHaveBeenCalledWith(PROJECT_ID);
   });
 

@@ -54,7 +54,7 @@ export const SHOWCASE_DEFAULT_MODEL = CLAUDE;
 
 /** Current models of every engine, so the model picker shows all three groups. */
 export const SHOWCASE_MODELS = [
-  'claude-fable-5-1',
+  'claude-fable-5-2',
   CLAUDE,
   'claude-sonnet-5-5',
   CODEX,
@@ -263,6 +263,13 @@ export function showcaseSessions(): ShowcaseSession[] {
         '',
         '## Goal',
         'Store owners get a sales summary every Monday morning.',
+        '',
+        '## Acceptance criteria',
+        '- Arrives Monday by 8:15 in the store’s time zone',
+        '- Matches the dashboard totals for the same week',
+        '',
+        '## Open decisions',
+        '1. **Include stores without sales?** — Yes, with a short note (recommended) | No',
         '',
         '## Steps',
         '1. Add a weekly report job for Monday at 8:00.',

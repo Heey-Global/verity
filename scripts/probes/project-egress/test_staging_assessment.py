@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -51,8 +52,9 @@ class StagingAssessmentTests(unittest.TestCase):
         (self.root / 'etc/docker/daemon.json').write_text(json.dumps({'runtimes': {'runsc-project': self.project}}))
         self.packages = {name: '1.0-fixture' for name in installer.NATIVE_PACKAGES}
         self.calls = []
+        self.docker_version = '29.8.0'
         self.authorization = {'scope': 'staging-assessment', 'productionAccepted': False,
-            'deploymentId': '11111111-1111-4111-8111-111111111111',
+            'deploymentId': 'ubuntu-ac986397',
             'targetDigest': 'ghcr.io/heey-global/verity/verity-server@sha256:' + 'a' * 64,
             'installedDigest': 'ghcr.io/heey-global/verity/verity-server@sha256:' + 'b' * 64,
             'operationId': 'c' * 24, 'channelPath': '/state/update-channel.json', 'channelOwnerUid': 0}
@@ -65,7 +67,7 @@ class StagingAssessmentTests(unittest.TestCase):
         self.calls.append(args)
         if args[0] == '/usr/bin/docker':
             config = json.loads((self.root / 'etc/docker/daemon.json').read_text())
-            return json.dumps({'OSType': 'linux', 'ServerVersion': '29.9.2', 'LiveRestoreEnabled': False,
+            return json.dumps({'OSType': 'linux', 'ServerVersion': self.docker_version, 'LiveRestoreEnabled': False,
                                'Runtimes': config['runtimes'], 'SecurityOptions': []})
         if args[0] == '/usr/bin/dpkg-query':
             return '\n'.join(name + '=' + value for name, value in sorted(self.packages.items()))
@@ -91,6 +93,63 @@ class StagingAssessmentTests(unittest.TestCase):
         self.assertFalse(any('restart' in call or 'stop' in call for call in self.calls))
         with self.assertRaisesRegex(ValueError, 'accepted native'):
             installer.accepted_native_profile(self.root, self.execute, str(self.release / 'node'))
+
+    def test_assessment_recovers_the_legacy_api_mount_unit_without_starting_it(self):
+        unit = self.root / 'etc/systemd/system/sys-fs-bpf.mount'
+        unit.parent.mkdir(parents=True)
+        unit.write_bytes(installer.LEGACY_BPFFS_UNIT)
+        enabled = unit.parent / 'multi-user.target.wants/sys-fs-bpf.mount'
+        enabled.parent.mkdir()
+        enabled.symlink_to('../sys-fs-bpf.mount')
+
+        def execute(*args):
+            if 'sys-fs-bpf.mount' in args:
+                raise subprocess.CalledProcessError(1, args)
+            return self.execute(*args)
+
+        descriptor = installer.prepare_staging_assessment(
+            self.root, execute, str(self.release / 'node'), self.authorization)
+        self.assertEqual(self.validate(descriptor), descriptor['profile'])
+        self.assertFalse(unit.exists())
+        self.assertFalse(enabled.is_symlink())
+        self.assertTrue((self.root / 'sys/fs/bpf/verity_egress_deadline').is_dir())
+        self.assertTrue((self.root / 'etc/tmpfiles.d/verity-egress-bpf.conf').is_file())
+
+    def test_supported_assessment_versions_bind_exact_identity(self):
+        for version in installer.STAGING_DOCKER_VERSIONS:
+            self.docker_version = version
+            descriptor = self.prepare()
+            self.assertEqual(descriptor['profile']['platform']['docker'], version)
+            self.docker_version = '30.0.0'
+            with self.assertRaises(installer.PreflightError):
+                self.validate(descriptor)
+        for version in ('29.7.0', '29.8.1', '30.0.0', 'unverified'):
+            self.docker_version = version
+            with self.assertRaises(installer.PreflightError):
+                self.prepare()
+
+    def test_runtime_preflight_keeps_production_gate_and_checks_assessment_identity(self):
+        descriptor = self.prepare()
+        def run(*args):
+            if args[0] == '/usr/bin/systemctl':
+                return 'systemd 259'
+            if args[0] == str(self.release / 'node'):
+                return 'v26.12.1'
+            return self.execute(*args)
+        with patch.object(installer.os, 'geteuid', return_value=0):
+            with self.assertRaises(installer.PreflightError):
+                installer.runtime_preflight(self.root, run, str(self.release / 'node'))
+            with patch.object(installer, 'validate_staging_assessment', side_effect=RuntimeError('identity verification reached')) as validate:
+                with self.assertRaisesRegex(RuntimeError, 'identity verification reached'):
+                    installer.runtime_preflight(self.root, run, str(self.release / 'node'), assessment=descriptor)
+                validate.assert_called_once_with(self.root, run, str(self.release / 'node'), descriptor)
+
+    def test_managed_ids_follow_the_existing_bounded_identifier_contract(self):
+        for value in ('ubuntu-ac986397', 'verity-11111111-1111-4111-8111-111111111111'):
+            self.assertEqual(self.prepare({**self.authorization, 'deploymentId': value})['authorization']['deploymentId'], value)
+        for value in ('', '../ubuntu', 'a' * 129, 'ubuntu;touch x', 'ubuntu\n'):
+            with self.subTest(value=value), self.assertRaises(installer.PreflightError):
+                self.prepare({**self.authorization, 'deploymentId': value})
 
     def test_requires_explicit_durable_staging_channel_before_any_mutation(self):
         for channel in ('stable', {}, None):
@@ -143,13 +202,13 @@ class StagingAssessmentTests(unittest.TestCase):
         node.chmod(0o644)
         node.write_bytes(b'other-node')
         node.chmod(0o444)
-        with self.assertRaisesRegex(ValueError, 'identities changed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'native_identity_changed'):
             self.validate(descriptor)
         node.chmod(0o644)
         node.write_bytes(original)
         node.chmod(0o444)
         self.packages['python3'] = 'different'
-        with self.assertRaisesRegex(ValueError, 'identities changed'):
+        with self.assertRaisesRegex(installer.PreflightError, 'native_packages_changed'):
             self.validate(descriptor)
         self.packages['python3'] = '1.0-fixture'
         self.sidecar.chmod(0o755)

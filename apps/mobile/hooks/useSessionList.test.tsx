@@ -24,6 +24,9 @@ describe('useSessionList focus lifecycle', () => {
     jest.spyOn(SessionListModel.prototype, 'start').mockImplementation(() => {});
     jest.spyOn(SessionListModel.prototype, 'stop').mockImplementation(() => {});
     const refresh = jest.spyOn(SessionListModel.prototype, 'refresh').mockResolvedValue(undefined);
+    const applyPr = jest
+      .spyOn(SessionListModel.prototype, 'applyPullRequestStatus')
+      .mockImplementation(() => {});
     const renders = jest.fn();
     const client = {} as VerityClient;
     const hook = renderHook(() => {
@@ -49,9 +52,18 @@ describe('useSessionList focus lifecycle', () => {
     expect(renders).toHaveBeenCalledTimes(1);
     act(() => {
       publishSettledPermission('session-1', 'tool-1');
-      publishPullRequestStatusMutation({ sessionId: 'session-1' });
+      publishPullRequestStatusMutation({
+        sessionId: 'session-1',
+        number: 119,
+        pr: { phase: 'merged', pipeline: 'success', mergeable: false },
+      });
     });
     expect(refresh).toHaveBeenCalledTimes(2);
+    expect(applyPr).toHaveBeenCalledWith(
+      'session-1',
+      { phase: 'merged', pipeline: 'success', mergeable: false },
+      119,
+    );
     expect(refresh).toHaveBeenNthCalledWith(1, { silent: true });
     expect(refresh).toHaveBeenNthCalledWith(2, { silent: true });
     hook.unmount();

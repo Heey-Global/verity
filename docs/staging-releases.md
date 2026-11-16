@@ -79,6 +79,28 @@ production app when Staging registration is missing. The existing Apple and Expo
 credentials are reused; the Apple API key must have access to both apps. EAS must
 also have signing credentials for the additional bundle ID.
 
+Set repository variable `APPLE_TEAM_TYPE` to the verified Apple Developer membership
+type: `COMPANY_OR_ORGANIZATION`, `INDIVIDUAL`, or `IN_HOUSE`. The native builder
+passes the existing ASC key and Apple team identity to EAS through its documented
+`EXPO_ASC_*` and `EXPO_APPLE_TEAM_*` variables. This allows EAS to authenticate
+when extension provisioning profiles need repair. Each extension needs its own
+profile; an existing app profile does not cover a newly added widget or Watch target.
+
+If EAS still reports missing credentials for a new target, inspect the named bundle
+ID, the API key's Apple permissions, and the EAS signing configuration. Complete
+any required initial credential setup for that exact target before recovering the
+existing native draft. Do not remove the target, revoke working certificates, or
+move the draft's immutable source to make the build pass. After the workflow fix
+is integrated, use the release dispatcher's existing `mobile-tag` recovery input
+with that draft's tag. Confirm Apple's processing and TestFlight status before
+claiming delivery. Production approval remains separate.
+
+The ASC private key is materialized outside the checkout with owner-only access.
+Build and upload create and remove their own temporary copies, including on failure;
+credentials must never be included in compiler caches or uploaded artifacts.
+See [Expo's CI authentication requirements](https://docs.expo.dev/build/building-on-ci/).
+
+
 The apps use different URL schemes and can be installed side by side. Pair each
 app with the intended Server. Servers support both app identities independently of their release channel.
 `GOOGLE_AUTH_ID` configures the production iOS client; `STAGING_GOOGLE_AUTH_ID`

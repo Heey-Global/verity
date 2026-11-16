@@ -928,3 +928,28 @@ it('waits from long-test discard even after the locally saved expiry passed', as
   expect(deadline).toBeGreaterThanOrEqual(discardedAt + 75_000);
   expect(screen.getByText('Start long test')).toBeDisabled();
 });
+
+// A reconnect must not hide the one retained snapshot for the selected session.
+it.each(['other-session', 'same-session', 'no-match'])(
+  'selects local export evidence with %s snapshots',
+  async (scenario) => {
+    const target = 'abcdef0123456789';
+    const first = {
+      sessionHash: scenario === 'no-match' ? '1111111111111111' : target,
+      events: [],
+    };
+    const second = {
+      sessionHash: scenario === 'same-session' ? target : '2222222222222222',
+      events: [],
+    };
+    mockExport.mockResolvedValue({ status: 'ready', recording: JSON.stringify([first, second]) });
+    render(<ConnectionRecording client={client() as never} />);
+    await pressStart();
+    await screen.findByText(/Ready — turn off VPN/);
+    pressCollect();
+    await waitFor(() => expect(mockCopy).toHaveBeenCalled());
+    const report = JSON.parse(mockCopy.mock.calls[0]![0] as string);
+    expect(report.app.available).toBe(scenario === 'other-session');
+    expect(report.app.recording).toEqual(scenario === 'other-session' ? [first] : null);
+  },
+);

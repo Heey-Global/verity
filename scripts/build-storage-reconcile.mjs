@@ -36,7 +36,7 @@ export function verifyOfflineEvidence(record, host, services, executables) {
     typeof record.operation !== 'string' ||
     typeof record.hostIdentity !== 'string' ||
     typeof record.hostBootId !== 'string' ||
-    !['build-export', 'image-import'].includes(record.operation) ||
+    !['build-export', 'image-import', 'protected-build'].includes(record.operation) ||
     !/^[a-f0-9]{64}$/.test(record.hostIdentity ?? '') ||
     !/^[a-f0-9-]{36}$/.test(record.hostBootId ?? '')
   )

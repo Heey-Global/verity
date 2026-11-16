@@ -6,9 +6,11 @@ import {
   planBuilderVolumeSweep,
   planRelaySweep,
   runDockerGc,
+  describeBuildCapacityReclamation,
   startDockerGcScheduler,
   type DockerGcDeps,
 } from './docker-gc.js';
+import type { DockerGcReport } from './docker-gc.js';
 import { devcontainerImageTag, DEVCONTAINER_IMAGE_PREFIX } from './provisioner.js';
 import { DockerError } from './docker.js';
 import type {
@@ -956,6 +958,59 @@ it('coalesces admission and scheduled reclamation entrypoints', async () => {
   }
 });
 
+// Observed: a build waiting for storage ran the full maintenance pass, whose
+// runner-cache and session-worktree steps alone outlasted the build's deadline,
+// so the steps that free build capacity never ran in time and every retry
+// started the same slow pass again.
+it('frees build capacity without waiting for a stalled maintenance pass', async () => {
+  const beforeSweep = vi.fn(() => new Promise<void>(() => {}));
+  const retireContainers = vi.fn(async () => ({ removed: [], errors: [] }));
+  const docker = fakeDocker({
+    images: [
+      image({ id: 'sha256:new', repoTags: ['verity-devc-acme-web:a'], created: 300, size: 5 }),
+      image({ id: 'sha256:old', repoTags: ['verity-devc-acme-web:b'], created: 100, size: 7 }),
+    ],
+    containers: [],
+    volumes: [volume({ name: anonName('a'), createdAt: '2026-01-01T00:00:00Z' })],
+    pruneBuildCache: () => Promise.resolve(1234),
+  });
+  const scheduler = startDockerGcScheduler(
+    deps(docker, { beforeSweep, retireContainers, policy: { keepImagesPerRepo: 1 } }),
+  );
+  try {
+    void scheduler.runOnce();
+    const first = scheduler.reclaimBuildCapacity();
+    const joined = scheduler.reclaimBuildCapacity();
+    expect(joined).toBe(first);
+    const report = await first;
+    expect(docker.removedImages).toEqual(['verity-devc-acme-web:b']);
+    expect(report.buildCacheBytes).toBe(1234);
+    // Full retirement, worktree, relay and volume maintenance remain outside capacity passes.
+    expect(beforeSweep).toHaveBeenCalledOnce();
+    expect(retireContainers).not.toHaveBeenCalled();
+    expect(docker.removedVolumes).toEqual([]);
+    // A build that asks again after the pass ended gets a fresh pass, not a stale one.
+    const again = scheduler.reclaimBuildCapacity();
+    expect(again).not.toBe(first);
+    await again;
+  } finally {
+    scheduler.stop();
+  }
+});
+
+it('describes what a build-capacity pass freed and what stopped containers keep', () => {
+  const report = {
+    imagesRemoved: ['a'],
+    estimatedImageBytes: 9 * 1024 ** 3,
+    buildCacheBytes: 0,
+    stoppedContainerPins: { images: 6, containers: 29, estimatedBytes: 35 * 1024 ** 3 },
+  } as DockerGcReport;
+  expect(describeBuildCapacityReclamation(report)).toBe(
+    'Reclamation removed 1 image(s) (about 9.0 GiB) and 0.0 GiB of build cache. ' +
+      '35.0 GiB of images stay for 29 stopped container(s).',
+  );
+});
+
 it('reports unique managed image pins from stopped containers without counting foreign images', async () => {
   const docker = fakeDocker({
     images: [
@@ -971,4 +1026,39 @@ it('reports unique managed image pins from stopped containers without counting f
   const report = await runDockerGc(deps(docker));
   expect(report.stoppedContainerPins).toEqual({ images: 1, containers: 2, estimatedBytes: 123 });
   expect(report.keptImageReasons[0]?.containers).toEqual(['one', 'two']);
+});
+
+it('retires cache helpers before capacity image inventory without full maintenance', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:a'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:b'], created: 100 }),
+    ],
+    containers: [{ id: 'helper', imageId: 'old', state: 'exited', labels: {} }],
+  };
+  const docker = fakeDocker(state);
+  const retireCacheHelpers = vi.fn(async () => {
+    state.containers = [];
+    return { removed: ['helper'], errors: [] };
+  });
+  const beforeSweep = vi.fn(async () => {});
+  const retireContainers = vi.fn(async () => ({ removed: [], errors: [] }));
+  const scheduler = startDockerGcScheduler(
+    deps(docker, {
+      retireCacheHelpers,
+      beforeSweep,
+      retireContainers,
+      policy: { keepImagesPerRepo: 1 },
+    }),
+  );
+  try {
+    const report = await scheduler.reclaimBuildCapacity();
+    expect(retireCacheHelpers).toHaveBeenCalledOnce();
+    expect(docker.removedImages).toEqual(['verity-devc-example:b']);
+    expect(report.containersRemoved).toEqual(['helper']);
+    expect(beforeSweep).not.toHaveBeenCalled();
+    expect(retireContainers).not.toHaveBeenCalled();
+  } finally {
+    scheduler.stop();
+  }
 });

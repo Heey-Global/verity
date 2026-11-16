@@ -1,3 +1,18 @@
+import { ProjectTeamStore } from './project-team.js';
+import { mergeSessionDeletionState, type SessionDeletionState } from './session-deletion-state.js';
+import {
+  MESSAGE_PROJECTION_VERSION,
+  pendingMessageProjectionByDb,
+  pendingMessageBackfillsByDb,
+  waitForPendingMessageProjections,
+  waitForMessageProjectionWork,
+  projectMessageEvent,
+  idChunks,
+} from './message-projection.js';
+export { waitForMessageProjectionWork, waitForPendingMessageProjections };
+import { ProjectInquiryStore } from './project-inquiries.js';
+import { SandboxRepairIntentStore } from './sandbox-repair-intents.js';
+import { WikiMaintenanceStore, WikiOccasionStore } from './wiki-occasions.js';
 import {
   egressDestinationDb,
   withEgressDestinationTransaction,
@@ -5,6 +20,17 @@ import {
   unguardedEgressDestinationMutation,
 } from './egress-destination-mutation.js';
 import { UserContextStore } from './user-context.js';
+import { UserProfileStore } from './user-profile.js';
+import { UserGitIdentityStore } from './user-git-identity.js';
+import { UserGithubAuthorizationStore } from './user-github-authorization.js';
+import { UserDopplerConnectionStore } from './user-doppler-connection.js';
+import { ProjectSandboxStore } from './project-sandboxes.js';
+import { UserProviderConnectionStore } from './user-provider-connections.js';
+import {
+  ProjectRepositoryStore,
+  type AddProjectRepositoryInput,
+  type SessionRepositoryWorkspaceRecord,
+} from './project-repositories.js';
 import { ViewStateStore } from './view-state.js';
 import { AssistantStore } from './assistant.js';
 import { SchedulingStore } from './scheduling.js';
@@ -87,6 +113,8 @@ export interface SessionRecord {
   planning?: SessionPlanning | null;
   planningRevision?: number;
   planningPlan?: string | null;
+  /** Mockups the agent presented for review. Absent when it never presented any. */
+  mockupReview?: SessionMockupReview;
   /** Operator-marked favorite, highlighted in the session list. Global like the
    *  unread mark, so it syncs across devices. Absent means not a favorite. */
   favorite?: boolean;
@@ -96,6 +124,88 @@ export interface SessionRecord {
  *  ends planning. `implemented` / `discarded`: how the last planning round ended,
  *  which tells the app whether the newest plan was carried out. */
 export type SessionPlanning = 'active' | 'implemented' | 'discarded';
+
+/** `pending`: screens wait for the reviewer, who marks each one and discusses them
+ *  in the chat. `revising`: written by earlier versions, which sent comments for a
+ *  revision; read as `pending` (see {@link storedMockupState}). `approved`: the user told the agent to implement and
+ *  the review ended. */
+export type SessionMockupState = 'pending' | 'revising' | 'approved';
+
+/** One presented screen. The image is a snapshot in the attachment store, so the
+ *  round stays as it was reviewed even when the agent rewrites the file later. */
+export interface MockupScreenRecord {
+  name: string;
+  /** SHA-256 of the image in the attachment store. */
+  attachment: string;
+  mediaType: 'image/png' | 'image/jpeg';
+  width: number;
+  height: number;
+  verdict: MockupVerdict;
+}
+
+/** The reviewer's mark on one screen. Only marks: neither starts any work. */
+export type MockupVerdict = 'open' | 'approved' | 'discarded';
+
+/** Stored screens, with marks from earlier versions mapped onto the current ones:
+ *  a commented screen was one the reviewer did not accept, so it reads as
+ *  discarded and never as approved. */
+export function storedMockupScreens(raw: unknown): MockupScreenRecord[] {
+  if (!Array.isArray(raw)) return [];
+  // A malformed entry is dropped rather than failing every load of the session.
+  const entries = raw.filter(
+    (entry): entry is Omit<MockupScreenRecord, 'verdict'> & { verdict: string } =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === 'string' &&
+      typeof (entry as { attachment?: unknown }).attachment === 'string' &&
+      typeof (entry as { width?: unknown }).width === 'number' &&
+      typeof (entry as { height?: unknown }).height === 'number',
+  );
+  return entries.map(({ name, attachment, mediaType, width, height, verdict }) => ({
+    name,
+    attachment,
+    mediaType,
+    width,
+    height,
+    verdict: verdict === 'approved' ? 'approved' : verdict === 'open' ? 'open' : 'discarded',
+  }));
+}
+
+export interface SessionMockupReview {
+  state: SessionMockupState;
+  /** Increments with each presentation; decisions name the round they were made for. */
+  revision: number;
+  screens: MockupScreenRecord[];
+}
+
+/** The review as stored; `state` null before the first presentation. */
+export interface SessionMockups {
+  state: SessionMockupState | null;
+  revision: number;
+  screens: MockupScreenRecord[];
+}
+
+/** A round an earlier version left `revising` already handed its comments to the
+ *  agent; nothing moves it on any more, so it reads as open for marks again. */
+export function storedMockupState(state: SessionMockupState | null): SessionMockupState | null {
+  return state === 'revising' ? 'pending' : state;
+}
+
+function mockupReview(
+  rawState: SessionMockupState | null,
+  revision: number,
+  screens: unknown,
+): { mockupReview?: SessionMockupReview } {
+  const state = storedMockupState(rawState);
+  if (state === null) return {};
+  return {
+    mockupReview: {
+      state,
+      revision,
+      screens: storedMockupScreens(screens),
+    },
+  };
+}
 
 export interface SessionLinkRecord {
   sessionId: string;
@@ -251,11 +361,17 @@ export function isInstallationPlaceholder(
 /** Multi-repo fleet-registry project record (`projects` row, concept §19.2). */
 export interface ProjectRecord {
   id: string;
+  /** The project's own name, independent of its repositories. Set when the
+   *  project is created, changed only by {@link EventStore.renameProject}. */
+  name: string;
   owner: string;
   repo: string;
   containerName: string;
   kind?: ProjectKind;
   forgeConnectionId?: string | null;
+  /** 1 for the first project of a repository; a further project of the same
+   *  repository takes the next number. Absent on records from older readers. */
+  repositoryInstance?: number;
   /** Host clone-directory name override; `null` = derive `<owner>-<repo>`. Set
    *  for `local` projects and preserved when they are linked to GitHub, so the
    *  clone (and every session worktree persisted under it) never moves. */
@@ -373,7 +489,23 @@ export interface ProjectUpsertInput {
   /** Mark this repo as intentionally added to the project overview. Installation
    *  sync omits it so unadded `absent` repos stay picker-only. */
   overviewVisible?: boolean;
+  /** The project's name. Only written on INSERT; omitted, it is derived with
+   *  {@link defaultProjectName}. An existing project keeps its name. */
+  name?: string;
 }
+
+/** Maximum UTF-16 length, matching API validation and native text input limits. */
+export const PROJECT_NAME_MAX_CHARS = 100;
+
+/** The name a project carries when none was given: its repository name, or a
+ *  local project's directory name — what the app showed before projects had
+ *  names of their own, and what migration 0204 copied into existing rows. */
+export function defaultProjectName(project: { repo: string }): string {
+  return project.repo;
+}
+
+/** A rename the store refuses: empty after trimming, or over the limit. */
+export class InvalidProjectNameError extends Error {}
 
 export interface SessionBackendStateRecord {
   contextFingerprint?: string;
@@ -463,6 +595,10 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Design module: whether plans include mockups the user approves before the build. */
+  designLevel: ProjectDesignLevel;
+  /** One line shown under the project's name; null when none was written. */
+  description: string | null;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -500,6 +636,23 @@ export interface HttpMcpConnectionRecord {
   enabled: boolean;
 }
 
+/**
+ * Whether a turn run for `userId` may use this HTTP MCP connection (ADR 0023 §3).
+ * A connection that carries a credential belongs to its owner and is usable only
+ * in the owner's turns; a credential-free server is project configuration and
+ * usable by everyone. A turn without an initiator gets no credentialed
+ * connection at all — never the administrator's as a fallback.
+ */
+export function httpMcpConnectionUsableBy(
+  connection: Pick<HttpMcpConnectionRecord, 'ownerUserId' | 'authType' | 'authorization'>,
+  userId: string | undefined,
+): boolean {
+  const credentialFree =
+    connection.authorization === null && (connection.authType ?? 'none') === 'none';
+  if (credentialFree) return true;
+  return userId !== undefined && connection.ownerUserId === userId;
+}
+
 export interface ProjectMcpBindingRecord {
   projectId: string;
   connectionId: string;
@@ -520,7 +673,13 @@ type ProjectSettingsKey =
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
+  | 'designLevel'
+  | 'description'
   | 'allowedAgents';
+
+/** `off`: no mockups. `on_request`: mockups when the user asks for them.
+ *  `required`: every plan that changes the UI includes mockups. */
+export type ProjectDesignLevel = 'off' | 'on_request' | 'required';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettingsRecord[K] | undefined;
@@ -660,6 +819,8 @@ export interface ClaudeEgressCaRecord {
  *  (a SECRET); the cert + fingerprint are non-secret. */
 export interface ClaudeEgressClientCertRecord {
   projectId: string;
+  /** The person whose sandbox presents this certificate (ADR 0023 §4). */
+  userId: string;
   certPem: string;
   keyPem: string;
   fingerprint256: string;
@@ -714,6 +875,10 @@ export interface VeritySettingsRecord {
   githubAppId: string | null;
   githubAppInstallationId: string | null;
   githubAppPrivateKey: string | null;
+  /** The App's OAuth client, used only for each person's own GitHub
+   *  authorization (ADR 0023 §3). The secret is encrypted at rest. */
+  githubAppClientId: string | null;
+  githubAppClientSecret: string | null;
   /** Account-level Doppler Service Account token (#320). A secret, encrypted at
    *  rest; decrypted on read via {@link EventStore.getVeritySettings}. */
   dopplerServiceToken: string | null;
@@ -788,6 +953,8 @@ type VeritySettingsKey =
   | 'githubAppId'
   | 'githubAppInstallationId'
   | 'githubAppPrivateKey'
+  | 'githubAppClientId'
+  | 'githubAppClientSecret'
   | 'dopplerServiceToken'
   | 'transcribeBaseUrl'
   | 'transcribeApiKey'
@@ -889,26 +1056,6 @@ export interface SequencedEvent {
   /** The row's `created_at` as epoch milliseconds (non-decreasing with `seq`). */
   ts: number;
   event: AgentEvent;
-}
-
-/**
- * How many session ids one `in (…)` list carries — see
- * {@link EventStore.listSessionProjectionFacts}. Postgres refuses a statement
- * with more than 65535 bind parameters outright, and `GET /sessions` passes
- * EVERY session of a deployment at once, so an unchunked list turns a big
- * install into a route that throws rather than one that is slow. Well under the
- * ceiling on purpose: the extra round trips are cheap next to the per-session
- * reads this replaced, and the queries spend parameters on the type filter too.
- */
-const PROJECTION_ID_CHUNK = 500;
-
-/** Split `items` into chunks of at most {@link PROJECTION_ID_CHUNK}. */
-function idChunks<T>(items: readonly T[]): T[][] {
-  const chunks: T[][] = [];
-  for (let at = 0; at < items.length; at += PROJECTION_ID_CHUNK) {
-    chunks.push(items.slice(at, at + PROJECTION_ID_CHUNK));
-  }
-  return chunks;
 }
 
 /**
@@ -1040,6 +1187,20 @@ export interface RunningTurnRecord {
   startCommandId: string | null;
 }
 
+/** Local identities are evidence to compare, never an ownership assignment. */
+export interface RunnerTurnOwnershipRequest {
+  turnId: string;
+  startCommandId?: string;
+  runnerInstanceId?: string;
+}
+
+/** Ownership does not assert that a turn has settled or that its cache is idle. */
+export interface RunnerTurnOwnership {
+  turnId: string;
+  sessionId?: string;
+  conflict: boolean;
+}
+
 /**
  * The narrow persistence seam the Runner's ingest path drives (ADR 0006 D2). It
  * is EXACTLY the three {@link EventStore} methods the runner/ingest/backend
@@ -1068,134 +1229,6 @@ export interface EventSink {
  * never drift.
  */
 export const RUNNER_FRAME_PROTOCOL_VERSION = 1;
-
-type ProjectionDb = Kysely<Database> | Transaction<Database>;
-const MESSAGE_PROJECTION_VERSION = 1;
-const pendingMessageProjectionByDb = new WeakMap<Kysely<Database>, Promise<void>>();
-const pendingMessageBackfillsByDb = new WeakMap<Kysely<Database>, Set<Promise<void>>>();
-
-export async function waitForPendingMessageProjections(db: Kysely<Database>): Promise<void> {
-  await (pendingMessageProjectionByDb.get(db) ?? Promise.resolve());
-}
-
-/**
- * Wait until no projection work is in flight against `db` — the ordered live
- * chain AND every recovery/search backfill.
- *
- * {@link waitForPendingMessageProjections} covers only the first. That is enough
- * to observe a projected event, but not to know the database is quiet: a live
- * projection that declines its slot enqueues a backfill *as it resolves*, and
- * {@link EventStore.ingestRunnerFrame} schedules one unawaited by design. Those
- * run on their own connection, so a caller that needs exclusive access (a test
- * harness truncating between tests) must wait for them too — otherwise its
- * TRUNCATE takes AccessExclusiveLock on the tables the backfill is midway
- * through reading and the two deadlock (40P01).
- *
- * The queues are re-read across a barrier because draining one can enqueue into
- * the other; the loop settles once a full pass adds nothing.
- */
-export async function waitForMessageProjectionWork(db: Kysely<Database>): Promise<void> {
-  for (;;) {
-    const live = pendingMessageProjectionByDb.get(db) ?? Promise.resolve();
-    const backfills = [...(pendingMessageBackfillsByDb.get(db) ?? [])];
-    await Promise.all([live, ...backfills.map((backfill) => backfill.catch(() => undefined))]);
-    // Let completion handlers enqueue a recovery backfill before checking that
-    // the two queues stayed unchanged across the barrier.
-    await Promise.resolve();
-    if (
-      (pendingMessageProjectionByDb.get(db) ?? live) === live &&
-      (pendingMessageBackfillsByDb.get(db)?.size ?? 0) === 0
-    ) {
-      return;
-    }
-  }
-}
-
-async function finalizeOpenMessage(db: ProjectionDb, sessionId: string): Promise<void> {
-  await db
-    .updateTable('messages')
-    .set({ finalized: true })
-    .where('session_id', '=', sessionId)
-    .where('finalized', '=', false)
-    .execute();
-}
-
-/** Fold one persisted canonical event into the rebuildable visible-message view. */
-async function projectMessageEvent(
-  db: ProjectionDb,
-  sessionId: string,
-  seq: number,
-  createdAt: Date,
-  event: AgentEvent,
-): Promise<void> {
-  if (event.t === 'task' || event.t === 'session') return;
-
-  if (event.t === 'text' && event.parentToolId === undefined) {
-    const open = await db
-      .selectFrom('messages')
-      .select(['id', 'text'])
-      .where('session_id', '=', sessionId)
-      .where('finalized', '=', false)
-      .where('role', '=', 'agent')
-      .orderBy('id', 'desc')
-      .executeTakeFirst();
-    if (open !== undefined) {
-      await db
-        .updateTable('messages')
-        .set({ text: open.text + event.delta, last_event_seq: seq })
-        .where('id', '=', open.id)
-        .execute();
-    } else {
-      await db
-        .insertInto('messages')
-        .values({
-          session_id: sessionId,
-          role: 'agent',
-          kind: 'text',
-          text: event.delta,
-          first_event_seq: seq,
-          last_event_seq: seq,
-          created_at: createdAt,
-        })
-        .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-        .execute();
-    }
-    return;
-  }
-
-  await finalizeOpenMessage(db, sessionId);
-  if (event.t === 'prompt') {
-    await db
-      .insertInto('messages')
-      .values({
-        session_id: sessionId,
-        role: 'user',
-        kind: 'prompt',
-        text: event.peer?.message ?? event.text,
-        first_event_seq: seq,
-        last_event_seq: seq,
-        finalized: true,
-        created_at: createdAt,
-      })
-      .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-      .execute();
-  } else if (event.t === 'notice') {
-    await db
-      .insertInto('messages')
-      .values({
-        session_id: sessionId,
-        role: event.role === 'operator' ? 'user' : 'agent',
-        kind: 'notice',
-        text: event.text,
-        first_event_seq: seq,
-        last_event_seq: seq,
-        finalized: true,
-        created_at: createdAt,
-      })
-      .onConflict((oc) => oc.columns(['session_id', 'first_event_seq']).doNothing())
-      .execute();
-  }
-}
 
 /**
  * The Server-side ingest descriptor for one Runner frame (ADR 0006 D4). It is the
@@ -1249,77 +1282,82 @@ const ABANDONED_TURN_FENCE_HASH = 'verity:abandoned-turn-fence';
  * there is no real instance to name. Excluded from the turn→instance binding check. */
 const ABANDONED_TURN_FENCE_INSTANCE = 'verity:abandoned-turn-fence';
 
+// PGlite has one physical connection, where advisory locks are re-entrant even
+// through different EventStore wrappers. Keep physical cleanup exclusive there too.
+const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
+
+/** The person a backend-state key is scoped to, or '' for the unscoped key. */
+function backendStateScope(backend: string): string {
+  const separator = backend.indexOf('#');
+  return separator < 0 ? '' : backend.slice(separator + 1);
+}
+
 /**
  * The durable source of truth (concept §5a). Wraps the append-only Postgres
  * event log. Every event is validated against the canonical contract before it
  * is persisted and again when it is read back, so the log can never hold — or
  * hand out — an event that violates the schema.
  */
-interface SessionDeletionState {
-  session?: { sessionId?: string; projectId?: string | null; worktree?: string };
-  previewIds?: string[];
-  managed?: { sessionId: string; projectId: string | null; instanceIds: string[] };
-  terminationConfirmed?: boolean;
-  legacyArtifactsPurged?: boolean;
-  artifactBindings?: { backend: string; backendSessionId: string }[];
-  purgedArtifactBindings?: { backend: string; backendSessionId: string }[];
-}
-
-/** Ownership is monotonic even when an older Server writes its retry snapshot. */
-function mergeSessionDeletionState(
-  current: SessionDeletionState,
-  next: SessionDeletionState,
-): SessionDeletionState {
-  const managed = current.managed ?? next.managed;
-  const session = current.session ?? next.session;
-  return {
-    ...current,
-    ...next,
-    artifactBindings: [
-      ...new Map(
-        [...(current.artifactBindings ?? []), ...(next.artifactBindings ?? [])].map((binding) => [
-          JSON.stringify([binding.backend, binding.backendSessionId]),
-          binding,
-        ]),
-      ).values(),
-    ],
-    purgedArtifactBindings: [
-      ...new Map(
-        [...(current.purgedArtifactBindings ?? []), ...(next.purgedArtifactBindings ?? [])].map(
-          (binding) => [JSON.stringify([binding.backend, binding.backendSessionId]), binding],
-        ),
-      ).values(),
-    ],
-    ...(session === undefined ? {} : { session }),
-    previewIds: [...new Set([...(current.previewIds ?? []), ...(next.previewIds ?? [])])],
-    ...(managed === undefined
-      ? {}
-      : {
-          managed: {
-            ...managed,
-            projectId: current.managed?.projectId ?? next.managed?.projectId ?? null,
-            instanceIds: [
-              ...new Set([
-                ...(current.managed?.instanceIds ?? []),
-                ...(next.managed?.instanceIds ?? []),
-              ]),
-            ],
-          },
-        }),
-    ...(current.legacyArtifactsPurged || next.legacyArtifactsPurged
-      ? { legacyArtifactsPurged: true }
-      : {}),
-    ...(current.terminationConfirmed || next.terminationConfirmed
-      ? { terminationConfirmed: true }
-      : {}),
-  };
-}
-
-// PGlite has one physical connection, where advisory locks are re-entrant even
-// through different EventStore wrappers. Keep physical cleanup exclusive there too.
-const sessionDeletionCleanupTails = new WeakMap<Kysely<Database>, Map<string, Promise<void>>>();
-
 export class EventStore implements EventSink {
+  listProjectRepositories(projectId: string, options: { includeRemoved?: boolean } = {}) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).list(
+      projectId,
+      options,
+    );
+  }
+
+  getProjectRepository(projectId: string, repositoryId?: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).get(
+      projectId,
+      repositoryId,
+    );
+  }
+
+  addProjectRepository(input: AddProjectRepositoryInput) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).add(input);
+  }
+
+  removeProjectRepository(projectId: string, repositoryId: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).remove(
+      projectId,
+      repositoryId,
+    );
+  }
+
+  async recordRepositoryPullRequest(
+    projectId: string,
+    repositoryId: string,
+    branch: string,
+    pullRequest: unknown,
+    sessionId?: string,
+  ): Promise<void> {
+    let query = this.db
+      .updateTable('session_repository_workspaces')
+      .set({
+        pull_request: sql`case when pull_request->>'number' = (${JSON.stringify(pullRequest)}::jsonb)->>'number'
+          then pull_request || ${JSON.stringify(pullRequest)}::jsonb
+          else ${JSON.stringify(pullRequest)}::jsonb end`,
+        branch,
+      })
+      .where('project_id', '=', projectId)
+      .where('repository_id', '=', repositoryId);
+    query =
+      sessionId === undefined
+        ? query.where('branch', '=', branch)
+        : query.where('session_id', '=', sessionId);
+    await query.execute();
+  }
+
+  listSessionRepositoryWorkspaces(sessionId: string) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).listWorkspaces(
+      sessionId,
+    );
+  }
+
+  upsertSessionRepositoryWorkspace(input: Omit<SessionRepositoryWorkspaceRecord, 'createdAt'>) {
+    return new ProjectRepositoryStore(this.db, (id) => this.getProject(id)).upsertWorkspace(input);
+  }
+
   private egressDestinationMutation: EgressDestinationMutation = unguardedEgressDestinationMutation;
 
   /** Installed before request handlers; every destination store shares this barrier. */
@@ -1548,11 +1586,12 @@ export class EventStore implements EventSink {
   ) {
     const db = rootDb;
     this.userContext = new UserContextStore(db);
+    this.userProfiles = new UserProfileStore(db);
     this.viewState = new ViewStateStore(db);
     this.projectEgress = new ProjectEgressStore(db);
     this.knowledge = new KnowledgeStore(db);
-    this.integrations = new IntegrationStore(db, cipher, (action) =>
-      this.egressDestinationMutation(action),
+    this.integrations = new IntegrationStore(db, cipher, (action, changesDestinations) =>
+      this.egressDestinationMutation(action, changesDestinations),
     );
     this.liveMeetings = new LiveMeetingStore(db, cipher);
     this.managedDevServers = new ManagedDevServerStore(db);
@@ -1561,10 +1600,15 @@ export class EventStore implements EventSink {
     this.repairs = new RepairSupervisionStore(db);
     this.qaAssignments = new QAAssignmentStore(db);
     this.assistant = new AssistantStore(db);
+    this.projectInquiries = new ProjectInquiryStore(db);
+    this.wikiOccasions = new WikiOccasionStore(db);
+    this.wikiMaintenance = new WikiMaintenanceStore(db);
+    this.sandboxRepairIntents = new SandboxRepairIntentStore(db);
     this.scheduling = new SchedulingStore(db, cipher);
   }
 
   readonly userContext: UserContextStore;
+  readonly userProfiles: UserProfileStore;
   /** Per-person overview state: folded projects, read sessions, dismissed Home items. */
   readonly viewState: ViewStateStore;
   readonly projectEgress: ProjectEgressStore;
@@ -1575,6 +1619,12 @@ export class EventStore implements EventSink {
   readonly repairs: RepairSupervisionStore;
   readonly qaAssignments: QAAssignmentStore;
   readonly assistant: AssistantStore;
+  readonly projectInquiries: ProjectInquiryStore;
+  /** What a project's Wiki may need to reflect, until a maintenance run read it. */
+  readonly wikiOccasions: WikiOccasionStore;
+  readonly wikiMaintenance: WikiMaintenanceStore;
+  /** Automatic Sandbox repairs still owed after a failed recreate. */
+  readonly sandboxRepairIntents: SandboxRepairIntentStore;
   readonly scheduling: SchedulingStore;
   readonly managedDevServers: ManagedDevServerStore;
   readonly vulnerabilityScans: VulnerabilityScanStore;
@@ -2070,6 +2120,9 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'mockup_review',
+        'mockup_revision',
+        'mockup_screens',
         'favorite',
       ])
       .where('session_id', '=', sessionId)
@@ -2085,6 +2138,7 @@ export class EventStore implements EventSink {
       ...(row.planning !== null ? { planning: row.planning } : {}),
       planningRevision: row.planning_revision,
       planningPlan: row.planning_plan,
+      ...mockupReview(row.mockup_review, row.mockup_revision, row.mockup_screens),
       ...(row.favorite ? { favorite: true } : {}),
     };
   }
@@ -2223,6 +2277,30 @@ export class EventStore implements EventSink {
     );
   }
 
+  get userProviderConnections(): UserProviderConnectionStore {
+    return new UserProviderConnectionStore(this.db, this.cipher);
+  }
+
+  get projectTeam(): ProjectTeamStore {
+    return new ProjectTeamStore(this.db, this.cipher);
+  }
+
+  get projectSandboxes(): ProjectSandboxStore {
+    return new ProjectSandboxStore(this.db);
+  }
+
+  get userDopplerConnections(): UserDopplerConnectionStore {
+    return new UserDopplerConnectionStore(this.db, this.cipher);
+  }
+
+  get userGithubAuthorizations(): UserGithubAuthorizationStore {
+    return new UserGithubAuthorizationStore(this.db, this.cipher);
+  }
+
+  get userGitIdentities(): UserGitIdentityStore {
+    return new UserGitIdentityStore(this.db, this.cipher);
+  }
+
   get googleAccounts(): GoogleAccountStore {
     return new GoogleAccountStore(this.db, this.cipher);
   }
@@ -2231,8 +2309,14 @@ export class EventStore implements EventSink {
     return new CalendarWatchStore(this.db, this.cipher);
   }
 
-  async getGoogleServiceCredentials(sessionId: string, service: 'gmail' | 'calendar' | 'contacts') {
-    const effective = await this.googleAccounts.effectiveAccess(sessionId, service);
+  /** Credentials for the Google account `userId` uses in this session; none for
+   *  anyone else's account and none without a person (ADR 0023 §3). */
+  async getGoogleServiceCredentials(
+    sessionId: string,
+    service: 'gmail' | 'calendar' | 'contacts',
+    userId: string | undefined,
+  ) {
+    const effective = await this.googleAccounts.effectiveAccess(sessionId, service, userId);
     if (!effective) return undefined;
     const credentials = await this.googleAccounts.credentials(effective.account.id);
     if (!credentials) return undefined;
@@ -2280,21 +2364,24 @@ export class EventStore implements EventSink {
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
     accountEmail: string,
+    userId: string,
   ): Promise<void> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account) {
-      await this.googleAccounts.setProjectAccess(projectId, service, account.id);
+      await this.googleAccounts.setProjectAccess(projectId, service, userId, account.id);
       return;
     }
     await this.db
       .insertInto('project_google_connections')
-      .values({ project_id: projectId, service, account_email: accountEmail })
+      .values({ project_id: projectId, service, user_id: userId, account_email: accountEmail })
       .onConflict((conflict) =>
-        conflict.columns(['project_id', 'service']).doUpdateSet({ account_email: accountEmail }),
+        conflict
+          .columns(['project_id', 'service', 'user_id'])
+          .doUpdateSet({ account_email: accountEmail }),
       )
       .execute();
   }
@@ -2302,9 +2389,10 @@ export class EventStore implements EventSink {
   async disableProjectGoogleConnection(
     projectId: string,
     service: 'gmail' | 'calendar' | 'contacts',
+    userId: string,
   ): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0) {
-      await this.googleAccounts.setProjectAccess(projectId, service, null);
+    if ((await this.googleAccounts.listAll()).length > 0) {
+      await this.googleAccounts.setProjectAccess(projectId, service, userId, null);
       return;
     }
     await this.db.transaction().execute(async (transaction) => {
@@ -2312,6 +2400,7 @@ export class EventStore implements EventSink {
         .deleteFrom('project_google_connections')
         .where('project_id', '=', projectId)
         .where('service', '=', service)
+        .where('user_id', '=', userId)
         .execute();
       // Disabling the project also revokes legacy grants in its sessions.
       const sessionIds = transaction
@@ -2338,10 +2427,13 @@ export class EventStore implements EventSink {
     return grant === undefined ? undefined : { sessionId, ...grant };
   }
 
-  async getSessionGmailConnection(sessionId: string): Promise<SessionGmailConnection | undefined> {
+  async getSessionGmailConnection(
+    sessionId: string,
+    userId: string | undefined,
+  ): Promise<SessionGmailConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'gmail');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'gmail', userId);
       return effective
         ? {
             sessionId,
@@ -2369,12 +2461,13 @@ export class EventStore implements EventSink {
   async enableSessionGmail(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionGmailConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'gmail', {
         mode: 'account',
@@ -2389,7 +2482,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionGmailConnection(sessionId)) ?? {
+      (await this.getSessionGmailConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2398,7 +2491,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionGmail(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'gmail', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_gmail_connections')
@@ -2413,10 +2506,11 @@ export class EventStore implements EventSink {
 
   async getSessionCalendarConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<SessionCalendarConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'calendar');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'calendar', userId);
       return effective
         ? {
             sessionId,
@@ -2444,12 +2538,13 @@ export class EventStore implements EventSink {
   async enableSessionCalendar(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionCalendarConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'calendar', {
         mode: 'account',
@@ -2464,7 +2559,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionCalendarConnection(sessionId)) ?? {
+      (await this.getSessionCalendarConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2473,7 +2568,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionCalendar(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'calendar', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_calendar_connections')
@@ -2491,10 +2586,11 @@ export class EventStore implements EventSink {
 
   async getSessionContactsConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<SessionContactsConnection | undefined> {
     const override = await this.googleAccounts.sessionAccess(sessionId, 'contacts');
-    if (override.mode !== 'inherit' || (await this.googleAccounts.list()).length > 0) {
-      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts');
+    if (override.mode !== 'inherit' || (await this.googleAccounts.listAll()).length > 0) {
+      const effective = await this.googleAccounts.effectiveAccess(sessionId, 'contacts', userId);
       return effective
         ? {
             sessionId,
@@ -2522,12 +2618,13 @@ export class EventStore implements EventSink {
   async enableSessionContacts(
     sessionId: string,
     accountEmail: string,
+    userId: string,
   ): Promise<SessionContactsConnection> {
-    const accounts = await this.googleAccounts.list();
-    const account = accounts.find(
+    const anyAccounts = (await this.googleAccounts.listAll()).length > 0;
+    const account = (await this.googleAccounts.list(userId)).find(
       (candidate) => candidate.email.toLowerCase() === accountEmail.toLowerCase(),
     );
-    if (accounts.length > 0 && !account) throw new Error('Google account is not connected');
+    if (anyAccounts && !account) throw new Error('Google account is not connected');
     if (account)
       await this.googleAccounts.setSessionAccess(sessionId, 'contacts', {
         mode: 'account',
@@ -2542,7 +2639,7 @@ export class EventStore implements EventSink {
       .returningAll()
       .executeTakeFirst();
     return (
-      (await this.getSessionContactsConnection(sessionId)) ?? {
+      (await this.getSessionContactsConnection(sessionId, userId)) ?? {
         sessionId,
         accountEmail,
         enabledAt: row!.enabled_at,
@@ -2551,7 +2648,7 @@ export class EventStore implements EventSink {
   }
 
   async disableSessionContacts(sessionId: string): Promise<void> {
-    if ((await this.googleAccounts.list()).length > 0)
+    if ((await this.googleAccounts.listAll()).length > 0)
       await this.googleAccounts.setSessionAccess(sessionId, 'contacts', { mode: 'disabled' });
     await this.db
       .deleteFrom('session_contacts_connections')
@@ -2814,6 +2911,9 @@ export class EventStore implements EventSink {
         'planning',
         'planning_revision',
         'planning_plan',
+        'mockup_review',
+        'mockup_revision',
+        'mockup_screens',
         'favorite',
       ])
       // session_id tiebreaker: `created_at` is `now()` (tx-start), so rapid
@@ -2831,6 +2931,7 @@ export class EventStore implements EventSink {
       ...(r.planning !== null ? { planning: r.planning } : {}),
       planningRevision: r.planning_revision,
       planningPlan: r.planning_plan,
+      ...mockupReview(r.mockup_review, r.mockup_revision, r.mockup_screens),
       ...(r.favorite ? { favorite: true } : {}),
     }));
   }
@@ -3301,6 +3402,10 @@ export class EventStore implements EventSink {
       .updateTable('sessions')
       .set({
         planning: 'active',
+        // A new plan revokes reviews belonging to the previous accepted work.
+        mockup_review: null,
+        mockup_screens: '[]',
+        mockup_revision: sql`mockup_revision + 1`,
         planning_plan: null,
         planning_revision: sql`planning_revision + 1`,
       })
@@ -3319,6 +3424,49 @@ export class EventStore implements EventSink {
       .returning('planning_revision')
       .executeTakeFirst();
     return row?.planning_revision;
+  }
+
+  /**
+   * Change a session's mockup review under a row lock. `change` sees the current
+   * review and answers the next one, or `undefined` to leave it as is; two devices
+   * deciding different screens at once therefore both keep their verdict. Answers
+   * the stored review, or `undefined` when the session is missing or nothing changed.
+   */
+  async updateSessionMockups(
+    sessionId: string,
+    change: (current: SessionMockups) => SessionMockups | undefined,
+    expectedPlanningRevision?: number,
+  ): Promise<SessionMockups | undefined> {
+    return this.db.transaction().execute(async (tx) => {
+      const row = await tx
+        .selectFrom('sessions')
+        .select(['mockup_review', 'mockup_revision', 'mockup_screens', 'planning_revision'])
+        .where('session_id', '=', sessionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return undefined;
+      if (
+        expectedPlanningRevision !== undefined &&
+        row.planning_revision !== expectedPlanningRevision
+      )
+        return undefined;
+      const next = change({
+        state: storedMockupState(row.mockup_review),
+        revision: row.mockup_revision,
+        screens: storedMockupScreens(row.mockup_screens),
+      });
+      if (next === undefined) return undefined;
+      await tx
+        .updateTable('sessions')
+        .set({
+          mockup_review: next.state,
+          mockup_revision: next.revision,
+          mockup_screens: JSON.stringify(next.screens),
+        })
+        .where('session_id', '=', sessionId)
+        .execute();
+      return next;
+    });
   }
 
   async getSessionBackendState(
@@ -3371,24 +3519,34 @@ export class EventStore implements EventSink {
       // Read before delete rather than `DELETE … RETURNING`: this runs on every bind,
       // against both the Postgres and PGlite dialects, and the extra round trip inside
       // the transaction is cheaper than a dialect-specific surprise here.
-      const displaced = await tx
-        .selectFrom('session_backend_state')
-        .select([
-          'session_id',
-          'backend',
-          'backend_session_id',
-          'context_seq',
-          'updated_at',
-          'context_fingerprint',
-        ])
-        .where('session_id', '=', input.sessionId)
-        .where('backend', '!=', input.backend)
-        .execute();
-      await tx
-        .deleteFrom('session_backend_state')
-        .where('session_id', '=', input.sessionId)
-        .where('backend', '!=', input.backend)
-        .execute();
+      // A key `backend#person` is one person's own thread (ADR 0023 §3); a bind
+      // displaces only the same person's other backend, never someone else's.
+      const scope = backendStateScope(input.backend);
+      const displaced = (
+        await tx
+          .selectFrom('session_backend_state')
+          .select([
+            'session_id',
+            'backend',
+            'backend_session_id',
+            'context_seq',
+            'updated_at',
+            'context_fingerprint',
+          ])
+          .where('session_id', '=', input.sessionId)
+          .where('backend', '!=', input.backend)
+          .execute()
+      ).filter((row) => backendStateScope(row.backend) === scope);
+      if (displaced.length > 0)
+        await tx
+          .deleteFrom('session_backend_state')
+          .where('session_id', '=', input.sessionId)
+          .where(
+            'backend',
+            'in',
+            displaced.map((row) => row.backend),
+          )
+          .execute();
       await tx
         .insertInto('session_backend_state')
         .values({
@@ -3622,6 +3780,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName(input),
           owner: input.owner,
           repo: input.repo,
           container_name: input.containerName,
@@ -3676,6 +3835,65 @@ export class EventStore implements EventSink {
       .onConflict((oc) => oc.columns(['session_id', 'marker']).doNothing())
       .executeTakeFirst();
     return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+  }
+
+  /** Keep a terminal PR hidden after the workspace first changes, across restarts. */
+  async observeSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<boolean> {
+    const result = await sql<{ hidden: boolean }>`
+      insert into session_pr_visibility(session_id, worktree, pr_url, fingerprint, hidden)
+      values (${sessionId}, ${worktree}, ${url}, ${fingerprint}, false)
+      on conflict (session_id, worktree, pr_url) do update set
+        hidden = session_pr_visibility.hidden or
+          session_pr_visibility.fingerprint <> excluded.fingerprint
+      returning hidden
+    `.execute(this.db);
+    return result.rows[0]!.hidden;
+  }
+
+  async getSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+  ): Promise<{ fingerprint: string; hidden: boolean } | undefined> {
+    return this.db
+      .selectFrom('session_pr_visibility')
+      .select(['fingerprint', 'hidden'])
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .executeTakeFirst();
+  }
+
+  /** Seed the final baseline after managed post-merge housekeeping has settled. */
+  async clearSessionPrVisibility(sessionId: string, worktree: string, url: string): Promise<void> {
+    await this.db
+      .deleteFrom('session_pr_visibility')
+      .where('session_id', '=', sessionId)
+      .where('worktree', '=', worktree)
+      .where('pr_url', '=', url)
+      .execute();
+  }
+
+  async resetSessionPrVisibility(
+    sessionId: string,
+    worktree: string,
+    url: string,
+    fingerprint: string,
+  ): Promise<void> {
+    await this.db
+      .insertInto('session_pr_visibility')
+      .values({ session_id: sessionId, worktree, pr_url: url, fingerprint, hidden: false })
+      .onConflict((oc) =>
+        oc
+          .columns(['session_id', 'worktree', 'pr_url'])
+          .doUpdateSet({ fingerprint, hidden: false }),
+      )
+      .execute();
   }
 
   /** Reserve before transport: a crash spends a bounded attempt instead of resetting it. */
@@ -3912,7 +4130,11 @@ export class EventStore implements EventSink {
         ),
       ])
       .where('m.finalized', '=', true)
-      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`);
+      .where(sql<boolean>`to_tsvector('simple', m.text) @@ ${tsQuery}`)
+      // The Wiki maintenance run quotes untrusted transcripts and appears nowhere.
+      .where(
+        sql<boolean>`not exists (select 1 from wiki_maintenance w where w.session_id = m.session_id)`,
+      );
     if (input.sessionId !== undefined) select = select.where('m.session_id', '=', input.sessionId);
     if (input.projectId !== undefined) select = select.where('s.project_id', '=', input.projectId);
     if (input.cursor !== undefined) {
@@ -4235,6 +4457,7 @@ export class EventStore implements EventSink {
         .where('origin', '=', 'agent')
         .where('status', 'in', ['open', 'in_progress'])
         .execute();
+      await sql`delete from project_inquiries where target_session_id=${sessionId}`.execute(tx);
       const result = await tx
         .deleteFrom('sessions')
         .where('session_id', '=', sessionId)
@@ -4245,6 +4468,19 @@ export class EventStore implements EventSink {
 
   /** Accept a background dispatch, its prompt and recovery marker in one commit.
    * Cancellation races on the same receipt row; only the winner can run the backend. */
+  /** Reserve a server-authored dispatch for atomic prompt admission and replay. */
+  async reserveBackgroundDispatch(id: string, sessionId: string): Promise<void> {
+    await this.db
+      .insertInto('qa_dispatches')
+      .values({
+        id,
+        session_id: sessionId,
+        state: 'reserved',
+      })
+      .onConflict((oc) => oc.column('id').doNothing())
+      .execute();
+  }
+
   async admitBackgroundDispatch(
     id: string,
     sessionId: string,
@@ -5189,6 +5425,32 @@ export class EventStore implements EventSink {
     return row?.userId ? { userId: row.userId } : undefined;
   }
 
+  /** The user a turn runs for while it is the session's running turn, or
+   *  `undefined` when `turnId` is not running there or names no initiator. Tools
+   *  resolve personal credentials through this, never through the session alone. */
+  async runningTurnInitiator(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ userId: string } | undefined> {
+    const running = (await this.listRunningTurns()).find((turn) => turn.sessionId === sessionId);
+    if (running === undefined || running.turnId !== turnId) return undefined;
+    return this.promptInitiatorAt(sessionId, running.promptSeq);
+  }
+
+  /** The user a specific prompt event was sent by, or `undefined` when that
+   *  event is not a prompt or names no initiator. Recovery uses it to resume a
+   *  turn under the identity it started with rather than the latest one. */
+  async promptInitiatorAt(sessionId: string, seq: number): Promise<{ userId: string } | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(sql<string>`payload->'initiatedBy'->>'userId'`.as('userId'))
+      .where('session_id', '=', sessionId)
+      .where('id', '=', seq)
+      .where(sql<boolean>`payload->>'t' = 'prompt'`)
+      .executeTakeFirst();
+    return row?.userId ? { userId: row.userId } : undefined;
+  }
+
   /**
    * Read events with `seq > afterSeq` (the bigserial id) in order, each tagged
    * with its `seq`. `afterSeq = 0` returns the full log. The cursor lets a WS
@@ -5261,7 +5523,7 @@ export class EventStore implements EventSink {
    *
    * BATCHED ON PURPOSE: `GET /sessions` needs every session at once, so this
    * answers all of them in four queries (tails, rate-limit states, sums,
-   * counters) rather than four per session — four per {@link PROJECTION_ID_CHUNK}
+   * counters) rather than four per session — four per `PROJECTION_ID_CHUNK` (message-projection.ts)
    * sessions, precisely, since the bind-parameter ceiling forces a chunk loop
    * above that many ids. Sessions with an empty log are present in the map with
    * `eventCount: 0` — absent from the map means the session id was not asked for.
@@ -5637,6 +5899,27 @@ export class EventStore implements EventSink {
     return events;
   }
 
+  /** Task updates must not hide the completion that releases a repair claim. */
+  async latestSessionTurnControlEvent(
+    sessionId: string,
+    afterSeq: number,
+  ): Promise<SequencedEvent | undefined> {
+    const row = await this.db
+      .selectFrom('events')
+      .select(['id', 'payload', 'created_at'])
+      .where('session_id', '=', sessionId)
+      .where('id', '>', afterSeq)
+      .where('type', 'in', ['status', 'prompt', 'interrupted'])
+      .orderBy('id', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    const parsed = parseAgentEvent(row.payload);
+    if (!parsed.success)
+      throw new Error(`corrupt event payload in session ${sessionId}: ${parsed.error.message}`);
+    return { seq: Number(row.id), ts: row.created_at.getTime(), event: parsed.data };
+  }
+
   /**
    * Whether this session's log holds a `task` event ANYWHERE.
    *
@@ -5977,6 +6260,85 @@ export class EventStore implements EventSink {
     await query.execute();
   }
 
+  /** Resolve a bounded maintenance page against Server-owned execution records.
+   * The caller derives sessionIds from the runtime's authoritative routing, including
+   * dedicated control-plane routing. Query all owners before applying that scope:
+   * filtering first would hide a conflicting binding in another runtime. */
+  async resolveRunnerTurnOwnership(input: {
+    sessionIds: string[];
+    turns: RunnerTurnOwnershipRequest[];
+  }): Promise<RunnerTurnOwnership[]> {
+    const safeId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+    if (
+      input.sessionIds.length > 512 ||
+      input.turns.length > 512 ||
+      input.sessionIds.some((id) => !safeId.test(id)) ||
+      new Set(input.sessionIds).size !== input.sessionIds.length ||
+      new Set(input.turns.map((turn) => turn.turnId)).size !== input.turns.length ||
+      input.turns.some(
+        (turn) =>
+          !safeId.test(turn.turnId) ||
+          (turn.startCommandId !== undefined && !safeId.test(turn.startCommandId)) ||
+          (turn.runnerInstanceId !== undefined && !safeId.test(turn.runnerInstanceId)),
+      )
+    )
+      throw new Error('Invalid runner ownership inventory');
+    if (input.turns.length === 0) return [];
+    const turnIds = input.turns.map((turn) => turn.turnId);
+    const allowed = new Set(input.sessionIds);
+    return this.db
+      .transaction()
+      .setIsolationLevel('repeatable read')
+      .execute(async (tx) => {
+        // Bound distinct identities, not frames: a long valid turn can have many frames.
+        const frames = await tx
+          .selectFrom('runner_frames')
+          .select(['turn_id', 'session_id', 'runner_instance_id'])
+          .where('turn_id', 'in', turnIds)
+          .where('payload_hash', '!=', ABANDONED_TURN_FENCE_HASH)
+          .distinct()
+          .limit(1025)
+          .execute();
+        const running = await tx
+          .selectFrom('running_turns')
+          .select(['turn_id', 'session_id', 'start_command_id'])
+          .where('turn_id', 'in', turnIds)
+          .limit(1025)
+          .execute();
+        if (frames.length > 1024 || running.length > 1024)
+          throw new Error('Runner ownership inventory limit');
+        return input.turns.map((turn) => {
+          const boundFrames = frames.filter((row) => row.turn_id === turn.turnId);
+          const boundRunning = running.filter((row) => row.turn_id === turn.turnId);
+          const owners = new Set([
+            ...boundFrames.map((row) => row.session_id),
+            ...boundRunning.map((row) => row.session_id),
+          ]);
+          const conflict =
+            owners.size > 1 ||
+            [...owners].some((owner) => !safeId.test(owner)) ||
+            new Set(boundFrames.map((row) => row.runner_instance_id)).size > 1 ||
+            boundFrames.some(
+              (row) =>
+                turn.runnerInstanceId !== undefined &&
+                row.runner_instance_id !== turn.runnerInstanceId,
+            ) ||
+            boundRunning.some(
+              (row) =>
+                row.start_command_id === null ||
+                !safeId.test(row.start_command_id) ||
+                (turn.startCommandId !== undefined && row.start_command_id !== turn.startCommandId),
+            );
+          const owner = owners.size === 1 ? [...owners][0] : undefined;
+          return {
+            turnId: turn.turnId,
+            ...(owner !== undefined && allowed.has(owner) && !conflict ? { sessionId: owner } : {}),
+            conflict: conflict || (owner !== undefined && !allowed.has(owner)),
+          };
+        });
+      });
+  }
+
   /** All in-flight markers. At startup a non-empty result flags sessions whose
    * turn was abandoned by a crash/restart. */
   async listRunningTurns(): Promise<RunningTurnRecord[]> {
@@ -6059,11 +6421,13 @@ export class EventStore implements EventSink {
 
   private projectRowToRecord(row: {
     id: string;
+    name?: string | null;
     owner: string;
     repo: string;
     container_name: string;
     kind?: string | null;
     forge_connection_id?: string | null;
+    repository_instance?: number | null;
     clone_dir?: string | null;
     image_ref: string | null;
     image_override_ref?: string | null;
@@ -6090,11 +6454,13 @@ export class EventStore implements EventSink {
   }): ProjectRecord {
     return {
       id: row.id,
+      name: row.name ?? defaultProjectName(row),
       owner: row.owner,
       repo: row.repo,
       containerName: row.container_name,
       kind: (row.kind ?? 'github') as ProjectKind,
       forgeConnectionId: row.forge_connection_id ?? null,
+      repositoryInstance: row.repository_instance ?? 1,
       cloneDir: row.clone_dir ?? null,
       imageRef: row.image_ref,
       imageOverrideRef: row.image_override_ref ?? null,
@@ -6131,11 +6497,13 @@ export class EventStore implements EventSink {
   private readonly projectColumns = [
     'forge_connection_id',
     'id',
+    'name',
     'kind',
     'owner',
     'repo',
     'container_name',
     'kind',
+    'repository_instance',
     'clone_dir',
     'image_ref',
     'image_override_ref',
@@ -6184,6 +6552,23 @@ export class EventStore implements EventSink {
    *          `deleteProject` (slice 3) between insert and lookup.
    */
   async upsertProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const row = await this.db.transaction().execute(async (tx) => {
+      // Knowledge lifecycle mutations take this lock before touching a project
+      // row. Match that order here so sync cannot deadlock with hide/delete.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      return this.upsertPrimaryProject(tx, input);
+    });
+    if (!row) {
+      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
+      // drops the returning clause — a contract bug, not a runtime path.
+      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
+    }
+    return this.projectRowToRecord(row);
+  }
+
+  /** The body of {@link upsertProject}: always targets the repository's first
+   *  project (instance 1). The caller holds the project lifecycle lock. */
+  private async upsertPrimaryProject(tx: Transaction<Database>, input: ProjectUpsertInput) {
     // Lowercase the canonical (owner, repo) and the derived container_name so
     // the persisted form honours §19.0/§19.2's lowercase-persist contract
     // (without forcing every caller — including GitHub-sync — to remember).
@@ -6193,161 +6578,302 @@ export class EventStore implements EventSink {
     const legacyContainerNames = [`dev-${owner}--${repo}`, `dev-${owner}-${repo}`];
     const shouldMigrateLegacyContainerName = containerName.startsWith('verity-');
 
-    const row = await this.db.transaction().execute(async (tx) => {
-      // Knowledge lifecycle mutations take this lock before touching a project
-      // row. Match that order here so sync cannot deadlock with hide/delete.
-      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
-      // A sync may omit the connection, but must never change the provider of
-      // an existing project identified by its durable ID.
-      const byId = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('id', '=', input.id)
-        .executeTakeFirst();
-      if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
+    // A sync may omit the connection, but must never change the provider of
+    // an existing project identified by its durable ID.
+    const byId = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id', 'repository_instance'])
+      .where('id', '=', input.id)
+      .executeTakeFirst();
+    // The upsert resolves by the repository's first project. A further project
+    // of the same repository must never be rewritten into, or confused with, it.
+    if (byId && byId.repository_instance !== 1) {
+      throw new ProjectIdentityClaimConflict(
+        'Project is a further project of its repository and cannot be upserted',
+      );
+    }
+    if (byId && (byId.kind === 'forgejo') !== (input.kind === 'forgejo')) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
+      input = { ...input, forgeConnectionId: byId.forge_connection_id };
+    }
+    const existingBinding = await tx
+      .selectFrom('projects')
+      .select(['kind', 'forge_connection_id'])
+      .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+      .where('owner', '=', owner)
+      .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
+      .executeTakeFirst();
+    if (
+      existingBinding !== undefined &&
+      ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
+        (input.forgeConnectionId !== undefined &&
+          existingBinding.forge_connection_id !== null &&
+          existingBinding.forge_connection_id !== input.forgeConnectionId))
+    ) {
+      throw new ProjectIdentityClaimConflict(
+        'Project identity belongs to another forge connection',
+      );
+    }
+    const claimed = await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner,
+        repo,
+        project_id: input.id,
+        forge_connection_id: input.forgeConnectionId ?? null,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+      )
+      .returning('project_id')
+      .executeTakeFirst();
+    if (claimed === undefined) {
+      const [claim, existing] = await Promise.all([
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirstOrThrow(),
+        tx
+          .selectFrom('projects')
+          .select('id')
+          .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      if (existing === undefined || claim.project_id !== existing.id) {
+        throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
       }
-      if (input.forgeConnectionId === undefined && byId?.forge_connection_id) {
-        input = { ...input, forgeConnectionId: byId.forge_connection_id };
-      }
-      const existingBinding = await tx
-        .selectFrom('projects')
-        .select(['kind', 'forge_connection_id'])
-        .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
+    }
+    const project = await tx
+      .insertInto('projects')
+      .values({
+        id: input.id,
+        name: input.name ?? defaultProjectName({ repo }),
+        owner,
+        repo,
+        container_name: containerName,
+        kind: input.kind ?? 'github',
+        forge_connection_id: input.forgeConnectionId ?? null,
+        clone_dir: input.cloneDir ?? null,
+        image_ref: input.imageRef ?? null,
+        image_override_ref: input.imageRef ?? null,
+        state: input.state,
+        archived: input.archived ?? false,
+        overview_visible: input.overviewVisible ?? false,
+        provision_error: null,
+        provision_warning: null,
+      })
+      .onConflict((oc) =>
+        oc.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doUpdateSet({
+          // Preserve custom adopted container names, but migrate old deterministic
+          // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
+          // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
+          // can keep pointing at a legacy Dogfood container and miss current
+          // runtime mounts and gateway routing configuration.
+          container_name: shouldMigrateLegacyContainerName
+            ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
+            : sql`projects.container_name`,
+          // Provisioning-owned state stays untouched (the worker's
+          // `cloning/container_starting/active/failed` survives a sync pass).
+          // The image fields are only touched when the caller EXPLICITLY sets an
+          // override: `input.imageRef === undefined` means
+          // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
+          // across slice-2 list refreshes), while `null` means "explicitly
+          // clear the pin" (operator-driven unpin). Slice 2's sync passes
+          // undefined → no-op.
+          // `toolkit_identity` travels with `image_ref` because it is a
+          // statement ABOUT that image: an operator pinning a NEW one has
+          // pinned something nothing has attested, and carrying the old
+          // verdict forward would let the new image inherit an all-clear it
+          // never earned. The next provisioning writes the real answer.
+          //
+          // Which is why the clear is conditional on the image actually
+          // moving. Re-saving the same pin — an idempotent settings write, a
+          // re-add of a project that never changed — leaves the effective
+          // image exactly as attested, so discarding the verdict there would
+          // manufacture an "unknown toolkit" warning about an image that was
+          // checked and passed, and it would stay wrong until the next
+          // provisioning. `is distinct from` compares against the PRE-update
+          // row (`projects.` in an ON CONFLICT update), and treats a null on
+          // either side as a difference rather than as unknown.
+          ...(input.imageRef !== undefined
+            ? {
+                image_ref: input.imageRef,
+                image_override_ref: input.imageRef,
+                toolkit_identity: sql<
+                  string | null
+                >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
+              }
+            : {}),
+          ...(input.forgeConnectionId !== undefined
+            ? { forge_connection_id: input.forgeConnectionId }
+            : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.archived !== undefined ? { archived: input.archived } : {}),
+          ...(input.overviewVisible !== undefined
+            ? { overview_visible: input.overviewVisible }
+            : {}),
+          // `restore` (the POST /projects re-add path) un-hides an existing
+          // row. Omitted by the installation sync, so a re-sync of a repo the
+          // operator deleted keeps it hidden rather than resurrecting it.
+          ...(input.restore === true ? { hidden_at: null } : {}),
+          updated_at: sql`now()`,
+        }),
+      )
+      .returningAll()
+      .executeTakeFirst();
+    if (project && input.archived !== undefined) {
+      // Every project of the repository shares its archive state.
+      await tx
+        .updateTable('projects')
+        .set({ archived: input.archived, updated_at: sql`now()` })
+        .where('forge_scope', '=', project.forge_scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .executeTakeFirst();
-      if (
-        existingBinding !== undefined &&
-        ((existingBinding.kind === 'forgejo') !== (input.kind === 'forgejo') ||
-          (input.forgeConnectionId !== undefined &&
-            existingBinding.forge_connection_id !== null &&
-            existingBinding.forge_connection_id !== input.forgeConnectionId))
-      ) {
-        throw new ProjectIdentityClaimConflict(
-          'Project identity belongs to another forge connection',
-        );
-      }
-      const claimed = await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner,
-          repo,
-          project_id: input.id,
-          forge_connection_id: input.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .returning('project_id')
-        .executeTakeFirst();
-      if (claimed === undefined) {
-        const [claim, existing] = await Promise.all([
-          tx
-            .selectFrom('project_identity_claims')
-            .select('project_id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirstOrThrow(),
-          tx
-            .selectFrom('projects')
-            .select('id')
-            .where('forge_scope', '=', input.forgeConnectionId ?? 'legacy-github')
-            .where('owner', '=', owner)
-            .where('repo', '=', repo)
-            .executeTakeFirst(),
-        ]);
-        if (existing === undefined || claim.project_id !== existing.id) {
-          throw new ProjectIdentityClaimConflict(`project identity ${owner}/${repo} is reserved`);
-        }
-      }
+        .where('repository_instance', '>', 1)
+        .where('archived', '!=', input.archived)
+        .execute();
+    }
+    if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+    return project;
+  }
+
+  /**
+   * Add a repository-backed project the operator chose. While the repository's
+   * first project (instance 1) is only an installation placeholder, it is
+   * adopted; when the operator had removed it, it is restored — both exactly as
+   * {@link upsertProject} does. Once that repository already backs a visible
+   * project (or a link is reserving it), a separate project is created as the
+   * next instance, with its own ID, clone directory and container. An existing
+   * project is never returned or reset for another project's request.
+   */
+  async createRepositoryProject(input: ProjectUpsertInput): Promise<ProjectRecord> {
+    const owner = input.owner.toLowerCase();
+    const repo = input.repo.toLowerCase();
+    const scope = input.forgeConnectionId ?? 'legacy-github';
+    const row = await this.db.transaction().execute(async (tx) => {
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
+      const [primary, claim] = await Promise.all([
+        tx
+          .selectFrom('projects')
+          .select(['id', 'kind', 'state', 'overview_visible', 'hidden_at', 'archived'])
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+        tx
+          .selectFrom('project_identity_claims')
+          .select('project_id')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .where('repository_instance', '=', 1)
+          .executeTakeFirst(),
+      ]);
+      const adoptable =
+        primary === undefined
+          ? claim === undefined
+          : claim?.project_id === primary.id &&
+            (primary.hidden_at !== null ||
+              isInstallationPlaceholder({
+                kind: primary.kind as ProjectKind,
+                state: primary.state as ProjectState,
+                overviewVisible: primary.overview_visible,
+              }));
+      const repositoryArchive =
+        primary ??
+        (await tx
+          .selectFrom('projects')
+          .select('archived')
+          .where('forge_scope', '=', scope)
+          .where('owner', '=', owner)
+          .where('repo', '=', repo)
+          .orderBy('repository_instance', 'asc')
+          .executeTakeFirst());
+      if (adoptable)
+        return this.upsertPrimaryProject(tx, {
+          ...input,
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+        });
+      const instance = await this.claimNextRepositoryInstance(
+        tx,
+        { owner, repo, forgeConnectionId: input.forgeConnectionId },
+        input.id,
+      );
+      // The project ID keeps the directory and container apart from every other
+      // project of this repository, whatever the repository is called.
       const project = await tx
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
-          container_name: containerName,
+          repository_instance: instance,
+          container_name: `${input.containerName}--${input.id}`.toLowerCase(),
           kind: input.kind ?? 'github',
           forge_connection_id: input.forgeConnectionId ?? null,
-          clone_dir: input.cloneDir ?? null,
+          clone_dir: `${input.cloneDir ?? `${owner}-${repo}`}-${input.id}`,
           image_ref: input.imageRef ?? null,
           image_override_ref: input.imageRef ?? null,
           state: input.state,
-          archived: input.archived ?? false,
-          overview_visible: input.overviewVisible ?? false,
+          // Archival is a property of the repository, recorded by the
+          // installation sync on its first project.
+          archived: input.archived ?? repositoryArchive?.archived ?? false,
+          overview_visible: input.overviewVisible ?? true,
           provision_error: null,
           provision_warning: null,
         })
-        .onConflict((oc) =>
-          oc.columns(['forge_scope', 'owner', 'repo']).doUpdateSet({
-            // Preserve custom adopted container names, but migrate old deterministic
-            // `dev-<owner>--<repo>` / `dev-<owner>-<repo>` rows to the current
-            // canonical `verity-<owner>--<repo>` name. Without this, fresh servers
-            // can keep pointing at a legacy Dogfood container and miss current
-            // runtime mounts and gateway routing configuration.
-            container_name: shouldMigrateLegacyContainerName
-              ? sql`case when projects.container_name in (${sql.join(legacyContainerNames)}) then ${containerName} else projects.container_name end`
-              : sql`projects.container_name`,
-            // Provisioning-owned state stays untouched (the worker's
-            // `cloning/container_starting/active/failed` survives a sync pass).
-            // The image fields are only touched when the caller EXPLICITLY sets an
-            // override: `input.imageRef === undefined` means
-            // "I have no opinion, leave what's pinned" (preserves a slice-3 pin
-            // across slice-2 list refreshes), while `null` means "explicitly
-            // clear the pin" (operator-driven unpin). Slice 2's sync passes
-            // undefined → no-op.
-            // `toolkit_identity` travels with `image_ref` because it is a
-            // statement ABOUT that image: an operator pinning a NEW one has
-            // pinned something nothing has attested, and carrying the old
-            // verdict forward would let the new image inherit an all-clear it
-            // never earned. The next provisioning writes the real answer.
-            //
-            // Which is why the clear is conditional on the image actually
-            // moving. Re-saving the same pin — an idempotent settings write, a
-            // re-add of a project that never changed — leaves the effective
-            // image exactly as attested, so discarding the verdict there would
-            // manufacture an "unknown toolkit" warning about an image that was
-            // checked and passed, and it would stay wrong until the next
-            // provisioning. `is distinct from` compares against the PRE-update
-            // row (`projects.` in an ON CONFLICT update), and treats a null on
-            // either side as a difference rather than as unknown.
-            ...(input.imageRef !== undefined
-              ? {
-                  image_ref: input.imageRef,
-                  image_override_ref: input.imageRef,
-                  toolkit_identity: sql<
-                    string | null
-                  >`case when projects.image_ref is distinct from ${input.imageRef} then null else projects.toolkit_identity end`,
-                }
-              : {}),
-            ...(input.forgeConnectionId !== undefined
-              ? { forge_connection_id: input.forgeConnectionId }
-              : {}),
-            ...(input.kind !== undefined ? { kind: input.kind } : {}),
-            ...(input.archived !== undefined ? { archived: input.archived } : {}),
-            ...(input.overviewVisible !== undefined
-              ? { overview_visible: input.overviewVisible }
-              : {}),
-            // `restore` (the POST /projects re-add path) un-hides an existing
-            // row. Omitted by the installation sync, so a re-sync of a repo the
-            // operator deleted keeps it hidden rather than resurrecting it.
-            ...(input.restore === true ? { hidden_at: null } : {}),
-            updated_at: sql`now()`,
-          }),
-        )
         .returningAll()
-        .executeTakeFirst();
-      if (project) await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
+        .executeTakeFirstOrThrow();
+      await ensureProjectKnowledgeSpace(tx, project.id, project.repo);
       return project;
     });
-    if (!row) {
-      // The only way `RETURNING *` returns undefined here is if the ORM/dialect
-      // drops the returning clause — a contract bug, not a runtime path.
-      throw new Error('verity: upsertProject RETURNING yielded no row — dialect bug');
-    }
+    if (!row) throw new Error('verity: createRepositoryProject RETURNING yielded no row');
     return this.projectRowToRecord(row);
+  }
+
+  /** Reserve the next free instance of a repository for `projectId`. The
+   *  caller holds the project lifecycle lock, which serializes allocation. */
+  private async claimNextRepositoryInstance(
+    tx: Transaction<Database>,
+    target: { owner: string; repo: string; forgeConnectionId?: string | null | undefined },
+    projectId: string,
+  ): Promise<number> {
+    const scope = target.forgeConnectionId ?? 'legacy-github';
+    const next = await sql<{ instance: number }>`
+      select coalesce(max(repository_instance), 0) + 1 as instance from (
+        select repository_instance from projects
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+        union all
+        select repository_instance from project_identity_claims
+          where forge_scope = ${scope} and owner = ${target.owner} and repo = ${target.repo}
+      ) taken
+    `.execute(tx);
+    const instance = Number(next.rows[0]?.instance ?? 2);
+    await tx
+      .insertInto('project_identity_claims')
+      .values({
+        owner: target.owner,
+        repo: target.repo,
+        repository_instance: instance,
+        project_id: projectId,
+        forge_connection_id: target.forgeConnectionId ?? null,
+      })
+      .execute();
+    return instance;
   }
 
   /** Insert a project without adopting an existing `(owner, repo)` row. Used for
@@ -6367,7 +6893,9 @@ export class EventStore implements EventSink {
           project_id: input.id,
           forge_connection_id: input.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .returning('project_id')
         .executeTakeFirst();
       if (claimed === undefined) {
@@ -6377,6 +6905,7 @@ export class EventStore implements EventSink {
         .insertInto('projects')
         .values({
           id: input.id,
+          name: input.name ?? defaultProjectName({ repo }),
           owner,
           repo,
           container_name: input.containerName.toLowerCase(),
@@ -6399,6 +6928,31 @@ export class EventStore implements EventSink {
     return this.projectRowToRecord(row);
   }
 
+  /**
+   * Gives a project a new name. Only the name changes: owner, repo, container,
+   * clone directory and every repository link stay as they are. Duplicate names
+   * across projects are allowed — the ID identifies a project, not its name.
+   *
+   * @throws {InvalidProjectNameError} when the trimmed name is empty or longer
+   *         than {@link PROJECT_NAME_MAX_CHARS}.
+   * @returns the renamed project, or `undefined` when it does not exist.
+   */
+  async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
+    const trimmed = name.trim();
+    if (trimmed.length === 0) throw new InvalidProjectNameError('project name is required');
+    if (trimmed.length > PROJECT_NAME_MAX_CHARS)
+      throw new InvalidProjectNameError(
+        `project name is limited to ${PROJECT_NAME_MAX_CHARS} characters`,
+      );
+    const row = await this.db
+      .updateTable('projects')
+      .set({ name: trimmed, updated_at: sql`now()` })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirst();
+    return row ? this.projectRowToRecord(row) : undefined;
+  }
+
   async getProject(id: string): Promise<ProjectRecord | undefined> {
     const row = await this.db
       .selectFrom('projects')
@@ -6411,6 +6965,16 @@ export class EventStore implements EventSink {
   /** Local project authority comes from an active user's membership, never
    * from their instance role alone. Route handlers will use this once team
    * access is enabled. */
+  /** Whether `userId` created the project (ADR 0023). */
+  async isProjectCreator(userId: string, projectId: string): Promise<boolean> {
+    const row = await this.db
+      .selectFrom('projects')
+      .select('created_by_user_id')
+      .where('id', '=', projectId)
+      .executeTakeFirst();
+    return row?.created_by_user_id === userId;
+  }
+
   async hasProjectPermission(
     userId: string,
     projectId: string,
@@ -6487,6 +7051,31 @@ export class EventStore implements EventSink {
       .map((membership) => membership.project_id);
   }
 
+  /** Delete every standing grant a person gave in a project (ADR 0023 §6). */
+  async deleteUserProjectGrants(projectId: string, userId: string): Promise<number> {
+    const result = await this.db
+      .deleteFrom('secret_provider_permissions')
+      .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
+      .executeTakeFirst();
+    return Number(result.numDeletedRows);
+  }
+
+  /** The names people chose to be shown under in shared projects (ADR 0023). */
+  async userDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await this.db
+      .selectFrom('users')
+      .select(['id', 'display_name'])
+      .where('id', 'in', [...userIds])
+      .execute();
+    return new Map(
+      rows
+        .filter((row) => row.display_name !== null && row.display_name.trim() !== '')
+        .map((row) => [row.id, row.display_name!.trim()]),
+    );
+  }
+
   /** Active users holding a project permission — the notification audience
    * for project work that has no individual initiator. Same control-plane rule
    * as {@link hasProjectPermission}. */
@@ -6540,14 +7129,26 @@ export class EventStore implements EventSink {
     // persisted from `'heey-global'/'VERITY'` lives as `'verity'` on disk, so the
     // caller can pass the raw GitHub-display form without having to know about
     // our persistence normalisation.
-    const row = await this.db
+    // Several projects may share a repository; this answers its first one.
+    // Callers that must not guess use listProjectsByOwnerRepo.
+    return (await this.listProjectsByOwnerRepo(owner, repo, forgeConnectionId))[0];
+  }
+
+  /** Every project of one repository, hidden ones included, first instance first. */
+  async listProjectsByOwnerRepo(
+    owner: string,
+    repo: string,
+    forgeConnectionId?: string | null,
+  ): Promise<ProjectRecord[]> {
+    const rows = await this.db
       .selectFrom('projects')
       .select(this.projectColumns)
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner.toLowerCase())
       .where('repo', '=', repo.toLowerCase())
-      .executeTakeFirst();
-    return row ? this.projectRowToRecord(row) : undefined;
+      .orderBy('repository_instance')
+      .execute();
+    return rows.map((row) => this.projectRowToRecord(row));
   }
 
   /**
@@ -6571,6 +7172,8 @@ export class EventStore implements EventSink {
     target: { owner: string; repo: string; forgeConnectionId?: string | null; kind?: ProjectKind },
   ): Promise<ProjectRecord | undefined> {
     const row = await this.db.transaction().execute(async (tx) => {
+      // Serialize archive inheritance with installation sync and identity allocation.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const existing = await tx
         .selectFrom('projects')
         .select(this.projectColumns)
@@ -6581,35 +7184,53 @@ export class EventStore implements EventSink {
       if (existing === undefined) return undefined;
       const targetOwner = target.owner.toLowerCase();
       const targetRepo = target.repo.toLowerCase();
-      // The placeholder stays intact while publication runs. Retire it only in
-      // this final transaction, alongside the local project's identity rewrite,
-      // so a pre-publication failure can restore its claim without losing any of
-      // its dependent configuration.
-      await this.retireInstallationPlaceholder(
-        tx,
-        targetOwner,
-        targetRepo,
-        id,
-        target.forgeConnectionId,
-      );
-      await tx
-        .insertInto('project_identity_claims')
-        .values({
-          owner: targetOwner,
-          repo: targetRepo,
-          project_id: id,
-          forge_connection_id: target.forgeConnectionId ?? null,
-        })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
-        .execute();
-      const claim = await tx
-        .selectFrom('project_identity_claims')
-        .select('project_id')
+      const targetProject = await tx
+        .selectFrom('projects')
+        .select('archived')
         .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', targetOwner)
         .where('repo', '=', targetRepo)
+        .orderBy('repository_instance', 'asc')
         .executeTakeFirst();
-      if (claim?.project_id !== id) {
+      const findClaim = () =>
+        tx
+          .selectFrom('project_identity_claims')
+          .select('repository_instance')
+          .where('project_id', '=', id)
+          .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+          .where('owner', '=', targetOwner)
+          .where('repo', '=', targetRepo)
+          .executeTakeFirst();
+      let claim = await findClaim();
+      if (claim === undefined || claim.repository_instance === 1) {
+        // The placeholder stays intact while publication runs. Retire it only in
+        // this final transaction, alongside the local project's identity rewrite,
+        // so a pre-publication failure can restore its claim without losing any of
+        // its dependent configuration.
+        await this.retireInstallationPlaceholder(
+          tx,
+          targetOwner,
+          targetRepo,
+          id,
+          target.forgeConnectionId,
+        );
+      }
+      if (claim === undefined) {
+        await tx
+          .insertInto('project_identity_claims')
+          .values({
+            owner: targetOwner,
+            repo: targetRepo,
+            project_id: id,
+            forge_connection_id: target.forgeConnectionId ?? null,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+          )
+          .execute();
+        claim = await findClaim();
+      }
+      if (claim === undefined) {
         throw new ProjectIdentityClaimConflict(
           `project identity ${targetOwner}/${targetRepo} is not reserved`,
         );
@@ -6619,6 +7240,8 @@ export class EventStore implements EventSink {
         .set({
           owner: targetOwner,
           repo: targetRepo,
+          repository_instance: claim.repository_instance,
+          archived: targetProject?.archived ?? false,
           kind: target.kind ?? 'github',
           forge_connection_id: target.forgeConnectionId ?? null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
@@ -6679,6 +7302,7 @@ export class EventStore implements EventSink {
           kind: 'local',
           owner: LOCAL_PROJECT_OWNER,
           repo: localRepo,
+          repository_instance: 1,
           forge_connection_id: null,
           clone_dir: existing.clone_dir ?? `${existing.owner}-${existing.repo}`,
           latest_release_tag: null,
@@ -6730,6 +7354,7 @@ export class EventStore implements EventSink {
       .where('forge_scope', '=', forgeConnectionId ?? 'legacy-github')
       .where('owner', '=', owner)
       .where('repo', '=', repo)
+      .where('repository_instance', '=', 1)
       .where('id', '!=', forProjectId)
       .executeTakeFirst();
     if (holder === undefined) return false;
@@ -6784,7 +7409,10 @@ export class EventStore implements EventSink {
   ): Promise<boolean> {
     const owner = target.owner.toLowerCase();
     const repo = target.repo.toLowerCase();
+    const scope = target.forgeConnectionId ?? 'legacy-github';
     return this.db.transaction().execute(async (tx) => {
+      // Serializes instance allocation with project creation and other links.
+      await sql`select pg_advisory_xact_lock(1447383636, 18)`.execute(tx);
       const project = await tx
         .selectFrom('projects')
         .select(['id', 'owner', 'repo', 'forge_scope'])
@@ -6810,6 +7438,14 @@ export class EventStore implements EventSink {
             claim.repo !== repo),
       );
       if (hasDifferentPendingTarget) return false;
+      // A retry of this project's own pending link keeps the instance it holds.
+      if (
+        claims.some(
+          (claim) => claim.forge_scope === scope && claim.owner === owner && claim.repo === repo,
+        )
+      ) {
+        return true;
+      }
       // Keep a sync placeholder (and all of its dependent configuration) intact
       // while publication runs; only transfer its claim temporarily. The final
       // link transaction retires it atomically with the identity rewrite, while
@@ -6818,22 +7454,26 @@ export class EventStore implements EventSink {
         .selectFrom('projects')
         .select(['id', 'kind', 'state', 'overview_visible'])
         .forUpdate()
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .where('id', '!=', id)
         .executeTakeFirst();
       if (holder !== undefined) {
+        // The repository already backs a project: this one becomes another,
+        // independent project of the same repository.
         if (
           !isInstallationPlaceholder({
             kind: holder.kind as ProjectKind,
             state: holder.state as ProjectState,
             overviewVisible: holder.overview_visible,
-          })
+          }) ||
+          (await this.installationPlaceholderHasDependents(tx, holder.id))
         ) {
-          return false;
+          await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+          return true;
         }
-        if (await this.installationPlaceholderHasDependents(tx, holder.id)) return false;
         // Hide the placeholder before releasing its row lock. createSession
         // takes a SHARE lock and rejects hidden projects, so this closes the
         // check-vs-spawn race for the entire external push window. `infinity`
@@ -6864,16 +7504,22 @@ export class EventStore implements EventSink {
           project_id: id,
           forge_connection_id: target.forgeConnectionId ?? null,
         })
-        .onConflict((conflict) => conflict.columns(['forge_scope', 'owner', 'repo']).doNothing())
+        .onConflict((conflict) =>
+          conflict.columns(['forge_scope', 'owner', 'repo', 'repository_instance']).doNothing(),
+        )
         .execute();
       const claim = await tx
         .selectFrom('project_identity_claims')
         .select('project_id')
-        .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+        .where('forge_scope', '=', scope)
         .where('owner', '=', owner)
         .where('repo', '=', repo)
+        .where('repository_instance', '=', 1)
         .executeTakeFirst();
-      return claim?.project_id === id;
+      if (claim?.project_id === id) return true;
+      // Another link is reserving the first instance; take the next one.
+      await this.claimNextRepositoryInstance(tx, { ...target, owner, repo }, id);
+      return true;
     });
   }
 
@@ -6895,15 +7541,28 @@ export class EventStore implements EventSink {
         .where('kind', '=', 'local')
         .executeTakeFirst();
       if (local === undefined) return;
-      const placeholder = await tx
-        .selectFrom('projects')
-        .select(['id', 'kind', 'state', 'overview_visible'])
-        .forUpdate()
+      const claim = await tx
+        .selectFrom('project_identity_claims')
+        .select('repository_instance')
+        .where('project_id', '=', id)
         .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
         .where('owner', '=', owner)
         .where('repo', '=', repo)
-        .where('id', '!=', id)
         .executeTakeFirst();
+      // Only the first instance can have been taken over from a placeholder.
+      const placeholder =
+        claim?.repository_instance === 1
+          ? await tx
+              .selectFrom('projects')
+              .select(['id', 'kind', 'state', 'overview_visible'])
+              .forUpdate()
+              .where('forge_scope', '=', target.forgeConnectionId ?? 'legacy-github')
+              .where('owner', '=', owner)
+              .where('repo', '=', repo)
+              .where('repository_instance', '=', 1)
+              .where('id', '!=', id)
+              .executeTakeFirst()
+          : undefined;
       if (
         placeholder !== undefined &&
         isInstallationPlaceholder({
@@ -7095,24 +7754,29 @@ export class EventStore implements EventSink {
   ): Promise<ProjectRecord | undefined> {
     const leavesSleepLifecycle =
       state !== 'sleeping_starting' && state !== 'sleeping' && state !== 'waking';
-    await this.db
-      .updateTable('projects')
-      .set({
-        state,
-        ...(leavesSleepLifecycle
-          ? {
-              sleep_compatibility_fingerprint: null,
-              sleeping_since: null,
-              wake_started_at: null,
-            }
-          : {}),
-        provision_error: provisionError,
-        provision_warning: provisionWarning,
-        state_changed_at: sql`now()`,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          ...(leavesSleepLifecycle
+            ? {
+                sleep_compatibility_fingerprint: null,
+                sleeping_since: null,
+                wake_started_at: null,
+              }
+            : {}),
+          provision_error: provisionError,
+          provision_warning: provisionWarning,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
     return this.getProject(id);
   }
 
@@ -7129,20 +7793,25 @@ export class EventStore implements EventSink {
       wakeStartedAt: Date | null;
     },
   ): Promise<ProjectRecord | undefined> {
-    await this.db
-      .updateTable('projects')
-      .set({
-        state,
-        sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
-        sleeping_since: metadata.sleepingSince,
-        wake_started_at: metadata.wakeStartedAt,
-        provision_error: null,
-        provision_warning: null,
-        state_changed_at: sql`now()`,
-        updated_at: sql`now()`,
-      })
-      .where('id', '=', id)
-      .execute();
+    await this.db.transaction().execute(async (trx) => {
+      await trx
+        .updateTable('projects')
+        .set({
+          state,
+          sleep_compatibility_fingerprint: metadata.sleepCompatibilityFingerprint,
+          sleeping_since: metadata.sleepingSince,
+          wake_started_at: metadata.wakeStartedAt,
+          provision_error: null,
+          provision_warning: null,
+          state_changed_at: sql`now()`,
+          updated_at: sql`now()`,
+        })
+        .where('id', '=', id)
+        .execute();
+      if (['absent', 'sleeping_starting', 'sleeping', 'waking'].includes(state)) {
+        await trx.deleteFrom('sandbox_repair_intents').where('project_id', '=', id).execute();
+      }
+    });
     return this.getProject(id);
   }
 
@@ -7476,6 +8145,8 @@ export class EventStore implements EventSink {
       google_drive_folder_id: string | null;
       google_drive_folder_name: string | null;
       google_drive_access_mode: 'read-only' | 'read-write';
+      design_level: ProjectDesignLevel;
+      description: string | null;
       allowed_agents: ProjectAgent[] | null;
       created_at: Date;
       updated_at: Date;
@@ -7500,6 +8171,8 @@ export class EventStore implements EventSink {
       googleDriveFolderId: row.google_drive_folder_id,
       googleDriveFolderName: row.google_drive_folder_name,
       googleDriveAccessMode: row.google_drive_access_mode,
+      designLevel: row.design_level,
+      description: row.description,
       allowedAgents: row.allowed_agents,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -7521,6 +8194,8 @@ export class EventStore implements EventSink {
     'google_drive_folder_id',
     'google_drive_folder_name',
     'google_drive_access_mode',
+    'design_level',
+    'description',
     'allowed_agents',
     'created_at',
     'updated_at',
@@ -7541,6 +8216,8 @@ export class EventStore implements EventSink {
       github_app_id: string | null;
       github_app_installation_id: string | null;
       github_app_private_key: string | null;
+      github_app_client_id: string | null;
+      github_app_client_secret: string | null;
       doppler_service_token: string | null;
       transcribe_base_url: string | null;
       transcribe_api_key: string | null;
@@ -7594,6 +8271,10 @@ export class EventStore implements EventSink {
       githubAppPrivateKey: decrypt
         ? this.decryptSecret(row.github_app_private_key)
         : row.github_app_private_key,
+      githubAppClientId: row.github_app_client_id,
+      githubAppClientSecret: decrypt
+        ? this.decryptSecret(row.github_app_client_secret)
+        : row.github_app_client_secret,
       dopplerServiceToken: decrypt
         ? this.decryptSecret(row.doppler_service_token)
         : row.doppler_service_token,
@@ -7650,6 +8331,8 @@ export class EventStore implements EventSink {
     'github_app_id',
     'github_app_installation_id',
     'github_app_private_key',
+    'github_app_client_id',
+    'github_app_client_secret',
     'doppler_service_token',
     'transcribe_base_url',
     'transcribe_api_key',
@@ -7732,6 +8415,8 @@ export class EventStore implements EventSink {
       github_app_id: normalizeSetting(patch.githubAppId),
       github_app_installation_id: normalizeSetting(patch.githubAppInstallationId),
       github_app_private_key: this.encryptSecret(normalizeSetting(patch.githubAppPrivateKey)),
+      github_app_client_id: normalizeSetting(patch.githubAppClientId),
+      github_app_client_secret: this.encryptSecret(normalizeSetting(patch.githubAppClientSecret)),
       doppler_service_token: this.encryptSecret(normalizeSetting(patch.dopplerServiceToken)),
       transcribe_base_url: normalizeSetting(patch.transcribeBaseUrl),
       transcribe_api_key: this.encryptSecret(normalizeSetting(patch.transcribeApiKey)),
@@ -7808,6 +8493,16 @@ export class EventStore implements EventSink {
             ? {
                 github_app_private_key: this.encryptSecret(
                   normalizeSetting(patch.githubAppPrivateKey),
+                ),
+              }
+            : {}),
+          ...(patch.githubAppClientId !== undefined
+            ? { github_app_client_id: normalizeSetting(patch.githubAppClientId) }
+            : {}),
+          ...(patch.githubAppClientSecret !== undefined
+            ? {
+                github_app_client_secret: this.encryptSecret(
+                  normalizeSetting(patch.githubAppClientSecret),
                 ),
               }
             : {}),
@@ -8480,31 +9175,33 @@ export class EventStore implements EventSink {
     };
   }
 
-  /** Read one project's client certificate, decrypting its private key. */
   async getClaudeEgressClientCert(
     projectId: string,
+    userId: string,
   ): Promise<ClaudeEgressClientCertRecord | undefined> {
     const row = await this.db
       .selectFrom('claude_egress_client_certs')
       .selectAll()
       .where('project_id', '=', projectId)
+      .where('user_id', '=', userId)
       .executeTakeFirst();
     return row ? this.claudeEgressClientCertRowToRecord(row) : undefined;
   }
 
   /** Every stored client certificate — the source of the gateway's
-   *  fingerprint→project peer bindings. */
+   *  fingerprint→sandbox peer bindings. */
   async listClaudeEgressClientCerts(): Promise<ClaudeEgressClientCertRecord[]> {
     const rows = await this.db
       .selectFrom('claude_egress_client_certs')
       .selectAll()
       .orderBy('project_id', 'asc')
+      .orderBy('user_id', 'asc')
       .execute();
     return rows.map((row) => this.claudeEgressClientCertRowToRecord(row));
   }
 
-  /** Insert or replace a project's client certificate, encrypting the key. A
-   *  rotation upserts on the project_id PK, dropping the superseded fingerprint. */
+  /** Insert or replace a sandbox's client certificate, encrypting the key. A
+   *  rotation upserts on the (project, person) key, dropping the superseded fingerprint. */
   async upsertClaudeEgressClientCert(record: ClaudeEgressClientCertRecord): Promise<void> {
     const values = {
       cert_pem: record.certPem,
@@ -8514,23 +9211,26 @@ export class EventStore implements EventSink {
     };
     await this.db
       .insertInto('claude_egress_client_certs')
-      .values({ project_id: record.projectId, ...values })
+      .values({ project_id: record.projectId, user_id: record.userId, ...values })
       .onConflict((oc) =>
-        oc.column('project_id').doUpdateSet({ ...values, updated_at: sql`now()` }),
+        oc.columns(['project_id', 'user_id']).doUpdateSet({ ...values, updated_at: sql`now()` }),
       )
       .execute();
   }
 
-  /** Drop a project's client certificate (deprovision / revocation). */
-  async deleteClaudeEgressClientCert(projectId: string): Promise<void> {
-    await this.db
+  /** Drop one sandbox's client certificate, or every one of the project when no
+   *  person is named (deprovision / revocation). */
+  async deleteClaudeEgressClientCert(projectId: string, userId?: string): Promise<void> {
+    let query = this.db
       .deleteFrom('claude_egress_client_certs')
-      .where('project_id', '=', projectId)
-      .execute();
+      .where('project_id', '=', projectId);
+    if (userId !== undefined) query = query.where('user_id', '=', userId);
+    await query.execute();
   }
 
   private claudeEgressClientCertRowToRecord(row: {
     project_id: string;
+    user_id: string;
     cert_pem: string;
     key_pem: string;
     fingerprint256: string;
@@ -8538,6 +9238,7 @@ export class EventStore implements EventSink {
   }): ClaudeEgressClientCertRecord {
     return {
       projectId: row.project_id,
+      userId: row.user_id,
       certPem: row.cert_pem,
       keyPem: this.decryptSecret(row.key_pem) ?? '',
       fingerprint256: row.fingerprint256,
@@ -8685,6 +9386,8 @@ export class EventStore implements EventSink {
       google_drive_folder_id: normalizeSetting(patch.googleDriveFolderId),
       google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName),
       google_drive_access_mode: patch.googleDriveAccessMode ?? 'read-write',
+      design_level: patch.designLevel ?? 'on_request',
+      description: normalizeSetting(patch.description),
       allowed_agents: allowedAgentsColumn(patch.allowedAgents),
     };
     return this.db.transaction().execute(async (tx) => {
@@ -8765,6 +9468,10 @@ export class EventStore implements EventSink {
               : {}),
             ...(patch.googleDriveAccessMode !== undefined
               ? { google_drive_access_mode: patch.googleDriveAccessMode }
+              : {}),
+            ...(patch.designLevel !== undefined ? { design_level: patch.designLevel } : {}),
+            ...(patch.description !== undefined
+              ? { description: normalizeSetting(patch.description) }
               : {}),
             ...(patch.googleDriveFolderName !== undefined
               ? { google_drive_folder_name: normalizeSetting(patch.googleDriveFolderName) }
@@ -8919,12 +9626,15 @@ export class EventStore implements EventSink {
     id: string;
     tokenHash: string;
     label?: string | null;
+    /** The person the device belongs to; absent → the column default (the administrator). */
+    userId?: string;
   }): Promise<string> {
     const row = await this.db
       .insertInto('auth_tokens')
       .values({
         id: record.id,
         token_hash: record.tokenHash,
+        ...(record.userId === undefined ? {} : { user_id: record.userId }),
         label: record.label ?? null,
         expires_at: record.expiresAt == null ? null : new Date(record.expiresAt).toISOString(),
       })

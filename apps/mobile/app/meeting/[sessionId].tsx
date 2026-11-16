@@ -24,15 +24,23 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type { LiveMeetingInsight, SessionHistoryPage } from '@verity/mobile';
+import {
+  type LiveMeetingInsight,
+  type OnlineMeetingStatus,
+  type SessionHistoryPage,
+  VerityApiError,
+} from '@verity/mobile';
 
 import {
   clearSpeakerNameSuggestion,
   currentMeeting,
   endMeeting,
+  recoverMeetingAudio,
+  discardMeetingAudio,
   pauseMeeting,
   resumeMeeting,
   startMeeting,
@@ -57,6 +65,10 @@ import { createVerityClient, getActiveMeetingServerId } from '../../lib/client';
 import {
   discardFinishedMeeting,
   followRemoteMeeting,
+  getMeetingSyncFailure,
+  readMeetingControl,
+  stopMeetingElsewhere,
+  subscribeMeetingSyncFailure,
   syncMeetingSession,
 } from '../../lib/liveMeetingSync';
 import {
@@ -82,7 +94,9 @@ import {
   type SpeakerLine,
 } from '../../lib/liveMeetingSpeakers';
 import { Icon } from '../../components/Icon';
+import { MeetingRecoveryCard } from '../../components/meeting/MeetingRecoveryCard';
 import { MeetingWave } from '../../components/meeting/MeetingWave';
+import { OnlineJoinScreen, PLATFORM_NAME } from '../../components/meeting/OnlineJoinScreen';
 import { AskVerityField, MeetingModelSheet, VerityPane } from '../../components/meeting/VerityPane';
 import {
   type CardAction,
@@ -103,6 +117,7 @@ import {
   SectionHeader,
   Text as UiText,
   SearchField,
+  StatusPill,
   TextField,
   Toggle,
   useConfirm,
@@ -110,6 +125,8 @@ import {
 import {
   CalendarMeetingPicker,
   canJoinCalendarMeeting,
+  isSupportedMeetingLink,
+  UNSUPPORTED_LINK_ERROR,
   UnassignedMeetingCard,
   useCalendarMeetingChoice,
   useUnassignedMeetings,
@@ -132,6 +149,9 @@ function publishPendingNote(meetingId: string) {
   for (const listener of pendingNoteListeners) listener(meetingId);
 }
 
+/** How long a failed online join keeps its own screen before it opens as a finished meeting. */
+const JOIN_FAILURE_SHOWN_MS = 10 * 60_000;
+
 function elapsed(startedAt: number, now: number) {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
@@ -146,9 +166,16 @@ function noteClockTime(startedAt: number, atSeconds: number) {
 }
 
 export default function MeetingScreen() {
-  const { sessionId, meetingId } = useLocalSearchParams<{
+  const { sessionId, meetingId, prepare, request, source, eventKey } = useLocalSearchParams<{
     sessionId: string;
     meetingId?: string;
+    /** `1`: Verity prepared a meeting; the start screen opens filled in, even after
+     *  an earlier meeting of this session. */
+    prepare?: string;
+    /** Differs per opening, so preparing the same meeting again fills it in again. */
+    request?: string;
+    source?: string;
+    eventKey?: string;
   }>();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -175,8 +202,12 @@ export default function MeetingScreen() {
     null,
   );
   const [engines, setEngines] = useState<STTEngine[]>([]);
-  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>('presence');
+  const [meetingSource, setMeetingSource] = useState<'presence' | 'online'>(
+    source === 'online' ? 'online' : 'presence',
+  );
   const [meetingUrl, setMeetingUrl] = useState('');
+  // Set when a start was refused for the typed link; editing the link clears it.
+  const [meetingUrlRefused, setMeetingUrlRefused] = useState(false);
   const [now, setNow] = useState(Date.now());
   // Both sources can take a calendar title; online calls can also use its join link.
   const { upcoming, loadFailed: calendarLoadFailed } = useUpcomingMeetings(true);
@@ -186,13 +217,27 @@ export default function MeetingScreen() {
     manualLink,
     setManualLink,
     selectedEvent: selectedCalendarEvent,
-  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence');
+  } = useCalendarMeetingChoice(upcoming, now, meetingSource === 'presence', eventKey ?? null);
   const selectedEvent =
     selectedCalendarEvent?.provider && canJoinCalendarMeeting(selectedCalendarEvent, now)
       ? selectedCalendarEvent
       : null;
   const [unassignedMeetings, reloadUnassigned] = useUnassignedMeetings();
   const [continuing, setContinuing] = useState<string | null>(null);
+  // How far Verity's bot got into an online meeting; null until the server answered.
+  const [onlineStatus, setOnlineStatus] = useState<{
+    meetingId: string;
+    value: OnlineMeetingStatus;
+  } | null>(null);
+  // An older server has no join status; the meeting's own capture status decides there.
+  const [onlineStatusMissing, setOnlineStatusMissing] = useState<string | null>(null);
+  // One End per meeting: repeated taps sent up to nine stop requests while a bot hung joining.
+  const stopInFlight = useRef<string | null>(null);
+  const [stopping, setStopping] = useState<{
+    meetingId: string;
+    failed: boolean;
+    message?: string;
+  } | null>(null);
   const [confirm, confirmSheet] = useConfirm();
   const [meetingTitle, setMeetingTitle] = useState('');
   const titledEvent = useRef<string | null>(null);
@@ -225,8 +270,35 @@ export default function MeetingScreen() {
   }, [meetingSource]);
   const [selectedEngine, setSelectedEngine] = useState<STTEngineId>('fluid-nemotron');
   const [expectedParticipants, setExpectedParticipants] = useState<number | null>(null);
-  const [showNewMeeting, setShowNewMeeting] = useState(false);
+  const [audioSafetyBuffer, setAudioSafetyBuffer] = useState(false);
+  const [pendingAudio, setPendingAudio] = useState<Array<{ meetingId: string; duration: number }>>(
+    [],
+  );
+  const [showNewMeeting, setShowNewMeeting] = useState(prepare === '1');
+  // The screen can already be on the stack when Verity prepares another meeting; the new
+  // parameters then arrive without a remount.
+  const preparedFor = useRef(prepare === '1' ? (request ?? '') : null);
+  // A changed source makes the calendar choice pick again; this pick follows it.
+  const pendingPick = useRef<string | null>(null);
+  useEffect(() => {
+    if (prepare !== '1' || preparedFor.current === (request ?? '')) return;
+    preparedFor.current = request ?? '';
+    setShowNewMeeting(true);
+    setMeetingSource(source === 'online' ? 'online' : 'presence');
+    if (eventKey) {
+      setManualLink(false);
+      pendingPick.current = eventKey;
+      setSelectedEventKey(eventKey);
+    }
+  }, [prepare, request, source, eventKey, setManualLink, setSelectedEventKey]);
+  useEffect(() => {
+    if (pendingPick.current === null) return;
+    setSelectedEventKey(pendingPick.current);
+    pendingPick.current = null;
+  }, [meetingSource, setSelectedEventKey]);
   const [syncError, setSyncError] = useState(false);
+  const [, refreshSyncFailure] = useState(0);
+  useEffect(() => subscribeMeetingSyncFailure(() => refreshSyncFailure((value) => value + 1)), []);
   // Every save is briefly pending; only a backlog that lasts is worth showing.
   const [syncPendingSince, setSyncPendingSince] = useState<number | null>(null);
   useEffect(() => {
@@ -341,6 +413,10 @@ export default function MeetingScreen() {
   const refresh = useCallback(async () => {
     if (!sessionId) return;
     const saved = await listMeetings(sessionId);
+    const buffered = await liveMeetingSTT?.pendingAudioBuffers?.().catch(() => []);
+    setPendingAudio(
+      (buffered ?? []).filter((item) => saved.some((entry) => entry.id === item.meetingId)),
+    );
     if (
       !meetingId &&
       currentMeeting()?.state !== 'active' &&
@@ -378,7 +454,10 @@ export default function MeetingScreen() {
             item.state === 'active' || (item.engine === 'attendee' && item.state === 'interrupted'),
         ) ??
         (current?.sessionId === sessionId && (current.serverId ?? null) === serverId
-          ? (saved.find((item) => item.id === current.id) ?? current)
+          ? // Gone from this device (discarded here or elsewhere): stop showing and polling
+            // it, unless it is the recording this device is still making.
+            (saved.find((item) => item.id === current.id) ??
+            (local?.id === current.id ? current : null))
           : null)
       );
     });
@@ -407,7 +486,7 @@ export default function MeetingScreen() {
                 if (note.meetingId === shown && !merged.has(note.id)) merged.set(note.id, note);
               return [...merged.values()].sort((a, b) => a.atSeconds - b.atSeconds);
             });
-          const control = await client?.getLiveMeetingCommands(sessionId, shown);
+          const control = client && (await readMeetingControl(client, sessionId, shown));
           if (mounted && control) {
             setRecorderOnline(control.recorderOnline);
             const latest = control.commands[0];
@@ -896,6 +975,11 @@ export default function MeetingScreen() {
         if (!client) throw new Error('Connect to the server.');
         // A link typed earlier stays behind a collapsed field; never start from what is not shown.
         if (!selectedEvent && !manualLink) throw new Error('Pick a meeting or enter its link.');
+        // Checked before anything is prepared: a link Verity cannot join is said at the field.
+        if (!selectedEvent && !isSupportedMeetingLink(meetingUrl)) {
+          setMeetingUrlRefused(true);
+          return;
+        }
         const result = selectedEvent
           ? await client.joinCalendarMeeting(selectedEvent.eventKey, sessionId)
           : await client.startOnlineMeeting(
@@ -911,15 +995,31 @@ export default function MeetingScreen() {
         await refresh();
         return;
       }
-      const next = await (meetingTitle.trim()
-        ? startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4, meetingTitle.trim())
-        : startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4));
+      const next = await (audioSafetyBuffer
+        ? startMeeting(
+            sessionId,
+            selectedEngine,
+            expectedParticipants ?? 4,
+            meetingTitle.trim() || undefined,
+            { audioSafetyBuffer: true },
+          )
+        : meetingTitle.trim()
+          ? startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4, meetingTitle.trim())
+          : startMeeting(sessionId, selectedEngine, expectedParticipants ?? 4));
+      setAudioSafetyBuffer(false);
       setSyncError(true);
       setMeeting(next);
       setShowNewMeeting(false);
       await refresh();
     } catch (reason) {
-      setError(String(reason));
+      // The link field holds the error only for a typed link; a calendar link says so here.
+      if (
+        reason instanceof VerityApiError &&
+        reason.code === 'unsupported_meeting_url' &&
+        !selectedEvent
+      )
+        setMeetingUrlRefused(true);
+      else setError(String(reason));
       await refresh();
     } finally {
       setBusy(false);
@@ -967,28 +1067,38 @@ export default function MeetingScreen() {
     });
 
   const end = async () => {
-    if (busy) return;
+    if (busy || !meeting || stopInFlight.current === meeting.id) return;
+    const stoppingId = meeting.id;
+    stopInFlight.current = stoppingId;
+    setStopping({ meetingId: stoppingId, failed: false });
     setBusy(true);
     try {
       await pendingNoteWrites.get(meeting?.id ?? '');
       if (meeting && currentMeeting()?.id !== meeting.id) {
         if (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId())
           throw new Error('This meeting belongs to another server.');
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this recording.');
-        if (meeting.engine === 'attendee')
-          await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
-        else {
-          await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-          setPendingCommand('stop');
+        const outcome = await stopMeetingElsewhere(meeting);
+        // A recorder's command state takes over, including a stop the server has to end.
+        if (outcome !== 'online') {
+          setPendingCommand(outcome === 'requested' ? 'stop' : null);
+          stopInFlight.current = null;
+          setStopping(null);
         }
       } else {
         await endMeeting();
         setSyncError(true);
       }
-      await refresh();
+      // Accepted: a failing reload afterwards must not report the stop as failed.
+      await refresh().catch(() => undefined);
     } catch (reason) {
-      setError(String(reason));
+      // End stays available to retry; the header says it did not work.
+      stopInFlight.current = null;
+      setStopping({
+        meetingId: stoppingId,
+        failed: true,
+        ...(reason instanceof Error ? { message: reason.message } : {}),
+      });
+      if (meeting.engine !== 'attendee') setError(String(reason));
     } finally {
       setBusy(false);
     }
@@ -1116,11 +1226,86 @@ export default function MeetingScreen() {
   const live =
     meeting?.state === 'active' ||
     (meeting?.engine === 'attendee' && meeting.state === 'interrupted');
+  const onlineMeetingId = meeting?.engine === 'attendee' ? meeting.id : null;
+  const onlineServerId = meeting?.serverId ?? null;
+  const joinState =
+    onlineMeetingId !== null && onlineStatus?.meetingId === onlineMeetingId
+      ? onlineStatus.value
+      : null;
+  // Asked until the answer can no longer change: in the call, failed, or ended.
+  const joinSettled =
+    joinState !== null && joinState.status !== 'joining' && joinState.status !== 'waiting';
+  useEffect(() => {
+    if (!sessionId || !onlineMeetingId || joinSettled || onlineStatusMissing === onlineMeetingId)
+      return;
+    let current = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      let again = true;
+      let failed = false;
+      try {
+        // Asked of the meeting's own server only; another server knows nothing of it.
+        // Paused, not given up: the meeting's server may be connected again.
+        if (onlineServerId !== getActiveMeetingServerId()) return;
+        const value = await createVerityClient()?.getOnlineMeetingStatus?.(
+          sessionId,
+          onlineMeetingId,
+        );
+        if (current && value) setOnlineStatus({ meetingId: onlineMeetingId, value });
+      } catch (reason) {
+        failed = true;
+        if (reason instanceof VerityApiError && (reason.status === 404 || reason.status === 403)) {
+          again = false;
+          if (current) setOnlineStatusMissing(onlineMeetingId);
+        }
+      } finally {
+        // A failing server is asked rarely rather than every few seconds.
+        if (current && again) timer = setTimeout(() => void load(), failed ? 15_000 : 3000);
+      }
+    };
+    void load();
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [sessionId, onlineMeetingId, onlineServerId, joinSettled, onlineStatusMissing]);
+  // A bot still outside the call: the meeting screen opens once it is in. Words already
+  // transcribed or a listening capture prove it is in, also for servers without join status.
+  const joiningCall =
+    meeting?.engine === 'attendee' &&
+    meeting.state === 'active' &&
+    // Without a join status to ask for, the meeting screen shows the meeting as before.
+    onlineStatusMissing !== meeting.id &&
+    (meeting.serverId ?? null) === getActiveMeetingServerId() &&
+    !meeting.transcript &&
+    meeting.captureStatus !== 'listening' &&
+    joinState?.status !== 'joined' &&
+    joinState?.status !== 'ended';
+  // Shown right after the attempt; later the meeting opens as any finished one, so it can
+  // still be discarded or assigned.
+  const joinFailed =
+    meeting?.engine === 'attendee' &&
+    !meeting.transcript &&
+    joinState?.status === 'failed' &&
+    (live || (meeting.endedAt ?? 0) > now - JOIN_FAILURE_SHOWN_MS);
+  useEffect(() => {
+    // The meeting it was ending is gone or over: End belongs to whatever comes next.
+    if (!live || stopping?.meetingId !== meeting?.id) {
+      stopInFlight.current = null;
+      setStopping(null);
+    }
+  }, [live, meeting?.id, stopping?.meetingId]);
   const noteUnsaved =
     noteSaveError !== null && noteSaveError.meetingId === (meeting?.id ?? draft?.meetingId);
   const syncDelayed = syncPendingSince !== null && now - syncPendingSince > 30_000;
+  const syncFailure = meeting?.serverId
+    ? getMeetingSyncFailure(meeting.serverId, meeting.id)
+    : null;
   // The live header shows only what needs attention, in one fixed slot so nothing moves.
   const liveProblem =
+    (meeting?.captureHealth?.microphone === 'stalled'
+      ? 'Microphone interrupted · audio is not arriving; transcript may have a gap.'
+      : null) ??
     error ??
     meeting?.error ??
     (noteUnsaved ? 'Note not saved yet. Use retry in the note field.' : null) ??
@@ -1185,10 +1370,10 @@ export default function MeetingScreen() {
         : meeting.state === 'interrupted'
           ? meeting.error?.startsWith('Local save failed')
             ? 'Interrupted · local save failed'
-            : syncError
+            : syncError || syncFailure
               ? 'Interrupted · server sync pending'
               : 'Interrupted · saved on server'
-          : syncError
+          : syncError || syncFailure
             ? 'Ended · server sync pending'
             : 'Ended · saved on server';
   const asNote = (text: string): CardAction | null =>
@@ -1444,8 +1629,103 @@ export default function MeetingScreen() {
     return [...nameCards, ...cards];
   };
 
+  const audioRecoveryCards = (onlyMeetingId?: string) =>
+    currentMeeting()?.state === 'active'
+      ? null
+      : pendingAudio
+          .filter((item) => !onlyMeetingId || item.meetingId === onlyMeetingId)
+          .map((item) => (
+            <Card key={item.meetingId}>
+              <View style={styles.setupCard}>
+                <UiText variant="row">Saved audio needs attention</UiText>
+                <UiText variant="subtitle">
+                  {Math.ceil(item.duration)} seconds remain on this device. Recover locally with
+                  Apple Speech, or discard this audio. Nothing is uploaded.
+                </UiText>
+                <View style={styles.setupInline}>
+                  <Button
+                    label="Recover audio"
+                    disabled={busy}
+                    variant="secondary"
+                    size="compact"
+                    onPress={() => {
+                      setBusy(true);
+                      void recoverMeetingAudio(item.meetingId)
+                        .then(refresh)
+                        .catch((reason: unknown) =>
+                          Alert.alert('Could not recover audio', String(reason)),
+                        )
+                        .finally(() => setBusy(false));
+                    }}
+                  />
+                  <Button
+                    label="Discard audio"
+                    disabled={busy}
+                    variant="text"
+                    size="compact"
+                    onPress={() =>
+                      confirm({
+                        title: 'Discard saved audio?',
+                        message:
+                          'This permanently deletes the remaining local audio. The saved transcript and notes are kept.',
+                        confirmLabel: 'Discard audio',
+                        destructive: true,
+                        onConfirm: async () => {
+                          setBusy(true);
+                          try {
+                            await discardMeetingAudio(item.meetingId);
+                            await refresh();
+                          } catch (reason) {
+                            Alert.alert('Could not discard audio', String(reason));
+                          } finally {
+                            setBusy(false);
+                          }
+                        },
+                      })
+                    }
+                  />
+                </View>
+              </View>
+            </Card>
+          ));
+
+  const captureGapNotes = meeting?.captureGaps?.length ? (
+    <View style={styles.block} accessibilityLabel="Recording interruptions">
+      {meeting.captureGaps.map((gap, index) => (
+        <UiText key={`${gap.at}-${index}`} variant="footnote">
+          {Math.floor(gap.at / 60)}:{String(Math.floor(gap.at % 60)).padStart(2, '0')} ·{' '}
+          {gap.message}
+        </UiText>
+      ))}
+    </View>
+  ) : null;
+
+  const syncRecoveryCard = (
+    <MeetingRecoveryCard
+      meeting={meeting}
+      live={live}
+      recordingHere={active || Boolean(meeting?.ownerToken)}
+      recorderOnline={recorderOnline}
+      syncFailure={syncFailure}
+      onRecovered={async () => {
+        await syncMeetingSession(sessionId).catch(() => undefined);
+        await refresh();
+      }}
+      onError={setError}
+    />
+  );
+
   const statusLines = (
     <>
+      {syncRecoveryCard}
+      {meeting?.captureHealth?.microphone === 'stalled' ? (
+        <HintBox
+          title="Microphone interrupted"
+          message="Audio is not currently arriving. Open the meeting to check the microphone; this period may be missing from the transcript."
+        />
+      ) : null}
+      {captureGapNotes}
+      {meeting ? audioRecoveryCards(meeting.id) : null}
       {error || meeting?.error ? <Text style={styles.error}>{error ?? meeting?.error}</Text> : null}
       {meeting ? (
         <Text
@@ -1824,10 +2104,11 @@ export default function MeetingScreen() {
     return (
       <View style={[styles.root, { paddingTop: insets.top + 12 }]}>
         <Stack.Screen options={{ headerShown: false }} />
-        <ScrollView
+        <KeyboardAwareScrollView
           style={styles.fill}
           contentContainerStyle={[styles.content, styles.narrow]}
           keyboardShouldPersistTaps="handled"
+          bottomOffset={KEYBOARD_BOTTOM_OFFSET}
         >
           <View style={styles.titleRow}>
             <Text style={styles.title}>New meeting</Text>
@@ -1842,6 +2123,7 @@ export default function MeetingScreen() {
             />
           </View>
           {error ? <HintBox title="Could not start the meeting" message={error} /> : null}
+          {audioRecoveryCards()}
           {noteUnsaved || draft?.text.trim() ? (
             <Card>
               <View style={styles.setupCard} testID="unsaved-note">
@@ -1931,7 +2213,11 @@ export default function MeetingScreen() {
             manual={manualLink}
             onManualChange={setManualLink}
             meetingUrl={meetingUrl}
-            onMeetingUrlChange={setMeetingUrl}
+            onMeetingUrlChange={(value) => {
+              setMeetingUrlRefused(false);
+              setMeetingUrl(value);
+            }}
+            meetingUrlError={meetingUrlRefused ? UNSUPPORTED_LINK_ERROR : undefined}
             now={now}
           />
           {meetingSource === 'online' ? (
@@ -2008,6 +2294,20 @@ export default function MeetingScreen() {
                   )}
                 </Group>
               </View>
+              {liveMeetingSTT?.configureMeeting ? (
+                <View style={styles.setupSection}>
+                  <Group>
+                    <Row
+                      title="Audio safety buffer"
+                      subtitle="Optional local recovery if transcription falls behind. Audio is deleted after its transcript is saved; unprocessed audio stays on this device until recovered or discarded."
+                      trailing={<Toggle value={audioSafetyBuffer} disabled={busy} />}
+                      disabled={busy}
+                      onPress={() => setAudioSafetyBuffer((value) => !value)}
+                      accessibilityLabel={`Audio safety buffer, ${audioSafetyBuffer ? 'on' : 'off'}`}
+                    />
+                  </Group>
+                </View>
+              ) : null}
             </>
           )}
           <Button
@@ -2030,13 +2330,39 @@ export default function MeetingScreen() {
             onPress={start}
             fullWidth
           />
-        </ScrollView>
+        </KeyboardAwareScrollView>
         {confirmSheet}
       </View>
     );
   }
 
   if (!meeting) return null;
+
+  if (joiningCall || joinFailed) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <OnlineJoinScreen
+          title={meeting.title || 'Online meeting'}
+          status={joinState ?? { status: 'joining', reason: null }}
+          platform={joinState?.platform ?? null}
+          waitedMs={now - meeting.startedAt}
+          topInset={insets.top}
+          bottomInset={insets.bottom}
+          cancelling={stopping?.meetingId === meeting.id && !stopping.failed}
+          cancelFailed={stopping?.meetingId === meeting.id && stopping.failed}
+          onMinimize={minimize}
+          onCancel={() => void end()}
+          onRetry={() => {
+            setMeetingSource('online');
+            setShowNewMeeting(true);
+          }}
+          onClose={minimize}
+        />
+        {confirmSheet}
+      </>
+    );
+  }
 
   if (!live) {
     const unnamed = speakers.find((speaker) => !meeting.speakerNames?.[speaker]);
@@ -2195,7 +2521,12 @@ export default function MeetingScreen() {
       : meeting.captureStatus === 'downloading'
         ? 'Preparing language model…'
         : preparing
-          ? 'Preparing microphone…'
+          ? // An online meeting has no microphone here: its bot joins the call instead.
+            meeting.engine !== 'attendee'
+            ? 'Preparing microphone…'
+            : joinState?.status === 'joined'
+              ? 'Starting transcript…'
+              : 'Joining…'
           : !active && !recorderOnline && meeting.engine !== 'attendee'
             ? // Viewed from another device whose recorder stopped reporting.
               'Meeting'
@@ -2208,65 +2539,82 @@ export default function MeetingScreen() {
   ]
     .filter(Boolean)
     .join(' · ');
-  // Phone: what is recording and how sits under the title, controls on the right.
+  // Phone: the controls on top; the meeting's name and state lead the page below them.
+  const stopFailed = stopping?.meetingId === meeting.id && stopping.failed;
+  const endingNow =
+    (stopping?.meetingId === meeting.id && !stopping.failed) || pendingCommand === 'stop';
+  const online = meeting.engine === 'attendee';
+  const statusPill: { intent: 'ready' | 'needsSetup' | 'neutral'; label: string } = stopFailed
+    ? { intent: 'needsSetup', label: 'Could not end' }
+    : endingNow
+      ? { intent: 'neutral', label: 'Ending…' }
+      : stateWord === 'Recording'
+        ? { intent: 'ready', label: `Live · ${elapsed(meeting.startedAt, now)}` }
+        : { intent: 'neutral', label: stateWord };
+  const problemLine = stopFailed
+    ? [stopping?.message, 'Tap End to try again.'].filter(Boolean).join(' ')
+    : liveProblem;
   const header = (
     <View style={styles.header}>
       <IconButton icon="chevron-down" accessibilityLabel="Minimize meeting" onPress={minimize} />
-      <View style={styles.fill}>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {meeting.title || 'Live meeting'}
-        </Text>
-        <View style={styles.wideStatus}>
-          {liveProblem === null ? (
-            <BreathingDot
-              color={
-                voiceSending
-                  ? colors.signature
-                  : paused || preparing
-                    ? colors.textFaint
-                    : colors.success
-              }
-              breathing={!paused && !preparing}
-            />
-          ) : null}
-          <Text
-            testID="meeting-live-status"
-            numberOfLines={2}
-            style={[styles.wideStatusText, styles.fill, liveProblem !== null && styles.statusError]}
-          >
-            {liveProblem ?? statusLine}
-          </Text>
-        </View>
-      </View>
-      <IconButton
-        icon={paused ? 'play' : 'pause'}
-        accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
-        disabled={
-          busy ||
-          meeting.engine === 'attendee' ||
-          !!pendingCommand ||
-          (!paused && meeting.captureStatus !== 'listening')
-        }
-        onPress={togglePause}
-      />
+      <View style={styles.fill} />
+      {online ? null : (
+        <IconButton
+          icon={paused ? 'play' : 'pause'}
+          accessibilityLabel={paused ? 'Resume meeting' : 'Pause meeting'}
+          disabled={busy || !!pendingCommand || (!paused && meeting.captureStatus !== 'listening')}
+          onPress={togglePause}
+        />
+      )}
       <Pressable
-        disabled={busy || pendingCommand === 'stop'}
+        disabled={busy || endingNow}
         onPress={end}
-        style={styles.endButton}
+        style={[styles.endButton, styles.endButtonRow, endingNow && styles.dimmed]}
         accessibilityRole="button"
         accessibilityLabel="End meeting"
+        accessibilityState={{ disabled: busy || endingNow }}
       >
-        <Text style={styles.endButtonText}>End</Text>
+        <Icon name={online ? 'phone-off' : 'square'} size={16} color={colors.attention} />
+        <Text style={styles.endButtonText}>{endingNow ? 'Ending…' : 'End'}</Text>
       </Pressable>
+    </View>
+  );
+  const hero = (
+    <View style={styles.liveHero}>
+      <Text style={styles.liveTitle} numberOfLines={2} accessibilityRole="header">
+        {meeting.title || 'Live meeting'}
+      </Text>
+      <View style={styles.liveChips} testID="meeting-live-status">
+        <StatusPill intent={statusPill.intent} label={statusPill.label} />
+        <StatusPill
+          intent="neutral"
+          icon={online ? 'video' : 'mic'}
+          label={
+            online
+              ? joinState?.platform
+                ? PLATFORM_NAME[joinState.platform]
+                : 'Online meeting'
+              : 'In person'
+          }
+        />
+        {(meeting.serverId ?? null) === null ? (
+          <StatusPill intent="neutral" icon="smartphone" label="Only on this device" />
+        ) : null}
+      </View>
+      {problemLine ? (
+        <Text style={[styles.liveProblem, styles.statusError]} numberOfLines={3}>
+          {problemLine}
+        </Text>
+      ) : null}
     </View>
   );
   const speakerRow = (captions: boolean) => (
     <View style={styles.block}>
-      <View style={styles.avatarLine}>
+      <View style={styles.peopleColumn}>
         {speakers.length ? (
-          <View style={[styles.avatarRow, styles.fill]}>{speakerAvatars(captions)}</View>
+          <View style={[styles.avatarRow, styles.centered]}>{speakerAvatars(captions)}</View>
         ) : (
-          <Text style={[styles.hint, styles.fill]}>{speakerStatus}</Text>
+          <Text style={[styles.hint, styles.centeredText]}>{speakerStatus}</Text>
         )}
         <Pressable
           accessibilityRole="button"
@@ -2284,8 +2632,15 @@ export default function MeetingScreen() {
   const cards = noticedCards();
   const noticed = (
     <View style={styles.block}>
+      {syncRecoveryCard}
       <View style={styles.noticedHeader}>
-        <Image source={VERITY_MARK} accessibilityIgnoresInvertColors style={styles.composerMark} />
+        <View style={styles.markTile}>
+          <Image
+            source={VERITY_MARK}
+            accessibilityIgnoresInvertColors
+            style={styles.composerMark}
+          />
+        </View>
         <Text style={styles.noticedTitle}>Verity noticed</Text>
         {cards.length ? <Text style={styles.hint}>{cards.length}</Text> : null}
       </View>
@@ -2371,6 +2726,7 @@ export default function MeetingScreen() {
               </Pressable>
             </View>
           )}
+          {captureGapNotes}
           <View style={styles.columns}>
             <View style={styles.column}>
               <View style={styles.roomHead}>
@@ -2556,7 +2912,9 @@ export default function MeetingScreen() {
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
         >
+          {hero}
           <MeetingWave active={!paused && !preparing} addressed={voiceSending} />
+          {captureGapNotes}
           {speakerRow(true)}
           {noticed}
           {composing === 'note' && finalizedNotes.length ? (
@@ -2680,10 +3038,28 @@ const styles = StyleSheet.create((theme) => {
       backgroundColor: tint(colors.attention, 'fill'),
       justifyContent: 'center',
     },
-    headerTitle: {
-      color: colors.text,
-      fontFamily: theme.fonts.bold,
-      fontSize: theme.typography.row.fontSize,
+    endButtonRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs + 2 },
+    liveHero: { alignItems: 'center', gap: theme.spacing.md },
+    liveTitle: { ...theme.typography.display, color: colors.text, textAlign: 'center' },
+    liveChips: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'center',
+      gap: theme.spacing.sm,
+    },
+    liveProblem: { ...theme.typography.footnote, textAlign: 'center' },
+    peopleColumn: { alignItems: 'center', gap: theme.spacing.lg },
+    centered: { justifyContent: 'center' },
+    centeredText: { textAlign: 'center' },
+    markTile: {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: tint(colors.signature, 'border'),
+      backgroundColor: tint(colors.signature, 'fill'),
     },
     endButtonText: {
       color: colors.attention,

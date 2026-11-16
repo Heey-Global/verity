@@ -103,6 +103,7 @@ function setup(
     return { capability: 'single-use-capability', claims };
   });
   const authorization = createCatalogSecretAuthorization({
+    initiatorOf: async () => 'lena',
     profiles,
     profileAdapters: createSecretExecutionProfileAdapterRegistry([
       {

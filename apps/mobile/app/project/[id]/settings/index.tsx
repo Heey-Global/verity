@@ -7,16 +7,13 @@
 import {
   allowedAgentsSummary,
   codeHostForProject,
-  forgejoConnection,
-  githubRepositoryAccessReady,
   providerName,
-  type ForgeConnection,
   modelDisplayName,
   projectBadge,
   type VerityClient,
 } from '@verity/mobile';
-import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useMemo } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
@@ -31,9 +28,12 @@ import { CodeHostIcon } from '../../../../components/CodeHostIcon';
 import { settingsStyles as styles } from '../../../../components/settings/settingsStyles';
 import type { StatusPillIntent } from '../../../../components/StatusPill';
 import { createVerityClient } from '../../../../lib/client';
+import { designLevelLabel } from '../../../../lib/designLevels';
 import { useDeleteProject } from '../../../../lib/projectDelete';
+import { useNewDesignChoice } from '../../../../lib/homePreferences';
+import { useProjectConnections } from '../../../../lib/useProjectConnections';
 import { projectIdParam, useProjectDetail } from '../../../../lib/useProjectDetail';
-import { Button } from '../../../../components/ui';
+import { Button, useTextPrompt } from '../../../../components/ui';
 
 export default function ProjectSettingsIndexScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -59,89 +59,39 @@ function ProjectSettingsIndexView({
   projectId: string;
 }) {
   const { theme } = useUnistyles();
-  const { detail, loading, error, setError, load } = useProjectDetail(client, projectId);
-  const [connectionRefresh, setConnectionRefresh] = useState(0);
-  const [usage, setUsage] = useState({ google: 0, mcp: 0, matrix: 0 });
-  const [forgeConnections, setForgeConnections] = useState<ForgeConnection[] | null>(null);
-  const [available, setAvailable] = useState({
-    github: false,
-    forgejo: false,
-    doppler: false,
-    drive: false,
-    google: false,
-    mcp: false,
-    matrix: false,
-  });
-  const [driveFolderNames, setDriveFolderNames] = useState<string[] | null>(null);
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      void Promise.allSettled([
-        Promise.resolve().then(() => client.getVeritySettings()),
-        Promise.resolve().then(() => client.getGoogleDriveConnection()),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'gmail')),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'calendar')),
-        Promise.resolve().then(() => client.getProjectGoogleConnection(projectId, 'contacts')),
-        Promise.resolve().then(() => client.listHttpMcpConnections()),
-        Promise.resolve().then(() => client.listIntegrations()),
-        Promise.resolve().then(() => client.listProjectMcpBindings(projectId)),
-        Promise.resolve().then(() => client.listProjectDriveFolders(projectId)),
-        Promise.resolve().then(() => client.listConnections()),
-      ]).then((results) => {
-        if (!active) return;
-        const [
-          settings,
-          drive,
-          gmail,
-          calendar,
-          contacts,
-          mcp,
-          integrations,
-          bindings,
-          folders,
-          forge,
-        ] = results;
-        const forgeList = forge.status === 'fulfilled' ? forge.value : null;
-        setForgeConnections(forgeList?.connections ?? null);
-        setDriveFolderNames(
-          folders.status === 'fulfilled' ? folders.value.map((folder) => folder.name) : null,
-        );
-        setUsage({
-          google: [gmail, calendar, contacts].filter(
-            (item) => item.status === 'fulfilled' && item.value.enabled,
-          ).length,
-          mcp:
-            bindings.status === 'fulfilled'
-              ? bindings.value.filter((binding) => binding.enabled).length
-              : 0,
-          matrix:
-            integrations.status === 'fulfilled'
-              ? integrations.value.sources.filter((source) => source.projectId === projectId).length
-              : 0,
-        });
-        setAvailable({
-          github: settings.status === 'fulfilled' && githubRepositoryAccessReady(settings.value),
-          forgejo:
-            forgeList?.forgejoProjectsAvailable === true &&
-            forgejoConnection(forgeList) !== undefined,
-          doppler:
-            settings.status === 'fulfilled' &&
-            Boolean(settings.value?.dopplerServiceTokenConfigured),
-          drive: drive.status === 'fulfilled' && drive.value.connected,
-          google: [gmail, calendar, contacts].some(
-            (item) => item.status === 'fulfilled' && item.value.connected,
-          ),
-          mcp: mcp.status === 'fulfilled' && mcp.value.length > 0,
-          matrix:
-            integrations.status === 'fulfilled' &&
-            integrations.value.accounts.some((account) => account.provider === 'matrix'),
-        });
-      });
-      return () => {
-        active = false;
-      };
-    }, [client, connectionRefresh, projectId]),
+  const { detail, loading, error, setError, load, onSettingsSaved } = useProjectDetail(
+    client,
+    projectId,
   );
+  const textPrompt = useTextPrompt();
+  const description = detail?.settings?.description ?? null;
+  const editDescription = () =>
+    textPrompt.prompt(
+      'Description',
+      'One line shown under the project name.',
+      (value) => {
+        setError(undefined);
+        client
+          .updateProjectSettings(projectId, { description: value.trim() === '' ? null : value })
+          .then(onSettingsSaved)
+          .catch((caught: unknown) =>
+            setError(caught instanceof Error ? caught.message : 'Could not save the description'),
+          );
+      },
+      'plain-text',
+      description ?? '',
+    );
+  // The new design shows project knowledge on the project page instead. Until
+  // the stored choice is known the row stays away: appearing late is calmer than
+  // showing and then vanishing for a device that has the preview on.
+  const newDesign = useNewDesignChoice();
+  const {
+    available,
+    usage,
+    driveFolderNames,
+    forgeConnections,
+    refresh: refreshConnections,
+  } = useProjectConnections(client, projectId);
   const [deleting, remove] = useDeleteProject(client, setError);
 
   if (loading && detail === undefined) {
@@ -159,7 +109,7 @@ function ProjectSettingsIndexView({
         screenTitle="Project settings"
         onRetry={() => {
           load();
-          setConnectionRefresh((value) => value + 1);
+          refreshConnections();
         }}
       />
     );
@@ -179,7 +129,8 @@ function ProjectSettingsIndexView({
     pathname:
       | '/project/[id]/settings/repository'
       | '/project/[id]/settings/sandbox'
-      | '/project/[id]/settings/model',
+      | '/project/[id]/settings/model'
+      | '/project/[id]/settings/design',
   ) => router.push({ pathname, params: { id: projectId } });
   const toService = (section: 'doppler' | 'drive' | 'mcp' | 'matrix' | 'google') =>
     router.push({
@@ -193,21 +144,51 @@ function ProjectSettingsIndexView({
       state={{ error, saving: false }}
       onRetry={() => {
         load();
-        setConnectionRefresh((value) => value + 1);
+        refreshConnections();
       }}
     >
-      <SettingsGroup title="Knowledge">
-        <SettingsListPanel>
-          <SettingsNavRow
-            icon="book-open"
-            title="Project knowledge"
-            subtitle="Decisions, Wiki and Raw Sources"
-            onPress={() =>
-              router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
-            }
-          />
-        </SettingsListPanel>
-      </SettingsGroup>
+      {newDesign !== false ? null : (
+        <SettingsGroup title="Knowledge">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="book-open"
+              title="Project knowledge"
+              subtitle="Wiki with decisions, and Sources"
+              onPress={() =>
+                router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId } })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      )}
+      {/* Keep the legacy editor when the project page or profile API is unavailable. */}
+      {(newDesign === false || detail.viewer === undefined) &&
+      detail.viewer?.canManage !== false ? (
+        <SettingsGroup title="General">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="align-left"
+              title="Description"
+              subtitle={description ?? 'Shown under the project name'}
+              onPress={editDescription}
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
+      {detail.viewer?.canManage === true ? (
+        <SettingsGroup title="Team">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="users"
+              title="Team"
+              subtitle="Members and invitations"
+              onPress={() =>
+                router.push({ pathname: '/project/[id]/settings/team', params: { id: projectId } })
+              }
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      ) : null}
       <SettingsGroup title="Context">
         <SettingsListPanel>
           <SettingsNavRow
@@ -384,6 +365,13 @@ function ProjectSettingsIndexView({
             value={defaultModel !== null ? modelDisplayName(defaultModel) : 'Automatic'}
             onPress={() => to('/project/[id]/settings/model')}
           />
+          <SettingsNavRow
+            icon="layout"
+            title="Design"
+            subtitle="Mockups before the agent builds"
+            value={designLevelLabel(detail.settings?.designLevel)}
+            onPress={() => to('/project/[id]/settings/design')}
+          />
         </SettingsListPanel>
       </SettingsGroup>
 
@@ -401,6 +389,7 @@ function ProjectSettingsIndexView({
           and the project's sessions.
         </Text>
       </View>
+      {textPrompt.dialog}
     </SettingsScaffold>
   );
 }

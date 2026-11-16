@@ -37,9 +37,8 @@ import {
   subscribeGestureDiagnostics,
 } from '../lib/gestureDiagnostics';
 import { Icon, type IconName } from './Icon';
+import { SWIPE_ACTION_WIDTH, SwipeActionButton } from './ui/SwipeActions';
 
-/** Width an action rests at after a short swipe. */
-const SWIPE_ACTION_WIDTH = 88;
 /** Share of the row width past which releasing fires the action directly. */
 const FULL_SWIPE_RATIO = 0.5;
 
@@ -50,39 +49,50 @@ export function isFullSwipe(side: SwipeSide, translation: number, threshold: num
   return side === 'favorite' ? translation >= threshold : translation <= -threshold;
 }
 
-/** `tone` laid over `base` at `alpha`, as an opaque color. The action lanes sit
- *  under the row and must not let anything else show through them. */
-export function mixColor(tone: string, base: string, alpha: number): string {
-  // Theme tokens are `#rrggbb` today; anything else would blend to `#NaNNaNNaN`
-  // and leave the lane without a background, so fall back to the opaque base.
-  const rgbHex = /^#[0-9a-f]{6}$/i;
-  if (!rgbHex.test(tone) || !rgbHex.test(base)) return base;
-  const channel = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16);
-  const mixed = [0, 1, 2].map((i) =>
-    Math.round(channel(tone, i) * alpha + channel(base, i) * (1 - alpha))
-      .toString(16)
-      .padStart(2, '0'),
-  );
-  return `#${mixed.join('')}`;
-}
-
 // Only one row may hold an action open; opening another closes it, like iOS lists.
 let openRow: SwipeableMethods | null = null;
 
+/** The action on the leading edge (swipe right): a session's favorite star by
+ *  default, or another non-destructive action of the row's subject. */
+export interface LeadingSwipeAction {
+  /** Short, under the icon in the lane ("Favorite", "Done"). */
+  label: string;
+  /** The same action in the browser's context menu ("Add to favorites"). */
+  menuLabel: string;
+  icon: IconName;
+  /** Drawn in the action color in the menu, for a state that is on. */
+  active?: boolean;
+  onPress: () => void;
+}
+
+/** A session's favorite star as the leading action. */
+export function favoriteAction(favorite: boolean, onToggle: () => void): LeadingSwipeAction {
+  return {
+    label: favorite ? 'Unfavorite' : 'Favorite',
+    menuLabel: favorite ? 'Remove from favorites' : 'Add to favorites',
+    icon: 'star',
+    active: favorite,
+    onPress: onToggle,
+  };
+}
+
 export function SwipeableSessionRow({
-  favorite,
+  favorite = false,
   label,
   onToggleFavorite,
+  leading,
   onDelete,
   onEdit,
   children,
   disabled = false,
   diagnostics,
 }: {
-  favorite: boolean;
+  favorite?: boolean;
   /** Session title, shown as the menu header. */
   label: string;
-  onToggleFavorite: () => void;
+  onToggleFavorite?: () => void;
+  /** Replaces the favorite star on the leading edge; a row with neither has none. */
+  leading?: LeadingSwipeAction | undefined;
   onDelete: () => void;
   onEdit: () => void;
   children: ReactNode;
@@ -91,6 +101,10 @@ export function SwipeableSessionRow({
   diagnostics?: { rowKey: string; projectKind: string | undefined };
 }) {
   const { theme } = useUnistyles();
+  const primary: LeadingSwipeAction | undefined =
+    leading ??
+    (onToggleFavorite !== undefined ? favoriteAction(favorite, onToggleFavorite) : undefined);
+  const onPrimary = primary?.onPress;
   const swipeable = useRef<SwipeableMethods>(null);
   const armed = useRef<SwipeSide | null>(null);
   const [width, setWidth] = useState(0);
@@ -106,10 +120,10 @@ export function SwipeableSessionRow({
     (side: SwipeSide) => {
       if (disabledRef.current) return;
       swipeable.current?.close();
-      if (side === 'favorite') onToggleFavorite();
+      if (side === 'favorite') onPrimary?.();
       else onDelete();
     },
-    [onDelete, onToggleFavorite],
+    [onDelete, onPrimary],
   );
   const onArm = useCallback((side: SwipeSide, on: boolean) => {
     if (disabledRef.current) return;
@@ -218,17 +232,24 @@ export function SwipeableSessionRow({
           record('swipe', 'close');
           if (openRow === swipeable.current) openRow = null;
         }}
-        renderLeftActions={(_progress, translation) => (
-          <SwipeAction
-            side="favorite"
-            label={favorite ? 'Unfavorite' : 'Favorite'}
-            icon="star"
-            translation={translation}
-            fullSwipe={fullSwipe}
-            onArm={onArm}
-            onPress={() => run('favorite')}
-          />
-        )}
+        {...(primary !== undefined
+          ? {
+              renderLeftActions: (
+                _progress: SharedValue<number>,
+                translation: SharedValue<number>,
+              ) => (
+                <SwipeAction
+                  side="favorite"
+                  label={primary.label}
+                  icon={primary.icon}
+                  translation={translation}
+                  fullSwipe={fullSwipe}
+                  onArm={onArm}
+                  onPress={() => run('favorite')}
+                />
+              ),
+            }
+          : {})}
         renderRightActions={(_progress, translation) => (
           <SwipeAction
             side="delete"
@@ -256,9 +277,8 @@ export function SwipeableSessionRow({
         <SessionContextMenu
           at={menuAt}
           title={label}
-          favorite={favorite}
+          leading={primary}
           onClose={() => setMenuAt(null)}
-          onToggleFavorite={onToggleFavorite}
           onEdit={onEdit}
           onDelete={onDelete}
         />
@@ -380,8 +400,7 @@ function SwipeAction({
   /** A second, non-destructive action resting between the row and this one. */
   secondary?: { label: string; icon: IconName; onPress: () => void };
 }) {
-  const { theme } = useUnistyles();
-  const tone = side === 'favorite' ? theme.colors.action : theme.colors.attention;
+  const tone = side === 'favorite' ? 'action' : 'destructive';
   const [isArmed, setArmed] = useState(false);
   const arm = useCallback(
     (on: boolean) => {
@@ -404,60 +423,25 @@ function SwipeAction({
   const lane = useAnimatedStyle(() => ({
     width: Math.max(rest, Math.abs(translation.value)),
   }));
-  // Tinted like the status pill at rest; solid once a release would fire it.
-  // Opaque either way: the lane sits under the row and must not show through.
-  const tint = (color: string) => mixColor(color, theme.colors.surface, 0.16);
-  const color = isArmed ? theme.colors.onAction : tone;
   return (
     <Reanimated.View style={[styles.lane, lane]}>
       {secondary && !isArmed ? (
-        <SwipeButton
+        <SwipeActionButton
           label={secondary.label}
           icon={secondary.icon}
-          color={theme.colors.action}
-          background={tint(theme.colors.action)}
+          tone="action"
           onPress={secondary.onPress}
         />
       ) : null}
-      <SwipeButton
+      <SwipeActionButton
         label={label}
         icon={icon}
-        color={color}
-        background={isArmed ? tone : tint(tone)}
+        tone={tone}
+        armed={isArmed}
         onPress={onPress}
         grow
       />
     </Reanimated.View>
-  );
-}
-
-function SwipeButton({
-  label,
-  icon,
-  color,
-  background,
-  onPress,
-  grow = false,
-}: {
-  label: string;
-  icon: IconName;
-  color: string;
-  background: string;
-  onPress: () => void;
-  grow?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={onPress}
-      style={[styles.action, grow ? styles.actionGrow : null, { backgroundColor: background }]}
-    >
-      <Icon name={icon} size={20} color={color} />
-      <Text style={[styles.actionLabel, { color }]} numberOfLines={1}>
-        {label}
-      </Text>
-    </Pressable>
   );
 }
 
@@ -486,17 +470,15 @@ const MENU_HEIGHT = 168;
 export function SessionContextMenu({
   at,
   title,
-  favorite,
+  leading,
   onClose,
-  onToggleFavorite,
   onEdit,
   onDelete,
 }: {
   at: { x: number; y: number };
   title: string;
-  favorite: boolean;
+  leading: LeadingSwipeAction | undefined;
   onClose: () => void;
-  onToggleFavorite: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -528,12 +510,14 @@ export function SessionContextMenu({
         <Text style={styles.menuTitle} numberOfLines={1}>
           {title}
         </Text>
-        <MenuItem
-          icon="star"
-          label={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          color={favorite ? theme.colors.action : theme.colors.text}
-          onPress={pick(onToggleFavorite)}
-        />
+        {leading !== undefined ? (
+          <MenuItem
+            icon={leading.icon}
+            label={leading.menuLabel}
+            color={leading.active === true ? theme.colors.action : theme.colors.text}
+            onPress={pick(leading.onPress)}
+          />
+        ) : null}
         <MenuItem icon="edit-2" label="Edit…" color={theme.colors.text} onPress={pick(onEdit)} />
         <View style={styles.menuDivider} />
         <MenuItem
@@ -578,23 +562,6 @@ const styles = StyleSheet.create((theme) => ({
   lane: {
     height: '100%',
     flexDirection: 'row',
-  },
-  // Icon above a short label, centered in the resting width (iOS list style):
-  // side by side, a label like "Unfavorite" does not fit and spills into the row.
-  action: {
-    height: '100%',
-    width: SWIPE_ACTION_WIDTH,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.xs,
-  },
-  actionGrow: {
-    flexGrow: 1,
-  },
-  actionLabel: {
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.bold,
   },
   backdrop: {
     position: 'absolute',

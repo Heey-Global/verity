@@ -8,7 +8,11 @@ const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function configure(manager: string, args: string[] = ['install', '--', 'a']) {
+function configure(
+  manager: string,
+  args: string[] = ['install', '--', 'a'],
+  installToken?: string,
+) {
   const root = mkdtempSync(resolve('.cache/package-artifacts-'));
   roots.push(root);
   const token = join(root, 'capability');
@@ -21,6 +25,7 @@ function configure(manager: string, args: string[] = ['install', '--', 'a']) {
     VERITY_PROJECT_MEMORY_URL: 'http://relay:8080/internal/project/memory',
     VERITY_GH_BROKER_CAPABILITY_FILE: token,
     NPM_CONFIG_USERCONFIG: original,
+    ...(installToken ? { VERITY_PACKAGE_INSTALL_TOKEN: installToken } : {}),
   };
   const source = `import { configurePackageArtifacts } from ${JSON.stringify(pathToFileURL(resolve('features/verity-sandbox-toolkit/bin/verity-package-artifacts.mjs')).href)};
 import {readFileSync, existsSync} from 'node:fs';
@@ -49,6 +54,7 @@ it.each(['npm', 'pnpm', 'bun'])(
     expect(result.args).toEqual([
       'install',
       '--registry=http://relay:8080/internal/package-artifacts/npm/',
+      ...(manager === 'npm' ? [`--userconfig=${result.path}`] : []),
       '--',
       'a',
     ]);
@@ -86,4 +92,25 @@ it('configures Yarn registry reads with no install-script bypass', () => {
   );
   expect(result.args).toEqual(['install', '--', 'a']);
   expect(result.env.npm_config_ignore_scripts).toBeUndefined();
+});
+
+it('uses an ephemeral installation token instead of widening the project capability', () => {
+  const result = configure('npm', ['ci'], 'one-install-token');
+  expect(result.config).toContain(':_authToken=one-install-token');
+  expect(result.config).not.toContain(':_authToken=fixture-capability');
+  expect(readFileSync(result.original, 'utf8')).not.toContain('one-install-token');
+  expect(result.remaining).toBe(false);
+});
+
+it('keeps the managed registry and credentials effective with npm prefix and config flags', () => {
+  const result = configure('npm', [
+    '--prefix',
+    'web',
+    'install',
+    '--registry=https://other.test',
+    '--userconfig=custom.npmrc',
+  ]);
+  expect(result.args.at(-2)).toBe('--registry=http://relay:8080/internal/package-artifacts/npm/');
+  expect(result.args.at(-1)).toBe(`--userconfig=${result.path}`);
+  expect(result.config).toContain(':_authToken=fixture-capability');
 });

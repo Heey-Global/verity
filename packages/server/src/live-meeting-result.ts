@@ -96,9 +96,20 @@ export function meetingResultWorker(opts: {
     };
     try {
       result.model = (await opts.store.getSession(sessionId))?.model ?? null;
+      const lines = liveMeetingTranscriptLines(meeting);
+      if (!lines.length) {
+        // Nothing was said: a model would only guess a summary and even its language.
+        result.status = 'ready';
+        result.title = meeting.title?.trim() || null;
+        result.tasks = [];
+        if (await opts.store.liveMeetings.saveResult(sessionId, result)) {
+          opts.onChanged?.(sessionId, meetingId);
+          await fileReady(sessionId, meetingId, meeting.revision, controller.signal);
+        }
+        return;
+      }
       if (!(await opts.store.liveMeetings.saveResult(sessionId, result))) return;
       opts.onChanged?.(sessionId, meetingId);
-      const lines = liveMeetingTranscriptLines(meeting);
       const prompt = [
         'Write a meeting result in the language of the transcript. Return JSON only:',
         '{"title":"short title","summary":"3–5 sentences","decisions":[{"text":"decision","quote":"verbatim transcript passage"}],"tasks":[{"text":"explicit actionable commitment","quote":"verbatim transcript passage"}],"openQuestions":[{"text":"unresolved question","quote":"verbatim transcript passage"}]}',

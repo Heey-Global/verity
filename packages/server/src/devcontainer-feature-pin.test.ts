@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { pinToolkitFeature } from './devcontainer-feature-pin.js';
+import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 
 const digest = `ghcr.io/trusted/toolkit@sha256:${'a'.repeat(64)}`;
 const feature = {
@@ -38,5 +38,30 @@ describe('toolkit Feature manifest pinning', () => {
         throw new Error('unavailable');
       }),
     ).rejects.toThrow('unavailable');
+  });
+});
+
+describe('signed release toolkit selection', () => {
+  it('uses the release pin without consulting a mutable alias', async () => {
+    const lookup = vi.fn(async () => {
+      throw new Error('alias moved');
+    });
+    const selected = releaseToolkitFeature(feature, digest, false);
+    expect((await pinToolkitFeature(selected, lookup))?.ref).toBe(digest);
+    expect(selected?.identity).toContain(digest);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+  it('preserves explicit operator configuration and disabled features', () => {
+    expect(releaseToolkitFeature(feature, digest, true)).toBe(feature);
+    expect(releaseToolkitFeature(undefined, digest, false)).toBeUndefined();
+    expect(releaseToolkitFeature(feature, '', false)).toBe(feature);
+  });
+  it('rejects an invalid or foreign release pin', () => {
+    expect(() => releaseToolkitFeature(feature, 'ghcr.io/trusted/toolkit:latest', false)).toThrow(
+      'Invalid',
+    );
+    expect(() =>
+      releaseToolkitFeature(feature, digest.replace('/trusted/', '/foreign/'), false),
+    ).toThrow('repository mismatch');
   });
 });

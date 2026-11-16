@@ -10,9 +10,43 @@ import {
   internalConnectionIdentity,
   internalConnectionGenerationSignal,
 } from './internal-listener.js';
+import { createPackageArtifactBroker } from './package-artifact-broker.js';
+import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
+import {
+  createNpmInstallGrant,
+  npmInstallGrant,
+  npmPackageIdentity,
+  npmReleaseEligibility,
+  revokeNpmInstallGrant,
+} from './package-install-grants.js';
+
+/** Registry lookups one verification runs at once; the broker bounds all requests. */
+export const PUBLICATION_LOOKUP_CONCURRENCY = 6;
+/** Publication times never change once released, so facts outlive one install. */
+export const PUBLICATION_FACT_TTL_MS = 24 * 60 * 60_000;
+export const PUBLICATION_FACT_LIMIT = 50_000;
+
+const npmPackages = z
+  .array(
+    z
+      .object({
+        name: z
+          .string()
+          .min(1)
+          .max(214)
+          .regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u),
+        version: z
+          .string()
+          .min(1)
+          .max(128)
+          .regex(/^[0-9A-Za-z.+_-]+$/u),
+      })
+      .strict(),
+  )
+  .max(5000);
 
 const inputSchema = z.object({
-  action: z.enum(['check', 'configured']),
+  action: z.enum(['check', 'configured', 'verify', 'complete']),
   sessionId: z.string().min(1).max(256),
   manager: z.enum(['npm', 'pnpm', 'yarn', 'bun', 'pip', 'uv']),
   command: z.string().min(1).max(16_384),
@@ -20,6 +54,9 @@ const inputSchema = z.object({
   protected: z.boolean(),
   configFile: z.string().min(1).max(4096),
   setupToken: z.string().uuid().optional(),
+  packages: npmPackages.optional(),
+  minimumAgeDays: z.number().finite().min(3).max(3650).optional(),
+  installToken: z.string().uuid().optional(),
 });
 
 interface SetupGrant {
@@ -41,6 +78,7 @@ export function registerPackageInstallRoute(
     >;
     conductor: Pick<Conductor, 'requestExternalPermission'>;
     appendNotice: (sessionId: string, text: string) => Promise<void>;
+    packageTransport?: BrokeredHttpStreamTransport;
   },
 ): void {
   if (!deps.capabilities) return;
@@ -48,6 +86,17 @@ export function registerPackageInstallRoute(
   const queues = new Map<string, Promise<void>>();
   const setupSelections = new Set<string>();
   const grants = new Map<string, SetupGrant>();
+  const packageBroker = createPackageArtifactBroker(
+    deps.packageTransport ? { transport: deps.packageTransport } : {},
+  );
+  // Publication facts only: verdicts, capability authority and exceptions are never cached.
+  const publicationTimes = new Map<string, { published: string; expires: number }>();
+  const publicationTime = (identity: string): string | undefined => {
+    const cached = publicationTimes.get(identity);
+    if (cached && cached.expires > Date.now()) return cached.published;
+    publicationTimes.delete(identity);
+    return undefined;
+  };
 
   app.post('/internal/package-install', async (request, reply) => {
     const token = bearerToken(request.headers.authorization) ?? '';
@@ -57,6 +106,7 @@ export function registerPackageInstallRoute(
       !binding ||
       !socket ||
       socket.projectId !== binding.projectId ||
+      socket.userId !== binding.userId ||
       socket.containerGeneration !== binding.containerGeneration
     )
       return reply.code(401).send({ error: 'unauthorized' });
@@ -67,6 +117,7 @@ export function registerPackageInstallRoute(
       return (
         !generationSignal?.aborted &&
         current?.projectId === binding.projectId &&
+        current.userId === binding.userId &&
         current.containerGeneration === binding.containerGeneration
       );
     };
@@ -80,6 +131,14 @@ export function registerPackageInstallRoute(
     if (!(await authorized())) return reply.code(401).send({ error: 'unauthorized' });
     const projectId = binding.projectId;
     for (const [key, grant] of grants) if (grant.expires <= Date.now()) grants.delete(key);
+
+    if (body.action === 'complete') {
+      const grant = body.installToken ? npmInstallGrant(body.installToken) : undefined;
+      if (!grant || grant.sourceToken !== token || grant.sessionId !== body.sessionId)
+        return reply.code(409).send({ error: 'no matching package installation' });
+      revokeNpmInstallGrant(body.installToken!);
+      return { action: 'complete' };
+    }
 
     if (body.action === 'configured') {
       const grant = body.setupToken === undefined ? undefined : grants.get(body.setupToken);
@@ -122,6 +181,170 @@ export function registerPackageInstallRoute(
     try {
       await previous;
       if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
+      if (body.action === 'verify') {
+        if (body.manager !== 'npm' || !body.packages || body.minimumAgeDays === undefined)
+          return reply
+            .code(400)
+            .send({ error: 'npm verification needs packages and minimumAgeDays' });
+        const minimumAgeDays = body.minimumAgeDays;
+        const identities = new Set<string>();
+        const exceptions = new Set<string>();
+        const violations: string[] = [];
+        // One bounded provider response at a time; never trust client publication dates.
+        const byName = new Map<string, string[]>();
+        for (const pkg of body.packages) {
+          const versions = byName.get(pkg.name) ?? [];
+          if (!versions.includes(pkg.version)) versions.push(pkg.version);
+          byName.set(pkg.name, versions);
+        }
+        // Look up names concurrently; the first failure stops the remaining lookups.
+        const lookups = [...byName];
+        const resolved = new Map<string, Map<string, string | undefined>>();
+        const stop = new AbortController();
+        const lookupSignal = AbortSignal.any([controller.signal, stop.signal]);
+        // Report the earliest rejected package in lockfile order among completed
+        // lookups, not whichever finished first.
+        let rejection: { index: number; error: string } | undefined;
+        let failed: string | undefined;
+        let next = 0;
+        const lookupOne = async (
+          index: number,
+          name: string,
+          versions: string[],
+        ): Promise<void> => {
+          const times = new Map(
+            versions.map((version) => [
+              version,
+              publicationTime(npmPackageIdentity(name, version)),
+            ]),
+          );
+          const missing = versions.filter((version) => times.get(version) === undefined);
+          if (missing.length > 0) {
+            const metadata = await packageBroker.publicationTimes(
+              name,
+              missing,
+              lookupSignal,
+              authorized,
+            );
+            for (const version of missing) {
+              const identity = npmPackageIdentity(name, version);
+              const published = metadata.times.get(version);
+              const problem = !metadata.versions.has(version)
+                ? 'release metadata is unavailable'
+                : typeof published !== 'string' ||
+                    !npmReleaseEligibility(published, minimumAgeDays).availableAt
+                  ? 'publication time is missing or invalid'
+                  : undefined;
+              if (problem || typeof published !== 'string') {
+                const error = `Cannot verify ${identity}: ${problem ?? 'publication time is missing or invalid'}.`;
+                if (!rejection || index < rejection.index) rejection = { index, error };
+                stop.abort();
+                return;
+              }
+              while (publicationTimes.size >= PUBLICATION_FACT_LIMIT)
+                publicationTimes.delete(publicationTimes.keys().next().value!);
+              publicationTimes.set(identity, {
+                published,
+                expires: Date.now() + PUBLICATION_FACT_TTL_MS,
+              });
+              times.set(version, published);
+            }
+          }
+          resolved.set(name, times);
+        };
+        const lookup = async (): Promise<void> => {
+          while (next < lookups.length && !lookupSignal.aborted) {
+            const index = next++;
+            const [name, versions] = lookups[index]!;
+            try {
+              await lookupOne(index, name, versions);
+            } catch (error) {
+              // A lookup cut short by another lookup's verdict does not change it.
+              if (stop.signal.aborted) return;
+              // Any failure, not only the registry call, names its package and stops the rest.
+              failed ??= `${name}@${versions.join(',')}`;
+              stop.abort();
+              throw error;
+            }
+          }
+        };
+        const outcomes = await Promise.allSettled(
+          Array.from({ length: Math.min(PUBLICATION_LOOKUP_CONCURRENCY, lookups.length) }, lookup),
+        );
+        const lookupFailed =
+          failed !== undefined ||
+          controller.signal.aborted ||
+          outcomes.some((outcome) => outcome.status === 'rejected');
+        if (!lookupFailed && rejection !== undefined)
+          return reply.code(409).send({ error: rejection.error });
+        try {
+          if (lookupFailed) throw new Error('publication lookup failed');
+          // Evaluate in lockfile order so the reported exceptions stay deterministic.
+          for (const [name, versions] of byName) {
+            const times = resolved.get(name)!;
+            for (const version of versions) {
+              const identity = npmPackageIdentity(name, version);
+              const eligibility = npmReleaseEligibility(times.get(version), minimumAgeDays);
+              if (!eligibility.availableAt)
+                return reply.code(409).send({
+                  error: `Cannot verify ${identity}: publication time is missing or invalid.`,
+                });
+              identities.add(identity);
+              if (!eligibility.eligible) {
+                exceptions.add(identity);
+                violations.push(`${identity}: available ${eligibility.availableAt}`);
+              }
+            }
+          }
+        } catch {
+          if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
+          return reply.code(502).send({
+            error: `Cannot verify ${failed ?? 'npm release'} metadata; installation remains blocked.`,
+          });
+        }
+        if (violations.length > 0) {
+          if (violations.length > 40)
+            return reply.code(409).send({
+              error: `Installation contains ${violations.length} young releases; wait for the release-age window instead of approving a bulk exception.`,
+            });
+          // The setup decision (including a saved Skip) never authorizes young versions.
+          const answer = await deps.conductor.requestExternalPermission({
+            sessionId: body.sessionId,
+            toolUseId: `package-install-exception-${randomUUID()}`,
+            toolName: 'verity_package_install',
+            input: {
+              command: `${body.command}\nRelease-age exception for this installation only (${minimumAgeDays} days):\n${violations.join('\n')}`,
+              manager: 'npm',
+              supported: false,
+              packages: [...exceptions],
+              minimumAgeDays,
+            },
+            channel: 'acp',
+            allowStandingGrant: false,
+            signal: controller.signal,
+          });
+          if (
+            controller.signal.aborted ||
+            !(await authorized()) ||
+            answer.decision.behavior !== 'allow' ||
+            answer.decision.updatedInput?.action !== 'install'
+          )
+            return { action: 'cancel' };
+          await deps.appendNotice(
+            body.sessionId,
+            `Release-age exception approved for this installation only · ${[...exceptions].join(', ')}`,
+          );
+        }
+        if (controller.signal.aborted || !(await authorized())) return { action: 'cancel' };
+        const installToken = createNpmInstallGrant({
+          sourceToken: token,
+          projectId,
+          containerGeneration: binding.containerGeneration,
+          sessionId: body.sessionId,
+          policy: { minimumAgeDays, packages: identities, exceptions },
+        });
+        return { action: 'continue', installToken };
+      }
       const configure = (): { action: 'configure'; setupToken: string } => {
         const setupToken = randomUUID();
         grants.set(setupToken, {

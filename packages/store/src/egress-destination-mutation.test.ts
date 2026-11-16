@@ -111,3 +111,49 @@ it('rejects additions and removals before persistence when fencing is unavailabl
   );
   expect(await ctx.store.readEgressDestinationUrls()).toEqual(before);
 });
+
+it('updates Matrix poll metadata without fencing while fencing every real endpoint change', async () => {
+  const account = {
+    id: 'inventory-poll',
+    provider: 'matrix' as const,
+    endpoint: 'https://matrix.example.org',
+    displayName: 'Matrix',
+    status: 'online',
+  };
+  let fenced = 0;
+  let available = true;
+  ctx.store.setEgressDestinationMutation((action, changesDestinations) =>
+    ctx.store.withEgressDestinationTransaction(async () => {
+      if (!changesDestinations || (await changesDestinations())) {
+        if (!available) throw new Error('host unavailable');
+        fenced++;
+      }
+      return action();
+    }),
+  );
+  await ctx.store.integrations.upsertAccount(account);
+  expect(fenced).toBe(1);
+  available = false;
+  await ctx.store.integrations.upsertAccount(account);
+  await ctx.store.integrations.upsertAccount({
+    ...account,
+    displayName: 'Updated',
+    status: 'offline',
+    lastError: 'temporary',
+  });
+  expect(fenced).toBe(1);
+  expect(
+    (await ctx.store.integrations.listAccounts()).find((row) => row.id === account.id),
+  ).toMatchObject({ displayName: 'Updated', status: 'offline' });
+  await expect(
+    ctx.store.integrations.upsertAccount({ ...account, endpoint: 'https://changed.example.org' }),
+  ).rejects.toThrow('host unavailable');
+  expect(await ctx.store.readEgressDestinationUrls()).toContain(account.endpoint);
+  expect(await ctx.store.readEgressDestinationUrls()).not.toContain('https://changed.example.org');
+  available = true;
+  await ctx.store.integrations.upsertAccount({
+    ...account,
+    endpoint: 'https://changed.example.org',
+  });
+  expect(fenced).toBe(2);
+});

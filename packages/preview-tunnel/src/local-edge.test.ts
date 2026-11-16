@@ -213,3 +213,31 @@ it('does not forward Core login cookies in local WebSocket handshakes', async ()
     );
   }
 });
+
+// One oversized cookie used to break the tunnel's header limits and fault the response.
+it('skips an oversized local cookie without failing the response', async () => {
+  const target = createServer((_request, response) => {
+    response.writeHead(200, { 'set-cookie': [`huge=${'x'.repeat(9000)}`, 'app=1; Path=/'] });
+    response.end('ok');
+  });
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+  const port = await localEdge().listen(0, '127.0.0.1');
+  const connector = new PreviewConnector({
+    accessMode: 'local-open',
+    edgeUrl: `ws://127.0.0.1:${port}/__verity/connector`,
+    connectorToken: 'connector',
+    targetOrigin: `http://127.0.0.1:${(target.address() as { port: number }).port}`,
+  });
+  try {
+    await connector.connect();
+    const response = await fetch(`http://127.0.0.1:${port}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
+    expect(response.headers.getSetCookie()).toEqual(['app=1; Path=/']);
+  } finally {
+    connector.close();
+    await new Promise<void>((resolve, reject) =>
+      target.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

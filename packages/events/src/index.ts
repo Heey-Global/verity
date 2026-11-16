@@ -57,25 +57,45 @@ export {
   END_PLANNING_TOOL,
   DISMISSED_PLAN_SYSTEM_PROMPT,
   parsePlanningProposal,
+  type PlanDecision,
+  type PlanningProposal,
   IMPLEMENT_PLAN_DISPLAY,
   IMPLEMENT_PLAN_PROMPT,
   PLANNING_ACTIVE_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   PRESENT_PLAN_TOOL,
+  COMPLETE_MOCKUPS_FOCUSED_TOOL,
+  COMPLETE_MOCKUPS_TOOL,
+  PRESENT_MOCKUPS_FOCUSED_TOOL,
+  PRESENT_MOCKUPS_TOOL,
   START_PLANNING_TOOL,
+  isPresentMockupsTool,
   planningToolName,
   type PlanningToolName,
 } from './planning.js';
+export {
+  MOCKUPS_FIRST_PROMPT,
+  mockupReviewPrompt,
+  planningDesignNote,
+  type DesignLevel,
+  type MockupMark,
+} from './mockups.js';
 export { DELEGATION_SYSTEM_PROMPT } from './delegation.js';
 export { AUTONOMY_RESUME_SYSTEM_PROMPT, AUTONOMY_SYSTEM_PROMPT } from './autonomy.js';
 export { BREVITY_SYSTEM_PROMPT } from './brevity.js';
 export { CODE_REVIEW_SYSTEM_PROMPT } from './code-review.js';
 export { LANGUAGE_SYSTEM_PROMPT } from './language.js';
 export { LOCAL_PROJECT_SYSTEM_PROMPT, DOCUMENT_PROJECT_SYSTEM_PROMPT } from './local-project.js';
-export { PROJECT_IMAGE_REBUILDING_WARNING } from './project-provision.js';
+export {
+  DEVCONTAINER_ROOT_USER_WARNING,
+  PROJECT_IMAGE_REBUILDING_WARNING,
+} from './project-provision.js';
 export { MEMORY_SYSTEM_PROMPT } from './memory.js';
 export { PULL_REQUEST_SYSTEM_PROMPT, repoToolPullRequestSystemPrompt } from './pull-requests.js';
-export { REPO_CONVENTIONS_SYSTEM_PROMPT } from './repo-conventions.js';
+export {
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
+  REPO_CONVENTIONS_SYSTEM_PROMPT,
+} from './repo-conventions.js';
 export { SANDBOX_RESOURCES_SYSTEM_PROMPT } from './sandbox-resources.js';
 export {
   SANDBOX_NOT_READY_ERROR_KIND,
@@ -237,6 +257,7 @@ export {
 export type { BoundedHistoryPage, BoundedHistoryResult } from './history.js';
 
 export * from './vulnerability.js';
+export * from './assistant-conversation.js';
 export {
   nativeRetirementSchema,
   runnerCacheReclamationSchema,
@@ -259,6 +280,31 @@ export { actionTitle } from './action-title.js';
 
 export {
   AGENT_CORE_PROMPT,
+  WIKI_MAINTENANCE_SKILL,
   AGENT_SKILL_CATALOG,
   AGENT_SKILL_MANIFEST_HASH,
 } from './agent-assets.generated.js';
+export {
+  markdownLinks,
+  parseWikiLog,
+  resolveKnowledgeLink,
+  WIKI_CONVENTIONS,
+  WIKI_INDEX,
+  WIKI_LOG,
+  wikiCatalogSchema,
+  type KnowledgePath,
+  type WikiLogEntry,
+  type WikiCatalog,
+  type WikiDecision,
+  type WikiPage,
+  type WikiReviewItem,
+  type WikiTopic,
+} from './knowledge-wiki.js';
+export {
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from './wiki-proposals.js';

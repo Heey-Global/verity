@@ -153,7 +153,9 @@ export interface ClaudeEgressGatewayHandlerOptions {
    * must never inspect HTTP headers, URL, or body.
    */
   authenticatePeer: (socket: Socket) => string | undefined;
-  accessToken: (projectId: string) => Promise<string>;
+  /** Resolves the login for the authenticated peer; `socket` lets a multi-tenant
+   *  gateway choose the login of the person behind the certificate. */
+  accessToken: (projectId: string, socket: Socket) => Promise<string>;
   forward?: ClaudeEgressForward;
   /**
    * Called exactly once per proxied request, whatever its outcome. Optional:
@@ -328,7 +330,7 @@ async function handleRequest(
     );
     // Resolve/materialize the secret only after every caller-controlled field and
     // the out-of-band peer identity have passed the fail-closed policy.
-    const token = await options.accessToken(scopedProjectId);
+    const token = await options.accessToken(scopedProjectId, request.socket);
     const authorized = injectClaudeEgressCredential(validated, token);
     const upstream = await forward({
       method,

@@ -2,13 +2,16 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { EventStore, createSealableSecretCipher } from '@verity/store';
+import { createIsolatedTestDb, type TestDb } from '@verity/store/testing';
 
 import {
   createGmailTool,
   gmailHasStandingAuthorization,
   type GmailToolStore,
 } from './gmail-tool.js';
+import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 
 function setup(overrides: Partial<GmailToolStore> = {}) {
   const completeGoogleWorkspaceInvocation = vi.fn().mockResolvedValue(undefined);
@@ -28,7 +31,12 @@ function setup(overrides: Partial<GmailToolStore> = {}) {
     ...overrides,
   };
   const gmail = {
-    downloadAttachment: vi.fn().mockResolvedValue({ encoding: 'base64', content: 'AP8=' }),
+    downloadAttachment: vi.fn().mockResolvedValue({
+      path: '/workspace/downloads/report.pdf',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: 2,
+    }),
     search: vi.fn().mockResolvedValue({ messages: [] }),
     readThread: vi.fn().mockResolvedValue({ id: 't1', messages: [] }),
     createDraft: vi.fn().mockResolvedValue({ id: 'd1' }),
@@ -86,10 +94,18 @@ describe('Gmail session tool', () => {
 
   it('downloads attachments only with session access and unchanged credentials', async () => {
     const request = { action: 'download_attachment', messageId: 'm1', partId: '1' };
-    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup();
+    const { tool, gmail, claimGoogleWorkspaceInvocation } = setup({
+      getSession: vi.fn().mockResolvedValue({ projectId: 'p1', worktree: '/workspace' }),
+    });
     expect(gmailHasStandingAuthorization(request)).toBe(true);
-    await expect(tool.invoke(input(request))).resolves.toMatchObject({ content: 'AP8=' });
-    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1');
+    const result = await tool.invoke(input(request));
+    expect(result).toEqual({
+      path: '/workspace/downloads/report.pdf',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      size: 2,
+    });
+    expect(gmail.downloadAttachment).toHaveBeenCalledWith('token', 'm1', '1', '/workspace');
     expect(claimGoogleWorkspaceInvocation).not.toHaveBeenCalled();
     const denied = setup({ getSessionGmailConnection: vi.fn().mockResolvedValue(undefined) });
     await expect(denied.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
@@ -102,6 +118,28 @@ describe('Gmail session tool', () => {
     });
     await expect(changed.tool.invoke(input(request))).rejects.toThrow('Gmail is not enabled');
     expect(changed.gmail.downloadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('requires a workspace before downloading an attachment', async () => {
+    const { tool, gmail } = setup();
+    await expect(
+      tool.invoke(input({ action: 'download_attachment', messageId: 'm1', partId: '1' })),
+    ).rejects.toThrow('no workspace');
+    expect(gmail.downloadAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session project change before writing an attachment', async () => {
+    const { tool, gmail } = setup({
+      getSession: vi
+        .fn()
+        .mockResolvedValueOnce({ projectId: 'p1', worktree: '/workspace' })
+        .mockResolvedValueOnce({ projectId: 'p1', worktree: '/workspace' })
+        .mockResolvedValue({ projectId: 'other', worktree: '/other' }),
+    });
+    await expect(
+      tool.invoke(input({ action: 'download_attachment', messageId: 'm1', partId: '1' })),
+    ).rejects.toThrow('restricted to the calling session');
+    expect(gmail.downloadAttachment).not.toHaveBeenCalled();
   });
 
   it('rejects an unknown send action', async () => {
@@ -387,5 +425,93 @@ describe('Gmail draft attachments from the session workspace', () => {
     const { tool, gmail } = setup();
     await expect(tool.invoke(input(draft([{ path: 'a.pdf' }])))).rejects.toThrow('no workspace');
     expect(gmail.createDraft).not.toHaveBeenCalled();
+  });
+});
+
+describe("Gmail for a turn run by someone other than the account's owner (ADR 0023 §3)", () => {
+  let ctx: TestDb;
+  let store: EventStore;
+  let aliceAccountId: string;
+  beforeAll(async () => {
+    ctx = await createIsolatedTestDb();
+    const cipher = createSealableSecretCipher();
+    cipher.unlock('ab'.repeat(32));
+    store = new EventStore(ctx.db, cipher);
+    await ctx.db
+      .insertInto('users')
+      .values([
+        { id: 'alice', role: 'member', status: 'active' },
+        { id: 'bob', role: 'member', status: 'active' },
+      ])
+      .execute();
+    await store.createProject({
+      id: 'p1',
+      kind: 'local',
+      owner: '__local__',
+      repo: 'p1',
+      cloneDir: 'p1',
+      containerName: 'verity-p1',
+      state: 'active',
+    });
+    await store.createSession({ sessionId: 's1', projectId: 'p1', worktree: '/wt', model: 'm' });
+    aliceAccountId = (
+      await store.googleAccounts.save({
+        ownerUserId: 'alice',
+        email: 'alice@example.test',
+        clientId: 'client',
+        refreshToken: 'alice-refresh',
+        scopes: ['gmail.readonly', 'gmail.compose', 'gmail.settings.basic'].map(
+          (scope) => `https://www.googleapis.com/auth/${scope}`,
+        ),
+      })
+    ).id;
+    // The chat is explicitly pinned to Alice's mailbox.
+    await store.googleAccounts.setSessionAccess('s1', 'gmail', {
+      mode: 'account',
+      accountId: aliceAccountId,
+    });
+  });
+  afterAll(async () => {
+    await ctx.close();
+  });
+
+  async function runTurn(userId: string, turnId: string) {
+    const prompt = await store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'Mail',
+      initiatedBy: { userId },
+    });
+    await store.markTurnRunning({ sessionId: 's1', promptSeq: prompt.seq });
+    await store.bindTurnIdentity('s1', { turnId, startCommandId: turnId });
+  }
+
+  it("never hands Alice's credentials to Bob's turn", async () => {
+    await runTurn('bob', 'bob-turn');
+    await expect(
+      resolveGoogleServiceCredentialForTurn(store, 's1', 'bob-turn', 'gmail'),
+    ).rejects.toThrow('not enabled');
+    const gmail = { search: vi.fn().mockResolvedValue({ messages: [] }) };
+    const googleAccessToken = vi.fn(async () => 'token');
+    const tool = createGmailTool({ eventStore: store, gmail: gmail as never, googleAccessToken });
+    await expect(
+      tool.invoke({
+        projectId: 'p1',
+        sessionId: 's1',
+        turnId: 'bob-turn',
+        invocationId: 'bob-search',
+        request: { action: 'search', query: 'is:unread' },
+      }),
+    ).rejects.toThrow('not enabled');
+    expect(googleAccessToken).not.toHaveBeenCalled();
+    expect(gmail.search).not.toHaveBeenCalled();
+
+    await runTurn('alice', 'alice-turn');
+    expect(
+      (await resolveGoogleServiceCredentialForTurn(store, 's1', 'alice-turn', 'gmail')).accountId,
+    ).toBe(aliceAccountId);
+    // A turn id that is no longer the running one names nobody.
+    await expect(
+      resolveGoogleServiceCredentialForTurn(store, 's1', 'bob-turn', 'gmail'),
+    ).rejects.toThrow('not enabled');
   });
 });

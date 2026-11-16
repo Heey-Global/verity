@@ -8,6 +8,12 @@ mkdir -p "$assets/runtime/bin" "$assets/runtime/opt" "$PROBE_EVIDENCE"
 node scripts/build-project-egress-host.mjs
 node scripts/probes/project-egress/build-boot-assets.mjs "$assets"
 cp "$(command -v node)" "$assets/node"
+docker build -f deploy/Dockerfile --target protected-build-toolchain -t verity-boot-toolchain:local . > "$PROBE_EVIDENCE/toolchain-build.txt" 2>&1
+toolchain=$(docker create verity-boot-toolchain:local)
+trap 'docker rm -f "$toolchain" >/dev/null' EXIT
+docker cp "$toolchain:/protected-toolchain" "$assets/toolchain"
+docker rm -f "$toolchain" >/dev/null
+trap - EXIT
 docker build -f deploy/gvisor-ci.Dockerfile -t verity-boot-runtime:local . > "$PROBE_EVIDENCE/runtime-build.txt" 2>&1
 runtime=$(docker create verity-boot-runtime:local)
 trap 'docker rm -f "$runtime" >/dev/null' EXIT
@@ -36,7 +42,7 @@ tar -C "$assets" -cf "$RUNNER_TEMP/verity-boot-assets.tar" .
 du -sh "$assets" "$RUNNER_TEMP/verity-boot-assets.tar" > "$PROBE_EVIDENCE/asset-disk-usage.txt"
 docker rm -f "$runtime" >/dev/null
 trap - EXIT
-docker image rm verity-boot-observed-runner:local verity-boot-runner:local verity-boot-relay:local verity-boot-runtime:local verity-boot-registry:local "$registry" "$postgres_image"
+docker image rm verity-boot-observed-runner:local verity-boot-runner:local verity-boot-relay:local verity-boot-runtime:local verity-boot-toolchain:local verity-boot-registry:local "$registry" "$postgres_image"
 docker builder prune --all --force
 rm -rf -- "$assets"
 df -B1 "$RUNNER_TEMP" >> "$PROBE_EVIDENCE/asset-disk-usage.txt"

@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import {
   egressHostAuthority,
+  egressBuildProtectedNetworks,
   egressHostDestinationAllowed,
   egressHostDirectChecks,
   readEgressHostConfiguration,
@@ -136,4 +137,38 @@ it('denies all direct grants and readiness until the managed mandatory inventory
   expect(() =>
     verifyEgressHostAuthorityReady({ ...config, managedInventoryComplete: undefined }),
   ).not.toThrow();
+});
+
+it('collects complete host-connected and Docker exclusions for public build access', async () => {
+  const id = 'a'.repeat(64);
+  const io = {
+    routes: async () => JSON.stringify([{ dst: 'default', dev: 'eth0' }]),
+    addresses: async () =>
+      JSON.stringify([
+        {
+          addr_info: [
+            { local: '8.9.10.11', prefixlen: 24 },
+            { local: '2606:4700::12', prefixlen: 64 },
+          ],
+        },
+      ]),
+    docker: vi.fn(async (...args: string[]) =>
+      args[1] === 'ls'
+        ? id
+        : JSON.stringify([
+            {
+              Id: id,
+              IPAM: { Config: [{ Subnet: '9.10.11.0/24' }, { Subnet: '2606:4701::/64' }] },
+            },
+          ]),
+    ),
+  };
+  expect(await egressBuildProtectedNetworks(io)).toEqual({
+    blocked: ['8.9.10.11/24', '2606:4700::12/64', '9.10.11.0/24', '2606:4701::/64'],
+    uplinks: ['eth0'],
+  });
+  io.docker.mockResolvedValueOnce(id).mockResolvedValueOnce('[]');
+  await expect(egressBuildProtectedNetworks(io)).rejects.toThrow('Incomplete');
+  io.docker.mockResolvedValueOnce('');
+  await expect(egressBuildProtectedNetworks(io)).rejects.toThrow('Invalid');
 });

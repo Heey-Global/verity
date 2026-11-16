@@ -142,29 +142,28 @@ describe('onboarding wizard shell — step screen', () => {
     expect(mockPush).not.toHaveBeenCalled();
   });
 
-  it('keeps Continue from racing a demo that is still starting', async () => {
+  it('keeps both setup paths from racing a demo that is still starting', async () => {
     mockEnterDemoMode.mockReturnValue(new Promise<void>(() => undefined));
     render(<OnboardingWelcome />);
     await act(async () => fireEvent.press(screen.getByLabelText('Try demo')));
-    expect(screen.getByLabelText('Continue')).toBeDisabled();
+    expect(screen.getByLabelText('Set up my own server')).toBeDisabled();
+    expect(screen.getByLabelText('Join a shared project')).toBeDisabled();
   });
 
-  it('renders the welcome step with its progress indicator and product orientation', () => {
+  it('renders the welcome step without a progress indicator', () => {
     render(<OnboardingWelcome />);
     // Welcome is preflight before any server/secret setup, not a numbered wizard step.
     expect(screen.queryByLabelText(/Step \d+ of \d+/)).toBeNull();
-    expect(screen.getByText('Secure development. Your choice of AI.')).toBeOnTheScreen();
+    expect(screen.getByText('Build software with the AI of your choice.')).toBeOnTheScreen();
     expect(screen.getByLabelText('Version 1.30.0, bundle dev')).toBeOnTheScreen();
-    expect(screen.getByText(/Claude Code, Codex, and open-source models/)).toBeOnTheScreen();
-    expect(screen.getByText(/isolated project sandboxes/)).toBeOnTheScreen();
-    expect(screen.getByText(/Switch AI providers/)).toBeOnTheScreen();
-    expect(screen.getByText('Get started')).toBeOnTheScreen();
   });
 
-  it('advances via the accessible Next control (router.push to the next step)', () => {
+  it('sets up an own server or joins a shared project from the welcome screen', () => {
     render(<OnboardingWelcome />);
-    fireEvent.press(screen.getByLabelText('Continue'));
+    fireEvent.press(screen.getByLabelText('Set up my own server'));
     expect(mockPush).toHaveBeenCalledWith('/onboarding/server-url');
+    fireEvent.press(screen.getByLabelText('Join a shared project'));
+    expect(mockPush).toHaveBeenCalledWith('/onboarding/join');
   });
 
   it('offers deterministic Back navigation on a non-first step', () => {

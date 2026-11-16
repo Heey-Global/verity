@@ -38,6 +38,7 @@ args=("$@")
 n=${#args[@]}
 effective_cwd="$PWD"
 hooks_override=""
+opt_git_dir=""
 
 # A `core.hooksPath` given on the command line displaces the installed seed
 # hooks for this one invocation. Keys are case-insensitive in git, so compare
@@ -105,7 +106,17 @@ while [ "$i" -lt "$n" ]; do
       i=$((i + 1))
       continue
       ;;
-    --git-dir | --work-tree | --namespace | --super-prefix)
+    --git-dir)
+      opt_git_dir="${args[$((i + 1))]:-}"
+      i=$((i + 2))
+      continue
+      ;;
+    --git-dir=*)
+      opt_git_dir="${a#--git-dir=}"
+      i=$((i + 1))
+      continue
+      ;;
+    --work-tree | --namespace | --super-prefix)
       i=$((i + 2))
       continue
       ;;
@@ -128,6 +139,135 @@ while [ "$i" -lt "$n" ]; do
       ;;
   esac
 done
+
+# --- push: re-sign members' commits as the pushing person --------------------
+# A member without a signing key commits unsigned in a shared session; their
+# commits never leave the sandbox, because the forge refuses their pushes. When
+# a person who signs pushes the checked-out branch, the unpublished commits from
+# the oldest unsigned one onward are replayed with that person as committer and
+# signer, while each author stays who wrote the change (ADR 0023 §3: deliberate
+# vouching). Commits before it keep their hashes. A rewrite that cannot complete
+# is undone and refuses the push; the pre-push hook refuses any unsigned commit
+# on other refs. Only for a turn with a person (its badge and committer) and with
+# signing enabled; anything else passes untouched.
+commit_is_signed() {
+  "$REAL_GIT" -C "$effective_cwd" cat-file commit "$1" 2>/dev/null |
+    sed '/^$/q' | grep -q '^gpgsig'
+}
+
+resign_unpublished() {
+  [ -n "${VERITY_TURN_CAPABILITY:-}" ] && [ -n "${GIT_COMMITTER_EMAIL:-}" ] || return 0
+  local g=("$REAL_GIT" -C "$effective_cwd")
+  [ "$("${g[@]}" config --bool commit.gpgsign 2>/dev/null || true)" = "true" ] || return 0
+  "${g[@]}" symbolic-ref -q HEAD >/dev/null 2>&1 || return 0
+  local head git_dir
+  head="$("${g[@]}" rev-parse --verify -q HEAD)" || return 0
+  git_dir="$("${g[@]}" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  # A rebase, merge or cherry-pick in progress belongs to the agent; the
+  # pre-push hook still refuses whatever unsigned commits it would publish.
+  if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] ||
+    [ -f "$git_dir/MERGE_HEAD" ] || [ -f "$git_dir/CHERRY_PICK_HEAD" ]; then
+    return 0
+  fi
+
+  local first="" commit
+  while read -r commit; do
+    if ! commit_is_signed "$commit"; then
+      first="$commit"
+      break
+    fi
+  done < <("${g[@]}" rev-list --reverse --topo-order HEAD --not --remotes 2>/dev/null)
+  [ -n "$first" ] || return 0
+
+  # The range replayed: everything on HEAD after the first unsigned commit's
+  # (first) parent, or the whole history when it is a root commit.
+  local onto range authors count base_short
+  if "${g[@]}" rev-parse --verify -q "${first}^1" >/dev/null; then
+    onto="$("${g[@]}" rev-parse "${first}^1")"
+    range="${onto}..HEAD"
+    base_short="$("${g[@]}" rev-parse --short "$onto")"
+  else
+    onto="--root"
+    range="HEAD"
+    base_short="--root"
+  fi
+  count="$("${g[@]}" rev-list --count "$range")"
+  # Rewriting must never touch a published commit, such as one merged in from
+  # the remote after the first unsigned commit: its new hash would diverge from
+  # what others already have. Leave such a range to the pre-push hook, which
+  # refuses the unsigned commits and says how to re-sign them.
+  if [ "$count" != "$("${g[@]}" rev-list --count "$range" --not --remotes)" ]; then
+    echo "verity git guard: not re-signing: published commits lie between the unsigned ones" >&2
+    return 0
+  fi
+  authors="$("${g[@]}" log --format='%an' "$range" | sort -u | paste -sd, - | sed 's/,/, /g')"
+
+  local tree_before
+  tree_before="$("${g[@]}" rev-parse "HEAD^{tree}")"
+  if ! "${g[@]}" rebase --quiet --rebase-merges --force-rebase \
+    --reapply-cherry-picks --autostash --gpg-sign "$onto" >/dev/null 2>&1; then
+    # Abort restores the branch, index and any autostashed changes exactly.
+    # Never reset --hard here: it would discard the changes autostash restored.
+    "${g[@]}" rebase --abort >/dev/null 2>&1 || true
+    {
+      echo "verity git guard: refusing to push unsigned commits by: $authors"
+      echo
+      echo "Pushing re-signs them with your key, but replaying them onto"
+      echo "$base_short failed, for example on a merge whose conflicts must be resolved"
+      echo "again. Nothing was changed or pushed. Re-sign them yourself, then push again:"
+      echo "  git rebase --rebase-merges --force-rebase --gpg-sign $base_short"
+    } >&2
+    return 1
+  fi
+  if [ "$("${g[@]}" rev-parse "HEAD^{tree}")" != "$tree_before" ]; then
+    # --keep moves the branch back and keeps uncommitted changes.
+    "${g[@]}" reset --quiet --keep "$head" >/dev/null 2>&1 || true
+    echo "verity git guard: re-signing changed the content; nothing was pushed" >&2
+    return 1
+  fi
+
+  # The commits are the same change; a review recorded for the old tip covers
+  # the new one, whose tree was just checked to be identical.
+  local marker top
+  top="$("${g[@]}" rev-parse --show-toplevel 2>/dev/null || true)"
+  marker="${VERITY_CODE_REVIEW_MARKER:-${top}/.agents/.last-code-review-sha}"
+  if [ -n "$top" ] && [ -f "$marker" ] &&
+    [ "$(head -n1 "$marker" | tr -d '[:space:]')" = "$head" ]; then
+    "${g[@]}" rev-parse HEAD >"$marker"
+  fi
+  echo "verity git guard: re-signed $count commit(s) by $authors with your key" >&2
+  return 0
+}
+
+# Whether this push publishes the checked-out branch: no dry run, deletion or
+# mirror, and either no refspec (the current branch's upstream) or one whose
+# source is HEAD or the branch itself. Anything else must not rewrite HEAD.
+push_targets_head() {
+  local branch k a positional=() refs=()
+  branch="$("$REAL_GIT" -C "$effective_cwd" symbolic-ref -q --short HEAD 2>/dev/null)" || return 1
+  k=$((subidx + 1))
+  while [ "$k" -lt "$n" ]; do
+    a="${args[$k]}"
+    case "$a" in
+      --) k=$((k + 1)); while [ "$k" -lt "$n" ]; do positional+=("${args[$k]}"); k=$((k + 1)); done; break ;;
+      -n | --dry-run | -d | --delete | --mirror | --all | --tags | --prune) return 1 ;;
+      --repo=* | --push-option=* | -o) ;;
+      -*) ;;
+      *) positional+=("$a") ;;
+    esac
+    k=$((k + 1))
+  done
+  [ "${#positional[@]}" -le 1 ] && return 0
+  refs=("${positional[@]:1}")
+  for a in "${refs[@]}"; do
+    a="${a#+}"
+    case "${a%%:*}" in
+      HEAD | "$branch" | "refs/heads/$branch") ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
 
 # --- push: the pre-push gate is not optional ---------------------------------
 # A push without the flag passes untouched, dry run or not. git accepts any
@@ -156,11 +296,141 @@ if [ "$subcmd" = "push" ]; then
       echo
       echo "The pre-push gate names a way through every block it raises:"
       echo "  code review     verity-code-review run, then verity-code-review mark"
-      echo "  lint/format     install the dependencies, or verity-local-checks skip"
+      echo "  lint/format     fix check errors or dependency preparation; explicit skip: verity-local-checks skip"
       echo "  secret          rewrite the commit, or add the fingerprint to .gitleaksignore"
       echo "If this is an operator-directed push, re-run with VERITY_GIT_GUARD_DISABLE=1."
     } >&2
     exit 1
+  fi
+  if push_targets_head; then
+    resign_unpublished || exit 1
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+# --- core.worktree: one session must not re-point every session's checkout ---
+# Every linked worktree shares the repository's config. A `core.worktree` written
+# there re-points the MAIN checkout for every git process that opens the
+# repository, including Verity's own Repair, which then fails on a path that
+# only exists inside this container. Two ways write it:
+#   - `git config core.worktree <path>` (also with --worktree: without
+#     extensions.worktreeConfig that writes the shared config, and with it the
+#     main checkout's config.worktree, which server-side git reads as well);
+#   - `git init` against an existing repository named by GIT_DIR/--git-dir: a
+#     hook running here already carries GIT_DIR pointing into the shared one.
+#     With a work tree as well, git records it as core.worktree; without one,
+#     git takes the admin dir for a bare repository and writes core.bare = true.
+#     Either breaks the main checkout for every session.
+refuse_core_worktree() {
+  {
+    echo "verity git guard: refusing $1"
+    echo
+    echo "The repository config is shared by every Verity session worktree; a"
+    echo "core.worktree there re-points the main checkout for all of them and breaks"
+    echo "Sandbox Repair. For a repository of your own, unset GIT_DIR / GIT_WORK_TREE"
+    echo "and name its config explicitly ('git config --file <repo>/.git/config ...')."
+    echo "If this is an operator-directed change, re-run with VERITY_GIT_GUARD_DISABLE=1."
+  } >&2
+  exit 1
+}
+
+if [ "$subcmd" = "config" ]; then
+  # Refuse only a WRITE of the key: `git config core.worktree` alone (and any
+  # read spelling) is a read and stays allowed.
+  scoped=""
+  adds=""
+  positional=()
+  j=$((subidx + 1))
+  while [ "$j" -lt "$n" ]; do
+    a="${args[$j]}"
+    case "${a,,}" in
+      # Reads, removals and writes that do not land in the shared config.
+      --get | --get-all | --get-regexp | --get-urlmatch | -l | --list | \
+        --unset | --unset-all | --global | --system | \
+        -f | --file | --file=* | --blob | --blob=* | -e | --edit | \
+        --rename-section | --remove-section | --get-color | --get-colorbool)
+        scoped=1
+        ;;
+      --add | --replace-all) adds=1 ;;
+      # Options whose value is the next argument, not a key or value.
+      --type | --default | --comment | --value) j=$((j + 1)) ;;
+      -*) ;;
+      *) positional+=("$a") ;;
+    esac
+    j=$((j + 1))
+  done
+  key="${positional[0]:-}"
+  values=$((${#positional[@]} - 1))
+  case "${key,,}" in
+    set)
+      key="${positional[1]:-}"
+      values=1
+      ;;
+    get | list | unset | rename-section | remove-section | edit) scoped=1 ;;
+  esac
+  if [ -z "$scoped" ] && [ "${key,,}" = "core.worktree" ] &&
+    { [ "$values" -gt 0 ] || [ -n "$adds" ]; }; then
+    refuse_core_worktree "'git config core.worktree' in the shared repository config"
+  fi
+  exec "$REAL_GIT" "$@"
+fi
+
+if [ "$subcmd" = "init" ]; then
+  init_git_dir="${opt_git_dir:-${GIT_DIR:-}}"
+  if [ -n "$init_git_dir" ]; then
+    case "$init_git_dir" in
+      /*) ;;
+      *)
+        # `git init <directory>` changes into <directory> before it reads a
+        # relative git dir, so resolve against it rather than the cwd.
+        init_base="$effective_cwd"
+        j=$((subidx + 1))
+        while [ "$j" -lt "$n" ]; do
+          a="${args[$j]}"
+          case "$a" in
+            --template | --separate-git-dir | -b | --initial-branch | --object-format | --ref-format)
+              j=$((j + 2))
+              continue
+              ;;
+            --)
+              a="${args[$((j + 1))]:-}"
+              [ -n "$a" ] || break
+              ;;
+            -*)
+              j=$((j + 1))
+              continue
+              ;;
+          esac
+          case "$a" in
+            /*) init_base="$a" ;;
+            *) init_base="$effective_cwd/$a" ;;
+          esac
+          break
+        done
+        init_git_dir="$init_base/$init_git_dir"
+        ;;
+    esac
+    # A session worktree's `.git` is a gitfile naming the shared repository's
+    # admin directory; follow it rather than reading it as "no repository".
+    if [ -f "$init_git_dir" ]; then
+      gitfile_line=""
+      IFS= read -r gitfile_line <"$init_git_dir" || true
+      case "$gitfile_line" in
+        "gitdir: "/*) init_git_dir="${gitfile_line#gitdir: }" ;;
+        "gitdir: "*) init_git_dir="${init_git_dir%/*}/${gitfile_line#gitdir: }" ;;
+      esac
+    fi
+    # Only a repository someone else uses: one shared with linked worktrees
+    # (an admin dir with `commondir`, or the repository holding `worktrees/`),
+    # or the managed clone mounted at /work, which the server opens on Repair
+    # even after its last session worktree is gone. Fresh git dirs and
+    # unrelated repositories (a tool cache re-running `init --bare`) stay allowed.
+    init_real="$(realpath -m -- "$init_git_dir" 2>/dev/null || printf '%s' "$init_git_dir")"
+    if [ -f "$init_git_dir/HEAD" ] &&
+      { [ -f "$init_git_dir/commondir" ] || [ -d "$init_git_dir/worktrees" ] ||
+        [ "$init_real" = "/work/.git" ]; }; then
+      refuse_core_worktree "'git init' on the existing repository named by GIT_DIR / --git-dir"
+    fi
   fi
   exec "$REAL_GIT" "$@"
 fi

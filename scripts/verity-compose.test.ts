@@ -606,7 +606,7 @@ describe('deploy/bin/verity-compose', () => {
     );
     // The spawn broker is the hop that decides whether the agent ever sees it.
     expect(
-      readFileSync('features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs', 'utf8'),
+      readFileSync('features/verity-sandbox-toolkit/src/spawn-broker/request.mjs', 'utf8'),
     ).toContain("copy('GIT_CONFIG_COUNT')");
   });
 

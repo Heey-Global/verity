@@ -14,7 +14,8 @@ const MAX_LINES = 6;
  * caller's job and must not happen while `error` is set.
  *
  * `secret` masks the value behind a reveal control and asks the platform not to
- * offer it to the password manager; `multiline` grows up to six lines.
+ * offer it to the password manager; `multiline` grows up to six lines, or
+ * between `lines.min` and `lines.max` for a document-sized text.
  */
 export function TextField({
   label,
@@ -26,6 +27,7 @@ export function TextField({
   error,
   secret = false,
   multiline = false,
+  lines,
   disabled = false,
   keyboardType,
   literal: literalInput = false,
@@ -33,6 +35,7 @@ export function TextField({
   maxLength,
   accessibilityLabel,
   labelAccessory,
+  inline = false,
 }: {
   label: string;
   value: string;
@@ -43,6 +46,8 @@ export function TextField({
   error?: { title: string; message: string } | undefined;
   secret?: boolean;
   multiline?: boolean;
+  /** With `multiline`: the field opens at `min` lines and grows to `max`. */
+  lines?: { min: number; max: number };
   disabled?: boolean;
   keyboardType?: 'default' | 'url' | 'email-address' | 'number-pad';
   /** Input that must arrive exactly as typed (a pasted certificate): no
@@ -55,6 +60,10 @@ export function TextField({
   accessibilityLabel?: string;
   /** A status beside the label, e.g. whether a write-only secret is stored. */
   labelAccessory?: ReactNode;
+  /** Text edited in place inside a card that already names it: no visible
+   *  label and no field chrome, so the text reads like the card's other
+   *  content. `label` still names the field for VoiceOver. */
+  inline?: boolean;
 }) {
   const { theme } = useUnistyles();
   const [focused, setFocused] = useState(false);
@@ -64,7 +73,7 @@ export function TextField({
     literalInput || secret || keyboardType === 'url' || keyboardType === 'email-address';
   return (
     <View style={styles.wrap}>
-      {labelAccessory !== undefined ? (
+      {inline ? null : labelAccessory !== undefined ? (
         <View style={styles.labelRow}>
           <Text style={styles.label}>{label}</Text>
           {labelAccessory}
@@ -79,13 +88,24 @@ export function TextField({
         style={[
           styles.field,
           multiline ? styles.multiline : null,
-          focused ? styles.focused : null,
+          focused && !inline ? styles.focused : null,
           error !== undefined && !focused ? styles.error : null,
+          inline ? styles.inline : null,
           disabled ? styles.disabled : null,
         ]}
       >
         <TextInput
-          style={[styles.input, secret ? styles.mono : null, multiline ? styles.inputMulti : null]}
+          style={[
+            styles.input,
+            secret ? styles.mono : null,
+            multiline ? styles.inputMulti : null,
+            multiline && lines
+              ? {
+                  minHeight: theme.typography.body.lineHeight * lines.min,
+                  maxHeight: theme.typography.body.lineHeight * lines.max,
+                }
+              : null,
+          ]}
           value={value}
           onChangeText={onChangeText}
           onFocus={() => setFocused(true)}
@@ -219,6 +239,13 @@ const styles = StyleSheet.create((theme) => ({
   },
   error: { borderColor: tint(theme.colors.attention, 'border') },
   disabled: { opacity: 0.4 },
+  inline: {
+    minHeight: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    borderWidth: 0,
+    backgroundColor: 'transparent',
+  },
   input: {
     flex: 1,
     minHeight: 44,

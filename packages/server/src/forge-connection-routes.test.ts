@@ -71,6 +71,22 @@ it('validates before persistence and never returns tokens', async () => {
     'rotated-fixture',
   );
 });
+it('omits archived Forgejo repositories from the picker', async () => {
+  user = 'admin';
+  const repositories = vi.spyOn(ForgejoTransport.prototype, 'repositories').mockResolvedValue([
+    { owner: 'owner', repo: 'active', archived: false },
+    { owner: 'owner', repo: 'archived', archived: true },
+  ]);
+  try {
+    const response = await app.inject(`/connections/${connectionId}/repositories`);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      repositories: [{ owner: 'owner', repo: 'active', archived: false }],
+    });
+  } finally {
+    repositories.mockRestore();
+  }
+});
 it('protects connections referenced by projects', async () => {
   await ctx.store.createProject({
     id: 'bound',

@@ -170,6 +170,7 @@ export function createMeetingTranscriptController(
           if (existing) {
             await appendMeetingIndex(meetingDir, existing.path, title);
             await emitMeetingTranscriptSaved({
+              log: app.log,
               eventStore: deps.eventStore,
               bus: deps.bus,
               sessionId: id,
@@ -305,6 +306,7 @@ export function createMeetingTranscriptController(
             request.raw.off('aborted', abortOnDisconnect);
             reply.raw.off('close', abortOnDisconnect);
             await emitMeetingTranscriptSaved({
+              log: app.log,
               eventStore: deps.eventStore,
               bus: deps.bus,
               sessionId: id,
@@ -464,6 +466,7 @@ export function createMeetingTranscriptController(
                 makeMeetingJobNonCancellable(id, controller);
                 await appendMeetingIndex(meetingDir, existing.path, title);
                 await emitMeetingTranscriptSaved({
+                  log: app.log,
                   eventStore: deps.eventStore,
                   bus: deps.bus,
                   sessionId: id,
@@ -526,6 +529,7 @@ export function createMeetingTranscriptController(
                   await readFile(join(meetingDir, basename(relPath)), 'utf8'),
                 );
               await emitMeetingTranscriptSaved({
+                log: app.log,
                 eventStore: deps.eventStore,
                 bus: deps.bus,
                 sessionId: id,

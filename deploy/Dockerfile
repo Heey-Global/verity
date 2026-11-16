@@ -17,7 +17,7 @@
 # Stage 1: builder — compile the TypeScript monorepo.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS builder-deps
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS builder-deps
 
 WORKDIR /app
 
@@ -105,7 +105,7 @@ RUN CI=1 EXPO_NO_TELEMETRY=1 npm run build:web --workspace @verity/mobile-app --
 # runtime image stays lean. --include-workspace-root keeps root-level runtime
 # deps (there are none today, but it is correct if any are added).
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS deps
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS deps
 
 WORKDIR /app
 
@@ -134,7 +134,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 # the client binary from the static bundle and the buildx/compose CLI plugins
 # are needed — not dockerd/containerd.
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS docker-cli
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS docker-cli
 
 # The static CLI download version tracks Docker Engine (moby) releases, whose
 # GitHub tags are `docker-v<x.y.z>` — the extractVersion strips that prefix and
@@ -212,10 +212,23 @@ RUN set -eux; \
     docker-compose version
 
 # ---------------------------------------------------------------------------
+# Native boot probes transport the same immutable build tools as the Server.
+FROM docker-cli AS protected-build-toolchain
+COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
+COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
+COPY deploy/buildkit/protected-build-attempt /opt/verity-install/deploy/buildkit/protected-build-attempt
+COPY scripts/build-project-egress-release.mjs /opt/verity-install/scripts/build-project-egress-release.mjs
+RUN mkdir /protected-toolchain \
+    && printf '{}\n' > /protected-toolchain/manifest.json \
+    && node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers \
+    && node /opt/verity-install/scripts/build-project-egress-release.mjs /protected-toolchain --protected-toolchain \
+    && node /protected-toolchain/devcontainer.js --version \
+    && /protected-toolchain/docker-buildx version
+
 # Stage 4: runtime — the shipped image.
 # ---------------------------------------------------------------------------
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS runtime
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS runtime
 
 # git: the provisioner clones project repos on the Server.
 # ca-certificates: TLS to github.com and Docker registries.
@@ -253,7 +266,13 @@ RUN chmod 0755 /usr/local/bin/verity-transcribe-meeting
 # Install shared CLI lockfiles with integrity checks, preserving global paths.
 COPY features/verity-sandbox-toolkit/npm /opt/verity-cli/npm
 COPY features/verity-sandbox-toolkit/bin/verity-cli-install.mjs /opt/verity-cli/bin/verity-cli-install.mjs
-RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers
+ARG VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=
+ENV VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE=${VERITY_BUNDLED_PROTECTED_TOOLKIT_FEATURE}
+COPY scripts/build-project-egress-release.mjs /opt/verity-install/scripts/build-project-egress-release.mjs
+RUN node /opt/verity-cli/bin/verity-cli-install.mjs devcontainers \
+    && node /opt/verity-install/scripts/build-project-egress-release.mjs /opt/verity-install/egress-release --protected-toolchain \
+    && node /opt/verity-install/egress-release/devcontainer.js --version \
+    && /opt/verity-install/egress-release/docker-buildx version
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-code
 RUN node /opt/verity-cli/bin/verity-cli-install.mjs claude-acp
 # Harden that install: upstream (through 0.66.0) builds tool-call titles out of
@@ -409,7 +428,7 @@ LABEL org.verity.postgres-image=${VERITY_BUNDLED_POSTGRES_IMAGE}
 # a new runtime can never be activated on a host that does not have it. A literal and not a
 # build-arg on purpose: every build of this Dockerfile, release or not, declares the same
 # pins its own code verifies against; gvisor-runtime-config.test.ts keeps the three in step.
-LABEL org.verity.host-runtimes="{\"release\":\"release-20261026.0\",\"sha512\":{\"x86_64\":\"e656d169e5761482b5cfd081e73e0014158843fe82366274d0bfa5d9716d6352514617fb680d28b7a11e6e2796f4790a3262b75f0cc6414207c4012a2139fa21\",\"aarch64\":\"88a647ecebed1731d6718c76681427a1f44ea4528018f79314706ff1b3d1369d067038587c2e49be8ab106b8021469c4bb5d45cd97d525f02eb803b325108f91\"},\"archiveSha512\":{\"x86_64\":\"26e4a327565f5da0f73261a6387e2c20f4695a232e330095a3111b70efd604fdf09d734e8cc8f714dbb5c5607ce8c87ea80b26df549d83a146f2efd5a1af448a\",\"aarch64\":\"da177d9bcfd9ac23899ecfedc6fd47358e9684a1f7e3f5f8ffb8bf7c0ca65f4c08730c0c503b9231b522db28b04c132a06d04d6719e0d8c04c9f82edaf03d8ae\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
+LABEL org.verity.host-runtimes="{\"release\":\"release-20261109.0\",\"sha512\":{\"x86_64\":\"2de47d2924af9f5a6caa9155d9138f9b016a58e253e9097c796dd9b6116af8d613a9b06c8ab28d2660c891c84c8104ef81b2d70c8912552da30eebff013955e2\",\"aarch64\":\"a29e3fa9cc36c6737558283e49aa6cdd3a03be6c7bcf49b2a73274181bcd6bdef54cba36edcadc6f56d062295e60bae96ddfd73664b3d210d9abfa10419cd6e2\"},\"archiveSha512\":{\"x86_64\":\"1a6b8f74c37b4931ef473f67ec1f601690855bedc52ac709f2fac965c69677aa0426ef44598d8eee1aed72cfdb9df87a2a5f352cb3348880fc61a7732bc10f2a\",\"aarch64\":\"411f2d6f7f98a93643725ce9933ff67a7f96f884c2317be3e2b579b976ceb54065bd1d4292a9d61de38da1940ef21b7e41070127874086b7992fb7b5e7a85897\"},\"runtimes\":{\"runsc\":[\"--platform=systrap\",\"--network=none\"],\"runsc-project\":[\"--platform=systrap\",\"--network=sandbox\",\"--host-uds=create\"]}}"
 
 # This image carries the devcontainer builder bundle under /opt/verity-install/deploy in the
 # form deploy/host/verity-host-builder installs from. During an update the Updater names this

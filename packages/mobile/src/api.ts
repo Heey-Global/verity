@@ -1,9 +1,41 @@
+import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
+import {
+  agentLoginResponseSchema,
+  peopleClient,
+  type AgentLogin,
+  type AgentLoginProvider,
+} from './people-api.js';
+export * from './people-api.js';
+export * from './backup-api.js';
+import {
+  backupProbeJobSchema,
+  backupStatusSchema,
+  backupKeyOfferSchema,
+  type BackupKeyOffer,
+  type BackupProbeJob,
+  type BackupStatus,
+} from './backup-api.js';
+import {
+  projectRepositorySchema,
+  projectInquirySchema,
+  repositoryInstructionsSchema,
+} from './projectCollaboration.js';
+import { repositoryPullRequestsSchema } from './projectPullRequests.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
   type ProjectEgressPolicy,
 } from './projectEgress.js';
-import { storageReclamationActionSchema, type StorageReclamationAction } from '@verity/events';
+import {
+  assistantConversationSchema,
+  assistantDeliverySchema,
+  storageReclamationActionSchema,
+  type AssistantAnswerRequest,
+  type AssistantConversation,
+  type AssistantDelivery,
+  type AssistantMessageRequest,
+  type StorageReclamationAction,
+} from '@verity/events';
 import { buildDiagnosticResponseSchema, systemLogResponseSchema } from './logs.js';
 import {
   auditHealthSchema,
@@ -21,6 +53,7 @@ import {
   vulnerabilitySessionSchema,
   vulnerabilityIgnoresSchema,
   type VulnerabilitySettings,
+  type VulnerabilityFixSelection,
 } from './vulnerability.js';
 import {
   boundedHistoryResultSchema,
@@ -34,6 +67,16 @@ import {
   runtimeOtherRequestGroup,
 } from './runtimeDiagnostics.js';
 import { recordingDigest, type RecordingDigest } from './recording-digest.js';
+import {
+  wikiCatalogSchema,
+  wikiProposalDecisionSchema,
+  wikiProposalListSchema,
+  wikiProposalSchema,
+  type WikiCatalog,
+  type WikiProposal,
+  type WikiProposalDecision,
+  type WikiProposalSummary,
+} from '@verity/events';
 import {
   recordingFailureReasonSchema,
   selectedEvidenceMetadataSchema,
@@ -73,7 +116,9 @@ export interface TransportRequestInit extends RequestInit {
 
 function readTransportLane(path: string): TransportLane {
   const pathname = path.split('?')[0]!;
-  return /^\/(?:sessions|projects)$/u.test(pathname) ||
+  // A held conversation read must not occupy one of the few background slots.
+  return pathname === '/assistant/conversation' ||
+    /^\/(?:sessions|projects)$/u.test(pathname) ||
     /^\/sessions\/[^/]+(?:\/(?:events|activity|history\/v1))?$/u.test(pathname)
     ? 'interactive'
     : 'background';
@@ -94,6 +139,26 @@ const projectGitHubIssuesSchema = z.object({
 });
 export type ProjectGitHubIssues = z.infer<typeof projectGitHubIssuesSchema>;
 export type ProjectGitHubIssue = ProjectGitHubIssues['issues'][number];
+
+const repositoryIdentity = {
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(['github', 'forgejo']),
+  owner: z.string(),
+  repo: z.string(),
+  isDefault: z.boolean(),
+};
+const repositoryIssuesSchema = z.discriminatedUnion('status', [
+  z.object({
+    ...repositoryIdentity,
+    status: z.literal('ok'),
+    viewerLogin: z.string().nullable(),
+    issues: projectGitHubIssuesSchema.shape.issues,
+  }),
+  z.object({ ...repositoryIdentity, status: z.literal('unavailable') }),
+]);
+/** Open issues of one repository connected to a project; `unavailable` is never "none". */
+export type RepositoryIssues = z.infer<typeof repositoryIssuesSchema>;
 
 export type { Attachment, AttachmentUpload } from '@verity/events';
 
@@ -223,6 +288,40 @@ const pendingPermissionRequestSchema = z.object({
   input: z.unknown().optional(),
 });
 
+/** A mockup review: the screens the agent presented, each marked approved,
+ * discarded or still open. An older server's `comment` reads as discarded, as the
+ * server itself reads it. A value this build does not understand reads as absent
+ * rather than failing the whole response, like `planning`. */
+export const mockupReviewSchema = z
+  .object({
+    state: z.enum(['pending', 'revising', 'approved']),
+    revision: z.number().int().nonnegative(),
+    screens: z.array(
+      z.object({
+        name: z.string(),
+        attachment: z.string(),
+        mediaType: z.string(),
+        width: z.number(),
+        height: z.number(),
+        verdict: z
+          .enum(['open', 'approved', 'discarded', 'comment'])
+          .transform((verdict) => (verdict === 'comment' ? 'discarded' : verdict)),
+      }),
+    ),
+  })
+  .optional()
+  .catch(undefined);
+export type MockupReview = NonNullable<z.infer<typeof mockupReviewSchema>>;
+export type MockupReviewScreen = MockupReview['screens'][number];
+
+/** Planning mode (`active`), or how the last planning round ended. A value this
+ * build does not know reads as absent rather than failing the whole response. */
+const sessionPlanningSchema = z
+  .enum(['active', 'implemented', 'discarded'])
+  .optional()
+  .catch(undefined);
+export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
+
 export const sessionSummarySchema = z
   .object({
     sessionId: z.string().min(1),
@@ -232,6 +331,8 @@ export const sessionSummarySchema = z
     name: z.string().nullable(),
     /** Project binding for multi-repo fleet sessions (#174). Older servers omit it. */
     projectId: z.string().nullable().optional(),
+    /** The open mockup review, if the agent presented mockups. */
+    mockupReview: mockupReviewSchema,
     /** Operator-marked favorite, highlighted in the session list. ABSENT means not a
      * favorite — servers omit it for unmarked sessions, and older servers never send it. */
     favorite: z.boolean().optional(),
@@ -247,6 +348,14 @@ export const sessionSummarySchema = z
     /** The unanswered question of the current turn. Absent on older servers, while
      * the session works and after an answer. */
     openChoices: openChoicesSchema.optional().catch(undefined),
+    /** Planning mode, so an overview can mark a session whose plan waits for
+     * approval. Absent on older servers and for a session that never planned. */
+    planning: sessionPlanningSchema,
+    planningRevision: z.number().int().nonnegative().optional().catch(undefined),
+    /** True while planning is active and a presented plan waits for approval. The
+     * list carries this instead of the plan text, which only the session shows.
+     * Absent on older servers, so they never mark a plan. */
+    planningPresented: z.literal(true).optional().catch(undefined),
     usage: usageTotalsSchema,
     /** Latest rate-limit state for this session. Optional for rollout with
      * older servers and absent until a runtime emits one. */
@@ -364,14 +473,6 @@ const queuedItemSchema = z.union([
 ]);
 export type QueuedItem = z.infer<typeof queuedItemSchema>;
 
-/** Planning mode (`active`), or how the last planning round ended. A value this
- * build does not know reads as absent rather than failing the whole response. */
-const sessionPlanningSchema = z
-  .enum(['active', 'implemented', 'discarded'])
-  .optional()
-  .catch(undefined);
-export type SessionPlanning = NonNullable<z.infer<typeof sessionPlanningSchema>>;
-
 const gmailSessionConnectionSchema = z.object({
   accountId: z.string().nullable().optional(),
   accountName: z.string().nullable().optional(),
@@ -419,6 +520,11 @@ export const sessionDetailSchema = sessionSummarySchema.safeExtend({
   busy: z.boolean().optional(),
   /** Turns queued behind the in-flight one (#90/#80), FIFO. Absent → none. */
   queued: z.array(queuedItemSchema).optional(),
+  /** In a session several people write in: each person's name by user id, so
+   *  messages can say who sent them. Absent when one person works alone. */
+  people: z.record(z.string(), z.string()).optional(),
+  /** The signed-in person, beside `people`. */
+  viewerUserId: z.string().optional(),
 });
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 
@@ -461,6 +567,7 @@ export const sessionActivitySchema = z.object({
   planning: sessionPlanningSchema,
   planningRevision: z.number().int().nonnegative().optional(),
   planningPlan: z.string().nullable().optional(),
+  mockupReview: mockupReviewSchema.nullable(),
 });
 export type SessionActivity = z.infer<typeof sessionActivitySchema>;
 
@@ -507,6 +614,14 @@ const sandboxUpdateSchema = z.object({
   // Defaulted for the same reason as `selfRepair`: a Server one release behind
   // this app does not send it, and `false` is exactly what that Server means.
   turnBlocked: z.boolean().default(false),
+  // What holds a `turnBlocked` update off — `turn`, `dev_server` or `preview` —
+  // so the app names the right remedy. Read as plain strings: members a newer
+  // Server adds are ignored by the helpers rather than failing the project list.
+  blockedBy: z.array(z.string()).default([]),
+  // The most recent failed automatic recreate, with its time, so an earlier
+  // failure cannot read as the outcome of the attempt running now. Defaulted for
+  // the same reason as the fields above.
+  lastRepairFailure: z.object({ at: z.string(), message: z.string() }).nullable().default(null),
 });
 export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 
@@ -528,6 +643,9 @@ export type ToolkitDrift = z.infer<typeof toolkitDriftSchema>;
 /** Cached GitHub-installation repo plus Verity-side container lifecycle state (#174). */
 export const projectRecordSchema = z.object({
   id: z.string().min(1),
+  // The project's own name. Optional for servers that predate it; the app then
+  // names the project as before (see `projectDisplayName`).
+  name: z.string().min(1).optional(),
   owner: z.string().min(1),
   repo: z.string().min(1),
   containerName: z.string().min(1),
@@ -638,6 +756,10 @@ export type LinkedProject = z.infer<typeof linkedProjectSchema>;
 export const PROJECT_AGENTS = ['claude', 'codex', 'opencode'] as const;
 export type ProjectAgent = (typeof PROJECT_AGENTS)[number];
 
+/** When an accepted plan stops for mockups before it is built. */
+export const PROJECT_DESIGN_LEVELS = ['off', 'on_request', 'required'] as const;
+export type ProjectDesignLevel = (typeof PROJECT_DESIGN_LEVELS)[number];
+
 export const projectSettingsSchema = z.object({
   projectId: z.string().min(1),
   // Broker-only Doppler mapping. Credentials remain central and never appear in
@@ -656,13 +778,23 @@ export const projectSettingsSchema = z.object({
   // Agents sessions in this project may use; null (or absent on an older server)
   // allows every connected agent.
   allowedAgents: z.array(z.enum(PROJECT_AGENTS)).nullable().optional(),
+  // When accepted plans stop for mockups; absent on an older server.
+  designLevel: z.enum(PROJECT_DESIGN_LEVELS).optional(),
+  // One line under the project's name; absent on an older server, null when unset.
+  description: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type ProjectSettings = z.infer<typeof projectSettingsSchema>;
 
 type ProjectSettingsKey =
-  'defaultBranch' | 'defaultModel' | 'memory' | 'googleDriveAccessMode' | 'allowedAgents';
+  | 'defaultBranch'
+  | 'defaultModel'
+  | 'memory'
+  | 'googleDriveAccessMode'
+  | 'allowedAgents'
+  | 'designLevel'
+  | 'description';
 
 export type ProjectSettingsPatch = {
   [K in ProjectSettingsKey]?: ProjectSettings[K] | undefined;
@@ -957,6 +1089,18 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
+// `.catch` keeps a newer server's additional status readable as still joining.
+const onlineJoinStatusSchema = z
+  .enum(['joining', 'waiting', 'joined', 'failed', 'ended'])
+  .catch('joining');
+const onlineMeetingStatusSchema = z.object({
+  status: onlineJoinStatusSchema,
+  /** Provider reason code of a failed join, for example `login_required`. */
+  reason: z.string().nullable().catch(null),
+  platform: z.enum(['google_meet', 'teams', 'zoom']).nullable().catch(null),
+});
+export type OnlineMeetingStatus = z.infer<typeof onlineMeetingStatusSchema>;
+
 const activeLiveMeetingsSchema = z.object({
   running: z.array(
     z.object({
@@ -967,6 +1111,8 @@ const activeLiveMeetingsSchema = z.object({
       startedAt: z.number(),
       state: z.enum(['active', 'interrupted']),
       captureStatus: z.string(),
+      /** Online meetings: how far Verity got into the call (newer servers only). */
+      joinStatus: onlineJoinStatusSchema.optional(),
       recorderLastSeenAt: z.number().nullable().optional(),
       sessionName: z.string().nullable(),
       projectId: z.string().nullable(),
@@ -1272,21 +1418,6 @@ export type VeritySettingsPatch = {
   opencodeDisabledModels?: string | null | undefined;
 };
 
-export const agentLoginProviderSchema = z.enum(['claude', 'codex']);
-export type AgentLoginProvider = z.infer<typeof agentLoginProviderSchema>;
-export const agentLoginSchema = z.object({
-  sessionId: z.string().min(1),
-  provider: agentLoginProviderSchema,
-  status: z.enum(['starting', 'ready', 'waiting', 'complete', 'failed']),
-  verificationUri: z.string().nullable(),
-  userCode: z.string().nullable(),
-  needsCode: z.boolean(),
-  configured: z.boolean(),
-  message: z.string().nullable(),
-});
-export type AgentLogin = z.infer<typeof agentLoginSchema>;
-const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
-
 /** State of the at-rest secret store (master-password unlock). `uninitialized`
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
@@ -1295,47 +1426,6 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
-/** A restore probe as the server reports it. The server keeps no key in it.
- *  `status` and `phase` stay plain strings so a newer server's values do not
- *  make the whole backup status unreadable. */
-export const backupProbeJobSchema = z.object({
-  id: z.string().uuid(),
-  status: z.string(),
-  phase: z.string(),
-  startedAt: z.number(),
-  finishedAt: z.number().nullable(),
-  snapshot: z.unknown(),
-  error: z.string().nullable(),
-});
-export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
-
-/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
- *  older servers report reasons this app does not know. */
-export const backupStatusSchema = z.discriminatedUnion('available', [
-  z.object({ available: z.literal(false), reason: z.string() }),
-  z.object({
-    available: z.literal(true),
-    configured: z.boolean(),
-    paused: z.boolean().optional(),
-    intervalMs: z.number().optional(),
-    lastSuccess: z.number().nullable().optional(),
-    capturing: z.boolean().optional(),
-    keyGeneration: z.number().optional(),
-    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
-    probe: backupProbeJobSchema.nullable().optional(),
-    alerts: z.array(z.string()),
-  }),
-]);
-export type BackupStatus = z.infer<typeof backupStatusSchema>;
-
-/** A newly generated recovery key, shown once. It becomes active on confirmation. */
-const backupKeyOfferSchema = z.object({
-  id: z.string().uuid(),
-  recoveryKey: z.string().min(1),
-  expiresAt: z.number(),
-});
-export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -1706,10 +1796,25 @@ export const projectDetailSchema = z.object({
   project: projectRecordSchema,
   settings: projectSettingsSchema.nullable(),
   sessions: z.array(sessionSummarySchema),
+  // What the requesting person may change. Absent from older servers, which
+  // left every change to administrators and refused the rest.
+  viewer: z.object({ canManage: z.boolean() }).optional(),
 });
 export type ProjectDetail = z.infer<typeof projectDetailSchema>;
 
 const projectCreatedSchema = z.object({ project: projectRecordSchema });
+
+/** Body for `PATCH /projects/:id/profile`: the name and description shown on
+ *  the project page. `description: null` (or empty) removes the description. */
+export interface ProjectProfilePatch {
+  name?: string;
+  description?: string | null;
+}
+const projectProfileSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().nullable().optional(),
+});
+export type ProjectProfile = z.infer<typeof projectProfileSchema>;
 export type ProjectCreated = z.infer<typeof projectCreatedSchema>;
 
 const projectSettingsResponseSchema = z.object({ settings: projectSettingsSchema });
@@ -1970,6 +2075,24 @@ export type ModelList = z.infer<typeof modelListSchema>;
 export const branchSwitchedSchema = z.object({ branch: z.string() });
 export type BranchSwitched = z.infer<typeof branchSwitchedSchema>;
 
+/** Response of `GET /knowledge/shared/recent`: the latest pages, newest first. */
+const recentSharedKnowledgeSchema = z.object({
+  entries: z.array(
+    z.object({
+      path: z.string().min(1),
+      title: z.string(),
+      area: z.enum(['decisions', 'wiki', 'sources']),
+      modifiedAt: z.string(),
+      // Only a confirmed decision records where it came from.
+      decision: z.object({ sessionId: z.string(), confirmedAt: z.string() }).optional(),
+    }),
+  ),
+  /** More files than the server scans; newer pages may be missing from the list. */
+  truncated: z.boolean().default(false),
+});
+export type RecentSharedKnowledgeList = z.infer<typeof recentSharedKnowledgeSchema>;
+export type RecentSharedKnowledge = z.infer<typeof recentSharedKnowledgeSchema>['entries'][number];
+
 export const sessionFileEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
@@ -2115,13 +2238,20 @@ export interface SpawnRequest {
   issue?: number;
 }
 
-/** Body for `POST /projects`. Two shapes: an existing GitHub repository as
+/** Body for `POST /projects`. `name` is the project's own name; a repository
+ * project without one is named after its repository. Two shapes: an existing GitHub repository as
  * `owner/repo` (plus the GitHub URL forms the server canonicalises through its
  * shared project parser), or a project with NO GitHub repository behind it,
  * which {@link VerityClient.linkProjectToGitHub} can connect to one later. */
 export type CreateProjectRequest =
-  | { repo: string; kind?: 'github'; imageRef?: string | null }
-  | { repo: string; kind: 'forgejo'; connectionId: string; imageRef?: string | null }
+  | { repo: string; kind?: 'github'; name?: string; imageRef?: string | null }
+  | {
+      repo: string;
+      kind: 'forgejo';
+      connectionId: string;
+      name?: string;
+      imageRef?: string | null;
+    }
   | { kind: 'local'; name: string; imageRef?: string | null };
 
 /** Body for `POST /devices/:id/push-token`: registers this device's Expo push
@@ -2140,6 +2270,7 @@ export type DevicePushTokenRegistered = z.infer<typeof devicePushTokenRegistered
 /** Body for `POST /sessions/:id/turns`. */
 export interface TurnRequest {
   prompt: string;
+  vulnerabilityFix?: { findings?: VulnerabilityFixSelection[] };
   permissionMode?: string;
   model?: string;
   timeoutMs?: number;
@@ -2270,6 +2401,9 @@ export interface VerityClientOptions {
    *  screen. NOT fired for the `/secret/*` on-ramp, whose 401 is a wrong-password
    *  signal the unlock UI handles inline. */
   onUnauthorized?: () => void;
+  /** Receives every request's outcome, so the app can show one connection state
+   *  instead of each screen rendering the same transport failure. */
+  connection?: ConnectionReporter;
 }
 
 function uploadBodyWithMimeType(data: Blob): Blob {
@@ -2621,6 +2755,23 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  // Team and personal connection calls (people-api.ts); set before the fields below.
+  private readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly getProjectTeam = this.people.getProjectTeam;
+  readonly createProjectInvitation = this.people.createProjectInvitation;
+  readonly getProjectInvitation = this.people.getProjectInvitation;
+  readonly revokeProjectInvitation = this.people.revokeProjectInvitation;
+  readonly setProjectMemberRights = this.people.setProjectMemberRights;
+  readonly removeProjectMember = this.people.removeProjectMember;
+  readonly listProviderConnections = this.people.listProviderConnections;
+  readonly startProviderConnectionLogin = this.people.startProviderConnectionLogin;
+  readonly getProviderConnectionLogin = this.people.getProviderConnectionLogin;
+  readonly submitProviderConnectionLoginCode = this.people.submitProviderConnectionLoginCode;
+  readonly setOpenCodeConnection = this.people.setOpenCodeConnection;
+  readonly disconnectProviderConnection = this.people.disconnectProviderConnection;
+  readonly setOwnProjectDefaultModel = this.people.setOwnProjectDefaultModel;
+  readonly joinTeam = this.people.joinTeam;
+
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
@@ -2679,6 +2830,17 @@ export class VerityClient {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
+    );
+  }
+  /** How far Verity's bot got into an online meeting of the session. */
+  async getOnlineMeetingStatus(sessionId: string, meetingId: string): Promise<OnlineMeetingStatus> {
+    return onlineMeetingStatusSchema.parse(
+      await (
+        await this.request(
+          `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/status`,
+          { method: 'GET' },
+        )
+      ).json(),
     );
   }
   /** Running meetings of readable sessions and, for administrators, unassigned ones. */
@@ -2924,6 +3086,14 @@ export class VerityClient {
     );
   }
 
+  /** End server discovery, retaining received content; does not stop a remote microphone. */
+  async finalizeLiveMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/finalize`,
+      { method: 'POST' },
+    );
+  }
+
   async putLiveMeetingNote(sessionId: string, note: LiveMeetingNote): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(note.meetingId)}/notes/${encodeURIComponent(note.id)}`,
@@ -3074,6 +3244,7 @@ export class VerityClient {
   private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
+  private readonly connection: ConnectionReporter | undefined;
 
   constructor(opts: VerityClientOptions) {
     this.recordingDigest = opts.recordingDigest ?? recordingDigest;
@@ -3087,6 +3258,7 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
+    this.connection = opts.connection;
   }
 
   private async knowledgeRequest(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -3345,6 +3517,123 @@ export class VerityClient {
     return z.object({ ids: z.array(z.string()) }).parse(await res.json()).ids;
   }
 
+  async listSessionRepositories(sessionId: string) {
+    const res = await this.request(`/sessions/${encodeURIComponent(sessionId)}/repositories`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        repositories: z.array(
+          projectRepositorySchema.extend({
+            workspace: z
+              .object({
+                worktree: z.string(),
+                branch: z.string().nullable(),
+                pullRequest: z
+                  .object({
+                    number: z.number(),
+                    url: z.string(),
+                    state: z.string(),
+                    dependsOn: z.array(z.string()).optional(),
+                  })
+                  .nullable()
+                  .optional(),
+              })
+              .passthrough()
+              .nullable(),
+          }),
+        ),
+      })
+      .parse(await res.json()).repositories;
+  }
+
+  async openSessionRepository(sessionId: string, repositoryId: string) {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/repositories/${encodeURIComponent(repositoryId)}/open`,
+      { method: 'POST' },
+    );
+  }
+
+  async listProjectRepositories(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(projectRepositorySchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  async addProjectRepository(
+    projectId: string,
+    input: {
+      name: string;
+      kind: 'github' | 'forgejo';
+      owner: string;
+      repo: string;
+      forgeConnectionId?: string;
+      defaultBranch?: string;
+    },
+  ) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/repositories`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return res.json();
+  }
+
+  async removeProjectRepository(projectId: string, repositoryId: string) {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/repositories/${encodeURIComponent(repositoryId)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  async listInquiryGrants(projectId: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'GET',
+    });
+    return z
+      .object({
+        grants: z.array(
+          z.object({
+            sourceProjectId: z.string(),
+            targetProjectId: z.string(),
+            enabled: z.boolean(),
+            createdAt: z.string(),
+          }),
+        ),
+      })
+      .parse(await res.json()).grants;
+  }
+
+  async setInquiryGrant(projectId: string, targetProjectId: string, enabled: boolean) {
+    await this.request(`/projects/${encodeURIComponent(projectId)}/inquiry-grants`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targetProjectId, enabled }),
+    });
+  }
+
+  async listProjectInquiries(sessionId?: string, projectId?: string) {
+    const path =
+      sessionId === undefined
+        ? `/project-inquiries/pending${projectId === undefined ? '' : `?projectId=${encodeURIComponent(projectId)}`}`
+        : `/sessions/${encodeURIComponent(sessionId)}/project-inquiries`;
+    const res = await this.request(path, { method: 'GET' });
+    return z.object({ inquiries: z.array(projectInquirySchema) }).parse(await res.json()).inquiries;
+  }
+
+  async decideProjectInquiry(sessionId: string, inquiryId: string, decision: 'approve' | 'reject') {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/project-inquiries/${encodeURIComponent(inquiryId)}/decision`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision }),
+      },
+    );
+  }
+
   async listSessionLinks(
     id: string,
     signal?: AbortSignal,
@@ -3520,6 +3809,46 @@ export class VerityClient {
       method: 'GET',
     });
     return projectGitHubIssuesSchema.parse(await res.json());
+  }
+
+  /**
+   * Open issues of every repository connected to the project, the default one
+   * first. A server that predates the per-repository route answers for the
+   * default repository only.
+   */
+  async listProjectIssues(
+    project: Pick<ProjectRecord, 'id'> & Partial<Pick<ProjectRecord, 'kind' | 'owner' | 'repo'>>,
+  ): Promise<RepositoryIssues[]> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(project.id)}/issues`, {
+        method: 'GET',
+      });
+      return z.object({ repositories: z.array(repositoryIssuesSchema) }).parse(await res.json())
+        .repositories;
+    } catch (err) {
+      // An older server does not know the route: 404, or 403 where its paired
+      // gate refuses an unlisted route. A real refusal fails the old route too.
+      if (!(err instanceof VerityApiError) || (err.status !== 404 && err.status !== 403)) throw err;
+    }
+    const legacy = await this.listProjectGitHubIssues(project.id);
+    // The old route answers for GitHub projects; without the record, assume one.
+    const kind = project.kind ?? 'github';
+    if (!legacy.connected || (kind !== 'github' && kind !== 'forgejo')) return [];
+    const owner = project.owner ?? '';
+    const repo = project.repo ?? '';
+    return [
+      {
+        id: `default:${project.id}`,
+        name: owner && repo ? `${owner}/${repo}` : 'Issues',
+        kind,
+        owner,
+        repo,
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: legacy.viewerLogin,
+        issues: legacy.issues,
+      },
+    ];
   }
 
   async listAvailableRepositories(): Promise<ProjectRecord[]> {
@@ -4092,6 +4421,30 @@ export class VerityClient {
       { method: 'GET' },
     );
     return driveFileListSchema.parse(await res.json());
+  }
+
+  async getProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+  ): Promise<DriveFile> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'GET' },
+    );
+    return z.object({ file: driveFileSchema }).parse(await res.json()).file;
+  }
+
+  async trashProjectGoogleDriveFile(
+    projectId: string,
+    folderId: string,
+    fileId: string,
+    expectedVersion: string,
+  ): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/google-drive/folders/${encodeURIComponent(folderId)}/files/${encodeURIComponent(fileId)}`,
+      { method: 'DELETE', body: JSON.stringify({ expectedVersion, confirmed: true }) },
+    );
   }
 
   async uploadProjectGoogleDriveFile(
@@ -4779,6 +5132,63 @@ export class VerityClient {
     return z.object({ instructions: z.string(), revision: z.string() }).parse(await res.json());
   }
 
+  /** The root AGENTS.md of each connected repository, read-only, with where it came from. */
+  async getProjectRepositoryInstructions(id: string) {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/repository-instructions`, {
+      method: 'GET',
+    });
+    return z.object({ repositories: z.array(repositoryInstructionsSchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  /** Every connected repository with its open pull requests, as the code host reports
+   *  them; `refresh` asks the host again instead of the server's recent answer. */
+  async getProjectPullRequests(id: string, options: { refresh?: boolean } = {}) {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests${options.refresh ? '?refresh=1' : ''}`,
+      { method: 'GET' },
+    );
+    return z.object({ repositories: z.array(repositoryPullRequestsSchema) }).parse(await res.json())
+      .repositories;
+  }
+
+  /** Merges a pull request that no session owns, at the commit the list showed. */
+  async mergeProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    head: { branch: string; expectedHeadSha: string },
+  ): Promise<{ merged: true }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/merge`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(head),
+      },
+    );
+    return z.object({ merged: z.literal(true) }).parse(await res.json());
+  }
+
+  /** Starts the session that fixes a failing or conflicting pull request, or returns
+   *  the one already working on it. */
+  async fixProjectPullRequest(
+    id: string,
+    repositoryId: string,
+    number: number,
+    branch: string,
+  ): Promise<{ sessionId: string; created: boolean }> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(id)}/pull-requests/${encodeURIComponent(repositoryId)}/${String(number)}/fix`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ branch }),
+      },
+    );
+    return z.object({ sessionId: z.string(), created: z.boolean() }).parse(await res.json());
+  }
+
   async replaceProjectInstructions(id: string, input: { instructions: string; revision: string }) {
     const res = await this.request(`/projects/${encodeURIComponent(id)}/instructions`, {
       method: 'PUT',
@@ -4831,6 +5241,16 @@ export class VerityClient {
   async getProject(id: string): Promise<ProjectDetail> {
     const res = await this.request(`/projects/${encodeURIComponent(id)}`, { method: 'GET' });
     return projectDetailSchema.parse(await res.json());
+  }
+
+  /** Renames the project and/or changes its description; only what is given changes. */
+  async updateProjectProfile(id: string, patch: ProjectProfilePatch): Promise<ProjectProfile> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/profile`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return projectProfileSchema.parse(await res.json());
   }
 
   async updateProjectSettings(id: string, patch: ProjectSettingsPatch): Promise<ProjectSettings> {
@@ -5880,6 +6300,33 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** Mark a mockup screen approved or discarded, or take the mark back. A mark
+   * starts no work. 409 when the round changed meanwhile (`stale`) or no longer
+   * waits for review (`notPending`). */
+  async decideMockup(
+    id: string,
+    revision: number,
+    screen: string,
+    decision: { verdict: MockupReviewScreen['verdict'] },
+  ): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'mark', revision, screen, ...decision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
+  /** End only the displayed review round, keeping images and marks. Starts no work. */
+  async completeMockups(id: string, revision: number): Promise<MockupReview | undefined> {
+    const res = await this.request(`/sessions/${encodeURIComponent(id)}/mockups`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'complete', revision }),
+    });
+    return z.object({ mockupReview: mockupReviewSchema }).parse(await res.json()).mockupReview;
+  }
+
   async renameSession(id: string, name: string | null): Promise<SessionRenamed> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -5965,9 +6412,16 @@ export class VerityClient {
   /** Permanently delete a session: drops its history and removes its worktree on
    * the server. Non-2xx (404 unknown, 409 busy) throws a {@link VerityApiError}
    * carrying the server's status + message. `force` bypasses the busy guard after
-   * an explicit destructive confirmation. Returns the deleted session id. */
-  async deleteSession(id: string, opts: { force?: boolean } = {}): Promise<SessionDeleted> {
-    const query = opts.force ? '?force=true' : '';
+   * an explicit destructive confirmation. `wiki` keeps the conversation for the
+   * project's Wiki maintenance until it was read (the session was done, not
+   * worthless). Returns the deleted session id. */
+  async deleteSession(
+    id: string,
+    opts: { force?: boolean; wiki?: boolean } = {},
+  ): Promise<SessionDeleted> {
+    // Built by hand: URLSearchParams is incomplete in some React Native runtimes.
+    const params = [opts.force ? 'force=true' : '', opts.wiki ? 'wiki=true' : ''].filter(Boolean);
+    const query = params.length ? `?${params.join('&')}` : '';
     const res = await this.request(`/sessions/${encodeURIComponent(id)}${query}`, {
       method: 'DELETE',
     });
@@ -5995,6 +6449,65 @@ export class VerityClient {
     return branchListSchema.parse(await res.json());
   }
 
+  /** The project Wiki's catalog for its start page, or null from a server that
+   *  predates it — the app then shows the Wiki as a folder, as before. */
+  async getProjectWiki(projectId: string): Promise<WikiCatalog | null> {
+    try {
+      const res = await this.request(`/projects/${encodeURIComponent(projectId)}/knowledge/wiki`, {
+        method: 'GET',
+      });
+      return wikiCatalogSchema.parse(await res.json());
+    } catch (err) {
+      // Only the router's own not-found means an older server; a missing
+      // project is a 404 that names it, and stays an error.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
+  /** Proposed Wiki changes waiting for review, or null from a server without proposals. */
+  async listWikiProposals(projectId: string): Promise<WikiProposalSummary[] | null> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/proposals`,
+        { method: 'GET' },
+      );
+      return wikiProposalListSchema.parse(await res.json()).proposals;
+    } catch (err) {
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        return null;
+      throw err;
+    }
+  }
+
+  /** One proposal with each page's proposed and current text. */
+  async getWikiProposal(projectId: string, proposalId: string): Promise<WikiProposal> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}`,
+      { method: 'GET' },
+    );
+    return wikiProposalSchema.parse(await res.json());
+  }
+
+  /** Applies or rejects a proposal's pending pages, or only the `paths` named. */
+  async decideWikiProposal(
+    projectId: string,
+    proposalId: string,
+    decision: 'apply' | 'reject',
+    paths?: readonly string[],
+  ): Promise<WikiProposalDecision> {
+    const res = await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/proposals/${encodeURIComponent(proposalId)}/${decision}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(paths ? { paths } : {}),
+      },
+    );
+    return wikiProposalDecisionSchema.parse(await res.json());
+  }
+
   async listProjectKnowledgeFiles(projectId: string, path = ''): Promise<SessionDirectory> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
@@ -6016,12 +6529,51 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  /** Where a native download of a project knowledge file reads from; the
+   * caller sends the bearer itself (React Native's Blob has no arrayBuffer). */
+  projectKnowledgeFileDownloadUrl(projectId: string, path: string): string {
+    return `${this.baseUrl}/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`;
+  }
+
   async downloadProjectKnowledgeFile(projectId: string, path: string): Promise<Blob> {
     const res = await this.request(
       `/projects/${encodeURIComponent(projectId)}/knowledge/files/download?path=${encodeURIComponent(path)}`,
       { method: 'GET' },
     );
     return res.blob();
+  }
+
+  async deleteProjectKnowledgeFile(projectId: string, path: string): Promise<void> {
+    await this.request(
+      `/projects/${encodeURIComponent(projectId)}/knowledge/files?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
+  }
+
+  /** Gives a Sources file or folder a new name in its folder; resolves to its
+   *  new path, with a warning when its search text could not follow. A name
+   *  that is taken is refused (409), never replaced. */
+  async renameProjectKnowledgeFile(
+    projectId: string,
+    path: string,
+    name: string,
+  ): Promise<{ path: string; warning?: string | undefined }> {
+    try {
+      const res = await this.request(
+        `/projects/${encodeURIComponent(projectId)}/knowledge/files/rename`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, name }),
+        },
+      );
+      return z.object({ path: z.string(), warning: z.string().optional() }).parse(await res.json());
+    } catch (err) {
+      // The router's own 404, not a missing file: a server without this route.
+      if (err instanceof VerityApiError && err.status === 404 && err.message === 'Not Found')
+        throw new Error('Update the Verity server to rename Sources', { cause: err });
+      throw err;
+    }
   }
 
   async writeProjectKnowledgeFile(
@@ -6040,6 +6592,14 @@ export class VerityClient {
     return sessionFileContentSchema.parse(await res.json());
   }
 
+  /** The most recently changed Shared pages, for Verity's page. */
+  async listRecentSharedKnowledge(limit = 8): Promise<RecentSharedKnowledgeList> {
+    const res = await this.request(`/knowledge/shared/recent?limit=${String(limit)}`, {
+      method: 'GET',
+    });
+    return recentSharedKnowledgeSchema.parse(await res.json());
+  }
+
   async listSharedKnowledgeFiles(path = ''): Promise<SessionDirectory> {
     const res = await this.request(`/knowledge/shared/files?path=${encodeURIComponent(path)}`, {
       method: 'GET',
@@ -6056,6 +6616,11 @@ export class VerityClient {
       { method: 'GET' },
     );
     return sessionFileContentSchema.parse(await res.json());
+  }
+
+  /** Where a native download of a Shared knowledge file reads from. */
+  sharedKnowledgeFileDownloadUrl(path: string): string {
+    return `${this.baseUrl}/knowledge/shared/files/download?path=${encodeURIComponent(path)}`;
   }
 
   async downloadSharedKnowledgeFile(path: string): Promise<Blob> {
@@ -6257,11 +6822,18 @@ export class VerityClient {
     return branchSwitchedSchema.parse(await res.json());
   }
 
-  async mergePullRequest(id: string, number: number): Promise<PullRequestMerged> {
+  /** `expectedHeadSha` merges only that commit; the server refuses a branch that moved. */
+  async mergePullRequest(
+    id: string,
+    number: number,
+    expectedHeadSha?: string,
+  ): Promise<PullRequestMerged> {
     const res = await this.request(`/sessions/${encodeURIComponent(id)}/pull-request/merge`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ number }),
+      body: JSON.stringify(
+        expectedHeadSha === undefined ? { number } : { number, expectedHeadSha },
+      ),
     });
     return pullRequestMergedSchema.parse(await res.json());
   }
@@ -6489,6 +7061,45 @@ export class VerityClient {
       .parse(await res.json());
   }
 
+  /** The conversation with Verity as phone and Watch show it (docs/assistant.md). A
+   * member who is not an administrator gets a 403 {@link VerityApiError}. */
+  async assistantConversation(
+    options: { after?: number; waitMs?: number; signal?: AbortSignal } = {},
+  ): Promise<AssistantConversation> {
+    // With both, the server holds the read until the conversation moves past `after`.
+    const query =
+      options.after !== undefined && options.waitMs !== undefined
+        ? `?after=${String(options.after)}&waitMs=${String(options.waitMs)}`
+        : '';
+    const res = await this.request(`/assistant/conversation${query}`, {
+      method: 'GET',
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return assistantConversationSchema.parse(await res.json());
+  }
+
+  /** Sends what the user said or typed. Replaying a `requestId` never sends twice:
+   * the reply then says `delivered: false`. */
+  async sendAssistantMessage(body: AssistantMessageRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
+  /** Answers the open question. A question already answered elsewhere or replaced
+   * is a 409 with code `answered` or `stale_question`. */
+  async answerAssistantQuestion(body: AssistantAnswerRequest): Promise<AssistantDelivery> {
+    const res = await this.request('/assistant/conversation/answers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return assistantDeliverySchema.parse(await res.json());
+  }
+
   async projectAssistant(id: string, mode?: 'off' | 'tasks' | 'delegate') {
     const res = await this.request(
       `/projects/${encodeURIComponent(id)}/assistant`,
@@ -6530,6 +7141,17 @@ export class VerityClient {
     return vulnerabilitySettingsSchema.parse(
       ((await res.json()) as { settings: unknown }).settings,
     );
+  }
+  async startVulnerabilityFix(
+    id: string,
+    body: { sessionId: string; findings?: VulnerabilityFixSelection[] },
+  ): Promise<{ sessionId: string; accepted: true }> {
+    const res = await this.request(`/projects/${encodeURIComponent(id)}/vulnerability-fix`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return z.object({ sessionId: z.string(), accepted: z.literal(true) }).parse(await res.json());
   }
   async projectVulnerabilities(id: string) {
     return vulnerabilityProjectSchema.parse(
@@ -6658,6 +7280,13 @@ export class VerityClient {
     } catch (error) {
       finishRuntimeRequest(true);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      // Only a transport failure reaches here; one the caller cancelled says
+      // nothing about the server and is not reported.
+      if (this.connection !== undefined && !isAbortError(error))
+        this.connection.reportFailure(
+          'unreachable',
+          error instanceof Error ? error.message : String(error),
+        );
       throw error;
     }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
@@ -6671,12 +7300,20 @@ export class VerityClient {
       // on-ramp is always exempt (its 401 is a wrong-password shown inline).
       if (res.status === 401 && sentToken && !path.startsWith('/secret/')) this.onUnauthorized?.();
       const payload = await errorPayload(res);
+      // The Gateway answers every request with this while the server updates;
+      // any other answer, error or not, proves the server is there.
+      if (res.status === 503 && payload.message === SERVER_MAINTENANCE_MESSAGE)
+        this.connection?.reportFailure('maintenance', payload.message);
+      // 502/504 may be the server about an upstream service or a relay in front
+      // of a server that is away: neither proof of the server nor of an outage.
+      else if (res.status !== 502 && res.status !== 504) this.connection?.reportSuccess();
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
         code: payload.code,
       });
     }
+    this.connection?.reportSuccess();
     return res;
   }
 }

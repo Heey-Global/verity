@@ -17,7 +17,7 @@
       },
       "invitationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "capabilities": {
         "type": "array",
@@ -53,7 +53,7 @@
       },
       "invitationId": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9_-]{1,128}(?![\\s\\S])"
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\\s\\S])"
       },
       "redemptionId": {
         "type": "string",

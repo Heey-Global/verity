@@ -232,6 +232,7 @@ function secretJobsConfig(): NonNullable<EmbeddedServerConfig['secretJobs']> {
 function sampleAppProject(): ProjectRecord {
   return {
     id: 'p-sample-app',
+    name: 'Fixture project',
     owner: 'Heey-Global',
     repo: 'Deep-OCR',
     containerName: 'dev-example-org--sample-app',
@@ -1996,7 +1997,10 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     // with the test rather than with the throw, so rewording the throw leaves both
     // green and the page quoting a message no Server emits — the one drift this
     // pairing exists to catch.
-    const embedded = await readFile(new URL('./embedded.ts', import.meta.url), 'utf8');
+    const embedded = await readFile(
+      new URL('./embedded-runner-wiring.ts', import.meta.url),
+      'utf8',
+    );
     const thrown =
       /deps\.mcpGatewayTokens === undefined &&[\s\S]*?throw new Error\(\s*'([^']+)'/u.exec(
         embedded,
@@ -2052,7 +2056,7 @@ describe('buildRunnerConductorWiring (Stage 5c runner cutover)', () => {
     };
 
     const here = await members(
-      new URL('./embedded.ts', import.meta.url),
+      new URL('./embedded-runner-wiring.ts', import.meta.url),
       // Anchored on BOTH conditions of the composition check, because the first alone
       // is not unique to it: an earlier `gatewayToolContext !== undefined` elsewhere in
       // the file would silently re-target this region, and a wrong-but-nonempty match
@@ -2557,6 +2561,9 @@ describe('buildEmbeddedServer', () => {
           dataVolumeRoot,
           hostCloneRoot,
           controlPlaneRunner,
+          // The withheld reply must expire within this test, not after the
+          // production deadline that a slow Sandbox deletion is allowed.
+          ...(layout === 'timeout' ? { sessionHomeDeleteTimeoutMs: 2_000 } : {}),
         });
         const lateRollout = join(day, 'rollout-2026-08-18T10-00-00-thread-late.jsonl');
         if (layout === 'late-binding') {
@@ -3629,7 +3636,21 @@ process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-
     );
     const repositories = await server.app.inject({ method: 'GET', url: '/github/repositories' });
     expect(repositories.statusCode).toBe(200);
-    expect(repositories.json()).toEqual([]);
+    expect(repositories.json()).toEqual([
+      expect.objectContaining({
+        id: 'repository:heey-global/legal-docs',
+        owner: 'heey-global',
+        repo: 'legal-docs',
+        containerName: 'repository:heey-global/legal-docs',
+        state: 'absent',
+        imageRef: null,
+        provisionError: null,
+        sandboxUpdate: expect.objectContaining({
+          state: 'unknown',
+          reason: 'project is not active',
+        }),
+      }),
+    ]);
   });
 
   it('rejects an unknown permissionMode at build time (not a background spawn failure)', async () => {

@@ -21,6 +21,17 @@ const ZERO_USAGE = {
   turns: 0,
 };
 
+it('finalizes a meeting through the server-only endpoint without sending recorder data', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({ finalized: true, recordingStopped: false }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.finalizeLiveMeeting('session/one', 'meeting/one');
+  expect(calls[0]?.url).toBe(
+    'http://host/sessions/session%2Fone/live-meetings/meeting%2Fone/finalize',
+  );
+  expect(calls[0]?.init?.method).toBe('POST');
+  expect(calls[0]?.init?.body).toBeUndefined();
+});
+
 it('round-trips revisioned personal and project context through their scoped endpoints', async () => {
   const personal = { instructions: 'Rules', memory: 'Fact', revision: 3 };
   const memory = { memory: 'Project fact', revision: 'memory-revision' };
@@ -183,6 +194,39 @@ it('carries inbox facts and tolerates their absence or a malformed copy', () => 
   expect(malformed.pendingPermissionRequests).toBeUndefined();
   expect(malformed.openChoices).toBeUndefined();
   expect(malformed.status).toBe('awaiting_input');
+});
+
+it('reads a plan awaiting approval and ignores what it does not understand', () => {
+  const base = {
+    sessionId: 's1',
+    worktree: '/wt/s1',
+    model: 'm',
+    name: null,
+    status: 'completed',
+    usage: ZERO_USAGE,
+  };
+  // Without these fields the overview cannot mark a session whose plan waits.
+  const planned = sessionSummarySchema.parse({
+    ...base,
+    planning: 'active',
+    planningRevision: 2,
+    planningPresented: true,
+  });
+  expect(planned).toMatchObject({
+    planning: 'active',
+    planningRevision: 2,
+    planningPresented: true,
+  });
+  const odd = sessionSummarySchema.parse({
+    ...base,
+    planning: 'paused',
+    planningRevision: null,
+    planningPresented: 'yes',
+  });
+  expect(odd.planning).toBeUndefined();
+  expect(odd.planningPresented).toBeUndefined();
+  expect(odd.planningRevision).toBeUndefined();
+  expect(odd.status).toBe('completed');
 });
 
 interface Call {
@@ -1329,6 +1373,94 @@ describe('VerityClient.listProjects (#174)', () => {
     expect(calls[0]?.url).toBe('http://host/projects/p%2F1/github/issues');
   });
 
+  it('lists the issues of every project repository', async () => {
+    const repositories = [
+      {
+        id: 'default:p',
+        name: 'acme/app',
+        kind: 'github',
+        owner: 'acme',
+        repo: 'app',
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: null,
+        issues: [],
+      },
+      {
+        id: 'site',
+        name: 'Website',
+        kind: 'forgejo',
+        owner: 'acme',
+        repo: 'site',
+        isDefault: false,
+        status: 'unavailable',
+      },
+    ];
+    const { fetch, calls } = fakeFetch(json({ repositories }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.listProjectIssues({ id: 'p/1', kind: 'github', owner: 'acme', repo: 'app' }),
+    ).toEqual(repositories);
+    expect(calls[0]?.url).toBe('http://host/projects/p%2F1/issues');
+  });
+
+  // An older server has no per-repository route; without the fallback the
+  // Issues tab of every project would vanish until the server is updated.
+  it('falls back to the default repository on a server without per-repository issues', async () => {
+    const issue = {
+      number: 7,
+      title: 'Crash',
+      url: 'https://forgejo.example/acme/app/issues/7',
+      labels: [],
+      assignees: [],
+    };
+    const { fetch, calls } = fakeFetchSequence(
+      json({ message: 'Route GET:/projects/p/issues not found' }, 404),
+      json({ connected: true, viewerLogin: 'me', issues: [issue] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(
+      await client.listProjectIssues({ id: 'p', kind: 'forgejo', owner: 'acme', repo: 'app' }),
+    ).toEqual([
+      {
+        id: 'default:p',
+        name: 'acme/app',
+        kind: 'forgejo',
+        owner: 'acme',
+        repo: 'app',
+        isDefault: true,
+        status: 'ok',
+        viewerLogin: 'me',
+        issues: [issue],
+      },
+    ]);
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://host/projects/p/issues',
+      'http://host/projects/p/github/issues',
+    ]);
+  });
+
+  it('falls back when an older server’s paired gate refuses the unknown route', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ error: 'forbidden' }, 403),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toHaveLength(1);
+    expect(calls[1]?.url).toBe('http://host/projects/p/github/issues');
+  });
+
+  it('names the fallback repository neutrally without the project record', async () => {
+    const { fetch } = fakeFetchSequence(
+      json({ message: 'Route GET:/projects/p/issues not found' }, 404),
+      json({ connected: true, viewerLogin: null, issues: [] }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.listProjectIssues({ id: 'p' })).toMatchObject([
+      { id: 'default:p', name: 'Issues', kind: 'github', status: 'ok' },
+    ]);
+  });
+
   it('fetches available GitHub repositories separately from created projects', async () => {
     const { fetch, calls } = fakeFetch(json([project]));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -2375,6 +2507,22 @@ describe('VerityClient.setSessionModel (switch engine)', () => {
 });
 
 describe('VerityClient.deleteSession', () => {
+  // The server keeps a deleted session's conversation for the Wiki only when
+  // asked; the flag must reach it, and must not be sent when not chosen.
+  it('asks the server to keep the conversation for the Wiki only when chosen', async () => {
+    const kept = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: kept.fetch }).deleteSession('s1', {
+      wiki: true,
+      force: true,
+    });
+    expect(kept.calls[0]?.url).toBe('http://host/sessions/s1?force=true&wiki=true');
+    const plain = fakeFetch(json({ sessionId: 's1' }));
+    await new VerityClient({ baseUrl: 'http://host', fetch: plain.fetch }).deleteSession('s1', {
+      wiki: false,
+    });
+    expect(plain.calls[0]?.url).toBe('http://host/sessions/s1');
+  });
+
   it('DELETEs the session and returns the echoed id', async () => {
     const { fetch, calls } = fakeFetch(json({ sessionId: 's1' }));
     const client = new VerityClient({ baseUrl: 'http://host', fetch });
@@ -2602,6 +2750,63 @@ describe('VerityClient.mergePullRequest', () => {
   });
 });
 
+describe('VerityClient project pull requests', () => {
+  const repository = {
+    id: 'default:p',
+    name: 'team/site',
+    kind: 'github',
+    owner: 'team',
+    repo: 'site',
+    isDefault: true,
+    status: 'ok',
+    webUrl: 'https://github.com/team/site',
+    pullRequests: [
+      {
+        number: 5,
+        title: 'Update graphql',
+        url: null,
+        author: 'renovate[bot]',
+        branch: 'renovate/graphql',
+        headSha: 'abc1234',
+        baseRef: 'main',
+        fork: false,
+        // A state a newer server adds must not drop the whole list.
+        state: 'queued-for-merge',
+        checks: null,
+        viewerCanMerge: true,
+        origin: { kind: 'bot', name: 'dependabot' },
+      },
+    ],
+  };
+
+  it('reads every repository and keeps a list with states this app does not know', async () => {
+    const { fetch, calls } = fakeFetch(json({ repositories: [repository] }));
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    const [read] = await client.getProjectPullRequests('p', { refresh: true });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests?refresh=1');
+    expect(read?.pullRequests[0]).toMatchObject({ state: 'unknown', origin: { kind: 'external' } });
+  });
+
+  it('addresses the repository by its encoded id and sends the shown head', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ merged: true }),
+      json({ sessionId: 's9', created: true }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.mergeProjectPullRequest('p', 'default:p', 5, {
+      branch: 'renovate/graphql',
+      expectedHeadSha: 'abc1234',
+    });
+    expect(calls[0]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/merge');
+    expect(jsonBody(calls[0])).toEqual({ branch: 'renovate/graphql', expectedHeadSha: 'abc1234' });
+    expect(await client.fixProjectPullRequest('p', 'default:p', 5, 'renovate/graphql')).toEqual({
+      sessionId: 's9',
+      created: true,
+    });
+    expect(calls[1]?.url).toBe('http://host/projects/p/pull-requests/default%3Ap/5/fix');
+  });
+});
+
 describe('VerityClient.mergeSessionBranch', () => {
   it('starts the local save workflow', async () => {
     const { fetch, calls } = fakeFetch(json({ accepted: true }));
@@ -2779,6 +2984,22 @@ describe('VerityClient session files', () => {
       Blob,
     );
     expect(calls[0]?.url).toBe('http://host/sessions/s1/files/download?path=dist%2Fcontract.docx');
+  });
+
+  // A native download reads the URL helper while the web path fetches through
+  // the client; if the two drift, only one platform downloads the right file.
+  it('points knowledge download URLs at the routes the client downloads from', async () => {
+    const blob = () =>
+      new Response(new Blob([new Uint8Array([1])]), {
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    const { fetch, calls } = fakeFetchSequence(blob(), blob());
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    await client.downloadSharedKnowledgeFile('insights/a b.md');
+    await client.downloadProjectKnowledgeFile('p/1', 'sources/x.pdf');
+    expect(client.sharedKnowledgeFileDownloadUrl('insights/a b.md')).toBe(calls[0]?.url);
+    expect(client.projectKnowledgeFileDownloadUrl('p/1', 'sources/x.pdf')).toBe(calls[1]?.url);
   });
 
   it('uploads a file into a session worktree directory', async () => {
@@ -4535,6 +4756,7 @@ describe('VerityClient calendar meetings', () => {
     'calendar-meeting-routes.ts',
     'calendar-watch-routes.ts',
     'live-meeting-routes.ts',
+    'attendee-routes.ts',
   ]
     .map((file) => readFileSync(new URL(`../../server/src/${file}`, import.meta.url), 'utf8'))
     .join('\n');
@@ -4597,6 +4819,27 @@ describe('VerityClient calendar meetings', () => {
     ]);
     registered('GET', '/live-meetings/active');
     registered('GET', '/live-meetings/upcoming');
+  });
+
+  it('reads the join status of an online meeting', async () => {
+    const { fetch, calls } = fakeFetchSequence(
+      json({ status: 'failed', reason: 'login_required', platform: 'teams' }),
+      json({ status: 'lobby', reason: null, platform: 'webex' }),
+    );
+    const client = new VerityClient({ baseUrl: 'http://host', fetch });
+    expect(await client.getOnlineMeetingStatus('s 1', 'm1')).toEqual({
+      status: 'failed',
+      reason: 'login_required',
+      platform: 'teams',
+    });
+    // A status or platform added by a newer server reads as still joining, not as an error.
+    expect(await client.getOnlineMeetingStatus('s 1', 'm1')).toEqual({
+      status: 'joining',
+      reason: null,
+      platform: null,
+    });
+    expect(calls[0]?.url).toBe('http://host/sessions/s%201/live-meetings/m1/online/status');
+    registered('GET', '/sessions/:id/live-meetings/:meetingId/online/status');
   });
 
   it('joins with or without a session, skips, assigns and discards', async () => {
@@ -4720,6 +4963,102 @@ it('browses project knowledge without a session and sends the revision for edits
   await expect(client.listProjectKnowledgeFiles('p/1')).rejects.toThrow('Update the Verity server');
 });
 
+it('renames a Sources entry and tells an older server apart from a name that is taken', async () => {
+  const { fetch, calls } = fakeFetchSequence(
+    json({ path: 'sources/documents/kickoff.md' }),
+    json({ error: '"taken.md" already exists' }, 409),
+    json(
+      {
+        error: 'Not Found',
+        message: 'Route POST:/projects/p%2F1/knowledge/files/rename not found',
+      },
+      404,
+    ),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(
+    await client.renameProjectKnowledgeFile('p/1', 'sources/documents/call.md', 'kickoff.md'),
+  ).toEqual({ path: 'sources/documents/kickoff.md' });
+  expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/files/rename');
+  expect(jsonBody(calls[0])).toEqual({ path: 'sources/documents/call.md', name: 'kickoff.md' });
+  await expect(
+    client.renameProjectKnowledgeFile('p/1', 'sources/documents/kickoff.md', 'taken.md'),
+  ).rejects.toThrow('already exists');
+  await expect(
+    client.renameProjectKnowledgeFile('p/1', 'sources/documents/kickoff.md', 'other.md'),
+  ).rejects.toThrow('Update the Verity server to rename Sources');
+});
+
+it('reads the project Wiki catalog and treats a server without it as none', async () => {
+  const catalog = {
+    pages: [
+      {
+        path: 'insights/plan.md',
+        title: 'The plan',
+        summary: 'Next.',
+        modifiedAt: '2026-11-07T10:00:00.000Z',
+        links: [],
+        linkedFrom: [],
+      },
+    ],
+    index: null,
+    decisions: [],
+    review: [],
+    truncated: false,
+  };
+  const { fetch, calls } = fakeFetchSequence(
+    json(catalog),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p%2F1/knowledge/wiki not found' },
+      404,
+    ),
+    json({ error: 'Project knowledge not found' }, 404),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectWiki('p/1')).toEqual(catalog);
+  expect(calls[0]?.url).toBe('http://host/projects/p%2F1/knowledge/wiki');
+  // An older server has no catalog: the app falls back to the folder view.
+  expect(await client.getProjectWiki('p/1')).toBeNull();
+  // A project that is gone is not an old server: the app says so.
+  await expect(client.getProjectWiki('p/1')).rejects.toThrow('Project knowledge not found');
+});
+
+// Proposals reach the review screen only through these calls; a server that
+// predates them must leave the Wiki working, and a partial decision must name
+// exactly the pages the user kept.
+it('lists, reads and decides proposed Wiki changes', async () => {
+  const head = {
+    id: 'a1',
+    mode: 'inline',
+    logKind: 'chat',
+    title: 'Billing',
+    sources: ['sources/a.md'],
+    createdAt: '2026-11-08T10:00:00.000Z',
+    decidedAt: null,
+  };
+  const change = { path: 'billing.md', summary: 'Explain', status: 'pending', stale: false };
+  const { fetch, calls } = fakeFetchSequence(
+    json({ proposals: [{ ...head, changes: [change] }] }),
+    json(
+      { error: 'Not Found', message: 'Route GET:/projects/p/knowledge/proposals not found' },
+      404,
+    ),
+    json({ ...head, changes: [{ ...change, content: '# Billing', current: null }] }),
+    json({ applied: ['billing.md'], stale: [] }),
+  );
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listWikiProposals('p')).toEqual([{ ...head, changes: [change] }]);
+  expect(await client.listWikiProposals('p')).toBeNull();
+  expect((await client.getWikiProposal('p', 'a1')).changes[0]?.content).toBe('# Billing');
+  expect(await client.decideWikiProposal('p', 'a1', 'apply', ['billing.md'])).toEqual({
+    applied: ['billing.md'],
+    stale: [],
+    failed: [],
+  });
+  expect(calls[3]?.url).toBe('http://host/projects/p/knowledge/proposals/a1/apply');
+  expect(JSON.parse(calls[3]?.init?.body as string)).toEqual({ paths: ['billing.md'] });
+});
+
 it('browses Shared without a session and sends the revision for edits', async () => {
   const directory = { root: 'shared', path: 'insights', entries: [], truncated: false };
   const file = {
@@ -4751,6 +5090,30 @@ it('browses Shared without a session and sends the revision for edits', async ()
   await expect(client.listSharedKnowledgeFiles()).rejects.toThrow('Update the Verity server');
 });
 
+it('reads the latest Shared pages with decision provenance', async () => {
+  const entries = [
+    {
+      path: 'insights/decisions/d1.md',
+      title: 'Verity owns Global',
+      area: 'decisions',
+      modifiedAt: '2026-11-05T10:00:00.000Z',
+      decision: { sessionId: 's-42', confirmedAt: '2026-11-03T16:14:02.187Z' },
+    },
+    {
+      path: 'insights/tone.md',
+      title: 'Tone',
+      area: 'wiki',
+      modifiedAt: '2026-11-04T10:00:00.000Z',
+    },
+  ];
+  const { fetch, calls } = fakeFetchSequence(json({ entries }), json({ entries: [{ path: 'x' }] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listRecentSharedKnowledge(5)).toEqual({ entries, truncated: false });
+  expect(calls[0]?.url).toBe('http://host/knowledge/shared/recent?limit=5');
+  // A malformed answer fails loudly instead of rendering rows without a title.
+  await expect(client.listRecentSharedKnowledge()).rejects.toThrow();
+});
+
 it('preserves Wiki exclusion reasons and unknown save status while accepting older servers', () => {
   const directory = { path: '', entries: [], truncated: false };
   const status = {
@@ -4771,4 +5134,128 @@ it('preserves Wiki exclusion reasons and unknown save status while accepting old
       documentStatus: { pending: false, running: false },
     }).documentStatus,
   ).toEqual({ pending: false, running: false });
+});
+
+it('talks to Verity through the shared conversation routes', async () => {
+  const conversation = {
+    availability: 'ready',
+    sessionId: 'assistant',
+    revision: 4,
+    state: 'needs_you',
+    items: [{ kind: 'message', id: 'm-1', at: 1, text: 'Hi' }],
+    question: { id: 'q-3', options: [{ label: 'Hansen' }], multiSelect: false },
+    approvals: [],
+  };
+  const delivered = { requestId: 'req-00000001', delivered: true };
+  const { fetch, calls } = fakeFetchSequence(json(conversation), json(delivered), json(delivered));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.assistantConversation()).toEqual(conversation);
+  const message = {
+    requestId: 'req-00000001',
+    text: 'Hi',
+    input: 'text',
+    device: 'phone',
+  } as const;
+  expect(await client.sendAssistantMessage(message)).toEqual(delivered);
+  const answer = {
+    requestId: 'req-00000001',
+    questionId: 'q-3',
+    labels: ['Hansen'],
+    device: 'phone' as const,
+  };
+  expect(await client.answerAssistantQuestion(answer)).toEqual(delivered);
+  expect(calls.map(({ url, init }) => [url, init?.method, init?.body])).toEqual([
+    ['http://host/assistant/conversation', 'GET', undefined],
+    ['http://host/assistant/conversation/messages', 'POST', JSON.stringify(message)],
+    ['http://host/assistant/conversation/answers', 'POST', JSON.stringify(answer)],
+  ]);
+});
+
+it('holds a conversation read on the interactive lane until it changes', async () => {
+  const conversation = {
+    availability: 'ready',
+    sessionId: 'assistant',
+    revision: 5,
+    state: 'working',
+    items: [{ kind: 'message', id: 'm-1', at: 1, text: 'Hi', timing: { firstMs: 800 } }],
+    question: null,
+    approvals: [],
+  };
+  const { fetch, calls } = fakeFetchSequence(json(conversation));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  const signal = new AbortController().signal;
+  expect(await client.assistantConversation({ after: 4, waitMs: 20_000, signal })).toEqual(
+    conversation,
+  );
+  expect(calls[0]?.url).toBe('http://host/assistant/conversation?after=4&waitMs=20000');
+  expect(calls[0]?.init).toMatchObject({ signal, transportLane: 'interactive' });
+});
+
+it('scopes project inquiry approval requests in the query string', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({ inquiries: [] }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.listProjectInquiries(undefined, 'project/id')).toEqual([]);
+  expect(calls[0]?.url).toBe('http://host/project-inquiries/pending?projectId=project%2Fid');
+});
+
+it('starts a vulnerability fix with encoded project identity and structured finding selection', async () => {
+  const findings = [
+    {
+      ecosystem: 'npm',
+      package: 'example',
+      advisoryId: 'GHSA-example',
+      source: 'package-lock.json',
+      version: '1',
+    },
+  ];
+  const body = { sessionId: 'request-id', findings };
+  const { fetch, calls } = fakeFetch(json({ sessionId: 'existing-fix', accepted: true }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.startVulnerabilityFix('project/id', body)).toEqual({
+    sessionId: 'existing-fix',
+    accepted: true,
+  });
+  expect(calls[0]).toMatchObject({
+    url: 'http://host/projects/project%2Fid/vulnerability-fix',
+    init: { method: 'POST', body: JSON.stringify(body) },
+  });
+});
+
+it('uses a distinct marking action that older servers cannot interpret as build approval', async () => {
+  const { fetch, calls } = fakeFetchSequence(json({}));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  await client.decideMockup('s1', 1, 'Home', { verdict: 'approved' });
+  expect(calls[0]?.init?.body).toBe(
+    JSON.stringify({
+      action: 'mark',
+      revision: 1,
+      screen: 'Home',
+      verdict: 'approved',
+    }),
+  );
+});
+
+it('ends only the displayed mockup revision without changing screen marks', async () => {
+  const review = { state: 'approved', revision: 7, screens: [] };
+  const { fetch, calls } = fakeFetch(json({ mockupReview: review }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.completeMockups('session/id', 7)).toEqual(review);
+  expect(calls[0]).toMatchObject({
+    url: 'http://host/sessions/session%2Fid/mockups',
+    init: { method: 'POST', body: JSON.stringify({ action: 'complete', revision: 7 }) },
+  });
+});
+
+it('reads a Drive snapshot and preserves its version when moving it to trash', async () => {
+  const file = { id: 'file/1', name: 'Note', mimeType: 'text/plain', version: '"v1"' };
+  const { fetch, calls } = fakeFetchSequence(json({ file }), new Response(null, { status: 204 }));
+  const client = new VerityClient({ baseUrl: 'http://host', fetch });
+  expect(await client.getProjectGoogleDriveFile('p/1', 'root/1', file.id)).toEqual(file);
+  await client.trashProjectGoogleDriveFile('p/1', 'root/1', file.id, file.version);
+  expect(calls.map(({ url }) => url)).toEqual([
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+    'http://host/projects/p%2F1/google-drive/folders/root%2F1/files/file%2F1',
+  ]);
+  expect(calls[1]?.init?.method).toBe('DELETE');
+  expect(jsonBody(calls[1])).toEqual({ confirmed: true, expectedVersion: '"v1"' });
 });

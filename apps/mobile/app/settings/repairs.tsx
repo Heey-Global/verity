@@ -1,3 +1,4 @@
+import { projectTitle } from '@verity/mobile';
 import { Linking } from 'react-native';
 import { useCallback, useMemo, useState } from 'react';
 import { router } from 'expo-router';
@@ -79,7 +80,7 @@ export default function RepairSettingsScreen() {
         ) : null}
       </SettingsGroup>
       {resource.data?.rows.map(({ project, mandate, incidents }) => (
-        <SettingsGroup key={project.id} title={`${project.owner}/${project.repo}`}>
+        <SettingsGroup key={project.id} title={projectTitle(project)}>
           <Text>
             {mandate?.mode ?? 'off'} · {mandate?.health ?? 'Not enabled'}
           </Text>

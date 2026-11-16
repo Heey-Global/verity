@@ -12,10 +12,13 @@ import {
   readdir,
   readFile,
   realpath,
+  rename as renamePath,
+  rm,
+  rmdir,
   statfs,
   unlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -34,14 +37,19 @@ import {
 import {
   ensureProjectKnowledge,
   ensureSharedKnowledge,
+  EXTRACTED_TEXT_DIR,
   KNOWLEDGE_INSIGHTS_DIR,
+  knowledgeRootDir,
+  SHARED_KNOWLEDGE_DIR,
 } from './knowledge-folder.js';
 import { acquireKnowledgeMutationLock } from './knowledge-mutation-lock.js';
 import { markProjectOverviewAuthoritative } from './project-overview-file.js';
 import { projectClonePath } from './provisioner.js';
 import { renameWorktreeFile } from './rename-worktree-file.js';
+import { removeSessionDirectory } from './remove-session-directory.js';
 import type { ServerDeps } from './server-deps.js';
 import {
+  FILE_HISTORY_DIR,
   excludeFileHistoryFromGit,
   pruneFileHistory,
   recoverFileHistory,
@@ -109,6 +117,104 @@ export function registerServerSessionFiles(
     fileStorageRoot(root),
     root.root === 'documents' || root.root === 'sources' ? `${basename(root.dir)}/${path}` : path,
   ];
+
+  /**
+   * Saves a text file through the explorer's write path: version check, file
+   * history and the knowledge refresh. A rejected path is returned, a failed
+   * save throws {@link FileWriteError}.
+   */
+  const saveText = async (
+    root: { root: SessionFileRootName; dir: string },
+    path: string,
+    content: string,
+    expectedVersion: string | null,
+    /** Overrides the mode a new file gets; the Wiki's pages stay writable for agents. */
+    newFileMode?: number,
+  ) => {
+    let slot;
+    try {
+      slot = await openKnowledgeFileSlot(root, path);
+    } catch (error) {
+      return { slotError: error };
+    }
+    const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+    try {
+      if (
+        root.root === 'knowledge' &&
+        slot.rel === 'overview.md' &&
+        content.length > PROJECT_MEMORY_MAX_CHARS
+      )
+        throw new FileWriteError(413, 'overview.md exceeds the project overview limit');
+      if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
+        await excludeFileHistoryFromGit(root.dir);
+      const creationMode =
+        newFileMode ??
+        (root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
+          ? 0o666
+          : 0o644);
+      const saved = await writeSessionText(slot, content, expectedVersion, creationMode);
+      let warning: string | undefined;
+      const updates: Array<() => Promise<unknown>> = [];
+      if (root.root === 'knowledge' && slot.rel === 'overview.md')
+        updates.push(() => markProjectOverviewAuthoritative(root.dir));
+      if (root.root !== 'worktree')
+        updates.push(() => extractKnowledgeFile(...extractionArgs(root, slot.rel)));
+      for (const update of updates) {
+        try {
+          await update();
+        } catch (err) {
+          app.log.warn(
+            { err, path: slot.rel, root: root.root },
+            'saved file Knowledge refresh failed',
+          );
+          warning = 'The file was saved. Knowledge search and context may be out of date.';
+        }
+      }
+      return warning ? { ...saved, warning } : saved;
+    } finally {
+      release();
+      await slot.close();
+    }
+  };
+
+  /**
+   * Carries the extracted text of every file in a renamed folder along with it.
+   * Each artifact names its source inside (heading, `Source:` line, metadata),
+   * so they move one by one rather than as a folder; a file without one is
+   * extracted afresh, and what is left under the old folder is derived text of
+   * files that no longer exist there.
+   */
+  const renameExtractionTree = async (
+    root: { root: SessionFileRootName; dir: string },
+    from: string,
+    to: string,
+  ) => {
+    const walk = async (folder: string): Promise<string[]> => {
+      const entries = await readdir(join(root.dir, to, folder), { withFileTypes: true });
+      const files = await Promise.all(
+        entries
+          .filter((entry) => entry.name !== FILE_HISTORY_DIR)
+          .map(async (entry) => {
+            const child = folder ? `${folder}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) return walk(child);
+            return entry.isFile() ? [child] : [];
+          }),
+      );
+      return files.flat();
+    };
+    for (const file of await walk('')) {
+      const moved = await moveKnowledgeExtraction(
+        ...extractionArgs(root, `${from}/${file}`),
+        ...extractionArgs(root, `${to}/${file}`),
+      );
+      if (!moved) await extractKnowledgeFile(...extractionArgs(root, `${to}/${file}`));
+    }
+    const [storage, relativeFrom] = extractionArgs(root, from);
+    await rm(join(storage, EXTRACTED_TEXT_DIR, relativeFrom), {
+      recursive: true,
+      force: true,
+    });
+  };
 
   registerSessionFileRoutes(app, {
     resolveProjectRoot: async (id) => {
@@ -553,61 +659,15 @@ export function registerServerSessionFiles(
       }
     },
     write: async (reply, root, body) => {
-      let slot;
       try {
-        slot = await openKnowledgeFileSlot(root, body.path);
-      } catch (error) {
-        return knowledgeSlotFailure(reply, error);
-      }
-      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
-      try {
-        if (
-          root.root === 'knowledge' &&
-          slot.rel === 'overview.md' &&
-          body.content.length > PROJECT_MEMORY_MAX_CHARS
-        ) {
-          reply.code(413);
-          return { error: 'overview.md exceeds the project overview limit' };
-        }
-        if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
-          await excludeFileHistoryFromGit(root.dir);
-        const creationMode =
-          root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
-            ? 0o666
-            : 0o644;
-        const saved = await writeSessionText(
-          slot,
-          body.content,
-          body.expectedVersion,
-          creationMode,
-        );
-        let warning: string | undefined;
-        const updates: Array<() => Promise<unknown>> = [];
-        if (root.root === 'knowledge' && slot.rel === 'overview.md')
-          updates.push(() => markProjectOverviewAuthoritative(root.dir));
-        if (root.root !== 'worktree')
-          updates.push(() => extractKnowledgeFile(...extractionArgs(root, slot.rel)));
-        for (const update of updates) {
-          try {
-            await update();
-          } catch (err) {
-            app.log.warn(
-              { err, path: slot.rel, root: root.root },
-              'saved file Knowledge refresh failed',
-            );
-            warning = 'The file was saved. Knowledge search and context may be out of date.';
-          }
-        }
-        return warning ? { ...saved, warning } : saved;
+        const saved = await saveText(root, body.path, body.content, body.expectedVersion);
+        return 'slotError' in saved ? knowledgeSlotFailure(reply, saved.slotError) : saved;
       } catch (error) {
         if (error instanceof FileWriteError) {
           reply.code(error.status);
           return { error: error.message };
         }
         throw error;
-      } finally {
-        release();
-        await slot.close();
       }
     },
     download: async (reply, root, path) => {
@@ -658,9 +718,28 @@ export function registerServerSessionFiles(
       }
     },
     remove: async (reply, root, path) => {
+      const protectedPaths = [...(root.protectedPaths ?? [])];
+      if (root.root === 'documents') protectedPaths.push('decisions');
+      if (root.root === 'knowledge') protectedPaths.push('insights/decisions');
+      // A legacy session can name canonical project knowledge as its worktree.
+      // Protect its physical decision storage regardless of the requested root.
+      if (root.root === 'worktree' && deps.dataRoot) {
+        const storage = await realpath(knowledgeRootDir(deps.dataRoot)).catch(() => undefined);
+        if (storage) {
+          const actualRoot = await realpath(root.dir).catch(() => undefined);
+          const project = actualRoot ? relative(storage, actualRoot).split(sep)[0] : undefined;
+          if (
+            actualRoot &&
+            project &&
+            /^[A-Za-z0-9_-]+$/.test(project) &&
+            project !== SHARED_KNOWLEDGE_DIR
+          )
+            protectedPaths.push(relative(actualRoot, join(storage, project, 'insights/decisions')));
+        }
+      }
       let file;
       try {
-        file = await openKnowledgeFileSlot(root, path);
+        file = await openKnowledgeFileSlot({ ...root, protectedPaths }, path);
       } catch (error) {
         return knowledgeSlotFailure(reply, error);
       }
@@ -672,11 +751,34 @@ export function registerServerSessionFiles(
             reply.code(404);
             return { error: 'file not found' };
           }
-          if (!stats.isFile()) {
+          if (
+            stats.isDirectory() &&
+            (root.root === 'worktree' || root.root === 'documents' || root.root === 'sources')
+          ) {
+            try {
+              await removeSessionDirectory(
+                file.directoryPath,
+                file.name,
+                root.root !== 'worktree'
+                  ? async (relative) => {
+                      // Saved versions are internal artifacts, never extracted knowledge files.
+                      if (relative.split('/').includes(FILE_HISTORY_DIR)) return;
+                      await removeKnowledgeExtraction(
+                        ...extractionArgs(root, `${file.rel}/${relative}`),
+                      );
+                    }
+                  : undefined,
+              );
+            } catch (error) {
+              reply.code(400);
+              return { error: error instanceof Error ? error.message : 'Could not delete folder' };
+            }
+          } else if (stats.isFile()) {
+            await unlink(`${file.directoryPath}/${file.name}`);
+          } else {
             reply.code(400);
-            return { error: 'only files can be deleted' };
+            return { error: 'only files and writable folders can be deleted' };
           }
-          await unlink(`${file.directoryPath}/${file.name}`);
           if (root.root === 'knowledge' && file.rel === 'overview.md')
             await markProjectOverviewAuthoritative(root.dir);
           if (root.root !== 'worktree')
@@ -772,5 +874,183 @@ export function registerServerSessionFiles(
         await destination.close();
       }
     },
+    rename: async (reply, root, path, name) => {
+      let source;
+      let destination;
+      try {
+        source = await openKnowledgeFileSlot(root, path);
+        destination = await openKnowledgeFileSlot(
+          root,
+          [dirname(source.rel), name].filter((part) => part !== '.').join('/'),
+        );
+      } catch (error) {
+        await source?.close();
+        return knowledgeSlotFailure(reply, error);
+      }
+      const sourcePath = `${source.directoryPath}/${source.name}`;
+      const destinationPath = `${destination.directoryPath}/${destination.name}`;
+      let release: (() => void) | undefined;
+      try {
+        release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+        if (destination.rel === source.rel) return { path: source.rel };
+        const stats = await lstat(sourcePath).catch(() => undefined);
+        if (stats === undefined) {
+          reply.code(404);
+          return { error: 'file not found' };
+        }
+        if (!stats.isFile() && !stats.isDirectory()) {
+          reply.code(400);
+          return { error: 'only files and folders can be renamed' };
+        }
+        try {
+          if (stats.isFile()) {
+            // Link-then-unlink: `rename` would silently replace a file that
+            // already has the new name.
+            await link(sourcePath, destinationPath);
+            try {
+              await unlink(sourcePath);
+            } catch (error) {
+              // Never leave the file under both names.
+              await unlink(destinationPath).catch(() => undefined);
+              throw error;
+            }
+          } else {
+            // Reserve the new name as an empty folder first: renaming a folder
+            // onto an empty one succeeds, onto anything else it fails, so an
+            // entry that already has the name — or appears meanwhile — is never
+            // replaced.
+            await mkdir(destinationPath);
+            try {
+              await renamePath(sourcePath, destinationPath);
+            } catch (error) {
+              await rmdir(destinationPath).catch(() => undefined);
+              throw error;
+            }
+          }
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+            reply.code(409);
+            return { error: `"${destination.name}" already exists` };
+          }
+          throw error;
+        }
+        // The entry has its new name now; a failure past this point must not
+        // read as a failed rename, or the app would keep offering the old name.
+        try {
+          if (stats.isFile()) {
+            const moved = await moveKnowledgeExtraction(
+              ...extractionArgs(root, source.rel),
+              ...extractionArgs(root, destination.rel),
+            );
+            if (!moved) await extractKnowledgeFile(...extractionArgs(root, destination.rel));
+          } else {
+            await renameExtractionTree(root, source.rel, destination.rel);
+          }
+        } catch (err) {
+          app.log.warn({ err, path: destination.rel }, 'renamed source text refresh failed');
+          return {
+            path: destination.rel,
+            warning: 'Renamed. Knowledge search may show the old name until its text is refreshed.',
+          };
+        }
+        return { path: destination.rel };
+      } finally {
+        release?.();
+        await source.close();
+        await destination.close();
+      }
+    },
   });
+
+  /** The project's Wiki as the explorer writes it: `path` is relative to `insights/`. */
+  const projectWiki = async (projectId: string) => {
+    if (!deps.dataRoot) throw new FileWriteError(503, 'Knowledge storage is unavailable');
+    const dir = join(
+      await ensureProjectKnowledge(deps.dataRoot, projectId),
+      KNOWLEDGE_INSIGHTS_DIR,
+    );
+    return { root: 'documents' as const, dir, protectedPaths: ['decisions'] };
+  };
+  return {
+    /** The page's text and version, or `null` when it does not exist yet. */
+    readProjectWiki: async (projectId: string, path: string) => {
+      const slot = await openKnowledgeFileSlot(await projectWiki(projectId), path).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+          throw error;
+        },
+      );
+      if (!slot) return null;
+      try {
+        const handle = await open(
+          `${slot.directoryPath}/${slot.name}`,
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        ).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+          throw error;
+        });
+        if (!handle) return null;
+        try {
+          const bytes = await handle.readFile();
+          return { content: bytes.toString('utf8'), version: fileVersion(bytes) };
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await slot.close();
+      }
+    },
+    /** Saves a page against the version it was based on; a new page needs `null`. */
+    writeProjectWiki: async (
+      projectId: string,
+      path: string,
+      content: string,
+      expectedVersion: string | null,
+    ) => {
+      // Folders are created before the slot validates the path, so only a plain
+      // relative path may reach them.
+      if (
+        path
+          .split('/')
+          .some((part) => !part || part === '.' || part === '..' || part.includes('\\'))
+      )
+        throw new FileWriteError(400, 'invalid Wiki path');
+      const wiki = await projectWiki(projectId);
+      await ensureWikiFolders(wiki.dir, path);
+      const saved = await saveText(wiki, path, content, expectedVersion, 0o666);
+      if ('slotError' in saved) throw new FileWriteError(400, 'invalid Wiki path');
+      return saved;
+    },
+  };
+}
+
+/**
+ * Creates the folders a new Wiki page needs, each relative to its opened parent
+ * so a folder swapped for a symlink meanwhile cannot redirect it. A component
+ * that is not a real directory stops it; the write then refuses the path.
+ */
+async function ensureWikiFolders(dir: string, path: string): Promise<void> {
+  const flags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  let parent = await open(dir, flags);
+  try {
+    for (const part of path.split('/').slice(0, -1)) {
+      const child = `/proc/self/fd/${String(parent.fd)}/${part}`;
+      const created = await mkdir(child).then(
+        () => true,
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          return false;
+        },
+      );
+      const next = await open(child, flags).catch(() => undefined);
+      if (!next) return;
+      await parent.close();
+      parent = next;
+      // The umask would narrow a mode passed to mkdir; agents write here as another user.
+      if (created) await parent.chmod(0o777);
+    }
+  } finally {
+    await parent.close();
+  }
 }

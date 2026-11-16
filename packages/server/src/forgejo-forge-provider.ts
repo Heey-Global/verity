@@ -17,6 +17,7 @@ interface ForgejoPull {
   merged: boolean;
   mergeable?: boolean;
   updated_at?: string;
+  user?: { login?: string } | null;
   head: { ref: string; sha: string; repo?: { full_name?: string } };
   base: { ref: string; sha: string };
   merge_commit_sha?: string;
@@ -300,6 +301,9 @@ export function createForgejoForgeProvider(options: {
           branch: p.head.ref,
           sha: p.head.sha,
           fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+          ...(typeof p.title === 'string' ? { title: p.title } : {}),
+          ...(typeof p.user?.login === 'string' ? { author: p.user.login } : {}),
+          ...(typeof p.html_url === 'string' ? { url: p.html_url } : {}),
         })),
         runs: [],
         nextPage: pulls.length === 30 ? page + 1 : null,

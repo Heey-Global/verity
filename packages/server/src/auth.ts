@@ -111,6 +111,7 @@ export interface AuthTokenStore {
     id: string;
     tokenHash: string;
     label?: string | null;
+    userId?: string;
     expiresAt?: number | null;
   }): Promise<string>;
   deleteAuthToken(id: string): Promise<boolean>;
@@ -161,6 +162,8 @@ export interface AuthTokenRegistry {
   isKnownId?(id: string): boolean;
   /** Mint a new device token, persist its hash, and return the raw token once. */
   mint(label?: string | null, browser?: boolean): Promise<MintedAuthToken>;
+  /** Pair a device to one person, such as a member who joined through an invitation. */
+  mintFor(userId: string, label: string | null): Promise<MintedAuthToken>;
   register(
     token: string,
     id: string,
@@ -282,6 +285,22 @@ export async function createAuthTokenRegistry(
       expiryByHash.set(tokenHash, expiresAt);
       tokenIdsByHash.set(tokenHash, id);
       tokenUsersByHash.set(tokenHash, userId);
+      return { token, id };
+    },
+    async mintFor(userId, label): Promise<MintedAuthToken> {
+      const token = randomBytes(TOKEN_BYTES).toString('base64url');
+      const id = randomBytes(ID_BYTES).toString('base64url');
+      const tokenHash = hashAuthToken(token);
+      const boundUserId = await store.insertAuthToken({
+        id,
+        tokenHash,
+        label,
+        expiresAt: null,
+        userId,
+      });
+      expiryByHash.set(tokenHash, null);
+      tokenIdsByHash.set(tokenHash, id);
+      tokenUsersByHash.set(tokenHash, boundUserId);
       return { token, id };
     },
     async register(token, id, label, browser = false): Promise<MintedAuthToken> {

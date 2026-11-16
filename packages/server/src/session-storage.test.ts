@@ -14,10 +14,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
 import { WORKTREE_SIDECAR } from './worktree.js';
-import { SessionStorage, compareDependencyTrees } from './session-storage.js';
+import { SessionStorage, compareDependencyTrees, storageHold } from './session-storage.js';
 import type { GitOutput } from './branches.js';
 
 const dirs: string[] = [];
@@ -103,6 +103,10 @@ function fixture() {
     },
     recent: () => {
       activity = now;
+    },
+    /** Idle for `days`: below three, private dependencies are only slimmed by comparison. */
+    idleDays: (days: number) => {
+      activity = now - days * 86400000;
     },
   };
 }
@@ -227,6 +231,7 @@ describe('safe session storage reclamation', () => {
   });
   it('preserves matching relative links with different source targets and local file deletions', async () => {
     const f = fixture();
+    f.idleDays(1);
     for (const root of [f.root, f.path]) {
       mkdirSync(join(root, 'vendor', 'dep'), { recursive: true });
       writeFileSync(
@@ -238,6 +243,7 @@ describe('safe session storage reclamation', () => {
     await f.service.runOnce();
     expect(readlinkSync(join(f.path, 'node_modules', 'linked'))).toBe('../vendor/dep');
     const missing = fixture();
+    missing.idleDays(1);
     rmSync(join(missing.path, 'node_modules', 'dep', 'index.js'));
     await missing.service.runOnce();
     expect(existsSync(join(missing.path, 'node_modules', 'dep'))).toBe(true);
@@ -245,6 +251,7 @@ describe('safe session storage reclamation', () => {
   });
   it('preserves runtime resolution of patched transitive dependencies', async () => {
     const f = fixture();
+    f.idleDays(1);
     for (const root of [f.root, f.path]) {
       for (const name of ['a', 'b'])
         mkdirSync(join(root, 'node_modules', name), { recursive: true });
@@ -269,6 +276,7 @@ describe('safe session storage reclamation', () => {
   });
   it('preserves customized workspace links when dependency comparison rejects removal', async () => {
     const f = fixture();
+    f.idleDays(1);
     for (const root of [f.root, f.path]) {
       writeFileSync(join(root, 'package.json'), '{"workspaces":["packages/*"]}');
       mkdirSync(join(root, 'packages', 'source'), { recursive: true });
@@ -312,11 +320,13 @@ describe('safe session storage reclamation', () => {
   });
   it('protects modified packages, uncommitted source, unknown ignored files and unsaved commits', async () => {
     const f = fixture();
+    f.idleDays(1);
     writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'local package patch');
     await f.service.runOnce();
     expect(readFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'utf8')).toBe(
       'local package patch',
     );
+    f.idleDays(8);
     writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'shared dependency');
     writeFileSync(join(f.path, 'secret.txt'), 'local-only data');
     await f.service.runOnce();
@@ -344,6 +354,7 @@ describe('safe session storage reclamation', () => {
     expect(existsSync(join(recent.path, '.git'))).toBe(true);
     expect(recent.service.lastReport?.worktreesRetired).toEqual([]);
     const incompatible = fixture();
+    incompatible.idleDays(1);
     writeFileSync(
       join(incompatible.path, 'package.json'),
       '{"dependencies":{"different":"1.0.0"}}',
@@ -364,6 +375,149 @@ describe('safe session storage reclamation', () => {
     );
     await f.service.runOnce();
     expect(existsSync(join(f.path, 'node_modules'))).toBe(true);
+  });
+  // Every dependency activation moved the previous installation into the
+  // worktree's Git directory and nothing ever removed it: 2.5 GB per session in
+  // a monorepo. Activation also rewrites workspace links in the copy, so link
+  // targets cannot be what decides; file contents do.
+  it('removes preserved dependency copies identical to their central installation', async () => {
+    const f = fixture();
+    f.recent();
+    const identity = 'a'.repeat(64);
+    const central = join(f.root, '.git', 'verity-dependencies', identity, 'node_modules');
+    mkdirSync(join(central, 'dep'), { recursive: true });
+    writeFileSync(join(central, 'dep', 'index.js'), 'shared dependency');
+    writeFileSync(join(central, '.verity-install.json'), JSON.stringify({ identity }));
+    symlinkSync('../../cache/packages/ws', join(central, 'ws'));
+    const preserved = join(f.root, '.git', 'worktrees', 'session', 'verity-dependencies-preserved');
+    const copy = (id: string, contents: string, receipt = true) => {
+      const path = join(preserved, id);
+      mkdirSync(join(path, 'dep'), { recursive: true });
+      writeFileSync(join(path, 'dep', 'index.js'), contents);
+      if (receipt) writeFileSync(join(path, '.verity-install.json'), JSON.stringify({ identity }));
+      symlinkSync('../../../packages/ws', join(path, 'ws'));
+      return path;
+    };
+    const identical = copy('11111111-1111-4111-8111-111111111111', 'shared dependency');
+    const patched = copy('22222222-2222-4222-8222-222222222222', 'locally patched');
+    const unknown = copy('33333333-3333-4333-8333-333333333333', 'shared dependency', false);
+    await f.service.runOnce();
+    expect(existsSync(identical)).toBe(false);
+    expect(existsSync(patched)).toBe(true);
+    expect(existsSync(unknown)).toBe(true);
+    expect(f.service.lastReport?.blockers.map((blocker) => blocker.path)).toEqual(
+      expect.arrayContaining([patched, unknown]),
+    );
+  });
+  // A server or preview in one session used to defer collection for the whole
+  // project, so a project that always had one running never reclaimed anything.
+  it('reclaims an idle session while another session of the project is busy', async () => {
+    const f = fixture();
+    const busy = {
+      ...f.session,
+      sessionId: 'busy',
+      worktree: join(f.root, '.verity-sessions', 'busy'),
+    };
+    const service = new SessionStorage({ ...f.deps, listSessions: async () => [f.session, busy] });
+    const asked: Array<string | null> = [];
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      (_, sessionId) => {
+        asked.push(sessionId);
+        return sessionId === 'busy';
+      },
+    );
+    await service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules'))).toBe(false);
+    expect(asked).toContain('busy');
+    expect(asked).toContain(null);
+  });
+  it('defers the orphan pass while the project holds it', async () => {
+    const f = fixture();
+    f.orphan();
+    f.service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      (_, sessionId) => sessionId === null,
+    );
+    await f.service.runOnce();
+    f.advance();
+    await f.service.runOnce();
+    expect(existsSync(f.path)).toBe(true);
+  });
+  // A private installation from a lockfile the base checkout does not share
+  // could never be slimmed by comparison, so in a monorepo every session kept a
+  // full installation forever. Past three idle days it is regenerable data.
+  it('removes private dependencies and preserved copies of a session idle for three days', async () => {
+    const f = fixture();
+    writeFileSync(join(f.path, 'package.json'), '{"dependencies":{"different":"1.0.0"}}');
+    writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'private install');
+    const preserved = join(f.root, '.git', 'worktrees', 'session', 'verity-dependencies-preserved');
+    const copy = join(preserved, '44444444-4444-4444-8444-444444444444');
+    mkdirSync(join(copy, 'dep'), { recursive: true });
+    writeFileSync(join(copy, 'dep', 'index.js'), 'earlier install, no receipt');
+    f.idleDays(2);
+    await f.service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(true);
+    expect(existsSync(copy)).toBe(true);
+    f.idleDays(4);
+    await f.service.runOnce();
+    expect(existsSync(join(f.path, 'node_modules', 'dep'))).toBe(false);
+    expect(existsSync(copy)).toBe(false);
+    // Source stays; only a week of idleness and a merged pull request retire it.
+    expect(existsSync(join(f.path, 'package.json'))).toBe(true);
+    expect(f.service.lastReport?.worktreesRetired).toEqual([]);
+  });
+  // A pass cut short at its budget used to restart from the first session, so
+  // the same expensive entries consumed every budget and later ones never ran.
+  it('continues after the session a cut-short pass was working on', async () => {
+    const f = fixture();
+    f.recent();
+    const visited: string[] = [];
+    const sessions = ['a', 'b', 'c'].map((id) => ({
+      ...f.session,
+      sessionId: id,
+      worktree: join(f.root, '.verity-sessions', id),
+    }));
+    let stopAt = 'b';
+    const service = new SessionStorage({
+      ...f.deps,
+      listSessions: async () => sessions,
+      activity: async (id) => {
+        visited.push(id);
+        if (id === stopAt) throw new Error('budget');
+        return null;
+      },
+    });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce().catch(() => undefined);
+    expect(visited).toEqual(['a', 'b']);
+    visited.length = 0;
+    stopAt = '';
+    await service.runOnce();
+    expect(visited).toEqual(['c', 'a', 'b']);
+  });
+  it('logs one summary per pass with its blockers', async () => {
+    const f = fixture();
+    f.idleDays(1);
+    writeFileSync(join(f.path, 'node_modules', 'dep', 'index.js'), 'local package patch');
+    const log = vi.fn();
+    const service = new SessionStorage({ ...f.deps, log });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce();
+    expect(log).toHaveBeenCalledOnce();
+    expect(log.mock.calls[0]![0]).toMatchObject({
+      completed: true,
+      dependenciesRemoved: 0,
+      topBlockers: expect.arrayContaining([
+        { reason: 'Dependency has local edits or no shared copy', count: 1 },
+      ]),
+    });
   });
   it('requires a persistent orphan grace period', async () => {
     const f = fixture();
@@ -387,6 +541,7 @@ describe('safe session storage reclamation', () => {
   });
   it('never follows symlink targets while comparing disposable dependencies', async () => {
     const f = fixture();
+    f.idleDays(1);
     symlinkSync('/outside', join(f.path, 'node_modules', 'unknown'));
     await expect(
       compareDependencyTrees(
@@ -419,5 +574,82 @@ describe('safe session storage reclamation', () => {
     expect(existsSync(f.path)).toBe(false);
     await f.service.ensureWorkspace(f.session);
     expect(existsSync(f.path)).toBe(true);
+  });
+});
+
+describe('storage shutdown', () => {
+  it('cancels active preparation, drains it and admits no new pass', async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let finish!: () => void;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const mutate = vi.fn(async (_projectId, _sessionId, _operation, signal?: AbortSignal) => {
+      entered();
+      await new Promise<void>((resolve) =>
+        signal!.addEventListener('abort', () => resolve(), { once: true }),
+      );
+      await held;
+    });
+    const service = new SessionStorage({
+      listProjects: async () => [{ id: 'p', kind: 'github' } as ProjectRecord],
+      listSessions: async () => [
+        { sessionId: 's', projectId: 'p', worktree: '/unused' } as SessionRecord,
+      ],
+      activity: async () => Date.now(),
+      root: () => '/unused',
+      withGit: async () => {
+        throw new Error('shutdown must not reach Git');
+      },
+      pr: async () => null,
+      mutate,
+    });
+    service.bind(
+      async (_id, run) => ({ ran: true, value: await run() }),
+      () => false,
+    );
+    const pass = service.runOnce();
+    await started;
+    let closed = false;
+    const closing = service.stop().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    finish();
+    await closing;
+    await pass;
+    await service.runOnce();
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The mutation the server wraps around each session's pass re-checked the whole
+// project for dev servers and previews, so one serving session still held every
+// idle worktree of its project even after the pass itself became per session.
+describe('storage hold', () => {
+  const devServers = {
+    hasRunningServers: (projectId: string) => projectId === 'p',
+    hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
+  };
+  const localPreviews = {
+    list: (sessionId: string) => (sessionId === 'previewing' ? [{}] : []),
+    listProject: () => [{}],
+  };
+  const hold = (
+    sessionId: string | undefined,
+    publicShares: { state: string; sessionId?: string | null }[] = [],
+  ) => storageHold({ projectId: 'p', sessionId, devServers, localPreviews, publicShares });
+  it('holds only the serving session, any project-level share, and the orphan pass', () => {
+    expect(hold('idle')).toBeUndefined();
+    expect(hold('serving')).toBe('Managed dev server is active');
+    expect(hold('previewing')).toBe('Public preview is active');
+    expect(hold('idle', [{ state: 'active', sessionId: 'other' }])).toBeUndefined();
+    expect(hold('idle', [{ state: 'revoked', sessionId: null }])).toBeUndefined();
+    expect(hold('idle', [{ state: 'active', sessionId: null }])).toBe('Public preview is active');
+    expect(hold(undefined)).toBe('Managed dev server is active');
   });
 });

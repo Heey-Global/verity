@@ -10,11 +10,53 @@ import { StatusTag } from '../ui/Status';
 
 const PROVIDER = { meet: 'Google Meet', teams: 'Teams', zoom: 'Zoom' } as const;
 const REFRESH_MS = 30_000;
-/** Matches the server's limit on joining early (`calendar-meeting-routes.ts`). */
-const JOIN_EARLY_MS = 15 * 60_000;
+/** Prefer a meeting near its start without preventing an explicit earlier join. */
+const PRESELECT_EARLY_MS = 15 * 60_000;
 
 export const canJoinCalendarMeeting = (meeting: UpcomingMeeting, now: number) =>
-  meeting.startsAt - now <= JOIN_EARLY_MS && meeting.endsAt > now;
+  meeting.endsAt > now;
+
+/** The hosts the server's `isSupportedMeetingUrl` accepts; a test keeps the two equal. */
+export const MEETING_HOSTS = [
+  'meet.google.com',
+  'teams.microsoft.com',
+  'teams.live.com',
+  'zoom.us',
+];
+
+/**
+ * Whether Verity's bot can join a typed link, as the server decides it: HTTPS on Google Meet,
+ * Teams or Zoom. A link pasted without `https://` is read the way the server reads it.
+ */
+export function isSupportedMeetingLink(text: string): boolean {
+  const value = text.trim();
+  const withScheme =
+    /^(?:meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|(?:[a-z0-9-]+\.)?zoom\.us)\//i.test(
+      value,
+    )
+      ? `https://${value}`
+      : value;
+  try {
+    const url = new URL(withScheme);
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      MEETING_HOSTS.some(
+        (host) =>
+          url.hostname === host || (host === 'zoom.us' && url.hostname.endsWith('.zoom.us')),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Shown at the link field when Verity cannot join the link. */
+export const UNSUPPORTED_LINK_ERROR = {
+  title: 'Link not supported',
+  message: 'Use Google Meet, Microsoft Teams or Zoom.',
+};
 
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -63,6 +105,8 @@ export function useCalendarMeetingChoice(
   upcoming: UpcomingMeeting[] | null,
   now: number,
   inPerson = false,
+  /** The meeting Verity prepared the screen for; picked first while it is listed. */
+  preferredEventKey: string | null = null,
 ) {
   const [selectedEventKey, setSelectedEventKey] = useState<string | null>(null);
   const [manualLink, setManualLink] = useState(false);
@@ -77,10 +121,20 @@ export function useCalendarMeetingChoice(
     if (!preselected.current || sourceChanged) {
       preselected.current = true;
       const eligible = (item: UpcomingMeeting) =>
-        canJoinCalendarMeeting(item, now) && (inPerson || item.provider !== null);
+        canJoinCalendarMeeting(item, now) &&
+        item.startsAt - now <= PRESELECT_EARLY_MS &&
+        (inPerson || item.provider !== null);
       const current = upcoming.find((item) => item.eventKey === selectedEventKey);
+      // Verity may name a meeting hours ahead to fill in its title, but never one without
+      // a call link for an online start.
+      const preferred = sourceChanged
+        ? undefined
+        : upcoming.find(
+            (item) => item.eventKey === preferredEventKey && (inPerson || item.provider !== null),
+          );
       const soon =
-        sourceChanged && current && eligible(current) ? current : upcoming.find(eligible);
+        preferred ??
+        (sourceChanged && current && eligible(current) ? current : upcoming.find(eligible));
       if (soon) {
         setSelectedEventKey(soon.eventKey);
         if (sourceChanged) setManualLink(false);
@@ -135,6 +189,7 @@ export function CalendarMeetingPicker({
   onManualChange,
   meetingUrl,
   onMeetingUrlChange,
+  meetingUrlError,
   now,
 }: {
   upcoming: UpcomingMeeting[] | null;
@@ -147,6 +202,8 @@ export function CalendarMeetingPicker({
   onManualChange: (manual: boolean) => void;
   meetingUrl: string;
   onMeetingUrlChange: (url: string) => void;
+  /** Set once a start was refused because Verity cannot join the typed link. */
+  meetingUrlError?: { title: string; message: string } | undefined;
   now: number;
 }) {
   const when = (meeting: UpcomingMeeting) => {
@@ -165,7 +222,13 @@ export function CalendarMeetingPicker({
             <Row
               key={meeting.eventKey}
               title={meeting.title || 'Online meeting'}
-              subtitle={`${when(meeting)} · ${meeting.provider ? PROVIDER[meeting.provider] : 'In person'}`}
+              subtitle={`${when(meeting)} · ${
+                meeting.provider
+                  ? PROVIDER[meeting.provider]
+                  : inPerson
+                    ? 'In person'
+                    : 'Link not supported'
+              }`}
               selected={!manual && selectedKey === meeting.eventKey}
               disabled={!inPerson && (!meeting.provider || !canJoinCalendarMeeting(meeting, now))}
               onPress={() => {
@@ -213,8 +276,11 @@ export function CalendarMeetingPicker({
               onChangeText={onMeetingUrlChange}
               placeholder="https://"
               keyboardType="url"
+              error={meetingUrlError}
             />
-            <Text variant="footnote">Google Meet, Microsoft Teams or Zoom.</Text>
+            {meetingUrlError ? null : (
+              <Text variant="footnote">Google Meet, Microsoft Teams or Zoom.</Text>
+            )}
           </Disclosure>
         </Card>
       ) : null}

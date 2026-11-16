@@ -170,29 +170,41 @@ export class IntegrationStore {
     status: string;
     lastError?: string | null | undefined;
   }): Promise<void> {
-    return this.egressDestinationMutation(async () => {
-      await this.db
-        .insertInto('integration_accounts')
-        .values({
-          id: input.id,
-          provider: input.provider,
-          endpoint: input.endpoint,
-          display_name: input.displayName,
-          status: input.status,
-          last_error: input.lastError ?? null,
-          updated_at: new Date().toISOString(),
-        })
-        .onConflict((c) =>
-          c.column('id').doUpdateSet({
+    // The predicate runs under the synchronizer's existing SQL lock and queue,
+    // avoiding lock inversion between a poll and periodic inventory refresh.
+    return this.egressDestinationMutation(
+      async () => {
+        await this.db
+          .insertInto('integration_accounts')
+          .values({
+            id: input.id,
+            provider: input.provider,
             endpoint: input.endpoint,
             display_name: input.displayName,
             status: input.status,
             last_error: input.lastError ?? null,
             updated_at: new Date().toISOString(),
-          }),
-        )
-        .execute();
-    });
+          })
+          .onConflict((c) =>
+            c.column('id').doUpdateSet({
+              endpoint: input.endpoint,
+              display_name: input.displayName,
+              status: input.status,
+              last_error: input.lastError ?? null,
+              updated_at: new Date().toISOString(),
+            }),
+          )
+          .execute();
+      },
+      async () => {
+        const previous = await this.db
+          .selectFrom('integration_accounts')
+          .select('endpoint')
+          .where('id', '=', input.id)
+          .executeTakeFirst();
+        return previous?.endpoint !== input.endpoint;
+      },
+    );
   }
 
   async replaceImportDiagnostics(

@@ -227,7 +227,7 @@ interface SleepingSessionGitOptions {
   templateContainer: string;
   /** Storage maintenance holds the project lifecycle barrier and needs Git writes/fetches. */
   maintenance?: {
-    fallback: SleepingGitFallback;
+    fallback?: SleepingGitFallback;
   };
   /** Current sandbox policy when GC has retired the template container. */
   fallback?: SleepingGitFallback;

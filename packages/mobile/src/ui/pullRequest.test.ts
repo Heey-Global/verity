@@ -124,6 +124,16 @@ describe('pullRequestMergeButton', () => {
   const idle = { merging: false, mergeRejected: false };
   const green = { completed: 3, total: 3, successful: 3, failed: 0, pending: 0 };
 
+  it('offers refresh after a transient preflight while a ready snapshot remains cached', () => {
+    expect(
+      pullRequestMergeButton(pr({ pipeline: 'success', checks: green, mergeable: true }), {
+        ...idle,
+        mergeRejected: true,
+        mergeRetryable: true,
+      }),
+    ).toEqual({ kind: 'refresh', label: 'Refresh' });
+  });
+
   it('enables merge only once GitHub confirms the PR can merge', () => {
     // The regression: green checks with `mergeable: null` used to look merge-ready in
     // the session list while the button was off. It must read as a wait, not a merge.

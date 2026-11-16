@@ -47,6 +47,7 @@ export function isRetryablePullError(error: unknown): boolean {
     case 'timeout':
     case 'image_not_found':
     case 'container_not_found':
+    case 'address_pool_exhausted':
     case 'conflict':
       return false;
     case 'other': {

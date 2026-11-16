@@ -7,7 +7,13 @@ import {
   type AgentGatewayStatus,
   type CodexCredentialUpdate,
 } from './agent-gateway-control.js';
-import { buildClaudeEgressPeerBindings } from './claude-egress-mtls.js';
+import type { Socket } from 'node:net';
+import { AgentGatewayPersonalCredentials } from './agent-gateway-personal.js';
+import {
+  buildClaudeEgressPeerBindings,
+  identifyClaudeEgressPeer,
+  type ClaudeEgressPeerIdentity,
+} from './claude-egress-mtls.js';
 import {
   authenticateClaudeEgressPeer,
   claudeEgressMtlsServerOptions,
@@ -73,11 +79,19 @@ export async function startAgentGatewayRuntime(options: {
   let codexRequired = false;
   let opencodeRequired = false;
   let opencodeCredential: { baseUrl: string; apiKey: string } | undefined;
-  let peerBindings = new Map<string, string>();
+  let peerBindings = new Map<string, ClaudeEgressPeerIdentity>();
   const spill = new AgentGatewaySpill(options.spillPath);
   const codexSpill = new CodexCredentialSpill(
     options.codexSpillPath ?? `${options.spillPath}.codex`,
   );
+  const codexSpillPath = options.codexSpillPath ?? `${options.spillPath}.codex`;
+  const personal = new AgentGatewayPersonalCredentials(
+    (userId) =>
+      `${codexSpillPath}.p-${createHash('sha256').update(userId, 'utf8').digest('hex').slice(0, 16)}`,
+  );
+  /** The person behind an authenticated peer; see {@link AgentGatewayPersonalCredentials}. */
+  const peerUser = (socket: Socket): string | null | undefined =>
+    identifyClaudeEgressPeer(socket, peerBindings)?.userId;
   const startGateway = options.startClaudeGateway ?? startClaudeEgressMtlsGateway;
   const startCodexGateway = options.startCodexGateway ?? startCodexEgressGateway;
   const status = (): AgentGatewayStatus => ({
@@ -98,6 +112,7 @@ export async function startAgentGatewayRuntime(options: {
           ...(codexListener === undefined ? {} : { codexPort: codexListener.port }),
           opencodeReady: opencodeCredential !== undefined,
         }),
+    perUserCredentials: true,
   });
   const control = await startAgentGatewayControlServer({
     socketPath: options.controlSocketPath,
@@ -184,6 +199,9 @@ export async function startAgentGatewayRuntime(options: {
         // the candidate before a first listener can accept traffic; rollback
         // restores the previous authority if any later configuration step fails.
         codexAuthority = nextCodexAuthority;
+        // Installed first: a person whose login was withdrawn must lose it even if
+        // a later step of this configuration fails.
+        await personal.configure(next.personal);
         opencodeCredential =
           next.opencode?.apiKey == null
             ? undefined
@@ -199,7 +217,7 @@ export async function startAgentGatewayRuntime(options: {
         if (listener !== undefined) listener.reloadTls(next.claude.tls);
         if (codexListener !== undefined)
           codexListener.reloadTls(claudeEgressMtlsServerOptions(next.claude.tls));
-        if (listener === undefined && nextToken !== undefined) {
+        if (listener === undefined && (nextToken !== undefined || personal.count() > 0)) {
           peerBindings = nextBindings;
           accessToken = nextToken;
           listener = await startGateway({
@@ -209,7 +227,16 @@ export async function startAgentGatewayRuntime(options: {
             tls: next.claude.tls,
             authenticatePeer: (socket): string | undefined =>
               authenticateClaudeEgressPeer(socket, peerBindings),
-            accessToken: (): Promise<string> => {
+            accessToken: (_projectId, socket): Promise<string> => {
+              const choice = personal.claude(peerUser(socket));
+              if (choice.kind === 'own') return Promise.resolve(choice.value);
+              if (choice.kind === 'none') {
+                return Promise.reject(
+                  new ClaudeEgressCredentialUnavailableError(
+                    'Claude egress has no login for this person',
+                  ),
+                );
+              }
               if (accessToken === undefined) {
                 return Promise.reject(
                   new ClaudeEgressCredentialUnavailableError(
@@ -224,7 +251,9 @@ export async function startAgentGatewayRuntime(options: {
         }
         if (
           codexListener === undefined &&
-          (nextCodexAuthority !== undefined || opencodeCredential !== undefined) &&
+          (nextCodexAuthority !== undefined ||
+            opencodeCredential !== undefined ||
+            personal.needsCodexListener()) &&
           options.codexPort !== undefined &&
           options.codexListenerAuthority !== undefined
         ) {
@@ -235,7 +264,14 @@ export async function startAgentGatewayRuntime(options: {
             tls: claudeEgressMtlsServerOptions(next.claude.tls),
             authenticatePeer: (socket): string | undefined =>
               authenticateClaudeEgressPeer(socket, peerBindings),
-            credential: () => {
+            credential: (socket) => {
+              const choice = personal.codex(peerUser(socket));
+              if (choice.kind === 'own') return choice.value.resolve();
+              if (choice.kind === 'none') {
+                return Promise.reject(
+                  new CodexCredentialUnavailableError('Codex gateway has no login for this person'),
+                );
+              }
               if (codexAuthority === undefined) {
                 return Promise.reject(
                   new CodexCredentialUnavailableError('Codex gateway credential is unavailable'),
@@ -243,9 +279,21 @@ export async function startAgentGatewayRuntime(options: {
               }
               return codexAuthority.resolve();
             },
-            refreshAfterUnauthorized: (previousAccessToken) =>
-              codexAuthority?.refreshAfterUnauthorized(previousAccessToken) ?? Promise.resolve(),
-            opencodeCredential: () => opencodeCredential,
+            refreshAfterUnauthorized: (previousAccessToken, socket) => {
+              const choice = personal.codex(peerUser(socket));
+              if (choice.kind === 'own')
+                return choice.value.refreshAfterUnauthorized(previousAccessToken);
+              if (choice.kind === 'none') return Promise.resolve();
+              return (
+                codexAuthority?.refreshAfterUnauthorized(previousAccessToken) ?? Promise.resolve()
+              );
+            },
+            opencodeCredential: (socket) => {
+              const choice = personal.opencode(peerUser(socket));
+              if (choice.kind === 'own') return choice.value;
+              if (choice.kind === 'none') return undefined;
+              return opencodeCredential;
+            },
             onRequestEnd: options.onCodexRequestEnd ?? logCodexEgressRequestEnd,
           });
         }
@@ -295,7 +343,11 @@ export async function startAgentGatewayRuntime(options: {
         await codexSpill.clear();
         pendingCodexUpdate = undefined;
       }
-      if (nextCodexAuthority === undefined && opencodeCredential === undefined) {
+      if (
+        nextCodexAuthority === undefined &&
+        opencodeCredential === undefined &&
+        !personal.needsCodexListener()
+      ) {
         if (codexListener !== undefined) {
           await codexListener.close();
           codexListener = undefined;
@@ -329,14 +381,21 @@ export async function startAgentGatewayRuntime(options: {
       opencodeRequired = next.opencode?.apiKey != null;
     },
     status,
-    readCodexCredentialUpdate: () => pendingCodexUpdate,
+    readCodexCredentialUpdate: () => pendingCodexUpdate ?? personal.readCodexUpdate(),
     // The Server's usage probe reads the account-global quota straight from the
     // ChatGPT backend. It gets a short-lived access token here rather than a copy
     // of the rotating refresh token, so this stays the only writer (ADR 0010).
-    readCodexAccessToken: async () => {
-      if (codexAuthority === undefined) return undefined;
+    readCodexAccessToken: async (userId) => {
+      // A person's own login, or the instance login when it is theirs.
+      // Before the Server sent the personal section, nobody's login is known to
+      // be a person's; answer nothing rather than the instance login.
+      if (userId !== undefined && !personal.enforced) return undefined;
+      const choice = userId === undefined ? undefined : personal.codex(userId);
+      if (choice?.kind === 'none') return undefined;
+      const authority = choice?.kind === 'own' ? choice.value : codexAuthority;
+      if (authority === undefined) return undefined;
       try {
-        return await codexAuthority.resolve();
+        return await authority.resolve();
       } catch (error) {
         // The control answer is deliberately detail-free, so this is the only place
         // the actual reason survives. Without it a wrong banner has nothing behind
@@ -359,7 +418,11 @@ export async function startAgentGatewayRuntime(options: {
         throw error;
       }
     },
-    ackCodexCredentialUpdate(sourceRevision, updatedRevision): void {
+    ackCodexCredentialUpdate(sourceRevision, updatedRevision, userId): void {
+      if (userId !== undefined) {
+        personal.ackCodexUpdate(userId, sourceRevision, updatedRevision);
+        return;
+      }
       if (
         pendingCodexUpdate?.sourceRevision === sourceRevision &&
         pendingCodexUpdate.updatedRevision === updatedRevision

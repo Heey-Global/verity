@@ -5,6 +5,7 @@ After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
+Slice=verity-buildkit.slice
 Type=notify
 NotifyAccess=main
 TimeoutStartSec=60

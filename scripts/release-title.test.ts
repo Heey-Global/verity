@@ -23,6 +23,23 @@ describe('release title input', () => {
     expect(step?.run).toContain('"$PR_TITLE"');
     expect(step?.run).not.toContain('github.event.pull_request.title');
   });
+  it('revalidates the live title at the required gate after parallel PR runs', () => {
+    const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8')) as {
+      jobs: {
+        'ci-checks': { steps: { name?: string; run?: string; env?: Record<string, string> }[] };
+      };
+    };
+    const step = workflow.jobs['ci-checks'].steps.find(
+      (entry) => entry.name === 'Validate current PR title',
+    );
+    expect(step?.env?.PR_NUMBER).toBe('${{ github.event.pull_request.number }}');
+    expect(step?.run).toContain(
+      'gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title',
+    );
+    expect(step?.run).toContain('.github/scripts/validate-release-title "$title"');
+    expect(step?.run).toContain('set -euo pipefail');
+  });
+
   it.each([
     'fix(server): reject stale tokens',
     'feat(mobile): show recovery',

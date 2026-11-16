@@ -16,7 +16,11 @@ use the scoped local checks below when the impact is localized:
 
 ## Dependencies
 
-Install dependencies with `npm install`. The root `.npmrc` refuses to resolve
+Install dependencies with `npm install`. Inside a Verity session worktree, run
+`verity dependencies install` instead: it prepares each dependency version once
+per project and reuses it across sessions, where `npm install` gives every
+session its own full installation. Use `npm install <pkg>` there only to change
+dependencies, then run `verity dependencies install`. The root `.npmrc` refuses to resolve
 any npm release younger than three days, which is the same window Renovate
 applies through the org preset `renovate.json` extends. `npm ci` is unaffected —
 it installs what the lockfile already pins — so CI and image builds do not see
@@ -55,7 +59,7 @@ current file content and the TypeScript/classifier version; this metadata is bou
 to 4 MiB under `.cache/lint-ambient` and never stores ASTs or type programs. Use
 `npm run lint -- --no-cache` or `npm run lint:changed -- --no-cache <files>` to
 bypass both caches and force a fresh check. Workers run sequentially under a conservative heap
-budget, limit both file count and source bytes per group, and retry smaller groups
+budget (512 MiB in sandboxes; up to 2 GiB on CI runners, which own their machine), limit both file count and source bytes per group (16 files in sandboxes; up to 192 sharing one type program on CI runners), and retry smaller groups
 after memory exhaustion; the heap budget never grows automatically. Full local lint
 includes new unignored files and skips files deleted from the working tree.
 
@@ -102,8 +106,11 @@ whose receipt is `.agents/.last-code-review-sha` — a per-checkout marker, neve
 committed. Run `verity-code-review run` and `verity-code-review mark`; the
 sandbox git wrapper refuses `git push --no-verify`. When the dependencies are
 not installed, the hook automatically prepares compatible dependencies with
-`verity-dependencies install` (falling back to npm with lifecycle scripts disabled)
-and runs the checks. A requested push authorizes this preparation without another
+`verity-dependencies install` and runs the checks. The helper prepares a verified
+central inventory and activates independent files with worktree-local workspace
+links; it does not install packages in the session worktree. A missing helper or
+unsupported central preparation layout blocks the push instead of falling back
+to a private npm installation. A requested push authorizes this preparation without another
 confirmation. Installation failures stop the push. An explicit
 `verity-local-checks skip` remains valid until dependency inputs change. The scan is the last point at which a leaked credential
 is still local; once pushed it is burned and has to be rotated, whoever
@@ -122,6 +129,23 @@ tests for changed behavior, and run verification proportional to the change.
 
 Never push directly to the protected default branch. Work on a branch and open
 a review-ready pull request.
+
+## Module boundaries and file size
+
+Keep every source file, tests included, at or below 1,500 lines, as decided in
+`docs/adr/0029-module-boundaries-and-file-size.md`. Composition roots such as
+`buildServer` only wire: put new domain wiring, routes and their dependency
+closures in a module of their own with an `install<Area>(app, ctx)` entry point,
+and new persistence in an `EventStore` sub-store. Never import a composition
+root from the modules it assembles.
+
+`scripts/file-size-debt.json` records the files that were larger when the limit
+was introduced, and it may only shrink. `npm run lint` and `npm run
+lint:changed` fail when a file crosses the limit, a recorded file grows, or a
+recorded file shrank without lowering its entry. After shrinking a recorded file,
+run `node scripts/file-size-guard.mjs --update`; never add or raise an entry by
+hand. Where `origin/main` is available, the check also rejects entries added or
+raised since the merge base.
 
 ## Public communication
 

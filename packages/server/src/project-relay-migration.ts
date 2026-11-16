@@ -323,25 +323,8 @@ export function containerGenerationOf(
  */
 export type MigrationAction = 'none' | 'migrate' | 'defer' | 'skip-foreign';
 
-/**
- * How many CONSECUTIVE reconcile ticks an orphaned sandbox may hold off its own
- * repair by being busy. Past this the repair outranks the turn.
- *
- * An orphaned sandbox has no broker, no signing and no egress, so a turn running
- * inside it cannot finish anything that needs them — and an agent that retries a
- * brokered step keeps the project busy for as long as it retries. Deferring on
- * `busy` alone is therefore a livelock, not patience: the retries that make the
- * project busy are caused by the very breakage the deferral is postponing, and
- * the sandbox is never repaired (observed live: a project deferred every tick
- * across a whole server generation while its agent re-attempted a signed commit).
- *
- * The window keeps SBX-1's intent for the case it was written for — a turn that
- * is nearly done should get to finish rather than be killed for a migration —
- * while guaranteeing forward progress. `legacy` sandboxes are excluded: they are
- * fully functional, only on the wrong network, so waiting for idle costs nothing.
- * So is a busy state that was never confirmed (see `busyConfirmed`): the window
- * may only be spent against a turn we know exists.
- */
+/** Former orphan deferral threshold, retained for compatibility and regression
+ * tests. It never authorizes replacing a sandbox while activity remains. */
 export const ORPHAN_DEFER_TICK_LIMIT = 5;
 
 /**
@@ -410,21 +393,24 @@ export const IMAGE_UPDATE_RECREATE_LIMIT = 2;
  */
 export const SANDBOX_SELF_REPAIR_FAILURE_LIMIT = 2;
 
+/**
+ * Backoff between automatic retries of a failed sandbox recreate: the first
+ * retry still comes after one regular tick, so the report above appears no
+ * later than before; each further failure doubles the wait up to the maximum.
+ * A persistent refusal then stops taking the Server's single build slot every
+ * tick, and every two seconds in the handoff window after a restart. Released
+ * build storage and any successful rebuild reset it.
+ */
+export const SANDBOX_REPAIR_RETRY_MIN_MS = 60_000;
+export const SANDBOX_REPAIR_RETRY_MAX_MS = 30 * 60_000;
+
 export interface DecideMigrationActionInput {
   classification: ProjectContainerClass;
   /** True when a session bound to this project is running a turn right now. */
   busy: boolean;
-  /** Whether `busy` is an ANSWER rather than a fallback. The busy probe reports
-   *  `true` both for a real turn and for "I could not find out" (unattached probe,
-   *  probe threw) — a fail-safe that keeps an automated recreate from stopping a
-   *  sandbox under a session it cannot prove idle. Only a confirmed `busy` may
-   *  spend the orphan grace window; an unproven one defers forever, exactly as it
-   *  did before the window existed. Absent reads as UNCONFIRMED, so a caller that
-   *  does not distinguish the two can never force a recreate. */
+  /** Compatibility metadata; confirmed and unknown activity both defer. */
   busyConfirmed?: boolean | undefined;
-  /** Consecutive earlier ticks that already deferred THIS project's orphan repair
-   *  on a confirmed-busy project. Absent (fresh decision, e.g. the provision path)
-   *  reads as zero. */
+  /** Compatibility metadata; elapsed ticks never authorize interruption. */
   orphanDeferrals?: number | undefined;
 }
 
@@ -433,9 +419,9 @@ export function decideMigrationAction(input: DecideMigrationActionInput): Migrat
     case 'legacy':
       return input.busy ? 'defer' : 'migrate';
     case 'orphaned':
-      if (!input.busy) return 'migrate';
-      if (input.busyConfirmed !== true) return 'defer';
-      return (input.orphanDeferrals ?? 0) < ORPHAN_DEFER_TICK_LIMIT ? 'defer' : 'migrate';
+      // A dead relay does not prove the work using its sandbox has ended.
+      // Deferral age cannot authorize interrupting a turn, preview or server.
+      return input.busy ? 'defer' : 'migrate';
     case 'foreign':
       return 'skip-foreign';
     case 'migrated':

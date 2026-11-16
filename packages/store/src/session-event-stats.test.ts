@@ -111,7 +111,13 @@ describe('durable session event statistics', () => {
       expect((await ctx.store.getSession('b'))!.lastSeenEventCount).toBeNull();
       expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(2);
       expect((await migrator.migrateTo('0143_drop_orphaned_agent_steps')).error).toBeUndefined();
-      expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(2);
+      // The historical schema predates fields selected by today's getSession.
+      const rolledBack = await ctx.db
+        .selectFrom('sessions')
+        .select('last_seen_event_count')
+        .where('session_id', '=', 'a')
+        .executeTakeFirstOrThrow();
+      expect(rolledBack.last_seen_event_count).toBe(2);
       expect((await ctx.store.getSessionEventStats('a'))!.eventCount).toBe(5);
       expect((await migrator.migrateToLatest()).error).toBeUndefined();
       expect((await ctx.store.getSession('a'))!.lastSeenEventCount).toBe(1);

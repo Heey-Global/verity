@@ -87,6 +87,19 @@ describe('groupRows', () => {
     expect(rows[2]).toMatchObject({ id: 'tools:b1' });
   });
 
+  it('shows a presented mockup round as its own row between tool runs', () => {
+    // Inside a collapsed tool group the reviewer would never see the screens the
+    // build is waiting on.
+    const round = toolCall('m1', { name: 'mcp__verity__verity_present_mockups' });
+    round.tool.result = {
+      presented: true,
+      mockupRevision: 1,
+      screens: [{ name: 'Home', attachment: 'a'.repeat(64), width: 1, height: 2 }],
+    };
+    const rows = groupRows([toolCall('t1'), round, toolCall('t2')]);
+    expect(rows.map((row) => row.kind)).toEqual(['tool-group', 'message', 'tool-group']);
+  });
+
   it('nests a sub-agent subtree under one delegated-agent row (not flattened)', () => {
     // Agent dispatch (id `tool-agent1`) + its sub-agent's text + two tool calls,
     // then a top-level tool after the delegation.

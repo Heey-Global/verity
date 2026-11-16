@@ -57,9 +57,16 @@ export interface HttpMcpProxyDeps {
     protocolVersion?: string;
   }) => Promise<{ body: unknown; transform: (message: unknown) => Promise<unknown> }>;
   resolveCaller(input: { projectId: string; token: string }): Promise<McpGatewayCaller | undefined>;
+  /** The connection as the calling turn may use it; undefined when the turn's
+   *  user may not (another person's credentialed connection) or it is unbound. */
   resolveConnection(input: {
     projectId: string;
     connectionId: string;
+    /** Whose connection rights apply: the turn calling through the proxy, or the
+     *  authenticated person driving an MCP app from the app. */
+    principal:
+      | { readonly caller: Pick<McpGatewayCaller, 'sessionId' | 'turnId'> }
+      | { readonly userId: string | undefined };
   }): Promise<HttpMcpProxyConnection | undefined>;
 }
 
@@ -241,7 +248,11 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
     const connection =
       generationSignal?.aborted || caller === undefined
         ? undefined
-        : await deps.resolveConnection({ projectId: identity.projectId, connectionId });
+        : await deps.resolveConnection({
+            projectId: identity.projectId,
+            connectionId,
+            principal: { caller },
+          });
     if (generationSignal?.aborted || caller === undefined || connection === undefined) {
       reply.code(401);
       return { error: 'unauthorized' };
@@ -252,10 +263,14 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
         signal: generationSignal,
         authorize: async () => {
           const activeCaller = await deps.resolveCaller({ projectId: identity.projectId, token });
-          const activeConnection = await deps.resolveConnection({
-            projectId: identity.projectId,
-            connectionId,
-          });
+          const activeConnection =
+            activeCaller === undefined
+              ? undefined
+              : await deps.resolveConnection({
+                  projectId: identity.projectId,
+                  connectionId,
+                  principal: { caller: activeCaller },
+                });
           if (
             activeCaller?.sessionId !== caller.sessionId ||
             activeCaller.turnId !== caller.turnId ||
@@ -318,10 +333,14 @@ export function registerHttpMcpProxyRoute(app: FastifyInstance, deps: HttpMcpPro
           const activeCaller = await deps.resolveCaller({ projectId: identity.projectId, token });
           if (generationSignal?.aborted)
             return reply.code(401).send({ error: 'MCP access changed' });
-          const activeConnection = await deps.resolveConnection({
-            projectId: identity.projectId,
-            connectionId,
-          });
+          const activeConnection =
+            activeCaller === undefined
+              ? undefined
+              : await deps.resolveConnection({
+                  projectId: identity.projectId,
+                  connectionId,
+                  principal: { caller: activeCaller },
+                });
           if (
             generationSignal?.aborted ||
             activeCaller?.sessionId !== caller.sessionId ||

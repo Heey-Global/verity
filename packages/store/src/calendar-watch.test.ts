@@ -3,6 +3,8 @@ import { CalendarWatchStore, calendarEventKey } from './calendar-watch.js';
 import { createSecretCipher } from './crypto.js';
 import { createTestDb, type TestDb } from './testing.js';
 
+const ADMIN = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -13,6 +15,7 @@ afterAll(async () => {
 
 it('watches, updates and stops watching calendars per account', async () => {
   const account = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'watch@example.com',
     clientId: 'client',
     refreshToken: 'secret',
@@ -43,6 +46,7 @@ it('watches, updates and stops watching calendars per account', async () => {
 // A disconnected account must not leave a calendar the watcher keeps trying to read.
 it('forgets the calendars of a disconnected account', async () => {
   const account = await ctx.store.googleAccounts.save({
+    ownerUserId: ADMIN,
     email: 'gone@example.com',
     clientId: 'client',
     refreshToken: 'secret',
@@ -77,6 +81,7 @@ describe('watched events', () => {
     watch = new CalendarWatchStore(ctx.db, createSecretCipher('cd'.repeat(32)));
     accountId = (
       await ctx.store.googleAccounts.save({
+        ownerUserId: ADMIN,
         email: 'events@example.com',
         clientId: 'client',
         refreshToken: 'secret',

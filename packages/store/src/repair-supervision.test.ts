@@ -408,6 +408,33 @@ it('upgrades pre-receipt ownership conservatively and round-trips the recovery m
 });
 
 describe('originating session repairs', () => {
+  it('lists origins per project and hands one over only from the owner it replaces', async () => {
+    for (const id of ['first', 'second', 'third'])
+      await ctx.store.createSession({
+        sessionId: id,
+        projectId: 'a',
+        worktree: `/wt/${id}`,
+        model: 'm',
+      });
+    await ctx.store.repairs.registerSessionOrigin('a', 'pr:1', 'first');
+    await ctx.store.repairs.registerSessionOrigin('a', 'repo:docs:pr:1', 'second');
+    expect(
+      (await ctx.store.repairs.sessionOrigins('a')).sort((x, y) =>
+        x.resource.localeCompare(y.resource),
+      ),
+    ).toEqual([
+      { resource: 'pr:1', sessionId: 'first' },
+      { resource: 'repo:docs:pr:1', sessionId: 'second' },
+    ]);
+    expect(await ctx.store.repairs.sessionOrigins('b')).toEqual([]);
+    // A caller that read an older owner cannot take the resource from the current one.
+    expect(await ctx.store.repairs.replaceSessionOrigin('a', 'pr:1', 'second', 'third')).toBe(
+      'first',
+    );
+    expect(await ctx.store.repairs.replaceSessionOrigin('a', 'pr:1', 'first', 'third')).toBe(
+      'third',
+    );
+  });
   it.each(['off', 'monitor', 'automatic'] as const)(
     'does not borrow QA consent in %s mode',
     async (mode) => {

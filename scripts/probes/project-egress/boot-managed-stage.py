@@ -9,6 +9,18 @@ import subprocess
 import sys
 import tempfile
 
+def release_source(assets, name, legacy_assets, objects=Path('/opt/verity-egress')):
+    if name == 'node':
+        return assets / 'node'
+    if name in ('native-runtime-pins.env', 'project-egress-host-main.mjs'):
+        return assets / name
+    if name.endswith('.bpf.o'):
+        return objects / name
+    if name not in legacy_assets:
+        return assets / 'toolchain' / name
+    return assets / 'units' / name
+
+
 assert os.getuid() == 0
 assert Path('/var/lib/cloud/data/instance-id').read_text().strip() == 'verity-boot-probe'
 assets = Path('/opt/verity-fixture')
@@ -19,13 +31,7 @@ release = assets / 'managed-release'
 release.mkdir(mode=0o700)
 manifest = {}
 for name in managed.ASSETS:
-    source = (assets / 'node') if name == 'node' else (assets / 'units' / name)
-    if name == 'native-runtime-pins.env':
-        source = assets / name
-    elif name == 'project-egress-host-main.mjs':
-        source = assets / name
-    elif name.endswith('.bpf.o'):
-        source = Path('/opt/verity-egress') / name
+    source = release_source(assets, name, managed.LEGACY_ASSETS)
     shutil.copyfile(source, release / name)
     os.chmod(release / name, 0o555 if name == 'node' else 0o444)
     manifest[name] = hashlib.sha256((release / name).read_bytes()).hexdigest()

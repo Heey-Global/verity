@@ -29,6 +29,20 @@ export class ForgejoRequestError extends Error {
   }
 }
 
+/** Rejects path normalization before a URL is built, so a caller can neither
+ *  escape a configured reverse-proxy prefix nor turn an API path into another
+ *  origin. Encoded slashes are refused too: a value that needs one has to keep
+ *  its `/` literal. */
+export function assertForgejoApiPath(path: string): void {
+  if (
+    path.includes('//') ||
+    !/^\/[a-zA-Z0-9_/?=&%.,:@+-]*$/u.test(path) ||
+    /(?:^|\/)\.\.(?:\/|$)|%2f|%5c|%2e/iu.test(path)
+  ) {
+    throw new Error('Invalid Forgejo API path');
+  }
+}
+
 export class ForgejoTransport {
   readonly baseUrl: string;
   constructor(
@@ -43,13 +57,7 @@ export class ForgejoTransport {
   async json<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     // Reject path normalization before constructing a URL; callers cannot escape
     // a configured reverse-proxy prefix or turn an API path into another origin.
-    if (
-      path.includes('//') ||
-      !/^\/[a-zA-Z0-9_/?=&%.,:@+-]*$/u.test(path) ||
-      /(?:^|\/)\.\.(?:\/|$)|%2f|%5c|%2e/iu.test(path)
-    ) {
-      throw new Error('Invalid Forgejo API path');
-    }
+    assertForgejoApiPath(path);
     const token = await this.token();
     if (!token || /[\r\n]/u.test(token)) throw new Error('Forgejo credentials unavailable');
     const url = new URL(`${this.baseUrl}/api/v1${path}`);

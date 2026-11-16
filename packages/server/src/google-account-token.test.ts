@@ -6,6 +6,7 @@ describe('account-specific Google token cache', () => {
   it('refuses ambiguity, isolates caches, refreshes scope upgrades and rejects removed accounts', async () => {
     const accounts: GoogleAccount[] = ['one', 'two'].map((id) => ({
       id,
+      ownerUserId: 'alice',
       email: `${id}@example.com`,
       subject: null,
       displayName: null,
@@ -15,7 +16,7 @@ describe('account-specific Google token cache', () => {
     }));
     const store = {
       googleAccounts: {
-        list: async () => accounts,
+        get: async (id: string) => accounts.find((account) => account.id === id),
         credentials: async (id: string) =>
           accounts.some((a) => a.id === id)
             ? { clientId: 'client', refreshToken: `refresh-${id}`, credentialVersion: 1 }
@@ -44,6 +45,9 @@ describe('account-specific Google token cache', () => {
     expect(fetchToken).toHaveBeenCalledTimes(3);
     accounts.shift();
     expect(await provider('one')).toBeUndefined();
-    expect(await provider()).toBe(two);
+    expect(await provider('two')).toBe(two);
+    // Even with a single account left, an unnamed request must not borrow it: on a
+    // shared server that account belongs to one person, not to whoever asks.
+    expect(await provider()).toBeUndefined();
   });
 });

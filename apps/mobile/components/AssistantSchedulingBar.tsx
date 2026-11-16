@@ -1,3 +1,4 @@
+import { projectTitle } from '@verity/mobile';
 import { useCallback, useState } from 'react';
 import { router } from 'expo-router';
 import { useUnistyles } from 'react-native-unistyles';
@@ -125,7 +126,7 @@ export function AssistantSchedulingOverview({
       const overview = await client.assistantSchedulingRequests(sessionId);
       if (overview.assistantSessionId !== sessionId) return null;
       const projects = await client.listProjects();
-      const names = new Map(projects.map((project) => [project.id, project.repo]));
+      const names = new Map(projects.map((project) => [project.id, projectTitle(project)]));
       return overview.requests.map(({ sessionAvailable, ...request }) => ({
         request,
         project: request.projectId ? (names.get(request.projectId) ?? null) : null,

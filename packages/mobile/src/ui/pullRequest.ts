@@ -109,11 +109,12 @@ const blocked = (reason: PullRequestBlockReason): PullRequestMergeButton => ({
 
 export function pullRequestMergeButton(
   pr: PullRequestStatusView,
-  state: { merging: boolean; mergeRejected: boolean },
+  state: { merging: boolean; mergeRejected: boolean; mergeRetryable?: boolean },
 ): PullRequestMergeButton {
   if (state.merging) return { kind: 'merging' };
   if (pr.phase !== 'open') return { kind: 'closed' };
   if (pr.viewerCanMerge === false) return blocked('permission');
+  if (state.mergeRetryable) return { kind: 'refresh', label: 'Refresh' };
   if (state.mergeRejected) return blocked('rejected');
   if (isPullRequestConflicted(pr)) return blocked('conflict');
   // A failing check that is not required leaves the PR `unstable`, and GitHub still

@@ -60,14 +60,25 @@ try_docker_fallback() {
 }
 
 token_file="${VERITY_SIGNING_TOKEN_FILE:-/run/verity/ssh/signing_broker_token}"
-if [ ! -r "$token_file" ]; then
+# A turn's own badge identifies the turn, and so the person it runs for; the
+# container-wide token only identifies the project. Prefer the badge when the
+# broker handed this turn one in the expected shape.
+turn_capability="${VERITY_TURN_CAPABILITY:-}"
+case "$turn_capability" in
+  *[!A-Za-z0-9_-]*) turn_capability="" ;;
+esac
+if [ "${#turn_capability}" -ne 43 ]; then turn_capability=""; fi
+if [ -n "$turn_capability" ]; then
+  token="$turn_capability"
+elif [ ! -r "$token_file" ]; then
   if try_docker_fallback; then
     exit 0
   fi
   echo "verity-git-sign: signing token file is not readable" >&2
   exit 1
+else
+  token="$(tr -d '\r\n' < "$token_file")"
 fi
-token="$(tr -d '\r\n' < "$token_file")"
 if [ -z "$token" ]; then
   if try_docker_fallback; then
     exit 0

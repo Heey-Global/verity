@@ -11,6 +11,7 @@ import type { AttentionSignal } from './attention.js';
 import type { ClaudeCredentialStatus } from './claudeUsage.js';
 import type { PullRequestStatus } from './forge-provider.js';
 import type { ProjectAgent } from './project-agent-policy.js';
+import type { ProjectActivityReason } from './project-idle-sleep.js';
 import type { SandboxUpdateStatus } from './sandbox-updates.js';
 import type { SessionGoogleStatus } from './session-google-status.js';
 import type { OpenChoices, PendingPermissionRequest } from './session-inbox-facts.js';
@@ -25,6 +26,10 @@ import type { VulnerabilitySummary } from './vulnerability-session.js';
 export interface SandboxRepairVerdicts {
   unrepaired: ReadonlySet<string>;
   turnBlocked: ReadonlySet<string>;
+  /** What holds each blocked project, see `SandboxUpdateStatus.blockedBy`. */
+  blockers?: ReadonlyMap<string, readonly ProjectActivityReason[]>;
+  /** The most recent failed automatic recreate per project, with its time. */
+  lastFailures?: ReadonlyMap<string, { at: number; message: string }>;
 }
 
 export type PublicVeritySettingsRecord = Omit<
@@ -34,6 +39,7 @@ export type PublicVeritySettingsRecord = Omit<
   | 'gitKnownHosts'
   | 'gitAllowedSigners'
   | 'githubAppPrivateKey'
+  | 'githubAppClientSecret'
   | 'dopplerServiceToken'
   | 'transcribeApiKey'
   | 'claudeCodeOauthCredentialsJson'
@@ -47,6 +53,8 @@ export type PublicVeritySettingsRecord = Omit<
   gitKnownHostsConfigured: boolean;
   gitAllowedSignersConfigured: boolean;
   githubAppPrivateKeyConfigured: boolean;
+  /** Whether people can authorize the GitHub App for themselves. */
+  githubAppClientSecretConfigured: boolean;
   dopplerServiceTokenConfigured: boolean;
   transcribeApiKeyConfigured: boolean;
   /** Always false: Verity no longer bundles a local transcription backend, so
@@ -99,6 +107,10 @@ export interface ProjectSettingsRecord {
   googleDriveFolderId: string | null;
   googleDriveFolderName: string | null;
   googleDriveAccessMode: 'read-only' | 'read-write';
+  /** Design module: whether plans include mockups the user approves before the build. */
+  designLevel: 'off' | 'on_request' | 'required';
+  /** One line shown under the project's name; null when none was written. */
+  description: string | null;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowedAgents: ProjectAgent[] | null;
   createdAt: Date;
@@ -119,6 +131,8 @@ type ProjectSettingsKey =
   | 'googleDriveFolderId'
   | 'googleDriveFolderName'
   | 'googleDriveAccessMode'
+  | 'designLevel'
+  | 'description'
   | 'allowedAgents';
 
 type ProjectSettingsPatch = {
@@ -279,6 +293,9 @@ export interface SessionSummary extends SessionRecord {
   /** Keys of this session's Home items the requesting person dismissed. Like
    *  `lastSeenEventCount`, filled in per person when the summary is delivered. */
   inboxDismissed?: string[];
+  /** Only on the session list, which leaves out `planningPlan`: present while
+   *  planning is active and a presented plan waits for approval. */
+  planningPresented?: true;
   /** Position within a manually ordered overview group; null means automatic. */
   sortOrder?: number | null;
   status: SessionStatus;

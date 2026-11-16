@@ -1,12 +1,16 @@
 import { Pressable, ScrollView, Text, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
+import { Icon, type IconName } from '../Icon';
 import { tint } from './tint';
 
 /**
  * A single-choice row of filter chips above a list. The selected chip is a
  * tonal `action` fill, like the primary button; the others are bordered and
  * muted. Rows scroll sideways by default; wrap keeps all options visible.
+ *
+ * An option with an `icon` shows only the symbol, for a category whose symbol
+ * is unmistakable (the favorites star); its `label` becomes the spoken name.
  */
 export function FilterChips<T extends string>({
   options,
@@ -16,7 +20,7 @@ export function FilterChips<T extends string>({
   wrap = false,
   compact = false,
 }: {
-  options: readonly { value: T; label: string }[];
+  options: readonly { value: T; label: string; icon?: IconName }[];
   value: T;
   onChange: (value: T) => void;
   accessibilityLabel: string;
@@ -24,6 +28,7 @@ export function FilterChips<T extends string>({
   wrap?: boolean;
   compact?: boolean;
 }) {
+  const { theme } = useUnistyles();
   const chips = (
     <>
       {options.map((option) => {
@@ -34,22 +39,32 @@ export function FilterChips<T extends string>({
             onPress={() => onChange(option.value)}
             accessibilityRole="tab"
             accessibilityState={{ selected }}
+            {...(option.icon ? { accessibilityLabel: option.label } : {})}
             style={({ pressed }) => [
               styles.chip,
               compact ? styles.compact : null,
+              option.icon ? styles.iconChip : null,
               selected ? styles.selected : null,
               pressed && !selected ? styles.pressed : null,
             ]}
           >
-            <Text
-              style={[
-                styles.label,
-                compact ? styles.compactLabel : null,
-                selected ? styles.labelSelected : null,
-              ]}
-            >
-              {option.label}
-            </Text>
+            {option.icon ? (
+              <Icon
+                name={option.icon}
+                size={16}
+                color={selected ? theme.colors.actionLabel : theme.colors.textMuted}
+              />
+            ) : (
+              <Text
+                style={[
+                  styles.label,
+                  compact ? styles.compactLabel : null,
+                  selected ? styles.labelSelected : null,
+                ]}
+              >
+                {option.label}
+              </Text>
+            )}
           </Pressable>
         );
       })}
@@ -81,6 +96,8 @@ const styles = StyleSheet.create((theme) => ({
   wrap: { flexDirection: 'row', flexWrap: 'wrap' },
   compact: { paddingHorizontal: theme.spacing.sm },
   compactLabel: { ...theme.typography.bodySmall },
+  // Square-ish, so a symbol chip reads as one of the set rather than a stray icon.
+  iconChip: { minWidth: 36, alignItems: 'center', paddingHorizontal: theme.spacing.sm },
   chip: {
     minHeight: 36,
     justifyContent: 'center',

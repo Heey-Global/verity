@@ -95,3 +95,33 @@ it.each(['provisioning_in_progress', 'mandatory_inventory_incomplete'] as const)
     });
   },
 );
+
+it.each([
+  'assessment_authorization_invalid',
+  'docker_host_unsupported',
+  'native_package_unavailable',
+  'relay_runtime_missing',
+] as const)('retains fixed installation precondition %s without granting readiness', (reason) => {
+  expect(projectEgressInstallationFailure({ version: 1, state: 'unavailable', reason })).toEqual({
+    available: false,
+    reason,
+  });
+  expect(projectEgressInstallationFailure({ version: 1, state: 'ready', reason })).toBeUndefined();
+});
+
+it('keeps authenticated live inventory status authoritative over the persistent reboot fallback', async () => {
+  const health = vi.fn<() => Promise<ProjectEgressHealth>>();
+  const status = projectEgressAvailability(
+    () => ({ health }),
+    () => ({ version: 1, state: 'unavailable', reason: 'controller_failed' }),
+  );
+  health.mockResolvedValue({ available: true, reason: 'ready' });
+  expect(await status(true)).toEqual({ available: true, reason: 'ready' });
+  health.mockResolvedValue({ available: false, reason: 'mandatory_inventory_incomplete' });
+  expect(await status(true)).toEqual({
+    available: false,
+    reason: 'mandatory_inventory_incomplete',
+  });
+  health.mockResolvedValue({ available: false, reason: 'service_unreachable' });
+  expect(await status(true)).toEqual({ available: false, reason: 'controller_failed' });
+});

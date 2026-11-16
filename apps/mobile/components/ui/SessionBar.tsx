@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import { Pressable, View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
+import { ActivityIndicator, Pressable, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { Text } from './Text';
 
 /** Shared frame for session status and its independent trailing action. */
@@ -33,13 +33,20 @@ export function SessionBarTarget({
   accessibilityRole = 'button',
 }: {
   children: ReactNode;
-  onPress(): void;
+  /** Omitted for a bar that only reports a state: it then is not a button. */
+  onPress?: () => void;
   onPressIn?(): void;
   onPressOut?(): void;
   accessibilityLabel: string;
   accessibilityHint?: string;
   accessibilityRole?: 'button' | 'link';
 }) {
+  if (onPress === undefined)
+    return (
+      <View style={styles.target} accessible accessibilityLabel={accessibilityLabel}>
+        {children}
+      </View>
+    );
   return (
     <Pressable
       style={styles.target}
@@ -57,18 +64,26 @@ export function SessionBarTarget({
 
 export function SessionBarContent({
   color,
+  busy = false,
   title,
   subtitle,
   children,
 }: {
   color: string;
+  /** In motion (§ 5.4 `transient`): a muted spinner takes the dot's place. */
+  busy?: boolean;
   title: string;
   subtitle: string;
   children?: ReactNode;
 }) {
+  const { theme } = useUnistyles();
   return (
     <>
-      <View style={[styles.dot, { backgroundColor: color }]} />
+      {busy ? (
+        <ActivityIndicator size="small" color={theme.colors.textMuted} />
+      ) : (
+        <View style={[styles.dot, { backgroundColor: color }]} />
+      )}
       <View style={styles.main}>
         <Text variant="bodySmall" style={styles.title} numberOfLines={1}>
           {title}

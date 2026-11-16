@@ -1,6 +1,6 @@
 // Test-only byte relay: no production admission, routing, or entitlement protocol.
 import { Buffer } from 'node:buffer';
-import { setTimeout, clearTimeout } from 'node:timers';
+import { setInterval, clearInterval, setTimeout, clearTimeout } from 'node:timers';
 import https from 'node:https';
 import http2 from 'node:http2';
 import net from 'node:net';
@@ -23,6 +23,30 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
    * @param {import('node:http').ServerResponse | http2.Http2ServerResponse} res */
   const handleCore = (req, res) => {
     if (req.url === '/slow') return;
+    // Keeps downstream bytes flowing, as a session's event stream does, so
+    // the attachment never looks idle while other requests are lost.
+    if (req.url === '/trickle') {
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'x-content-type-options': 'nosniff',
+      });
+      const timer = setInterval(() => {
+        res.write(Buffer.alloc(1024, 0x74));
+      }, 200);
+      const stop = setTimeout(() => res.end(), 60_000);
+      res.on('close', () => {
+        clearInterval(timer);
+        clearTimeout(stop);
+      });
+      return;
+    }
+    // After answering, the relay stops reading every app data socket while it
+    // keeps writing to them: replies still arrive, requests and pings do not.
+    // A one-way loss at the relay, not a simulation of the network beneath it.
+    if (req.url === '/mute-upstream') {
+      res.end('muted', () => setTimeout(muteUpstream, 50));
+      return;
+    }
     // Leave the response incomplete after real application bytes have arrived.
     if (req.url === '/partial') {
       // An unspecified media type lets native clients buffer the unfinished
@@ -89,6 +113,11 @@ export async function startFixture({ key, cert, protocol = 'h1' }) {
   relay.on('clientError', (_error, socket) => socket.destroy());
   const tunnels = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   const data = new WebSocketServer({ noServer: true, maxPayload: 96 * 1024 });
+  // ws.pause() holds across its own backpressure handling, which resumes
+  // the raw socket on receiver drain.
+  function muteUpstream() {
+    for (const client of data.clients) client.pause();
+  }
   relay.on('upgrade', (request, socket, head) => {
     const server = request.url === '/tunnel' ? tunnels : request.url === '/data' ? data : null;
     if (!server) return socket.destroy();

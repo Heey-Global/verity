@@ -27,6 +27,22 @@ describe('agentEventDescriptor', () => {
     });
   });
 
+  // The server refuses a shared-project turn whose sender has no account of
+  // their own for the model; the row must lead to where they connect one.
+  it('leads a turn refused for a missing own account to My AI accounts', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'run_failed',
+        message: 'Connect your Codex account in Verity to send messages with this model.',
+      }),
+    ).toMatchObject({
+      kind: 'account-required',
+      label: 'Connect your Codex account',
+      action: 'connect-account',
+    });
+  });
+
   it('describes a compaction boundary (neutral, no detail)', () => {
     const d = agentEventDescriptor({ t: 'compaction', boundary: true });
     expect(d).toEqual({ kind: 'compaction', label: 'Context compacted', tone: 'neutral' });
@@ -243,4 +259,76 @@ it('describes durable task updates as an actionable Tasks row', () => {
       taskIds: ['one'],
     }),
   ).toMatchObject({ label: 'You completed 1 task', action: 'tasks' });
+});
+
+describe('turn start failures', () => {
+  // The readiness gate's timeout: the turn never reached the agent, so the row
+  // says so, keeps the diagnostics behind Details and offers to send the
+  // operator's message again rather than a "try again" follow-up.
+  it('describes a turn that never started from the server-written sentence', () => {
+    const descriptor = agentEventDescriptor({
+      t: 'error',
+      kind: 'sandbox_not_ready',
+      message:
+        'The project environment started, but its connection to Codex wasn’t ready within 90 seconds. Your message wasn’t sent to the agent.\nstartup_readiness_timeout\nconnector: ready; claude: not_configured; codex: refused; broker: ready',
+    });
+    expect(descriptor).toMatchObject({
+      kind: 'agent-not-started',
+      label: 'Agent couldn’t start',
+      detail:
+        'The project environment started, but its connection to Codex wasn’t ready within 90 seconds. Your message wasn’t sent to the agent.',
+      tone: 'warning',
+      action: 'resend',
+    });
+    expect(descriptor.technical).toContain('codex: refused');
+  });
+
+  it('explains a terse lifecycle refusal instead of showing it as the reason', () => {
+    expect(
+      agentEventDescriptor({
+        t: 'error',
+        kind: 'sandbox_not_ready',
+        message: 'project Sandbox is cloning',
+      }),
+    ).toMatchObject({
+      label: 'Agent couldn’t start',
+      detail: 'The project environment wasn’t ready. Your message wasn’t sent to the agent.',
+      technical: 'sandbox_not_ready\nproject Sandbox is cloning',
+    });
+  });
+
+  // codex wraps the connector's 502 as a bad gateway; reading that as the model
+  // provider being down sent people to the wrong place twice over.
+  it('names the project connection, not the provider, for a sandbox egress 502', () => {
+    const descriptor = agentEventDescriptor({
+      t: 'error',
+      kind: 'acp',
+      message:
+        'unexpected status 502 Bad Gateway: Codex egress unavailable: nothing accepted the connection at the Codex egress., url: http://127.0.0.1:47821/codex/responses',
+    });
+    expect(descriptor).toMatchObject({
+      kind: 'egress-unavailable',
+      label: 'Agent connection unavailable',
+      action: 'retry',
+    });
+    expect(descriptor.detail).not.toMatch(/credential/iu);
+  });
+  it('does not offer a retry that cannot help', () => {
+    const unconfigured = agentEventDescriptor({
+      t: 'error',
+      kind: 'acp',
+      message:
+        'unexpected status 502 Bad Gateway: Codex egress is not configured for this Sandbox: it was provisioned without a Codex gateway.',
+    });
+    expect(unconfigured.kind).toBe('codex-unconfigured');
+    expect(unconfigured.action).toBeUndefined();
+    const rejected = agentEventDescriptor({
+      t: 'error',
+      kind: 'acp',
+      message:
+        'unexpected status 502 Bad Gateway: Verity sandbox connector rejected the request before any gateway was reached.',
+    });
+    expect(rejected.kind).toBe('egress-rejected');
+    expect(rejected.action).toBeUndefined();
+  });
 });

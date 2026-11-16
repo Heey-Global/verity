@@ -6,12 +6,35 @@ import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
 export const TRUSTED_OUTPUT_BYTES = 10 * 1024 * 1024;
 const RETENTION_MS = 60 * 60 * 1000;
 const PAGE_BYTES = 12 * 1024;
+// Running records each reserve the full ceiling, so their count bounds in-flight payload.
+// Finished records are retained (so a caller whose wait was cut off can find the run) under
+// a separate budget of actually stored bytes and record count, enforced by evicting the
+// oldest finished records whenever a run is admitted. Running output becomes retained output
+// when it finishes, so stored payload stays below the two byte budgets combined (400 MiB).
+const PROJECT_RUNNING = 5;
+const TOTAL_RUNNING = 20;
+const PROJECT_RETAINED_BYTES = 5 * TRUSTED_OUTPUT_BYTES;
+const TOTAL_RETAINED_BYTES = 20 * TRUSTED_OUTPUT_BYTES;
+// Runs with little or no output cost almost no bytes; the record count bounds them too.
+const PROJECT_RETAINED_RECORDS = 200;
+const TOTAL_RETAINED_RECORDS = 1000;
+const LIST_LIMIT = 20;
 export type OutputOwner = { projectId: string; sessionId: string };
+type TrustedCliInvocationSummary = {
+  invocationId: string;
+  startedAt: string;
+  complete: boolean;
+  terminationReason?: string;
+  exitCode?: number;
+  exitCodeKnown?: false;
+};
 export interface TrustedCliOutputStore {
   begin(owner: OutputOwner): Promise<string>;
   append(id: string, stream: 'stdout' | 'stderr', text: string): Promise<void>;
   finish(id: string, result: Record<string, unknown>): Promise<void>;
   read(owner: OutputOwner, id: string, cursor?: number): Promise<unknown>;
+  /** The owner's retained records, newest first; metadata only, never output. */
+  list(owner: OutputOwner): Promise<{ invocations: TrustedCliInvocationSummary[] }>;
   remove(id: string): Promise<void>;
   cleanup(): Promise<void>;
 }
@@ -26,7 +49,6 @@ export function createTrustedCliOutputStore(
     maxJobBytes: TRUSTED_OUTPUT_BYTES,
     now,
   });
-  // Each retained invocation reserves its full ceiling, bounding aggregate payload to 200 MiB.
   const cleanup = async () => {
     await db.transaction().execute(async (tx) => {
       const expired = await sql<{
@@ -47,16 +69,43 @@ export function createTrustedCliOutputStore(
         await sql`select pg_advisory_xact_lock(hashtext('verity.trusted-cli-output-quota'))`.execute(
           tx,
         );
+        // Retention is a convenience for callers whose wait was cut off; it never blocks a
+        // new run. Over budget, the earliest finished records go first. finish() sets
+        // expires_at to completion plus the retention window, so it orders by completion:
+        // a long run, the kind whose wait gets cut off, is not evicted for its early start.
+        const evicted = await sql<{ id: string }>`delete from trusted_cli_outputs where id in (
+          select id from (
+            select o.id,
+              row_number() over (partition by o.project_id order by o.expires_at desc, o.id desc) as project_rank,
+              sum(coalesce(f.bytes, 0)) over (partition by o.project_id order by o.expires_at desc, o.id desc) as project_bytes,
+              row_number() over (order by o.expires_at desc, o.id desc) as total_rank,
+              sum(coalesce(f.bytes, 0)) over (order by o.expires_at desc, o.id desc) as total_bytes
+            from trusted_cli_outputs o
+            left join (select job_id, sum(byte_length)::float8 as bytes from secret_job_frames
+              where job_id in (select id from trusted_cli_outputs where result is not null)
+              group by job_id) f on f.job_id = o.id
+            where o.result is not null
+          ) ranked
+          where project_rank > ${PROJECT_RETAINED_RECORDS} or total_rank > ${TOTAL_RETAINED_RECORDS}
+            or project_bytes > ${PROJECT_RETAINED_BYTES} or total_bytes > ${TOTAL_RETAINED_BYTES}
+        ) returning id`.execute(tx);
+        if (evicted.rows.length > 0)
+          await sql`delete from secret_job_frames where job_id = any(${evicted.rows.map((row) => row.id)})`.execute(
+            tx,
+          );
         const { rows } = await sql<{
-          total: number;
-          project: number;
-        }>`select count(*)::integer as total, count(*) filter (where project_id = ${owner.projectId})::integer as project from trusted_cli_outputs`.execute(
-          tx,
-        );
-        if ((rows[0]?.total ?? 0) >= 20 || (rows[0]?.project ?? 0) >= 5)
+          running: number;
+          project_running: number;
+        }>`select count(*)::integer as running,
+          count(*) filter (where project_id = ${owner.projectId})::integer as project_running
+          from trusted_cli_outputs where result is null`.execute(tx);
+        if (
+          (rows[0]?.running ?? 0) >= TOTAL_RUNNING ||
+          (rows[0]?.project_running ?? 0) >= PROJECT_RUNNING
+        )
           throw new Error('trusted CLI output quota exceeded');
         // Abandoned executions have a bounded lease even when the server never returns to finish.
-        await sql`insert into trusted_cli_outputs(id, project_id, session_id, expires_at, next_sequence) values (${id}, ${owner.projectId}, ${owner.sessionId}, ${new Date(now().getTime() + 2 * RETENTION_MS).toISOString()}, 0)`.execute(
+        await sql`insert into trusted_cli_outputs(id, project_id, session_id, expires_at, next_sequence, started_at) values (${id}, ${owner.projectId}, ${owner.sessionId}, ${new Date(now().getTime() + 2 * RETENTION_MS).toISOString()}, 0, ${now().toISOString()})`.execute(
           tx,
         );
       });
@@ -126,6 +175,39 @@ export function createTrustedCliOutputStore(
         ...(row.result === null
           ? {}
           : { result: JSON.parse(cipher.decrypt(row.result)) as unknown }),
+      };
+    },
+    async list(owner) {
+      await cleanup();
+      const { rows } = await sql<{
+        id: string;
+        started_at: Date;
+        result: string | null;
+      }>`select id, started_at, result from trusted_cli_outputs where project_id = ${owner.projectId} and session_id = ${owner.sessionId} order by started_at desc, id desc limit ${LIST_LIMIT}`.execute(
+        db,
+      );
+      return {
+        invocations: rows.map((row) => {
+          const summary: TrustedCliInvocationSummary = {
+            invocationId: row.id,
+            startedAt: new Date(row.started_at).toISOString(),
+            complete: row.result !== null,
+          };
+          if (row.result === null) return summary;
+          let result: Record<string, unknown>;
+          try {
+            result = JSON.parse(cipher.decrypt(row.result)) as Record<string, unknown>;
+          } catch {
+            // One unreadable record (for example after a key change) must not hide the rest.
+            return summary;
+          }
+          // Only fixed status fields; output stays behind read() and its pagination.
+          if (typeof result.terminationReason === 'string')
+            summary.terminationReason = result.terminationReason;
+          if (typeof result.exitCode === 'number') summary.exitCode = result.exitCode;
+          if (result.exitCodeKnown === false) summary.exitCodeKnown = false;
+          return summary;
+        }),
       };
     },
     async remove(id) {

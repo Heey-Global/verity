@@ -69,6 +69,21 @@ export function subscribeAuthToken(listener: () => void): () => void {
   };
 }
 
+const biometricListeners = new Set<() => void>();
+
+/** Observe Face ID unlock being switched on or off: copies of the token kept
+ *  outside the protected keychain item (the Apple Watch link) follow it. */
+export function subscribeBiometricUnlock(listener: () => void): () => void {
+  biometricListeners.add(listener);
+  return () => {
+    biometricListeners.delete(listener);
+  };
+}
+
+function notifyBiometricChanged(): void {
+  for (const listener of [...biometricListeners]) listener();
+}
+
 /** The in-memory bearer token for this server URL, or null when none is loaded. */
 export function getAuthToken(baseUrl: string | null): string | null {
   if (baseUrl === null || baseUrl !== currentTokenBaseUrl) return null;
@@ -229,6 +244,7 @@ export async function enableBiometricUnlock(
     await SecureStore.setItemAsync(key, BIOMETRIC_ENABLED_VALUE, {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
     });
+    notifyBiometricChanged();
     return true;
   } catch {
     return false;
@@ -243,6 +259,7 @@ export async function disableBiometricUnlock(baseUrl: string | null): Promise<vo
     await SecureStore.setItemAsync(key, BIOMETRIC_DISABLED_VALUE, {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
     });
+    notifyBiometricChanged();
     const passwordKey = await masterPasswordKey(baseUrl);
     if (passwordKey !== null) await SecureStore.deleteItemAsync(passwordKey);
   } catch {

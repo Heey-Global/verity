@@ -16,7 +16,7 @@ const TABS: { tab: HomeTab; label: string; icon: IconName }[] = [
 
 /**
  * The bottom switch between Home (what needs you) and the project list. Only
- * mounted while the "New Home" preview is on; the routes and the stack stay as
+ * mounted while the new design preview is on; the routes and the stack stay as
  * they are, so a deep link lands exactly where it did before.
  */
 export function HomeTabBar({

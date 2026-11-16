@@ -1,3 +1,4 @@
+import { useFocusEffect } from 'expo-router';
 // The project settings routes (app/project/[id]/settings/*): the index that
 // routes to them, and each screen's own behaviour. They mirror the Verity
 // settings routes — same scaffold, same row furniture, same module mocks — so
@@ -14,6 +15,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('expo-router', () => require('./support/settingsHarness').expoRouterMock());
 jest.mock('../lib/client', () => require('./support/settingsHarness').clientMock());
+let mockNewDesignChoice = false;
+jest.mock('../lib/homePreferences', () => ({
+  useNewDesignChoice: () => mockNewDesignChoice,
+}));
 
 import ProjectSettingsIndexScreen from '../app/project/[id]/settings/index';
 import ProjectSandboxScreen from '../app/project/[id]/settings/sandbox';
@@ -42,12 +47,31 @@ const rowLabel = (title: string) =>
   new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(,|$)`);
 
 beforeEach(() => {
+  mockNewDesignChoice = false;
   setSearchParams({ id: 'p/1' });
 });
 
 afterEach(() => {
   resetSettingsHarness();
   jest.restoreAllMocks();
+});
+
+it('cleans up the previous focus effect before refocusing and unmounting', () => {
+  // A refocus that drops the previous cleanup leaves polling intervals alive
+  // after unmount, so every assertion passes while Jest never exits.
+  const cleanup = jest.fn();
+  const effect = jest.fn(() => cleanup);
+  function FocusedScreen() {
+    useFocusEffect(effect);
+    return null;
+  }
+  const view = render(<FocusedScreen />);
+  expect(effect).toHaveBeenCalledTimes(1);
+  act(() => refocus());
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(effect).toHaveBeenCalledTimes(2);
+  view.unmount();
+  expect(cleanup).toHaveBeenCalledTimes(2);
 });
 
 describe('project settings index — destinations', () => {
@@ -112,6 +136,46 @@ describe('project settings index — destinations', () => {
     expect(screen.queryByLabelText(/^Google Drive(,|$)/)).toBeNull();
     expect(screen.queryByLabelText(/^MCP(,|$)/)).toBeNull();
   });
+
+  it('leaves description editing on the project page', async () => {
+    mockNewDesignChoice = true;
+    const detail = { ...makeDetail({ description: 'Old line' }), viewer: { canManage: true } };
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
+    render(<ProjectSettingsIndexScreen />);
+    await screen.findByLabelText(rowLabel('Sandbox'));
+    expect(screen.queryByLabelText(rowLabel('Description'))).toBeNull();
+    expect(screen.queryByText('Old line')).toBeNull();
+  });
+
+  it.each([
+    [false, undefined],
+    [true, undefined],
+    [false, { canManage: true }],
+  ] as const)(
+    'keeps description editing with preview %s and viewer %s',
+    async (preview, viewer) => {
+      mockNewDesignChoice = preview;
+      const detail = { ...makeDetail({ description: 'Old line' }), viewer };
+      const updateProjectSettings = jest
+        .fn()
+        .mockResolvedValue({ ...detail.settings, description: 'Agent workspace' });
+      mockCreateVerityClient.mockReturnValue(makeClient({ detail, updateProjectSettings }));
+      const prompt = jest
+        .spyOn(Alert, 'prompt')
+        .mockImplementation((_title, _message, callback) => {
+          (callback as (value: string) => void)('Agent workspace');
+        });
+      render(<ProjectSettingsIndexScreen />);
+      fireEvent.press(await screen.findByLabelText(/^Description, Old line/));
+      expect(prompt.mock.calls[0]?.[4]).toBe('Old line');
+      await waitFor(() =>
+        expect(updateProjectSettings).toHaveBeenCalledWith('p/1', {
+          description: 'Agent workspace',
+        }),
+      );
+      expect(await screen.findByText('Agent workspace')).toBeOnTheScreen();
+    },
+  );
 
   it('shows the sandbox state and default model without GitHub details', async () => {
     mockCreateVerityClient.mockReturnValue(
@@ -211,6 +275,8 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'converging',
           turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: null,
         },
       },
     };
@@ -232,6 +298,50 @@ describe('project settings — sandbox', () => {
     expect(
       screen.getByText('Update pending — Verity is rebuilding this sandbox'),
     ).toBeOnTheScreen();
+  });
+
+  it('dates an earlier failed update while a retry is running instead of reporting it stuck', async () => {
+    // An earlier refusal shown without a time reads as the outcome of the retry
+    // that is waiting for the build slot now.
+    const base = makeDetail();
+    const detail: ProjectDetail = {
+      ...base,
+      project: {
+        ...base.project,
+        state: 'active',
+        sandboxUpdate: {
+          state: 'available',
+          kind: 'normal',
+          category: 'software',
+          reason: null,
+          current: null,
+          target: null,
+          currentVersion: '1.22.1',
+          currentRevision: null,
+          targetVersion: '2.9.2',
+          targetRevision: null,
+          selfRepair: 'converging',
+          turnBlocked: false,
+          blockedBy: [],
+          lastRepairFailure: {
+            at: '2026-11-10T14:41:24.000Z',
+            message: 'Build storage admission rejected',
+          },
+        },
+      },
+    };
+    mockCreateVerityClient.mockReturnValue(makeClient({ detail }));
+    render(<ProjectSandboxScreen />);
+
+    expect(
+      await screen.findByText('Update pending — Verity is rebuilding this sandbox'),
+    ).toBeOnTheScreen();
+    expect(
+      screen.getByText(
+        /^Retrying — the previous automatic rebuild failed 10 Nov 2026, \d{2}:\d{2}: Build storage admission rejected$/,
+      ),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText(/stuck/)).toBeNull();
   });
 
   it('offers no Update button for an update a turn is holding off', async () => {
@@ -259,6 +369,8 @@ describe('project settings — sandbox', () => {
           targetRevision: null,
           selfRepair: 'stalled',
           turnBlocked: true,
+          blockedBy: ['turn'],
+          lastRepairFailure: null,
         },
       },
     };
@@ -701,8 +813,6 @@ describe('project settings — agents', () => {
     const client = makeClient({ detail: before });
     const getProject = client.getProject as jest.Mock;
     let finishRefresh: (() => void) | undefined;
-    const updateProjectSettings = client.updateProjectSettings as jest.Mock;
-    updateProjectSettings.mockResolvedValue({ ...before.settings, defaultModel: 'codex/default' });
     mockCreateVerityClient.mockReturnValue(client);
     render(<ProjectModelScreen />);
 
@@ -743,30 +853,32 @@ describe('project settings — agents', () => {
     expect(screen.getByLabelText(/^Use model Codex, codex\/default(,|$)/)).toBeOnTheScreen();
   });
 
-  // The choice has to reach the server as the `defaultModel` key alone — a
-  // PATCH that also carried `defaultBranch` or `memory` would clear them.
-  it('PATCHes { defaultModel } when a model is picked and null for Automatic', async () => {
-    const updateProjectSettings = jest
+  // The default model is the signed-in person's own (ADR 0023 §3): it is saved
+  // through their own route, never as a project setting everyone shares.
+  it('saves the person’s own default model when picked and null for Automatic', async () => {
+    const updateProjectSettings = jest.fn();
+    const setOwnProjectDefaultModel = jest
       .fn()
-      .mockImplementation((_id: string, patch: object) =>
-        Promise.resolve({ ...makeDetail().settings, ...patch }),
+      .mockImplementation((_id: string, model: string | null) =>
+        Promise.resolve({ defaultModel: model }),
       );
-    mockCreateVerityClient.mockReturnValue(makeClient({ updateProjectSettings }));
+    mockCreateVerityClient.mockReturnValue(
+      makeClient({ updateProjectSettings, setOwnProjectDefaultModel }),
+    );
     render(<ProjectModelScreen />);
 
     fireEvent.press(await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/));
     await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenCalledWith('p/1', { defaultModel: 'codex/default' }),
+      expect(setOwnProjectDefaultModel).toHaveBeenCalledWith('p/1', 'codex/default'),
     );
+    expect(updateProjectSettings).not.toHaveBeenCalled();
     expect(
       (await screen.findByLabelText(/^Use model Codex, codex\/default(,|$)/)).props
         .accessibilityState.checked,
     ).toBe(true);
 
     fireEvent.press(screen.getByLabelText(/^Use the first allowed model(,|$)/));
-    await waitFor(() =>
-      expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', { defaultModel: null }),
-    );
+    await waitFor(() => expect(setOwnProjectDefaultModel).toHaveBeenLastCalledWith('p/1', null));
   });
 
   // The toggles PATCH the agent list alone; a list naming every agent is stored
@@ -931,7 +1043,6 @@ describe('project settings — agents', () => {
     await act(async () => finishers[0]?.());
     await waitFor(() =>
       expect(updateProjectSettings).toHaveBeenLastCalledWith('p/1', {
-        defaultModel: null,
         allowedAgents: ['claude'],
       }),
     );

@@ -1,7 +1,7 @@
 import { networkProtectionStatus } from '../../lib/networkProtection';
 import { resetFeatureHints } from '../../lib/featureHints';
 import { useTaskPreferences } from '../../lib/taskPreferences';
-import { setHomeInboxEnabled, useHomePreferences } from '../../lib/homePreferences';
+import { setNewDesignEnabled, useNewDesign, useNewDesignChoice } from '../../lib/homePreferences';
 // Settings, top level: what is left to set up, where everything lives, and the
 // two app-wide switches. Everything with a form of its own is one tap deeper.
 //
@@ -34,6 +34,7 @@ import { backupRowSummary } from '../../components/settings/backup/backupText';
 import { useAppStoreUpdateVersion } from '../../lib/appUpdateFacts';
 import { githubActionNeeded, useGithubPermission } from '../../lib/githubPermission';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
+import { getOtherServerProfiles } from '../../lib/serverProfile';
 import { useServerUpdateBadge } from '../../lib/serverUpdateBadge';
 import { enterDemoMode, isDemoMode } from '../../lib/demoMode';
 import {
@@ -70,7 +71,8 @@ export default function SettingsIndexScreen() {
 
 function SettingsIndexView({ client }: { client: VerityClient }) {
   const taskPreferences = useTaskPreferences();
-  const homePreferences = useHomePreferences();
+  const newDesign = useNewDesign();
+  const designChoice = useNewDesignChoice();
   const reload = useLoadVeritySettings(client);
   const { settings, secretStatus, loading, failed } = useVeritySettings();
   const githubConnected = githubRepositoryAccessReady(settings);
@@ -196,18 +198,28 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
               router.push({ pathname: '/settings/context', params: { kind: 'memory' } })
             }
           />
-        </SettingsListPanel>
-      </SettingsGroup>
-      <SettingsGroup title="Knowledge">
-        <SettingsListPanel>
           <SettingsNavRow
-            icon="book-open"
-            title="Shared knowledge"
-            subtitle="Reference material available to agents across projects"
-            onPress={() => router.push('/settings/shared-knowledge')}
+            icon="cpu"
+            title="My AI accounts"
+            subtitle="Claude, Codex and OpenCode for your turns"
+            onPress={() => router.push('/settings/ai-accounts')}
           />
         </SettingsListPanel>
       </SettingsGroup>
+      {/* The new design keeps Shared knowledge on Verity's page; until the stored
+          choice is known the group stays away rather than show and vanish. */}
+      {designChoice !== false ? null : (
+        <SettingsGroup title="Knowledge">
+          <SettingsListPanel>
+            <SettingsNavRow
+              icon="book-open"
+              title="Shared knowledge"
+              subtitle="Reference material available to agents across projects"
+              onPress={() => router.push('/settings/shared-knowledge')}
+            />
+          </SettingsListPanel>
+        </SettingsGroup>
+      )}
       <SettingsGroup title="Features">
         <SettingsListPanel>
           <SettingsNavRow
@@ -234,7 +246,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           <SettingsNavRow
             icon="check-square"
             title="Tasks"
-            subtitle="Capture bubble, screenshot tips"
+            subtitle="Verity button, Apple Watch"
             status={
               taskPreferences.enabled
                 ? { intent: 'ready', label: 'On' }
@@ -332,6 +344,18 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
             }}
             accessibilityLabel="Change server address"
           />
+          {!isDemoMode() ? (
+            <SettingsNavRow
+              icon="layers"
+              title="Servers"
+              subtitle={
+                getOtherServerProfiles().length === 0
+                  ? 'This server only'
+                  : `${String(getOtherServerProfiles().length + 1)} servers`
+              }
+              onPress={() => router.push('/settings/servers' as Href)}
+            />
+          ) : null}
           <SettingsNavRow
             icon="monitor"
             title="Devices & Web Browsers"
@@ -358,10 +382,10 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
       <SettingsGroup title="This app">
         <SettingsListPanel>
           <SettingsToggleRow
-            label="New Home (preview)"
-            subtitle="Everything that needs you across projects, beside the project list"
-            value={homePreferences.inbox}
-            onValueChange={setHomeInboxEnabled}
+            label="New design (preview)"
+            subtitle="Home with everything that needs you, a compact project list and a page per project"
+            value={newDesign}
+            onValueChange={setNewDesignEnabled}
           />
           {!isDemoMode() ? (
             <SettingsNavRow

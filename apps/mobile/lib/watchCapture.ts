@@ -1,7 +1,27 @@
-import { projectsByRecentCapture, type ProjectRecord, type Task } from '@verity/mobile';
+import {
+  createPushReplyPerformer,
+  type AssistantConversation,
+  type InboxItem,
+  type VerityClient,
+} from '@verity/mobile';
 import { requireOptionalNativeModule } from 'expo-modules-core';
 import { AppState, Platform } from 'react-native';
-import { captureTask, taskAccountScope } from './tasksStore';
+
+import {
+  getAuthToken,
+  isBiometricUnlockEnabled,
+  subscribeAuthToken,
+  subscribeBiometricUnlock,
+} from './authToken';
+import { createVerityClient, getVerityBaseUrl, subscribeVerityBaseUrl } from './client';
+import { getServerProfile } from './serverProfile';
+import { taskAccountScope } from './tasksStore';
+import {
+  answerVerity,
+  sendToVerity,
+  subscribeVerity,
+  type VerityState,
+} from './verityConversation';
 
 /** A watch recording the iPhone has transcribed (native/VerityWatchInbox.swift). */
 export interface WatchCapture {
@@ -9,19 +29,19 @@ export interface WatchCapture {
   text: string;
   createdAt: string;
   durationMs: number;
-  /** Picked on the watch; `scope` is the account its project list came from. */
+  /** Picked on older watch builds; offered to Verity as context only. */
   projectId?: string;
+  /** The account the watch knew while recording. */
   scope?: string;
 }
 
-/** A project the watch picker offers. */
-export interface WatchProject {
+/** An answer to Verity's question given on the watch. */
+interface WatchAnswer {
   id: string;
-  name: string;
+  questionId: string;
+  labels: string[];
+  scope?: string;
 }
-
-/** The watch picker lists this many; a longer list is scrolling, not choosing. */
-export const WATCH_PROJECT_LIMIT = 12;
 
 export interface WatchStatus {
   supported: boolean;
@@ -29,21 +49,78 @@ export interface WatchStatus {
   paired?: boolean;
   watchAppInstalled?: boolean;
   reachable?: boolean;
-  /** Transcribed captures not yet saved as tasks. */
+  /** Transcribed captures that have not reached Verity yet. */
   waiting?: number;
+}
+
+/** The direct connection native code uses while the app is in the background. */
+export interface WatchLink {
+  baseUrl: string;
+  token: string;
+  tlsPin: string;
+  scope: string;
+}
+
+/** What the watch shows of the conversation (`VeritySnapshot` on the watch). */
+export interface WatchSnapshot {
+  availability: string;
+  state: string;
+  revision: number;
+  approvals: number;
+  scope?: string;
+  reply?: string;
+  replyId?: string;
+  replyMessageId?: string;
+  question?: { id: string; text?: string; options: string[]; multiSelect: boolean };
+}
+
+/** One open item from Home as the watch lists it (`WatchInbox` on the watch). */
+interface WatchInboxItem {
+  key: string;
+  title: string;
+  context: string;
+  tag: string;
+  tone: InboxItem['tone'];
+  message?: string;
+  actions: { kind: 'resume' | 'merge'; label: string; sessionId: string; number?: number }[];
+}
+
+/** Home's open items for the watch, with when the iPhone last read them. */
+export interface WatchInboxPayload {
+  scope: string;
+  /** Milliseconds since the epoch; the watch says "as of" when this is old. */
+  at: number;
+  items: WatchInboxItem[];
+  /** All of Home's items; the wrist lists at most {@link WATCH_INBOX_LIMIT}. */
+  total: number;
+}
+
+/** How many open items the wrist lists; the rest wait on the iPhone. */
+export const WATCH_INBOX_LIMIT = 12;
+
+export interface WatchInboxActionRequest {
+  id: string;
+  scope: string;
+  key: string;
+  action: { kind: 'resume' | 'merge'; sessionId: string; number?: number };
+  expiresAt: number;
 }
 
 interface NativeWatchBridge {
   pending(): Promise<WatchCapture[]>;
+  pendingInboxActions?(): Promise<WatchInboxActionRequest[]>;
+  completeInboxAction?(id: string, result: { status: string; message?: string }): Promise<void>;
   acknowledge(id: string): Promise<void>;
+  pendingAnswers(): Promise<WatchAnswer[]>;
+  acknowledgeAnswer(id: string): Promise<void>;
+  setLink(link: WatchLink | null): Promise<void>;
+  setVerity(snapshot: WatchSnapshot | null): Promise<void>;
+  /** Missing on native builds older than the watch's "Needs you" list. */
+  setInbox?(inbox: WatchInboxPayload | null): Promise<void>;
   log(): Promise<string[]>;
   status(): Promise<WatchStatus>;
   discardWaiting(): Promise<number>;
-  setProjects(
-    scope: string | null,
-    projects: WatchProject[],
-    lastProjectId: string | null,
-  ): Promise<void>;
+  setProjects(scope: string | null, projects: [], lastProjectId: null): Promise<void>;
   addListener(event: 'onWatchInbox', listener: () => void): { remove(): void };
 }
 
@@ -52,30 +129,36 @@ const native =
     ? requireOptionalNativeModule<NativeWatchBridge>('VerityWatchBridge')
     : null;
 
-type Inbox = Pick<NativeWatchBridge, 'pending' | 'acknowledge'>;
-type Save = (capture: WatchCapture) => Promise<unknown>;
+interface Inbox<T extends { id: string }> {
+  pending(): Promise<T[]>;
+  acknowledge(id: string): Promise<void>;
+}
 
 /**
- * Moves transcribed watch captures into the task queue, releasing each one from
- * the native inbox only after the queue has persisted it. A capture that cannot
- * be saved (signed out) stays in the inbox for the next drain without holding
- * back the ones after it. Captures go to the account signed in when the drain
- * runs. Calls during a drain fold into one more pass, so an entry that lands
- * mid-drain is not left waiting for the next app activation.
+ * Hands what the watch said over to Verity's outbox, releasing each item from
+ * the native inbox only after the outbox has persisted it. An item that cannot
+ * be handed over (signed out, said under another account) stays for the next
+ * drain without holding back the ones after it. Calls during a drain fold into
+ * one more pass, so an item that lands mid-drain is not left waiting for the
+ * next app activation. Native code usually sends first; the outbox then
+ * delivers the same request id once more, which the server recognises.
  */
-export function createWatchInboxDrainer(inbox: Inbox, save: Save): () => Promise<void> {
+export function createWatchInboxDrainer<T extends { id: string }>(
+  inbox: Inbox<T>,
+  save: (item: T) => Promise<unknown>,
+): () => Promise<void> {
   let running: Promise<void> | null = null;
   let again = false;
   const pass = async () => {
     let failure: unknown = null;
     do {
       again = false;
-      for (const capture of await inbox.pending()) {
+      for (const item of await inbox.pending()) {
         try {
-          await save(capture);
-          await inbox.acknowledge(capture.id);
+          await save(item);
+          await inbox.acknowledge(item.id);
         } catch (error) {
-          // An unacknowledged capture is offered again; the queue ignores its id.
+          // An unacknowledged item is offered again; the outbox ignores its id.
           failure ??= error;
         }
       }
@@ -94,98 +177,313 @@ export function createWatchInboxDrainer(inbox: Inbox, save: Save): () => Promise
   };
 }
 
-/** The picker's list: the project last used for quick capture first, then the
- *  rest by most recent capture, cut to what fits a watch screen. */
-export function watchProjectList(
-  projects: readonly Pick<ProjectRecord, 'id' | 'repo'>[],
-  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
-  lastProjectId: string | null,
-): WatchProject[] {
-  const recent = projectsByRecentCapture(projects, tasks);
-  const last = recent.findIndex((project) => project.id === lastProjectId);
-  if (last > 0) recent.unshift(...recent.splice(last, 1));
-  return recent
-    .slice(0, WATCH_PROJECT_LIMIT)
-    .map((project) => ({ id: project.id, name: project.repo }));
+/** Words said on the watch go only to the account they were said in. A capture
+ *  without an account (an interrupted recording) goes to the one signed in. */
+export function watchScopeAllowed(scope: string | undefined, signedIn: string | null): boolean {
+  if (signedIn === null) return false;
+  return scope === undefined || scope === signedIn;
 }
 
-/** The account and projects the iPhone currently knows; null until loaded. */
-export interface KnownProjects {
-  scope: string;
-  ids: ReadonlySet<string>;
+function requireScope(scope: string | undefined): void {
+  if (!watchScopeAllowed(scope, taskAccountScope()))
+    throw new Error('Said while another account was signed in');
 }
 
-/** The project a capture is saved to. Throws, keeping the capture in the inbox,
- *  when it was picked under another account or its project is not (yet) known:
- *  a task filed under a guessed project is worse than one that waits.
- *  `signedIn` is the account the task queue writes for now; `known` follows
- *  React state, which can still hold the previous account's projects. */
-export function watchCaptureProject(
-  capture: WatchCapture,
-  known: KnownProjects | null,
-  signedIn: string | null,
-): string {
-  if (!capture.projectId) throw new Error('Choose a project on the watch');
-  if (!known || capture.scope !== known.scope || known.scope !== signedIn) {
-    throw new Error('Captured while another account was signed in');
-  }
-  if (!known.ids.has(capture.projectId)) throw new Error('The project is not available');
-  return capture.projectId;
-}
+const drainCaptures = native
+  ? createWatchInboxDrainer(native, async (capture: WatchCapture) => {
+      requireScope(capture.scope);
+      await sendToVerity(
+        { text: capture.text, input: 'voice', projectId: capture.projectId ?? null },
+        { requestId: capture.id, device: 'watch' },
+      );
+    })
+  : null;
 
-let known: KnownProjects | null = null;
-
-const drain = native
-  ? createWatchInboxDrainer(native, (capture) =>
-      captureTask(
-        {
-          title: capture.text,
-          projectId: watchCaptureProject(capture, known, taskAccountScope()),
-        },
-        { id: capture.id, createdAt: capture.createdAt || undefined },
-      ),
+const drainAnswers = native
+  ? createWatchInboxDrainer(
+      { pending: () => native.pendingAnswers(), acknowledge: (id) => native.acknowledgeAnswer(id) },
+      async (answer: WatchAnswer) => {
+        requireScope(answer.scope);
+        await answerVerity(answer.questionId, answer.labels, {
+          requestId: answer.id,
+          device: 'watch',
+        });
+      },
     )
   : null;
 
-/** Sends the watch its project list and lets captures held for a project the
- *  iPhone had not loaded yet through. Signed out, the watch gets no projects.
- *  `projects` is null while the list for `scope` has not loaded: right after an
- *  account switch it would still be the previous account's. */
-export function syncWatchProjects(
+/** The watch's view of a conversation: small enough for the wrist. */
+export function watchSnapshot(
+  conversation: AssistantConversation | null,
+  access: VerityState['access'],
   scope: string | null,
-  projects: readonly Pick<ProjectRecord, 'id' | 'repo'>[] | null,
-  tasks: readonly Pick<Task, 'projectId' | 'origin' | 'createdAt'>[],
-  lastProjectId: string | null,
-): void {
-  if (!native || !drain) return;
-  if (scope && !projects) {
-    known = null;
-    return;
-  }
-  projects ??= [];
-  const list = scope ? watchProjectList(projects, tasks, lastProjectId) : [];
-  void native.setProjects(scope, list, scope ? lastProjectId : null).catch(() => undefined);
-  const ids = new Set(projects.map((project) => project.id));
-  const changed =
-    known?.scope !== scope ||
-    known.ids.size !== ids.size ||
-    [...ids].some((id) => !known?.ids.has(id));
-  known = scope ? { scope, ids } : null;
-  if (changed && known) void drain().catch(() => undefined);
+): WatchSnapshot | null {
+  if (scope === null) return null;
+  if (access === 'denied')
+    return { availability: 'denied', state: 'idle', revision: 0, approvals: 0, scope };
+  if (conversation === null) return null;
+  const replyIndex = conversation.items.findLastIndex((item) => item.kind === 'reply');
+  const reply = conversation.items[replyIndex];
+  const replyMessage = conversation.items
+    .slice(0, replyIndex)
+    .findLast((item) => item.kind === 'message');
+  const question = conversation.question;
+  return {
+    availability: conversation.availability,
+    state: conversation.state,
+    revision: conversation.revision,
+    approvals: conversation.approvals.length,
+    scope,
+    ...(reply?.kind === 'reply'
+      ? {
+          reply: reply.text.slice(0, 600),
+          replyId: reply.id,
+          ...(replyMessage ? { replyMessageId: replyMessage.id } : {}),
+        }
+      : {}),
+    ...(question
+      ? {
+          question: {
+            id: question.id,
+            ...(question.question !== undefined ? { text: question.question } : {}),
+            options: question.options.map((option) => option.label),
+            multiSelect: question.multiSelect,
+          },
+        }
+      : {}),
+  };
 }
 
-/** Drains on start, whenever the inbox changes while JS runs, and on foreground. */
+/** Home's items cut to what the wrist shows; property lists hold no undefined. */
+export function watchInbox(
+  items: readonly InboxItem[],
+  scope: string | null,
+  at: number,
+): WatchInboxPayload | null {
+  if (scope === null) return null;
+  return {
+    scope,
+    at,
+    total: items.length,
+    items: items.slice(0, WATCH_INBOX_LIMIT).map((item) => ({
+      key: item.key,
+      title: item.title.slice(0, 160),
+      context: item.context.slice(0, 120),
+      tag: item.tag,
+      tone: item.tone,
+      ...(item.message ? { message: item.message.slice(0, 400) } : {}),
+      actions: item.actions.flatMap((action) =>
+        action.kind === 'resume' || action.kind === 'merge' ? [action] : [],
+      ),
+    })),
+  };
+}
+
+/** Unchanged items are sent again after this long, so "as of" stays honest. */
+const INBOX_REFRESH_MS = 5 * 60_000;
+
+/**
+ * Sends Home's items on a change, and an unchanged list again once it has aged,
+ * so the watch's "as of" time stays true without a send on every render.
+ */
+export function createWatchInboxSync(
+  send: (payload: WatchInboxPayload | null) => Promise<void>,
+): (items: readonly InboxItem[], scope: string | null, now?: number) => void {
+  let last: { key: string; at: number } | null = null;
+  return (items, scope, now = Date.now()) => {
+    const payload = watchInbox(items, scope, now);
+    const key = JSON.stringify(
+      payload === null ? null : [payload.scope, payload.total, payload.items],
+    );
+    if (last?.key === key && now - last.at < INBOX_REFRESH_MS) return;
+    const sent = { key, at: now };
+    last = sent;
+    // A send that failed (watch session not active yet) is tried again on the
+    // next change instead of waiting out the refresh interval.
+    void send(payload).catch(() => {
+      if (last === sent) last = null;
+    });
+  };
+}
+
+/**
+ * Hands the watch the items Home shows under "For you", under the account they
+ * were read for (not whichever is signed in when the call runs, which may
+ * already be the next one). The watch keeps the latest list with its time.
+ */
+export const syncWatchInbox: (
+  items: readonly InboxItem[],
+  scope: string | null,
+  now?: number,
+) => void = native?.setInbox
+  ? createWatchInboxSync((payload) => native.setInbox!(payload))
+  : () => undefined;
+
+/**
+ * The direct connection for native code, or null. Only a certificate-pinned
+ * direct endpoint qualifies, and only when the sign-in is not held behind Face
+ * ID: native code keeps the token readable after first unlock so it can send
+ * from the background, which must not undo a biometric protection the user chose.
+ */
+export async function watchLink(): Promise<WatchLink | null> {
+  const baseUrl = getVerityBaseUrl();
+  const scope = taskAccountScope();
+  const token = getAuthToken(baseUrl);
+  const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === baseUrl);
+  if (baseUrl === null || scope === null || token === null) return null;
+  if (endpoint?.transport !== 'direct' || !endpoint.tlsPin) return null;
+  if (await isBiometricUnlockEnabled(baseUrl)) return null;
+  return { baseUrl, token, tlsPin: endpoint.tlsPin, scope };
+}
+
+let linkSync = 0;
+
+/** Hands native code the current link. Only the latest call writes: a sign-out
+ *  must not be overtaken by an earlier call still checking Face ID. */
+function syncLink(): void {
+  if (!native) return;
+  const call = ++linkSync;
+  void watchLink()
+    .catch(() => null)
+    .then((link) => (call === linkSync ? native.setLink(link) : undefined))
+    .catch(() => undefined);
+}
+
+/** Immediate only: do not persist a merge until a later app launch. */
+export async function performWatchInboxAction(
+  request: WatchInboxActionRequest,
+  client: VerityClient | null,
+  scope: () => string | null = taskAccountScope,
+  now: () => number = Date.now,
+): Promise<{ status: string; message?: string }> {
+  if (!client || scope() !== request.scope || now() > request.expiresAt)
+    return { status: 'error', message: 'Open Verity on iPhone and try again.' };
+  try {
+    const session = await client.getSession(request.action.sessionId);
+    if (scope() !== request.scope || now() > request.expiresAt)
+      return { status: 'error', message: 'Account changed or action expired. Try again.' };
+    if (
+      request.action.kind === 'resume' &&
+      (session.status !== 'crashed' ||
+        session.resumable === false ||
+        (session.eventCount !== undefined &&
+          request.key !== `crashed:${request.action.sessionId}:${String(session.eventCount)}`))
+    )
+      return { status: 'error', message: 'This session can no longer be resumed. Refresh Home.' };
+    if (
+      request.action.kind === 'merge' &&
+      (!session.pullRequest ||
+        session.pullRequest.number !== request.action.number ||
+        session.pullRequest.phase !== 'open' ||
+        session.pullRequest.mergeable !== true ||
+        !session.pullRequest.headSha ||
+        request.key !==
+          `merge:${request.action.sessionId}:${String(request.action.number)}:${session.pullRequest.headSha ?? ''}`)
+    )
+      return {
+        status: 'error',
+        message: 'This pull request is no longer ready to merge. Refresh Home.',
+      };
+    if (request.action.kind === 'merge') {
+      await client.mergePullRequest(
+        request.action.sessionId,
+        request.action.number!,
+        session.pullRequest!.headSha!,
+      );
+      return { status: 'done' };
+    }
+    const action = {
+      type: 'send-turn' as const,
+      sessionId: request.action.sessionId,
+      prompt: 'Continue where you stopped.',
+    };
+    const result = await createPushReplyPerformer(client)(action, request.id);
+    return result === 'done'
+      ? { status: 'done' }
+      : {
+          status: 'error',
+          message:
+            result === 'stale'
+              ? 'This item changed. Refresh Home.'
+              : 'Could not complete this action. Try again.',
+        };
+  } catch {
+    return { status: 'error', message: 'Could not refresh this item. Try again.' };
+  }
+}
+
+/**
+ * Connects the watch to Verity while the app runs: hands over what the watch
+ * said, keeps the native connection current, tells the watch which account is
+ * signed in and sends it Verity's state whenever the conversation changes.
+ */
 export function startWatchInbox(): () => void {
-  if (!native || !drain) return () => undefined;
-  const run = () => void drain().catch(() => undefined);
+  if (!native || !drainCaptures || !drainAnswers) return () => undefined;
+  const run = () => {
+    void drainCaptures().catch(() => undefined);
+    void drainAnswers().catch(() => undefined);
+    if (native.pendingInboxActions && native.completeInboxAction) {
+      void native
+        .pendingInboxActions()
+        .then(async (requests) => {
+          for (const request of requests) {
+            const result = await performWatchInboxAction(request, createVerityClient());
+            await native.completeInboxAction!(request.id, result);
+          }
+        })
+        .catch(() => undefined);
+    }
+  };
+  let scope: string | null | undefined;
+  const syncAccount = () => {
+    const next = taskAccountScope();
+    if (next === scope) return;
+    scope = next;
+    // The watch only needs the account now; it has no project picker.
+    void native.setProjects(next, [], null).catch(() => undefined);
+    // Home may be gone before it could send an empty list: never leave another
+    // account's items on the iPhone's side of the link.
+    if (next === null) syncWatchInbox([], null);
+    syncLink();
+    run();
+  };
+  let last: string | undefined;
+  const unsubscribeVerity = subscribeVerity((current) => {
+    syncAccount();
+    const snapshot = watchSnapshot(current.conversation, current.access, taskAccountScope());
+    // Nothing read yet: keep what native code last sent rather than clearing it.
+    if (snapshot === null && taskAccountScope() !== null) return;
+    const key = JSON.stringify(snapshot);
+    if (key === last) return;
+    last = key;
+    void native.setVerity(snapshot).catch(() => undefined);
+  });
   const subscription = native.addListener('onWatchInbox', run);
   const appState = AppState.addEventListener('change', (state) => {
-    if (state === 'active') run();
+    if (state === 'active') {
+      syncAccount();
+      syncLink();
+      run();
+    }
   });
+  const unsubscribeToken = subscribeAuthToken(() => {
+    syncAccount();
+    syncLink();
+  });
+  const unsubscribeBiometric = subscribeBiometricUnlock(syncLink);
+  const unsubscribeBaseUrl = subscribeVerityBaseUrl(() => {
+    syncAccount();
+    syncLink();
+  });
+  syncAccount();
   run();
   return () => {
+    unsubscribeVerity();
     subscription.remove();
     appState.remove();
+    unsubscribeToken();
+    unsubscribeBiometric();
+    unsubscribeBaseUrl();
   };
 }
 
@@ -201,7 +499,7 @@ export function watchStatus(): Promise<WatchStatus> {
   return native ? native.status() : Promise.resolve({ supported: false });
 }
 
-/** Drops captures that wait for an account or project; returns how many. */
+/** Drops captures that wait for their account; returns how many. */
 export function discardWaitingWatchCaptures(): Promise<number> {
   return native ? native.discardWaiting() : Promise.resolve(0);
 }

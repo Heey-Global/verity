@@ -1,6 +1,7 @@
 import { boundedHistoryResultSchema, type AgentEvent } from '@verity/events';
 import { InMemoryEventBus } from '@verity/session';
 import type { FastifyInstance } from 'fastify';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -32,7 +33,6 @@ import {
   ZERO_USAGE,
 } from './server-fixture.test-helper.js';
 import { buildServer, redactScrollDiagnosticData, redactScrollDiagnosticEvent } from './server.js';
-import { sessionGoogleStatus } from './session-google-status.js';
 
 describe('GET /sessions/:id/activity', () => {
   it('keeps background work visible while the main agent awaits input and settles on termination', async () => {
@@ -70,6 +70,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
   });
@@ -119,6 +120,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
       branch: 'feat/122-x',
     });
@@ -143,6 +145,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: 'Auth Refactor',
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
     await noBranches.close();
@@ -175,6 +178,7 @@ describe('GET /sessions/:id/activity', () => {
       terminationUnconfirmed: false,
       name: null,
       planningPlan: null,
+      mockupReview: null,
       planningRevision: 0,
     });
     await noBranches.close();
@@ -917,6 +921,43 @@ describe('GET /sessions', () => {
     }
   });
 
+  // The server decides what holds back storage collection. A dev server or a
+  // preview must hold only its own session's worktree; holding the project kept
+  // every idle worktree on disk while any one session served something.
+  it('holds storage collection for the session that serves, not its whole project', async () => {
+    let blocked: ((projectId: string, sessionId: string | null) => boolean) | undefined;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sessionStorage: {
+        bind: (_claim: unknown, predicate: typeof blocked) => {
+          blocked = predicate;
+        },
+      } as unknown as import('./session-storage.js').SessionStorage,
+      managedDevServerManager: {
+        hasRunningServers: (projectId: string) => projectId === 'p1',
+        hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
+      } as unknown as import('./managed-dev-server-manager.js').ManagedDevServerManager,
+      localPreviewManager: {
+        list: (sessionId: string) => (sessionId === 'previewing' ? [{}] : []),
+        listProject: (projectId: string) => (projectId === 'p2' ? [{}] : []),
+      } as unknown as import('./local-preview-manager.js').LocalPreviewManager,
+    });
+    try {
+      expect(blocked!('p1', 'serving')).toBe(true);
+      expect(blocked!('p1', 'idle')).toBe(false);
+      expect(blocked!('p2', 'previewing')).toBe(true);
+      expect(blocked!('p2', 'idle')).toBe(false);
+      // Orphaned registrations belong to no session; any server still defers them.
+      expect(blocked!('p1', null)).toBe(true);
+      expect(blocked!('p2', null)).toBe(true);
+      expect(blocked!('p3', null)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('marks sessions that carry an automation and checks its model on confirm', async () => {
     await ctx.store.updateVeritySettings({
       claudeCodeOauthCredentialsJson: '{"claudeAiOauth":{"accessToken":"claude-token"}}',
@@ -963,7 +1004,6 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
-        planningPlan: null,
         planningRevision: 0,
         projectId: null,
         sortOrder: null,
@@ -982,7 +1022,6 @@ describe('GET /sessions', () => {
         worktree: '/wt/s2',
         model: 'm',
         name: null,
-        planningPlan: null,
         planningRevision: 0,
         projectId: null,
         sortOrder: null,
@@ -1150,7 +1189,6 @@ describe('GET /sessions', () => {
         worktree: '/wt/s1',
         model: 'm',
         name: null,
-        planningPlan: null,
         planningRevision: 0,
         projectId: null,
         sortOrder: null,
@@ -1812,6 +1850,40 @@ describe('GET /provider-limits', () => {
     }
   });
 
+  // The instance accounts were the administrator's: a member's meter must show
+  // their own accounts' quota, never the administrator's.
+  it("shows a member their own accounts' quota, not the instance's", async () => {
+    const instanceLimits = vi.fn(async () => [
+      {
+        status: 'allowed' as const,
+        resetsAt: 1_700_000_100,
+        window: 'five_hour' as const,
+        usedPercent: 90,
+        providerLabel: 'Claude',
+      },
+    ]);
+    const personalClaudeAccessToken = vi.fn(async () => undefined);
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      claudeUsage: { getLimits: instanceLimits },
+      personalClaudeAccessToken,
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const res = await asLena.inject({ method: 'GET', url: '/provider-limits' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+      expect(instanceLimits).not.toHaveBeenCalled();
+      expect(personalClaudeAccessToken).toHaveBeenCalledWith('lena');
+    } finally {
+      await asLena.close();
+    }
+  });
+
   it('serves the Codex account-global quota next to Claude', async () => {
     // Codex's own per-turn events only advance while an interactive session runs,
     // so the probe is what keeps the Codex meter true; the route must merge both.
@@ -1946,11 +2018,21 @@ describe('overview projections read only the narrow event slice', () => {
       pr: async () => null,
     });
     const server = buildServer({ eventStore: ctx.store, bus, conductor, sessionStorage: storage });
+    const acquisitions = new AsyncLocalStorage<{ count: number }>();
+    let measurement: { count: number } | undefined;
+    server.addHook('onRequest', (_request, _reply, done) => {
+      if (measurement) acquisitions.run(measurement, done);
+      else done();
+    });
     await server.ready();
     const original = ctx.store.listSessionProjectionFacts.bind(ctx.store);
+    let releaseBackground: () => void = () => undefined;
+    let backgroundRead: Promise<unknown> = Promise.resolve();
     const facts = vi
       .spyOn(ctx.store, 'listSessionProjectionFacts')
       .mockImplementation(async (...args) => {
+        releaseBackground();
+        await backgroundRead;
         const result = await original(...args);
         for (const entry of result.values()) {
           entry.eventsTruncated = true;
@@ -1958,7 +2040,34 @@ describe('overview projections read only the narrow event slice', () => {
         }
         return result;
       });
-    const acquire = vi.spyOn(PgliteDriver.prototype, 'acquireConnection');
+    // A prototype-wide spy also counts background recovery/timer reads, even
+    // from the shared fixture app. Measure only this request's async context.
+    // Preserve the dynamic database receiver via .call(this) inside the spy.
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    const originalAcquire = PgliteDriver.prototype.acquireConnection;
+    const acquire = vi
+      .spyOn(PgliteDriver.prototype, 'acquireConnection')
+      .mockImplementation(function (this: PgliteDriver) {
+        const current = acquisitions.getStore();
+        if (current) current.count++;
+        return originalAcquire.call(this);
+      });
+    const measure = async () => {
+      // Register outside the request context, like a pre-existing timer. Its
+      // query is forced to overlap the request so a global counter fails here.
+      backgroundRead = new Promise<void>((resolve) => {
+        releaseBackground = resolve;
+      }).then(async () => {
+        await ctx.store.listProjects();
+        await ctx.store.listSessions();
+      });
+      const current = { count: 0 };
+      measurement = current;
+      acquire.mockClear();
+      const response = await server.inject('/sessions');
+      measurement = undefined;
+      return { response, count: current.count };
+    };
     const seed = async (n: number) => {
       await ctx.store.createSession({
         sessionId: `pool-${n}`,
@@ -1970,17 +2079,16 @@ describe('overview projections read only the narrow event slice', () => {
     };
     try {
       await seed(0);
-      acquire.mockClear();
-      expect((await server.inject('/sessions')).statusCode).toBe(200);
-      const small = acquire.mock.calls.length;
-      expect(small).toBeGreaterThan(0);
+      const small = await measure();
+      expect(small.response.statusCode).toBe(200);
+      expect(small.count).toBeGreaterThan(0);
       for (let n = 1; n < 40; n++) await seed(n);
-      acquire.mockClear();
-      const large = await server.inject('/sessions');
-      expect(large.statusCode).toBe(200);
-      expect(large.json()).toHaveLength(40);
-      expect(acquire.mock.calls.length).toBeLessThanOrEqual(small);
-      expect(acquire.mock.calls.length).toBeLessThanOrEqual(12);
+      const large = await measure();
+      expect(large.response.statusCode).toBe(200);
+      expect(large.response.json()).toHaveLength(40);
+      expect(large.count).toBeLessThanOrEqual(small.count);
+      expect(large.count).toBeLessThanOrEqual(12);
+      expect(acquire.mock.calls.length).toBeGreaterThanOrEqual(large.count + 2);
     } finally {
       acquire.mockRestore();
       facts.mockRestore();
@@ -2865,105 +2973,6 @@ describe('vulnerability scan session integration', () => {
     } finally {
       await server.close();
     }
-  });
-});
-
-describe('GET /sessions/:id', () => {
-  it('returns session detail with status and event count', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
-    await ctx.store.appendEvent('s1', { t: 'status', state: 'running' });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
-      sessionId: 's1',
-      worktree: '/wt/s1',
-      model: 'm',
-      name: null,
-      planningPlan: null,
-      planningRevision: 0,
-      projectId: null,
-      status: 'running',
-      pendingPermissions: [],
-      usage: ZERO_USAGE,
-      resumable: false,
-      eventCount: 0,
-      agentTextCounterVersion: 'agent-text-v2',
-      lastActivityAt: expect.any(Number),
-      lastSeenEventCount: null,
-      inboxDismissed: [],
-      busy: false,
-      queued: [],
-    });
-  });
-
-  it('includes cumulative token usage in the detail', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
-    await ctx.store.appendEvent('s1', {
-      t: 'result',
-      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheCreationTokens: 3 },
-      stopReason: 'end_turn',
-    });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      eventCount: 0,
-      usage: {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheReadTokens: 5,
-        cacheCreationTokens: 3,
-        turns: 1,
-      },
-    });
-  });
-
-  it('includes the latest rate-limit state in the detail', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', {
-      t: 'rate_limit',
-      status: 'rejected',
-      resetsAt: 1_700_000_000,
-      window: 'five_hour',
-      providerLabel: 'Codex',
-    });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      rateLimit: {
-        status: 'rejected',
-        resetsAt: 1_700_000_000,
-        window: 'five_hour',
-        providerLabel: 'Codex',
-        observedAt: expect.any(Number),
-      },
-      rateLimits: [
-        {
-          status: 'rejected',
-          resetsAt: 1_700_000_000,
-          window: 'five_hour',
-          providerLabel: 'Codex',
-          observedAt: expect.any(Number),
-        },
-      ],
-    });
-  });
-
-  it('returns 404 for an unknown session', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/missing' });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('missing') });
-  });
-
-  it('returns 400 for an invalid session id (not the raw zod error)', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/bad%20id' });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual({ error: 'invalid request' });
   });
 });
 

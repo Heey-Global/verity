@@ -32,6 +32,34 @@ count. Dead peers normally disconnect about 45 seconds after the last successful
 probe, excluding socket-write delays and event-loop stalls. Heartbeat timeout
 diagnostics include `missedPongs` and the existing scheduling delay metadata.
 
+## PIN protection
+
+The hosted edge requires `VERITY_PREVIEW_PIN_BUDGET_URL` (an HTTP(S) origin)
+and `VERITY_PREVIEW_PIN_BUDGET_TOKEN` (43 base64url characters). Every fresh PIN
+check reserves an attempt with the hosted budget service before verifying the
+six-digit code, then reports whether it matched. Access requires both a matching
+code and an allowed completion. Only HTTP 200 responses with valid payloads are
+accepted; service failures refuse login. Requests use a five-second timeout.
+Existing visitor cookies skip new PIN checks, including after a link is locked.
+
+A process-local IP limit supplements the durable per-link budget. Every three
+incorrect PINs pause that address for 60 seconds, doubling on each group to a
+3600-second cap. One hour without incorrect PINs resets the escalation. Correct
+PINs do not clear previous failures, and wrong PINs still count if the budget
+completion fails. Pauses are checked before reserving another durable attempt;
+only one verification per address may be pending. Cooldown responses include the
+wait duration and `Retry-After`; locked links ask the owner to create a new link.
+
+`VERITY_PREVIEW_TRUSTED_PROXY_HOPS` must match the gateway's forwarding chain.
+When configured, the edge uses that hop from the right of `X-Forwarded-For`,
+rejecting missing or malformed chains. The edge must be reachable only through
+trusted gateways that overwrite or append verified peer addresses; arbitrary
+client-supplied prefixes are not trusted. Without trusted proxy hops, identity
+comes from the socket peer and forwarding headers are ignored. Verify the actual
+gateway configuration before relying on per-visitor limits behind a proxy.
+Repository tests do not prove the deployed gateway trust boundary or durable
+budget enforcement across replicas; verify those against the deployed image.
+
 ## Request logs
 
 Both executable entrypoints emit one JSON `request.completed` record per HTTP

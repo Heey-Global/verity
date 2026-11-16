@@ -5,11 +5,12 @@ import { Platform, Text } from 'react-native';
 import { GestureDetector } from 'react-native-gesture-handler';
 
 import {
+  favoriteAction,
   isFullSwipe,
-  mixColor,
   SessionContextMenu,
   SwipeableSessionRow,
 } from '../components/SessionRowActions';
+import { mixColor, SwipeActionButton } from '../components/ui/SwipeActions';
 import { exportGestureDiagnostics, setGestureDiagnosticsEnabled } from '../lib/gestureDiagnostics';
 
 function renderMenu(favorite: boolean) {
@@ -23,14 +24,32 @@ function renderMenu(favorite: boolean) {
     <SessionContextMenu
       at={{ x: 40, y: 80 }}
       title="Fix login"
-      favorite={favorite}
-      {...handlers}
+      leading={favoriteAction(favorite, handlers.onToggleFavorite)}
+      onClose={handlers.onClose}
+      onEdit={handlers.onEdit}
+      onDelete={handlers.onDelete}
     />,
   );
   return handlers;
 }
 
 describe('SessionContextMenu', () => {
+  // A task row has no favorite; its menu must not offer one it cannot keep.
+  it('leaves out the leading action for a row without one', () => {
+    render(
+      <SessionContextMenu
+        at={{ x: 40, y: 80 }}
+        title="Fix login"
+        leading={undefined}
+        onClose={jest.fn()}
+        onEdit={jest.fn()}
+        onDelete={jest.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText('Add to favorites')).toBeNull();
+    expect(screen.getByLabelText('Edit…')).toBeTruthy();
+  });
+
   it('offers to add a session that is not a favorite yet', () => {
     const { onToggleFavorite, onClose } = renderMenu(false);
 
@@ -103,6 +122,17 @@ describe('SwipeableSessionRow', () => {
 
     fireEvent.press(screen.getByLabelText('Delete'));
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws its actions with the lanes every swipeable row shares', () => {
+    renderRow(false);
+    expect(
+      screen.UNSAFE_getAllByType(SwipeActionButton).map(({ props }) => [props.label, props.tone]),
+    ).toEqual([
+      ['Favorite', 'action'],
+      ['Edit', 'action'],
+      ['Delete', 'destructive'],
+    ]);
   });
 
   it('opens the session settings from the Edit action beside Delete', () => {

@@ -926,3 +926,23 @@ describe('AcpOpenCodeBackend', () => {
     ]);
   });
 });
+
+it('requires broker-owned native tool isolation and offers only the Verity MCP server', async () => {
+  const fake = acpSpawner({ httpMcp: true });
+  const spawner = vi.fn(fake.spawner);
+  await new AcpOpenCodeBackend().run({
+    store: ctx.store,
+    storeSessionId: 'verity-opencode-gateway-only',
+    worktree: '/work/project',
+    cwd: '/work/project',
+    prompt: 'File this note',
+    spawner,
+    gatewayToolsOnly: true,
+    mcpGateway: { url: 'http://relay:8080/mcp', token: 'gateway-token' },
+    mcpServers: [{ name: 'external', url: 'http://external/mcp', headers: [] }],
+  });
+  expect(spawner.mock.calls[0]?.[2]).toMatchObject({ gatewayToolsOnly: true });
+  expect(write(fake.writes, 'session/new')).toMatchObject({
+    params: { mcpServers: [{ name: 'verity' }] },
+  });
+});

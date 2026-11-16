@@ -44,4 +44,17 @@ describe('AUTONOMY_SYSTEM_PROMPT', () => {
       expect(prompt).toContain('Do not wait for the user to ask how to proceed');
     },
   );
+
+  it.each([AUTONOMY_SYSTEM_PROMPT, AUTONOMY_RESUME_SYSTEM_PROMPT])(
+    'keeps required background work inside the active turn',
+    (prompt) => {
+      // A final promise cannot wake the agent after teardown killed its review.
+      expect(prompt).toContain('Wait for required reviews and tests to finish');
+      expect(prompt).toContain('wait or poll');
+      expect(prompt).toContain('exit status');
+      expect(prompt).toMatch(/turn completion can (terminate its processes|kill background work)/i);
+      expect(prompt).toContain('managed continuation');
+      expect(prompt).toContain('report the concrete failure');
+    },
+  );
 });

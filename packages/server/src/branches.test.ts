@@ -1875,6 +1875,37 @@ it('reads the exact attached repair revision through the scoped git runner', asy
   }
 });
 
+it('fingerprints detached post-merge work without treating a branch name as new work', async () => {
+  const repo = mkdtempSync(join(tmpdir(), 'verity-pr-fingerprint-'));
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q', '-b', 'main');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repo, 'tracked'), 'before');
+    git('add', '.');
+    git('commit', '-qm', 'initial');
+    const svc = createGitBranchService({
+      git: async (args) => execFileSync('git', [...args], { encoding: 'utf8' }),
+    });
+    const baseline = await svc.worktreeFingerprint!(repo, false);
+    expect(baseline).toEqual(expect.any(String));
+    git('checkout', '--detach', '-q');
+    expect(await svc.worktreeFingerprint!(repo, false)).toBe(baseline);
+    git('checkout', '-qb', 'next');
+    expect(await svc.worktreeFingerprint!(repo, false)).toBe(baseline);
+    writeFileSync(join(repo, 'tracked'), 'after');
+    expect(await svc.worktreeFingerprint!(repo, false)).not.toBe(baseline);
+    git('add', '.');
+    git('commit', '-qm', 'next');
+    expect(await svc.worktreeFingerprint!(repo, false)).not.toBe(baseline);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 it('binds QA dirty-worktree continuations to tracked, staged and untracked contents', async () => {
   const repo = mkdtempSync(join(tmpdir(), 'verity-qa-fingerprint-'));
   const git = (...args: string[]) =>

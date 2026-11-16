@@ -274,3 +274,29 @@ describe('host preparation status projection', () => {
     expect(response).not.toHaveProperty('hostPreparation');
   });
 });
+
+it.each([true, false])(
+  'offers a different release after terminal host failure (sidecar: %s)',
+  async (sidecar) => {
+    const operation: UpdateOperation = {
+      ...stuck,
+      state: 'failed' as const,
+      phase: 'failed' as const,
+      failureCode: 'host-runtime-failed',
+    };
+    const hostPreparation = {
+      updateId: operation.updateId,
+      targetDigest: operation.targetDigest,
+      stage: 'recovery-required' as const,
+    };
+    const response = await status(
+      routes({
+        readOperation: async () => operation,
+        ...(sidecar ? { readHostPreparation: async () => hostPreparation } : {}),
+      }),
+    );
+    expect(response).toMatchObject({ state: 'available', release, operation });
+    if (sidecar) expect(response.hostPreparation).toEqual(hostPreparation);
+    else expect(response).not.toHaveProperty('hostPreparation');
+  },
+);

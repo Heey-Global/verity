@@ -5,6 +5,7 @@
 //      fake `manifestConvert` and a real cipher so the sealed gates are exercised.
 // Invariants asserted throughout: the PEM / app id NEVER reach any HTML body;
 // the CSRF `state` is single-use + TTL-bounded; interpolated values are escaped.
+import { GITHUB_USER_CALLBACK_URL } from './github-user-authorization.js';
 import type { Conductor } from '@verity/session';
 import { InMemoryEventBus } from '@verity/session';
 import { EventStore, createSealableSecretCipher, type SealableSecretCipher } from '@verity/store';
@@ -62,6 +63,16 @@ describe('buildManifest', () => {
     expect(serialized).toContain('https://verity.build/github/app/callback');
     expect(serialized).toContain('returnTo=%2Fonboarding%2Fgithub');
     expect(serialized).not.toContain('verity.example');
+  });
+
+  // Without a registered callback GitHub refuses every person's own sign-in, and
+  // existing Apps then need a manual settings change; new Apps must not.
+  it('registers the per-person GitHub sign-in callback for web and app manifests', () => {
+    for (const manifest of [
+      buildManifest('https://verity.example'),
+      buildMobileManifest('/onboarding/github'),
+    ])
+      expect(manifest['callback_urls']).toEqual([GITHUB_USER_CALLBACK_URL]);
   });
 
   it('keeps the public bridge permission allowlist equal to the generated manifest', () => {
@@ -184,6 +195,32 @@ describe('defaultManifestConvert (production conversion, faked transport)', () =
     expect(seenUrl).toBe('https://api.github.com/app-manifests/the-code/conversions');
     // Numeric id is stringified; pem passes through as the private key.
     expect(result).toEqual({ appId: '424242', slug: 'verity-abc', privateKey: pem });
+  });
+
+  // GitHub hands out the client secret only in this response. Dropping it would
+  // leave every new installation needing a manual secret before anyone can sign in.
+  it('keeps the App OAuth client GitHub returns once with the conversion', async () => {
+    const pem = pemString();
+    const fetch: HttpFetch = () =>
+      Promise.resolve({
+        ok: true,
+        status: 201,
+        json: () =>
+          Promise.resolve({
+            id: 1,
+            slug: 'verity-abc',
+            pem,
+            client_id: 'Iv1.client',
+            client_secret: 'client-secret',
+          }),
+      } as HttpResponse);
+    await expect(defaultManifestConvert({ fetch })('the-code')).resolves.toEqual({
+      appId: '1',
+      slug: 'verity-abc',
+      privateKey: pem,
+      clientId: 'Iv1.client',
+      clientSecret: 'client-secret',
+    });
   });
 
   it('throws a redaction-safe message on a non-2xx (no body read)', async () => {

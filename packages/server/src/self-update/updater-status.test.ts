@@ -1867,3 +1867,42 @@ it.each([true, false, 'unavailable'] as const)(
     expect(checked).toEqual([image('b')]);
   },
 );
+
+it('accepts a different target after terminal host failure without claiming recovery', async () => {
+  const { socketPath, token, managedRoot } = await fixture({ managed: true });
+  await requestUpdaterOperation({
+    socketPath,
+    token,
+    idempotencyKey: 'old-host',
+    targetDigest: image('b'),
+  });
+  await advanceUpdate(managedRoot, 'requested', 'pulling');
+  await advanceUpdate(managedRoot, 'pulling', 'verifying-image');
+  const journal = await advanceUpdate(managedRoot, 'verifying-image', 'preflight');
+  await failUpdate(managedRoot, 'preflight', 'host-runtime-failed');
+  await writeHostPreparation(managedRoot, journal, 'recovery-required');
+  expect(await readUpdaterHostPreparation({ socketPath, token })).toMatchObject({
+    stage: 'recovery-required',
+  });
+  const next = await requestUpdaterOperation({
+    socketPath,
+    token,
+    idempotencyKey: 'new-host',
+    targetDigest: image('c'),
+  });
+  expect(next).toMatchObject({
+    generation: 2,
+    phase: 'requested',
+    state: 'preparing',
+    targetDigest: image('c'),
+  });
+  expect(
+    await requestUpdaterOperation({
+      socketPath,
+      token,
+      idempotencyKey: 'new-host',
+      targetDigest: image('c'),
+    }),
+  ).toEqual(next);
+  expect(await readdir(managedRoot)).toContain('update-journal-g1.json');
+});

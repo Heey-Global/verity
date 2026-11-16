@@ -1,3 +1,4 @@
+import { hasCacheHelperIdentity, retainLatestCacheHelper } from './cache-helper-retention.js';
 import type { ProjectRecord } from '@verity/store';
 import type { DockerClient, DockerContainerSummary, DockerImageSummary } from './docker.js';
 
@@ -40,6 +41,10 @@ export async function retireStoppedContainers(input: {
   withProjectMutation: (projectId: string, run: () => Promise<void>) => Promise<void>;
   now?: number;
   dryRun?: boolean;
+  /** Capacity passes only retire cache helpers, with a bounded project inventory. */
+  cacheHelpersOnly?: boolean;
+  maxHelperProjects?: number;
+  helperProjectOffset?: number;
 }): Promise<{
   removed: string[];
   errors: string[];
@@ -60,6 +65,69 @@ export async function retireStoppedContainers(input: {
   await docker.listImages(); // Inventory errors must fail closed.
   const containers = await docker.listContainers();
   const heldProjects = new Set(projects.map((p) => p.id));
+  const cacheProjects = new Set(
+    containers
+      .filter(hasCacheHelperIdentity)
+      .map((c) => c.labels?.[projectLabel])
+      .filter((id): id is string => !!id),
+  );
+  const helperProjects = [...cacheProjects].sort();
+  const offset = helperProjects.length
+    ? (input.helperProjectOffset ?? 0) % helperProjects.length
+    : 0;
+  const selected = [...helperProjects.slice(offset), ...helperProjects.slice(0, offset)].slice(
+    0,
+    input.maxHelperProjects,
+  );
+  for (const projectId of selected) {
+    let barrierEntered = false;
+    try {
+      await input.withProjectMutation(projectId, async () => {
+        barrierEntered = true;
+        const freshProjects = await input.listProjects();
+        if (heldProjects.has(projectId) && !freshProjects.some((p) => p.id === projectId)) return;
+        const retention = await retainLatestCacheHelper({
+          docker,
+          projectId,
+          now,
+          expireAfterMs: 7 * DAY,
+          ...(input.dryRun === undefined ? {} : { dryRun: input.dryRun }),
+        });
+        if (retention.blocked && retention.retained.length === 0)
+          result.errors.push(
+            `${projectId}: Cache helper retention inventory unavailable or too large; containers retained`,
+          );
+        for (const id of retention.removed)
+          result.removed.push(containers.find((c) => c.id === id)?.names?.[0] ?? id);
+        for (const id of retention.retained)
+          result.retained.push({
+            name: containers.find((c) => c.id === id)?.names?.[0] ?? id,
+            reason: retention.blocked
+              ? (retention.blockedReason ??
+                'Cache helper retention blocked by unverified state or identity')
+              : 'Latest cache helper evidence retained (7 days)',
+          });
+      });
+    } catch {
+      // Before the barrier was entered this pass removed nothing. An exception
+      // inside verification may follow partial cleanup, so its old inventory
+      // cannot truthfully identify every container that remains.
+      if (!barrierEntered) {
+        for (const candidate of containers.filter(
+          (item) => item.labels?.[projectLabel] === projectId && hasCacheHelperIdentity(item),
+        )) {
+          result.retained.push({
+            name: candidate.names?.[0] ?? candidate.id,
+            reason: 'Project lifecycle or storage barrier unavailable; helpers retained',
+          });
+        }
+      }
+      result.errors.push(
+        `${projectId}: Cache helper retention failed; unverified containers retained`,
+      );
+    }
+  }
+  if (input.cacheHelpersOnly) return result;
   for (const candidate of containers) {
     if (!stopped(candidate)) continue;
     const projectId = candidate.labels?.[projectLabel];
@@ -67,6 +135,9 @@ export async function retireStoppedContainers(input: {
       keep(candidate, 'No project identity; outside managed ownership');
       continue;
     }
+    // Cache helpers were reconciled under their project barrier above. Generic GC
+    // must not delete result evidence or bypass a blocked retention pass.
+    if (hasCacheHelperIdentity(candidate)) continue;
     const maintenance =
       candidate.labels?.[componentLabel] === 'storage-maintenance' &&
       candidate.names?.some((name) => /^verity-query-[a-f0-9-]{36}$/.test(name));
@@ -133,18 +204,21 @@ export async function retireStoppedContainers(input: {
           keep(current, 'No newer image in the managed repository');
           return;
         }
-        // A relay may only be retired with its stopped sandbox generation, never independently of a running sandbox.
+        // A relay is retired only after its sandbox generation is gone. A sleeping
+        // project keeps a STOPPED sandbox whose wake adopts this exact relay by
+        // name; removing the relay alone left that sandbox un-wakeable. Once the
+        // sandbox itself is retired (earlier in this pass or later), the re-listing
+        // here no longer finds it and the relay follows.
         if (
           relay(current) &&
           (await docker.listContainers!()).some(
             (c) =>
               c.labels?.[projectLabel] === projectId &&
               !relay(c) &&
-              c.labels?.[generationLabel] === current.labels?.[generationLabel] &&
-              !stopped(c),
+              c.labels?.[generationLabel] === current.labels?.[generationLabel],
           )
         ) {
-          keep(current, 'Relay generation still has a running sandbox');
+          keep(current, 'Relay generation still has a sandbox');
           return;
         }
         if (!latestProject && heldProjects.has(projectId)) return; // Project changed during the pass; retry next time.
@@ -160,7 +234,7 @@ export async function retireStoppedContainers(input: {
   return result;
 }
 
-/** Reconcile old successful Compose init containers only after a newer server is running. */
+/** Reconcile bootstrap containers after their consumers have completed initialization. */
 export async function retireCompletedUpdateContainers(
   docker: Pick<DockerClient, 'listContainers' | 'inspectContainer' | 'removeStoppedContainer'>,
   completedDeployment?: { composeProject: string },
@@ -169,7 +243,7 @@ export async function retireCompletedUpdateContainers(
   const removed: string[] = [];
   for (const c of await docker.listContainers()) {
     if (
-      c.state !== 'exited' ||
+      (c.state !== 'exited' && !(completedDeployment && c.state === 'created')) ||
       !['verity-agent-seed', 'verity-managed-data-init'].includes(c.labels?.[serviceLabel] ?? '')
     )
       continue;
@@ -177,7 +251,15 @@ export async function retireCompletedUpdateContainers(
     if (!project || (completedDeployment && project !== completedDeployment.composeProject))
       continue;
     const inspect = await docker.inspectContainer(c.id);
-    if (inspect.running || inspect.status !== 'exited' || inspect.exitCode !== 0) continue;
+    if (
+      inspect.running ||
+      inspect.status !== c.state ||
+      inspect.imageId !== c.imageId ||
+      inspect.labels?.[serviceLabel] !== c.labels?.[serviceLabel] ||
+      inspect.labels?.[composeLabel] !== project ||
+      (inspect.status === 'exited' && inspect.exitCode !== 0)
+    )
+      continue;
     // Re-list at mutation time; the running consumer establishes successful bootstrap completion.
     const ready =
       completedDeployment !== undefined ||
@@ -194,6 +276,46 @@ export async function retireCompletedUpdateContainers(
     if (!ready) continue;
     await docker.removeStoppedContainer(c.id);
     removed.push(c.names?.[0] ?? c.id);
+  }
+  return removed;
+}
+
+/** Called under the completed update's journal lease, after companion reconciliation. */
+export async function retireCompletedHostPreparationJobs(
+  docker: Pick<DockerClient, 'listContainers' | 'inspectContainer' | 'removeStoppedContainer'>,
+  completed: { deploymentId: string; updateId: string; targetDigest: string },
+): Promise<string[]> {
+  if (!docker.listContainers || !docker.removeStoppedContainer) return [];
+  const removed: string[] = [];
+  const ownership = {
+    'verity.managed-deployment-id': completed.deploymentId,
+    'verity.update-id': completed.updateId,
+    'verity.target-digest': completed.targetDigest,
+  };
+  for (const candidate of await docker.listContainers()) {
+    const role = candidate.labels?.['verity.managed-role'];
+    const stage = candidate.labels?.['verity.renewal-stage'];
+    if (
+      candidate.state !== 'exited' ||
+      !['runtime-renewal', 'egress-provisioning'].includes(role ?? '') ||
+      !['verify', 'install'].includes(stage ?? '') ||
+      Object.entries(ownership).some(([key, value]) => candidate.labels?.[key] !== value)
+    )
+      continue;
+    const inspect = await docker.inspectContainer(candidate.id);
+    if (
+      inspect.running ||
+      inspect.status !== 'exited' ||
+      inspect.exitCode !== 0 ||
+      inspect.imageId !== candidate.imageId ||
+      inspect.labels?.['verity.managed-role'] !== role ||
+      inspect.labels?.['verity.renewal-stage'] !== stage ||
+      Object.entries(ownership).some(([key, value]) => inspect.labels?.[key] !== value)
+    )
+      continue;
+    // Never force-remove a helper that resumed after inspection, or delete its volumes.
+    await docker.removeStoppedContainer(candidate.id);
+    removed.push(candidate.names?.[0] ?? candidate.id);
   }
   return removed;
 }

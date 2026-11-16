@@ -14,6 +14,9 @@ export default tseslint.config(
       '.verity-sessions/**',
       // Reproducible esbuild output; lint its typed sources instead.
       'features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs',
+      // Bundled from features/verity-sandbox-toolkit/src/; lint those modules instead.
+      'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
+      'features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
     ],
   },
   js.configs.recommended,

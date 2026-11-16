@@ -76,3 +76,51 @@ describe('assistant project grants', () => {
     expect(await ctx.store.assistant.grant('a')).toBeUndefined();
   });
 });
+
+describe('assistant requests', () => {
+  const base = { sessionId: 'assistant', userId: 'u1' } as const;
+  beforeEach(async () => {
+    await ctx.store.createSession({ sessionId: 'assistant', worktree: '/a', model: 'm' });
+  });
+
+  it('returns the first delivery when a device replays the same request id', async () => {
+    const message = { ...base, requestId: 'r1', kind: 'message' as const };
+    expect(await ctx.store.assistant.claimRequest(message)).toEqual({ claimed: true });
+    await ctx.store.assistant.acceptRequest('r1');
+    // A replay after acceptance must never start a second turn.
+    expect(await ctx.store.assistant.claimRequest(message)).toMatchObject({
+      claimed: false,
+      request: { request_id: 'r1', state: 'accepted', kind: 'message' },
+    });
+  });
+
+  it('lets only one request answer a question', async () => {
+    const answer = { ...base, kind: 'answer' as const, questionId: 'q-7' };
+    expect(await ctx.store.assistant.claimRequest({ ...answer, requestId: 'phone' })).toEqual({
+      claimed: true,
+    });
+    expect(
+      await ctx.store.assistant.claimRequest({ ...answer, requestId: 'watch', userId: 'u2' }),
+    ).toMatchObject({ claimed: false, answeredBy: { request_id: 'phone' } });
+    // A different question stays answerable.
+    expect(
+      await ctx.store.assistant.claimRequest({ ...answer, requestId: 'next', questionId: 'q-9' }),
+    ).toEqual({ claimed: true });
+  });
+
+  it('frees a refused claim and reclaims one a crashed dispatch left pending', async () => {
+    const message = { ...base, requestId: 'r2', kind: 'message' as const };
+    await ctx.store.assistant.claimRequest(message);
+    await ctx.store.assistant.releaseRequest('r2');
+    expect(await ctx.store.assistant.claimRequest(message)).toEqual({ claimed: true });
+    // Still fresh: a concurrent replay waits for the first dispatch.
+    expect(await ctx.store.assistant.claimRequest(message)).toMatchObject({ claimed: false });
+    expect(await ctx.store.assistant.claimRequest({ ...message, staleAfterMs: 0 })).toEqual({
+      claimed: true,
+    });
+    // Another user cannot take over someone else's pending request.
+    expect(
+      await ctx.store.assistant.claimRequest({ ...message, userId: 'u2', staleAfterMs: 0 }),
+    ).toMatchObject({ claimed: false });
+  });
+});

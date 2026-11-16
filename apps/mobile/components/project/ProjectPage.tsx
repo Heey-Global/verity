@@ -1,0 +1,467 @@
+import { ProjectInquiryCards } from './ProjectInquiryCards';
+import {
+  inboxDismissedKeys,
+  inboxItems,
+  projectTitle,
+  type InboxItem,
+  type RepositoryPullRequests,
+  type ProjectDetail,
+  type ProjectRecord,
+  type SessionSummary,
+  type VerityClient,
+} from '@verity/mobile';
+import { Stack, router } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
+import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+
+import { useInboxFeed } from '../home/HomeInbox';
+import { KnowledgeColumn } from '../knowledge/KnowledgeBrowser';
+import {
+  folderIcon,
+  folderSubtitle,
+  folderTitle,
+  type KnowledgeScope,
+} from '../knowledge/knowledgeScope';
+import { Button, Group, IconButton, InlineEdit, Row, SectionHeader, StatusTag, Text } from '../ui';
+import { tint } from '../ui/tint';
+import { useProjectDetail } from '../../lib/useProjectDetail';
+import { ProjectTasksRow } from './ProjectTasksRow';
+import { ProjectRepositoriesRow } from './ProjectRepositoriesRow';
+import { projectLine } from '../../lib/projectRepositories';
+import { useProjectPullRequests } from '../../lib/useProjectPullRequests';
+import { ProjectWork } from './ProjectWork';
+import {
+  packagesToUpdate,
+  ProjectSecurityRow,
+  useProjectSecurity,
+  type ProjectSecurity,
+} from '../vulnerability/ProjectSecurity';
+
+/**
+ * The inbox items that belong to one project: its sessions' questions,
+ * permissions, crashes and merges, and its own health. Meetings belong to no
+ * project, and "Open" on a health item would open the page it is shown on.
+ */
+export function projectInboxItems(
+  project: ProjectRecord,
+  sessions: readonly SessionSummary[],
+  now: number,
+): InboxItem[] {
+  return (
+    inboxItems({ sessions, projects: [project], now })
+      .filter((item) => item.projectId === project.id)
+      // The page's own Security row lists the findings and offers the fix;
+      // Home's item only says how many and leads here.
+      .filter((item) => !item.key.startsWith(`health:${project.id}:vulnerabilities:`))
+      .map((item) => ({
+        ...item,
+        actions: item.actions.filter((action) => action.kind !== 'open_project'),
+      }))
+  );
+}
+
+/**
+ * A project's own page in the new design (Settings › This app), one scrolling
+ * page: the project, its work — by default what needs the operator and what is
+ * running ({@link ProjectWork}) — and what it holds, its knowledge first. The
+ * gear leads to the project settings.
+ *
+ * `inline` draws the page inside the wide layout's left column, with its own
+ * "Projects" back control, and opens the knowledge in that column; otherwise it
+ * is a stack screen that names itself in the navigation bar and pushes the
+ * knowledge as a screen of its own.
+ */
+export function ProjectPage({
+  client,
+  projectId,
+  inline = false,
+  onBack,
+  onOpenSession,
+  onRepairProject,
+  onSessionChanged,
+  onInboxSaved,
+  onProjectChanged,
+  reloadOn,
+  selectedSessionId,
+}: {
+  client: VerityClient;
+  projectId: string;
+  selectedSessionId?: string | null | undefined;
+  inline?: boolean;
+  onBack?: (() => void) | undefined;
+  onOpenSession: (sessionId: string) => void;
+  /** What Repair on a health item does; the sandbox settings, which offer it, when omitted. */
+  onRepairProject?: ((projectId: string) => void) | undefined;
+  /**
+   * Changes whenever the host polled newer sessions and projects; the page then
+   * reloads too, so it never lags the list and Home beside it.
+   */
+  reloadOn?: unknown;
+  /** An inbox item on this page was answered, dismissed or restored. */
+  onInboxSaved?: (() => void) | undefined;
+  /** The project's name or description was changed on this page. */
+  onProjectChanged?: (() => void) | undefined;
+  /** A session was renamed, (un)favorited or deleted on this page. */
+  onSessionChanged?: ((sessionId: string, deleted: boolean) => void) | undefined;
+}) {
+  const { theme } = useUnistyles();
+  const { detail, loading, error, load, onProfileSaved, savedProfile } = useProjectDetail(
+    client,
+    projectId,
+  );
+  const pullRequests = useProjectPullRequests(client, projectId);
+  /** The knowledge area open in the wide layout's column, if any. */
+  const [knowledgeArea, setKnowledgeArea] = useState<string>();
+  const security = useProjectSecurity(
+    client,
+    projectId,
+    onOpenSession,
+    detail?.project.kind === 'github' || detail?.project.kind === 'forgejo',
+  );
+  const knowledgeScope = useMemo<KnowledgeScope>(
+    () => ({ kind: 'project', projectId }),
+    [projectId],
+  );
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const reloadPullRequests = pullRequests.reload;
+  const reload = useCallback(() => {
+    void load(true);
+    void reloadPullRequests();
+  }, [load, reloadPullRequests]);
+  const refresh = useCallback(() => {
+    setRefreshing(true);
+    void Promise.all([load(true), reloadPullRequests(true)]).finally(() => {
+      setLayoutRevision((value) => value + 1);
+      setRefreshing(false);
+    });
+  }, [load, reloadPullRequests]);
+  // Compared with the last value rather than skipping a first run: the mount
+  // already loads, and a re-run with the same token (a re-mounted effect, a new
+  // `reload`) must not read again.
+  const lastReloadOn = useRef(reloadOn);
+  useEffect(() => {
+    if (Object.is(lastReloadOn.current, reloadOn)) return;
+    lastReloadOn.current = reloadOn;
+    reload();
+  }, [reloadOn, reload]);
+  // A host that passes `reloadOn` refreshes after the change and moves the token;
+  // reading here as well would fetch the detail twice.
+  const hostReloads = reloadOn !== undefined;
+  const inboxSaved = useCallback(() => {
+    if (!hostReloads) reload();
+    onInboxSaved?.();
+  }, [hostReloads, reload, onInboxSaved]);
+  const sessionChanged = useCallback(
+    (sessionId: string, deleted: boolean) => {
+      if (!hostReloads) reload();
+      onSessionChanged?.(sessionId, deleted);
+    },
+    [hostReloads, reload, onSessionChanged],
+  );
+  // Held by the page rather than the work list: switching its filter must not
+  // drop an answer in flight or its reply id, or a second tap could send it twice.
+  const now = useClock();
+  const all = useMemo(
+    () => (detail ? projectInboxItems(detail.project, detail.sessions, now) : []),
+    [detail, now],
+  );
+  const serverHidden = useMemo(
+    () =>
+      detail
+        ? inboxDismissedKeys({ sessions: detail.sessions, projects: [detail.project] })
+        : new Set<string>(),
+    [detail],
+  );
+  const feed = useInboxFeed({
+    client,
+    all,
+    serverHidden,
+    onOpenSession,
+    onRepairProject: onRepairProject ?? openSandbox,
+    onSaved: inboxSaved,
+  });
+  const openSettings = useCallback(
+    () => router.push({ pathname: '/project/[id]/settings', params: { id: projectId } }),
+    [projectId],
+  );
+  const openKnowledge = useCallback(
+    (folder: string) => {
+      if (inline) setKnowledgeArea(folder);
+      else router.push({ pathname: '/project/[id]/knowledge', params: { id: projectId, folder } });
+    },
+    [inline, projectId],
+  );
+  const name = detail ? projectTitle(detail.project) : 'Project';
+  const saveProfile = useCallback(
+    async (patch: { name?: string; description?: string | null }) => {
+      const saved = await client.updateProjectProfile(projectId, patch);
+      onProfileSaved(saved);
+      await load(true);
+      onProjectChanged?.();
+    },
+    [client, projectId, load, onProfileSaved, onProjectChanged],
+  );
+  const gear = (
+    <IconButton icon="settings" accessibilityLabel="Project settings" onPress={openSettings} />
+  );
+
+  let body;
+  if (detail === undefined) {
+    body =
+      loading || error === undefined ? (
+        <View style={styles.centered}>
+          <ActivityIndicator color={theme.colors.text} />
+        </View>
+      ) : (
+        <View style={styles.centered}>
+          <Text variant="body" tone="muted">
+            {error}
+          </Text>
+          <Button label="Retry" variant="secondary" size="compact" onPress={reload} />
+        </View>
+      );
+  } else {
+    body = (
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} />}
+      >
+        <ProjectHero
+          project={detail.project}
+          description={
+            (savedProfile?.description !== undefined
+              ? savedProfile.description
+              : detail.settings?.description) ?? ''
+          }
+          line={projectLine(detail.project, null, pullRequests.repositories?.length)}
+          onSave={detail.viewer?.canManage === true ? saveProfile : undefined}
+        />
+        <ProjectWork
+          client={client}
+          projectId={projectId}
+          sessions={detail.sessions}
+          layoutRevision={layoutRevision}
+          selectedSessionId={selectedSessionId}
+          feed={feed}
+          leadingRows={securityRows(security)}
+          onOpenSession={onOpenSession}
+          onChanged={sessionChanged}
+        />
+        <ProjectInquiryCards client={client} projectId={projectId} />
+        <SectionHeader title="Content" />
+        <ProjectContent
+          client={client}
+          detail={detail}
+          scope={knowledgeScope}
+          security={security}
+          repositories={pullRequests.repositories}
+          onOpenKnowledge={openKnowledge}
+        />
+      </ScrollView>
+    );
+  }
+
+  if (inline && knowledgeArea !== undefined) {
+    return (
+      <View style={styles.flex} testID="project-knowledge">
+        <KnowledgeColumn
+          key={`${projectId}:${knowledgeArea}`}
+          client={client}
+          scope={knowledgeScope}
+          start={knowledgeArea}
+          exit={{ label: name, onPress: () => setKnowledgeArea(undefined) }}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.flex} testID="project-page">
+      {inline ? (
+        <View style={styles.topBar}>
+          <Button
+            label="Projects"
+            icon="chevron-left"
+            variant="text"
+            size="compact"
+            onPress={() => onBack?.()}
+          />
+          {gear}
+        </View>
+      ) : (
+        <Stack.Screen options={{ title: name, headerRight: () => gear }} />
+      )}
+      {body}
+    </View>
+  );
+}
+
+/**
+ * The project's name with its description below. Someone who may manage the
+ * project edits both in place; for everyone else they are plain text, and a
+ * missing description gives way to what the project is connected to.
+ */
+function ProjectHero({
+  project,
+  description,
+  line,
+  onSave,
+}: {
+  project: ProjectRecord;
+  description: string;
+  /** Shown read-only instead of an absent description. */
+  line: string;
+  onSave?: ((patch: { name?: string; description?: string | null }) => Promise<void>) | undefined;
+}) {
+  const name = projectTitle(project);
+  return (
+    <View style={styles.hero}>
+      <View style={styles.initial}>
+        <Text variant="title" tone="action">
+          {(Array.from(name.trim())[0] ?? '?').toUpperCase()}
+        </Text>
+      </View>
+      <View style={styles.heroBody}>
+        <InlineEdit
+          value={name}
+          label="Project name"
+          variant="title"
+          header
+          required
+          maxLength={100}
+          numberOfLines={1}
+          onSave={onSave && ((next) => onSave({ name: next }))}
+          testID="project-name"
+        />
+        <InlineEdit
+          value={description}
+          label="Description"
+          variant="subtitle"
+          multiline
+          maxLength={200}
+          numberOfLines={2}
+          placeholder="Add description"
+          emptyText={line}
+          onSave={onSave && ((next) => onSave({ description: next === '' ? null : next }))}
+          testID="project-line"
+        />
+      </View>
+    </View>
+  );
+}
+
+/** Severe findings wait at the top of "Needs you", with the fix one tap away. */
+function securityRows(security: ProjectSecurity | undefined): ReactElement[] {
+  if (!security || (security.severe === 0 && !security.status)) return [];
+  return [<ProjectSecurityRow key="security" security={security} />];
+}
+
+/** Repair asks for a decision; the sandbox settings explain it and offer it. */
+function openSandbox(projectId: string) {
+  router.push({ pathname: '/project/[id]/settings/sandbox', params: { id: projectId } });
+}
+
+/** The project’s Wiki (with its decisions), sources, tasks and security findings. */
+function ProjectContent({
+  client,
+  detail,
+  scope,
+  security,
+  repositories,
+  onOpenKnowledge,
+}: {
+  client: VerityClient;
+  detail: ProjectDetail;
+  scope: KnowledgeScope;
+  security: ProjectSecurity | undefined;
+  repositories: readonly RepositoryPullRequests[] | undefined;
+  onOpenKnowledge: (folder: string) => void;
+}) {
+  const id = detail.project.id;
+  const severe = security !== undefined && security.severe > 0;
+  return (
+    <Group>
+      {(['insights', 'sources'] as const).map((area) => (
+        <Row
+          key={area}
+          leading={{ icon: folderIcon(area) }}
+          title={folderTitle(scope, area)}
+          subtitle={folderSubtitle(scope, area)}
+          navigates
+          onPress={() => onOpenKnowledge(area)}
+        />
+      ))}
+      <ProjectTasksRow client={client} project={detail.project} />
+      {repositories !== undefined && repositories.length > 0 ? (
+        <ProjectRepositoriesRow projectId={id} repositories={repositories} />
+      ) : null}
+      {security !== undefined ? (
+        <Row
+          leading={{ icon: 'shield', ...(severe ? { intent: 'needsSetup' as const } : {}) }}
+          title="Vulnerabilities"
+          subtitle={packagesToUpdate(security.packages)}
+          trailing={
+            <StatusTag
+              intent={severe ? 'needsSetup' : 'optional'}
+              label={security.status ?? (severe ? 'Security' : 'Review')}
+            />
+          }
+          navigates
+          onPress={security.show}
+        />
+      ) : null}
+    </Group>
+  );
+}
+
+/** Re-evaluates relative times on the page without new data. */
+function useClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
+const styles = StyleSheet.create((theme) => ({
+  flex: { flex: 1 },
+  centered: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+  },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+  },
+  hero: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
+  },
+  heroBody: { flex: 1, gap: theme.spacing.xxs },
+  initial: {
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.control,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tint(theme.colors.action, 'fill'),
+  },
+  content: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+    gap: theme.spacing.sm,
+  },
+}));

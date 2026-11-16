@@ -115,3 +115,35 @@ it('gives each person their own read mark and dismissed items from one shared lo
     await app.close();
   }
 });
+
+it('marks a plan awaiting approval without sending its text', async () => {
+  // Every device polls this list; a plan's text would ride along with each poll,
+  // and an overview that lost the flag would stop marking the session.
+  const app = Fastify();
+  const plan = '1. Step\n'.repeat(500);
+  registerSessionListRoute(app, {
+    store: {
+      listSessions: async () => [],
+      linkedSessionIds: async () => new Set(),
+      sessionSortOrders: async () => new Map(),
+      viewState: { sessionViews: async () => new Map() } as never,
+    },
+    summarizeSessions: async () =>
+      [
+        { sessionId: 'presented', planning: 'active', planningRevision: 2, planningPlan: plan },
+        { sessionId: 'drafting', planning: 'active', planningRevision: 3, planningPlan: null },
+        { sessionId: 'done', planning: 'implemented', planningRevision: 2, planningPlan: plan },
+      ] as SessionSummary[],
+    collectAttention: async () => [],
+    prunePrSummaryCache: () => {},
+    pruneBranchCache: () => {},
+  });
+  try {
+    const list = (await app.inject('/sessions')).json<Record<string, unknown>[]>();
+    expect(list.map((summary) => summary.planningPresented)).toEqual([true, undefined, undefined]);
+    for (const summary of list) expect(summary).not.toHaveProperty('planningPlan');
+    expect(list[0]).toMatchObject({ planning: 'active', planningRevision: 2 });
+  } finally {
+    await app.close();
+  }
+});

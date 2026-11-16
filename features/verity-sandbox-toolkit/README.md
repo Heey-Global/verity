@@ -101,6 +101,12 @@ failed confinement operation.
 - **npm supply-chain hardening** — global `ignore-scripts=true`, `allow-git=none`,
   `save-exact=true`, `fund=false`, written to the resolved
   `npm config get globalconfig` path (not hard-coded) and re-asserted.
+- **Session dependency verification and reuse** — npm lockfile inventories are
+  checked before installation or reuse, including cache hits; young versions
+  require a fresh scoped exception. Compatible successful installations can be
+  copied across sessions without sharing writable packages. See
+  [session dependency preparation](../../docs/session-dependencies.md) for
+  supported operations, preserved files and rollout requirements.
 - **git config** into the target user's `~/.gitconfig`: `safe.directory` for
   `/work` (+ worktrees), SSH commit/tag signing (`gpg.format=ssh`,
   `user.signingkey`), the two `insteadOf` HTTPS rewrites, and
@@ -139,6 +145,11 @@ failed confinement operation.
     (NFS/CIFS) or any driver whose advisory-lock semantics differ — two
     supervisors could then both win. Keep the runtime on a local volume driver
     until turns are routed through it.
+- **Built boundary binaries**: `bin/verity-runner-supervisor.mjs` and
+  `bin/verity-agent-spawn-broker.mjs` ship as single files, because the Server
+  hashes each as one executable. Their sources are the modules under `src/`;
+  edit those and run `npm run build:toolkit-bundles`. CI fails when a committed
+  bundle differs from what its sources build (`npm run check:toolkit-bundles`).
 - **dedicated runtime identity**: numeric `verity-runner` UID and
   `verity-runtime` GID (defaults `1101:1101`). The normal agent user is not a
   member, so project code cannot write the supervisor mount.

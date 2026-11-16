@@ -18,7 +18,8 @@ describe('Control runner script sandbox image provisioning', () => {
       'features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs',
       'utf8',
     );
-    const dependencies = [...broker.matchAll(/from '\.\/(.*?)'/gu)].map((match) => match[1]!);
+    // The shipped bundle's own imports, in whichever quotes the bundler writes.
+    const dependencies = [...broker.matchAll(/from ["']\.\/(.*?)["']/gu)].map((match) => match[1]!);
     expect(dependencies.length).toBeGreaterThan(0);
     for (const path of ['deploy/Dockerfile', 'features/verity-sandbox-toolkit/install.sh']) {
       const install = readFileSync(path, 'utf8').replaceAll('\\\n', ' ');
@@ -92,7 +93,9 @@ it('provisions the managed Git baseline when the Control image bypasses the Feat
     'utf8',
   );
   const installer = readFileSync('features/verity-sandbox-toolkit/install.sh', 'utf8');
-  expect(broker).toContain(`'${destination}'`);
+  expect([`'${destination}'`, `"${destination}"`].some((quoted) => broker.includes(quoted))).toBe(
+    true,
+  );
   expect(installer).toContain(`install -m 0644 /dev/null ${destination}`);
   const directories = execFileSync(
     'git',

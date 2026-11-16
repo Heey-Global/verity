@@ -1,3 +1,4 @@
+import { normalizeDetailRateLimit, toDisplayAttachment } from './sessionDetailNormalize.js';
 import {
   markSessionSwitch,
   sessionSwitchTiming,
@@ -12,6 +13,8 @@ import {
   type QueuedItem,
   type SessionDetail,
   type SessionHistoryPage,
+  type MockupReview,
+  type MockupReviewScreen,
   type SessionPlanning,
   type TurnRequest,
 } from '../api.js';
@@ -58,6 +61,9 @@ interface PendingEntry extends PendingMessage {
 /** The render state the chat screen consumes. */
 export interface SessionModelState {
   googleStatus?: SessionDetail['googleStatus'];
+  /** Names by user id in a session several people write in; absent otherwise. */
+  people?: SessionDetail['people'];
+  viewerUserId?: SessionDetail['viewerUserId'];
   detailLoaded?: boolean;
   /** Live transcript + status + usage (from the stream's reducer). */
   session: SessionState;
@@ -161,6 +167,12 @@ export interface SessionModelState {
   planningPlan: string | null | undefined;
   /** True while an "implement" / "discard" decision is in flight. */
   decidingPlanning: boolean;
+  /** The mockup review the agent presented, if any; drives the review bar. */
+  mockupReview: MockupReview | undefined;
+  /** True while a mockup mark is being saved. */
+  decidingMockup: boolean;
+  /** Why the last mockup decision failed, if it did. */
+  mockupError: string | undefined;
   /** Why the last planning decision failed, if it did. */
   planningError: string | undefined;
   /** True when older history exists before the loaded tail — the screen shows a
@@ -234,6 +246,52 @@ export interface SessionModelOptions {
   ready?: Promise<unknown>;
 }
 
+/** What the card says when ending planning failed. A 409 with a code this
+ *  build does not know shows the server's own text, so a newer refusal is not
+ *  mistaken for planning having ended. */
+/** The server answers with the stored review; compare what the bar shows. */
+function sameMockupReview(a: MockupReview | undefined, b: MockupReview | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.state === b.state &&
+    a.revision === b.revision &&
+    a.screens.length === b.screens.length &&
+    a.screens.every((screen, index) => {
+      const other = b.screens[index]!;
+      return (
+        screen.name === other.name &&
+        screen.attachment === other.attachment &&
+        screen.verdict === other.verdict
+      );
+    })
+  );
+}
+
+function mockupDecisionError(error: unknown): string {
+  if (!(error instanceof VerityApiError)) return 'Could not save your review. Try again.';
+  if (error.status === 409 && error.code === 'stale')
+    return 'The mockups were updated. Please review the current ones.';
+  if (error.status === 409 && error.code === 'notPending')
+    return 'These mockups are no longer waiting for review.';
+  return error.message;
+}
+
+function planningDecisionError(error: unknown): string {
+  if (!(error instanceof VerityApiError) || error.status !== 409)
+    return 'Could not end planning. Try again.';
+  switch (error.code) {
+    case 'stalePlan':
+      return 'The plan was updated. Please review it again.';
+    case 'openDecisions':
+      return 'Answer the open decisions first; the plan will be revised.';
+    case undefined:
+    case 'notPlanning':
+      return 'Planning already ended.';
+    default:
+      return error.message;
+  }
+}
+
 /**
  * Headless controller for the chat screen: drives the {@link SessionStream}
  * lifecycle (live transcript via the reducer) and sends operator turns through
@@ -256,6 +314,8 @@ export class SessionModel {
   private _model: string | undefined;
   private _modelSwitched = false;
   private _googleStatus: SessionDetail['googleStatus'];
+  private _people: SessionDetail['people'];
+  private _viewerUserId: SessionDetail['viewerUserId'];
   private _detailLoaded = false;
   private detailRead: AbortController | undefined;
   private _projectId: string | null | undefined;
@@ -307,6 +367,10 @@ export class SessionModel {
   private _planningPlan: string | null | undefined;
   private _decidingPlanning = false;
   private _planningError: string | undefined;
+  private _mockupReview: MockupReview | undefined;
+  private _decidingMockup = false;
+  private _mockupError: string | undefined;
+  private _mockupDecisionAfterActivityRequest = 0;
   private _activityTimer: ReturnType<typeof setInterval> | undefined;
   // Guards against overlapping polls: the interval fires on a fixed cadence
   // regardless of whether the prior `loadActivity` resolved, and the poll now does a
@@ -460,6 +524,8 @@ export class SessionModel {
       model: this._model,
       projectId: this._projectId,
       googleStatus: this._googleStatus,
+      people: this._people,
+      viewerUserId: this._viewerUserId,
       detailLoaded: this._detailLoaded,
       switchingModel: this._switchingModel,
       modelSwitchPending: this._modelSwitchPending,
@@ -498,6 +564,9 @@ export class SessionModel {
       planningPlan: this._planningPlan,
       decidingPlanning: this._decidingPlanning,
       planningError: this._planningError,
+      mockupReview: this._mockupReview,
+      decidingMockup: this._decidingMockup,
+      mockupError: this._mockupError,
       hasOlder: this._hasOlder,
       oldestHistorySeq: this._historyBefore,
       loadingOlder: this._loadingOlder,
@@ -968,6 +1037,12 @@ export class SessionModel {
       this._busyAtSeq = seqAtRequest;
       // Ending planning keeps the same revision: an older poll must not reactivate it.
       const acceptPlanning = activityRequest > this._planningDecisionAfterActivityRequest;
+      // A poll sent before the reviewer's own verdict would undo it on screen.
+      const mockupChanged =
+        activity.mockupReview !== undefined &&
+        activityRequest > this._mockupDecisionAfterActivityRequest &&
+        !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
+      if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
       if (activity.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
       }
@@ -1032,6 +1107,7 @@ export class SessionModel {
           activity.planningRevision === undefined ||
           activity.planningRevision === this._planningRevision) &&
         sameItems(activity.queued, this._waiting) &&
+        !mockupChanged &&
         !nameChanged &&
         !modelSwitchPendingChanged &&
         !rateLimitPruned &&
@@ -1098,6 +1174,8 @@ export class SessionModel {
       });
       if (controller.signal.aborted) return;
       this._googleStatus = detail.googleStatus;
+      this._people = detail.people;
+      this._viewerUserId = detail.viewerUserId;
       this._detailLoaded = true;
       if (detail.pendingPermissions !== undefined) {
         this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
@@ -1135,6 +1213,7 @@ export class SessionModel {
         this._planning = detail.planning;
         this._planningRevision = detail.planningRevision;
         this._planningPlan = detail.planningPlan;
+        this._mockupReview = detail.mockupReview;
       }
       this.emit();
     } catch {
@@ -1373,17 +1452,55 @@ export class SessionModel {
       this._planning = result.planning;
       this._planningDecisionAfterActivityRequest = this._activityRequest;
     } catch (error) {
-      this._planningError =
-        error instanceof VerityApiError && error.status === 409 && error.code === 'stalePlan'
-          ? 'The plan was updated. Please review it again.'
-          : error instanceof VerityApiError && error.status === 409
-            ? 'Planning already ended.'
-            : 'Could not end planning. Try again.';
+      this._planningError = planningDecisionError(error);
     } finally {
       this._decidingPlanning = false;
       this.emit();
     }
     void this.loadActivity();
+  }
+
+  /** Mark one mockup screen approved or discarded, or take the mark back. Marks
+   * start nothing: the user tells the agent in the chat when to build. */
+  async decideMockup(
+    screen: string,
+    decision: { verdict: MockupReviewScreen['verdict'] },
+  ): Promise<boolean> {
+    const review = this._mockupReview;
+    if (this._decidingMockup || review === undefined) return false;
+    return this.mockupAction(() =>
+      this.opts.client.decideMockup(this.opts.sessionId, review.revision, screen, decision),
+    );
+  }
+
+  private async mockupAction(send: () => Promise<MockupReview | undefined>): Promise<boolean> {
+    this._decidingMockup = true;
+    this._mockupError = undefined;
+    this.emit();
+    let ok = false;
+    try {
+      this._mockupReview = await send();
+      this._mockupDecisionAfterActivityRequest = this._activityRequest;
+      ok = true;
+    } catch (error) {
+      this._mockupError = mockupDecisionError(error);
+    } finally {
+      this._decidingMockup = false;
+      this.emit();
+    }
+    void this.loadActivity();
+    return ok;
+  }
+
+  /** Close the round the user is viewing, without changing marks or sending a turn. */
+  async completeMockups(revision: number): Promise<boolean> {
+    if (
+      this._decidingMockup ||
+      this._mockupReview === undefined ||
+      this._mockupReview.revision !== revision
+    )
+      return false;
+    return this.mockupAction(() => this.opts.client.completeMockups(this.opts.sessionId, revision));
   }
 
   async decidePermission(toolUseId: string, decision: PermissionDecision): Promise<void> {
@@ -1446,51 +1563,8 @@ function messageSeq(id: string): number {
   return Number.isNaN(seq) ? -1 : seq;
 }
 
-/** An outgoing {@link TurnRequest} attachment as the transcript renders it. The
- * upload shape (inline base64) is a valid persisted attachment, so the local echo
- * shows the real thumbnails while the send is in flight; once the `prompt` event
- * lands the transcript's own (content-addressed) attachments take over. */
-function toDisplayAttachment(upload: NonNullable<TurnRequest['attachments']>[number]): Attachment {
-  return upload.kind === 'file'
-    ? {
-        kind: 'file',
-        mediaType: upload.mediaType,
-        fileName: upload.fileName,
-        data: upload.data,
-      }
-    : { kind: 'image', mediaType: upload.mediaType, data: upload.data };
-}
-
 /** Shallow equality of two queued-item lists (order-sensitive, by id + text) — to
  * skip a no-op activity emit when the backlog hasn't changed. */
 function sameItems(a: readonly QueuedItem[], b: readonly QueuedItem[]): boolean {
   return a.length === b.length && a.every((x, i) => x.id === b[i]?.id && x.text === b[i]?.text);
-}
-
-function normalizeDetailRateLimit(
-  detail: SessionDetail,
-  currentModel: string | undefined,
-): SessionState['rateLimit'] {
-  const rateLimits = detail.rateLimits ?? (detail.rateLimit ? [detail.rateLimit] : []);
-  const currentProvider = engineLabel(currentModel);
-  const rateLimit = rateLimits
-    .filter(
-      (r) =>
-        (r.providerLabel ?? 'Claude') === currentProvider &&
-        (r.scope === undefined || r.scope === 'all_models'),
-    )
-    .sort((a, b) => {
-      const activeDelta = Number(a.status === 'allowed') - Number(b.status === 'allowed');
-      if (activeDelta !== 0) return activeDelta;
-      return b.resetsAt - a.resetsAt;
-    })[0];
-  if (rateLimit === undefined) return undefined;
-  const providerLabel = rateLimit.providerLabel ?? 'Claude';
-  return {
-    status: rateLimit.status,
-    resetsAt: rateLimit.resetsAt,
-    window: rateLimit.window,
-    ...(rateLimit.usedPercent !== undefined ? { usedPercent: rateLimit.usedPercent } : {}),
-    providerLabel,
-  };
 }

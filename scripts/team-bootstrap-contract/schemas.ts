@@ -4,6 +4,9 @@ import { z } from 'zod';
 const object = z.strictObject;
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}(?![\s\S])/);
 const handle = z.string().regex(/^[A-Za-z0-9_-]{21}[AQgw](?![\s\S])/);
+// Invitation ids are presented by unauthenticated callers: 32 random bytes,
+// the same format as the enrollment envelope and team control contract.
+const invitationId = z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048](?![\s\S])/);
 const ticket = z.string().regex(/^[A-Za-z0-9_-]{1,512}(?![\s\S])/);
 const timeMs = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const capability = z.literal('team-bootstrap-v1');
@@ -20,14 +23,14 @@ export const schemas = {
     type: z.literal('team.join.reserve'),
     requestId: id,
     installationHandle: handle,
-    invitationId: id,
+    invitationId,
     capabilities: z.tuple([capability]),
   }),
   joinPending: object({
     type: z.literal('team.join.pending'),
     requestId: id,
     sessionId: id,
-    invitationId: id,
+    invitationId,
     redemptionId: id,
     projectId: id,
     permissions,

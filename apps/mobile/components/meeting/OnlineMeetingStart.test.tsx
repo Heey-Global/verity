@@ -1,8 +1,12 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react-native';
 import type { UpcomingMeeting } from '@verity/mobile';
 import { createVerityClient } from '../../lib/client';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   CalendarMeetingPicker,
+  isSupportedMeetingLink,
+  MEETING_HOSTS,
   UnassignedMeetingCard,
   useCalendarMeetingChoice,
   useUpcomingMeetings,
@@ -78,6 +82,25 @@ describe('useCalendarMeetingChoice', () => {
     expect(result.current.manualLink).toBe(false);
   });
 
+  // Verity prepared the screen for one meeting; the default pick must not replace it.
+  it('picks the meeting Verity prepared, until the source changes', () => {
+    const upcoming = [meeting('now', NOW), meeting('client', NOW + 3_600_000)];
+    const { result, rerender } = renderHook(
+      ({ inPerson }: { inPerson: boolean }) =>
+        useCalendarMeetingChoice(upcoming, NOW, inPerson, 'client'),
+      { initialProps: { inPerson: false } },
+    );
+    expect(result.current.selectedEventKey).toBe('client');
+    rerender({ inPerson: true });
+    expect(result.current.selectedEventKey).toBe('now');
+  });
+
+  it('never preselects a meeting without a call link for an online start', () => {
+    const upcoming = [meeting('call', NOW), meeting('office', NOW, { provider: null })];
+    const { result } = renderHook(() => useCalendarMeetingChoice(upcoming, NOW, false, 'office'));
+    expect(result.current.selectedEventKey).toBe('call');
+  });
+
   it('opens the link field when the calendar has nothing to pick', () => {
     const { result, rerender } = renderHook(
       ({ upcoming }: { upcoming: UpcomingMeeting[] | null }) =>
@@ -135,8 +158,8 @@ describe('CalendarMeetingPicker', () => {
     expect(screen.getByText('Started 6 min ago · Google Meet')).toBeOnTheScreen();
     expect(screen.queryByLabelText('Online meeting link')).toBeNull();
     fireEvent.press(screen.getByText('Meeting b'));
-    // Starts in more than 15 minutes: listed, but not joinable yet.
-    expect(props.onSelect).not.toHaveBeenCalled();
+    // An explicit selection may join before the default preselection window.
+    expect(props.onSelect).toHaveBeenCalledWith('b');
     fireEvent.press(screen.getByText('Meeting a'));
     expect(props.onSelect).toHaveBeenCalledWith('a');
     fireEvent.press(screen.getByText('Enter link manually'));
@@ -155,6 +178,20 @@ describe('CalendarMeetingPicker', () => {
     fireEvent.press(screen.getByText('Meeting office'));
     expect(props.onSelect).toHaveBeenCalledWith('office');
     expect(screen.queryByText('Enter link manually')).toBeNull();
+  });
+
+  it('allows choosing a meeting half an hour before its start', () => {
+    const onSelect = jest.fn();
+    render(
+      <CalendarMeetingPicker
+        {...props}
+        upcoming={[meeting('early', NOW + 30 * 60_000)]}
+        onSelect={onSelect}
+        manual={false}
+      />,
+    );
+    fireEvent.press(screen.getByText('Meeting early'));
+    expect(onSelect).toHaveBeenCalledWith('early');
   });
 
   it('shows calendar request failures distinctly from empty calendars', () => {
@@ -195,4 +232,31 @@ it('continues or discards a meeting without a project', () => {
   fireEvent.press(screen.getByLabelText('Discard meeting'));
   expect(onContinue).toHaveBeenCalledTimes(1);
   expect(onDiscard).toHaveBeenCalledTimes(1);
+});
+
+describe('isSupportedMeetingLink', () => {
+  // The app refuses a link before the server sees it; a host added on the server only would
+  // be blocked here without anyone noticing.
+  it('accepts exactly the hosts the server joins', () => {
+    const server = readFileSync(
+      join(__dirname, '../../../../packages/server/src/calendar-meeting-links.ts'),
+      'utf8',
+    );
+    const hosts = /const MEETING_HOSTS = (\[[^\]]*\])/u.exec(server)?.[1];
+    expect(hosts).toBeDefined();
+    expect(MEETING_HOSTS).toEqual(JSON.parse(hosts!.replaceAll("'", '"').replace(/,\s*\]$/u, ']')));
+  });
+
+  it.each([
+    ['https://meet.google.com/abc-defg-hij', true],
+    ['meet.google.com/abc-defg-hij', true],
+    ['us02web.zoom.us/j/1', true],
+    ['https://teams.live.com/meet/1', true],
+    ['http://meet.google.com/abc-defg-hij', false],
+    ['https://meet.example.com/abc', false],
+    ['https://user:pw@zoom.us/j/1', false],
+    ['not a link', false],
+  ])('reads %s as %s', (link, supported) => {
+    expect(isSupportedMeetingLink(link)).toBe(supported);
+  });
 });

@@ -16,6 +16,7 @@ const CONTROL_PROJECT_ID = 'verity-control';
 
 function project(overrides: Partial<ProjectRecord> & Pick<ProjectRecord, 'id'>): ProjectRecord {
   return {
+    name: 'Fixture project',
     owner: 'acme',
     repo: overrides.id,
     containerName: `verity-${overrides.id}`,

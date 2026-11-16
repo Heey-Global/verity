@@ -40,7 +40,9 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   transcript; the parent should only receive concise findings.
 - `bin/verity-code-review` runs the gate: `run` hands the branch diff to an
   isolated reviewer and prints only its findings, `mark` then records the
-  reviewed HEAD in `.agents/.last-code-review-sha`. The reviewer starts a fresh
+  reviewed HEAD in `.agents/.last-code-review-sha`. A completed `run` notes the
+  HEAD it reviewed in `.agents/.last-code-review-run`, and `mark` refuses any
+  other HEAD, so a commit made after the review needs another run. The reviewer starts a fresh
   context on the current session backend (Claude Opus or the prioritized Codex
   default). Codex may inspect the repository through its read-only sandbox;
   Claude receives the fenced diff without filesystem tools. Agents must not improvise
@@ -52,9 +54,33 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   tip is covered by that marker or each pending commit is explicitly tagged
   `[skip review]`. When the repository declares lint or format checks but
   compatible dependencies are missing, the hook automatically prepares them with
-  `verity-dependencies install`, then runs the checks. Older seeds fall back to
-  `npm ci --ignore-scripts` (or `npm install --ignore-scripts` without a lockfile).
-  Installation errors block the push; no additional confirmation is required.
+  `verity-dependencies install`, then runs the checks. A missing helper is a
+  provisioning error and blocks the push; the hook never falls back to a private
+  npm installation. Installation errors block the push; no additional confirmation
+  is required.
+- `bin/verity-dependencies` prepares npm dependencies in central staging under the
+  repository's common Git directory, keyed by dependency inputs, configuration,
+  local package sources and runtime. One preparation runs per project at a time;
+  equal identities wait for the same preparation. Only a complete, policy-verified
+  inventory is published atomically. A receiving session gets independent files
+  with workspace links restored to its own sources. Existing local patches and
+  incomplete files are preserved before replacement; shared writable packages and
+  hardlinks are not used. Declared workspace executables target the receiving
+  sources; like npm, activation restores executable bits and normalizes CRLF
+  shebangs. Non-regular or external executable targets are rejected; CRLF
+  normalization is bounded to 1 MiB.
+  New central preparations require an npm lockfile with a `packages` map,
+  project-local workspace links and declared workspace dependency paths. Workspace-local
+  `node_modules` trees are copied independently into each receiving worktree, alongside
+  the root tree; previous local trees are preserved before activation.
+  Unsupported layouts fail explicitly rather than installing privately. Compatible
+  existing installations remain reusable. The two ready inventory slots are
+  bounded; preparation and activation locks protect active inventories during
+  cleanup. A full inventory blocks publication when no slot can be reclaimed.
+  Deployment must ship both identical helper copies and refresh existing sandbox
+  tooling. Large npm metadata also requires the Core metadata-parser fix in the
+  running server; updating a checkout alone does not update that server. Source
+  checks do not establish that either component has been deployed.
 - `bin/verity-local-checks` records an explicit skip: `skip` writes
   `.agents/.local-checks-skip` with a fingerprint of `package.json` and the
   lockfile, `reset` forgets it, `status` reports whether it still applies.

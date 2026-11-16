@@ -1,3 +1,4 @@
+import { ProjectInquiryGrants } from '../../../../components/project/ProjectInquiryGrants';
 // Agents, per project: which connected agents may run here, and the model a new
 // session starts with. The default list is the project's own `GET /models`, so a
 // model that can be chosen here can actually be spawned; "Automatic" clears the
@@ -82,10 +83,8 @@ function AgentIcon({ agent }: { agent: ProjectAgent }) {
 
 function ProjectAgentsView({ client, projectId }: { client: VerityClient; projectId: string }) {
   const { theme } = useUnistyles();
-  const { detail, loading, error, setError, load, onSettingsSaved } = useProjectDetail(
-    client,
-    projectId,
-  );
+  const { detail, loading, error, setError, load, onSettingsSaved, onOwnDefaultModelSaved } =
+    useProjectDetail(client, projectId);
   // Every connected model decides which agents can be toggled; the project's own
   // list is what its sessions may start with, including the resolved default.
   const [connected, setConnected] = useState<ModelList | undefined>(undefined);
@@ -135,9 +134,16 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
       void (async () => {
         let next: ProjectSettingsChange | undefined = patch;
         while (next !== undefined) {
-          const change: ProjectSettingsChange = next;
+          const { defaultModel, ...projectChange } = next;
           try {
-            onSettingsSaved(await client.updateProjectSettings(projectId, change));
+            // The project's agent rule is the project's; the default model is the
+            // signed-in person's own, which anyone working in the project may set.
+            if (projectChange.allowedAgents !== undefined)
+              onSettingsSaved(await client.updateProjectSettings(projectId, projectChange));
+            if (defaultModel !== undefined)
+              onOwnDefaultModelSaved(
+                (await client.setOwnProjectDefaultModel(projectId, defaultModel)).defaultModel,
+              );
           } catch (caught) {
             setError(caught instanceof Error ? caught.message : 'Could not save the agents');
             queued.current = undefined;
@@ -153,7 +159,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
         loadModels();
       })();
     },
-    [client, loadModels, onSettingsSaved, projectId, setError],
+    [client, loadModels, onOwnDefaultModelSaved, onSettingsSaved, projectId, setError],
   );
 
   if (loading && detail === undefined) {
@@ -302,6 +308,7 @@ function ProjectAgentsView({ client, projectId }: { client: VerityClient; projec
         ) : null}
         {modelsError !== undefined ? <Text style={styles.fieldError}>{modelsError}</Text> : null}
       </SettingsGroup>
+      <ProjectInquiryGrants client={client} projectId={projectId} />
     </SettingsScaffold>
   );
 }

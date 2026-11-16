@@ -116,7 +116,7 @@ describe('standby promotion cutover', () => {
       env: { DATABASE_URL: 'test-only' },
       exitCode: undefined as number | undefined,
     };
-    const execute = async () => {
+    const execute = async (compat = SERVER_COMPAT) => {
       processStub.exitCode = undefined;
       await runInNewContext(`(async () => { ${executable} })()`, {
         process: processStub,
@@ -124,7 +124,7 @@ describe('standby promotion cutover', () => {
           '/app/packages/store/dist/index.js': {
             createPostgresDb: () => ({ selectFrom: db.selectFrom.bind(db), destroy: close }),
           },
-          '/app/packages/server/dist/self-update/compat.js': { SERVER_COMPAT },
+          '/app/packages/server/dist/self-update/compat.js': { SERVER_COMPAT: compat },
         },
       });
       return processStub.exitCode;
@@ -132,6 +132,14 @@ describe('standby promotion cutover', () => {
     try {
       await migrateToLatest(db);
       expect(await execute()).toBe(0);
+      // Candidate activation can advance beyond the retained image's window.
+      // A passing same-build fixture must not weaken this cross-version refusal.
+      expect(
+        await execute({
+          ...SERVER_COMPAT,
+          schema: { ...SERVER_COMPAT.schema, max: SERVER_COMPAT.schema.min },
+        }),
+      ).toBe(1);
       const future = `${latestMigrationKey()}_future`;
       await sql`insert into kysely_migration (name, timestamp) values (${future}, ${new Date().toISOString()})`.execute(
         db,
@@ -139,7 +147,7 @@ describe('standby promotion cutover', () => {
       expect(await execute()).toBe(1);
       await sql`drop table kysely_migration`.execute(db);
       expect(await execute()).toBe(1);
-      expect(close).toHaveBeenCalledTimes(3);
+      expect(close).toHaveBeenCalledTimes(4);
     } finally {
       await db.destroy();
     }

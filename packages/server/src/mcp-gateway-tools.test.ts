@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { TRUSTED_CLI_TOOL_DESCRIPTION } from '@verity/secret-contracts';
+import { AGENT_CAPABILITIES } from './mcp-gateway.js';
 import { createMcpGatewayToolExecutor } from './mcp-gateway-tools.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
@@ -122,6 +124,7 @@ describe('MCP trusted output retrieval', () => {
         remove: vi.fn(),
         cleanup: vi.fn(),
         read,
+        list: vi.fn(),
       },
     });
     await invoke({
@@ -140,6 +143,64 @@ describe('MCP trusted output retrieval', () => {
     );
     expect(trustedCliTool).not.toHaveBeenCalled();
   });
+
+  // A caller whose verity_secret_run wait was cut off never received an invocationId; without
+  // an owner-scoped listing the only way back to the run's output would be running it again.
+  it("lists the calling session's runs when no invocationId is given", async () => {
+    const trustedCliTool = vi.fn();
+    const read = vi.fn();
+    const listing = { invocations: [{ invocationId: 'run', startedAt: 'now', complete: false }] };
+    const list = vi.fn(async () => listing);
+    const invoke = createMcpGatewayToolExecutor({
+      brokeredHttpTool: vi.fn(),
+      trustedCliTool,
+      trustedCliOutput: {
+        begin: vi.fn(),
+        append: vi.fn(),
+        finish: vi.fn(),
+        remove: vi.fn(),
+        cleanup: vi.fn(),
+        read,
+        list,
+      },
+    });
+    await expect(
+      invoke({
+        projectId: 'project',
+        sessionId: 'session',
+        turnId: 'later-turn',
+        callId: 'list',
+        invocationId: 'list-invocation',
+        toolName: 'verity_secret_output',
+        request: {},
+      }),
+    ).resolves.toBe(listing);
+    expect(list).toHaveBeenCalledWith({ projectId: 'project', sessionId: 'session' });
+    await expect(
+      invoke({
+        projectId: 'project',
+        sessionId: 'session',
+        turnId: 'later-turn',
+        callId: 'page',
+        invocationId: 'page-invocation',
+        toolName: 'verity_secret_output',
+        request: { cursor: 3 },
+      }),
+    ).rejects.toThrow('cursor requires invocationId');
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(read).not.toHaveBeenCalled();
+    expect(trustedCliTool).not.toHaveBeenCalled();
+  });
+});
+
+// The recovery hint is the only way a cut-off caller learns about the listing. Agents see
+// capability names (verity_secret_read_output), not the gateway's internal tool names, so
+// the hint must name an advertised capability or the caller re-runs the command instead.
+it('names an advertised capability in the secret-run recovery hint', () => {
+  const named = TRUSTED_CLI_TOOL_DESCRIPTION.match(/verity_[a-z_]+/gu) ?? [];
+  const advertised = new Set(AGENT_CAPABILITIES.map((capability) => capability.name));
+  expect(named).toContain('verity_secret_read_output');
+  for (const name of named) expect(advertised).toContain(name);
 });
 
 describe('MCP gateway Google Slides integration', () => {

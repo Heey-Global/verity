@@ -17,7 +17,10 @@ afterEach(async () => {
 
 type Handler = (body: Record<string, unknown>, reply: ServerResponse) => void;
 
-async function fixture(handler: Handler, options: { branch?: string | null; url?: boolean } = {}) {
+async function fixture(
+  handler: Handler,
+  options: { branch?: string | null; url?: boolean; sessionId?: string } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), 'verity-repo-'));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args: string[]) =>
@@ -72,6 +75,7 @@ async function fixture(handler: Handler, options: { branch?: string | null; url?
             options.url === false ? '' : `http://127.0.0.1:${address.port}/internal/project/repo`,
           VERITY_GH_BROKER_CAPABILITY_FILE: capability,
           VERITY_REPO_TIMEOUT_SECONDS: '1',
+          VERITY_SESSION_ID: options.sessionId ?? '',
         },
       });
       let stdout = '';
@@ -124,6 +128,38 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
     ]);
   });
 
+  it('carries the sandbox session and explicit repository through PR requests', async () => {
+    const { calls, run } = await fixture(ok({ host: 'GitHub', pullRequest: pull }), {
+      sessionId: 'current-session',
+    });
+    expect((await run(binRoot, ['pr', 'view', '--repository', 'module'])).code).toBe(0);
+    expect(calls).toEqual([
+      {
+        action: 'pr.view',
+        head: 'feat/7-search',
+        repositoryId: 'module',
+        sessionId: 'current-session',
+      },
+    ]);
+  });
+
+  it('passes explicit PR dependency references without changing repository authority', async () => {
+    const { calls, run } = await fixture(ok({ host: 'GitHub', pullRequest: pull }));
+    expect(
+      (
+        await run(binRoot, [
+          'pr',
+          'create',
+          '--title',
+          'Consumer',
+          '--depends-on',
+          'https://github.com/team/api/pull/1',
+        ])
+      ).code,
+    ).toBe(0);
+    expect(calls[0]?.dependsOn).toEqual(['https://github.com/team/api/pull/1']);
+  });
+
   it('marks the current branch pull request ready, or a numbered one', async () => {
     const { calls, run } = await fixture(ok({ host: 'GitHub', pullRequest: pull }));
     expect((await run(binRoot, ['pr', 'ready'])).stdout).toContain('#12 is ready for review');
@@ -158,6 +194,36 @@ describe.each(ROOTS)('verity-repo (%s)', (binRoot) => {
       'Commented: https://git.example.org/c/1',
     );
     expect(calls.at(-1)).toEqual({ action: 'issue.comment', number: 7, body: 'On it' });
+  });
+
+  it("prints an opened repository's path and branch, and points at its own AGENTS.md", async () => {
+    const workspace = { worktree: '/work/.verity-repositories/abc/def', branch: 'verity/x' };
+    const { run } = await fixture((body, reply) =>
+      ok(
+        body.repositoryId === 'with-rules'
+          ? { workspace, instructions: `${workspace.worktree}/AGENTS.md` }
+          : { workspace },
+      )(body, reply),
+    );
+    const withRules = await run(binRoot, [
+      'repository',
+      'open',
+      'with-rules',
+      '--session',
+      'current-session',
+    ]);
+    // Scripts read exactly these two lines; the pointer must not join them.
+    expect(withRules.stdout).toBe(`${workspace.worktree}\nverity/x\n`);
+    expect(withRules.stderr).toContain(`read ${workspace.worktree}/AGENTS.md before working`);
+    const plain = await run(binRoot, [
+      'repository',
+      'open',
+      'plain',
+      '--session',
+      'current-session',
+    ]);
+    expect(plain.stdout).toBe(`${workspace.worktree}\nverity/x\n`);
+    expect(plain.stderr).toBe('');
   });
 
   it('prints the raw response with --json', async () => {

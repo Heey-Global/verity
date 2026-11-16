@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmod, chown, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createConnection } from 'node:net';
+import { createConnection, createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,6 +11,8 @@ import {
   runAgentSpawnBroker,
 } from '../../../features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs';
 import { runSupervisor } from '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs';
+import { requestRunnerSupervisor } from '@verity/session';
+import { classifyProbeError } from './sandbox-turn-readiness.js';
 
 const execFileAsync = promisify(execFile);
 const controlDir = '/fixed-broker';
@@ -251,6 +253,115 @@ it('exposes health through existing broker and supervisor sockets, ignoring call
     else process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET = previousSocket;
     await supervisor?.close();
     await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// The turn-start gate reaches this through the same sockets as stack health. The
+// targets come from the Sandbox's own environment: a caller naming its own hosts
+// must not turn the probe into a connect-anywhere primitive.
+it('exposes egress readiness through the broker and supervisor sockets', async () => {
+  const directory = await mkdtemp('/tmp/verity-egress-socket-');
+  await chmod(directory, 0o770);
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const closed = createServer();
+  await new Promise<void>((done) => closed.listen(0, '127.0.0.1', done));
+  const refusedPort = (closed.address() as AddressInfo).port;
+  await new Promise((done) => closed.close(done));
+  const broker = await runAgentSpawnBroker({
+    runtimeDir: directory,
+    worktreeRoot: directory,
+    enforceRoot: false,
+    agentUid: Math.max(1, uid),
+    agentGid: Math.max(1, gid),
+    scriptIsolation: { available: true },
+    env: {
+      PATH: '/usr/bin:/bin',
+      VERITY_MEMORY_GUARD: '0',
+      VERITY_CODEX_EGRESS_URL: `https://127.0.0.1:${String(refusedPort)}`,
+    },
+  });
+  let supervisor: Awaited<ReturnType<typeof runSupervisor>> | undefined;
+  const previousSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
+  try {
+    const payload = {
+      protocolVersion: 1,
+      kind: 'egress-readiness',
+      env: { VERITY_CODEX_EGRESS_URL: 'https://elsewhere.invalid:1' },
+    };
+    const expected = {
+      ok: true,
+      egressReadinessVersion: 1,
+      connector: 'not_configured',
+      claude: 'not_configured',
+      codex: 'refused',
+      broker: 'not_configured',
+    };
+    expect(await request(broker.socketPath, payload)).toEqual(expected);
+    process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET = broker.socketPath;
+    supervisor = await runSupervisor({
+      runtimeDir: directory,
+      uid,
+      gid,
+      scriptIsolation: { available: true },
+      brokerSocket: broker.socketPath,
+    });
+    expect(await request(supervisor.socketPath, payload)).toEqual(expected);
+  } finally {
+    if (previousSocket === undefined) delete process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
+    else process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET = previousSocket;
+    await supervisor?.close();
+    await broker.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// A Sandbox built from a toolkit without `egress-readiness` refuses it the way
+// it refuses any request it does not know. That refusal must let the turn
+// through as before, never park it on a 90 second wait.
+it('reads a supervisor that does not know the readiness request as an older toolkit', async () => {
+  const directory = await mkdtemp('/tmp/verity-egress-old-');
+  await chmod(directory, 0o770);
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const supervisor = await runSupervisor({
+    runtimeDir: directory,
+    uid,
+    gid,
+    scriptIsolation: { available: true },
+    brokerSocket: join(directory, 'absent-broker.sock'),
+  });
+  try {
+    const refusal = await requestRunnerSupervisor(
+      supervisor.socketPath,
+      { kind: 'egress-readiness-from-a-later-release' },
+      2_000,
+    ).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(classifyProbeError(refusal)).toEqual({ kind: 'unsupported' });
+  } finally {
+    await supervisor.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// The gate waits only on a supervisor that timed out, so the timeout the real
+// client raises has to be the one the classification recognises.
+it('reads a supervisor that does not answer in time as still starting', async () => {
+  const directory = await mkdtemp('/tmp/verity-egress-slow-');
+  const socketPath = join(directory, 'supervisor.sock');
+  const silent = createServer(() => undefined);
+  await new Promise<void>((done) => silent.listen(socketPath, done));
+  try {
+    const timeout = await requestRunnerSupervisor(
+      socketPath,
+      { kind: 'egress-readiness' },
+      50,
+    ).catch((error: unknown) => error);
+    expect(classifyProbeError(timeout)).toEqual({ kind: 'unavailable' });
+  } finally {
+    silent.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

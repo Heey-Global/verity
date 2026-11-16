@@ -137,6 +137,9 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
         return [];
       })) as {
         number: number;
+        title?: string;
+        html_url?: string;
+        user?: { login?: string } | null;
         head: { ref: string; sha: string; repo?: { full_name?: string } };
       }[];
       const body = (await read(
@@ -165,6 +168,9 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
           branch: p.head.ref,
           sha: p.head.sha,
           fork: p.head.repo?.full_name?.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase(),
+          ...(typeof p.title === 'string' ? { title: p.title } : {}),
+          ...(typeof p.user?.login === 'string' ? { author: p.user.login } : {}),
+          ...(typeof p.html_url === 'string' ? { url: p.html_url } : {}),
         })),
         runs: body.workflow_runs
           .filter(

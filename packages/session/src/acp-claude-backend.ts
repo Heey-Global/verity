@@ -5,14 +5,41 @@ import type { Backend } from './backend.js';
 import type { RunResult, RunTurnOptions } from './backend-contract.js';
 import { runAcpTurn, type AcpBackendProfile } from './acp-backend.js';
 import { ALLOWED_PERMISSION_MODES } from './runner.js';
+import { BACKGROUND_HOLD_MAX_MS } from './background-work.js';
 
 export const UNREADABLE_AGENTS_MD_DIRECTIVE =
   'Repository instructions: this worktree has an AGENTS.md that Verity could not import. ' +
   'Read AGENTS.md at the worktree root before you start and follow it.';
 
+/**
+ * Claude Code tools that schedule the agent to run again later. A wakeup or cron
+ * fires inside the agent process, and Verity ends that process with the turn —
+ * at the latest when the background hold (`background-work.ts`) runs out — so
+ * the scheduled run never happens while the agent has already promised it.
+ * Recurring work belongs to Verity automations; a short delayed check is a
+ * background command such as `sleep 300`, which holds the turn until it ends.
+ */
+export const CLAUDE_SCHEDULING_TOOLS = [
+  'ScheduleWakeup',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'RemoteTrigger',
+] as const;
+
+const HOLD_HOURS = BACKGROUND_HOLD_MAX_MS / 3_600_000;
+
+/** How a Claude turn is told that Verity holds it open for background work. The
+ * shared directives stay backend-neutral; this one states the guarantee only
+ * where the profile actually provides it. */
+export const BACKGROUND_HOLD_DIRECTIVE = `## Background work (Verity)
+
+Verity holds this turn — and the agent process — open while background commands (\`run_in_background\`), Monitor watches or background subagents you started are still running, for at most ${HOLD_HOURS} hours. When one reports back you continue in the same turn, so you may start such work, say that you are waiting, end your reply and act on the result when it arrives. For a delayed check, run a background command such as \`sleep 300\`. Scheduling tools (wakeups, cron, remote triggers) are unavailable; recurring work needs a Verity automation. Never promise anything after the ${HOLD_HOURS}-hour limit or after the turn has ended, and never detach work with \`nohup\`, \`&\` or \`disown\`: Verity cannot see detached processes.`;
+
 export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
   defaultCommand: 'claude-agent-acp',
   telemetryBackend: 'claude-acp',
+  holdsForBackgroundWork: true,
   httpMcpWhenUnspecified: true,
   enforcesToolless: true,
   enforcesGatewayToolsOnly: true,
@@ -64,13 +91,18 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
         }
       }
     }
+    // Toolless and Verity-tools-only turns cannot start background work.
+    const append =
+      opts.toolless === true || opts.gatewayToolsOnly === true
+        ? opts.appendSystemPrompt
+        : [opts.appendSystemPrompt, BACKGROUND_HOLD_DIRECTIVE].filter(Boolean).join('\n\n');
     return {
-      ...(opts.appendSystemPrompt
+      ...(append
         ? {
             systemPrompt: {
               type: 'preset',
               preset: 'claude_code',
-              append: opts.appendSystemPrompt,
+              append,
             },
           }
         : {}),
@@ -78,9 +110,9 @@ export const CLAUDE_ACP_PROFILE: AcpBackendProfile = {
         options: {
           ...(opts.model !== undefined ? { model: opts.model } : {}),
           ...(opts.allowedTools !== undefined ? { allowedTools: [...opts.allowedTools] } : {}),
-          ...(opts.disallowedTools !== undefined
-            ? { disallowedTools: [...opts.disallowedTools] }
-            : {}),
+          disallowedTools: [
+            ...new Set([...(opts.disallowedTools ?? []), ...CLAUDE_SCHEDULING_TOOLS]),
+          ],
           // Project settings and extensions cannot add another provider or MCP
           // server. Toolless queries additionally disable the built-in tool set.
           settingSources: [],

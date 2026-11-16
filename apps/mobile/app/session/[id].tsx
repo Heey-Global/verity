@@ -1,5 +1,11 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
+import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
+import { SessionRepositories } from '../../components/project/SessionRepositories';
+import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
 import { WikiDetails } from '../../components/WikiDetails';
-import { qaAssignmentView } from '@verity/mobile';
+import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
+import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
 import { StatusTag } from '../../components/ui/Status';
 import { McpAppCard } from '../../components/McpAppCard';
@@ -13,10 +19,10 @@ import {
 } from '../../components/project/managedServerApproval';
 import { useGoogleAccountAvailability } from '../../hooks/useGoogleAccountAvailability';
 import { useFocusedSessionRead } from '../../hooks/useFocusedSessionRead';
+import { useConnectionRecovered, useHidesConnectionError } from '../../hooks/useServerConnection';
 import { useSessionGoogleStatus } from '../../hooks/useSessionGoogleStatus';
 import { reportRecordedScrollDiagnostic } from '../../lib/scrollDiagnostics';
 import { SessionBar, SessionBarContent, SessionBarTarget } from '../../components/ui/SessionBar';
-import { SessionVulnerabilityCard } from '../../components/vulnerability/SessionVulnerabilityCard';
 import {
   VulnerabilityFixSheet,
   VulnerabilityStarterCard,
@@ -55,6 +61,16 @@ import {
 import { beginSessionSwitch, type SwitchTiming } from '@verity/mobile';
 import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
+import {
+  HighlightedSearchText,
+  MarkdownLine,
+  MarkdownTable,
+  MarkdownText,
+  markdownStyles,
+  SearchHighlightContext,
+  type OpenAppLink,
+  type OpenLocalFile,
+} from '../../components/chat/MarkdownText';
 import { shouldSendWebKey } from '../../lib/composerWebKey';
 import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
@@ -91,12 +107,13 @@ import {
   type SessionFileEntry,
   type SessionFileContent,
   type SessionFileRoot,
-  type AppLinkTarget,
   type SessionGoogleWorkspaceFile,
+  type MockupReview,
   type SessionPlanning,
   type ToolCallMessage,
   type UserTextMessage,
   agentEventDescriptor,
+  splitNoticeText,
   briefingExtent,
   engineLabel,
   groupModelsByEngine,
@@ -108,7 +125,6 @@ import {
   planProposalHeadline,
   planProposalContent,
   planningToolName,
-  END_PLANNING_TOOL,
   START_PLANNING_TOOL,
   freezeTranscriptTail,
   frozenTranscriptRows,
@@ -129,7 +145,6 @@ import {
   withPlanningSnapshot,
   pullRequestMergeButton,
   pullRequestStatusText,
-  markdownSectionTitle,
   modelRateLimited,
   modelDisplayName,
   excludedAgentsNote,
@@ -137,9 +152,6 @@ import {
   partitionModels,
   publishSessionAutomationMutation,
   parseBranchIssue,
-  parseAppLink,
-  parseInline,
-  parseMarkdownBlocks,
   rateLimitNotice,
   rateLimitNoticeText,
   rateLimitNoticeTone,
@@ -147,11 +159,12 @@ import {
   rowRecycleType,
   secretGrantScopes,
   brokeredAuthSentence,
+  permissionSummary,
+  trustedCliCommandLine,
+  trustedCliRiskSentence,
   brokeredHttpSummary,
-  brokeredHttpTitle,
   listSessionsSentence,
   listSessionsSummary,
-  listSessionsTitle,
   permissionInputText,
   knowledgePublishSummary,
   packageInstallSummary,
@@ -160,15 +173,11 @@ import {
   printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
-  sessionHandoffTitle,
   sessionProgressSummary,
   recentSessionMessagesSummary,
   spellOutBidiControls,
-  trustedCliInjectionSummary,
   trustedCliSecretLabel,
   trustedCliSummary,
-  splitSearchHighlights,
-  sessionFilePathFromLocalLink,
   sessionFileTargetFromLocalLink,
   splitRichText,
   toolCallView,
@@ -176,7 +185,6 @@ import {
   type PlanView,
   type PullRequestBlockReason,
   trustedCliUnlockCandidate,
-  type AgentEventTone,
   type FrozenTranscriptTail,
   type GmailSessionConnection,
   type CalendarSessionConnection,
@@ -236,6 +244,9 @@ import { openFailureAlert, RunningServerCard } from '../../components/project/Ru
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
 import { SessionFolderRow } from '../../components/SessionFolderRow';
 import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
+import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../components/ui';
+import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
+import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
 import {
@@ -282,6 +293,15 @@ import { type UseBranches, useBranches } from '../../hooks/useBranches';
 import { shouldShowPullRequest } from '../../lib/pullRequestVisibility';
 import { useModels } from '../../hooks/useModels';
 import { useAttachmentMenuAnchor } from '../../hooks/useAttachmentMenuAnchor';
+import {
+  MockupPager,
+  MockupReviewBar,
+  MockupReviewSheet,
+} from '../../components/session/MockupReview';
+import {
+  useAttachmentImageSource,
+  usePinnedImageSource,
+} from '../../hooks/useAttachmentImageSource';
 import { useSessionKeyboardAvoidance } from '../../hooks/useSessionKeyboardAvoidance';
 import { useTranscriptNavigation } from '../../hooks/useTranscriptNavigation';
 import { TranscriptRow } from '../../components/TranscriptRow';
@@ -339,6 +359,7 @@ import {
   loadSharingModule,
   parentPath,
   pdfFileName,
+  fileDeletionBatch,
   renameProblem,
 } from '../../lib/sessionFileUi';
 import {
@@ -542,11 +563,13 @@ const RETRY_TRUSTED_CLI_AFTER_UNLOCK =
   'Retry only the trusted CLI call immediately preceding this unlock. The broker response confirmed that the command was not started.';
 
 export default function SessionScreen() {
-  const { id, targetMessageId, targetSearchQuery, retrySecret } = useLocalSearchParams<{
+  const { id, targetMessageId, targetSearchQuery, retrySecret, mockups } = useLocalSearchParams<{
     id: string;
     targetMessageId?: string;
     targetSearchQuery?: string;
     retrySecret?: string;
+    /** `1` from Home's Review: open the mockup review once it has loaded. */
+    mockups?: string;
   }>();
   const client = useMemo(() => createVerityClient(), []);
   const baseUrl = getVerityBaseUrl();
@@ -576,6 +599,7 @@ export default function SessionScreen() {
         targetMessageId={targetMessageId}
         targetSearchQuery={targetSearchQuery}
         retrySecret={retrySecret}
+        mockups={mockups}
       />
     );
   }
@@ -588,6 +612,7 @@ export default function SessionScreen() {
       initialTargetMessageId={targetMessageId}
       initialTargetSearchQuery={targetSearchQuery}
       retrySecret={retrySecret}
+      initialMockupReview={mockups === '1'}
     />
   );
 }
@@ -610,6 +635,9 @@ interface SessionActions {
   focusInput: () => void;
   /** Put a failed optimistic message back into the input for editing. */
   recoverPending: (id: string) => void;
+  /** The operator's newest text-only message, for resending a turn that never
+   *  reached the agent. Null when it carried attachments a resend would drop. */
+  lastUserPrompt: string | null;
   /** Save a proposed automation after the operator confirms it. */
   confirmAutomation: (proposal: AutomationProposalMessage['proposal']) => Promise<void>;
   /** The automation this session has now, so a proposal card knows whether it
@@ -625,6 +653,10 @@ interface SessionActions {
   decidingPlanning: boolean;
   /** The plan card's "Implement plan": the tap itself is the operator's approval. */
   implementPlan: (revision?: number) => void;
+  /** The mockup review, so a presented round shows the current verdicts. */
+  mockupReview: MockupReview | undefined;
+  /** Open the full-screen mockup review at a screen. */
+  openMockups: (screen?: string) => void;
 }
 
 const SessionActionsContext = createContext<SessionActions | null>(null);
@@ -651,19 +683,11 @@ const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
   drafts: 'folder',
 };
 
-type OpenLocalFile = (path: string, root?: SessionFileRoot) => void;
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
-// An agent's `verity://` link resolved by `parseAppLink`. The screen owns the
-// navigation and the sheets, so it answers with the handler for a target, or null
-// when the target cannot be opened here; the renderer then shows the same
-// non-tappable reference styling as an unknown target instead of a link that
-// would do nothing.
-type OpenAppLink = (target: AppLinkTarget) => (() => void) | null;
 const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
 const SessionFileImageSourceContext = createContext<
   ((path: string) => ImageSource | undefined) | null
 >(null);
-const SearchHighlightContext = createContext<string | null>(null);
 
 function useTranscriptRows(messages: readonly Message[], sessionId: string): Row[] {
   const previous = useRef<Row[]>([]);
@@ -684,6 +708,7 @@ export const SessionChat = memo(function SessionChat({
   initialTargetMessageId,
   initialTargetSearchQuery,
   retrySecret,
+  initialMockupReview = false,
 }: {
   client: VerityClient;
   sessionId: string;
@@ -692,6 +717,8 @@ export const SessionChat = memo(function SessionChat({
   initialTargetMessageId?: string;
   initialTargetSearchQuery?: string;
   retrySecret?: string;
+  /** Open the mockup review as soon as the session reports one waiting. */
+  initialMockupReview?: boolean;
 }) {
   markFirstSessionRender(sessionId, 'session-screen-render-entry');
   const finishChatWork = beginRenderWork('chat-body', sessionId);
@@ -721,6 +748,8 @@ export const SessionChat = memo(function SessionChat({
     model: currentModel,
     projectId,
     googleStatus,
+    people,
+    viewerUserId,
     detailLoaded,
     switchingModel,
     modelSwitchPending,
@@ -740,6 +769,11 @@ export const SessionChat = memo(function SessionChat({
     decidingPlanning,
     planningError,
     decidePlanning,
+    mockupReview,
+    decidingMockup,
+    mockupError,
+    decideMockup,
+    completeMockups,
     decidingPermission,
     permissionError,
     sendTurn,
@@ -756,6 +790,14 @@ export const SessionChat = memo(function SessionChat({
     loadOlder,
     loadOlderUntil,
   } = useSession(client, sessionId, baseUrl);
+  // A server update or outage is the header's connection bar's to show; the
+  // stream reconnects by itself, history and metadata reload once it is back.
+  const hidesHistoryError = useHidesConnectionError(historyError);
+  const hidesStreamError = useHidesConnectionError(streamError);
+  useConnectionRecovered(() => {
+    refreshMetadata();
+    if (connectionFailureKind(historyError) !== undefined) (loaded ? loadOlder : retryHistory)();
+  });
   const optionalWorkReady = useDeferredSessionWork(
     sessionId,
     initialListLoaded || (loaded && session.messages.length === 0) || locallyCreated,
@@ -1117,6 +1159,7 @@ export const SessionChat = memo(function SessionChat({
   // The chip names the CURRENT BRANCH; fall back to the session label while the
   // branch list is still loading (or if branch switching is unconfigured → 503).
   const sessionFallback = name?.trim() ? name.trim() : shortLabel(session.model, sessionId);
+  const [confirmDelete, deleteSheet] = useConfirm();
   // The header tracks the LIVE branch from the ~1.5s activity poll (#110) so the label
   // updates on an external/agent `git checkout` without a remount; fall back to the
   // load-once `useBranches` value until the first poll resolves (or when the server
@@ -2422,7 +2465,7 @@ export const SessionChat = memo(function SessionChat({
   const [filesInitialRoot, setFilesInitialRoot] = useState<SessionFileRoot>('worktree');
   const openSessionFile = useCallback((path: string, root: SessionFileRoot = 'worktree') => {
     if (root === 'shared') {
-      router.push({ pathname: '/settings/shared-knowledge', params: { path } });
+      router.push({ pathname: '/settings/shared-knowledge', params: { file: path } });
       return;
     }
     setFilesInitialPath(path);
@@ -3537,6 +3580,16 @@ export const SessionChat = memo(function SessionChat({
     },
     [scrollToLatest, sendTurn],
   );
+  const lastUserPrompt = useMemo(() => {
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const message = session.messages[i];
+      if (message?.kind !== 'user-text') continue;
+      return (message.attachments?.length ?? 0) === 0 && message.text.trim() !== ''
+        ? message.text
+        : null;
+    }
+    return null;
+  }, [session.messages]);
   const latestAutomationProposalId = useMemo(() => {
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
       const message = session.messages[i];
@@ -3558,6 +3611,23 @@ export const SessionChat = memo(function SessionChat({
     }
     return count > 1;
   }, [session.messages]);
+  const [mockupSheet, setMockupSheet] = useState<{ screen?: string } | null>(null);
+  const openMockups = useCallback(
+    (screen?: string) => setMockupSheet(screen === undefined ? {} : { screen }),
+    [],
+  );
+  const mockupBar = useMemo(() => mockupBarView(mockupReview), [mockupReview]);
+  // Home's Review opens the session with its review in front, once, as soon as
+  // the session reports the round; a later visit to the same route stays in the chat.
+  useEffect(() => {
+    if (!initialMockupReview || mockupReview?.state !== 'pending') return;
+    setMockupSheet({});
+    router.setParams({ mockups: undefined });
+  }, [initialMockupReview, mockupReview?.state]);
+  // The review closes itself once nothing is left to decide in this round.
+  useEffect(() => {
+    if (mockupReview?.state !== 'pending') setMockupSheet(null);
+  }, [mockupReview?.state]);
   const implementPlan = useCallback(
     (revision?: number) => {
       const pending = session.pendingPermission;
@@ -3593,6 +3663,7 @@ export const SessionChat = memo(function SessionChat({
       dead,
       focusInput,
       recoverPending: onDismissPendingEcho,
+      lastUserPrompt,
       confirmAutomation,
       automation,
       automationReady,
@@ -3602,6 +3673,8 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      mockupReview,
+      openMockups,
     }),
     [
       sendQuickReply,
@@ -3609,6 +3682,7 @@ export const SessionChat = memo(function SessionChat({
       dead,
       focusInput,
       onDismissPendingEcho,
+      lastUserPrompt,
       confirmAutomation,
       automation,
       automationReady,
@@ -3618,6 +3692,8 @@ export const SessionChat = memo(function SessionChat({
       planningPlan,
       decidingPlanning,
       implementPlan,
+      mockupReview,
+      openMockups,
     ],
   );
   // Local upload placeholders may sit after the transcript tail, but quick-action
@@ -4275,7 +4351,12 @@ export const SessionChat = memo(function SessionChat({
           );
         })}
       {switcherOpen ? (
-        <BranchSwitcherSheet branches={branches} onClose={() => setSwitcherOpen(false)} />
+        <BranchSwitcherSheet
+          client={client}
+          sessionId={sessionId}
+          branches={branches}
+          onClose={() => setSwitcherOpen(false)}
+        />
       ) : null}
       {bookmarksOpen ? (
         <BookmarksSheet
@@ -4290,9 +4371,11 @@ export const SessionChat = memo(function SessionChat({
       <VulnerabilityFixSheet
         groups={mainFixGroups}
         onClose={() => setMainFixGroups(null)}
-        onFix={(prompt) => {
+        onFix={(findings, prompt) => {
           setMainFixGroups(null);
-          sendQuickReply(prompt);
+          void sendTurn(prompt, {
+            vulnerabilityFix: { findings },
+          });
         }}
       />
       {staticPreviewOpen && projectId ? (
@@ -4327,7 +4410,8 @@ export const SessionChat = memo(function SessionChat({
           displayName={sessionFallback}
           projectId={projectId ?? null}
           projectName={
-            settingsProjects.find((project) => project.id === projectId)?.repo ?? 'No project'
+            projectTitle(settingsProjects.find((project) => project.id === projectId)) ??
+            'No project'
           }
           canMove={
             !busy &&
@@ -4340,7 +4424,7 @@ export const SessionChat = memo(function SessionChat({
           }
           projects={settingsProjects
             .filter((project) => project.kind === 'local')
-            .map((project) => ({ id: project.id, name: project.repo }))}
+            .map((project) => ({ id: project.id, name: projectTitle(project) }))}
           linkableSessions={settingsSessions
             .filter((candidate) => isLinkableSession(candidate, sessionId, settingsProjects))
             .map((candidate) => ({
@@ -4348,8 +4432,9 @@ export const SessionChat = memo(function SessionChat({
               name: candidate.name ?? candidate.sessionId,
               projectId: candidate.projectId!,
               projectName:
-                settingsProjects.find((project) => project.id === candidate.projectId)?.repo ??
-                candidate.projectId!,
+                projectTitle(
+                  settingsProjects.find((project) => project.id === candidate.projectId),
+                ) ?? candidate.projectId!,
             }))}
           client={client}
           onClose={() => setSessionSettingsOpen(false)}
@@ -4357,35 +4442,30 @@ export const SessionChat = memo(function SessionChat({
             refreshMetadata();
             branchesRefresh();
           }}
-          onDelete={() =>
-            Alert.alert(
-              'Delete session?',
-              `This permanently removes "${sessionFallback}", its history and worktree. This cannot be undone.`,
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Delete',
-                  style: 'destructive',
-                  onPress: () => {
-                    void client
-                      .deleteSession(sessionId)
-                      .then(() => {
-                        setSessionSettingsOpen(false);
-                        router.replace('/');
-                      })
-                      .catch((error: unknown) =>
-                        Alert.alert(
-                          'Could not delete session',
-                          error instanceof Error ? error.message : 'Please try again.',
-                        ),
-                      );
-                  },
-                },
-              ],
-            )
-          }
+          onDelete={() => {
+            // One sheet at a time: the confirmation replaces the settings.
+            setSessionSettingsOpen(false);
+            confirmDelete(
+              deleteSessionRequest(
+                { label: sessionFallback, projectId: projectId ?? null },
+                // Not awaited: a failure is reported after the sheet has closed.
+                ({ wiki }) =>
+                  void client
+                    .deleteSession(sessionId, wiki ? { wiki } : {})
+                    .then(() => router.replace('/'))
+                    .catch((error: unknown) =>
+                      Alert.alert(
+                        'Could not delete session',
+                        error instanceof Error ? error.message : 'Please try again.',
+                      ),
+                    ),
+                true,
+              ),
+            );
+          }}
         />
       ) : null}
+      {deleteSheet}
       {filesOpen ? (
         <SessionFilesSheet
           client={client}
@@ -4480,7 +4560,7 @@ export const SessionChat = memo(function SessionChat({
           )}
         />
       ) : null}
-      {historyError ? (
+      {historyError && !hidesHistoryError ? (
         <>
           <Banner tone="attention" text={historyError} />
           <Button
@@ -4492,7 +4572,9 @@ export const SessionChat = memo(function SessionChat({
           />
         </>
       ) : null}
-      {streamError ? <Banner tone="attention" text={`Stream: ${streamError}`} /> : null}
+      {streamError && !hidesStreamError ? (
+        <Banner tone="attention" text={`Stream: ${streamError}`} />
+      ) : null}
       {sendError ? <Banner tone="danger" text={`Send failed: ${sendError}`} /> : null}
       {switchModelError ? (
         <Banner tone="danger" text={`Model switch failed: ${switchModelError}`} />
@@ -4582,42 +4664,29 @@ export const SessionChat = memo(function SessionChat({
         // Rows stay chronological so FlashList's native chat anchoring can preserve the
         // viewport while older history is prepended and new text grows below it.
         <SessionActionsContext.Provider value={actions}>
-          <SessionFileOpenContext.Provider value={openSessionFile}>
-            <AppLinkOpenContext.Provider value={openAppLink}>
-              <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
-                <BookmarksContext.Provider value={bookmarks}>
-                  <KnowledgeSaveProvider
-                    client={client}
-                    sessionId={sessionId}
-                    projectId={projectId}
-                  >
-                    {transcriptList}
-                    {/* Keep intermediate history pages hidden while resolving a jump, and
-                cover measurement correction while restoring a saved position. */}
-                    {restoring || pendingUserJump !== null || jumpTarget !== null ? (
-                      <View style={styles.restoreCover}>
-                        <ActivityIndicator
-                          color={theme.colors.textMuted}
-                          accessibilityLabel={
-                            pendingUserJump !== null || jumpTarget !== null
-                              ? 'Jumping to message or bookmark'
-                              : 'Restoring chat position'
-                          }
-                        />
-                        {pendingUserJump !== null || jumpTarget !== null ? (
-                          <Text style={styles.emptySubtitle}>
-                            {pendingUserJump !== null
-                              ? 'Finding previous message or bookmark…'
-                              : 'Jumping to message or bookmark…'}
-                          </Text>
-                        ) : null}
-                      </View>
-                    ) : null}
-                  </KnowledgeSaveProvider>
-                </BookmarksContext.Provider>
-              </SessionFileImageSourceContext.Provider>
-            </AppLinkOpenContext.Provider>
-          </SessionFileOpenContext.Provider>
+          <SessionPeopleProvider people={people} viewerUserId={viewerUserId}>
+            <SessionFileOpenContext.Provider value={openSessionFile}>
+              <AppLinkOpenContext.Provider value={openAppLink}>
+                <SessionFileImageSourceContext.Provider value={sessionFileImageSource}>
+                  <BookmarksContext.Provider value={bookmarks}>
+                    <KnowledgeSaveProvider
+                      client={client}
+                      sessionId={sessionId}
+                      projectId={projectId}
+                    >
+                      {transcriptList}
+                      <TranscriptPositionCover
+                        restoring={restoring}
+                        finding={pendingUserJump !== null}
+                        jumping={jumpTarget !== null}
+                        styles={styles}
+                      />
+                    </KnowledgeSaveProvider>
+                  </BookmarksContext.Provider>
+                </SessionFileImageSourceContext.Provider>
+              </AppLinkOpenContext.Provider>
+            </SessionFileOpenContext.Provider>
+          </SessionPeopleProvider>
         </SessionActionsContext.Provider>
       )}
       {messages.length > 0 ? (
@@ -4748,6 +4817,7 @@ export const SessionChat = memo(function SessionChat({
             onDecide={decideLinkedMessage}
           />
         ))}
+      <ProjectInquiryCards client={client} sessionId={sessionId} />
       {waitingMessages.length > 0 ? (
         <QueuedMessages items={waitingMessages} onRetract={onRetractWaiting} />
       ) : null}
@@ -4790,6 +4860,7 @@ export const SessionChat = memo(function SessionChat({
             />
           )}
           markdown={planningPlan}
+          keyboardHeight={keyboardHeight}
           updated={planUpdated}
           deciding={
             decidingPlanning ||
@@ -4800,13 +4871,34 @@ export const SessionChat = memo(function SessionChat({
           error={planningError}
           onDismiss={dismissPlan}
           onImplement={() => implementPlan(planningRevision)}
+          onAnswerDecision={(answer) => {
+            void sendTurn(answer).then((accepted) => {
+              if (accepted) scrollToLatest(true);
+            });
+          }}
         />
       ) : null}
+      {mockupBar !== undefined ? (
+        <MockupReviewBar view={mockupBar} onReview={() => openMockups()} />
+      ) : null}
+      <MockupReviewSheet
+        key={mockupReview?.revision}
+        visible={mockupSheet !== null && mockupReview !== undefined}
+        screens={mockupReview?.screens ?? []}
+        title={planTitle(planningPlan) ?? 'Mockups'}
+        initialScreen={mockupSheet?.screen}
+        deciding={decidingMockup}
+        error={mockupError}
+        onDecide={decideMockup}
+        onComplete={async () => {
+          if (mockupReview !== undefined && (await completeMockups(mockupReview.revision)))
+            setMockupSheet(null);
+        }}
+        onClose={() => setMockupSheet(null)}
+      />
       {client ? <QAApprovalCard client={client} sessionId={sessionId} /> : null}
       {client ? <SchedulingRequestsCard client={client} sessionId={sessionId} /> : null}
       {client ? <AssistantSchedulingOverview client={client} sessionId={sessionId} /> : null}
-      {/* Last above the composer: below the plan and the PR bar, never above them. */}
-      {client ? <SessionVulnerabilityCard client={client} sessionId={sessionId} /> : null}
       <InputBar
         hasPlan={planning === 'active' && planningPlan != null}
         planning={planning === 'active'}
@@ -5133,6 +5225,7 @@ function SessionFilesSheet({
 }) {
   const { theme } = useUnistyles();
   const sheet = useResizableSheet();
+  const [confirm, confirmSheet] = useConfirm();
   const [documentSession, setDocumentSession] = useState(false);
   const [codeAvailable, setCodeAvailable] = useState(true);
   const [documentStatus, setDocumentStatus] = useState<{
@@ -5142,7 +5235,6 @@ function SessionFilesSheet({
     inspectionError?: boolean;
     excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
   }>();
-  const workspaceClassified = useRef(false);
   const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
   const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
   const [entries, setEntries] = useState<SessionFileEntry[]>([]);
@@ -5203,7 +5295,7 @@ function SessionFilesSheet({
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
   useEffect(() => {
-    if (codeAvailable || driveActive) return;
+    if (codeAvailable) return;
     let active = true;
     const timer = setInterval(() => {
       void client
@@ -5220,7 +5312,7 @@ function SessionFilesSheet({
       active = false;
       clearInterval(timer);
     };
-  }, [client, sessionId, codeAvailable, documentSession, driveActive]);
+  }, [client, sessionId, codeAvailable, documentSession]);
 
   useEffect(() => {
     if (!initialFilePath) return;
@@ -5265,23 +5357,14 @@ function SessionFilesSheet({
         if (!active) return;
         setDocumentStatus(dir.documentStatus);
         setCodeAvailable(dir.codeAvailable ?? true);
-        if (dir.codeAvailable === false && root === 'worktree' && !initialFilePath) {
-          setRoot('documents');
-          setPath('');
-        }
-        if (dir.workspaceKind) {
-          setDocumentSession(dir.workspaceKind === 'documents');
-          if (
-            !workspaceClassified.current &&
-            dir.workspaceKind === 'documents' &&
-            !initialFilePath &&
-            initialRoot === 'worktree'
-          ) {
-            setRoot('documents');
-            setPath('');
-          }
-          workspaceClassified.current = true;
-        }
+        if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+        if (
+          !initialFilePath &&
+          root === 'worktree' &&
+          (dir.codeAvailable === false || dir.workspaceKind === 'documents') &&
+          projectId
+        )
+          setDriveActive(true);
         setEntries(dir.entries);
         setTruncated(dir.truncated);
       })
@@ -5298,7 +5381,17 @@ function SessionFilesSheet({
     return () => {
       active = false;
     };
-  }, [client, driveActive, sessionId, path, root, reloadKey, initialFilePath, initialRoot]);
+  }, [
+    client,
+    driveActive,
+    sessionId,
+    path,
+    root,
+    reloadKey,
+    initialFilePath,
+    initialRoot,
+    projectId,
+  ]);
 
   useEffect(() => {
     if (!driveActive || !projectId) return;
@@ -5786,60 +5879,86 @@ function SessionFilesSheet({
     modifierClick.current = { anchor: null, range: [] };
   }, []);
 
-  // One confirmation for every delete, from a row's menu, the open file or the
-  // selection. It names the files and the root they leave: Shared is read by
-  // every project, so "this file" is not enough to know what is at stake.
   const confirmDelete = useCallback(
     (
       paths: readonly string[],
       onDeleted: (deleted: readonly string[], complete: boolean) => void,
     ) => {
       if (mutating || paths.length === 0) return;
-      setMutating(true);
-      const names = paths.slice(0, 5).map((filePath) => `• ${fileNameFromPath(filePath)}`);
-      if (paths.length > names.length) names.push(`… and ${paths.length - names.length} more`);
-      Alert.alert(
-        paths.length === 1 ? 'Delete file?' : `Delete ${paths.length} files?`,
-        `${names.join('\n')}\n\n${
-          root === 'worktree'
-            ? 'This permanently removes them from the workspace.'
-            : root === 'shared'
-              ? 'This removes them from Global Knowledge, for every project, with their extracted text.'
-              : 'This removes them from the project with their extracted text.'
-        }`,
-        [
-          { text: 'Cancel', style: 'cancel', onPress: () => setMutating(false) },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: () => {
-              void (async () => {
-                const deleted: string[] = [];
-                try {
-                  for (const filePath of paths) {
-                    await client.deleteSessionFile(sessionId, root, filePath);
-                    deleted.push(filePath);
-                  }
-                  onDeleted(deleted, true);
-                } catch (err) {
-                  onDeleted(deleted, false);
-                  Alert.alert(
-                    'Could not delete file',
-                    err instanceof Error ? err.message : String(err),
-                  );
-                } finally {
-                  if (deleted.length > 0) setReloadKey((key) => key + 1);
-                  setMutating(false);
-                }
-              })();
-            },
-          },
-        ],
-        { cancelable: false },
+      const folder =
+        paths.length === 1 &&
+        entries.some((entry) => entry.path === paths[0] && entry.kind === 'directory');
+      const batch = fileDeletionBatch(paths, (filePath) =>
+        client.deleteSessionFile(sessionId, root, filePath),
       );
+      confirm({
+        title: folder
+          ? 'Delete folder and its contents?'
+          : paths.length === 1
+            ? 'Delete file?'
+            : `Delete ${paths.length} files?`,
+        message: `${paths
+          .slice(0, 5)
+          .map((filePath) => fileNameFromPath(filePath))
+          .join(
+            '\n',
+          )}\n\n${folder ? 'This permanently removes the folder and everything inside it.' : 'This permanently removes the selected files.'}`,
+        confirmLabel: 'Delete',
+        destructive: true,
+        onConfirm: async () => {
+          setMutating(true);
+          const deleted = batch.deleted;
+          try {
+            await batch.run();
+            onDeleted(deleted, true);
+          } catch (error) {
+            onDeleted(deleted, false);
+            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
+            throw error;
+          } finally {
+            if (deleted.length) setReloadKey((key) => key + 1);
+            setMutating(false);
+          }
+        },
+      });
     },
-    [client, mutating, root, sessionId],
+    [client, confirm, entries, mutating, root, sessionId],
   );
+
+  const trashDriveFile = async (file: DriveFile) => {
+    if (!projectId || !driveFolderId || !driveCanWrite || mutating) return;
+    try {
+      const snapshot = await client.getProjectGoogleDriveFile(projectId, driveFolderId, file.id);
+      if (!snapshot.version)
+        throw new Error('This file has no version. Reload the folder and try again.');
+      const expectedVersion = snapshot.version;
+      confirm({
+        title: 'Move to Google Drive trash?',
+        message: `${file.name}\n\n${file.mimeType === 'application/vnd.google-apps.folder' ? 'The folder and its contents will be moved to the trash.' : 'The file will be moved to the trash.'}`,
+        confirmLabel: 'Move to trash',
+        destructive: true,
+        onConfirm: async () => {
+          setMutating(true);
+          try {
+            await client.trashProjectGoogleDriveFile(
+              projectId,
+              driveFolderId,
+              file.id,
+              expectedVersion,
+            );
+            setReloadKey((key) => key + 1);
+          } catch (error) {
+            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
+            throw error;
+          } finally {
+            setMutating(false);
+          }
+        },
+      });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   const deleteSelectedFiles = useCallback(() => {
     confirmDelete(selected, (deleted, complete) => {
@@ -6100,628 +6219,622 @@ function SessionFilesSheet({
 
   return (
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
-        <View />
-      </Pressable>
-      <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-        <SheetResizeHandle panHandlers={sheet.panHandlers} />
-        {!preview ? (
-          selecting ? (
-            <FileSheetHeader
-              leading={
-                <HeaderTextButton
-                  label={allSelected ? 'Select None' : 'Select All'}
-                  disabled={mutating}
-                  onPress={() => {
-                    modifierClick.current = { anchor: null, range: [] };
-                    setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
-                  }}
-                />
-              }
-              title={selected.length > 0 ? selectionSummary(selected.length) : 'Select files'}
-              trailing={
-                // Text, not a glyph: the old toggle turned into an X beside the X
-                // that closes the sheet, and nobody could tell which ended what.
-                <HeaderTextButton
-                  label="Done"
-                  emphasis="strong"
-                  disabled={mutating}
-                  accessibilityLabel="Done selecting files"
-                  onPress={endSelection}
-                />
-              }
-            />
-          ) : (
-            <FileSheetHeader
-              title="Files"
-              trailing={
-                <>
-                  {/* One way in to adding, as in every file app's toolbar. Selecting
+      <GestureHandlerRootView style={styles.flex}>
+        <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
+          <View />
+        </Pressable>
+        <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
+          <SheetResizeHandle panHandlers={sheet.panHandlers} />
+          {!preview ? (
+            selecting ? (
+              <FileSheetHeader
+                leading={
+                  <HeaderTextButton
+                    label={allSelected ? 'Select None' : 'Select All'}
+                    disabled={mutating}
+                    onPress={() => {
+                      modifierClick.current = { anchor: null, range: [] };
+                      setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
+                    }}
+                  />
+                }
+                title={selected.length > 0 ? selectionSummary(selected.length) : 'Select files'}
+                trailing={
+                  // Text, not a glyph: the old toggle turned into an X beside the X
+                  // that closes the sheet, and nobody could tell which ended what.
+                  <HeaderTextButton
+                    label="Done"
+                    emphasis="strong"
+                    disabled={mutating}
+                    accessibilityLabel="Done selecting files"
+                    onPress={endSelection}
+                  />
+                }
+              />
+            ) : (
+              <FileSheetHeader
+                title="Files"
+                trailing={
+                  <>
+                    {/* One way in to adding, as in every file app's toolbar. Selecting
                       is not up here: a long press on a row starts it, as does
                       "Select" in the row's menu, so the bar stays two glyphs. */}
-                  <HeaderIconButton
-                    icon={driveActive ? 'upload' : 'plus'}
-                    tint
-                    busy={uploading}
-                    disabled={
-                      mutating ||
-                      root === 'drafts' ||
-                      error !== null ||
-                      (driveActive && (driveUnconfigured || !driveCanWrite))
-                    }
-                    accessibilityLabel={
-                      driveActive
-                        ? driveCanWrite
-                          ? 'Upload files to Google Drive'
-                          : 'Google Drive is read-only'
-                        : 'New or upload files'
-                    }
-                    onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
-                  />
-                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
-                </>
-              }
-            />
-          )
-        ) : null}
-        {!preview ? (
-          <View style={styles.filesRootBar}>
-            {(
-              [
-                ['worktree', documentSession ? 'My edits' : 'Code'],
-                ['sources', 'Raw Sources'],
-                ['documents', 'Wiki'],
-              ] as const
+                    <HeaderIconButton
+                      icon={driveActive ? 'upload' : 'plus'}
+                      tint
+                      busy={uploading}
+                      disabled={
+                        mutating ||
+                        root === 'drafts' ||
+                        error !== null ||
+                        (driveActive && (driveUnconfigured || !driveCanWrite))
+                      }
+                      accessibilityLabel={
+                        driveActive
+                          ? driveCanWrite
+                            ? 'Upload files to Google Drive'
+                            : 'Google Drive is read-only'
+                          : 'New or upload files'
+                      }
+                      onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
+                    />
+                    <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                  </>
+                }
+              />
             )
-              .filter(
-                ([candidate]) => !((documentSession || !codeAvailable) && candidate === 'worktree'),
-              )
-              .map(([candidate, label]) => (
+          ) : null}
+          {!preview ? (
+            <View style={styles.filesRootBar}>
+              <Pressable
+                disabled={mutating || documentSession || !codeAvailable}
+                onPress={() => navigateRoot('worktree')}
+                accessibilityRole="tab"
+                accessibilityState={{
+                  selected: !driveActive && root === 'worktree',
+                  disabled: documentSession || !codeAvailable,
+                }}
+                accessibilityLabel="Code"
+                style={[
+                  styles.filesRootButton,
+                  !driveActive && root === 'worktree' ? styles.filesRootButtonActive : null,
+                ]}
+              >
+                <Icon name={FILE_ROOT_ICON.worktree} size={14} color={theme.colors.textMuted} />
+                <Text
+                  style={
+                    !driveActive && root === 'worktree'
+                      ? styles.filesRootLabelActive
+                      : styles.filesRootLabel
+                  }
+                >
+                  Code
+                </Text>
+              </Pressable>
+              {projectId ? (
                 <Pressable
-                  key={candidate}
                   disabled={mutating}
                   onPress={() => {
-                    navigateRoot(candidate);
+                    if (driveActive) return;
+                    previewRequest.current += 1;
+                    endSelection();
+                    setDriveActive(true);
+                    setLoading(true);
+                    setPreview(null);
+                    setError(null);
                   }}
                   accessibilityRole="tab"
-                  accessibilityState={{
-                    selected:
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree')))),
-                  }}
-                  accessibilityLabel={label}
+                  accessibilityState={{ selected: driveActive }}
+                  accessibilityLabel="Google Drive"
                   style={[
                     styles.filesRootButton,
-                    !driveActive &&
-                    (root === candidate ||
-                      (candidate === 'documents' &&
-                        (root === 'drafts' || (documentSession && root === 'worktree'))))
-                      ? styles.filesRootButtonActive
-                      : null,
+                    driveActive ? styles.filesRootButtonActive : null,
                   ]}
                 >
                   <Icon
-                    name={FILE_ROOT_ICON[candidate]}
+                    name="hard-drive"
                     size={14}
-                    color={
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree'))))
-                        ? theme.colors.text
-                        : theme.colors.textMuted
-                    }
+                    color={driveActive ? theme.colors.text : theme.colors.textMuted}
                   />
-                  <Text
-                    style={
-                      !driveActive &&
-                      (root === candidate ||
-                        (candidate === 'documents' &&
-                          (root === 'drafts' || (documentSession && root === 'worktree'))))
-                        ? styles.filesRootLabelActive
-                        : styles.filesRootLabel
-                    }
-                  >
-                    {label}
+                  <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
+                    Google Drive
                   </Text>
                 </Pressable>
-              ))}
-            {projectId ? (
-              <Pressable
+              ) : null}
+            </View>
+          ) : null}
+          {preview ? null : driveActive ? (
+            (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
+              <FileBreadcrumb
+                rootIcon="hard-drive"
+                rootLabel={
+                  driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
+                }
+                segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
+                  ({ id, name }) => ({ key: id, name }),
+                )}
                 disabled={mutating}
-                onPress={() => {
-                  if (driveActive) return;
-                  previewRequest.current += 1;
-                  endSelection();
-                  setDriveActive(true);
-                  setLoading(true);
-                  setPreview(null);
-                  setError(null);
-                }}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: driveActive }}
-                accessibilityLabel="Google Drive"
-                style={[styles.filesRootButton, driveActive ? styles.filesRootButtonActive : null]}
-              >
-                <Icon
-                  name="hard-drive"
-                  size={14}
-                  color={driveActive ? theme.colors.text : theme.colors.textMuted}
-                />
-                <Text style={driveActive ? styles.filesRootLabelActive : styles.filesRootLabel}>
-                  Google Drive
-                </Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
-        {preview ? null : driveActive ? (
-          (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
+                onNavigate={(index) =>
+                  setDrivePath((current) =>
+                    current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)),
+                  )
+                }
+              />
+            ) : null
+          ) : path ? (
+            // At the top of a tab the tab itself says where you are; a breadcrumb
+            // of nothing but the root would be a control with nowhere to go.
             <FileBreadcrumb
-              rootIcon="hard-drive"
+              rootIcon={FILE_ROOT_ICON[root]}
               rootLabel={
-                driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
+                root === 'worktree'
+                  ? documentSession
+                    ? 'My edits'
+                    : 'Code'
+                  : root === 'sources'
+                    ? 'Sources'
+                    : root === 'documents'
+                      ? 'Wiki'
+                      : root === 'drafts'
+                        ? 'Session edits'
+                        : root === 'knowledge'
+                          ? 'Project'
+                          : 'Global'
               }
-              segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
-                ({ id, name }) => ({ key: id, name }),
-              )}
-              disabled={mutating}
+              segments={breadcrumbSegments(path).map((segment) => ({
+                key: segment.path,
+                name: segment.name,
+              }))}
+              disabled={mutating || selecting}
               onNavigate={(index) =>
-                setDrivePath((current) => current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)))
+                setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)
               }
             />
-          ) : null
-        ) : path ? (
-          // At the top of a tab the tab itself says where you are; a breadcrumb
-          // of nothing but the root would be a control with nowhere to go.
-          <FileBreadcrumb
-            rootIcon={FILE_ROOT_ICON[root]}
-            rootLabel={
-              root === 'worktree'
-                ? documentSession
-                  ? 'My edits'
-                  : 'Code'
-                : root === 'sources'
-                  ? 'Raw Sources'
-                  : root === 'documents'
-                    ? 'Wiki'
-                    : root === 'drafts'
-                      ? 'Session edits'
-                      : root === 'knowledge'
-                        ? 'Project'
-                        : 'Global'
-            }
-            segments={breadcrumbSegments(path).map((segment) => ({
-              key: segment.path,
-              name: segment.name,
-            }))}
-            disabled={mutating || selecting}
-            onNavigate={(index) => setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)}
-          />
-        ) : null}
-        {!driveActive ? (
-          <WikiDetails
-            root={root}
-            documentSession={documentSession}
-            status={documentStatus}
-            error={error}
-            hasConflicts={
-              root === 'documents' && !path && entries.some((entry) => entry.name === 'Conflicts')
-            }
-            disabled={mutating}
-            navigate={navigateRoot}
-          />
-        ) : null}
-        {driveActive ? (
-          <ScrollView style={styles.filesList}>
-            {error ? <Text style={styles.sheetError}>{error}</Text> : null}
-            {driveUnconfigured && projectId ? (
-              <View style={styles.driveSetupNotice}>
-                <Icon name="hard-drive" size={28} color={theme.colors.textFaint} />
-                <Text style={styles.emptyTitle}>No Google Drive folder</Text>
-                <Text style={styles.emptySubtitle}>
-                  Connect a folder in the project settings to use its documents in this project.
-                </Text>
-                <Pressable
-                  onPress={() => {
-                    onClose();
-                    router.push({
-                      pathname: '/project/[id]/settings/services',
-                      params: { id: projectId, section: 'drive' },
-                    });
-                  }}
-                  accessibilityRole="button"
-                  accessibilityLabel="Open project settings to connect Google Drive"
-                  style={({ pressed }) => [
-                    styles.driveSetupButton,
-                    pressed ? styles.driveSetupButtonPressed : null,
-                  ]}
-                >
-                  <Text style={styles.driveSetupButtonLabel}>Connect a folder</Text>
-                </Pressable>
-              </View>
-            ) : loading ? (
-              <View style={styles.sheetLoading}>
-                <ActivityIndicator color={theme.colors.textMuted} />
-              </View>
-            ) : driveEntries.length === 0 && !error ? (
-              <Text style={styles.sheetEmpty}>This folder is empty.</Text>
-            ) : (
-              driveEntries.map((file) => {
-                const folder = file.mimeType === 'application/vnd.google-apps.folder';
-                return (
+          ) : null}
+          {!driveActive ? (
+            <WikiDetails
+              root={root}
+              documentSession={documentSession}
+              status={documentStatus}
+              error={error}
+              hasConflicts={
+                root === 'documents' && !path && entries.some((entry) => entry.name === 'Conflicts')
+              }
+              disabled={mutating}
+              navigate={navigateRoot}
+            />
+          ) : null}
+          {driveActive ? (
+            <ScrollView style={styles.filesList}>
+              {error ? <Text style={styles.sheetError}>{error}</Text> : null}
+              {driveUnconfigured && projectId ? (
+                <View style={styles.driveSetupNotice}>
+                  <Icon name="hard-drive" size={28} color={theme.colors.textFaint} />
+                  <Text style={styles.emptyTitle}>No Google Drive folder</Text>
+                  <Text style={styles.emptySubtitle}>
+                    Connect a folder in the project settings to use its documents in this project.
+                  </Text>
                   <Pressable
-                    key={file.id}
-                    onPress={() =>
-                      folder
-                        ? setDrivePath((current) => [...current, { id: file.id, name: file.name }])
-                        : openDriveFile(file)
-                    }
-                    disabled={mutating}
+                    onPress={() => {
+                      onClose();
+                      router.push({
+                        pathname: '/project/[id]/settings/services',
+                        params: { id: projectId, section: 'drive' },
+                      });
+                    }}
                     accessibilityRole="button"
-                    accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
+                    accessibilityLabel="Open project settings to connect Google Drive"
                     style={({ pressed }) => [
-                      styles.fileRow,
-                      pressed ? styles.sheetRowPressed : null,
+                      styles.driveSetupButton,
+                      pressed ? styles.driveSetupButtonPressed : null,
                     ]}
                   >
-                    <Icon
-                      name={folder ? 'folder' : 'file'}
-                      size={18}
-                      color={theme.colors.textMuted}
+                    <Text style={styles.driveSetupButtonLabel}>Connect a folder</Text>
+                  </Pressable>
+                </View>
+              ) : loading ? (
+                <View style={styles.sheetLoading}>
+                  <ActivityIndicator color={theme.colors.textMuted} />
+                </View>
+              ) : driveEntries.length === 0 && !error ? (
+                <Text style={styles.sheetEmpty}>This folder is empty.</Text>
+              ) : (
+                driveEntries.map((file) => {
+                  const folder = file.mimeType === 'application/vnd.google-apps.folder';
+                  return (
+                    <FileRowActions
+                      key={file.id}
+                      label={file.name}
+                      deleteLabel="Move to trash"
+                      disabled={mutating}
+                      onDelete={
+                        driveCanWrite && driveFolderId
+                          ? () => {
+                              void trashDriveFile(file);
+                            }
+                          : undefined
+                      }
+                    >
+                      <Pressable
+                        onPress={() =>
+                          folder
+                            ? setDrivePath((current) => [
+                                ...current,
+                                { id: file.id, name: file.name },
+                              ])
+                            : openDriveFile(file)
+                        }
+                        disabled={mutating}
+                        accessibilityRole="button"
+                        accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
+                        style={({ pressed }) => [
+                          styles.fileRow,
+                          pressed ? styles.sheetRowPressed : null,
+                        ]}
+                      >
+                        <Icon
+                          name={folder ? 'folder' : 'file'}
+                          size={18}
+                          color={theme.colors.textMuted}
+                        />
+                        <View style={styles.fileMain}>
+                          <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
+                            {file.name}
+                          </Text>
+                        </View>
+                        <Icon
+                          name={folder ? 'chevron-right' : 'file'}
+                          size={17}
+                          color={theme.colors.textFaint}
+                        />
+                      </Pressable>
+                    </FileRowActions>
+                  );
+                })
+              )}
+            </ScrollView>
+          ) : preview ? (
+            <View style={styles.filesPreviewWrap}>
+              <FileSheetHeader
+                leading={
+                  <HeaderIconButton
+                    icon="chevron-left"
+                    accessibilityLabel="Back to file list"
+                    onPress={closePreview}
+                  />
+                }
+                title={fileNameFromPath(preview.path)}
+                subtitle={parentPath(preview.path) || null}
+                trailing={
+                  <>
+                    {preview.editable && preview.version ? (
+                      <HeaderTextButton
+                        label="Edit"
+                        disabled={mutating}
+                        onPress={() => setEditing(preview)}
+                      />
+                    ) : null}
+                    <HeaderIconButton
+                      icon="more-horizontal"
+                      disabled={mutating}
+                      accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
+                      onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
                     />
-                    <View style={styles.fileMain}>
-                      <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
-                        {file.name}
+                    <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
+                  </>
+                }
+              />
+              <FileContentPreview
+                key={preview.path}
+                path={preview.path}
+                content={preview.content}
+                listStyle={styles.filesPreview}
+                bodyStyle={styles.filesPreviewBody}
+                textStyle={styles.filesPreviewText}
+                renderMarkdown={(item) =>
+                  item.type === 'table' ? (
+                    <MarkdownTable header={item.header} rows={item.rows} />
+                  ) : item.type === 'code' ? (
+                    <View style={styles.codeBlock}>
+                      {item.lang ? <Text style={styles.codeLang}>{item.lang}</Text> : null}
+                      <Text selectable style={styles.codeText}>
+                        {item.content}
                       </Text>
                     </View>
-                    <Icon
-                      name={folder ? 'chevron-right' : 'more-horizontal'}
-                      size={17}
-                      color={theme.colors.textFaint}
-                    />
-                  </Pressable>
-                );
-              })
-            )}
-          </ScrollView>
-        ) : preview ? (
-          <View style={styles.filesPreviewWrap}>
-            <FileSheetHeader
-              leading={
-                <HeaderIconButton
-                  icon="chevron-left"
-                  accessibilityLabel="Back to file list"
-                  onPress={closePreview}
-                />
-              }
-              title={fileNameFromPath(preview.path)}
-              subtitle={parentPath(preview.path) || null}
-              trailing={
-                <>
-                  {preview.editable && preview.version ? (
-                    <HeaderTextButton
-                      label="Edit"
-                      disabled={mutating}
-                      onPress={() => setEditing(preview)}
-                    />
-                  ) : null}
-                  <HeaderIconButton
-                    icon="more-horizontal"
-                    disabled={mutating}
-                    accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
-                    onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
-                  />
-                  <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
-                </>
-              }
-            />
-            <FileContentPreview
-              key={preview.path}
-              path={preview.path}
-              content={preview.content}
-              listStyle={styles.filesPreview}
-              bodyStyle={styles.filesPreviewBody}
-              textStyle={styles.filesPreviewText}
-              renderMarkdown={(item) =>
-                item.type === 'table' ? (
-                  <MarkdownTable header={item.header} rows={item.rows} />
-                ) : item.type === 'code' ? (
-                  <View style={styles.codeBlock}>
-                    {item.lang ? <Text style={styles.codeLang}>{item.lang}</Text> : null}
-                    <Text selectable style={styles.codeText}>
-                      {item.content}
-                    </Text>
-                  </View>
-                ) : (
-                  <MarkdownLine
-                    line={item.content}
-                    onOpenLocalFile={null}
-                    onOpenAppLink={null}
-                    sessionFileImageSource={null}
-                    onOpenImage={() => {}}
-                  />
-                )
-              }
-            />
-          </View>
-        ) : previewLoading ? (
-          <View style={styles.sheetLoading}>
-            <ActivityIndicator color={theme.colors.textMuted} />
-          </View>
-        ) : (
-          <>
-            {error &&
-            root !== 'documents' &&
-            root !== 'drafts' &&
-            !(documentSession && root === 'worktree') ? (
-              <Text style={styles.sheetError}>{error}</Text>
-            ) : null}
-            {truncated ? <Text style={styles.sheetLimited}>Showing first 1000 entries</Text> : null}
-            {loading ? (
-              <View style={styles.sheetLoading}>
-                <ActivityIndicator color={theme.colors.textMuted} />
-              </View>
-            ) : (
-              <DropZone
-                style={styles.filesDropZone}
-                enabled={!uploading && root !== 'drafts'}
-                maxFiles={MAX_DROPPED_UPLOADS}
-                maxFileBytes={MAX_DROPPED_UPLOAD_BYTES}
-                maxTotalBytes={MAX_DROPPED_UPLOAD_TOTAL_BYTES}
-                onFiles={uploadDroppedFiles}
-                onRejected={onUploadDropRejected}
-                onActiveChange={setDropActive}
-              >
-                {/* A touch that turned into a scroll never reaches a press, so
-                    the modifiers it reported have to be withdrawn here too. */}
-                <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
-                  {entries.length === 0 ? (
-                    <Text style={styles.sheetEmpty}>
-                      {error
-                        ? 'Files could not be loaded. Reopen this view to try again.'
-                        : 'No files'}
-                    </Text>
                   ) : (
-                    entries.map((entry) => {
-                      const meta = fileEntryMeta(entry);
-                      const selectable = isSelectableFile(entry);
-                      const picked = selectable && selected.includes(entry.path);
-                      // In selection mode only files respond: a directory has
-                      // nothing to select, and navigating away would discard the
-                      // selection you are still building.
-                      const inert = selecting
-                        ? !selectable
-                        : entry.kind === 'symlink' || entry.kind === 'other';
-                      return (
-                        <DragSource
-                          key={entry.path}
-                          // Every row stays draggable while selecting: grabbing
-                          // one outside the selection drags just that file, the
-                          // same as Finder. `items` already encodes which.
-                          enabled={!isDemoMode()}
-                          items={dragItemsByPath.get(entry.path) ?? []}
-                          authorization={authorization}
-                          tlsPin={directTlsPin ?? ''}
-                          origin={baseUrl}
-                          // The selection has done its job once the files land
-                          // somewhere; leaving it up would strand the sheet in a
-                          // mode you have to dismiss by hand. A row dragged from
-                          // outside the selection did not carry it, so it leaves
-                          // the selection alone.
-                          onDelivered={selecting && picked ? endSelection : undefined}
-                          onModifiers={rememberModifiers}
-                        >
-                          {entry.kind === 'directory' && !selecting ? (
-                            <SessionFolderRow
-                              name={entry.name}
-                              onPress={() => pressFileRow(entry)}
-                              accessibilityLabel={entry.name}
-                            />
-                          ) : (
-                            <Pressable
-                              onPress={() => {
-                                pressFileRow(entry);
-                              }}
-                              // Not on iPad, where a long press is the lift that
-                              // starts a native drag (UIDragInteraction is off on
-                              // iPhone by default); both firing at ~500 ms would
-                              // race. There the row menu and ⌘-click remain.
-                              onLongPress={
-                                !selecting && selectable && !longPressDrags
-                                  ? () => startSelection(entry)
+                    <MarkdownLine
+                      line={item.content}
+                      onOpenLocalFile={null}
+                      onOpenAppLink={null}
+                      sessionFileImageSource={null}
+                      onOpenImage={() => {}}
+                    />
+                  )
+                }
+              />
+            </View>
+          ) : previewLoading ? (
+            <View style={styles.sheetLoading}>
+              <ActivityIndicator color={theme.colors.textMuted} />
+            </View>
+          ) : (
+            <>
+              {error &&
+              root !== 'documents' &&
+              root !== 'drafts' &&
+              !(documentSession && root === 'worktree') ? (
+                <Text style={styles.sheetError}>{error}</Text>
+              ) : null}
+              {truncated ? (
+                <Text style={styles.sheetLimited}>Showing first 1000 entries</Text>
+              ) : null}
+              {loading ? (
+                <View style={styles.sheetLoading}>
+                  <ActivityIndicator color={theme.colors.textMuted} />
+                </View>
+              ) : (
+                <DropZone
+                  style={styles.filesDropZone}
+                  enabled={!uploading && root !== 'drafts'}
+                  maxFiles={MAX_DROPPED_UPLOADS}
+                  maxFileBytes={MAX_DROPPED_UPLOAD_BYTES}
+                  maxTotalBytes={MAX_DROPPED_UPLOAD_TOTAL_BYTES}
+                  onFiles={uploadDroppedFiles}
+                  onRejected={onUploadDropRejected}
+                  onActiveChange={setDropActive}
+                >
+                  {/* A touch that turned into a scroll never reaches a press, so
+                    the modifiers it reported have to be withdrawn here too. */}
+                  <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
+                    {entries.length === 0 ? (
+                      <Text style={styles.sheetEmpty}>
+                        {error
+                          ? 'Files could not be loaded. Reopen this view to try again.'
+                          : 'No files'}
+                      </Text>
+                    ) : (
+                      entries.map((entry) => {
+                        const meta = fileEntryMeta(entry);
+                        const selectable = isSelectableFile(entry);
+                        const picked = selectable && selected.includes(entry.path);
+                        // In selection mode only files respond: a directory has
+                        // nothing to select, and navigating away would discard the
+                        // selection you are still building.
+                        const inert = selecting
+                          ? !selectable
+                          : entry.kind === 'symlink' || entry.kind === 'other';
+                        return (
+                          <DragSource
+                            key={entry.path}
+                            // Every row stays draggable while selecting: grabbing
+                            // one outside the selection drags just that file, the
+                            // same as Finder. `items` already encodes which.
+                            enabled={!isDemoMode()}
+                            items={dragItemsByPath.get(entry.path) ?? []}
+                            authorization={authorization}
+                            tlsPin={directTlsPin ?? ''}
+                            origin={baseUrl}
+                            // The selection has done its job once the files land
+                            // somewhere; leaving it up would strand the sheet in a
+                            // mode you have to dismiss by hand. A row dragged from
+                            // outside the selection did not carry it, so it leaves
+                            // the selection alone.
+                            onDelivered={selecting && picked ? endSelection : undefined}
+                            onModifiers={rememberModifiers}
+                          >
+                            <FileRowActions
+                              label={entry.name}
+                              disabled={mutating || selecting || inert}
+                              onDelete={
+                                root !== 'drafts' &&
+                                (entry.kind === 'file' || entry.kind === 'directory')
+                                  ? () => confirmDelete([entry.path], () => undefined)
                                   : undefined
                               }
-                              disabled={inert}
-                              accessibilityRole={selecting ? 'checkbox' : 'button'}
-                              accessibilityLabel={entry.name}
-                              accessibilityState={selecting ? { checked: picked } : undefined}
-                              style={({ pressed }) => [
-                                styles.fileRow,
-                                pressed || picked ? styles.sheetRowPressed : null,
-                                inert ? styles.sheetRowDisabled : null,
-                              ]}
+                              onMenu={
+                                entry.kind === 'file'
+                                  ? () => setMenuFor({ path: entry.path, inPreview: false })
+                                  : undefined
+                              }
                             >
-                              <Icon
-                                name={fileIcon(entry)}
-                                size={18}
-                                color={theme.colors.textMuted}
-                              />
-                              <View style={styles.fileMain}>
-                                <Text
-                                  style={[styles.sheetRowLabel, styles.fileName]}
-                                  numberOfLines={2}
-                                  ellipsizeMode="tail"
-                                >
-                                  {entry.name}
-                                </Text>
-                                {meta.length > 0 ? (
-                                  <Text style={styles.fileMeta} numberOfLines={1}>
-                                    {meta}
-                                  </Text>
-                                ) : null}
-                              </View>
-                              {selecting ? (
-                                <View style={styles.fileDownload}>
-                                  <Icon
-                                    name={picked ? 'check-circle' : 'circle'}
-                                    size={18}
-                                    color={picked ? theme.colors.action : theme.colors.textFaint}
-                                  />
-                                </View>
-                              ) : entry.kind === 'file' ? (
+                              {entry.kind === 'directory' && !selecting ? (
+                                <SessionFolderRow
+                                  name={entry.name}
+                                  onPress={() => pressFileRow(entry)}
+                                  accessibilityLabel={entry.name}
+                                />
+                              ) : (
                                 <Pressable
-                                  onPress={() => setMenuFor({ path: entry.path, inPreview: false })}
-                                  disabled={mutating}
-                                  hitSlop={8}
-                                  accessibilityRole="button"
-                                  accessibilityLabel={`More actions for ${entry.name}`}
-                                  style={styles.fileDownload}
+                                  onPress={() => {
+                                    pressFileRow(entry);
+                                  }}
+                                  // Not on iPad, where a long press is the lift that
+                                  // starts a native drag (UIDragInteraction is off on
+                                  // iPhone by default); both firing at ~500 ms would
+                                  // race. There the row menu and ⌘-click remain.
+                                  onLongPress={
+                                    !selecting && selectable && !longPressDrags
+                                      ? () => startSelection(entry)
+                                      : undefined
+                                  }
+                                  disabled={inert}
+                                  accessibilityRole={selecting ? 'checkbox' : 'button'}
+                                  accessibilityLabel={entry.name}
+                                  accessibilityState={selecting ? { checked: picked } : undefined}
+                                  style={({ pressed }) => [
+                                    styles.fileRow,
+                                    pressed || picked ? styles.sheetRowPressed : null,
+                                    inert ? styles.sheetRowDisabled : null,
+                                  ]}
                                 >
                                   <Icon
-                                    name="more-horizontal"
+                                    name={fileIcon(entry)}
                                     size={18}
                                     color={theme.colors.textMuted}
                                   />
+                                  <View style={styles.fileMain}>
+                                    <Text
+                                      style={[styles.sheetRowLabel, styles.fileName]}
+                                      numberOfLines={2}
+                                      ellipsizeMode="tail"
+                                    >
+                                      {entry.name}
+                                    </Text>
+                                    {meta.length > 0 ? (
+                                      <Text style={styles.fileMeta} numberOfLines={1}>
+                                        {meta}
+                                      </Text>
+                                    ) : null}
+                                  </View>
+                                  {selecting ? (
+                                    <View style={styles.fileDownload}>
+                                      <Icon
+                                        name={picked ? 'check-circle' : 'circle'}
+                                        size={18}
+                                        color={
+                                          picked ? theme.colors.action : theme.colors.textFaint
+                                        }
+                                      />
+                                    </View>
+                                  ) : entry.kind === 'directory' ? (
+                                    <Icon
+                                      name="chevron-right"
+                                      size={17}
+                                      color={theme.colors.textFaint}
+                                    />
+                                  ) : null}
                                 </Pressable>
-                              ) : (
-                                <Icon
-                                  name="chevron-right"
-                                  size={17}
-                                  color={theme.colors.textFaint}
-                                />
                               )}
-                            </Pressable>
-                          )}
-                        </DragSource>
-                      );
-                    })
+                            </FileRowActions>
+                          </DragSource>
+                        );
+                      })
+                    )}
+                  </ScrollView>
+                  {dropActive ? (
+                    <View pointerEvents="none" style={styles.filesDropHint}>
+                      <Icon name="download" size={18} color={theme.colors.action} />
+                      <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
+                    </View>
+                  ) : null}
+                </DropZone>
+              )}
+              {selecting ? (
+                <View style={styles.filesSelectionBar}>
+                  {selected.length === 0 ? (
+                    <Text style={styles.filesPath}>Tap files to select them</Text>
+                  ) : (
+                    <View />
                   )}
-                </ScrollView>
-                {dropActive ? (
-                  <View pointerEvents="none" style={styles.filesDropHint}>
-                    <Icon name="download" size={18} color={theme.colors.action} />
-                    <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
-                  </View>
-                ) : null}
-              </DropZone>
-            )}
-            {selecting ? (
-              <View style={styles.filesSelectionBar}>
-                {selected.length === 0 ? (
-                  <Text style={styles.filesPath}>Tap files to select them</Text>
-                ) : (
-                  <View />
-                )}
-                <HeaderTextButton
-                  label="Delete…"
-                  emphasis="destructive"
-                  disabled={root === 'drafts' || mutating || selected.length === 0}
-                  accessibilityLabel="Delete selected files"
-                  onPress={deleteSelectedFiles}
-                />
-              </View>
-            ) : null}
-          </>
-        )}
-        {menuFor ? (
-          <FileActionMenu
-            title={fileNameFromPath(menuFor.path)}
-            actions={menuActions.filter((action) =>
-              root === 'drafts'
-                ? !['edit', 'rename', 'delete'].includes(action.key)
-                : root === 'sources'
-                  ? action.key !== 'edit'
-                  : true,
-            )}
-            onDismiss={() => setMenuFor(null)}
-          />
-        ) : null}
-        {adding ? (
-          <FileActionMenu
-            title="Add files"
-            onDismiss={() => setAdding(false)}
-            actions={[
-              ...(root === 'sources'
-                ? []
-                : [
-                    {
-                      key: 'create',
-                      label: 'New Markdown file…',
-                      icon: 'file-plus' as const,
-                      onPress: () => setCreating(true),
-                    },
-                  ]),
-              { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
-            ]}
-          />
-        ) : null}
-        {creating ? (
-          <FileNameDialog
-            title="New Markdown file"
-            initialName="note.md"
-            allowUnchanged
-            confirmLabel="Create"
-            validate={(name) =>
-              renameProblem(
-                name,
-                '',
-                entries.map((entry) => entry.name),
-              ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
-            }
-            onCancel={() => setCreating(false)}
-            onSubmit={async (name) => {
-              setCreating(false);
-              setEditing({
-                path: [path, name].filter(Boolean).join('/'),
-                content: '',
-                size: 0,
-                editable: true,
-              });
-            }}
-          />
-        ) : null}
-        {editing ? (
-          <FileTextEditor
-            file={editing}
-            onCancel={() => setEditing(null)}
-            onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
-            onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
-            onVersion={(version) =>
-              client.readSessionFileVersion(sessionId, root, editing.path, version)
-            }
-            onSave={(filePath, content, version) =>
-              client.saveSessionFileContent(sessionId, root, filePath, content, version)
-            }
-            onSaved={(file) => {
-              if (file.warning) Alert.alert('File saved', file.warning);
-              setEditing(null);
-              setPreview(file);
-              setPath(parentPath(file.path));
-              setReloadKey((key) => key + 1);
-            }}
-          />
-        ) : null}
-        {renaming ? (
-          <FileNameDialog
-            title="Rename file"
-            subtitle={parentPath(renaming) ? `in /${parentPath(renaming)}` : undefined}
-            initialName={fileNameFromPath(renaming)}
-            confirmLabel="Rename"
-            validate={(name) =>
-              renameProblem(
-                name,
-                fileNameFromPath(renaming),
-                entries.filter((entry) => entry.path !== renaming).map((entry) => entry.name),
-              )
-            }
-            onSubmit={(name) => renameFile(renaming, name)}
-            onCancel={() => setRenaming(null)}
-          />
-        ) : null}
-      </Animated.View>
+                  <HeaderTextButton
+                    label="Delete…"
+                    emphasis="destructive"
+                    disabled={root === 'drafts' || mutating || selected.length === 0}
+                    accessibilityLabel="Delete selected files"
+                    onPress={deleteSelectedFiles}
+                  />
+                </View>
+              ) : null}
+            </>
+          )}
+          {confirmSheet}
+          {menuFor ? (
+            <FileActionMenu
+              title={fileNameFromPath(menuFor.path)}
+              actions={menuActions.filter((action) =>
+                root === 'drafts'
+                  ? !['edit', 'rename', 'delete'].includes(action.key)
+                  : root === 'sources'
+                    ? action.key !== 'edit'
+                    : true,
+              )}
+              onDismiss={() => setMenuFor(null)}
+            />
+          ) : null}
+          {adding ? (
+            <FileActionMenu
+              title="Add files"
+              onDismiss={() => setAdding(false)}
+              actions={[
+                ...(root === 'sources'
+                  ? []
+                  : [
+                      {
+                        key: 'create',
+                        label: 'New Markdown file…',
+                        icon: 'file-plus' as const,
+                        onPress: () => setCreating(true),
+                      },
+                    ]),
+                { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
+              ]}
+            />
+          ) : null}
+          {creating ? (
+            <FileNameDialog
+              title="New Markdown file"
+              initialName="note.md"
+              allowUnchanged
+              confirmLabel="Create"
+              validate={(name) =>
+                renameProblem(
+                  name,
+                  '',
+                  entries.map((entry) => entry.name),
+                ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
+              }
+              onCancel={() => setCreating(false)}
+              onSubmit={async (name) => {
+                setCreating(false);
+                setEditing({
+                  path: [path, name].filter(Boolean).join('/'),
+                  content: '',
+                  size: 0,
+                  editable: true,
+                });
+              }}
+            />
+          ) : null}
+          {editing ? (
+            <FileTextEditor
+              file={editing}
+              onCancel={() => setEditing(null)}
+              onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
+              onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
+              onVersion={(version) =>
+                client.readSessionFileVersion(sessionId, root, editing.path, version)
+              }
+              onSave={(filePath, content, version) =>
+                client.saveSessionFileContent(sessionId, root, filePath, content, version)
+              }
+              onSaved={(file) => {
+                if (file.warning) Alert.alert('File saved', file.warning);
+                setEditing(null);
+                setPreview(file);
+                setPath(parentPath(file.path));
+                setReloadKey((key) => key + 1);
+              }}
+            />
+          ) : null}
+          {renaming ? (
+            <FileNameDialog
+              title="Rename file"
+              subtitle={parentPath(renaming) ? `in /${parentPath(renaming)}` : undefined}
+              initialName={fileNameFromPath(renaming)}
+              confirmLabel="Rename"
+              validate={(name) =>
+                renameProblem(
+                  name,
+                  fileNameFromPath(renaming),
+                  entries.filter((entry) => entry.path !== renaming).map((entry) => entry.name),
+                )
+              }
+              onSubmit={(name) => renameFile(renaming, name)}
+              onCancel={() => setRenaming(null)}
+            />
+          ) : null}
+        </Animated.View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -6814,14 +6927,6 @@ function renderRow(item: Row, isLatest: boolean, bookmarkable = true) {
 // so it never disappears for the duration of a slow round trip; the model retires
 // the echo the moment the canonical message arrives, so there is exactly one
 // bubble at every point in time (see `SessionModel.retirePending`).
-function HighlightedSearchText({ text }: { text: string }) {
-  const query = useContext(SearchHighlightContext);
-  return splitSearchHighlights(text, query).map((segment, index) => (
-    <Text key={index} style={segment.highlighted ? styles.searchTermHighlight : undefined}>
-      {segment.text}
-    </Text>
-  ));
-}
 
 function UserBubble({ message }: { message: UserTextMessage }) {
   const attachments = message.attachments ?? [];
@@ -6835,10 +6940,11 @@ function UserBubble({ message }: { message: UserTextMessage }) {
   const pending = message.pending;
   const actions = useContext(SessionActionsContext);
   const recoverable = pending === 'failed' && actions !== null;
+  const { sender, fromOther } = useMessageSender(message);
   return (
     <View>
       <Text style={styles.turnTimestamp}>{formatTurnTimestamp(message.createdAt)}</Text>
-      <View style={[styles.userRow, message.peer ? styles.peerRow : null]}>
+      <View style={[styles.userRow, message.peer || fromOther ? styles.peerRow : null]}>
         <View
           style={[
             styles.userBubble,
@@ -6851,6 +6957,7 @@ function UserBubble({ message }: { message: UserTextMessage }) {
               Agent · {message.peer.label}
             </Text>
           ) : null}
+          {sender !== undefined ? <Text style={styles.peerSource}>{sender}</Text> : null}
           {attachments.length > 0 ? (
             <View style={styles.userImages}>
               {attachments.map((a, i) =>
@@ -6889,7 +6996,10 @@ function UserBubble({ message }: { message: UserTextMessage }) {
             </Text>
           ) : null}
           {pending === 'sending' ? (
-            <Text style={styles.userPendingTag}>◌ sending…</Text>
+            <View style={styles.userPendingStatus}>
+              <SystemNoticeIndicator intent="transient" />
+              <Text style={styles.userPendingTag}>Sending…</Text>
+            </View>
           ) : pending === 'failed' ? (
             <Pressable
               onPress={recoverable ? () => actions.recoverPending(message.id) : undefined}
@@ -6902,9 +7012,12 @@ function UserBubble({ message }: { message: UserTextMessage }) {
                   : undefined
               }
             >
-              <Text style={styles.userPendingTag}>
-                {recoverable ? '✕ not sent · tap to edit' : '✕ not sent'}
-              </Text>
+              <View style={styles.userPendingStatus}>
+                <SystemNoticeIndicator intent="needsSetup" />
+                <Text style={styles.userPendingTag}>
+                  {recoverable ? 'Not sent · tap to edit' : 'Not sent'}
+                </Text>
+              </View>
             </Pressable>
           ) : null}
         </View>
@@ -7320,268 +7433,6 @@ function MessageActionsMenu({
   );
 }
 
-function MarkdownText({
-  content,
-  onOpenLocalFile,
-  onOpenAppLink,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  content: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const finishMarkdownWork = beginRenderWork(
-    'markdown-body',
-    useContext(TranscriptTimingContext) ?? '',
-  );
-  const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
-  const rendered = (
-    <View>
-      {blocks.map((block, i) =>
-        block.type === 'table' ? (
-          <MarkdownTable key={i} header={block.header} rows={block.rows} />
-        ) : (
-          block.lines.map((line, j) => (
-            <MarkdownLine
-              key={`${i}-${j}`}
-              line={line}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-              sessionFileImageSource={sessionFileImageSource}
-              onOpenImage={onOpenImage}
-            />
-          ))
-        ),
-      )}
-    </View>
-  );
-  finishMarkdownWork();
-  return rendered;
-}
-
-// A markdown table (GitHub-flavored: a header row, a `|---|` separator, body
-// rows) → an aligned grid. The block-level parsing (`parseMarkdownBlocks` /
-// `splitTableCells`) lives in @verity/mobile and is unit-tested; this component
-// renders the parsed header + rows.
-function MarkdownTable({ header, rows }: { header: string[]; rows: string[][] }) {
-  return (
-    <View style={styles.table}>
-      <View style={[styles.tableRow, styles.tableHeaderRow]}>
-        {header.map((cell, i) => (
-          <View key={i} style={styles.tableCell}>
-            <SelectableMarkdownText textStyle={[styles.agentText, styles.tableHeaderText]}>
-              <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
-            </SelectableMarkdownText>
-          </View>
-        ))}
-      </View>
-      {rows.map((row, ri) => (
-        <View
-          key={ri}
-          style={[styles.tableRow, ri === rows.length - 1 ? styles.tableRowLast : null]}
-        >
-          {row.map((cell, ci) => (
-            <View key={ci} style={styles.tableCell}>
-              <SelectableMarkdownText textStyle={styles.agentText}>
-                <Inline text={cell} onOpenLocalFile={null} onOpenAppLink={null} />
-              </SelectableMarkdownText>
-            </View>
-          ))}
-        </View>
-      ))}
-    </View>
-  );
-}
-
-const HEADING = /^(#{1,6})\s+(.*)$/;
-const BULLET = /^\s*[-*]\s+(.*)$/;
-const ORDERED = /^\s*(\d+)\.\s+(.*)$/;
-
-// Agent prose uses native RN <Text>, not react-native-uitextview. Keep it out of
-// generic flex rows: on iOS, selectable Text in a row can measure as one wide
-// line and clip at the right edge. Direct column layout wraps normally and also
-// avoids UITextView's clipped-height mis-measure.
-function SelectableMarkdownText({
-  textStyle,
-  children,
-}: {
-  textStyle: StyleProp<TextStyle>;
-  children: ReactNode;
-}) {
-  return (
-    <Text style={[styles.mdText, textStyle]} selectable>
-      {children}
-    </Text>
-  );
-}
-
-function MarkdownLine({
-  line,
-  onOpenLocalFile,
-  onOpenAppLink,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  line: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const imageLinks = useMemo(() => localImageLinks(line), [line]);
-  const heading = HEADING.exec(line);
-  if (heading) {
-    return (
-      <SelectableMarkdownText textStyle={[styles.agentText, styles.mdHeading]}>
-        <Inline
-          text={heading[2] ?? ''}
-          onOpenLocalFile={onOpenLocalFile}
-          onOpenAppLink={onOpenAppLink}
-        />
-      </SelectableMarkdownText>
-    );
-  }
-  const bullet = BULLET.exec(line);
-  if (bullet) {
-    return (
-      <View style={styles.mdListRow}>
-        <Text style={styles.mdBullet}>•</Text>
-        <View style={styles.mdTextSlot}>
-          <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline
-              text={bullet[1] ?? ''}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-            />
-          </SelectableMarkdownText>
-          <LocalImageLinks
-            links={imageLinks}
-            sessionFileImageSource={sessionFileImageSource}
-            onOpenImage={onOpenImage}
-          />
-        </View>
-      </View>
-    );
-  }
-  const ordered = ORDERED.exec(line);
-  if (ordered) {
-    return (
-      <View style={styles.mdListRow}>
-        <Text style={styles.mdBullet}>{ordered[1]}.</Text>
-        <View style={styles.mdTextSlot}>
-          <SelectableMarkdownText textStyle={styles.agentText}>
-            <Inline
-              text={ordered[2] ?? ''}
-              onOpenLocalFile={onOpenLocalFile}
-              onOpenAppLink={onOpenAppLink}
-            />
-          </SelectableMarkdownText>
-          <LocalImageLinks
-            links={imageLinks}
-            sessionFileImageSource={sessionFileImageSource}
-            onOpenImage={onOpenImage}
-          />
-        </View>
-      </View>
-    );
-  }
-  const section = markdownSectionTitle(line);
-  if (section) {
-    return (
-      <SelectableMarkdownText textStyle={[styles.agentText, styles.mdSectionHeading]}>
-        <HighlightedSearchText text={section} />
-      </SelectableMarkdownText>
-    );
-  }
-  if (line.trim() === '') return <View style={styles.mdGap} />;
-  return (
-    <View>
-      <SelectableMarkdownText textStyle={styles.agentText}>
-        <Inline text={line} onOpenLocalFile={onOpenLocalFile} onOpenAppLink={onOpenAppLink} />
-      </SelectableMarkdownText>
-      <LocalImageLinks
-        links={imageLinks}
-        sessionFileImageSource={sessionFileImageSource}
-        onOpenImage={onOpenImage}
-      />
-    </View>
-  );
-}
-
-function localImageLinks(line: string): Array<{ path: string; label: string }> {
-  const seen = new Set<string>();
-  const links: Array<{ path: string; label: string }> = [];
-  for (const span of parseInline(line)) {
-    if (span.t !== 'link' || span.external) continue;
-    const path = sessionFilePathFromLocalLink(span.url);
-    if (path === null || !isSessionImageFilePath(path) || seen.has(path)) continue;
-    seen.add(path);
-    links.push({ path, label: span.text });
-  }
-  return links;
-}
-
-function LocalImageLinks({
-  links,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  links: Array<{ path: string; label: string }>;
-  sessionFileImageSource: ((path: string) => ImageSource | undefined) | null;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  if (links.length === 0 || sessionFileImageSource === null) return null;
-  return (
-    <View style={styles.localLinkImages}>
-      {links.map((link) => (
-        <LocalImageLink
-          key={link.path}
-          link={link}
-          sessionFileImageSource={sessionFileImageSource}
-          onOpenImage={onOpenImage}
-        />
-      ))}
-    </View>
-  );
-}
-
-// A session-file image goes through the pinned downloader like a tool image: a
-// direct HTTPS URL would reach expo-image, which rejects the self-signed
-// certificate of a TLS-pinned endpoint and leaves an empty frame behind.
-function LocalImageLink({
-  link,
-  sessionFileImageSource,
-  onOpenImage,
-}: {
-  link: { path: string; label: string };
-  sessionFileImageSource: (path: string) => ImageSource | undefined;
-  onOpenImage: (source: ImageSource, label: string) => void;
-}) {
-  const immediate = useMemo(
-    () => sessionFileImageSource(link.path),
-    [sessionFileImageSource, link.path],
-  );
-  const source = usePinnedImageSource(immediate, `session-file-${link.path}`);
-  if (source === undefined) return null;
-  return (
-    <Pressable
-      onPress={() => onOpenImage(source, link.label)}
-      accessibilityRole="imagebutton"
-      accessibilityLabel={`View ${link.label} full screen`}
-    >
-      <ExpoImage
-        source={source}
-        style={styles.localLinkImage}
-        contentFit="contain"
-        transition={120}
-      />
-    </Pressable>
-  );
-}
-
 function ImageSourceViewer({
   source,
   label,
@@ -7611,79 +7462,6 @@ function SessionFileImageViewer({
   return <ImageLightbox source={source} label={fileNameFromPath(path)} onClose={onClose} />;
 }
 
-// Render inline **bold** / `code` / link spans (nested Text lays them out inline).
-// A link tap opens the URL in the system browser, a `verity://` link opens the
-// whitelisted screen or sheet in the app; selection still works via a long-press
-// on the surrounding selectable Text.
-function Inline({
-  text,
-  onOpenLocalFile,
-  onOpenAppLink,
-}: {
-  text: string;
-  onOpenLocalFile: OpenLocalFile | null;
-  onOpenAppLink: OpenAppLink | null;
-}) {
-  const { theme } = useUnistyles();
-  return (
-    <>
-      {parseInline(text).map((span, i) => {
-        if (span.t === 'bold') {
-          return (
-            <Text key={i} style={styles.mdBold}>
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        if (span.t === 'code') {
-          return (
-            <Text key={i} style={[styles.mdCode, { color: theme.colors.signature }]}>
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        if (span.t === 'link') {
-          const appLink = span.external ? null : parseAppLink(span.url);
-          const openApp =
-            appLink !== null && onOpenAppLink !== null ? onOpenAppLink(appLink) : null;
-          const local =
-            span.external || appLink !== null ? null : sessionFileTargetFromLocalLink(span.url);
-          const canOpenLocal = local !== null && onOpenLocalFile !== null;
-          const asLink = span.external || openApp !== null;
-          return (
-            <Text
-              key={i}
-              style={[
-                asLink ? styles.mdLink : styles.mdReference,
-                { color: asLink ? theme.colors.action : theme.colors.signature },
-              ]}
-              // openURL rejects only if no handler can open it (no browser); swallow
-              // so it never surfaces as an unhandled rejection (only http(s) reach here).
-              onPress={
-                span.external
-                  ? () => void Linking.openURL(span.url).catch(() => undefined)
-                  : openApp !== null
-                    ? openApp
-                    : canOpenLocal
-                      ? () => onOpenLocalFile(local.path, local.root)
-                      : undefined
-              }
-              accessibilityRole={asLink || canOpenLocal ? 'link' : undefined}
-            >
-              <HighlightedSearchText text={span.text} />
-            </Text>
-          );
-        }
-        return (
-          <Text key={i}>
-            <HighlightedSearchText text={span.text} />
-          </Text>
-        );
-      })}
-    </>
-  );
-}
-
 // The agent's reasoning, collapsed to a subtle one-line chip by default. Only
 // reached for NON-EMPTY thinking: headless `claude -p` exposes no thinking body
 // (just a signature), so the reducer drops empty thinking blocks rather than
@@ -7707,7 +7485,7 @@ function ThinkingBlock({ text }: { text: string }) {
           color={theme.colors.textFaint}
         />
       </Pressable>
-      {open ? <Text style={[styles.agentText, styles.thinkingText]}>{text}</Text> : null}
+      {open ? <Text style={[markdownStyles.agentText, styles.thinkingText]}>{text}</Text> : null}
     </View>
   );
 }
@@ -7767,6 +7545,16 @@ function ToolCard({ message }: { message: ToolCallMessage }) {
   const skillBody = message.tool.skillBody;
   const running = message.tool.name === 'Skill' && message.tool.state === 'running';
   const expandable = Boolean(view.subtitle) || Boolean(view.preview) || Boolean(skillBody);
+  const actions = useContext(SessionActionsContext);
+  const round = mockupRoundView(message.tool, actions?.mockupReview);
+  if (round)
+    return (
+      <MockupPager
+        screens={round.screens}
+        current={round.current}
+        onOpen={(name) => actions?.openMockups(name)}
+      />
+    );
   const assignment = qaAssignmentView(message.tool);
   if (assignment)
     return (
@@ -8162,99 +7950,88 @@ function PlanProposalCard({
 const RETRY_PROMPT = 'Try again';
 
 function EventRow({ message, isLatest }: { message: ModeSwitchMessage; isLatest: boolean }) {
-  const { theme } = useUnistyles();
   const actions = useContext(SessionActionsContext);
-  const [showTechnical, setShowTechnical] = useState(false);
   const descriptor = agentEventDescriptor(message.event);
-  const color = toneColor(theme.colors, eventToneColor(descriptor.tone));
-  // A task change is bookkeeping, not conversation: one muted line that opens
+  // A task change is bookkeeping, not conversation: one quiet line that opens
   // the panel when tapped, so it never competes with the reply around it.
   if (descriptor.action === 'tasks') {
     return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+      <SystemNotice
+        intent="unknown"
+        title={descriptor.label}
+        link="Tasks"
         onPress={openTasksPanel}
-        style={({ pressed }) => [styles.eventRow, pressed ? styles.eventActionPressed : null]}
-      >
-        <Text style={styles.eventDetail}>{descriptor.label}</Text>
-        <Text style={styles.eventTasksLink}>Tasks ›</Text>
-      </Pressable>
+        accessibilityLabel={`${descriptor.label}. Open Tasks`}
+      />
     );
   }
   const repeats = message.repeatCount ?? 1;
   // Only the newest failure offers a resend: an older one was already followed
   // by something, and resending from it would answer a stale state.
+  // A turn that never started is repeated verbatim; asking the agent to "try
+  // again" would send a follow-up to a request it never received. Without a
+  // text-only message to repeat (attachments), no button is better than that.
+  const resendable = descriptor.action !== 'resend' || Boolean(actions?.lastUserPrompt);
   const canRetry =
-    descriptor.action === 'retry' &&
+    (descriptor.action === 'retry' || descriptor.action === 'resend') &&
+    resendable &&
     isLatest &&
     actions !== null &&
     !actions.sending &&
     !actions.dead;
-  const expandable = descriptor.technical !== undefined;
-  return (
-    <View
-      style={[styles.eventRow, descriptor.action || expandable ? styles.eventRowActionable : null]}
-    >
-      <Text style={[styles.eventLabel, { color }]}>
-        {repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
-      </Text>
-      {descriptor.detail ? <Text style={styles.eventDetail}>{descriptor.detail}</Text> : null}
-      {canRetry || expandable ? (
-        <View style={styles.eventFailureActions}>
-          {canRetry ? (
-            <Button
-              label="Try again"
-              icon="rotate-cw"
-              variant="secondary"
-              size="compact"
-              onPress={() => actions.sendTurn(RETRY_PROMPT)}
-              accessibilityHint="Sends a new turn asking the agent to continue"
-            />
-          ) : null}
-          {expandable ? (
-            <Pressable
-              onPress={() => setShowTechnical((open) => !open)}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: showTechnical }}
-              accessibilityLabel={showTechnical ? 'Hide details' : 'Show details'}
-              hitSlop={8}
-              style={({ pressed }) => (pressed ? styles.eventActionPressed : null)}
-            >
-              <Text style={styles.eventTasksLink}>
-                {showTechnical ? 'Hide details' : 'Details'}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-      {expandable && showTechnical ? (
-        <View style={styles.eventTechnical}>
-          <Text selectable style={styles.toolPreview}>
-            {descriptor.technical}
-          </Text>
-        </View>
-      ) : null}
-      {descriptor.action === 'claude-login' ? (
-        <View style={styles.eventActionRow}>
+  const resend =
+    descriptor.action === 'resend' && actions?.lastUserPrompt
+      ? actions.lastUserPrompt
+      : RETRY_PROMPT;
+  const recovery =
+    canRetry || descriptor.action === 'claude-login' || descriptor.action === 'connect-account' ? (
+      <>
+        {canRetry ? (
+          <Button
+            label="Try again"
+            icon="rotate-cw"
+            variant="secondary"
+            size="compact"
+            onPress={() => actions.sendTurn(resend)}
+            accessibilityHint={
+              descriptor.action === 'resend'
+                ? 'Sends your last message again'
+                : 'Sends a new turn asking the agent to continue'
+            }
+          />
+        ) : null}
+        {descriptor.action === 'connect-account' ? (
+          <Button
+            label="My AI accounts"
+            size="compact"
+            onPress={() => router.push('/settings/ai-accounts')}
+          />
+        ) : null}
+        {descriptor.action === 'claude-login' ? (
           <Button
             label="Sign in to Claude"
             size="compact"
             onPress={() => router.push('/settings/services/claude?agentLogin=claude')}
           />
-        </View>
-      ) : null}
-    </View>
+        ) : null}
+      </>
+    ) : undefined;
+  return (
+    <SystemNotice
+      intent={descriptor.tone === 'neutral' ? 'unknown' : 'needsSetup'}
+      title={repeats > 1 ? `${descriptor.label} · ${String(repeats)}×` : descriptor.label}
+      detail={descriptor.detail}
+      actions={recovery}
+      technical={descriptor.technical}
+    />
   );
 }
 
+/** A preparation wait the server reported. Its first sentence is the headline,
+ *  the rest explains; the row disappears once the turn starts. */
 function DependencyStatusRow({ text }: { text: string }) {
-  return (
-    <View style={styles.dependencyStatusRow} accessible accessibilityLabel={text}>
-      <WorkingDot size={7} />
-      <Text style={styles.dependencyStatusText}>{text}</Text>
-    </View>
-  );
+  const { title, detail } = splitNoticeText(text);
+  return <SystemNotice intent="transient" title={title} detail={detail} />;
 }
 
 // Quick-Action chips (issue #97): the agent's end-of-turn decision rendered as
@@ -8496,9 +8273,13 @@ function BookmarksSheet({
 // the dirty-worktree case the sheet offers commit/stash retries inline. Rendered
 // only while open, so its branch fetch runs only then.
 function BranchSwitcherSheet({
+  client,
+  sessionId,
   branches,
   onClose,
 }: {
+  client: VerityClient;
+  sessionId: string;
   // Shared with the top chip (one source of truth) so a switch updates BOTH —
   // the chip's branch name and the sheet's list — not just the sheet.
   branches: UseBranches;
@@ -8571,6 +8352,7 @@ function BranchSwitcherSheet({
           <SheetResizeHandle panHandlers={sheet.panHandlers} />
           <Text style={styles.sheetTitle}>Switch branch</Text>
           <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
+            <SessionRepositories client={client} sessionId={sessionId} />
             {error ? <Text style={styles.sheetError}>Couldn’t load branches: {error}</Text> : null}
             {switchError ? <Text style={styles.sheetError}>{switchError}</Text> : null}
             {loading && current === undefined ? (
@@ -8936,7 +8718,6 @@ function PermissionPrompt({
   const packageInstall =
     pending.tool === 'verity_package_install' ? packageInstallSummary(pending.input) : null;
   const planningTool = planningToolName(pending.tool);
-  const isEndPlanning = planningTool === END_PLANNING_TOOL;
   const isPresentPlan = planningTool === 'verity_present_plan';
   const knowledgeSummary = isKnowledge ? knowledgePublishSummary(pending.input) : null;
   const calendarSummary = isCalendar ? calendarChangeSummary(pending.input) : null;
@@ -9033,44 +8814,9 @@ function PermissionPrompt({
   // owns its own headline, first match wins in the order they are parsed above, and the next
   // tool adds a line here instead of another level of nesting. The fallback names the tool,
   // which is all that is known when no summariser recognised the input.
-  const cardTitle =
-    [
-      packageInstall?.title ?? null,
-      !isKnowledge
-        ? null
-        : knowledgeSummary?.replacesExisting
-          ? 'Save changes to Global Knowledge?'
-          : 'Publish insight to Global Knowledge?',
-      httpSummary === null ? null : brokeredHttpTitle(httpSummary),
-      cliSecretLabel === null ? null : `Run trusted command with ${cliSecretLabel}?`,
-      handoffSummary === null ? null : sessionHandoffTitle(handoffSummary),
-      linkedMessage === null
-        ? null
-        : approvedForDelivery
-          ? `Retry delivery to ${linkedMessage.targetSessionId}?`
-          : `Send to ${linkedMessage.targetSessionId} and continue the exchange?`,
-      listingSummary === null ? null : listSessionsTitle(listingSummary),
-      progressSummary === null ? null : `Read progress for session ${progressSummary.sessionId}?`,
-      recentSummary === null
-        ? null
-        : `Read ${String(recentSummary.count)} recent messages from session ${recentSummary.sessionId}?`,
-      calendarSummary?.title ?? null,
-      schedulingSummary === null ? null : spellOutBidiControls(schedulingSummary.title),
-      matrixSummary === null
-        ? null
-        : `Send Matrix message to ${spellOutBidiControls(matrixSummary.roomName)}?`,
-      gmailSummary === null ? null : `Send email to ${gmailSummary.to.join(', ')}?`,
-      isEndPlanning
-        ? grantInput?.action === 'discard'
-          ? 'Leave planning and change files?'
-          : 'Implement the plan?'
-        : null,
-      isPresentPlan ? 'Show the proposed plan?' : null,
-    ].find((title) => title !== null) ??
-    // Spelled out like every other string on the card. Tool names are server-controlled today,
-    // so this is consistency rather than exposure — but it is the headline, and the one field
-    // here that never passed a summariser.
-    `Allow ${spellOutBidiControls(view.title)}?`;
+  // Home's inbox titles the same request from the same function, so the two
+  // never word one approval differently.
+  const cardTitle = permissionSummary(pending.tool, pending.input, { approvedForDelivery }).title;
   const allow = (scope?: 'session' | 'project' | 'forever'): void => {
     if (!active) return;
     if (
@@ -9200,20 +8946,10 @@ function PermissionPrompt({
             {/* Command tokens are arbitrary strings and this is the card that hands a
                 secret to a process — the displayed order has to be the executed order. */}
             <Text style={styles.permissionSubtitle} selectable>
-              {spellOutBidiControls(
-                cliSummary.command.map((token) => JSON.stringify(token)).join(' '),
-              )}
+              {trustedCliCommandLine(cliSummary)}
             </Text>
           </ScrollView>
-          <Text style={styles.permissionHttpMeta}>
-            {cliSummary.entryScript !== null
-              ? `Entry script ${cliSummary.entryScript.path} (SHA-256 ${cliSummary.entryScript.sha256}, ${cliSummary.entryScript.loading} loading). `
-              : ''}
-            Verity injects {trustedCliInjectionSummary(cliSummary)}. This trusted process can read,
-            transform, or disclose{' '}
-            {cliSummary.secrets.length === 1 ? 'the complete secret' : 'every one of them in full'}.
-            Output redaction is hygiene only and cannot prevent exfiltration.
-          </Text>
+          <Text style={styles.permissionHttpMeta}>{trustedCliRiskSentence(cliSummary)}</Text>
         </View>
       ) : linkedMessage !== null ? (
         <View style={styles.permissionHttpSummary}>
@@ -9695,6 +9431,7 @@ function PullRequestBar({
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
   const [mergePermissionDenied, setMergePermissionDenied] = useState(false);
+  const [mergeRetryable, setMergeRetryable] = useState(false);
   const [mergeRejectedFor, setMergeRejectedFor] = useState<string | undefined>(undefined);
   const mounted = useRef(true);
   const { checks } = pullRequest;
@@ -9717,7 +9454,7 @@ function PullRequestBar({
   ].join(':');
   const pending = pullRequest.pipeline === 'running' || pullRequest.pipeline === 'pending';
   const mergeRejected = !pending && mergeRejectedFor === pullRequestStateKey && error !== undefined;
-  const visibleError = mergeRejected ? error : undefined;
+  const visibleError = mergeRejected && !mergeRetryable ? error : undefined;
   const merged = pullRequest.phase === 'merged';
   const checksText = pullRequestStatusText(pullRequest);
   // One verdict drives the dot and the button, so they cannot disagree. A conflicting
@@ -9728,7 +9465,7 @@ function PullRequestBar({
     mergeRejected && mergePermissionDenied
       ? { ...pullRequest, viewerCanMerge: false }
       : pullRequest,
-    { merging, mergeRejected },
+    { merging, mergeRejected, mergeRetryable: mergeRejected && mergeRetryable },
   );
   const mergeButtonEnabled = button.kind === 'merge';
   // Static on purpose: the waiting states show their spinner on the button, and a
@@ -9791,6 +9528,7 @@ function PullRequestBar({
       if (!result.ok) {
         setError(result.message);
         setMergePermissionDenied(result.permissionDenied === true);
+        setMergeRetryable(result.retryable === true);
         setMergeRejectedFor(pullRequestStateKey);
         return;
       }
@@ -9866,7 +9604,11 @@ function PullRequestBar({
             button.kind === 'refresh'
               ? () =>
                   void confirmHint().then((proceed) => {
-                    if (proceed && mounted.current) onRefresh();
+                    if (proceed && mounted.current) {
+                      setMergeRejectedFor(undefined);
+                      setError(undefined);
+                      onRefresh();
+                    }
                   })
               : merge
           }
@@ -10347,10 +10089,6 @@ function AttachMenu({
         accessibilityLabel="Close attachment menu"
       />
       <View style={[styles.menuCard, { width: MENU_WIDTH }, cardPos]}>
-        {googleCatalogLoading ? (
-          <Text style={styles.menuRowDetail}>Loading Google accounts…</Text>
-        ) : null}
-        {googleCatalogError ? <Text style={styles.menuRowDetail}>{googleCatalogError}</Text> : null}
         {rows.map((row, index) =>
           'section' in row ? (
             <Text key={row.section} style={styles.menuSectionLabel}>
@@ -10374,6 +10112,30 @@ function AttachMenu({
             </Pressable>
           ),
         )}
+        {/* Where the Connect section appears, so the menu does not jump when it
+            arrives: a first read in progress, or one that failed. */}
+        {!googleConnected && (googleCatalogLoading || googleCatalogError) ? (
+          <>
+            <View style={styles.menuDivider} />
+            <View
+              style={styles.menuRow}
+              accessible
+              accessibilityRole={googleCatalogError ? 'alert' : undefined}
+              accessibilityLabel={googleCatalogError ?? 'Checking Google accounts'}
+            >
+              {googleCatalogError ? (
+                <Icon name="alert-circle" size={20} color={theme.colors.textMuted} />
+              ) : (
+                <ActivityIndicator size="small" color={theme.colors.textMuted} />
+              )}
+              <View style={styles.menuRowText}>
+                <Text style={styles.menuRowDetail}>
+                  {googleCatalogError ?? 'Checking Google accounts…'}
+                </Text>
+              </View>
+            </View>
+          </>
+        ) : null}
       </View>
     </Modal>
   );
@@ -10392,118 +10154,9 @@ function FilePreview({ name }: { name: string }) {
   );
 }
 
-// Resolve an attachment to a renderable URI: a stored ref (id) → the server's
-// content-addressed endpoint (expo-image lazy-fetches + disk-caches it); a pending
-// upload or a legacy inline attachment (data) → a data URI.
-function attachmentSource(a: {
-  id?: string;
-  data?: string;
-  mediaType: string;
-}): ImageSource | undefined {
-  const baseUrl = getVerityBaseUrl();
-  if (a.id !== undefined && baseUrl !== null) {
-    const token = getAuthToken(baseUrl);
-    return {
-      uri: `${baseUrl}/attachments/${a.id}`,
-      ...(token !== null && token.length > 0
-        ? { headers: { authorization: `Bearer ${token}` } }
-        : {}),
-    };
-  }
-  if (a.data !== undefined) return { uri: `data:${a.mediaType};base64,${a.data}` };
-  return undefined;
-}
-
-/** Resolve stored images through the same native public-key-pinned downloader as
- * API requests. Passing their HTTPS URL directly to expo-image would use its own
- * URLSession and therefore reject the installer's self-signed certificate. */
-function useAttachmentImageSource(a: {
-  id?: string;
-  data?: string;
-  mediaType: string;
-}): ImageSource | undefined {
-  const immediate = useMemo(() => attachmentSource(a), [a.data, a.id, a.mediaType]);
-  return usePinnedImageSource(immediate, a.id);
-}
-
-/** Load a server-hosted image source (`immediate`) through the pinned downloader
- * when the active endpoint is a TLS-pinned direct connection; otherwise hand it to
- * expo-image as-is. `cacheKey` names the downloaded copy; without one, `immediate`
- * is not a server URL (e.g. inline base64) and is returned unchanged. */
-function usePinnedImageSource(
-  immediate: ImageSource | undefined,
-  cacheKey: string | undefined,
-  onError?: () => void,
-): ImageSource | undefined {
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-  const [source, setSource] = useState<ImageSource | undefined>(
-    cacheKey === undefined ? immediate : undefined,
-  );
-  useEffect(() => {
-    if (cacheKey === undefined || !/^https?:\/\//.test(immediate?.uri ?? '')) {
-      setSource(immediate);
-      return;
-    }
-    const baseUrl = getVerityBaseUrl();
-    const endpoint = getServerProfile()?.endpoints.find(({ url }) => url === baseUrl);
-    if (
-      baseUrl === null ||
-      endpoint?.transport !== 'direct' ||
-      endpoint.tlsPin === undefined ||
-      // The bearer and pin belong to the active endpoint only; a source built for
-      // another origin (e.g. before a LAN/remote switch) keeps its own loader.
-      !immediate!.uri!.startsWith(`${baseUrl}/`)
-    ) {
-      setSource(immediate);
-      return;
-    }
-    let active = true;
-    let cachedUri: string | undefined;
-    const destination = new FsFile(
-      Paths.cache,
-      'verity-attachments',
-      `${cacheKey.replace(/[^A-Za-z0-9._-]/g, '_').slice(-80)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    );
-    // Read the bearer now rather than trusting the memoized source's header: a
-    // biometric unlock or token rotation can land after the source was built.
-    const token = getAuthToken(baseUrl);
-    void downloadPinnedFile({
-      url: immediate!.uri!,
-      destination: destination.uri,
-      tlsPin: endpoint.tlsPin,
-      useRemote: true,
-      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
-    })
-      .then((uri) => {
-        if (active) {
-          cachedUri = uri;
-          setSource({ uri });
-        } else {
-          try {
-            new FsFile(uri).delete();
-          } catch {
-            // Best effort cache cleanup.
-          }
-        }
-      })
-      .catch(() => {
-        if (!active) return;
-        setSource(undefined);
-        onErrorRef.current?.();
-      });
-    return () => {
-      active = false;
-      if (cachedUri) {
-        try {
-          new FsFile(cachedUri).delete();
-        } catch {
-          // Best effort cache cleanup.
-        }
-      }
-    };
-  }, [cacheKey, immediate]);
-  return source;
+/** The plan's "# Title", which names what the mockups are for. */
+function planTitle(plan: string | null | undefined): string | undefined {
+  return /^#\s+(\S.*)$/m.exec(plan ?? '')?.[1]?.trim();
 }
 
 function AttachmentImage({
@@ -10781,10 +10434,6 @@ function CenteredMessage({ title, subtitle }: { title: string; subtitle: string 
 
 function toolToneColor(tone: ToolCallTone): 'active' | 'done' | 'danger' {
   return tone === 'error' ? 'danger' : tone === 'done' ? 'done' : 'active';
-}
-
-function eventToneColor(tone: AgentEventTone): 'idle' | 'attention' | 'danger' {
-  return tone === 'danger' ? 'danger' : tone === 'warning' ? 'attention' : 'idle';
 }
 
 /** A short header label: the model name, falling back to a truncated session id. */
@@ -11574,11 +11223,6 @@ const styles = StyleSheet.create((theme) => ({
   invertedItem: {
     transform: [{ scaleY: -1 }],
   },
-  searchTermHighlight: {
-    color: theme.colors.text,
-    backgroundColor: tint(theme.colors.signature, 'border'),
-    borderRadius: 3,
-  },
   // Spinner at the top of the transcript while older history is loading (scroll-up).
   olderSpinner: {
     paddingVertical: theme.spacing.md,
@@ -11660,12 +11304,16 @@ const styles = StyleSheet.create((theme) => ({
     borderStyle: 'dashed',
     opacity: 0.75,
   },
-  userPendingTag: {
-    color: theme.colors.textFaint,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
+  userPendingStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
     alignSelf: 'flex-end',
-    marginTop: 2,
+    gap: theme.spacing.xs,
+    marginTop: theme.spacing.xs,
+  },
+  userPendingTag: {
+    ...theme.typography.subtitle,
+    color: theme.colors.textMuted,
   },
   userText: {
     color: theme.colors.text,
@@ -11737,12 +11385,6 @@ const styles = StyleSheet.create((theme) => ({
     top: theme.spacing.xs,
     right: theme.spacing.xs,
   },
-  agentText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.row.fontSize,
-    lineHeight: 22 * theme.fontScale,
-    fontFamily: theme.fonts.regular,
-  },
   localMeetingUploadStatus: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -11770,83 +11412,6 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.bodySmall.fontSize,
     lineHeight: 18 * theme.fontScale,
-  },
-  mdHeading: {
-    fontSize: theme.typography.title.fontSize,
-    fontFamily: theme.fonts.bold,
-    marginTop: theme.spacing.xs,
-  },
-  mdSectionHeading: {
-    fontFamily: theme.fonts.bold,
-    marginTop: theme.spacing.sm,
-  },
-  mdListRow: {
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-    paddingLeft: theme.spacing.xs,
-  },
-  mdBullet: {
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.row.fontSize,
-    lineHeight: 22 * theme.fontScale,
-  },
-  // Native selectable Text wraps reliably in normal column flow. Inside list
-  // rows, give it an explicit flex slot so it can shrink before wrapping instead
-  // of measuring as one clipped line on iOS.
-  mdText: {
-    width: '100%',
-    flexShrink: 1,
-  },
-  mdTextSlot: {
-    flex: 1,
-    minWidth: 0,
-  },
-  mdGap: {
-    height: theme.spacing.sm,
-  },
-  mdBold: {
-    fontFamily: theme.fonts.bold,
-  },
-  mdCode: {
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.typography.bodySmall.fontSize,
-  },
-  mdLink: {
-    textDecorationLine: 'underline',
-  },
-  mdReference: {
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: theme.typography.bodySmall.fontSize,
-  },
-  table: {
-    marginVertical: theme.spacing.xs,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    overflow: 'hidden',
-  },
-  tableRow: {
-    flexDirection: 'row',
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  tableRowLast: {
-    borderBottomWidth: 0,
-  },
-  tableHeaderRow: {
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  tableCell: {
-    flex: 1,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRightWidth: 1,
-    borderRightColor: theme.colors.border,
-  },
-  tableHeaderText: {
-    fontFamily: theme.fonts.bold,
-    color: theme.colors.text,
   },
   thinkingRow: {
     flexDirection: 'row',
@@ -11976,19 +11541,6 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  localLinkImages: {
-    gap: theme.spacing.xs,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.xs,
-  },
-  localLinkImage: {
-    width: '100%',
-    height: 220,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
   // Expanded input/output, indented under the headline (no card frame to divide).
   toolDetail: {
     gap: theme.spacing.xs,
@@ -12042,55 +11594,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing.sm,
     paddingVertical: theme.spacing.sm,
   },
-  dependencyStatusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
-  },
-  dependencyStatusText: {
-    flex: 1,
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.bodySmall.fontSize,
-    lineHeight: 20 * theme.fontScale,
-  },
-  eventRowActionable: {
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-  },
-  eventFailureActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    marginTop: theme.spacing.xs,
-  },
-  eventTechnical: {
-    alignSelf: 'stretch',
-    marginTop: theme.spacing.xs,
-    padding: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-  },
-  eventLabel: {
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   eventDetail: {
     color: theme.colors.textFaint,
     fontFamily: theme.fonts.regular,
     fontSize: theme.typography.footnote.fontSize,
-  },
-  eventTasksLink: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.footnote.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  eventActionRow: { flexDirection: 'row', marginTop: theme.spacing.xs },
-  eventActionPressed: {
-    opacity: 0.72,
   },
   // The whole bottom bar: an optional attachment-preview strip stacked above the
   // input row. The surface + top border live here so the strip and row read as one

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
+import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import { ProjectEgressHealthError } from './project-egress-health.js';
 import type { ProjectEgressHostRequest, ProjectEgressHostResponse } from './project-egress-host.js';
 
@@ -65,6 +66,7 @@ export function createManagedSystemInventory(options: {
 }) {
   const now = options.now ?? Date.now;
   let readyUntil = 0;
+  let readyToken: string | undefined;
   let snapshotHash: string | undefined;
   let owner: { token: string; until: number } | undefined;
   return {
@@ -75,18 +77,41 @@ export function createManagedSystemInventory(options: {
     begin(token: string) {
       readyUntil = 0;
       options.invalidate();
-      if (!options.managed) throw new Error('Managed inventory is not configured');
-      if (owner && now() <= owner.until) throw new Error('System inventory mutation is busy');
+      if (!options.managed) throw new ProjectEgressInventoryError('inventory_not_configured');
+      if (owner && now() <= owner.until) throw new ProjectEgressInventoryError('inventory_busy');
+      readyToken = undefined;
       owner = { token, until: now() + 30_000 };
     },
-    async commit(token: string, hosts: readonly string[], addresses: readonly string[] = []) {
-      if (!owner || owner.token !== token || now() > owner.until)
-        throw new Error('System inventory mutation lease expired');
-      await options.replace(hosts, addresses);
-      if (now() > owner.until) throw new Error('System inventory mutation lease expired');
-      snapshotHash = projectEgressSystemInventoryHash(hosts, addresses);
-      readyUntil = now() + 30_000;
+    abort(token: string) {
+      if (owner ? owner.token !== token : readyToken !== token) return;
+      readyToken = undefined;
       owner = undefined;
+      readyUntil = 0;
+      options.invalidate();
+    },
+    async commit(token: string, hosts: readonly string[], addresses: readonly string[] = []) {
+      const lease = owner;
+      if (!lease || lease.token !== token || now() > lease.until)
+        throw new ProjectEgressInventoryError('inventory_lease_expired');
+      try {
+        await options.replace(hosts, addresses);
+        if (owner !== lease || now() > lease.until)
+          throw new ProjectEgressInventoryError('inventory_lease_expired');
+        readyToken = token;
+        snapshotHash = projectEgressSystemInventoryHash(hosts, addresses);
+        readyUntil = now() + 30_000;
+      } catch (error) {
+        if (owner === lease || (!owner && readyToken === undefined)) {
+          readyUntil = 0;
+          options.invalidate();
+        }
+        throw error instanceof ProjectEgressInventoryError
+          ? error
+          : new ProjectEgressInventoryError('inventory_replace_failed');
+      } finally {
+        // A late completion must never release another Server's newer lease.
+        if (owner === lease) owner = undefined;
+      }
     },
     renew(hash: string) {
       if (
@@ -95,7 +120,7 @@ export function createManagedSystemInventory(options: {
         snapshotHash !== hash ||
         options.healthy?.() === false
       )
-        throw new Error('System inventory snapshot requires synchronization');
+        throw new ProjectEgressInventoryError('inventory_snapshot_required');
       readyUntil = now() + 30_000;
     },
     ready() {
@@ -126,40 +151,67 @@ export function createProjectEgressInventorySynchronizer(options: {
     tail = pending.catch(() => undefined);
     return pending;
   };
-  const sync = <T>(action: () => Promise<T>): Promise<T> =>
-    options.transaction(async () => {
-      const previous = await options.readUrls();
-      const token = randomUUID();
-      const begin = await options.command({ operation: 'inventory-begin', token });
-      if (begin.state !== 'inventory-denied' || begin.token !== token)
-        throw new Error('System inventory fencing was not acknowledged');
-      // A failed source write rolls back its SQL transaction and leaves the host
-      // fenced until a fresh synchronization; it must not publish completeness.
-      const result = await action();
-      // Until the SQL commit, other readers still use the prior endpoints.
-      // Protect both snapshots before making the new configuration visible.
-      let snapshot: ReturnType<typeof projectEgressSystemDestinations> | undefined;
-      try {
-        snapshot = projectEgressSystemDestinations([...previous, ...(await options.readUrls())]);
-      } catch {
-        // Persist a repair under verified denial, but do not declare completeness
-        // while this process can retain clients for an unrepresentable old URL.
-        sourceRepairRequiresRestart = true;
-      }
-      if (snapshot && !sourceRepairRequiresRestart) {
-        const committed = await options.command({
-          operation: 'inventory-commit',
-          token,
-          ...snapshot,
-        });
-        if (committed.state !== 'inventory-ready' || committed.token !== token)
-          throw new Error('System inventory synchronization was not acknowledged');
-      }
+  const sync = async <T>(
+    action: () => Promise<T>,
+    changesDestinations?: () => Promise<boolean>,
+  ): Promise<T> => {
+    const token = randomUUID();
+    let complete = false;
+    let committed = false;
+    let attemptedBegin = false;
+    try {
+      const result = await options.transaction(async () => {
+        if (changesDestinations && !(await changesDestinations())) {
+          complete = true;
+          return action();
+        }
+        const previous = await options.readUrls();
+        attemptedBegin = true;
+        const begin = await options.command({ operation: 'inventory-begin', token });
+        if (begin.state !== 'inventory-denied' || begin.token !== token)
+          throw new Error('System inventory fencing was not acknowledged');
+        // A failed source write rolls back its SQL transaction and leaves the host
+        // fenced until a fresh synchronization; it must not publish completeness.
+        const result = await action();
+        // Until the SQL commit, other readers still use the prior endpoints.
+        // Protect both snapshots before making the new configuration visible.
+        let snapshot: ReturnType<typeof projectEgressSystemDestinations> | undefined;
+        try {
+          snapshot = projectEgressSystemDestinations([...previous, ...(await options.readUrls())]);
+        } catch {
+          // Persist a repair under verified denial, but do not declare completeness
+          // while this process can retain clients for an unrepresentable old URL.
+          sourceRepairRequiresRestart = true;
+        }
+        if (snapshot && !sourceRepairRequiresRestart) {
+          const acknowledgement = await options.command({
+            operation: 'inventory-commit',
+            token,
+            ...snapshot,
+          });
+          if (acknowledgement.state !== 'inventory-ready' || acknowledgement.token !== token)
+            throw new Error('System inventory synchronization was not acknowledged');
+          committed = true;
+        }
+        return result;
+      });
+      complete ||= committed;
       return result;
-    });
+    } finally {
+      if (!complete && attemptedBegin) {
+        try {
+          await options.command({ operation: 'inventory-abort', token });
+        } catch {
+          /* Lost connection: denial and bounded lease remain. */
+        }
+      }
+    }
+  };
   return {
-    mutate: <T>(action: () => Promise<T>) =>
-      serialize(() => (options.enabled?.() === false ? action() : sync(action))),
+    mutate: <T>(action: () => Promise<T>, changesDestinations?: () => Promise<boolean>) =>
+      serialize(() =>
+        options.enabled?.() === false ? action() : sync(action, changesDestinations),
+      ),
     refresh: () =>
       serialize(() => {
         if (options.enabled?.() === false) return Promise.resolve();

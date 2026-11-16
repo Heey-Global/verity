@@ -9,21 +9,19 @@ export function dispatchVoiceShortcut(): void {
   for (const listener of listeners) listener();
 }
 
-/** `assistant` preselects the Verity assistant as the target when it is available;
- * otherwise capture opens with its usual project choice. */
-export interface TaskCaptureRequest {
-  target?: 'assistant';
+/** How the V opens: listening at once (the default), or with the keyboard. */
+export interface VerityRequest {
+  mode?: 'voice' | 'text';
 }
 
-const taskListeners = new Set<(request: TaskCaptureRequest) => void>();
+const verityListeners = new Set<(request: VerityRequest) => void>();
 
-export function subscribeTaskVoiceShortcut(
-  listener: (request: TaskCaptureRequest) => void,
-): () => void {
-  taskListeners.add(listener);
-  return () => taskListeners.delete(listener);
+/** Opens Verity's panel; the hardware shortcut, Home and Watch handoffs use it. */
+export function subscribeVerityShortcut(listener: (request: VerityRequest) => void): () => void {
+  verityListeners.add(listener);
+  return () => verityListeners.delete(listener);
 }
 
-export function dispatchTaskVoiceShortcut(request: TaskCaptureRequest = {}): void {
-  for (const listener of taskListeners) listener(request);
+export function dispatchVerityShortcut(request: VerityRequest = {}): void {
+  for (const listener of verityListeners) listener(request);
 }

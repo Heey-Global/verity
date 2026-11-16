@@ -19,7 +19,8 @@ import { type IconName } from '../Icon';
 import { Button, Group, Row, SectionHeader, StatusDot, TextField, ToggleRow } from '../ui';
 import { type StatusIntent } from '../ui/Status';
 import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
-import { useVeritySettings } from '../../lib/settingsStore';
+import { useHidesConnectionError } from '../../hooks/useServerConnection';
+import { useVeritySettings, veritySettingsLoadFailed } from '../../lib/settingsStore';
 import { ApplyPendingBanner } from './ApplyPendingBanner';
 import { settingsStyles as styles } from './settingsStyles';
 
@@ -40,9 +41,13 @@ export function SettingsScaffold({
   state,
   footer,
   headerAction,
+  embedded = false,
   children,
 }: {
   title: string;
+  /** Inside another screen (a project page's tab): the host owns the navigation
+   *  title, so this scaffold does not set one. */
+  embedded?: boolean;
   /** One icon button on the right of the header, for a screen's secondary settings. */
   headerAction?: ReactNode;
   /** What "Retry" on the error banner should do. Omitted → no retry offered. */
@@ -63,6 +68,14 @@ export function SettingsScaffold({
   const verity = useVeritySettings();
   const error = state !== undefined ? state.error : verity.error;
   const saving = state !== undefined ? (state.saving ? 1 : 0) : verity.saving;
+  // A server update or outage is shown once, by the header's connection bar,
+  // but only a failed LOAD of the settings store gives way to it: the store
+  // reloads that by itself. A failed save stays on screen — the bar does not
+  // say the edit was lost — and nothing is retried from here, since `onRetry`
+  // may repeat a save. Screens with their own state cannot tell the two apart.
+  const connectionError = useHidesConnectionError(error);
+  const hidesError =
+    state === undefined && verity.failed && veritySettingsLoadFailed() && connectionError;
 
   // A pinned footer sits outside the scroll view, so the frame itself has to
   // shrink above the keyboard or the footer's action ends up behind it. Only one
@@ -71,14 +84,18 @@ export function SettingsScaffold({
   const pinned = footer !== undefined;
   return (
     <KeyboardAvoidingView style={styles.flex} behavior="padding" enabled={pinned}>
-      <Stack.Screen
-        options={{
-          title,
-          // Only when set: an explicit `undefined` would override a layout's own.
-          ...(headerAction !== undefined && { headerRight: () => headerAction }),
-        }}
-      />
-      {error !== undefined ? <SettingsBanner message={error} onRetry={onRetry} /> : null}
+      {embedded ? null : (
+        <Stack.Screen
+          options={{
+            title,
+            // Only when set: an explicit `undefined` would override a layout's own.
+            ...(headerAction !== undefined && { headerRight: () => headerAction }),
+          }}
+        />
+      )}
+      {error !== undefined && !hidesError ? (
+        <SettingsBanner message={error} onRetry={onRetry} />
+      ) : null}
       {/* Only on screens backed by the Verity settings store — that store is
           where a container-affecting save is recorded. */}
       {state === undefined ? <ApplyPendingBanner /> : null}

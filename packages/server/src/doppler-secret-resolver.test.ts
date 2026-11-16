@@ -25,6 +25,7 @@ const claims: RunGrantClaims = {
   sessionId: 'session-1',
   turnId: 'turn-1',
   toolCallId: 'call-1',
+  initiatorUserId: 'lena',
   profile: { id: 'profile-1', version: 1, policyHash: HASH },
   aliases: [{ id: 'api-token', version: 1 }],
   providerBindings: [{ id: 'doppler-binding', version: 1, provider: 'doppler' }],
@@ -115,7 +116,7 @@ describe('Doppler Secret Resolver', () => {
       readCredential: () => Promise.resolve(credential),
       fetch,
     });
-    await expect(listNames(binding)).resolves.toEqual(['DATABASE_URL', 'GITHUB_TOKEN']);
+    await expect(listNames(binding, 'lena')).resolves.toEqual(['DATABASE_URL', 'GITHUB_TOKEN']);
     const [url] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toContain('/v3/configs/config/secrets/names?');
     expect(url).toContain('include_dynamic_secrets=false');
@@ -217,6 +218,30 @@ describe('Doppler Secret Resolver', () => {
     expect(init?.headers?.Authorization).toBe(`Bearer ${TOKEN}`);
     expect([...credential!]).toEqual(new Array(credential!.length).fill(0));
     expect(JSON.stringify(values)).not.toContain(TOKEN);
+  });
+
+  // ADR 0023 §3: a job resolves through the connection of the person its grant
+  // was issued for, and a grant naming no one resolves through nobody's.
+  it("reads the grant's person's credential and refuses a grant without one", async () => {
+    const readCredential = vi.fn(() => Promise.resolve(Buffer.from(TOKEN)));
+    const resolver = createDopplerSecretResolver({
+      catalog: {
+        resolveAlias: () => Promise.resolve(alias),
+        resolveBinding: () => Promise.resolve(binding),
+      },
+      readCredential,
+      fetch: vi.fn<HttpFetch>(() => Promise.resolve(response({ UPSTREAM_API_TOKEN: SECRET }))),
+    });
+    await resolver(claims);
+    expect(readCredential).toHaveBeenCalledWith(binding.credentialRef, {
+      projectId: 'project-1',
+      userId: 'lena',
+    });
+    readCredential.mockClear();
+    const withoutPerson = { ...claims };
+    delete withoutPerson.initiatorUserId;
+    await expect(resolver(withoutPerson)).rejects.toMatchObject({ phase: 'Doppler connection' });
+    expect(readCredential).not.toHaveBeenCalled();
   });
 
   it('downloads multiple distinct secrets in one request', async () => {

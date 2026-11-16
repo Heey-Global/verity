@@ -34,5 +34,41 @@
       "name": "verity_assistant",
       "action": "add_task"
     }
+  },
+  {
+    "name": "verity_assistant_meetings",
+    "title": "Verity · Assistant · Meetings",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "meetings"
+    }
+  },
+  {
+    "name": "verity_assistant_prepare_meeting",
+    "title": "Verity · Assistant · Prepare Meeting",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "prepare_meeting"
+    }
+  },
+  {
+    "name": "verity_assistant_join_meeting",
+    "title": "Verity · Assistant · Join Meeting",
+    "entryPoint": "tool",
+    "scope": "authenticated-session",
+    "connector": null,
+    "skill": null,
+    "compatibility": {
+      "name": "verity_assistant",
+      "action": "join_meeting"
+    }
   }
 ]

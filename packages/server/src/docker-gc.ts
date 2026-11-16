@@ -220,6 +220,8 @@ export interface DockerGcDeps {
     errors: string[];
     retained?: Array<{ name: string; reason: string }>;
   }>;
+  /** Bounded, non-waiting helper retention under lifecycle/storage barriers. */
+  retireCacheHelpers?: DockerGcDeps['retireContainers'];
   heldRelays?: () => Iterable<{ projectId: string; containerGeneration: string }>;
 }
 
@@ -513,7 +515,19 @@ async function probeFreeBytes(dataRoot: string): Promise<number | undefined> {
 
 /** Run one GC pass. Resolves with what it did; only a failure to even list the
  *  daemon's state rejects, and {@link startDockerGcScheduler} catches that too. */
-export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
+export async function runDockerGc(
+  deps: DockerGcDeps,
+  scope: DockerGcScope = 'full',
+): Promise<DockerGcReport> {
+  const capacityOnly = scope === 'build-capacity';
+  const phaseMs: Record<string, number> = {};
+  const startedAt = Date.now();
+  let phaseStart = startedAt;
+  const phaseDone = (phase: string) => {
+    const at = Date.now();
+    phaseMs[phase] = at - phaseStart;
+    phaseStart = at;
+  };
   const policy: DockerGcPolicy = { ...DEFAULT_DOCKER_GC_POLICY, ...deps.policy };
   const now = deps.now ?? Date.now;
   const { docker, log } = deps;
@@ -550,7 +564,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
     errors,
   };
 
-  if (!deps.imagesOnly) {
+  if (!deps.imagesOnly && !capacityOnly) {
     try {
       await deps.beforeSweep?.();
     } catch (error) {
@@ -567,6 +581,20 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       }
     } catch (error) {
       errors.push({ resource: 'stopped containers', message: errorMessage(error) });
+    }
+    phaseDone('maintenance');
+  }
+
+  if (capacityOnly && !deps.imagesOnly) {
+    try {
+      const retired = await deps.retireCacheHelpers?.();
+      if (retired) {
+        report.containersRemoved.push(...retired.removed);
+        if (retired.retained) report.retainedContainers = retired.retained;
+        errors.push(...retired.errors.map((message) => ({ resource: 'cache helper', message })));
+      }
+    } catch (error) {
+      errors.push({ resource: 'cache helpers', message: errorMessage(error) });
     }
   }
 
@@ -647,6 +675,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
     }
   }
 
+  phaseDone('images');
   if (deps.imagesOnly) {
     for (const error of errors) log.warn(error, 'docker gc skipped a resource');
     deps.onReport?.(report);
@@ -659,7 +688,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
   // reclaimed then. Unlike the disk steps this one is NOT escalated under disk
   // pressure — the grace period exists to protect an in-flight provision, and a
   // full disk is no reason to strand a sandbox that is still coming up.
-  if (policy.sweepSupersededRelays && docker.listContainers !== undefined) {
+  if (!capacityOnly && policy.sweepSupersededRelays && docker.listContainers !== undefined) {
     try {
       const containers = await docker.listContainers();
       const plan = planRelaySweep({
@@ -731,7 +760,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
   // One dangling listing feeds both planners: anonymous volumes (leaked by the
   // pre-v=true teardown path) and orphaned buildx builder state volumes. Their
   // name shapes are disjoint, so a volume is claimed by at most one planner.
-  if (docker.listVolumes !== undefined && docker.removeVolume !== undefined) {
+  if (!capacityOnly && docker.listVolumes !== undefined && docker.removeVolume !== undefined) {
     try {
       const volumes = await docker.listVolumes({ danglingOnly: true });
       const nowMs = now();
@@ -772,6 +801,7 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       errors.push({ resource: 'build cache', message: errorMessage(err) });
     }
   }
+  phaseDone('buildCache');
 
   log.info(
     {
@@ -786,6 +816,9 @@ export async function runDockerGc(deps: DockerGcDeps): Promise<DockerGcReport> {
       lowDisk,
       ...(freeBytes !== undefined ? { freeBytes } : {}),
       errors: errors.length,
+      scope,
+      durationMs: Date.now() - startedAt,
+      phaseMs,
     },
     'docker gc pass complete',
   );
@@ -824,10 +857,21 @@ const DOCKER_GC_PRESSURE_CHECK_MS = 10 * 60_000;
 /** Minimum time between two passes started by low free space. */
 const DOCKER_GC_PRESSURE_MIN_SPACING_MS = 30 * 60_000;
 
+/** `full` is the maintenance pass. `build-capacity` serves a build waiting for
+ *  storage: only the steps that free build capacity, image removal and build
+ *  cache pruning. The maintenance steps before them (runner caches, session
+ *  worktrees, stopped helpers) talk to Sandboxes and helper containers and
+ *  routinely took longer than the waiting build may wait, so a build never
+ *  waited long enough to reach the steps that could have admitted it. */
+export type DockerGcScope = 'full' | 'build-capacity';
+
 export interface DockerGcScheduler {
   stop(): void;
   /** Run one pass now (test seam; does not touch the timer). */
   runOnce(): Promise<DockerGcReport>;
+  /** One build-capacity pass; callers during a pass share it. It does not wait
+   *  for a running maintenance pass, whose image step it would only repeat. */
+  reclaimBuildCapacity(): Promise<DockerGcReport>;
 }
 
 export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
@@ -848,6 +892,14 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
       flight = undefined;
     });
     return flight;
+  };
+
+  let capacityFlight: Promise<DockerGcReport> | undefined;
+  const reclaimBuildCapacity = (): Promise<DockerGcReport> => {
+    capacityFlight ??= runDockerGc(deps, 'build-capacity').finally(() => {
+      capacityFlight = undefined;
+    });
+    return capacityFlight;
   };
 
   const pass = async (): Promise<void> => {
@@ -909,5 +961,20 @@ export function startDockerGcScheduler(deps: DockerGcDeps): DockerGcScheduler {
       pressureTimer = undefined;
     },
     runOnce: collect,
+    reclaimBuildCapacity,
   };
+}
+
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+
+/** One line for a build that is still refused after a build-capacity pass: what
+ *  the pass freed, and what it had to keep, so a retry is not the only advice. */
+export function describeBuildCapacityReclamation(report: DockerGcReport): string {
+  const freed =
+    `Reclamation removed ${String(report.imagesRemoved.length)} image(s) (about ` +
+    `${gib(report.estimatedImageBytes)}) and ${gib(report.buildCacheBytes)} of build cache.`;
+  const pins = report.stoppedContainerPins;
+  return pins.images > 0
+    ? `${freed} ${gib(pins.estimatedBytes)} of images stay for ${String(pins.containers)} stopped container(s).`
+    : freed;
 }

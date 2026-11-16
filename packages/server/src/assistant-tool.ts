@@ -1,7 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { assistantRequestSchema } from '@verity/events';
+import { assistantRequestSchema, type AssistantRequest } from '@verity/events';
 import type { AssistantMode, AssistantSettings, EventStore } from '@verity/store';
-import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
+import { OnlineMeetingStartError } from './attendee-meetings.js';
+import {
+  CalendarEventAlreadyJoinedError,
+  CalendarEventNotFoundError,
+  type CalendarMeetingDeps,
+} from './calendar-meeting-watcher.js';
+import {
+  canJoinNow,
+  CalendarJoinWindowError,
+  CalendarUnavailableError,
+  joinWatchedMeeting,
+  listUpcomingMeetings,
+} from './calendar-meetings.js';
+import {
+  ControlPlaneSessionAuthorityError,
+  ControlPlaneSessionToolError,
+} from './session-handoff-tool.js';
 
 export interface AssistantToolDeps {
   eventStore: EventStore;
@@ -13,6 +29,11 @@ export interface AssistantToolDeps {
     projectId: string,
     permission: 'read' | 'execute',
   ): Promise<boolean>;
+  /** The watched meeting calendars; absent until the server has built them. */
+  meetings?: CalendarMeetingDeps;
+  /** Whether `userId` (undefined when auth is off) administers the server. The meeting
+   *  calendars belong to the server's Google accounts, as on the start screen. */
+  administrator?(userId: string | undefined): Promise<boolean>;
 }
 
 /** Every gateway tool the assistant session may call (docs/assistant.md). It reads untrusted
@@ -101,6 +122,19 @@ async function grantedProjects(
   input: { sessionId: string; turnId: string },
 ): Promise<{ projectId: string; name: string; mode: AssistantMode }[]> {
   const initiator = await deps.initiator(input.sessionId, input.turnId);
+  return assistantProjectsFor(deps, initiator?.userId);
+}
+
+/**
+ * The projects the assistant may use on behalf of `userId`: granted, live, and
+ * readable by that user. The conversation routes put this list into each
+ * message's context so a turn need not spend a model round asking for it; the
+ * tool still checks the grant again when it acts.
+ */
+export async function assistantProjectsFor(
+  deps: Pick<AssistantToolDeps, 'eventStore' | 'permitted'>,
+  userId: string | undefined,
+): Promise<{ projectId: string; name: string; mode: AssistantMode }[]> {
   const projects = new Map(
     (await deps.eventStore.listProjects()).map((project) => [project.id, project]),
   );
@@ -108,7 +142,7 @@ async function grantedProjects(
   for (const grant of await deps.eventStore.assistant.grants()) {
     const project = projects.get(grant.project_id);
     if (grant.mode === 'off' || !project || project.hiddenAt !== null || project.archived) continue;
-    if (!(await deps.permitted(initiator?.userId, project.id, 'read'))) continue;
+    if (!(await deps.permitted(userId, project.id, 'read'))) continue;
     granted.push({
       projectId: project.id,
       name: `${project.owner}/${project.repo}`,
@@ -157,6 +191,89 @@ async function schedulingOverview(
     }));
 }
 
+/** A meeting refusal the assistant can relay; it never names another account's calendar. */
+class AssistantMeetingError extends ControlPlaneSessionToolError {}
+
+/** The watched calendars, for an administrator's turn only. */
+async function meetingDeps(
+  deps: AssistantToolDeps,
+  input: { sessionId: string; turnId: string },
+): Promise<CalendarMeetingDeps> {
+  const initiator = await deps.initiator(input.sessionId, input.turnId);
+  if (deps.meetings === undefined || deps.administrator === undefined)
+    throw new AssistantMeetingError('Live meetings are not available on this server.');
+  if (!(await deps.administrator(initiator?.userId)))
+    throw new ControlPlaneSessionAuthorityError(
+      'Live meetings from the calendar are available to administrators only.',
+    );
+  return deps.meetings;
+}
+
+async function meetingAction(
+  deps: AssistantToolDeps,
+  input: { sessionId: string; turnId: string },
+  request: Extract<AssistantRequest, { action: 'meetings' | 'prepare_meeting' | 'join_meeting' }>,
+): Promise<Record<string, unknown>> {
+  const calendar = await meetingDeps(deps, input);
+  try {
+    if (request.action === 'meetings') {
+      const at = (calendar.now ?? Date.now)();
+      const meetings = await listUpcomingMeetings(calendar, {
+        includeInPerson: request.includeInPerson === true,
+      });
+      return {
+        meetings: meetings.map((meeting) => ({
+          eventKey: meeting.eventKey,
+          title: meeting.title,
+          startsAt: new Date(meeting.startsAt).toISOString(),
+          endsAt: new Date(meeting.endsAt).toISOString(),
+          calendar: meeting.calendar,
+          provider: meeting.provider,
+          joinableNow: canJoinNow(meeting, at),
+          ...(meeting.meetingId !== null ? { alreadyJoined: true } : {}),
+        })),
+      };
+    }
+    if (request.action === 'prepare_meeting') {
+      // The phone fills in the start screen from the tool call; only a listed meeting may
+      // be named, so the card never points at an event of an unwatched calendar.
+      if (request.eventKey !== undefined) {
+        const listed = (
+          await listUpcomingMeetings(calendar, {
+            includeInPerson: request.mode === 'in_person',
+          })
+        ).some((meeting) => meeting.eventKey === request.eventKey);
+        if (!listed)
+          throw new AssistantMeetingError(
+            'That meeting is not in the watched calendars. List them with "meetings" first.',
+          );
+      }
+      return { prepared: { sessionId: input.sessionId, mode: request.mode } };
+    }
+    try {
+      const { meetingId } = await joinWatchedMeeting(calendar, request.eventKey, input.sessionId);
+      return { joined: { sessionId: input.sessionId, meetingId } };
+    } catch (error) {
+      if (!(error instanceof CalendarEventAlreadyJoinedError)) throw error;
+      const event = await calendar.store.calendarWatch.getEvent(request.eventKey);
+      throw new AssistantMeetingError(
+        event?.meetingId
+          ? 'Verity is already in this meeting; the user can open it from the live meetings.'
+          : error.message,
+      );
+    }
+  } catch (error) {
+    if (
+      error instanceof CalendarEventNotFoundError ||
+      error instanceof CalendarJoinWindowError ||
+      error instanceof CalendarUnavailableError ||
+      error instanceof OnlineMeetingStartError
+    )
+      throw new AssistantMeetingError(error.message);
+    throw error;
+  }
+}
+
 export async function executeAssistantTool(
   deps: AssistantToolDeps,
   input: { sessionId: string; turnId: string; request: unknown },
@@ -165,6 +282,12 @@ export async function executeAssistantTool(
   const request = assistantRequestSchema.parse(input.request);
   if (request.action === 'projects') return { projects: await grantedProjects(deps, input) };
   if (request.action === 'scheduling') return { requests: await schedulingOverview(deps, input) };
+  if (
+    request.action === 'meetings' ||
+    request.action === 'prepare_meeting' ||
+    request.action === 'join_meeting'
+  )
+    return meetingAction(deps, input, request);
   const { userId, projectName } = await requireAssistantGrant(
     deps,
     { ...input, projectId: request.projectId },

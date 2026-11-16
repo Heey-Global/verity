@@ -1,4 +1,5 @@
 import { appendProjectOverview } from './project-overview-file.js';
+import { createHandoffSessionCreator } from './handoff-session-create.js';
 import { connectorToolAvailable } from './agent-tool-availability.js';
 import {
   createQAAssignmentTool,
@@ -21,7 +22,10 @@ import type { Conductor } from '@verity/session';
 import {
   answerAppHelp,
   appHelpRequestSchema,
+  COMPLETE_MOCKUPS_TOOL,
   END_PLANNING_TOOL,
+  planningDesignNote,
+  PRESENT_MOCKUPS_TOOL,
   PRESENT_PLAN_TOOL,
   publishSessionProgressRequestSchema,
   RECENT_SESSION_MESSAGES_DEFAULT,
@@ -31,11 +35,10 @@ import {
   type AgentEvent,
 } from '@verity/events';
 import { PermissionDecisionInProgressError } from '@verity/session';
+import { presentMockupsRequestSchema, type SessionMockupActions } from './mockups.js';
 import type { EventStore, SessionRecord } from '@verity/store';
-import { isLocalProject, type ProjectRecord } from '@verity/store';
+import { httpMcpConnectionUsableBy, type ProjectRecord } from '@verity/store';
 import { type FastifyInstance } from 'fastify';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 import {
   assistantToolRefusal,
   executeAssistantTool,
@@ -64,7 +67,7 @@ import {
   googleDriveRequestSchema,
 } from './google-drive-request.js';
 import { hasGoogleWorkspaceScope } from './google-oauth-scopes.js';
-import { resolveGoogleServiceCredential } from './google-service-credentials.js';
+import { resolveGoogleServiceCredentialForTurn } from './google-service-credentials.js';
 import { assertWorkspaceWritePermission } from './google-workspace-tool-types.js';
 import { httpMcpAuthorization } from './http-mcp-oauth.js';
 import { registerHttpMcpProxyRoute, type HttpMcpProxyDeps } from './http-mcp-proxy.js';
@@ -73,6 +76,13 @@ import {
   importProjectSource,
   moveProjectSource,
 } from './knowledge-import.js';
+import {
+  knowledgeRef,
+  noteWikiOccasion,
+  occasionTitle,
+  wikiOccasionTool,
+} from './wiki-occasions.js';
+import { readWikiPage } from './wiki-page-reader.js';
 import { publishSharedInsight } from './knowledge-publish.js';
 import { knowledgeToolRequestSchema } from './knowledge-tool.js';
 import { lookupProjectDecisions, recordProjectDecision } from './knowledge-decisions.js';
@@ -83,9 +93,12 @@ import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { createMcpGateway } from './mcp-gateway.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
-import { createSessionPlanning, trustedPlanInstructionConsent } from './planning.js';
-import { resolveProjectDefaultModel } from './project-agent-policy.js';
-import { projectClonePath } from './provisioner.js';
+import {
+  createSessionPlanning,
+  OPEN_DECISIONS_ERROR,
+  openPlanDecisions,
+  trustedPlanInstructionConsent,
+} from './planning.js';
 import type { ServerDeps } from './server-deps.js';
 import type {
   ModelList,
@@ -113,9 +126,12 @@ import { type SessionStatus } from './status.js';
 import { executeTasksTool } from './tasks-routes.js';
 import { createVulnerabilityScanService } from './vulnerability-scan.js';
 import { createVulnerabilityTool } from './vulnerability-tool.js';
-import { createGitWorktreeProvisioner } from './worktree.js';
-interface ServerMcpRouteDeps {
+import type { WikiProposals } from './wiki-proposals.js';
+export interface ServerMcpRouteDeps {
   deps: ServerDeps;
+  /** Absent without a knowledge folder; proposing then fails like other knowledge writes. */
+  wikiProposals: WikiProposals | undefined;
+  inquiryTool: (sessionId: string, userId: string | null, request: unknown) => Promise<unknown>;
   app: FastifyInstance;
   conductor: Conductor;
   assistantToolDeps: AssistantToolDeps;
@@ -136,6 +152,7 @@ interface ServerMcpRouteDeps {
   vulnerabilityService: ReturnType<typeof createVulnerabilityScanService>;
   canExecuteAs: (userId: string | null | undefined, projectId: string | null) => Promise<boolean>;
   sessionPlanning: ReturnType<typeof createSessionPlanning>;
+  sessionMockups: SessionMockupActions;
   publishSessionEvent: (sessionId: string, event: AgentEvent) => Promise<void>;
   projectSettingsStore: (store: EventStore) => ProjectSettingsStore;
   isProjectSessionModel: (model: string | undefined) => boolean;
@@ -144,8 +161,35 @@ interface ServerMcpRouteDeps {
   SERVER_VERSION: string;
   VERITY_CONTROL_PROJECT_ID: string;
 }
+
+/** The knowledge operations a Wiki maintenance run may call from its isolated turn. */
+const WIKI_MAINTENANCE_OPERATIONS: ReadonlySet<string> = new Set([
+  'read_wiki_page',
+  'read_wiki_occasions',
+  'close_wiki_occasions',
+  'propose_wiki',
+]);
+
+/** Whether a gateway call is one of those operations, from the maintenance session. */
+async function isWikiMaintenanceCall(
+  store: Pick<EventStore, 'wikiMaintenance'>,
+  toolName: string,
+  request: unknown,
+  sessionId: string,
+): Promise<boolean> {
+  const operation = (request as { operation?: unknown } | null)?.operation;
+  return (
+    toolName === 'verity_knowledge' &&
+    typeof operation === 'string' &&
+    WIKI_MAINTENANCE_OPERATIONS.has(operation) &&
+    (await store.wikiMaintenance.isSession(sessionId))
+  );
+}
+
 export function registerServerMcpRoutes({
   deps,
+  wikiProposals,
+  inquiryTool,
   app,
   conductor,
   assistantToolDeps,
@@ -163,6 +207,7 @@ export function registerServerMcpRoutes({
   vulnerabilityService,
   canExecuteAs,
   sessionPlanning,
+  sessionMockups,
   publishSessionEvent,
   projectSettingsStore,
   isProjectSessionModel,
@@ -182,101 +227,17 @@ export function registerServerMcpRoutes({
   // reaches the same durable permission card, decide route and standing-grant check as a
   // turn-bound prompt (D2). The `acp` channel is stated by the caller rather than read off a
   // live turn, because a gateway call routinely arrives with none (ADR 0014 D3).
-  const controlHandoffSessionCreates = new Map<string, Promise<{ sessionId: string }>>();
-  const createHandoffSession = async ({
-    projectId,
-    name,
-    idempotencyKey,
-  }: {
-    projectId: string;
-    name: string;
-    idempotencyKey: string;
-  }) => {
-    const existing = controlHandoffSessionCreates.get(idempotencyKey);
-    if (existing !== undefined) return existing;
-    const creating = (async (): Promise<{ sessionId: string }> => {
-      const digest = createHash('sha256').update(idempotencyKey).digest();
-      digest[6] = (digest[6]! & 0x0f) | 0x40;
-      digest[8] = (digest[8]! & 0x3f) | 0x80;
-      const hex = digest.subarray(0, 16).toString('hex');
-      const sessionId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-      const prior = await deps.eventStore.getSession(sessionId);
-      if (prior !== undefined) {
-        if (prior.projectId !== projectId) {
-          throw new ControlPlaneSessionToolError('new-session handoff key collision');
-        }
-        return { sessionId };
-      }
-      const project = await deps.eventStore.getProject(projectId);
-      if (
-        project === undefined ||
-        project.hiddenAt !== null ||
-        project.state !== 'active' ||
-        isControlPlaneProject(project)
-      ) {
-        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-      }
-      if (deps.projectCloneRoot === undefined || deps.projectBackend === undefined) {
-        throw new ControlPlaneSessionToolError('new-session handoff is not configured');
-      }
-      if (projectsBeingDeleted.has(project.id)) {
-        throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
-      }
-      if (isLocalProject(project) && !deps.dataRoot)
-        throw new ControlPlaneSessionToolError(
-          'Local projects require configured document storage.',
-        );
-      await deps.provisioner?.prepareLocalDocuments?.(project.id);
-      const releaseSpawn = beginProjectSpawn(project.id);
-      try {
-        const settings = await projectSettingsStore(deps.eventStore).getProjectSettings(project.id);
-        const model = resolveProjectDefaultModel(
-          await availableModels({ allowLegacyCodexFallback: true }),
-          settings,
-          isProjectSessionModel,
-        );
-        if (model === undefined || !(await isConfiguredProjectSessionModel(model))) {
-          throw new ControlPlaneSessionToolError('project has no eligible default model');
-        }
-        const selectedModel = model;
-        const projectClone = projectClonePath(deps.projectCloneRoot, project);
-        const worktreeOpts = {
-          refreshBase: true,
-          ...(settings?.defaultBranch == null ? {} : { baseBranch: settings.defaultBranch }),
-        };
-        const provisioner =
-          deps.projectWorktrees?.(project, projectClone, worktreeOpts) ??
-          createGitWorktreeProvisioner({
-            repoDir: projectClone,
-            worktreeRoot: join(projectClone, '.verity-sessions'),
-            ...worktreeOpts,
-          });
-        await deps.refreshProjectToken?.(project);
-        const worktree = await provisioner.add(makeBranch(name));
-        try {
-          await deps.eventStore.createSession({
-            sessionId,
-            projectId: project.id,
-            worktree,
-            model: selectedModel,
-            name,
-          });
-        } catch (error) {
-          await provisioner.remove(worktree).catch(() => undefined);
-          throw error;
-        }
-        return { sessionId };
-      } finally {
-        releaseSpawn();
-      }
-    })();
-    controlHandoffSessionCreates.set(idempotencyKey, creating);
-    try {
-      return await creating;
-    } finally {
-      controlHandoffSessionCreates.delete(idempotencyKey);
-    }
-  };
+  const createHandoffSession = createHandoffSessionCreator({
+    deps,
+    isControlPlaneProject,
+    projectsBeingDeleted,
+    beginProjectSpawn,
+    projectSettingsStore,
+    availableModels,
+    isProjectSessionModel,
+    isConfiguredProjectSessionModel,
+    makeBranch,
+  });
   const qaRepair = createQARepairTool({
     store: deps.eventStore,
     permitted: canExecuteAs,
@@ -478,6 +439,7 @@ export function registerServerMcpRoutes({
     const resolveMcpAppConnection: HttpMcpProxyDeps['resolveConnection'] = async ({
       projectId,
       connectionId,
+      principal,
     }) => {
       const [bindings, connections] = await Promise.all([
         deps.eventStore.listProjectMcpBindings(projectId),
@@ -490,6 +452,14 @@ export function registerServerMcpRoutes({
         (candidate) => candidate.id === connectionId && candidate.enabled,
       );
       if (binding === undefined || connection === undefined) return undefined;
+      // The turn that listed this server ran for one person; another member's
+      // credentialed connection must not answer for it, even by its id.
+      const userId =
+        'caller' in principal
+          ? (await runningTurnInitiator(principal.caller.sessionId, principal.caller.turnId))
+              ?.userId
+          : principal.userId;
+      if (!httpMcpConnectionUsableBy(connection, userId)) return undefined;
       const authorization = await httpMcpAuthorization(deps.eventStore, connection);
       return {
         id: connection.id,
@@ -505,6 +475,9 @@ export function registerServerMcpRoutes({
         if (!caller) return undefined;
         const session = await deps.eventStore.getSession(caller.sessionId);
         if (session?.projectId !== input.projectId) return undefined;
+        // The Wiki maintenance run reads untrusted text unattended; the project's
+        // connected MCP servers are a way out it must not have.
+        if (await deps.eventStore.wikiMaintenance.isSession(caller.sessionId)) return undefined;
         if (deps.authRegistry?.isEnabled() === true) {
           const principal = await runningTurnInitiator(caller.sessionId, caller.turnId);
           if (!principal || !(await canExecuteAs(principal.userId, input.projectId)))
@@ -569,7 +542,12 @@ export function registerServerMcpRoutes({
       sourceSessionId: string,
       requestedTarget: string | undefined,
     ) => {
-      const links = await deps.eventStore.listSessionLinks(sourceSessionId);
+      if (await deps.eventStore.projectInquiries.isTarget(sourceSessionId)) return undefined;
+      const links = [];
+      for (const link of await deps.eventStore.listSessionLinks(sourceSessionId)) {
+        if (!(await deps.eventStore.projectInquiries.isTarget(link.peerSessionId)))
+          links.push(link);
+      }
       if (requestedTarget !== undefined) {
         return links.find((link) => link.peerSessionId === requestedTarget);
       }
@@ -1009,7 +987,7 @@ export function registerServerMcpRoutes({
           )
         )
           return false;
-        return connectorToolAvailable(deps.eventStore, input);
+        return connectorToolAvailable(deps.eventStore, { ...input, userId: user?.userId });
       },
       // Approval cannot restore rights revoked from the initiating user while waiting.
       authorizeExecution: async (input) => {
@@ -1039,7 +1017,14 @@ export function registerServerMcpRoutes({
       authorizeCall: async (input) => {
         // The composition's own pre-card refusals (the trusted CLI isolation check) first.
         await gatewayDeps.authorizeCall?.(input);
-        const { projectId, sessionId, toolName } = input;
+        const { projectId, sessionId, turnId, toolName } = input;
+        if (
+          (await deps.eventStore.wikiMaintenance.isSession(sessionId)) &&
+          !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'External tools are unavailable in planning mode; Wiki maintenance allows only Wiki operations.',
+          );
         if (
           (await deps.eventStore.repairs.qa()).session_id === sessionId &&
           toolName !== 'verity_qa_analysis'
@@ -1062,6 +1047,19 @@ export function registerServerMcpRoutes({
           throw new ControlPlaneSessionAuthorityError(
             'The calling user no longer has project execution permission.',
           );
+        if (
+          (await deps.eventStore.getSession(sessionId))?.planning === 'active' &&
+          (await deps.eventStore.projectInquiries.isReadOnlyTarget(sessionId)) &&
+          toolName !== 'verity_app_help' &&
+          !(
+            toolName === 'verity_project_inquiry' &&
+            ['answer', 'list'].includes((input.request as { operation: string }).operation)
+          )
+        ) {
+          throw new ControlPlaneSessionAuthorityError(
+            'Inquiry investigation is read-only; changes require target-side human approval',
+          );
+        }
         if (toolName === 'verity_vulnerabilities') {
           await vulnerabilityTool.authorize(input);
           return;
@@ -1098,6 +1096,11 @@ export function registerServerMcpRoutes({
         // and recording the agreed steps belongs to planning. App help only reads the
         // static catalog, and explaining Verity is as much a part of planning.
         if (
+          !(await isWikiMaintenanceCall(deps.eventStore, toolName, input.request, sessionId)) &&
+          !(
+            toolName === 'verity_project_inquiry' &&
+            (input.request as { operation?: string }).operation !== 'request'
+          ) &&
           toolName !== 'verity_tasks' &&
           toolName !== 'verity_repairs' &&
           toolName !== 'verity_app_help' &&
@@ -1108,8 +1111,20 @@ export function registerServerMcpRoutes({
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
         }
+        if (toolName === 'verity_project_inquiry') return;
+        if (toolName === PRESENT_MOCKUPS_TOOL || toolName === COMPLETE_MOCKUPS_TOOL) {
+          const session = await deps.eventStore.getSession(sessionId);
+          if (session?.projectId !== projectId)
+            throw new ControlPlaneSessionAuthorityError('session project changed');
+          return;
+        }
         if (toolName === 'verity_scheduling') {
-          await schedulingTool.authorize({ projectId, sessionId, request: input.request });
+          await schedulingTool.authorize({
+            projectId,
+            sessionId,
+            turnId,
+            request: input.request,
+          });
           return;
         }
         if (toolName === 'verity_matrix') {
@@ -1152,6 +1167,7 @@ export function registerServerMcpRoutes({
             deps.eventStore,
             projectId,
             driveRequest,
+            (await runningTurnInitiator(sessionId, turnId))?.userId,
           );
           if (
             googleDriveIsMutation(driveRequest) &&
@@ -1176,7 +1192,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return;
           }
           if (toolName === 'verity_google_calendar') {
@@ -1184,7 +1205,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return;
           }
           if (toolName === 'verity_gmail') {
@@ -1200,7 +1226,12 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Google access is restricted to the calling session',
               );
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return;
           }
           const action = (input.request as { action?: string }).action;
@@ -1335,15 +1366,27 @@ export function registerServerMcpRoutes({
               : toolName === 'verity_google_contacts'
                 ? 'contacts'
                 : undefined;
+        // Google access is snapshotted for the person the turn runs for; another
+        // member's account must not be what the approval card binds.
+        const googleUser =
+          service !== undefined ||
+          toolName === 'verity_google_drive' ||
+          ['verity_google_docs', 'verity_google_sheets', 'verity_google_slides'].includes(toolName)
+            ? (await runningTurnInitiator(sessionId, turnId))?.userId
+            : undefined;
         if (service)
           return JSON.stringify(
-            await deps.eventStore.googleAccounts.authorizationSnapshot(sessionId, service),
+            await deps.eventStore.googleAccounts.authorizationSnapshot(
+              sessionId,
+              service,
+              googleUser,
+            ),
           );
         if (toolName === 'verity_google_drive') {
           const parsed = googleDriveRequestSchema.parse(request);
           if (parsed.action === 'capabilities') return undefined;
           return JSON.stringify(
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed),
+            await resolveGoogleDriveAuthority(deps.eventStore, projectId, parsed, googleUser),
           );
         }
         if (
@@ -1351,7 +1394,8 @@ export function registerServerMcpRoutes({
         ) {
           const file = await deps.eventStore.getSessionWorkspaceFile(sessionId);
           if (!file?.accountId) throw new Error('No Google account is assigned');
-          const account = await deps.eventStore.googleAccounts.get(file.accountId);
+          const account = await deps.eventStore.googleAccounts.getOwned(file.accountId, googleUser);
+          if (!account) throw new Error('Connect your own Google account to use this file');
           const link = file.folderLinkId
             ? (await deps.eventStore.googleAccounts.folders(projectId)).find(
                 (candidate) => candidate.id === file.folderLinkId,
@@ -1404,7 +1448,7 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_scheduling') {
           if (!schedulingHasStandingAuthorization(request)) return false;
           // A refused read must fail as such, not turn into a card showing raw arguments.
-          await schedulingTool.authorize({ projectId, sessionId, request });
+          await schedulingTool.authorize({ projectId, sessionId, turnId, request });
           return true;
         }
         if (toolName === 'verity_matrix') {
@@ -1435,6 +1479,7 @@ export function registerServerMcpRoutes({
           toolName === 'verity_list_linked_sessions' ||
           toolName === 'verity_repairs' ||
           toolName === 'verity_qa_analysis' ||
+          toolName === 'verity_project_inquiry' ||
           toolName === 'verity_tasks' ||
           toolName === 'verity_app_help'
         ) {
@@ -1442,7 +1487,15 @@ export function registerServerMcpRoutes({
           return session?.projectId === projectId;
         }
 
-        if (toolName === START_PLANNING_TOOL || toolName === PRESENT_PLAN_TOOL) {
+        // Presenting mockups only stores images the session already has and asks the
+        // user to look at them; the review itself is the user's decision. Completing
+        // it only follows what the user said in the chat and starts no work itself.
+        if (
+          toolName === START_PLANNING_TOOL ||
+          toolName === PRESENT_PLAN_TOOL ||
+          toolName === PRESENT_MOCKUPS_TOOL ||
+          toolName === COMPLETE_MOCKUPS_TOOL
+        ) {
           const session = await deps.eventStore.getSession(sessionId);
           return session?.projectId === projectId;
         }
@@ -1485,7 +1538,12 @@ export function registerServerMcpRoutes({
           const driveRequest = googleDriveRequestSchema.parse(request);
           if (driveRequest.action === 'capabilities') return true;
           try {
-            await resolveGoogleDriveAuthority(deps.eventStore, projectId, driveRequest);
+            await resolveGoogleDriveAuthority(
+              deps.eventStore,
+              projectId,
+              driveRequest,
+              (await runningTurnInitiator(sessionId, turnId))?.userId,
+            );
           } catch {
             return false;
           }
@@ -1494,6 +1552,7 @@ export function registerServerMcpRoutes({
               (await deps.googleDriveDocumentIsWithinProject?.({
                 projectId,
                 sessionId,
+                turnId,
                 url: driveRequest.url,
                 accountId: driveRequest.accountId,
                 folderLinkId: driveRequest.folderLinkId,
@@ -1515,7 +1574,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_contacts') {
           if (!googleContactsHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'contacts');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'contacts',
+            );
             return true;
           } catch {
             return false;
@@ -1524,7 +1588,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_google_calendar') {
           if (!googleCalendarHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'calendar');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'calendar',
+            );
             return true;
           } catch {
             return false;
@@ -1533,7 +1602,12 @@ export function registerServerMcpRoutes({
         if (toolName === 'verity_gmail') {
           if (!gmailHasStandingAuthorization(request)) return false;
           try {
-            await resolveGoogleServiceCredential(deps.eventStore, sessionId, 'gmail');
+            await resolveGoogleServiceCredentialForTurn(
+              deps.eventStore,
+              sessionId,
+              turnId,
+              'gmail',
+            );
             return true;
           } catch {
             return false;
@@ -1556,6 +1630,19 @@ export function registerServerMcpRoutes({
           ? schedulingTool.approvedEdits(request, updatedInput)
           : undefined,
       invokeTool: async (input) => {
+        // Recheck at execution too: a pending approval cannot widen a maintenance turn.
+        if (
+          (await deps.eventStore.wikiMaintenance.isSession(input.sessionId)) &&
+          !(await isWikiMaintenanceCall(
+            deps.eventStore,
+            input.toolName,
+            input.request,
+            input.sessionId,
+          ))
+        )
+          throw new ControlPlaneSessionAuthorityError(
+            'Wiki maintenance allows only Wiki operations.',
+          );
         if (input.toolName === 'verity_vulnerabilities') return vulnerabilityTool.invoke(input);
         if (input.toolName === 'verity_scheduling') return schedulingTool.invoke(input);
         if (input.toolName === 'verity_secret_output') {
@@ -1568,9 +1655,51 @@ export function registerServerMcpRoutes({
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
           if (!(await sessionPlanning.start(input.sessionId)))
             throw new ControlPlaneSessionAuthorityError('Planning mode is already active.');
+          // The note only guides how the plan is written, so a settings read that
+          // fails falls back to the default level rather than refusing to plan.
+          let designLevel: 'off' | 'on_request' | 'required' = 'on_request';
+          try {
+            designLevel =
+              (await projectSettingsStore(deps.eventStore).getProjectSettings(input.projectId))
+                ?.designLevel ?? designLevel;
+          } catch {
+            /* Default level. */
+          }
           return {
             planning: 'active',
-            note: 'Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message.',
+            note: `Planning mode is on. Do not change any files in this turn either; Verity enforces it from the next message. ${planningDesignNote(designLevel)}`,
+          };
+        }
+        if (input.toolName === PRESENT_MOCKUPS_TOOL) {
+          const review = await sessionMockups.present(
+            input.sessionId,
+            presentMockupsRequestSchema.parse(input.request),
+          );
+          return {
+            presented: true,
+            mockupRevision: review.revision,
+            // The chat renders this round from the result, so it keeps showing what
+            // was presented after later rounds replace the session's review.
+            screens: review.screens.map(({ name, attachment, width, height, verdict }) => ({
+              name,
+              attachment,
+              width,
+              height,
+              verdict,
+            })),
+            note: 'Verity shows the mockups in the chat; the user marks each screen and explains in the chat. End your turn now and do not implement the rest of the plan until the user tells you in the chat to implement.',
+          };
+        }
+        if (input.toolName === COMPLETE_MOCKUPS_TOOL) {
+          const result = await sessionMockups.complete(input.sessionId);
+          if (!result.ok)
+            return {
+              completed: false,
+              note: 'No mockup review is waiting. Continue as the user asked.',
+            };
+          return {
+            completed: true,
+            note: 'The mockup review has ended. Continue implementing as the user asked, keeping the approved screens and leaving out discarded ones.',
           };
         }
         if (input.toolName === PRESENT_PLAN_TOOL) {
@@ -1587,6 +1716,10 @@ export function registerServerMcpRoutes({
           };
         }
         if (input.toolName === END_PLANNING_TOOL) {
+          if (await deps.eventStore.projectInquiries.isReadOnlyTarget(input.sessionId))
+            throw new ControlPlaneSessionAuthorityError(
+              'Project inquiry sessions require target-side human change approval',
+            );
           if ((input.request as { action?: string }).action === 'discard') {
             if (
               !(await sessionPlanning.discard(
@@ -1602,6 +1735,13 @@ export function registerServerMcpRoutes({
           }
           // The user's instruction in chat already authorizes implementation.
           const planningRevision = planningApprovalRevisions.get(input.request as object);
+          const planned = await deps.eventStore.getSession(input.sessionId);
+          if (
+            planningRevision !== undefined &&
+            planned?.planningRevision === planningRevision &&
+            openPlanDecisions(planned.planningPlan) > 0
+          )
+            throw new ControlPlaneSessionAuthorityError(OPEN_DECISIONS_ERROR);
           if (
             planningRevision === undefined ||
             !(await sessionPlanning.implement(
@@ -1659,14 +1799,34 @@ export function registerServerMcpRoutes({
             request: tasksRequestSchema.parse(input.request),
           });
         }
+        if (
+          input.toolName === 'verity_project_inquiry' &&
+          (input.request as { operation?: string }).operation !== 'request'
+        ) {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
+        }
+        // A Wiki maintenance run is isolated like planning; of the external tools it
+        // keeps only its Wiki operations, which are handled below.
+        const wikiMaintenanceCall = await isWikiMaintenanceCall(
+          deps.eventStore,
+          input.toolName,
+          input.request,
+          input.sessionId,
+        );
         // Planning can begin while an external approval card is pending.
         if (
-          (await sessionPlanning.isPlanning(input.sessionId)) ||
-          conductor.isPlanningTurn?.(input.sessionId)
+          !wikiMaintenanceCall &&
+          ((await sessionPlanning.isPlanning(input.sessionId)) ||
+            conductor.isPlanningTurn?.(input.sessionId))
         ) {
           throw new ControlPlaneSessionAuthorityError(
             'External tools are unavailable in planning mode; use read-only local tools.',
           );
+        }
+        if (input.toolName === 'verity_project_inquiry') {
+          const initiator = await runningTurnInitiator(input.sessionId, input.turnId);
+          return inquiryTool(input.sessionId, initiator?.userId ?? null, input.request);
         }
         if (input.toolName === 'verity_list_linked_sessions') {
           const links = await deps.eventStore.listSessionLinks(input.sessionId);
@@ -1706,8 +1866,64 @@ export function registerServerMcpRoutes({
               throw new ControlPlaneSessionAuthorityError(
                 'Knowledge access requires an active session in the calling project',
               );
-            if (request.operation === 'import_source')
-              return importProjectSource(deps.dataRoot, input.projectId, session.worktree, request);
+            if (request.operation === 'read_wiki_page')
+              return readWikiPage(deps.dataRoot, input.projectId, request);
+            if (request.operation === 'import_source') {
+              const imported = await importProjectSource(
+                deps.dataRoot,
+                input.projectId,
+                session.worktree,
+                request,
+              );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'source',
+                  ref: knowledgeRef(imported.path),
+                  title: occasionTitle(imported.path),
+                },
+                app.log,
+              );
+              return imported;
+            }
+            if (
+              request.operation === 'read_wiki_occasions' ||
+              request.operation === 'close_wiki_occasions'
+            ) {
+              // What happened in a project includes the conversations of deleted
+              // sessions; only the run the server started for it reads and closes them.
+              if (
+                (await deps.eventStore.wikiMaintenance.get(input.projectId))?.sessionId !==
+                input.sessionId
+              )
+                throw new ControlPlaneSessionAuthorityError(
+                  'Wiki occasions are read only in the Wiki maintenance run',
+                );
+              return wikiOccasionTool(deps.eventStore, input.projectId, request);
+            }
+            if (request.operation === 'propose_wiki') {
+              if (!wikiProposals) throw new Error('Knowledge storage is unavailable');
+              // A deleted project is only hidden; its Wiki takes no new proposals.
+              if ((await deps.eventStore.getProject(input.projectId))?.hiddenAt)
+                throw new ControlPlaneSessionAuthorityError('The project was deleted');
+              const result = await wikiProposals.propose({
+                mode: request.mode,
+                logKind: request.logKind,
+                title: request.title,
+                sources: request.sources,
+                changes: request.changes,
+                projectId: input.projectId,
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+              });
+              return {
+                proposalId: result.proposal?.id ?? null,
+                proposed: result.proposal?.changes.map((change) => change.path) ?? [],
+                skipped: result.skipped,
+                status: result.proposal ? 'awaiting_review' : 'nothing_new',
+              };
+            }
             if (request.operation === 'create_source_folder')
               return createProjectSourceFolder(deps.dataRoot, input.projectId, request);
             if (request.operation === 'lookup_decisions')
@@ -1758,7 +1974,7 @@ export function registerServerMcpRoutes({
                 throw new Error(
                   'Decision confirmation must reference a user prompt in the calling session',
                 );
-              return recordProjectDecision(
+              const recorded = await recordProjectDecision(
                 deps.dataRoot,
                 input.projectId,
                 {
@@ -1767,6 +1983,17 @@ export function registerServerMcpRoutes({
                 },
                 request,
               );
+              await noteWikiOccasion(
+                deps.eventStore,
+                {
+                  projectId: input.projectId,
+                  kind: 'decision',
+                  ref: knowledgeRef(recorded.path),
+                  title: request.title,
+                },
+                app.log,
+              );
+              return recorded;
             }
             return moveProjectSource(deps.dataRoot, input.projectId, request);
           }
@@ -1928,6 +2155,7 @@ export function registerServerMcpRoutes({
       requestApproval: async ({
         projectId,
         sessionId,
+        turnId,
         callId,
         invocationId,
         authorizationSnapshot,
@@ -1960,6 +2188,7 @@ export function registerServerMcpRoutes({
           sessionId,
           toolName,
           request: input,
+          userId: (await runningTurnInitiator(sessionId, turnId))?.userId,
         });
         // The card shows the stored draft itself, never the agent's description of it.
         const scheduling =
@@ -2004,9 +2233,11 @@ export function registerServerMcpRoutes({
                   ),
                 }
               : {}),
-            // Secret tools reuse consent for their bound request shape.
+            // Secret tools reuse consent for their bound request shape, and only the
+            // calling turn's person's own consent (ADR 0023 §3).
             allowStandingGrant:
               toolName === 'verity_http_request' || toolName === 'verity_secret_run',
+            grantUserId: (await runningTurnInitiator(sessionId, turnId))?.userId ?? null,
             signal,
           });
         } catch (error) {

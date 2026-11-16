@@ -148,14 +148,16 @@ either — the status handshake carries `protocolVersion` and `runnerInstanceId`
 and no boundary-binary version — so read the binary that decides:
 
 ```
-docker exec <container> grep -c "ACP_WORKER_BACKENDS.*'opencode-acp'" /usr/local/bin/verity-runner-supervisor
+docker exec <container> grep -c "ACP_WORKER_BACKENDS = .*opencode-acp" /usr/local/bin/verity-runner-supervisor
 ```
 
 Read the ADMISSION list, not the file. A stale supervisor mentions `opencode-acp`
 in several places already — it has spawned OpenCode workers since ADR 0012
 Amendment 4 — so a bare `grep -c opencode-acp` answers non-zero on exactly the
 container this check exists to catch. `ACP_WORKER_BACKENDS` is the one list that
-changed.
+changed, and the pattern matches only its declaration, not the places that read it.
+It names no quote character: the installed supervisor is built from sources and
+its declaration quotes the members differently from those sources.
 
 The pattern is line-anchored, like every `grep` pattern, and the declaration it
 reads is one line today. Reformat that declaration — or add a fourth member, and

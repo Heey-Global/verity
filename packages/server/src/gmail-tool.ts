@@ -1,5 +1,5 @@
 import {
-  resolveGoogleServiceCredential,
+  resolveGoogleServiceCredentialForTurn,
   type GoogleServiceCredentialStore,
 } from './google-service-credentials.js';
 import { basename } from 'node:path';
@@ -39,6 +39,7 @@ export interface GmailToolStore extends GoogleServiceCredentialStore {
   ): Promise<{ projectId: string | null; worktree?: string } | undefined>;
   getSessionGmailConnection(
     sessionId: string,
+    userId: string | undefined,
   ): Promise<{ accountEmail: string; enabledAt: Date } | undefined>;
   getVeritySettings(): Promise<
     | {
@@ -156,7 +157,12 @@ export function createGmailTool(deps: {
   googleAccessToken: (accountId?: string) => Promise<string | undefined>;
   gmail?: {
     search(token: string, query: string, maxResults: number, pageToken?: string): Promise<unknown>;
-    downloadAttachment?(token: string, messageId: string, partId: string): Promise<unknown>;
+    downloadAttachment?(
+      token: string,
+      messageId: string,
+      partId: string,
+      worktree: string,
+    ): Promise<unknown>;
     readThread(token: string, threadId: string): Promise<unknown>;
     createDraft(token: string, input: GmailDraftInput): Promise<unknown>;
     listSenders(token: string): Promise<GmailSendAs[]>;
@@ -193,9 +199,10 @@ export function createGmailTool(deps: {
     if (deps.eventStore.getGoogleServiceCredentials) {
       if (session?.projectId !== input.projectId)
         throw new Error('Google access is restricted to the calling session');
-      const credential = await resolveGoogleServiceCredential(
+      const credential = await resolveGoogleServiceCredentialForTurn(
         deps.eventStore,
         input.sessionId,
+        input.turnId,
         'gmail',
       );
       return {
@@ -205,7 +212,10 @@ export function createGmailTool(deps: {
         refreshToken: credential.refreshToken,
       };
     }
-    const connection = await deps.eventStore.getSessionGmailConnection(input.sessionId);
+    const connection = await deps.eventStore.getSessionGmailConnection(
+      input.sessionId,
+      (await deps.eventStore.runningTurnInitiator?.(input.sessionId, input.turnId))?.userId,
+    );
     const settings = await deps.eventStore.getVeritySettings();
     if (
       session === undefined ||
@@ -266,10 +276,16 @@ export function createGmailTool(deps: {
       }
       if (request.action === 'download_attachment') {
         await verifyCredentialUnchanged(input, credential);
+        const session = await deps.eventStore.getSession(input.sessionId);
+        if (session?.projectId !== input.projectId)
+          throw new Error('Google access is restricted to the calling session');
+        if (!session.worktree)
+          throw new Error('This session has no workspace to download attachments into');
         return (gmail.downloadAttachment ?? downloadGmailAttachment)(
           token,
           request.messageId,
           request.partId,
+          session.worktree,
         );
       }
       if (request.action === 'prepare_draft_send') {

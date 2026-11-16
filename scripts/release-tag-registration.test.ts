@@ -370,6 +370,144 @@ describe('later trusted merge identity for an already included version', () => {
   });
 });
 
+describe('registered releases followed by empty duplicate PRs', () => {
+  function withHistory(
+    test: (history: {
+      git: (args: string[]) => string;
+      original: string;
+      duplicate: string;
+      writes: string[][];
+      run: (command: string, args: string[]) => string;
+    }) => void,
+    options: { changed?: boolean; untrusted?: boolean; merge?: boolean } = {},
+  ) {
+    const cwd = mkdtempSync(join(tmpdir(), 'release-duplicate-'));
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      git(['init', '-q']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'tag.gpgSign', 'false']);
+      for (const [train, manifest] of [
+        ['mobile', { 'apps/mobile': '1.89.0' }],
+        ['backend', { '.': '4.89.1' }],
+        ['website', { 'docs/website': '2.0.0' }],
+      ] as const)
+        writeFileSync(
+          join(cwd, `.release-please-manifest.${train}.json`),
+          JSON.stringify(manifest),
+        );
+      git(['add', '.']);
+      git(['commit', '-qm', 'original release']);
+      const original = git(['rev-parse', 'HEAD']);
+      for (const tag of ['mobile-v1.89.0', 'v4.89.1', 'website-v2.0.0'])
+        git(['tag', tag, original]);
+      // Intervening backend work must not make an empty mobile merge a new release.
+      writeFileSync(join(cwd, 'backend.txt'), 'unrelated backend update');
+      git(['add', '.']);
+      git(['commit', '-qm', 'backend update']);
+      if (options.changed) {
+        writeFileSync(join(cwd, 'mobile.txt'), 'new release content');
+        git(['add', '.']);
+      }
+      if (options.merge) {
+        const parent = git(['rev-parse', 'HEAD']);
+        const tree = git(['rev-parse', 'HEAD^{tree}']);
+        const merge = git(['commit-tree', tree, '-p', parent, '-p', original, '-m', 'merge']);
+        git(['update-ref', 'HEAD', merge]);
+      } else git(['commit', '--allow-empty', '-qm', 'duplicate release']);
+      const duplicate = git(['rev-parse', 'HEAD']);
+      git(['remote', 'add', 'origin', cwd]);
+      const writes: string[][] = [];
+      const run = (command: string, args: string[]): string => {
+        if (command === 'git') return git(args);
+        if (args.includes('.object.sha')) return duplicate;
+        if (args.includes('POST')) {
+          writes.push(args);
+          throw new Error('Unexpected tag write');
+        }
+        return [original, duplicate]
+          .map((sha) =>
+            JSON.stringify({
+              merged_at: '2026-11-09',
+              merge_commit_sha: sha,
+              user: {
+                login: options.untrusted && sha === duplicate ? 'someone' : 'github-actions[bot]',
+              },
+              head: { ref: 'release-please--branches--main--components--mobile' },
+            }),
+          )
+          .join('\n');
+      };
+      test({ git, original, duplicate, run, writes });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+  it.each(['check', 'register', 'scoped-register'] as const)(
+    'preserves the registered identity in %s despite reversed PR listing order',
+    (mode) => {
+      withHistory(({ original, duplicate, run, writes, git }) => {
+        const reverse = (command: string, args: string[]) => {
+          const result = run(command, args);
+          return command === 'gh' && !args.includes('.object.sha') && !args.includes('POST')
+            ? result.split('\n').reverse().join('\n')
+            : result;
+        };
+        const result = registerReleaseTags(mode === 'check' ? 'check' : 'register', duplicate, {
+          repository: 'example/repo',
+          run: reverse,
+          ...(mode === 'scoped-register' ? { train: 'mobile' } : {}),
+        });
+        expect(result).toContainEqual({ tag: 'mobile-v1.89.0', sha: original });
+        expect(git(['rev-parse', 'mobile-v1.89.0'])).toBe(original);
+        expect(writes).toEqual([]);
+      });
+    },
+  );
+  it.each(['missing', 'unrelated', 'changed', 'untrusted', 'merge', 'git-error'] as const)(
+    'keeps the barrier closed for %s evidence',
+    (scenario) => {
+      withHistory(
+        ({ original, duplicate, run, git, writes }) => {
+          if (scenario === 'missing') git(['tag', '-d', 'mobile-v1.89.0']);
+          if (scenario === 'unrelated') git(['tag', '-f', 'mobile-v1.89.0', `${duplicate}^`]);
+          expect(() =>
+            registerReleaseTags('register', duplicate, {
+              repository: 'example/repo',
+              train: 'mobile',
+              run: (command, args) => {
+                if (scenario === 'git-error' && args[0] === 'diff-tree')
+                  throw new Error('Git unavailable');
+                return run(command, args);
+              },
+            }),
+          ).toThrow(
+            scenario === 'untrusted'
+              ? 'Unexpected author'
+              : scenario === 'git-error'
+                ? 'Git unavailable'
+                : 'Ambiguous',
+          );
+          if (scenario !== 'missing' && scenario !== 'unrelated')
+            expect(git(['rev-parse', 'mobile-v1.89.0'])).toBe(original);
+          expect(writes).toEqual([]);
+        },
+        {
+          changed: scenario === 'changed',
+          untrusted: scenario === 'untrusted',
+          merge: scenario === 'merge',
+        },
+      );
+    },
+  );
+});
+
 it('reproduces earlier version content and a later empty trusted merge using real Git ancestry', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'release-identity-'));
   try {
@@ -439,3 +577,182 @@ it('reproduces earlier version content and a later empty trusted merge using rea
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+it.each(['check', 'register'] as const)(
+  'preserves the original identity after an empty duplicate release in %s mode',
+  (mode) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'duplicate-release-'));
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      git(['init', '-q']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'user.email', 'test@example.com']);
+      for (const [train, manifest] of [
+        ['mobile', { 'apps/mobile': '1.89.0' }],
+        ['backend', { '.': '3.0.0' }],
+        ['website', { 'docs/website': '2.0.0' }],
+      ] as const)
+        writeFileSync(
+          join(cwd, `.release-please-manifest.${train}.json`),
+          JSON.stringify(manifest),
+        );
+      git(['add', '.']);
+      git(['commit', '-qm', 'original release']);
+      const original = git(['rev-parse', 'HEAD']);
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', original]);
+      git(['update-ref', 'refs/tags/v3.0.0', original]);
+      git(['update-ref', 'refs/tags/website-v2.0.0', original]);
+      // Intervening main changes must not make an empty release look substantive.
+      writeFileSync(join(cwd, 'unrelated.txt'), 'another train changed');
+      git(['add', '.']);
+      git(['commit', '-qm', 'unrelated main change']);
+      git(['commit', '--allow-empty', '-qm', 'duplicate mobile release']);
+      const duplicate = git(['rev-parse', 'HEAD']);
+      git(['remote', 'add', 'origin', cwd]);
+      const records = [duplicate, original]
+        .map((sha) =>
+          JSON.stringify({
+            merged_at: '2026-11-09',
+            merge_commit_sha: sha,
+            user: { login: 'github-actions[bot]' },
+            head: { ref: 'release-please--branches--main--components--mobile' },
+          }),
+        )
+        .join('\n');
+      const writes: string[][] = [];
+      let failDiff = false;
+      const run = (command: string, args: string[]) => {
+        if (command === 'git') {
+          if (failDiff && args[0] === 'diff-tree')
+            throw Object.assign(new Error('Missing parent'), { status: 128 });
+          return git(args);
+        }
+        if (args.includes('POST')) {
+          writes.push(args);
+          throw new Error('Unexpected tag creation');
+        }
+        if (args.includes('.object.sha')) return duplicate;
+        return records;
+      };
+      const invoke = () =>
+        registerReleaseTags(mode, duplicate, {
+          repository: 'example/repo',
+          run,
+          ...(mode === 'register' ? { train: 'mobile' } : {}),
+        });
+      expect(invoke()).toContainEqual({ tag: 'mobile-v1.89.0', sha: original });
+      expect(git(['rev-parse', 'mobile-v1.89.0'])).toBe(original);
+      expect(writes).toHaveLength(0);
+      failDiff = true;
+      expect(invoke).toThrow('Missing parent');
+      failDiff = false;
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', duplicate]);
+      expect(invoke).toThrow('Ambiguous');
+      git(['update-ref', 'refs/tags/mobile-v1.89.0', original]);
+      writeFileSync(join(cwd, 'duplicate.txt'), 'substantive change');
+      git(['add', '.']);
+      git(['commit', '--amend', '-qm', 'nonempty duplicate release']);
+      const substantive = git(['rev-parse', 'HEAD']);
+      expect(() =>
+        registerReleaseTags(mode, substantive, {
+          repository: 'example/repo',
+          run: (command, args) => {
+            if (command === 'gh' && args.includes('.object.sha')) return substantive;
+            if (command === 'gh' && !args.includes('POST'))
+              return records.replace(duplicate, substantive);
+            return run(command, args);
+          },
+          ...(mode === 'register' ? { train: 'mobile' } : {}),
+        }),
+      ).toThrow('Ambiguous');
+      expect(writes).toHaveLength(0);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(['register', 'check'] as const)(
+  'ignores only redundant empty release merges in %s mode using real Git trees',
+  (mode) => {
+    const cwd = mkdtempSync(join(tmpdir(), 'release-noop-'));
+    try {
+      const git = (args: string[]) =>
+        execFileSync('git', args, {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+      git(['init', '-q']);
+      git(['config', 'user.name', 'Test']);
+      git(['config', 'user.email', 'test@example.com']);
+      const manifest = join(cwd, `.release-please-manifest.${'mobile'}.json`);
+      writeFileSync(manifest, JSON.stringify({ 'apps/mobile': '1.88.0' }));
+      git(['add', '.']);
+      git(['commit', '-qm', 'previous version']);
+      writeFileSync(manifest, JSON.stringify({ 'apps/mobile': '1.89.0' }));
+      git(['commit', '-qam', 'original release']);
+      const original = git(['rev-parse', 'HEAD']);
+      git(['commit', '--allow-empty', '-qm', 'duplicate release PR']);
+      const empty = git(['rev-parse', 'HEAD']);
+      git(['remote', 'add', 'origin', cwd]);
+      git(['tag', 'mobile-v1.89.0', original]);
+      let duplicate = empty;
+      const run = (command: string, args: string[]): string => {
+        if (command === 'git') return git(args);
+        if (args.includes('.object.sha')) return git(['rev-parse', 'HEAD']);
+        if (args.includes('POST')) throw new Error('Unexpected tag mutation');
+        return [original, duplicate]
+          .map((sha) =>
+            JSON.stringify({
+              merged_at: '2026-11-09',
+              merge_commit_sha: sha,
+              user: { login: 'github-actions[bot]' },
+              head: { ref: 'release-please--branches--main--components--mobile' },
+            }),
+          )
+          .join('\n');
+      };
+      const options = {
+        repository: 'example/repo',
+        ...(mode === 'register' ? { train: 'mobile' } : {}),
+      };
+      // Check mode covers all trains; restrict its manifest inputs to this fixture.
+      const mobileRun = (command: string, args: string[]) => {
+        if (args[0] === 'show' && !args[1]?.includes('mobile'))
+          return JSON.stringify({ '.': '3.0.0', 'docs/website': '2.0.0' });
+        if (args[0] === 'ls-remote' && args[3] !== 'refs/tags/mobile-v1.89.0')
+          return `${original}\t${args[3]}`;
+        return run(command, args);
+      };
+      expect(registerReleaseTags(mode, empty, { ...options, run: mobileRun })).toContainEqual({
+        tag: 'mobile-v1.89.0',
+        sha: original,
+      });
+      expect(git(['rev-parse', 'mobile-v1.89.0'])).toBe(original);
+      expect(() =>
+        registerReleaseTags(mode, empty, {
+          ...options,
+          run: (command, args) => {
+            if (args[0] === 'diff-tree') throw new Error('Tree unavailable');
+            return mobileRun(command, args);
+          },
+        }),
+      ).toThrow('Tree unavailable');
+      writeFileSync(join(cwd, 'release-note'), 'A real change with the same version');
+      git(['add', '.']);
+      git(['commit', '-qm', 'different release candidate']);
+      duplicate = git(['rev-parse', 'HEAD']);
+      expect(() => registerReleaseTags(mode, duplicate, { ...options, run: mobileRun })).toThrow(
+        'Ambiguous',
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+);

@@ -5,6 +5,8 @@ import { expect, it, vi } from 'vitest';
 import {
   createPackageArtifactBroker,
   PACKAGE_ARTIFACT_BASE_URL,
+  PUBLICATION_METADATA_SLOTS,
+  createSlotPool,
 } from './package-artifact-broker.js';
 import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
 
@@ -62,6 +64,120 @@ it('rewrites npm metadata to stable content selectors while retaining native age
       ([input]) => input.headers.authorization === undefined && input.method === 'GET',
     ),
   ).toBe(true);
+});
+
+it.each([undefined, 'not-a-date', '2030-01-01T00:00:00Z'])(
+  'blocks locked artifact bytes with ineligible publication time %j',
+  async (published) => {
+    const f = fixture();
+    f.transport.mockImplementation(async ({ path }) =>
+      response(metadataPath(path) ? { ...manifest(), time: { '1.0.0': published } } : bytes),
+    );
+    const path = await selector(f);
+    await expect(f.serve(path)).rejects.toMatchObject({ status: 409 });
+    await expect(f.serve('npm/example/-/example-1.0.0.tgz')).rejects.toMatchObject({ status: 409 });
+    expect(f.transport.mock.calls.every(([input]) => metadataPath(input.path))).toBe(true);
+  },
+);
+
+it('enforces stronger install floors and package-scoped exceptions on download', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async ({ path }) =>
+    response(
+      metadataPath(path)
+        ? { ...manifest(), time: { '1.0.0': new Date(Date.now() - 4 * 86400_000).toISOString() } }
+        : bytes,
+    ),
+  );
+  const path = await selector(f);
+  const policy = {
+    minimumAgeDays: 7,
+    packages: new Set(['example@1.0.0']),
+    exceptions: new Set<string>(),
+  };
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 409 });
+  policy.exceptions.add('example@1.0.0');
+  expect(
+    (await f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy)).body,
+  ).toEqual(bytes);
+  policy.packages.clear();
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 403 });
+});
+
+it('never treats missing publication metadata as an approved young release', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async ({ path }) =>
+    response(metadataPath(path) ? { ...manifest(), time: {} } : bytes),
+  );
+  const path = await selector(f);
+  const policy = {
+    minimumAgeDays: 3,
+    packages: new Set(['example@1.0.0']),
+    exceptions: new Set(['example@1.0.0']),
+  };
+  await expect(
+    f.broker.serve(path, f.signal, f.authorized, PACKAGE_ARTIFACT_BASE_URL, policy),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(f.transport.mock.calls.every(([input]) => metadataPath(input.path))).toBe(true);
+});
+
+it('verifies publication facts from large packuments without raising the ordinary metadata cap', async () => {
+  const f = fixture();
+  f.transport.mockImplementation(async () =>
+    response({ ...manifest(), description: 'x'.repeat(3 * 1024 ** 2) }),
+  );
+  const result = await f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  expect(result.versions).toEqual(new Set(['1.0.0']));
+  expect(result.times.get('1.0.0')).toBe('2020-01-01T00:00:00Z');
+  await expect(f.serve('npm/example')).rejects.toMatchObject({ status: 413 });
+});
+
+it('keeps publication metadata redirects on the provider and rechecks authority', async () => {
+  const f = fixture();
+  f.transport.mockResolvedValueOnce(
+    response('', 302, { location: 'https://foreign.example/example' }),
+  );
+  await expect(
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  ).rejects.toThrow();
+  expect(f.transport).toHaveBeenCalledOnce();
+  f.transport.mockImplementationOnce(async () => {
+    f.authorized.mockResolvedValue(false);
+    return response(manifest());
+  });
+  await expect(
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  ).rejects.toMatchObject({ status: 401 });
+});
+
+it.each([false, true])(
+  'downloads a selected artifact from large packuments (time first: %s)',
+  async (timeFirst) => {
+    const f = fixture();
+    const path = await selector(f);
+    const { time, ...data } = manifest();
+    const metadata = timeFirst
+      ? { time, ...data, description: 'x'.repeat(3 * 1024 ** 2) }
+      : { ...data, time, description: 'x'.repeat(3 * 1024 ** 2) };
+    f.transport.mockImplementation(async ({ path }) =>
+      response(metadataPath(path) ? metadata : bytes),
+    );
+    expect((await f.serve(path)).body).toEqual(bytes);
+    expect((await f.serve('npm/example/-/example-1.0.0.tgz')).body).toEqual(bytes);
+  },
+);
+
+it('does not retain an earlier selected artifact overwritten by a duplicate version', async () => {
+  const f = fixture();
+  const path = await selector(f);
+  const metadata = manifest();
+  const raw = `{"name":"example","versions":{"1.0.0":${JSON.stringify(metadata.versions['1.0.0'])},"1.0.0":null},"time":${JSON.stringify(metadata.time)}}`;
+  f.transport.mockImplementation(async () => response(Buffer.from(raw)));
+  await expect(f.serve(path)).rejects.toMatchObject({ status: 404 });
 });
 
 it('reauthorizes a frozen lockfile selector after broker restart and generation replacement', async () => {
@@ -289,4 +405,109 @@ it('keeps npm audit on a fixed schema-validated endpoint without publishing or r
   await expect(
     f.broker.advisories({ example: ['1.0.0'] }, f.signal, f.authorized),
   ).rejects.toMatchObject({ status: 502 });
+});
+
+it('requests compressed publication metadata', async () => {
+  const f = fixture();
+  await f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  expect(f.transport.mock.calls[0]![0].headers['accept-encoding']).toBe('gzip');
+});
+
+it('queues publication lookups beyond the metadata slots instead of rejecting them', async () => {
+  // Verification fans out over many names. Rejecting the overflow with 429 would
+  // fail an install whenever two projects verify at the same time.
+  const f = fixture();
+  let active = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  f.transport.mockImplementation(async () => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise<void>((done) => releases.push(done));
+    active--;
+    return response(manifest());
+  });
+  const lookups = Array.from({ length: PUBLICATION_METADATA_SLOTS + 3 }, () =>
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  );
+  let settled = false;
+  const all = Promise.all(lookups).finally(() => {
+    settled = true;
+  });
+  while (!settled) {
+    await new Promise((done) => setTimeout(done, 5));
+    releases.splice(0).forEach((release) => release());
+  }
+  const results = await all;
+  expect(results.every((result) => result.versions.has('1.0.0'))).toBe(true);
+  expect(peak).toBe(PUBLICATION_METADATA_SLOTS);
+});
+
+it('hands a freed slot to the oldest waiter before any newcomer', async () => {
+  // Waiting for a slot has no timeout. If a newcomer arriving right after a release
+  // could take the slot ahead of the queue, a waiter could be overtaken forever.
+  const pool = createSlotPool(1);
+  const signal = new AbortController().signal;
+  const order: string[] = [];
+  const first = await pool.acquire(signal);
+  const waiting = pool.acquire(signal).then((release) => {
+    order.push('waiting');
+    return release;
+  });
+  await Promise.resolve();
+  first();
+  const newcomer = pool.acquire(signal).then((release) => {
+    order.push('newcomer');
+    return release;
+  });
+  (await waiting)();
+  (await newcomer)();
+  expect(order).toEqual(['waiting', 'newcomer']);
+});
+
+it('passes a handed-over slot on when its waiter was aborted before resuming', async () => {
+  const pool = createSlotPool(1);
+  const signal = new AbortController().signal;
+  const first = await pool.acquire(signal);
+  const controller = new AbortController();
+  const aborted = pool.acquire(controller.signal);
+  const next = pool.acquire(signal);
+  await Promise.resolve();
+  first();
+  controller.abort();
+  await expect(aborted).rejects.toMatchObject({ status: 401 });
+  const release = await next;
+  release();
+  // The slot is free again: a fresh acquire succeeds immediately.
+  (await pool.acquire(signal))();
+});
+
+it('stops waiting for a metadata slot when the request is aborted', async () => {
+  const f = fixture();
+  const releases: (() => void)[] = [];
+  f.transport.mockImplementation(async () => {
+    await new Promise<void>((done) => releases.push(done));
+    return response(manifest());
+  });
+  const held = Array.from({ length: PUBLICATION_METADATA_SLOTS }, () =>
+    f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized),
+  );
+  const controller = new AbortController();
+  const waiting = f.broker.publicationTimes('example', ['1.0.0'], controller.signal, f.authorized);
+  // A live lookup queued behind the aborted one must get the next free slot.
+  const live = f.broker.publicationTimes('example', ['1.0.0'], f.signal, f.authorized);
+  controller.abort();
+  await expect(waiting).rejects.toMatchObject({ status: 401 });
+  // Poll instead of sleeping once, so a slow runner cannot fail the ordering.
+  const until = async (condition: () => boolean) => {
+    for (let waited = 0; !condition() && waited < 5000; waited += 5)
+      await new Promise((done) => setTimeout(done, 5));
+  };
+  await until(() => releases.length === PUBLICATION_METADATA_SLOTS);
+  releases.shift()!();
+  // The freed slot went to the live lookup, which is now waiting on the registry.
+  await until(() => releases.length === PUBLICATION_METADATA_SLOTS);
+  expect(releases).toHaveLength(PUBLICATION_METADATA_SLOTS);
+  releases.splice(0).forEach((release) => release());
+  await Promise.all([...held, live]);
 });

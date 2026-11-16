@@ -13,6 +13,7 @@ import {
   publishProjectStatusMutation,
   subscribeProjectStatusMutations,
   type ProjectDetail,
+  type ProjectProfile,
   type ProjectRecord,
   type ProjectSettings,
   type VerityClient,
@@ -37,8 +38,13 @@ export type ProjectDetailState = {
   load: (silent?: boolean) => Promise<void>;
   /** An action returned a newer project record: adopt it and tell the other screens. */
   onProjectUpdated: (project: ProjectRecord) => void;
+  /** Adopt the saved profile before attempting a fallible detail refresh. */
+  onProfileSaved: (profile: ProjectProfile) => void;
+  savedProfile: ProjectProfile | undefined;
   /** A settings PATCH returned the saved settings: adopt them in place. */
   onSettingsSaved: (settings: ProjectSettings) => void;
+  /** The signed-in person's own default model was saved (ADR 0023 §3). */
+  onOwnDefaultModelSaved: (model: string | null) => void;
 };
 
 // Projects whose `pending` setup status is being migrated right now. Module
@@ -49,6 +55,7 @@ const setupMigrations = new Set<string>();
 
 export function useProjectDetail(client: VerityClient, projectId: string): ProjectDetailState {
   const [detail, setDetail] = useState<ProjectDetail | undefined>(undefined);
+  const [savedProfile, setSavedProfile] = useState<ProjectProfile | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>(undefined);
   const loadGeneration = useRef(0);
@@ -76,6 +83,37 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     setDetail((current) => (current ? { ...current, settings: next } : current));
   }, []);
 
+  const onOwnDefaultModelSaved = useCallback((model: string | null) => {
+    // Like a settings save: an older detail request must not bring the old one back.
+    loadGeneration.current += 1;
+    setLoading(false);
+    setDetail((current) =>
+      current?.settings
+        ? { ...current, settings: { ...current.settings, defaultModel: model } }
+        : current,
+    );
+  }, []);
+
+  const onProfileSaved = useCallback((profile: ProjectProfile) => {
+    loadGeneration.current += 1;
+    setSavedProfile((current) => ({ ...current, ...profile }));
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            project:
+              profile.name === undefined
+                ? current.project
+                : { ...current.project, name: profile.name },
+            settings:
+              profile.description === undefined || current.settings === null
+                ? current.settings
+                : { ...current.settings, description: profile.description },
+          }
+        : current,
+    );
+  }, []);
+
   const load = useCallback(
     async (silent = false): Promise<void> => {
       const generation = ++loadGeneration.current;
@@ -89,6 +127,7 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
           const project = pendingProjectMutationRef.current ?? next.project;
           pendingProjectMutationRef.current = undefined;
           setDetail({ ...next, project });
+          setSavedProfile(undefined);
           // A fetch result deliberately stays off the status bus. Only an
           // action's response is published (see `onProjectUpdated`): with the
           // project screen and its settings routes stacked, each polling, a
@@ -157,5 +196,16 @@ export function useProjectDetail(client: VerityClient, projectId: string): Proje
     [client, projectId, detailLoaded, load],
   );
 
-  return { detail, loading, error, setError, load, onProjectUpdated, onSettingsSaved };
+  return {
+    detail,
+    loading,
+    error,
+    setError,
+    load,
+    onProjectUpdated,
+    onSettingsSaved,
+    onOwnDefaultModelSaved,
+    onProfileSaved,
+    savedProfile,
+  };
 }

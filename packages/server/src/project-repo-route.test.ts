@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import type { Server } from 'node:http';
 
-import type { ProjectRecord } from '@verity/store';
+import type { EventStore, ProjectRecord } from '@verity/store';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -12,10 +12,23 @@ import {
   type ForgeRepositoryOperations,
 } from './forge-provider.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
-import { markInternalConnections } from './internal-listener.js';
-import { registerProjectRepoRoute, type ProjectRepository } from './project-repo-route.js';
+import { type InternalConnectionIdentity, markInternalConnections } from './internal-listener.js';
+import {
+  registerProjectRepoRoute,
+  type ProjectRepository,
+  type ProjectRepoRouteDeps,
+} from './project-repo-route.js';
+import { createSessionRepositories } from './session-repositories.js';
 
-const binding = { projectId: 'p', containerGeneration: 'g', owner: 'team', repo: 'site' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+const binding = {
+  projectId: 'p',
+  userId: SANDBOX_USER,
+  containerGeneration: 'g',
+  owner: 'team',
+  repo: 'site',
+};
 const pull: ForgePullRequestView = {
   number: 7,
   title: 'Add search',
@@ -39,6 +52,7 @@ function operations(overrides: Partial<ForgeRepositoryOperations> = {}): ForgeRe
     markPullRequestReady: vi.fn().mockResolvedValue(pull),
     viewIssue: vi.fn().mockResolvedValue(null),
     commentOnIssue: vi.fn().mockResolvedValue({ url: 'https://example/c/1' }),
+    readFile: vi.fn().mockResolvedValue(null),
     ...overrides,
   };
 }
@@ -49,13 +63,26 @@ afterEach(async () => {
 });
 
 function setup(options: {
+  store?: ProjectRepoRouteDeps['store'];
+  getSession?: ProjectRepoRouteDeps['getSession'];
+  currentRepositoryBranch?: ProjectRepoRouteDeps['currentRepositoryBranch'];
   kind?: ProjectRecord['kind'];
   ops?: ForgeRepositoryOperations;
-  socket?: { projectId: string; containerGeneration: string } | 'external';
+  socket?: InternalConnectionIdentity | 'external';
   repository?: ProjectRepository | undefined | null;
+  openRepository?: ProjectRepoRouteDeps['openRepository'];
+  log?: string[];
 }) {
-  app = Fastify();
-  const socket = options.socket ?? { projectId: 'p', containerGeneration: 'g' };
+  const log = options.log;
+  app = log
+    ? Fastify({ logger: { level: 'warn', stream: { write: (line: string) => log.push(line) } } })
+    : Fastify();
+  const socket = options.socket ?? {
+    projectId: 'p',
+    userId: SANDBOX_USER,
+    projectDefault: true,
+    containerGeneration: 'g',
+  };
   if (socket !== 'external') {
     const connections = new EventEmitter();
     markInternalConnections(connections as unknown as Server, socket);
@@ -79,6 +106,12 @@ function setup(options: {
     } as unknown as GhTokenCapabilityRegistry,
     getProject: async () => project(options.kind ?? 'forgejo'),
     repositoryFor,
+    ...(options.store ? { store: options.store } : {}),
+    ...(options.getSession ? { getSession: options.getSession } : {}),
+    ...(options.openRepository ? { openRepository: options.openRepository } : {}),
+    ...(options.currentRepositoryBranch
+      ? { currentRepositoryBranch: options.currentRepositoryBranch }
+      : {}),
   });
   const call = (payload: unknown, token = 'cap') =>
     app.inject({
@@ -95,10 +128,28 @@ describe('POST /internal/project/repo', () => {
   // project's socket or capability would reach a foreign repository.
   it.each([
     ['an unknown capability', {}, 'other'],
-    ['a foreign project socket', { socket: { projectId: 'q', containerGeneration: 'g' } }, 'cap'],
+    [
+      'a foreign project socket',
+      {
+        socket: {
+          projectId: 'q',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'g',
+        },
+      },
+      'cap',
+    ],
     [
       'an older container generation',
-      { socket: { projectId: 'p', containerGeneration: 'old' } },
+      {
+        socket: {
+          projectId: 'p',
+          userId: SANDBOX_USER,
+          projectDefault: true,
+          containerGeneration: 'old',
+        },
+      },
       'cap',
     ],
     ['an external connection', { socket: 'external' as const }, 'cap'],
@@ -138,12 +189,15 @@ describe('POST /internal/project/repo', () => {
     expect((await call({ action: 'issue.list' })).statusCode).toBe(503);
   });
 
-  it('refuses a second pull request for the same branch', async () => {
+  it('reuses an existing pull request for an idempotent retry', async () => {
     const { call, ops } = setup({
       ops: operations({ findPullRequest: vi.fn().mockResolvedValue(pull) }),
     });
     const response = await call({ action: 'pr.create', title: 'Again', head: 'feat/7-search' });
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(200);
+    expect(response.json<{ pullRequest: { number: number } }>().pullRequest.number).toBe(
+      pull.number,
+    );
     expect(ops.createPullRequest).not.toHaveBeenCalled();
   });
 
@@ -263,4 +317,264 @@ describe('POST /internal/project/repo', () => {
     expect(failed.statusCode).toBe(502);
     expect(failed.body).not.toContain('secret');
   });
+});
+
+it('records a pull request against its validated session after a branch change', async () => {
+  const remember = vi.fn();
+  const { call } = setup({
+    store: {
+      getProjectRepository: vi.fn().mockResolvedValue({
+        ...project('forgejo'),
+        projectId: 'p',
+        id: 'extra',
+        removedAt: null,
+        isDefault: false,
+      }),
+      listProjectRepositories: vi.fn(),
+      recordRepositoryPullRequest: remember,
+      upsertSessionRepositoryWorkspace: vi.fn(),
+    },
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue(pull.head),
+  });
+  const response = await call({
+    action: 'pr.create',
+    repositoryId: 'extra',
+    sessionId: 'session',
+    title: pull.title,
+    head: pull.head,
+  });
+  expect(response.statusCode).toBe(200);
+  expect(remember).toHaveBeenCalledWith('p', 'extra', pull.head, pull, 'session');
+});
+it('rejects a foreign session before contacting the remote repository', async () => {
+  const { call, repositoryFor } = setup({
+    getSession: vi.fn().mockResolvedValue({ projectId: 'foreign' }),
+  });
+  expect((await call({ action: 'pr.view', sessionId: 'foreign', number: 7 })).statusCode).toBe(404);
+  expect(repositoryFor).not.toHaveBeenCalled();
+});
+
+it('publishes and stores explicit PR dependency references', async () => {
+  const dependsOn = ['https://github.com/team/api/pull/1'];
+  const remember = vi.fn();
+  const { call, ops } = setup({
+    store: {
+      getProjectRepository: vi.fn(),
+      listProjectRepositories: vi.fn(),
+      upsertSessionRepositoryWorkspace: vi.fn(),
+      recordRepositoryPullRequest: remember,
+    },
+  });
+  expect(
+    (
+      await call({
+        action: 'pr.create',
+        title: 'Consumer',
+        head: pull.head,
+        body: 'Change',
+        dependsOn,
+      })
+    ).statusCode,
+  ).toBe(200);
+  expect(ops.createPullRequest).toHaveBeenCalledWith(
+    expect.objectContaining({ body: `Change\n\nDepends on: ${dependsOn[0]}` }),
+  );
+  expect(remember).toHaveBeenCalledWith(
+    'p',
+    'default:p',
+    pull.head,
+    { ...pull, dependsOn },
+    undefined,
+  );
+  vi.mocked(ops.findPullRequest).mockResolvedValue(pull);
+  remember.mockClear();
+  expect(
+    (
+      await call({
+        action: 'pr.create',
+        title: 'Retry',
+        head: pull.head,
+        dependsOn: ['https://github.com/team/api/pull/2'],
+      })
+    ).statusCode,
+  ).toBe(200);
+  // A retry cannot rewrite local dependencies without publishing the same remote body.
+  expect(remember).toHaveBeenCalledWith('p', 'default:p', pull.head, pull, undefined);
+  expect(ops.createPullRequest).toHaveBeenCalledTimes(1);
+  expect(
+    (
+      await call({
+        action: 'pr.create',
+        title: 'Bad',
+        head: pull.head,
+        dependsOn: ['javascript:alert(1)'],
+      })
+    ).statusCode,
+  ).toBe(400);
+});
+
+it('does not associate a viewed PR from another branch with the active workspace', async () => {
+  const remember = vi.fn();
+  const { call } = setup({
+    ops: operations({ findPullRequest: vi.fn().mockResolvedValue(pull) }),
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    currentRepositoryBranch: vi.fn().mockResolvedValue('other-branch'),
+    store: {
+      getProjectRepository: vi.fn(),
+      listProjectRepositories: vi.fn(),
+      recordRepositoryPullRequest: remember,
+      upsertSessionRepositoryWorkspace: vi.fn(),
+    },
+  });
+  expect((await call({ action: 'pr.view', number: 7, sessionId: 'session' })).statusCode).toBe(200);
+  expect(remember).not.toHaveBeenCalled();
+});
+
+it('shares default-repository PR creation while recording each calling session', async () => {
+  let release!: (pr: ForgePullRequestView) => void;
+  const gate = new Promise<ForgePullRequestView>((resolve) => {
+    release = resolve;
+  });
+  const create = vi.fn(async () => gate);
+  const remember = vi.fn();
+  const getSession = vi.fn().mockResolvedValue({ projectId: 'p', worktree: '/wt' });
+  const { call, repositoryFor } = setup({
+    ops: operations({ createPullRequest: create }),
+    getSession,
+    currentRepositoryBranch: async () => pull.head,
+    store: {
+      getProjectRepository: vi.fn().mockResolvedValue({
+        ...project('forgejo'),
+        projectId: 'p',
+        id: 'default:p',
+        isDefault: true,
+        removedAt: null,
+      }),
+      listProjectRepositories: vi.fn(),
+      upsertSessionRepositoryWorkspace: vi.fn(),
+      recordRepositoryPullRequest: remember,
+    },
+  });
+  const first = call({
+    action: 'pr.create',
+    title: 'First',
+    head: pull.head,
+    sessionId: 'one',
+    dependsOn: ['https://github.com/team/api/pull/1'],
+  });
+  const second = call({
+    action: 'pr.create',
+    title: 'Second',
+    head: pull.head,
+    sessionId: 'two',
+    repositoryId: 'default:p',
+  });
+  const completed = Promise.all([first, second]);
+  await vi.waitFor(() => expect(repositoryFor).toHaveBeenCalledTimes(2));
+  release(pull);
+  expect((await completed).map((response) => response.statusCode)).toEqual([200, 200]);
+  expect(create).toHaveBeenCalledTimes(1);
+  for (const session of ['one', 'two'])
+    expect(remember).toHaveBeenCalledWith(
+      'p',
+      'default:p',
+      pull.head,
+      { ...pull, dependsOn: ['https://github.com/team/api/pull/1'] },
+      session,
+    );
+});
+
+it('reports why a module checkout failed: a bounded category to the sandbox, redacted detail to the log', async () => {
+  // A bare catch once turned every failed clone into the same opaque 409, so
+  // a broker abort could not be told apart from planning or a missing proxy.
+  const secret = 'ghs_leakedTokenValue123';
+  const store = {
+    getSession: vi.fn(async () => ({
+      projectId: 'p',
+      planning: 'implemented',
+      worktree: '/clones/project/sessions/s',
+    })),
+    getProject: vi.fn(async () => ({
+      id: 'p',
+      kind: 'github',
+      owner: 'team',
+      repo: 'site',
+      cloneDir: 'project',
+    })),
+    getProjectRepository: vi.fn(async () => ({
+      id: 'r',
+      projectId: 'p',
+      kind: 'github',
+      owner: 'team',
+      repo: 'infra',
+      forgeConnectionId: 'legacy-github',
+      defaultBranch: 'main',
+      isDefault: false,
+      removedAt: null,
+    })),
+    listSessionRepositoryWorkspaces: vi.fn(async () => []),
+  } as unknown as EventStore;
+  const service = createSessionRepositories({
+    store,
+    cloneRoot: '/clones',
+    git: () => async (args) => {
+      if (args.includes('--get-regexp')) return 'http.https://github.com.proxy http://broker:8080';
+      if (args.includes('rev-parse')) throw new Error('not a repository');
+      if (args.includes('clone'))
+        throw Object.assign(
+          new Error(`Command failed: git clone https://x:${secret}@github.com/team/infra.git`),
+          {
+            code: 128,
+            stderr: `Cloning into '/work/x'...\nerror: RPC failed; curl 56 https://x:${secret}@github.com\nfatal: early EOF\n`,
+          },
+        );
+      return '';
+    },
+  });
+  const log: string[] = [];
+  const { call } = setup({
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    openRepository: service.openForSandbox,
+    log,
+  });
+  const response = await call({ action: 'repository.open', repositoryId: 'r', sessionId: 's' });
+  expect(response.statusCode).toBe(409);
+  expect(response.json()).toEqual({
+    error: 'repository checkout unavailable: clone failed',
+    reason: 'clone failed',
+  });
+  const entries = log
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((entry) => entry.msg === 'verity: repository checkout failed');
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    projectId: 'p',
+    sessionId: 's',
+    repositoryId: 'r',
+    reason: 'clone failed',
+    exitCode: 128,
+  });
+  expect(entries[0]!.stderr).toContain('RPC failed; curl 56');
+  expect(log.join('')).not.toContain(secret);
+  expect(log.join('')).not.toContain('Command failed');
+});
+
+it('names an unexpected checkout failure without exposing its message', async () => {
+  const log: string[] = [];
+  const { call } = setup({
+    getSession: vi.fn().mockResolvedValue({ projectId: 'p' }),
+    openRepository: async () => {
+      throw new Error('internal detail /srv/private');
+    },
+    log,
+  });
+  const response = await call({ action: 'repository.open', repositoryId: 'r', sessionId: 's' });
+  expect(response.statusCode).toBe(409);
+  expect(response.json()).toEqual({
+    error: 'repository checkout unavailable: checkout failed',
+    reason: 'checkout failed',
+  });
+  expect(log.join('')).toContain('"reason":"checkout failed"');
+  expect(log.join('')).not.toContain('/srv/private');
 });

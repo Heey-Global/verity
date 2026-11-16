@@ -15,7 +15,12 @@ jest.mock('expo-localization', () => ({
   },
 }));
 
-import { formatClockTime, formatResetDisplay, formatTurnTimestamp } from '../lib/time';
+import {
+  formatClockTime,
+  formatResetDisplay,
+  formatTimeUntil,
+  formatTurnTimestamp,
+} from '../lib/time';
 
 // A fixed, arbitrary epoch (2023-11-14T22:13:20Z). The exact wall-clock hour is
 // timezone-dependent, but the presence/absence of an AM/PM marker is not.
@@ -106,5 +111,24 @@ describe('formatTurnTimestamp', () => {
   it('honors the 12-hour device preference in the time part', () => {
     mockCalendars = [{ uses24hourClock: false }];
     expect(formatTurnTimestamp(EPOCH_MS, new Date(EPOCH_MS))).toMatch(/[a-z]/i);
+  });
+});
+
+describe('formatTimeUntil', () => {
+  const now = EPOCH_SECONDS * 1000;
+  // The usage details read "resets 11:49 (in 1h 9m)"; a countdown that dropped a
+  // unit or rounded a pending reset down to "0m" would contradict the clock time.
+  it('names the two largest units', () => {
+    expect(formatTimeUntil(EPOCH_SECONDS + 69 * 60, now)).toBe('1h 9m');
+    expect(formatTimeUntil(EPOCH_SECONDS + (3 * 24 + 12) * 3600, now)).toBe('3d 12h');
+    expect(formatTimeUntil(EPOCH_SECONDS + 2 * 3600, now)).toBe('2h');
+    expect(formatTimeUntil(EPOCH_SECONDS + 4 * 86400, now)).toBe('4d');
+    expect(formatTimeUntil(EPOCH_SECONDS + 45 * 60, now)).toBe('45m');
+  });
+
+  it('rounds a pending reset up and reads a passed one as now', () => {
+    expect(formatTimeUntil(EPOCH_SECONDS + 30, now)).toBe('1m');
+    expect(formatTimeUntil(EPOCH_SECONDS, now)).toBe('now');
+    expect(formatTimeUntil(EPOCH_SECONDS - 600, now)).toBe('now');
   });
 });

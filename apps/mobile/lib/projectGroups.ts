@@ -1,4 +1,5 @@
 import {
+  projectTitle,
   codeHostForProject,
   sameSnapshotValue,
   type ForgeConnection,
@@ -62,7 +63,7 @@ export function projectGroups(
     });
     return {
       id: project.id,
-      title: project.kind === 'control_plane' ? 'Verity Control' : project.repo,
+      title: project.kind === 'control_plane' ? 'Verity Control' : projectTitle(project),
       subtitle: project.latestReleaseTag ?? '',
       status: projectOverviewStatus(project, detection),
       portLinks,

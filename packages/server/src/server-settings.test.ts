@@ -1,3 +1,4 @@
+import { legacyAdministratorId } from './view-state-routes.js';
 import { InMemoryEventBus } from '@verity/session';
 import { createSealableSecretCipher } from '@verity/store';
 import { readdirSync } from 'node:fs';
@@ -108,6 +109,7 @@ describe('GET/PATCH /settings', () => {
     const secrets = {
       gitSshPrivateKey: 'planted-ssh-key',
       githubAppPrivateKey: 'planted-github-key',
+      githubAppClientSecret: 'planted-github-client-secret',
       dopplerServiceToken: 'planted-doppler',
       transcribeApiKey: 'planted-transcribe',
       claudeCodeOauthCredentialsJson: claudeCredentials,
@@ -852,6 +854,35 @@ describe('project allowed agents', () => {
     }
   });
 
+  // Migration 0217 retired the project-wide default: each person keeps their own,
+  // and a project that restricts agents must still offer it, not its first model.
+  it("offers the person's own default model in a project that restricts agents", async () => {
+    await project('p-agents-own');
+    await ctx.store.updateVeritySettings({
+      codexAuthJson: '{"tokens":{"access_token":"codex"}}',
+    });
+    await patchSettings('p-agents-own', { allowedAgents: ['codex'] });
+    await ctx.store.userProviderConnections.setProjectDefaultModel(
+      legacyAdministratorId,
+      'p-agents-own',
+      'codex/gpt-5.5',
+    );
+    const withModels = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.6-sol', 'codex/gpt-5.5']),
+    });
+    try {
+      const res = await withModels.inject('/models?projectId=p-agents-own');
+      const body = res.json<{ models: string[]; default: string }>();
+      expect(body.models).toContain('codex/gpt-5.5');
+      expect(body.default).toBe('codex/gpt-5.5');
+    } finally {
+      await withModels.close();
+    }
+  });
+
   it('refuses a mid-session switch onto an excluded agent but keeps the current one', async () => {
     await project('p-agents-switch');
     await patchSettings('p-agents-switch', { allowedAgents: ['codex'] });
@@ -964,7 +995,7 @@ describe('GET /models (#143)', () => {
   it('pins the curated Claude model list and the spawn default (the single source of record)', () => {
     expect(CLAUDE_MODELS).toEqual([
       'claude-opus-5-5',
-      'claude-fable-5-1',
+      'claude-fable-5-2',
       'claude-sonnet-5-5',
       'claude-haiku-5-5',
     ]);
@@ -988,6 +1019,49 @@ describe('GET /models (#143)', () => {
     expect(body.default).toBe(DEFAULT_MODEL);
     expect(body.default).not.toContain('/');
     expect(res.json<{ moreModels: string[] }>().moreModels).toEqual(['claude-haiku-5-5']);
+  });
+
+  // A member's turns run only on their own accounts, so their model list must
+  // offer only what those accounts serve: never the instance logins, which are
+  // the administrator's, and their own OpenCode provider's models instead.
+  it("lists only the signed-in person's own accounts for a member", async () => {
+    await configureAgentLogins({ claude: true, codex: true });
+    await ctx.store.updateVeritySettings({
+      opencodeBaseUrl: 'https://admin-llm.example/v1',
+      opencodeApiKey: 'admin-key',
+      opencodeModels: 'admin-model',
+    });
+    await ctx.db
+      .insertInto('users')
+      .values({ id: 'lena', role: 'member', status: 'active' })
+      .execute();
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      listModels: () => Promise.resolve(['codex/gpt-5.5', 'verity/admin-model']),
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const nothing = await asLena.inject({ method: 'GET', url: '/models' });
+      expect(nothing.json<{ models: string[] }>().models).toEqual([]);
+
+      await ctx.store.userProviderConnections.set('lena', 'codex', { credential: '{}' });
+      await ctx.store.userProviderConnections.set('lena', 'opencode', {
+        credential: 'lena-key',
+        baseUrl: 'https://lena-llm.example/v1',
+        models: 'lena-model',
+      });
+      const own = await asLena.inject({ method: 'GET', url: '/models' });
+      expect(own.json<{ models: string[] }>().models).toEqual([
+        'codex/gpt-5.5',
+        'verity/lena-model',
+      ]);
+    } finally {
+      await asLena.close();
+    }
   });
 
   it('returns Codex only when only Codex is logged in', async () => {

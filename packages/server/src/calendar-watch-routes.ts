@@ -1,3 +1,4 @@
+import { viewerId } from './view-state-routes.js';
 // Which Google calendars Verity watches for online meetings (docs/live-meeting-calendar.md).
 // A calendar carries no project: meetings joined from it start unassigned.
 import type { EventStore } from '@verity/store';
@@ -68,10 +69,11 @@ export function registerCalendarWatchRoutes(
     );
   };
 
-  app.get('/settings/calendar-watch', async () => {
+  // A person sees and changes only the watches of Google accounts they connected.
+  app.get('/settings/calendar-watch', async (request) => {
     const watched = await deps.store.calendarWatch.list();
     const accounts: CalendarWatchAccountView[] = [];
-    for (const account of await deps.store.googleAccounts.list()) {
+    for (const account of await deps.store.googleAccounts.list(viewerId(request))) {
       const mine = watched.filter((item) => item.accountId === account.id);
       const view = { id: account.id, email: account.email, displayName: account.displayName };
       const stored = mine.map((item) => ({
@@ -110,13 +112,15 @@ export function registerCalendarWatchRoutes(
 
   app.put('/settings/calendar-watch', async (request, reply) => {
     const body = updateBody.parse(request.body);
+    if (!(await deps.store.googleAccounts.getOwned(body.accountId, viewerId(request))))
+      return reply.code(404).send({ error: 'Google account not found' });
     try {
       if (!body.watched) {
         // Stopping never needs Google, so it works with a revoked or unreachable account.
         await deps.store.calendarWatch.unwatch(body.accountId, body.calendarId);
         return { watched: false, autoJoin: false };
       }
-      const account = await deps.store.googleAccounts.get(body.accountId);
+      const account = await deps.store.googleAccounts.getOwned(body.accountId, viewerId(request));
       if (!account) throw new CalendarWatchError(404, 'Google account not found.');
       if (!hasGoogleCalendarScopes(account.scopes))
         throw new CalendarWatchError(409, 'Grant Calendar access to this Google account first.');

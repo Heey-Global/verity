@@ -26,6 +26,7 @@ function inspect(overrides: Partial<ContainerInspect>): ContainerInspect {
 function project(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   return {
     id: 'p1',
+    name: 'Fixture project',
     owner: 'heey-global',
     repo: 'legal-docs',
     containerName: 'dev-heey-global--legal-docs',

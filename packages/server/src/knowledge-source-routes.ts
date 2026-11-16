@@ -15,6 +15,7 @@ import {
   KNOWLEDGE_INSIGHTS_DIR,
 } from './knowledge-folder.js';
 import { ingestKnowledgeBytes } from './knowledge-file-ingest.js';
+import { knowledgeRef, noteWikiOccasion } from './wiki-occasions.js';
 
 const id = z.string().min(1).max(128);
 const file = { filename: z.string().min(1).max(150), base64: z.string().min(4).max(13_981_016) };
@@ -45,7 +46,7 @@ export function registerKnowledgeSourceRoutes(
   app: FastifyInstance,
   deps: {
     knowledge: KnowledgeStore;
-    store?: Pick<EventStore, 'getSession'>;
+    store?: Pick<EventStore, 'getSession' | 'wikiOccasions'>;
     dataRoot?: string | undefined;
   },
 ): void {
@@ -133,12 +134,21 @@ export function registerKnowledgeSourceRoutes(
         const digest = createHash('sha256').update(bytes).digest('hex').slice(0, 8);
         const extension = truncateUtf8(rawExtension, 40);
         const stem = truncateUtf8(rawStem, 200 - Buffer.byteLength(extension)) || 'file';
-        paths.push(
-          await ingestKnowledgeBytes(
-            root,
-            `${KNOWLEDGE_DOCUMENTS_DIR}/${stem}-${digest}${extension}`,
-            bytes,
-          ),
+        const path = await ingestKnowledgeBytes(
+          root,
+          `${KNOWLEDGE_DOCUMENTS_DIR}/${stem}-${digest}${extension}`,
+          bytes,
+        );
+        paths.push(path);
+        await noteWikiOccasion(
+          deps.store,
+          {
+            projectId: session.projectId,
+            kind: 'source',
+            ref: knowledgeRef(path),
+            title: attachment.filename,
+          },
+          request.log,
         );
       }
       return { paths };

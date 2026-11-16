@@ -2,7 +2,36 @@ import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { requestRunnerSupervisor } from '@verity/session';
 import { sessionHomePath } from './session-home.js';
+
+/**
+ * How long the Server waits for the Runner supervisor to answer
+ * `delete-session-home`. The supervisor first scans the project's turn
+ * directories and cancels the session's turns that are still in flight, then
+ * hands the deletion to the spawn broker and allows that step 30 s without a
+ * reply (`brokerStorageRequest` in verity-runner-supervisor.mjs). Inside the
+ * Sandbox every file operation is a round trip through the runtime, so a
+ * project with a long turn history makes the scan itself take seconds, before
+ * the broker fences late starts, removes the home and purges legacy native
+ * state. A shorter Server deadline abandons a deletion the supervisor still
+ * owns: the request reports a timeout although it may yet succeed, and a
+ * failed Repair then stops the container mid-deletion. The deadline therefore
+ * exceeds the supervisor's own storage budget, so its answer, success or a
+ * bounded failure, is what the Server records.
+ */
+export const SESSION_HOME_DELETE_TIMEOUT_MS = 60_000;
+
+/** Delete one session home through the project's Runner supervisor. Only an
+ *  explicit `ok: true` answer counts as deleted. */
+export async function deleteRunnerSessionHome(
+  socketPath: string,
+  sessionId: string,
+  timeoutMs = SESSION_HOME_DELETE_TIMEOUT_MS,
+): Promise<void> {
+  // requestRunnerSupervisor resolves only an explicit `ok: true` answer.
+  await requestRunnerSupervisor(socketPath, { kind: 'delete-session-home', sessionId }, timeoutMs);
+}
 
 export interface PendingSessionCleanup {
   sessionId: string;
@@ -71,7 +100,10 @@ export async function pendingSessionCleanups(root: string): Promise<PendingSessi
         typeof record.sandboxCwd !== 'string' ||
         !Array.isArray(record.bindings) ||
         !Array.isArray(record.runnerProjectIds) ||
-        record.runnerProjectIds.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id))
+        // A project's runtime, or a person's own (`u<tag>/<project>`, ADR 0023 §4).
+        record.runnerProjectIds.some(
+          (id) => !/^(?:u[0-9a-f]{16}\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id),
+        )
       )
         throw new Error('Invalid pending session cleanup');
       if (

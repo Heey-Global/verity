@@ -17,9 +17,10 @@ const journal = {
 } as UpdateJournal;
 function fixture() {
   const jobs = new Map<string, { spec: ContainerSpec; inspect: ContainerInspect }>();
+  let nextId = 0;
   const docker = {
     createContainer: vi.fn(async (spec: ContainerSpec) => {
-      const id = String(jobs.size + 1).repeat(64);
+      const id = String(++nextId).padStart(64, '0');
       jobs.set(id, {
         spec,
         inspect: {
@@ -159,11 +160,13 @@ describe('authenticated runtime service renewal', () => {
       })
       .mockRejectedValueOnce(new Error('connection lost'));
     await expect(h.run()).rejects.toThrow('connection lost');
-    expect(h.jobs.size).toBe(2);
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
     await h.run();
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
-    expect(h.docker.startContainer).toHaveBeenCalledTimes(2);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
+    expect(h.docker.startContainer).toHaveBeenCalledTimes(3);
     expect(h.jobs.size).toBe(0);
   });
   it.each([
@@ -253,9 +256,11 @@ describe('authenticated runtime service renewal', () => {
     const h = fixture();
     h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
     await expect(h.run()).rejects.toThrow('receipt mismatch');
-    expect(h.jobs.size).toBe(2);
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
     await h.run();
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(2);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
     expect(h.jobs.size).toBe(0);
   });
   it.each(['create', 'inspect', 'verify-wait'] as const)(
@@ -278,7 +283,7 @@ describe('authenticated runtime service renewal', () => {
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error('start disconnected'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('replaces only an owned Created job and never accepts extra security options', async () => {
     const h = fixture();
@@ -291,7 +296,7 @@ describe('authenticated runtime service renewal', () => {
     const old = install.inspect.id;
     await h.run();
     expect(h.docker.removeContainer).toHaveBeenCalledWith(old);
-    expect(h.docker.createContainer).toHaveBeenCalledTimes(3);
+    expect(h.docker.createContainer).toHaveBeenCalledTimes(4);
   });
   it('never removes a foreign Created job', async () => {
     const h = fixture();
@@ -302,7 +307,10 @@ describe('authenticated runtime service renewal', () => {
     const install = [...h.jobs.values()].find((job) => job.spec.pidMode === 'host')!;
     install.inspect.labels = { ...install.inspect.labels, 'verity.update-id': 'foreign' };
     await expect(h.run()).rejects.toMatchObject({ recovery: 'unchanged' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledTimes(2);
+    expect([...h.jobs.values()].map((job) => job.spec.labels?.['verity.renewal-stage'])).toEqual([
+      'install',
+    ]);
   });
   it('does not report unchanged when re-verification fails after an earlier install started', async () => {
     const h = fixture();
@@ -312,7 +320,7 @@ describe('authenticated runtime service renewal', () => {
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
     h.docker.waitContainer.mockRejectedValueOnce(new Error('verification disconnected'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('retains recovery-required if inventory fails after an ambiguous install start', async () => {
     const h = fixture();
@@ -322,7 +330,7 @@ describe('authenticated runtime service renewal', () => {
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
     h.docker.listContainers.mockRejectedValueOnce(new Error('inventory unavailable'));
     await expect(h.run()).rejects.toMatchObject({ recovery: 'recovery-required' });
-    expect(h.docker.removeContainer).not.toHaveBeenCalled();
+    expect(h.docker.removeContainer).toHaveBeenCalledOnce();
   });
   it('rejects malformed service capability declarations', () => {
     expect(
@@ -336,6 +344,160 @@ describe('authenticated runtime service renewal', () => {
       { revision: 1, renewalProtocol: 1, features: [], extra: true },
     ])
       expect(parseRuntimeServiceRequirements(value)).toBeNull();
+  });
+});
+
+async function egressJobFixture(stage: 'install' | 'verify' = 'install') {
+  const h = fixture();
+  if (stage === 'verify') {
+    h.docker.waitContainer.mockRejectedValueOnce(new Error('verification disconnected'));
+    await expect(h.run()).rejects.toThrow('verification disconnected');
+  } else {
+    h.verifyInstalled.mockRejectedValueOnce(new Error('receipt mismatch'));
+    await expect(h.run()).rejects.toThrow('receipt mismatch');
+  }
+  const job = [...h.jobs.values()].find(
+    (item) => item.spec.labels?.['verity.renewal-stage'] === stage,
+  )!;
+  job.spec.name = `verity-egress-${stage}-${'c'.repeat(24)}`;
+  job.spec.labels = { ...job.spec.labels, 'verity.managed-role': 'egress-provisioning' };
+  job.inspect.labels = job.spec.labels;
+  h.docker.waitContainer.mockResolvedValue(1);
+  return { ...h, spec: job.spec, runJob: () => runHostRenewalJob(h.docker, job.spec) };
+}
+
+describe('project egress helper failure diagnostics', () => {
+  const diagnostic = {
+    version: 1,
+    kind: 'egress-provisioning',
+    operationId: 'c'.repeat(24),
+    phase: 'submit',
+    code: 'start_unverified',
+    exitCode: 1,
+  };
+
+  it('reports the failing provisioning phase without claiming runtime restoration', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(diagnostic));
+    await expect(h.runJob()).rejects.toMatchObject({
+      name: 'ProjectEgressProvisioningError',
+      recovery: 'recovery-required',
+      message: expect.stringContaining('phase submit, code start_unverified'),
+    });
+    expect(h.docker.containerLogs).toHaveBeenCalledWith(expect.any(String), 1);
+  });
+
+  it('reports an allowlisted host failure reason and step', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        ...diagnostic,
+        phase: 'observe',
+        code: 'host_failed',
+        reason: 'relay_reload_failed',
+        step: 'prerequisites',
+      }),
+    );
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.stringContaining(
+        'phase observe, code host_failed, reason relay_reload_failed, step prerequisites',
+      ),
+    });
+  });
+
+  it.each([
+    { reason: 'postgres://secret@private', step: 'postgres://secret@private' },
+    { reason: 'unknown_failure', step: 'unknown_step' },
+    { reason: { message: 'secret' }, step: ['secret'] },
+    { reason: null, step: null },
+  ])('omits unsupported host diagnostics while retaining safe context: %j', async (fields) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify({ ...diagnostic, ...fields }));
+    const error = await h.runJob().catch((failure: unknown) => failure);
+    expect(error).toMatchObject({
+      message: expect.stringContaining('phase submit, code start_unverified'),
+    });
+    expect(error).toMatchObject({
+      message: expect.not.stringMatching(/reason |step |secret|unknown_/u),
+    });
+  });
+
+  it('does not accept safe host diagnostics from another operation', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({
+        ...diagnostic,
+        operationId: 'd'.repeat(24),
+        reason: 'relay_reload_failed',
+        step: 'prerequisites',
+      }),
+    );
+    await expect(h.runJob()).rejects.toMatchObject({
+      message: expect.not.stringMatching(/phase |reason |step /u),
+    });
+  });
+
+  it.each([
+    { ...diagnostic, operationId: 'd'.repeat(24) },
+    { ...diagnostic, exitCode: 2 },
+    { ...diagnostic, phase: 'postgres://secret@private' },
+    { ...diagnostic, code: 'postgres://secret@private' },
+    {
+      version: 1,
+      updateId: journal.updateId,
+      targetDigest: journal.targetDigest,
+      outcome: 'restored',
+    },
+    null,
+  ])('refuses unbound or non-allowlisted helper output: %j', async (value) => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(JSON.stringify(value));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.not.stringMatching(/phase |secret|restored/u),
+    });
+  });
+
+  it('keeps safe failure context when logs are unavailable', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockRejectedValueOnce(new Error('private docker error'));
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'recovery-required',
+      message: expect.stringContaining(
+        'Project network protection preparation failed (install, exit 1',
+      ),
+    });
+  });
+
+  it.each(['postgres://secret@private', 'x'.repeat(4097)])(
+    'does not relay raw or oversized logs',
+    async (logs) => {
+      const h = await egressJobFixture();
+      h.docker.containerLogs.mockResolvedValue(logs);
+      await expect(h.runJob()).rejects.toMatchObject({
+        recovery: 'recovery-required',
+        message: expect.not.stringMatching(/secret|xxxx|phase /u),
+      });
+    },
+  );
+
+  it('ignores private fields even in an otherwise valid diagnostic', async () => {
+    const h = await egressJobFixture();
+    h.docker.containerLogs.mockResolvedValue(
+      JSON.stringify({ ...diagnostic, error: 'postgres://secret@private' }),
+    );
+    const error = await h.runJob().catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ message: expect.stringContaining('code start_unverified') });
+    expect(error).toMatchObject({ message: expect.not.stringContaining('secret') });
+  });
+
+  it('distinguishes signature verification from host installation', async () => {
+    const h = await egressJobFixture('verify');
+    await expect(h.runJob()).rejects.toMatchObject({
+      recovery: 'unchanged',
+      message: expect.stringContaining('Target verification did not complete'),
+    });
   });
 });
 

@@ -71,8 +71,8 @@
  * first connection, so the candidate never answers and the quiesced generation
  * the rollback would return to cannot reclaim a control plane either. Both halves
  * fail, and what the stage is really about is what is left — an operation parked
- * in `rollback-activating-old` with its authority already back on the old digest,
- * which the recovery above finishes once the database returns.
+ * in `rollback-activating-old` without restoring authority before the schema
+ * can be checked. Recovery finishes once the database returns.
  *
  * The caller supplies an ISOLATED daemon (see deploy/bin/verity-self-update-live-smoke).
  * That is not optional: the managed deployment's identifiers — the container names
@@ -88,16 +88,27 @@ import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  BACKUP_PROVISION_LABEL,
+  type BackupProvisionPlan,
+} from './self-update/backup-provisioning.js';
 import { createDockerClient, type ContainerInspect, type DockerClient } from './docker.js';
 import {
   MANAGED_SERVER_DEFAULT_RESOURCES,
   sealDeploymentSpec,
+  type ServerDeploymentSpec,
   type ServerDeploymentSpecBody,
 } from './self-update/deployment-spec.js';
 import {
   initializeManagedDeployment,
+  PROJECT_EGRESS_MOUNTS,
   readManagedDeployment,
 } from './self-update/managed-deployment.js';
+import {
+  admitProjectEgressProvision,
+  projectEgressProvisionSupported,
+  type ProvisionProjectEgressHostOptions,
+} from './self-update/project-egress-provisioning.js';
 import {
   MANAGED_SERVER_NAME,
   managedContainerMatchesSpec,
@@ -374,6 +385,14 @@ function deploymentSpec(
         target: '/var/run/docker.sock',
         readOnly: false,
       },
+      // Bootstrap seals the installer state exactly like this, and project egress
+      // provisioning refuses any deployment that lacks it. Without it every update
+      // between images carrying the provisioning contract stops before standby.
+      {
+        source: { kind: 'bind', path: '/etc/verity' },
+        target: '/run/verity-pairing',
+        readOnly: true,
+      },
     ],
     user: { uid: 1000, gid: 1000, supplementaryGids: [65532] },
     restart: 'unless-stopped',
@@ -395,8 +414,76 @@ function readSecret(path: string): Promise<string> {
   return Promise.resolve(`${SECRET_VALUE}\n`);
 }
 
+/** Update operations whose project egress provisioning passed the real admission. */
+const admittedEgressOperations = new Set<string>();
+
+/**
+ * Stands in for project egress host provisioning after its real admission.
+ *
+ * Admission is everything that decides whether an update may provision the host:
+ * both image contracts, the installed sealed deployment and the installer state
+ * mount. What it skips is the execution — a cosign check against the public
+ * Sigstore instance, which this registry's unsigned images cannot pass, and a
+ * privileged installer that writes systemd units on a host this daemon does not
+ * have. Those run on disposable systemd hosts instead.
+ */
+async function admitEgressProvisioning(
+  options: ProvisionProjectEgressHostOptions,
+): Promise<boolean> {
+  const request = await admitProjectEgressProvision(
+    options.docker,
+    options.journal,
+    options.spec,
+    options.onSkip,
+  );
+  if (request === false) return false;
+  admittedEgressOperations.add(request.operationId);
+  process.stdout.write('smoke: project egress host provisioning simulated after admission\n');
+  return true;
+}
+
+/**
+ * Whether this operation's images carry the project egress provisioning contract,
+ * decided by the product's own rule: a predecessor released before the contract
+ * legitimately skips provisioning, any later one must not. A client that cannot
+ * read labels would make every image look contract-less and the guard vacuous.
+ */
+async function egressProvisioningExpected(
+  journal: UpdateJournal,
+  spec: ServerDeploymentSpec,
+): Promise<boolean> {
+  const client = docker();
+  expect(
+    client.inspectImageLabels !== undefined,
+    'the Docker client cannot read image labels, so egress admission cannot be checked',
+  );
+  return projectEgressProvisionSupported(client, journal, spec);
+}
+
+/** Backup host plans the real planner produced, by the target image they were made with. */
+const plannedBackups = new Map<string, BackupProvisionPlan>();
+
+/**
+ * Stands in for backup host provisioning after the real plan. The planner ran
+ * in the target image against the sealed installer state; what is skipped is
+ * the installer that writes systemd units and the PostgreSQL dump service, which
+ * this daemon has neither of. The sealed mount migration that follows is real.
+ */
+function planBackupProvisioning(
+  _docker: unknown,
+  _spec: unknown,
+  image: string,
+  plan: BackupProvisionPlan,
+): Promise<void> {
+  plannedBackups.set(image, plan);
+  process.stdout.write('smoke: backup host provisioning simulated after planning\n');
+  return Promise.resolve();
+}
+
 function preparationOptions(managedRoot: string, databaseUrl: string, deploymentId: string) {
   return {
+    provisionProjectEgressHost: admitEgressProvisioning,
+    provisionBackupHost: planBackupProvisioning,
     managedRoot,
     docker: docker(),
     hostRuntimeDir: required('VERITY_SMOKE_HOST_RUNTIME_DIR'),
@@ -571,6 +658,9 @@ async function begin(managedRoot: string, targetDigest: string): Promise<UpdateJ
 async function prepare(managedRoot: string): Promise<void> {
   const targetDigest = required('VERITY_SMOKE_TARGET_DIGEST');
   const databaseUrl = required('VERITY_SMOKE_DATABASE_URL');
+  // Rollbacks reuse the target digest of the commit they precede; a plan left
+  // from that earlier operation must not satisfy this one's assertions.
+  plannedBackups.delete(targetDigest);
   const started = await begin(managedRoot, targetDigest);
   const state = await readManagedDeployment(managedRoot);
   if (!state.managed) fail('managed authority disappeared mid-preparation');
@@ -609,6 +699,64 @@ async function prepare(managedRoot: string): Promise<void> {
     'standby lacks its production database source',
   );
   expect((candidate.mounts ?? []).length > 0, 'standby lacks production mounts');
+  // A planned backup host must reach the standby as sealed mounts; otherwise the
+  // simulated provisioning above would hide a migration that never happened.
+  // Expected from the target's own contract label, so a preparation that stopped
+  // planning, or stopped routing through the stand-in, fails instead of skipping.
+  expect(
+    client.inspectImageLabels !== undefined,
+    'the Docker client cannot read image labels, so host provisioning cannot be checked',
+  );
+  const backupContract = (await client.inspectImageLabels!(targetDigest))?.[BACKUP_PROVISION_LABEL];
+  const backup = plannedBackups.get(targetDigest);
+  expect(
+    (backupContract === '1') === (backup !== undefined),
+    `backup provisioning was ${backup === undefined ? 'not ' : ''}planned for a target whose contract is ${String(backupContract)}`,
+  );
+  if (backup !== undefined) {
+    const sealed = await readManagedDeployment(managedRoot);
+    const bind = (target: string) =>
+      sealed.managed
+        ? sealed.spec.mounts.find((mount) => mount.target === target)?.source
+        : undefined;
+    const backups = bind('/run/verity-backups');
+    const identity = bind('/run/verity-backup-identity');
+    expect(
+      backups?.kind === 'bind' &&
+        backups.path === backup.backupPath &&
+        identity?.kind === 'bind' &&
+        identity.path === backup.identityPath,
+      'the sealed deployment lacks the planned backup mounts',
+    );
+    expect(
+      ['/run/verity-backups', '/run/verity-backup-identity'].every((target) =>
+        (candidate.mounts ?? []).some((mount) => mount.destination === target),
+      ),
+      'standby started without the backup mounts',
+    );
+  }
+  // Without this, an admission that started skipping again would leave every
+  // stage above green while network protection never reached a standby.
+  if (await egressProvisioningExpected(journal, state.spec)) {
+    expect(
+      admittedEgressOperations.has(journal.updateId),
+      'project egress provisioning was not admitted for an update whose images require it',
+    );
+    const sealed = await readManagedDeployment(managedRoot);
+    expect(
+      sealed.managed &&
+        PROJECT_EGRESS_MOUNTS.every((expected) =>
+          sealed.spec.mounts.some((mount) => JSON.stringify(mount) === JSON.stringify(expected)),
+        ),
+      'the sealed deployment lacks the project egress mounts after admission',
+    );
+    expect(
+      PROJECT_EGRESS_MOUNTS.every((expected) =>
+        (candidate.mounts ?? []).some((mount) => mount.destination === expected.target),
+      ),
+      'standby started without the project egress mounts',
+    );
+  }
 
   // The preflight container is a throwaway: it must not survive its own run,
   // or the next generation inherits a stale name.
@@ -1806,18 +1954,14 @@ async function postgresContainer(client: DockerClient): Promise<string> {
  * not this stage's — an update that commits onto a healthy Server and then loses
  * the store leaves a deployment no worse than the store took away by itself.
  *
- * What follows is forced, and the point: the standby holds no control plane, so
- * it survives the loss and then cannot resume — `claimControlPlane` needs the
- * database it is being asked to come back on — and the cold start behind the
- * fallback cannot come up either. Both halves therefore fail, the aggregate says
- * so, and the operation stays parked in `rollback-activating-old` with its
- * authority already back on the old digest. That is the durable intent the ADR
- * asks for: nothing committed, nothing lost, and a rollback that any later
- * attempt can finish once the store is back — which is what
- * {@link cutoverRecoversRollback} then does, from the same container.
+ * Both readiness and rollback schema proof must fail while the database is
+ * absent. Authority stays on the candidate digest, maintenance stays active,
+ * and the operation remains in `rollback-activating-old`. No old writers may
+ * resume until schema proof succeeds. After checking that refusal, explicitly
+ * stop the retained container to exercise cold recovery once the store returns.
  */
 async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
-  const previousDigest = required('VERITY_SMOKE_PREVIOUS_DIGEST');
+  const targetDigest = required('VERITY_SMOKE_TARGET_DIGEST');
   const client = docker();
   const before = await managedServer(client);
   const routedBefore = (await routedBackend()).host;
@@ -1874,7 +2018,7 @@ async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
     );
     const authority = await readManagedDeployment(managedRoot);
     if (!authority.managed) fail(`managed authority unavailable: ${authority.reason}`);
-    expect(authority.spec.image === previousDigest, `authority kept ${authority.spec.image}`);
+    expect(authority.spec.image === targetDigest, `authority kept ${authority.spec.image}`);
 
     // The route never moved, so nothing a client can reach was ever pointed at
     // the generation that could not connect.
@@ -1883,15 +2027,18 @@ async function cutoverLosesTheDatabase(managedRoot: string): Promise<void> {
       `the Gateway was switched to ${(await routedBackend()).host} by a cutover that never became ready`,
     );
 
-    // The standby did not survive being asked to come back, which is the whole
-    // of this gate: the generation a rollback returns to needs the same store
-    // the candidate could not reach, so there is nothing left to route at and
-    // the cutover has to leave the container stopped rather than serving.
-    const old = await client.inspectContainer(before.id);
     expect(
-      !old.running,
-      'the standby that could not reclaim the control plane was left running, so the Gateway could be routed at a process holding none',
+      (await gatewayController(managedRoot).status()).maintenance,
+      'schema proof failed but the Gateway left maintenance',
     );
+
+    // Schema proof refused before attempting to resume the standby. A second
+    // fault (loss of that retained process) proves the next attempt can recover
+    // without relying on its in-memory key. This stop belongs to fault injection,
+    // not to the production rollback policy.
+    await client.stopContainer(before.id);
+    const old = await client.inspectContainer(before.id);
+    expect(!old.running, 'the retained Server did not stop for the cold recovery scenario');
     process.stdout.write(
       `left ${before.id} stopped and the rollback unfinished after the store went away\n`,
     );

@@ -17,9 +17,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { ProtectedBuildFailure } from './project-egress-build-error.js';
+import { protectedBuildReply, protectedBuildRequest } from './project-egress-build.js';
 
 const GiB = 1024 ** 3;
 /** Marks a rejection whose command exited on its own with a status. */
@@ -58,9 +61,12 @@ const ownerSchema = z.object({
   /** The host admission marker this attempt holds, released with it. */
   admissionMarker: z.string().optional(),
 });
+const protectedBuildReference = protectedBuildRequest.pick({ projectId: true, attemptId: true });
+type ProtectedBuildReference = z.infer<typeof protectedBuildReference>;
 const remoteRecordSchema = z.object({
   version: z.literal(1),
-  operation: z.enum(['build-export', 'image-import']),
+  operation: z.enum(['build-export', 'image-import', 'protected-build']),
+  protectedBuild: protectedBuildReference.optional(),
   hostBootId: z.uuid(),
   hostIdentity: z.string().regex(/^[a-f0-9]{64}$/),
   startedAt: z.iso.datetime(),
@@ -68,6 +74,24 @@ const remoteRecordSchema = z.object({
   estimateBytes: z.number().int().nonnegative().optional(),
 });
 type RemoteOperation = z.infer<typeof remoteRecordSchema>['operation'];
+
+/** Bounds for waiting out host builder maintenance before refusing a build. A
+ *  builder update restarts BuildKit in a few minutes; this leaves headroom for a
+ *  slow image pull without turning a stuck maintenance run into a hung build. */
+const BUILDER_MAINTENANCE_WAIT_MS = 10 * 60_000;
+const BUILDER_MAINTENANCE_POLL_MS = 5_000;
+const BUILDER_MAINTENANCE_REASON = 'builder maintenance is in progress';
+/** `flock --nonblock` exit status when another holder has the lock. */
+const FLOCK_HELD = 1;
+
+/** The host holds the admission lock exclusively for maintenance: transient, so
+ *  admission waits for it, unlike every other refusal. */
+export class BuilderMaintenanceError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'BuilderMaintenanceError';
+  }
+}
 
 /**
  * An attempt from another PID namespace (the previous Server container) has no
@@ -100,6 +124,9 @@ const TRANSPORT_FAILURE =
  * leaves the remote state unknown, and reconciliation decides later.
  */
 export function remoteOperationEnded(operation: RemoteOperation, output: string): boolean {
+  // Only the authenticated build supervisor can establish termination; default
+  // BuildKit idleness and build-produced output say nothing about a private worker.
+  if (operation === 'protected-build') return false;
   const lines = output
     .split('\n')
     .map((line) => line.trim())
@@ -212,7 +239,8 @@ export interface BuildStorageLease {
     command: string,
     args: string[],
     options: {
-      remoteOperation?: 'build-export' | 'image-import';
+      remoteOperation?: 'build-export' | 'image-import' | 'protected-build';
+      protectedBuild?: ProtectedBuildReference;
       env: NodeJS.ProcessEnv;
       signal?: AbortSignal;
       timeout: number;
@@ -341,9 +369,34 @@ const activeDirectories = new Set<string>();
  */
 class BuildStorageCapacityError extends Error {}
 
+/** A capacity refusal that reclamation could not lift says what reclamation did,
+ *  so the operator sees why a retry alone will not help. Other errors pass through. */
+function afterReclamation(refusal: unknown, outcome: string | void): unknown {
+  if (!(refusal instanceof BuildStorageCapacityError) || !outcome) return refusal;
+  return new BuildStorageCapacityError(`${refusal.message} ${outcome}`, { cause: refusal });
+}
+
+/** Whether a failure, or anything in its cause chain, is a build-storage
+ *  capacity refusal: the one failure that released storage can resolve. */
+export function isBuildStorageCapacityRefusal(error: unknown): boolean {
+  for (let current = error, depth = 0; current !== undefined && depth < 8; depth++) {
+    if (current instanceof BuildStorageCapacityError) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
 export class BuildStorage {
-  private reclaimer?: () => Promise<void>;
-  setReclaimer(reclaim: () => Promise<void>): void {
+  private reclaimer?: () => Promise<string | void>;
+  private releaseListener?: () => void;
+  /** Told after an earlier attempt's reservation is released. */
+  setReleaseListener(listener: () => void): void {
+    this.releaseListener = listener;
+  }
+
+  /** `reclaim` may return a one-line account of what it freed and what it had
+   *  to keep; a refusal that outlasts reclamation carries it to the caller. */
+  setReclaimer(reclaim: () => Promise<string | void>): void {
     this.reclaimer = reclaim;
   }
 
@@ -353,6 +406,11 @@ export class BuildStorage {
   /** A waiter was woken and has not yet taken its turn; newcomers queue behind it. */
   private handingOver = false;
   private currentDirectory: string | undefined;
+  /** Who holds this Server's lease, for diagnostics only. Without it a build
+   *  waiting for its turn can name neither the build ahead of it nor how long
+   *  that build has held the lease, so a hung build is indistinguishable from a
+   *  slow one. */
+  private holder: { label: string; projectId?: string; since: number } | undefined;
   private unresolved: UnresolvedBuildAttempt[] = [];
   private warnedUnprovisioned = false;
   private evidenceWarning = '';
@@ -366,6 +424,10 @@ export class BuildStorage {
       return { availableBytes: stats.bavail * stats.bsize, freeInodes: stats.ffree };
     },
     private readonly admissionDirectory?: string,
+    private readonly maintenanceWait: { timeoutMs: number; pollMs: number } = {
+      timeoutMs: BUILDER_MAINTENANCE_WAIT_MS,
+      pollMs: BUILDER_MAINTENANCE_POLL_MS,
+    },
   ) {}
 
   /** Markers carry recovery evidence independently of the artifact directory. */
@@ -435,7 +497,7 @@ export class BuildStorage {
           if (this.liveChild(marker)) continue;
           const remote = this.readRemoteRecord(marker);
           if (remote !== undefined) {
-            if (remote === 'invalid') continue;
+            if (remote === 'invalid' || remote.operation === 'protected-build') continue;
             if (
               remote.operation === 'build-export' &&
               (idleBefore === undefined || Date.parse(remote.startedAt) >= idleBefore)
@@ -514,7 +576,46 @@ export class BuildStorage {
    * A build holds the lease for at most its commands' bounds, so the wait is
    * bounded too.
    */
-  async admitInTurn(onQueued?: (ahead: number) => void): Promise<BuildStorageLease> {
+  async admitInTurn(
+    onQueued?: (ahead: number, holder?: { label: string; since: number }) => void,
+    owner: { label: string; projectId?: string } = { label: 'unnamed build' },
+  ): Promise<BuildStorageLease> {
+    // Host builder maintenance (a builder update or snapshotter migration) holds
+    // the admission lock for minutes, not hours. Failing at once turned a Repair
+    // issued during that window into a failed project with nothing wrong with it.
+    // Wait for it, bounded, outside the queue so other builds are not held up.
+    // The budget starts at the first maintenance refusal: queueing before it is
+    // not maintenance (the host's lock waits for running builds anyway). Later
+    // retries share that one budget, so the wait stays bounded overall.
+    let deadline: number | undefined;
+    let waitingSince: number | undefined;
+    for (;;) {
+      try {
+        const lease = await this.admitInTurnOnce(onQueued, owner);
+        if (waitingSince !== undefined)
+          console.log(
+            `Builder maintenance ended; ${owner.label} admitted after waiting ${String(Math.round((Date.now() - waitingSince) / 1000))}s.`,
+          );
+        return lease;
+      } catch (error) {
+        if (!(error instanceof BuilderMaintenanceError)) throw error;
+        deadline ??= Date.now() + this.maintenanceWait.timeoutMs;
+        if (Date.now() >= deadline) throw error;
+        if (waitingSince === undefined) {
+          waitingSince = Date.now();
+          console.warn(
+            `Builder maintenance is in progress; ${owner.label} waits up to ${String(Math.round(this.maintenanceWait.timeoutMs / 1000))}s for it to finish.`,
+          );
+        }
+        await delay(Math.min(this.maintenanceWait.pollMs, Math.max(0, deadline - Date.now())));
+      }
+    }
+  }
+
+  private async admitInTurnOnce(
+    onQueued: ((ahead: number, holder?: { label: string; since: number }) => void) | undefined,
+    owner: { label: string; projectId?: string },
+  ): Promise<BuildStorageLease> {
     if (this.held || this.handingOver || this.waiting.length > 0) {
       // A refusal that does not depend on the lease answers now, not after the wait;
       // admit() checks everything again once the turn comes.
@@ -523,25 +624,35 @@ export class BuildStorage {
       const turn = new Promise<void>((resolve) => this.waiting.push(resolve));
       // Only a notice: a failing one must not leave a woken turn unclaimed.
       try {
-        onQueued?.(ahead);
+        onQueued?.(ahead, this.holder && { label: this.holder.label, since: this.holder.since });
       } catch {
         /* the wait goes on */
       }
       await turn;
       this.handingOver = false;
     }
+    const held = (lease: BuildStorageLease): BuildStorageLease => {
+      // An unmanaged lease does not take the Server's slot; only a held one has a holder.
+      if (this.held) this.holder = { ...owner, since: Date.now() };
+      return lease;
+    };
     try {
       try {
-        return this.admit();
+        return held(this.admit());
       } catch (error) {
         if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
         this.handingOver = true;
+        let outcome: string | void;
         try {
-          await this.reclaimCapacity();
+          outcome = await this.reclaimCapacity();
         } finally {
           this.handingOver = false;
         }
-        return this.admit();
+        try {
+          return held(this.admit());
+        } catch (refusal) {
+          throw afterReclamation(refusal, outcome);
+        }
       }
     } finally {
       // An unmanaged lease or a refusal leaves the lease free for the next waiter.
@@ -549,10 +660,10 @@ export class BuildStorage {
     }
   }
 
-  private async reclaimCapacity(): Promise<void> {
+  private async reclaimCapacity(): Promise<string | void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
+      return await Promise.race([
         this.reclaimer?.(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
@@ -581,16 +692,21 @@ export class BuildStorage {
         stdio: ['ignore', 'ignore', 'pipe', fd],
         timeout: 5000,
       });
-      if (locked.status !== 0) reason = 'builder maintenance is in progress';
+      // Only "lock held" (exit 1 under --nonblock) is maintenance; a timeout or a
+      // failed spawn is a broken check, which must not be waited out as one.
+      if (locked.status === FLOCK_HELD) reason = BUILDER_MAINTENANCE_REASON;
+      else if (locked.status !== 0) reason = 'the builder admission lock could not be checked';
       else if (existsSync(join(this.admissionDirectory, 'migration-pending')))
         reason = 'builder migration recovery is pending';
     } finally {
       closeSync(fd);
     }
-    if (reason !== undefined)
-      throw new Error(
-        `Builder admission unavailable: ${reason}; retry after managed maintenance completes`,
-      );
+    if (reason !== undefined) {
+      const message = `Builder admission unavailable: ${reason}; retry after managed maintenance completes`;
+      throw reason === BUILDER_MAINTENANCE_REASON
+        ? new BuilderMaintenanceError(message)
+        : new Error(message);
+    }
   }
 
   private wakeNext(): void {
@@ -669,6 +785,9 @@ export class BuildStorage {
                     version: 1,
                     ...identity,
                     operation: options.remoteOperation,
+                    ...(options.protectedBuild === undefined
+                      ? {}
+                      : { protectedBuild: protectedBuildReference.parse(options.protectedBuild) }),
                     startedAt: new Date().toISOString(),
                   },
             ),
@@ -760,7 +879,9 @@ export class BuildStorage {
           stdio: ['ignore', 'ignore', 'pipe', admissionFd],
           timeout: 5000,
         });
-        if (locked.status !== 0) throw new Error('builder maintenance is in progress');
+        if (locked.status === FLOCK_HELD)
+          throw new BuilderMaintenanceError(BUILDER_MAINTENANCE_REASON);
+        if (locked.status !== 0) throw new Error('the builder admission lock could not be checked');
         if (existsSync(join(this.admissionDirectory, 'migration-pending')))
           throw new Error('builder migration recovery is pending');
         // The shared descriptor fences the check/create race with the host's exclusive lock.
@@ -768,10 +889,10 @@ export class BuildStorage {
         admissionMarker = this.createAdmissionMarker(this.admissionDirectory);
       } catch (cause) {
         if (admissionFd !== undefined) closeSync(admissionFd);
-        throw new Error(
-          `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`,
-          { cause },
-        );
+        const message = `Builder admission unavailable: ${cause instanceof Error ? cause.message : String(cause)}; retry after managed maintenance completes`;
+        throw cause instanceof BuilderMaintenanceError
+          ? new BuilderMaintenanceError(message, { cause })
+          : new Error(message, { cause });
       }
     }
     try {
@@ -909,6 +1030,12 @@ export class BuildStorage {
       /^attempt-[\w-]+$/.test(marker.slice(marker.lastIndexOf('/') + 1))
     )
       rmSync(marker, { recursive: true, force: true });
+    // Removing a dead attempt frees real space, as releasing a reservation does.
+    try {
+      this.releaseListener?.();
+    } catch {
+      /* the removal stands */
+    }
   }
 
   private releaseRemoteRecord(directory: string, reason: string): void {
@@ -922,6 +1049,12 @@ export class BuildStorage {
     console.warn(
       `Build storage released ${directory.slice(directory.lastIndexOf('/') + 1)}: ${reason}.`,
     );
+    // A notice only: the release is already durable and must not be undone by it.
+    try {
+      this.releaseListener?.();
+    } catch {
+      /* the release stands */
+    }
   }
 
   /** Stronger than the cached unresolved list: any on-disk entry or held lease
@@ -946,6 +1079,18 @@ export class BuildStorage {
     }
   }
 
+  /** The build holding this Server's lease, if it was admitted in turn, and how
+   *  many builds wait behind it. */
+  queueState(): {
+    holder?: { label: string; projectId?: string; since: number };
+    waiting: number;
+  } {
+    return {
+      ...(this.held && this.holder ? { holder: { ...this.holder } } : {}),
+      waiting: this.waiting.length,
+    };
+  }
+
   /** Earlier attempts that still hold space because their end is not yet confirmed. */
   unresolvedAttempts(): UnresolvedBuildAttempt[] {
     return [...this.unresolved];
@@ -963,11 +1108,19 @@ export class BuildStorage {
    * outlived every command bound.
    */
   async reconcile(
-    probe: { buildkitIdle?: BuildkitIdleProbe } = {},
+    probe: {
+      buildkitIdle?: BuildkitIdleProbe;
+      protectedBuildStatus?: (reference: ProtectedBuildReference) => Promise<unknown>;
+      /** Host reply to the `slot` query; covers records written before it was asked. */
+      protectedBuildSlot?: () => Promise<unknown>;
+    } = {},
     now: number = Date.now(),
   ): Promise<UnresolvedBuildAttempt[]> {
     const namespace = readlinkSync('/proc/self/ns/pid');
     const identity = this.hostIdentity();
+    // Fixed diagnostic text only: probe errors can contain credentials or paths.
+    const retainedReasons = new Map<string, string>();
+    const protectedReasons = new Map<string, string>();
     let idle: boolean | undefined;
     let asked = false;
     // The worker's answer covers only operations that began before it was asked.
@@ -980,7 +1133,114 @@ export class BuildStorage {
       }
       return idle;
     };
+    let slotIdle: Promise<boolean> | undefined;
+    let slotAskedAt = 0;
+    const protectedSlotIdle = () =>
+      (slotIdle ??= (async () => {
+        slotAskedAt = Date.now();
+        try {
+          const reply = protectedBuildReply.safeParse(await probe.protectedBuildSlot?.());
+          return reply.success && 'idle' in reply.data && reply.data.idle;
+        } catch {
+          return false;
+        }
+      })());
+    /** The host has one slot and refuses a new build until the previous one is
+     * proven ended, so an idle slot proves every attempt it had admitted before
+     * the question ended. The answer covers only records that began earlier. */
+    const slotProvesEnded = async (record: z.infer<typeof remoteRecordSchema>) =>
+      (await protectedSlotIdle()) && Date.parse(record.startedAt) < slotAskedAt;
+    const protectedEnded = async (record: z.infer<typeof remoteRecordSchema>): Promise<boolean> => {
+      if (record.operation !== 'protected-build') return false;
+      // Records from before attempt identities were stored cannot be matched to a receipt.
+      if (record.protectedBuild === undefined) return slotProvesEnded(record);
+      const reference = record.protectedBuild;
+      try {
+        const reply = protectedBuildReply.safeParse(await probe.protectedBuildStatus?.(reference));
+        if (!reply.success || !('record' in reply.data)) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote status check did not return a valid receipt',
+          );
+        } else if (
+          reply.data.record.request.projectId !== reference.projectId ||
+          reply.data.record.request.attemptId !== reference.attemptId
+        ) {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote receipt identity does not match the reserved attempt',
+          );
+        } else {
+          protectedReasons.set(
+            reference.attemptId,
+            'remote builder has not confirmed the attempt ended',
+          );
+        }
+        return (
+          reply.success &&
+          'record' in reply.data &&
+          reply.data.record.ended &&
+          ['succeeded', 'failed'].includes(reply.data.record.phase) &&
+          reply.data.record.request.projectId === reference.projectId &&
+          reply.data.record.request.attemptId === reference.attemptId
+        );
+      } catch (error) {
+        protectedReasons.set(
+          reference.attemptId,
+          'remote status check failed; termination is not confirmed',
+        );
+        // The host holds neither this attempt nor a receipt for it: its begin was
+        // refused or never arrived (hosts before refusal receipts), or its receipt
+        // aged out. A begin that a dead client wrote may still be unread by the
+        // host, so wait out the client bound; after it, an idle slot restored from
+        // persisted state proves the attempt is not running. Other errors prove nothing.
+        if (
+          !(error instanceof ProtectedBuildFailure) ||
+          error.reason !== 'unknown_attempt' ||
+          now - Date.parse(record.startedAt) <= CLIENT_MAX_AGE_MS
+        )
+          return false;
+        return slotProvesEnded(record);
+      }
+    };
     this.sweepAdmissionMarkers(namespace);
+    // Admission-only leases have no artifact directory through which to query the host.
+    if (this.admissionDirectory !== undefined) {
+      const leases = join(this.admissionDirectory, 'leases');
+      if (existsSync(leases))
+        for (const entry of readdirSync(leases, { withFileTypes: true })) {
+          if (
+            !/^attempt-[\w-]+$/.test(entry.name) ||
+            !entry.isDirectory() ||
+            entry.isSymbolicLink()
+          )
+            continue;
+          const marker = join(leases, entry.name);
+          try {
+            const owner = ownerSchema.parse(
+              JSON.parse(readFileSync(join(marker, 'owner.json'), 'utf8')),
+            );
+            const record = this.readRemoteRecord(marker);
+            if (record === undefined || record === 'invalid') continue;
+            const clientGone = () =>
+              owner.namespace === namespace
+                ? !(existsProcess(owner.pid) && processStart(owner.pid) === owner.start) &&
+                  !this.liveChild(marker)
+                : now - Date.parse(record.startedAt) > CLIENT_MAX_AGE_MS;
+            if (!clientGone() || !(await protectedEnded(record))) continue;
+            if (
+              !clientGone() ||
+              JSON.stringify(this.readRemoteRecord(marker)) !== JSON.stringify(record)
+            )
+              continue;
+            this.releaseRemoteRecord(marker, 'the protected builder confirmed the attempt ended');
+            rmSync(marker, { recursive: true });
+          } catch {
+            // An unreadable marker or unconfirmed host response retains its admission fence.
+          }
+        }
+      this.sweepAdmissionMarkers(namespace);
+    }
     // Orphan markers have no artifact record through which the ordinary pass can
     // ask the worker. Reuse the same probe and retain unknown remote outcomes.
     if (
@@ -1011,7 +1271,10 @@ export class BuildStorage {
       }
       const sameNamespace = owner?.namespace === namespace;
       const record = this.readRemoteRecord(directory);
-      if (record === 'invalid') continue;
+      if (record === 'invalid') {
+        retainedReasons.set(entry.name, 'remote operation identity record could not be verified');
+        continue;
+      }
       if (record !== undefined) {
         const rebooted =
           identity !== undefined &&
@@ -1033,20 +1296,50 @@ export class BuildStorage {
           Date.parse(record.startedAt) < askedAt
         )
           reason = 'the build client has exited and the builder reports no running build';
+        else if (
+          record.operation === 'protected-build' &&
+          clientGone() &&
+          (await protectedEnded(record))
+        )
+          reason = 'the protected builder confirmed the attempt ended';
         else if (record.operation === 'image-import' && clientGone())
           reason = 'the image import client has exited';
-        if (reason === undefined) continue;
+        if (reason === undefined) {
+          retainedReasons.set(
+            entry.name,
+            !clientGone()
+              ? 'build client may still submit or own remote work'
+              : record.operation === 'protected-build'
+                ? (record.protectedBuild &&
+                    protectedReasons.get(record.protectedBuild.attemptId)) ||
+                  'remote termination is not confirmed'
+                : idle === false
+                  ? 'builder reports remote work is still running'
+                  : idle === undefined
+                    ? 'builder status is unavailable; termination is not confirmed'
+                    : 'operation began after the builder status observation',
+          );
+          continue;
+        }
         // A lease may have been taken, a client started, or this record rewritten,
         // while the worker was asked.
-        if (directory === this.currentDirectory || activeDirectories.has(directory)) continue;
-        if (!rebooted && !clientGone()) continue;
+        if (directory === this.currentDirectory || activeDirectories.has(directory)) {
+          retainedReasons.set(entry.name, 'a live owner acquired the attempt during verification');
+          continue;
+        }
+        if (!rebooted && !clientGone()) {
+          retainedReasons.set(entry.name, 'build client may still submit or own remote work');
+          continue;
+        }
         const current = this.readRemoteRecord(directory);
         if (
           current === undefined ||
           current === 'invalid' ||
-          current.startedAt !== record.startedAt
-        )
+          JSON.stringify(current) !== JSON.stringify(record)
+        ) {
+          retainedReasons.set(entry.name, 'remote operation identity changed during verification');
           continue;
+        }
         this.releaseRemoteRecord(directory, reason);
       }
       if (owner === undefined) continue;
@@ -1078,6 +1371,10 @@ export class BuildStorage {
           return attempt.operation === 'local' || this.readRemoteRecord(directory) !== undefined;
         })
       : this.survey(namespace);
+    this.unresolved = this.unresolved.map((attempt) => ({
+      ...attempt,
+      reason: retainedReasons.get(attempt.attempt) ?? attempt.reason,
+    }));
     return this.unresolvedAttempts();
   }
 
@@ -1157,8 +1454,12 @@ export class BuildStorage {
           reserveBuild(imageBytes);
         } catch (error) {
           if (!(error instanceof BuildStorageCapacityError) || !this.reclaimer) throw error;
-          await this.reclaimCapacity();
-          reserveBuild(imageBytes);
+          const outcome = await this.reclaimCapacity();
+          try {
+            reserveBuild(imageBytes);
+          } catch (refusal) {
+            throw afterReclamation(refusal, outcome);
+          }
         }
       },
       run: async (command, args, options) => {
@@ -1194,6 +1495,9 @@ export class BuildStorage {
               JSON.stringify({
                 version: 1,
                 operation: options.remoteOperation,
+                ...(options.protectedBuild === undefined
+                  ? {}
+                  : { protectedBuild: protectedBuildReference.parse(options.protectedBuild) }),
                 hostBootId: report.hostBootId,
                 hostIdentity: report.hostIdentity,
                 startedAt: new Date().toISOString(),
@@ -1360,6 +1664,7 @@ export class BuildStorage {
         else releaseAdmission();
         disposed = true;
         this.held = false;
+        this.holder = undefined;
         this.currentDirectory = undefined;
         activeDirectories.delete(directory);
         this.wakeNext();

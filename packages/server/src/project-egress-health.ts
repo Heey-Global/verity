@@ -5,6 +5,11 @@ export const projectEgressHealthReasons = [
   'provisioning_pending',
   'provisioning_in_progress',
   'runtime_unsupported',
+  'assessment_authorization_invalid',
+  'docker_host_unsupported',
+  'native_package_unavailable',
+  'relay_runtime_missing',
+
   'provisioning_failed',
   'controller_failed',
   'key_unreadable',
@@ -24,9 +29,24 @@ export interface ProjectEgressHealth {
   available: boolean;
   reason: ProjectEgressHealthReason;
 }
+/** Which host-control command failed, for logs. Only the fixed operation name and
+ *  the project it concerned: never a binding, address, token or host detail. */
+export interface ProjectEgressOperationContext {
+  operation?: string | undefined;
+  projectId?: string | undefined;
+}
 export class ProjectEgressHealthError extends Error {
-  constructor(readonly reason: ProjectEgressHealthReason) {
+  /** Enumerable so a logged `err` names the operation and project it belongs to;
+   *  without them a timed-out start cannot be told apart from inventory upkeep. */
+  declare readonly operation?: string;
+  declare readonly projectId?: string;
+  constructor(
+    readonly reason: ProjectEgressHealthReason,
+    context: ProjectEgressOperationContext = {},
+  ) {
     super('Host control operation failed; execution outcome may be unknown');
+    if (context.operation !== undefined) this.operation = context.operation;
+    if (context.projectId !== undefined) this.projectId = context.projectId;
   }
 }
 export function projectEgressFailure(error: unknown): ProjectEgressHealth {
@@ -36,7 +56,10 @@ export function projectEgressFailure(error: unknown): ProjectEgressHealth {
   };
 }
 
-/** Root-owned provisioning diagnostics can explain an outage, never establish readiness. */
+/** Root-owned provisioning diagnostics can explain an outage, never establish readiness.
+ * /etc/verity-egress-server/status.json deliberately records an unavailable reboot
+ * fallback. /run is ephemeral; neither file overrides authenticated live health.
+ */
 export function projectEgressInstallationFailure(input: unknown): ProjectEgressHealth | undefined {
   if (typeof input !== 'object' || input === null) return undefined;
   const status = input as Record<string, unknown>;
@@ -45,6 +68,10 @@ export function projectEgressInstallationFailure(input: unknown): ProjectEgressH
     status.reason !== 'provisioning_in_progress' &&
     status.reason !== 'mandatory_inventory_incomplete' &&
     status.reason !== 'runtime_unsupported' &&
+    status.reason !== 'assessment_authorization_invalid' &&
+    status.reason !== 'docker_host_unsupported' &&
+    status.reason !== 'native_package_unavailable' &&
+    status.reason !== 'relay_runtime_missing' &&
     status.reason !== 'provisioning_failed' &&
     status.reason !== 'controller_failed'
   )

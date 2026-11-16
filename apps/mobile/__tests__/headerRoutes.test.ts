@@ -1,4 +1,4 @@
-import { showsMessageSearch } from '../lib/headerRoutes';
+import { showsMessageSearch, usesExpandedHeaderTitle } from '../lib/headerRoutes';
 
 describe('showsMessageSearch', () => {
   it('shows search for a native session header even when the pathname is stale', () => {
@@ -12,4 +12,16 @@ describe('showsMessageSearch', () => {
   it('keeps search hidden on unrelated routes', () => {
     expect(showsMessageSearch('settings')).toBe(false);
   });
+});
+
+describe('usesExpandedHeaderTitle', () => {
+  it.each(['project/[id]/vulnerability-scan', 'project/[id]/settings/index', 'settings'])(
+    'reserves more title space and a compact back button for %s',
+    (route) => expect(usesExpandedHeaderTitle(route)).toBe(true),
+  );
+
+  it.each(['index', 'session/[id]', 'project/[id]/index'])(
+    'keeps the existing header proportions for %s',
+    (route) => expect(usesExpandedHeaderTitle(route)).toBe(false),
+  );
 });

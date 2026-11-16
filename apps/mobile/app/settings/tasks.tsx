@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, AppState, Linking, Share } from 'react-native';
+import { Alert, AppState, Share } from 'react-native';
 import {
   SettingsGroup,
   SettingsListPanel,
@@ -10,11 +10,6 @@ import {
 } from '../../components/settings/SettingsChrome';
 import { saveTaskPreferences, useTaskPreferences } from '../../lib/taskPreferences';
 import {
-  enableTaskScreenshotSuggestions,
-  screenshotAccess,
-  type ScreenshotAccess,
-} from '../../lib/taskScreenshot';
-import {
   discardWaitingWatchCaptures,
   showWatchSettings,
   watchBridgeAvailable,
@@ -22,13 +17,6 @@ import {
   watchStatus,
   type WatchStatus,
 } from '../../lib/watchCapture';
-
-const ACCESS_LABEL: Record<ScreenshotAccess, string> = {
-  granted: 'Allowed',
-  undetermined: 'Not asked yet',
-  denied: 'Not allowed',
-  unavailable: 'Unavailable on this device',
-};
 
 function watchLabel(status: WatchStatus): string {
   if (!status.supported) return 'Unavailable on this device';
@@ -50,7 +38,6 @@ function save(patch: Parameters<typeof saveTaskPreferences>[0]): void {
 
 export default function TasksSettingsScreen() {
   const preferences = useTaskPreferences();
-  const [access, setAccess] = useState<ScreenshotAccess | null>(null);
   const [watch, setWatch] = useState<WatchStatus | null>(null);
   useEffect(() => {
     let active = true;
@@ -65,9 +52,6 @@ export default function TasksSettingsScreen() {
         })
         .catch(() => undefined);
     const refresh = () => {
-      void screenshotAccess().then((next) => {
-        if (active) setAccess(next);
-      });
       if (watchBridgeAvailable) loadWatch(true);
     };
     refresh();
@@ -79,59 +63,19 @@ export default function TasksSettingsScreen() {
       subscription.remove();
     };
   }, []);
-  const requestAccess = () => {
-    if (access === 'denied') {
-      void Linking.openSettings();
-      return;
-    }
-    void enableTaskScreenshotSuggestions()
-      .catch(() => undefined)
-      .finally(() => void screenshotAccess().then(setAccess));
-  };
   return (
     <SettingsScaffold title="Tasks" detail>
       <SettingsGroup
-        title="Capture bubble"
-        description="The mic at the screen edge. Tap it to record a task, hold it to see your list."
+        title="Verity button"
+        description="The V at the screen edge. Tap it to talk to Verity, hold it to type."
       >
         <SettingsPanel>
           <SettingsToggleRow
-            label="Show capture bubble"
+            label="Show Verity button"
             value={preferences.enabled}
             onValueChange={(value) => save({ enabled: value })}
           />
         </SettingsPanel>
-      </SettingsGroup>
-      <SettingsGroup
-        title="Screenshots"
-        description="Offers a screenshot taken in the last two minutes, so you can attach it in one tap. Needs access to your photos."
-      >
-        <SettingsPanel>
-          <SettingsToggleRow
-            label="Suggest recent screenshots"
-            value={preferences.screenshots}
-            onValueChange={(value) => {
-              save({ screenshots: value, ...(value ? { screenshotPromptDismissed: false } : {}) });
-              if (value && access === 'undetermined') requestAccess();
-            }}
-          />
-        </SettingsPanel>
-        {access !== null && access !== 'unavailable' ? (
-          <SettingsListPanel>
-            <SettingsNavRow
-              icon="image"
-              title="Photo access"
-              value={ACCESS_LABEL[access]}
-              status={
-                access === 'granted'
-                  ? { intent: 'ready', label: 'Allowed' }
-                  : { intent: 'optional', label: ACCESS_LABEL[access] }
-              }
-              onPress={access === 'granted' ? () => void Linking.openSettings() : requestAccess}
-              accessibilityLabel={`Photo access, ${ACCESS_LABEL[access]}`}
-            />
-          </SettingsListPanel>
-        ) : null}
       </SettingsGroup>
       {showWatchSettings(watch) ? (
         <SettingsGroup
@@ -197,8 +141,8 @@ export default function TasksSettingsScreen() {
         <SettingsListPanel>
           <SettingsNavRow
             icon="corner-down-right"
-            title="Reset bubble position"
-            subtitle="Puts the bubble back on the right edge"
+            title="Reset button position"
+            subtitle="Puts the V back on the right edge"
             onPress={() => save({ side: 'right', fraction: 0.65 })}
           />
         </SettingsListPanel>

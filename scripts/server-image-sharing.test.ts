@@ -25,7 +25,10 @@ describe('shared CI image', () => {
     expect(builds).toHaveLength(1);
     expect(consumers.needs).toContain('server-image-build');
     expect(jobs['ci-checks'].needs).toContain('server-image-build');
-    expect(jobs['ci-checks'].steps?.[0].run).toContain('require_when_changed server-image-build');
+    const gate = jobs['ci-checks'].steps?.find(
+      (step) => step.name === 'Verify all required jobs succeeded',
+    );
+    expect(gate?.run).toContain('require_when_changed server-image-build');
     const upload = producer.steps?.find((step) => step.name === 'Upload Server image archive');
     const download = consumers.steps?.find((step) => step.name === 'Download Server image archive');
     expect(upload?.with?.name).toBeDefined();

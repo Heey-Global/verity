@@ -62,6 +62,9 @@ export {
 // harness reaches it through `@verity/store/testing`.
 export {
   EventStore,
+  defaultProjectName,
+  InvalidProjectNameError,
+  PROJECT_NAME_MAX_CHARS,
   SESSION_AUTOMATION_MAX_CONSECUTIVE_ERRORS,
   type EventSink,
   type PlanningConsent,
@@ -74,6 +77,14 @@ export {
   type SessionEventStats,
   type SessionRecord,
   type SessionPlanning,
+  type SessionMockupState,
+  type ProjectDesignLevel,
+  type SessionMockupReview,
+  type SessionMockups,
+  type MockupScreenRecord,
+  type MockupVerdict,
+  storedMockupScreens,
+  storedMockupState,
   type SessionSlideDeckRecord,
   type SessionWorkspaceFileRecord,
   type SessionGmailConnection,
@@ -83,6 +94,8 @@ export {
   type GoogleSlideImageCleanupRecord,
   type SessionInput,
   type RunningTurnRecord,
+  type RunnerTurnOwnership,
+  type RunnerTurnOwnershipRequest,
   type QueuedTurnRecord,
   type QueuedTurnInput,
   type ProjectRecord,
@@ -94,6 +107,7 @@ export {
   ProjectDefaultModelNotAllowedError,
   type ProjectSettingsRecord,
   type HttpMcpConnectionRecord,
+  httpMcpConnectionUsableBy,
   type ProjectMcpBindingRecord,
   type DevServerRecord,
   type DevServerCreateInput,
@@ -243,6 +257,9 @@ export {
   AssistantStore,
   type AssistantGrant,
   type AssistantMode,
+  type AssistantRequest,
+  type AssistantRequestClaim,
+  type AssistantRequestKind,
   type AssistantSettings,
 } from './assistant.js';
 
@@ -278,6 +295,29 @@ export {
   validateContext,
   type UserContext,
 } from './user-context.js';
+export {
+  UserProfileStore,
+  DISPLAY_NAME_MAX_CHARS,
+  normalizeDisplayName,
+  type UserProfile,
+} from './user-profile.js';
+export { UserGitIdentityStore, type UserGitIdentity } from './user-git-identity.js';
+export { UserDopplerConnectionStore } from './user-doppler-connection.js';
+export {
+  UserProviderConnectionStore,
+  type ProviderConnectionKind,
+  type UserProviderConnection,
+  type UserProviderConnectionStatus,
+} from './user-provider-connections.js';
+export {
+  ProjectSandboxStore,
+  type ProjectSandboxRecord,
+  type ProjectSandboxState,
+} from './project-sandboxes.js';
+export {
+  UserGithubAuthorizationStore,
+  type UserGithubAuthorization,
+} from './user-github-authorization.js';
 
 export {
   ViewStateStore,
@@ -288,3 +328,43 @@ export {
   type SessionViewState,
   type ViewSubject,
 } from './view-state.js';
+
+export {
+  ProjectRepositoryStore,
+  defaultProjectRepository,
+  projectForRepository,
+  type ProjectRepositoryRecord,
+  type AddProjectRepositoryInput,
+  type SessionRepositoryWorkspaceRecord,
+} from './project-repositories.js';
+
+export {
+  SANDBOX_REPAIR_MESSAGE_LIMIT,
+  SandboxRepairIntentStore,
+  type SandboxRepairIntent,
+} from './sandbox-repair-intents.js';
+
+export {
+  WIKI_OCCASION_BODY_LIMIT,
+  WikiMaintenanceStore,
+  WikiOccasionStore,
+  type WikiMaintenanceRecord,
+  type RecordWikiOccasion,
+  type WikiOccasion,
+  type WikiOccasionKind,
+} from './wiki-occasions.js';
+
+export {
+  ProjectInquiryStore,
+  type ProjectInquiry,
+  type ProjectInquiryGrant,
+} from './project-inquiries.js';
+export {
+  INVITATION_MAX_TTL_MS,
+  ProjectTeamError,
+  ProjectTeamStore,
+  type InvitationState,
+  type ProjectInvitation,
+  type ProjectMember,
+  type TeamOutboxEntry,
+} from './project-team.js';

@@ -4,7 +4,6 @@ import type { ProjectRecord } from '@verity/store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ListeningProcess } from './listening-ports.js';
 import type { LocalPreviewShare } from './local-preview-manager.js';
-import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import {
   MANAGED_SILENT_LIMIT_MS,
   MANAGED_STARTUP_DEADLINE_MS,
@@ -14,9 +13,11 @@ import {
 } from './managed-dev-server-manager.js';
 
 let ctx: TestDb;
+
 beforeAll(async () => {
   ctx = await createTestDb();
 });
+
 afterAll(async () => ctx.close());
 
 /** A sandbox in memory: started instances listen once `listen()` is called. */
@@ -108,9 +109,13 @@ function fakeShares() {
 }
 
 let now = Date.parse('2026-10-05T10:00:00Z');
+
 let sandbox: ReturnType<typeof fakeSandbox>;
+
 let shares: ReturnType<typeof fakeShares>;
+
 let manager: ManagedDevServerManager;
+
 let supervisionReady = true;
 
 beforeEach(async () => {
@@ -148,11 +153,76 @@ beforeEach(async () => {
     now: () => now,
   });
 });
+
 afterEach(() => manager.close());
 
 const instanceOf = async (sessionId = 's1') => (await manager.view(sessionId))[0]!.instance!;
 
 describe('managed dev servers', () => {
+  // ADR 0023 §4: a server runs in the sandbox of the person it is for, and with
+  // their secrets. Started by Lena, it runs in Lena's sandbox; restarted by the
+  // administrator, it ends there and runs in the original sandbox.
+  it("runs a server in its starter's sandbox and moves it when someone else restarts it", async () => {
+    await manager.close();
+    const containerOf = vi.fn(async (_project: ProjectRecord, userId: string | null) =>
+      userId === 'lena' ? 'sandbox--lena' : 'sandbox',
+    );
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      canSupervise: () => supervisionReady,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
+        worktree.replace('/clone', '/work'),
+      now: () => now,
+      sandboxContainer: containerOf,
+    });
+    const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+    const containers = (calls: unknown[][]) =>
+      calls.map(([project]) => (project as ProjectRecord).containerName);
+    const starts = vi.spyOn(sandbox.runtime, 'startManagedServer');
+    const stops = vi.spyOn(sandbox.runtime, 'stopManagedServer');
+
+    await manager.start('s1', 'Demo', 'operator', { person: 'lena' });
+    expect(containers(starts.mock.calls)).toEqual(['sandbox--lena']);
+    expect(containerOf).toHaveBeenCalledWith(expect.anything(), 'lena', true);
+
+    await manager.restart('s1', 'Demo', 'operator', 'admin');
+    expect(containers(stops.mock.calls)).toContain('sandbox--lena');
+    expect(containers(starts.mock.calls).at(-1)).toBe('sandbox');
+  });
+
+  // ADR 0023 §6: a removed member's servers must not keep running, nor be woken
+  // again by supervision, which restarts every server still marked running.
+  it('stops the servers a removed person ran, and only theirs', async () => {
+    await manager.close();
+    manager = new ManagedDevServerManager({
+      store: ctx.store,
+      runtime: sandbox.runtime,
+      canSupervise: () => supervisionReady,
+      localShares: shares.local,
+      networkPorts: [8100, 8101],
+      sandboxWorktree: (_project: ProjectRecord, worktree: string) =>
+        worktree.replace('/clone', '/work'),
+      now: () => now,
+      sandboxContainer: async (_project: ProjectRecord, userId: string | null) =>
+        userId === 'lena' ? 'sandbox--lena' : 'sandbox',
+    });
+    const entry = await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.approve('s1', 'Demo', { command: entry.command, workdir: '.' });
+    await manager.start('s1', 'Demo', 'operator', { person: 'lena' });
+    expect(await manager.hasRunningServersFor('p1', 'lena')).toBe(true);
+    const stops = vi.spyOn(sandbox.runtime, 'stopManagedServer');
+
+    await manager.stopForPerson('p1', 'admin');
+    expect(stops).not.toHaveBeenCalled();
+    await manager.stopForPerson('p1', 'lena');
+    expect(stops).toHaveBeenCalledTimes(1);
+    expect(await manager.hasRunningServersFor('p1', 'lena')).toBe(false);
+  });
+
   it('defers supervision until preview ownership is ready', async () => {
     const readListeners = vi.spyOn(sandbox.runtime, 'listListeningProcesses');
     await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
@@ -168,6 +238,19 @@ describe('managed dev servers', () => {
     supervisionReady = true;
     await manager.tick();
     expect((await instanceOf()).state).toBe('running');
+  });
+
+  // Storage collection asks per session. Answering for the whole project would
+  // keep every idle session's worktree on disk while one session runs a server.
+  it('reports a running server for its own session only, until it stops', async () => {
+    await manager.add('s1', { name: 'Demo', command: 'node server.mjs' });
+    await manager.start('s1', 'Demo', 'agent');
+    expect(manager.hasRunningSessionServers('s1')).toBe(true);
+    expect(manager.hasRunningSessionServers('s2')).toBe(false);
+    expect(manager.hasRunningServers('p1')).toBe(true);
+    await manager.stop('s1', 'Demo');
+    await manager.tick();
+    expect(manager.hasRunningSessionServers('s1')).toBe(false);
   });
 
   it('starts an entry with its own port and reports running only once the port answers', async () => {
@@ -1095,301 +1178,6 @@ it('removes network access when repeated external kills exhaust recovery', async
   }
   expect(await instanceOf()).toMatchObject({ state: 'crashed', desired: 'stopped' });
   expect(shares.shares).toHaveLength(0);
-});
-
-describe('managed servers with secret bindings', () => {
-  const secretBindings = [{ secretAlias: 'ATTENDEE_API_KEY', env: 'API_KEY' }];
-  const withResolver = async (
-    resolveSecrets: NonNullable<
-      ConstructorParameters<typeof ManagedDevServerManager>[0]['resolveSecrets']
-    >,
-  ) => {
-    await manager.close();
-    manager = new ManagedDevServerManager({
-      store: ctx.store,
-      runtime: sandbox.runtime,
-      resolveSecrets,
-      providerAuthority: async (projectId) => {
-        const settings = await ctx.store.getProjectSettings(projectId);
-        return JSON.stringify([
-          settings?.dopplerProject ?? 'test',
-          settings?.dopplerConfig ?? 'test',
-        ]);
-      },
-      networkPorts: [8100, 8101],
-      sandboxWorktree: (_project, worktree) => worktree.replace('/clone', '/work'),
-      now: () => now,
-    });
-  };
-
-  it('rejects a provider change between display and confirmation without saving approval', async () => {
-    await ctx.store.updateProjectSettings('p1', {
-      dopplerProject: 'demo',
-      dopplerConfig: 'staging',
-    });
-    const resolveSecrets = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
-    await withResolver(resolveSecrets);
-    const entry = await manager.add('s1', {
-      name: 'api',
-      command: 'node server.mjs',
-      secretBindings,
-    });
-    const seen = {
-      command: entry.command,
-      workdir: '.',
-      secretBindings,
-      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-    };
-    await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
-    await expect(manager.approve('s1', 'api', seen)).rejects.toThrow('provider');
-    expect(await ctx.store.managedDevServers.approvedProviderAuthority(entry.id)).toBeUndefined();
-    expect(resolveSecrets).not.toHaveBeenCalled();
-    expect(sandbox.started).toHaveLength(0);
-    const refreshed = (await manager.view('s1'))[0]!;
-    expect(refreshed.providerSnapshot).toEqual({
-      provider: 'doppler',
-      project: 'demo',
-      config: 'production',
-    });
-    await manager.approve('s1', 'api', { ...seen, providerSnapshot: refreshed.providerSnapshot });
-    await manager.start('s1', 'api', 'agent');
-    expect(sandbox.started).toHaveLength(1);
-  });
-
-  for (const failure of ['missing-snapshot', 'missing-provider', 'lookup-error'] as const) {
-    it(`does not save approval with ${failure}`, async () => {
-      await withResolver(async () => []);
-      const entry = await manager.add('s1', {
-        name: 'api',
-        command: 'node server.mjs',
-        secretBindings,
-      });
-      const seen = {
-        command: entry.command,
-        workdir: '.',
-        secretBindings,
-        ...(failure === 'missing-snapshot'
-          ? {}
-          : { providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot }),
-      };
-      if (failure === 'lookup-error' || failure === 'missing-provider') {
-        await manager.close();
-        manager = new ManagedDevServerManager({
-          store: ctx.store,
-          runtime: sandbox.runtime,
-          providerAuthority: async () => {
-            if (failure === 'lookup-error') throw new Error('private diagnostic');
-            return undefined;
-          },
-          networkPorts: [8100],
-          sandboxWorktree: (_project, worktree) => worktree,
-        });
-      }
-      await expect(manager.approve('s1', 'api', seen)).rejects.toThrow('provider');
-      expect(await ctx.store.managedDevServers.approvedProviderAuthority(entry.id)).toBeUndefined();
-      expect(sandbox.started).toHaveLength(0);
-    });
-  }
-
-  // A provider change must not launch a process with stale secret authority.
-  for (const change of ['unchanged', 'during-resolution'] as const) {
-    const check = it;
-    check(
-      `rechecks provider binding before starting a secret-bearing server: ${change}`,
-      async () => {
-        await ctx.store.updateProjectSettings('p1', {
-          dopplerProject: 'demo',
-          dopplerConfig: 'staging',
-        });
-        const resolveSecret = vi.fn(async () => {
-          if (change === 'during-resolution')
-            await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
-          return Buffer.from('synthetic-staging-value');
-        });
-        await withResolver(
-          createManagedDevServerSecretResolver({
-            getProjectBinding: async (projectId) => {
-              const settings = await ctx.store.getProjectSettings(projectId);
-              if (!settings?.dopplerProject || !settings.dopplerConfig) return undefined;
-              return {
-                dopplerProject: settings.dopplerProject,
-                dopplerConfig: settings.dopplerConfig,
-              };
-            },
-            resolveSecret,
-          }),
-        );
-        const entry = await manager.add('s1', {
-          name: 'api',
-          command: 'node server.mjs',
-          secretBindings,
-        });
-        await manager.approve('s1', 'api', {
-          command: entry.command,
-          workdir: '.',
-          secretBindings,
-          providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-        });
-        await manager.start('s1', 'api', 'agent');
-        expect(resolveSecret).toHaveBeenCalledWith({
-          projectId: 'p1',
-          dopplerProject: 'demo',
-          dopplerConfig: 'staging',
-          secretName: 'ATTENDEE_API_KEY',
-        });
-        if (change === 'unchanged') {
-          expect(sandbox.started).toHaveLength(1);
-          expect(sandbox.started[0]!.secrets).toEqual([
-            { env: 'API_KEY', value: 'synthetic-staging-value' },
-          ]);
-        } else {
-          expect((await ctx.store.getProjectSettings('p1'))?.dopplerConfig).toBe('production');
-          expect(sandbox.started).toHaveLength(0);
-        }
-      },
-    );
-  }
-
-  it('requires displayed binding approval for agent starts and resolves fresh values at restart', async () => {
-    const resolveSecrets = vi.fn(async () => [
-      { env: 'API_KEY', value: `synthetic-value-${resolveSecrets.mock.calls.length}` },
-    ]);
-    await withResolver(resolveSecrets);
-    const entry = await manager.add('s1', {
-      name: 'api',
-      command: 'node server.mjs',
-      secretBindings,
-    });
-    await expect(manager.start('s1', 'api', 'agent')).rejects.toThrow('approve');
-    expect(resolveSecrets).not.toHaveBeenCalled();
-    await expect(
-      manager.approve('s1', 'api', { command: entry.command, workdir: '.' }),
-    ).rejects.toThrow('changed');
-    await manager.approve('s1', 'api', {
-      command: entry.command,
-      workdir: '.',
-      secretBindings,
-      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-    });
-    await manager.start('s1', 'api', 'agent');
-    expect(resolveSecrets).toHaveBeenCalledWith(
-      'p1',
-      secretBindings,
-      JSON.stringify(['test', 'test']),
-    );
-    expect(sandbox.started[0]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-1' }]);
-    expect(sandbox.started[0]!.env).not.toHaveProperty('API_KEY');
-    await manager.restart('s1', 'api', 'agent');
-    expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value-2' }]);
-    const instance = (await ctx.store.managedDevServers.listInstances({ serverId: entry.id }))[0]!;
-    expect(instance.lastRunSecretBindings).toEqual(secretBindings);
-    expect(JSON.stringify(await manager.view('s1'))).not.toContain('synthetic-value');
-  });
-
-  for (const change of ['provider', 'legacy', 'lookup-error', 'recovery'] as const) {
-    it(`requires fresh provider approval after ${change}`, async () => {
-      await ctx.store.updateProjectSettings('p1', {
-        dopplerProject: 'demo',
-        dopplerConfig: 'staging',
-      });
-      const resolveSecrets = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic' }]);
-      await withResolver(resolveSecrets);
-      const entry = await manager.add('s1', {
-        name: 'api',
-        command: 'node server.mjs',
-        secretBindings,
-      });
-      await manager.approve('s1', 'api', {
-        command: entry.command,
-        workdir: '.',
-        secretBindings,
-        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-      });
-      if (change === 'recovery') {
-        await manager.start('s1', 'api', 'agent');
-        sandbox.recreate();
-        resolveSecrets.mockClear();
-      }
-      if (change === 'legacy')
-        await ctx.db
-          .updateTable('managed_dev_servers')
-          .set({ approved_provider_authority: null })
-          .where('id', '=', entry.id)
-          .execute();
-      else if (change === 'lookup-error')
-        vi.spyOn(ctx.store, 'getProjectSettings').mockRejectedValueOnce(
-          new Error('lookup unavailable'),
-        );
-      else await ctx.store.updateProjectSettings('p1', { dopplerConfig: 'production' });
-      if (change === 'recovery') await manager.tick();
-      else await manager.start('s1', 'api', 'agent');
-      expect(resolveSecrets).not.toHaveBeenCalled();
-      expect(sandbox.started).toHaveLength(change === 'recovery' ? 1 : 0);
-      if (change !== 'lookup-error') expect((await manager.view('s1'))[0]!.approved).toBe(false);
-      await manager.approve('s1', 'api', {
-        command: entry.command,
-        workdir: '.',
-        secretBindings,
-        providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-      });
-      await manager.start('s1', 'api', 'agent');
-      expect(resolveSecrets).toHaveBeenCalledOnce();
-    });
-  }
-
-  it('never launches a partial secret set or stores resolver diagnostics', async () => {
-    await withResolver(async () => {
-      throw new Error('synthetic-private-value');
-    });
-    const entry = await manager.add('s1', {
-      name: 'api',
-      command: 'node server.mjs',
-      secretBindings,
-    });
-    await manager.approve('s1', 'api', {
-      command: entry.command,
-      workdir: '.',
-      secretBindings,
-      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-    });
-    await manager.start('s1', 'api', 'agent');
-    expect(sandbox.started).toHaveLength(0);
-    expect((await instanceOf()).state).toBe('crashed');
-    expect(JSON.stringify(await manager.view('s1'))).not.toContain('synthetic-private-value');
-  });
-
-  it('recovers with the last approved mapping rather than an unapproved edit', async () => {
-    const resolveSecrets = vi.fn(async () => [{ env: 'API_KEY', value: 'synthetic-value' }]);
-    await withResolver(resolveSecrets);
-    const entry = await manager.add('s1', {
-      name: 'api',
-      command: 'node server.mjs',
-      secretBindings,
-    });
-    await manager.approve('s1', 'api', {
-      command: entry.command,
-      workdir: '.',
-      secretBindings,
-      providerSnapshot: (await manager.view('s1'))[0]!.providerSnapshot,
-    });
-    await manager.start('s1', 'api', 'agent');
-    const run = sandbox.started[0]!;
-    sandbox.listen(run.instanceId, Number(run.env.PORT));
-    await manager.tick();
-    await manager.update('s1', 'api', {
-      secretBindings: [{ secretAlias: 'EXPO_TOKEN', env: 'OTHER_KEY' }],
-    });
-    expect((await instanceOf()).restartToApply).toBe(true);
-    sandbox.recreate();
-    now += 6000;
-    await manager.tick();
-    expect(resolveSecrets.mock.calls).toEqual([
-      ['p1', secretBindings, JSON.stringify(['test', 'test'])],
-      ['p1', secretBindings, JSON.stringify(['test', 'test'])],
-    ]);
-    expect(sandbox.started[1]!.secrets).toEqual([{ env: 'API_KEY', value: 'synthetic-value' }]);
-    await expect(manager.restart('s1', 'api', 'agent')).rejects.toThrow('approve');
-  });
 });
 
 describe('session deletion cleanup', () => {

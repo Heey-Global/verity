@@ -1,4 +1,3 @@
-import { readFileSync as readEvidenceFixture } from 'node:fs';
 import { PreviewShareRemovalQueuedError } from './preview-share-manager.js';
 import { EventEmitter } from 'node:events';
 import type { VeritySettingsPatch, EventStore } from '@verity/store';
@@ -55,6 +54,7 @@ function setup(
     expectedInstallationId?: string;
     url?: string;
     offerRemoteControl?: boolean;
+    offerTeam?: boolean;
     reserveRemoteConnector?: (
       request: RemoteConnectorRequest,
       signal: AbortSignal,
@@ -108,6 +108,7 @@ function setup(
     ...(options.offerRemoteControl !== undefined
       ? { offerRemoteControl: options.offerRemoteControl }
       : {}),
+    ...(options.offerTeam !== undefined ? { offerTeam: options.offerTeam } : {}),
     ...(options.reserveRemoteConnector
       ? { reserveRemoteConnector: options.reserveRemoteConnector }
       : {}),
@@ -200,6 +201,58 @@ describe('UplinkControlClient', () => {
       try {
         expect(fixture.socketFactory).not.toHaveBeenCalled();
         expect(fixture.client.isAvailable()).toBe(false);
+      } finally {
+        await fixture.client.stop();
+      }
+    },
+  );
+
+  // Team v1 is opt-in on both sides: the client offers it, and sends team.*
+  // only after the service selected it; omission never means an implicit v1.
+  it.each([undefined, 1])(
+    'sends team requests only after welcome selects team v1 (%s)',
+    async (teamVersion) => {
+      const fixture = setup({ offerTeam: true });
+      fixture.client.start();
+      await flush();
+      fixture.socket.open();
+      await flush();
+      const hello = JSON.parse(fixture.socket.sent[0]!) as Record<string, unknown>;
+      expect(hello.teamVersions).toEqual([1]);
+      fixture.socket.message({
+        type: 'welcome',
+        installationId: 'installation-1',
+        features: ['sharing'],
+        leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+        ...(teamVersion === undefined ? {} : { teamVersion }),
+      });
+      await flush();
+      try {
+        expect(fixture.client.teamNegotiated()).toBe(teamVersion === 1);
+        const request = fixture.client.teamRequest(
+          'team.invite.cancel',
+          { operationId: 'op', invitationId: 'inv' },
+          ['team.invite.cancelled'],
+        );
+        if (teamVersion === undefined) {
+          await expect(request).rejects.toThrow('not negotiated');
+          return;
+        }
+        await flush();
+        const sent = JSON.parse(fixture.socket.sent.at(-1)!) as Record<string, unknown>;
+        expect(sent).toMatchObject({
+          type: 'team.invite.cancel',
+          teamVersion: 1,
+          operationId: 'op',
+        });
+        fixture.socket.message({
+          type: 'team.invite.cancelled',
+          requestId: sent.requestId,
+          teamVersion: 1,
+          invitationId: 'inv',
+          alreadyCommitted: false,
+        });
+        await expect(request).resolves.toMatchObject({ type: 'team.invite.cancelled' });
       } finally {
         await fixture.client.stop();
       }
@@ -312,6 +365,7 @@ describe('UplinkControlClient', () => {
       fixture.client.refreshCredentials();
       await vi.advanceTimersByTimeAsync(1250);
       replacement.open();
+      replacement.close.mockClear();
       replacement.message(welcome);
       await flush();
       expect(fixture.client.isAvailable()).toBe(false);
@@ -1096,7 +1150,7 @@ describe('UplinkControlClient', () => {
       decisionExpiresAt: Date.now() + 15_000,
     });
     await flush();
-    expect(sockets[1]!.terminate).toHaveBeenCalledOnce();
+    expect(sockets[1]!.close).toHaveBeenCalledWith(1002, 'invalid control message');
     expect(client.remoteControlDescriptor().enabled).toBe(false);
     await client.stop();
   });
@@ -1169,6 +1223,26 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
+  it('logs the negotiated capabilities when the Uplink admits this installation', async () => {
+    const fixture = setup();
+    fixture.client.start();
+    await flush();
+    fixture.socket.open();
+    fixture.socket.message({
+      type: 'welcome',
+      installationId: 'installation-1',
+      features: ['sharing'],
+      capabilities: ['webhook-v1'],
+      leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await flush();
+    expect(fixture.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ capabilities: ['webhook-v1'], features: ['sharing'] }),
+      'Uplink admitted this installation',
+    );
+    await fixture.client.stop();
+  });
+
   it('logs renewal requests and the lease returned by renewed', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-22T06:00:00.000Z'));
@@ -1196,17 +1270,18 @@ describe('UplinkControlClient', () => {
     await client.stop();
   });
 
-  it('terminates an expired lease without waiting for a close handshake or redialling', async () => {
+  it('bounds a stalled close handshake while recovering an expired control lease', async () => {
     vi.useFakeTimers();
     const { client, socket, socketFactory } = await welcomed(setup(), 10000);
     socket.close.mockImplementation(() => {
       socket.readyState = WebSocket.CLOSING;
     });
     await vi.advanceTimersByTimeAsync(10000);
-    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socket.close).toHaveBeenCalledWith(4000, 'lease expired');
     expect(client.isAvailable()).toBe(false);
-    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 2);
-    expect(socketFactory).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(socket.terminate).toHaveBeenCalledOnce();
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
     await client.stop();
   });
 
@@ -1282,9 +1357,8 @@ describe('UplinkControlClient', () => {
 
   /**
    * The two reject classes differ only in whether the installation may try
-   * again, and the difference is invisible in a single connection: both close
-   * the socket and both disable sharing. What separates them is what happens
-   * on the timer afterwards, which is what these two guards watch.
+   * again: both close the socket, but only identity refusal revokes shares.
+   * The timer afterwards distinguishes recovery from a terminal refusal.
    *
    * Getting this wrong is silent in both directions. Treating a capacity
    * refusal as terminal strands the installation until someone restarts it,
@@ -1293,7 +1367,7 @@ describe('UplinkControlClient', () => {
    * against an Uplink that allocates per connection, each of those dials costs
    * something.
    */
-  it('bounds a startup capacity refusal without keeping a background connection', async () => {
+  it('retries a startup capacity refusal while persisted shares need recovery', async () => {
     vi.useFakeTimers();
     const { client, sockets, socketFactory } = setupReconnecting();
     client.start();
@@ -1302,8 +1376,8 @@ describe('UplinkControlClient', () => {
     sockets[0]!.message({ type: 'reject', reason: 'limit_reached' });
     await flush();
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 2);
-    expect(socketFactory).toHaveBeenCalledOnce();
-    expect(client.diagnostics().control).toBe('idle');
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
+    expect(client.diagnostics().control).toBe('reconnecting');
     await client.stop();
   });
 
@@ -1538,7 +1612,7 @@ describe('UplinkControlClient', () => {
     await flush();
 
     await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS * 1.5);
-    expect(socketFactory).toHaveBeenCalledOnce();
+    expect(socketFactory.mock.calls.length).toBeGreaterThan(1);
     await client.stop();
   });
 
@@ -1747,7 +1821,7 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(socket.close).toHaveBeenCalledWith(1011, 'local welcome processing failed');
     expect(client.isAvailable()).toBe(false);
-    expect(disabled).toHaveBeenCalledWith('failed to accept Uplink welcome');
+    expect(disabled).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledWith(
       expect.objectContaining({ error: expect.any(Error), frameType: 'welcome' }),
       'failed to accept Uplink welcome',
@@ -2278,7 +2352,7 @@ describe('UplinkControlClient', () => {
     await flush();
     expect(store.getVeritySettings).toHaveBeenCalledOnce();
     expect(socket.sent).toEqual([]);
-    expect(disabled).toHaveBeenCalledWith('encrypted Uplink credentials are unavailable');
+    expect(disabled).not.toHaveBeenCalled();
     await client.stop();
   });
 
@@ -2695,8 +2769,8 @@ describe('UplinkControlClient', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await flush();
 
-    expect(socket.terminate).toHaveBeenCalledOnce();
-    expect(disabled).toHaveBeenCalledWith('Uplink lease expired');
+    expect(socket.close).toHaveBeenCalledWith(4000, 'lease expired');
+    expect(disabled).not.toHaveBeenCalled();
     expect(client.isAvailable()).toBe(false);
     await client.stop();
   });
@@ -2886,7 +2960,7 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
-  it('stops restored sharing and queues revocation after a stalled initial handshake', async () => {
+  it('retains restored sharing without queuing revocation after a stalled initial handshake', async () => {
     const f = setup({
       restoreShareIds: async () => ['restored'],
       premiumRemoteAccessEnabled: false,
@@ -2899,12 +2973,12 @@ describe('Uplink connection demand', () => {
     f.client.start();
     await flush();
     await vi.advanceTimersByTimeAsync(DEMAND_CHECK_TIMEOUT_MS);
-    expect(shutdown).toHaveBeenCalled();
-    expect(f.disabled).toHaveBeenCalled();
-    expect(f.store.addPendingUplinkShareRemoval).toHaveBeenCalledWith('restored');
-    expect(f.client.diagnostics().control).toBe('idle');
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
-    expect(f.socketFactory).toHaveBeenCalledOnce();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+    expect(f.client.diagnostics().control).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS);
+    expect(f.socketFactory.mock.calls.length).toBeGreaterThan(1);
     await f.client.stop();
   });
 
@@ -2921,30 +2995,66 @@ describe('Uplink connection demand', () => {
     await f.client.stop();
   });
 
-  it('fails closed when restoring sharing demand fails', async () => {
-    const f = setup({
-      restoreShareIds: async () => {
-        throw new Error('storage unavailable');
-      },
-    });
+  it('retries restoring sharing demand without deleting shares when storage fails', async () => {
+    const restoreShareIds = vi
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValue(['restored']);
+    const f = setup({ restoreShareIds });
     const shutdown = vi.fn();
     f.client.onSharingDisabled(shutdown);
     f.client.start();
     await flush();
-    expect(f.disabled).toHaveBeenCalled();
-    expect(shutdown).toHaveBeenCalled();
-    expect(f.client.diagnostics().control).toBe('idle');
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(shutdown).not.toHaveBeenCalled();
+    expect(f.client.isAvailable()).toBe(false);
     expect(f.socketFactory).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(restoreShareIds).toHaveBeenCalledTimes(2);
+    expect(f.socketFactory).toHaveBeenCalledOnce();
+    admit(f.socket);
+    await flush();
+    expect(f.client.isAvailable()).toBe(true);
     await f.client.stop();
   });
 
-  it('reports idle after transport loss clears the last sharing demand', async () => {
-    const f = await welcomed(setup({ premiumRemoteAccessEnabled: false }));
-    f.socket.close(1006, 'lost');
+  it('restores unfinished sharing demand during an explicit rights check', async () => {
+    const restoreShareIds = vi
+      .fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValue(['restored']);
+    const f = setup({ restoreShareIds, premiumRemoteAccessEnabled: false });
+    f.client.start();
     await flush();
-    expect(f.client.diagnostics().control).toBe('idle');
-    await vi.advanceTimersByTimeAsync(RECONNECT_CAPACITY_MS);
-    expect(f.socketFactory).toHaveBeenCalledOnce();
+    const checking = f.client.checkEntitlements();
+    const assertion = expect(checking).resolves.toMatchObject({
+      control: 'connected',
+      sharing: 'ready',
+    });
+    await flush();
+    admit(f.socket);
+    await assertion;
+    expect(restoreShareIds).toHaveBeenCalledTimes(2);
+    expect(f.disabled).not.toHaveBeenCalled();
+    expect(f.store.addPendingUplinkShareRemoval).not.toHaveBeenCalled();
+    await f.client.stop();
+  });
+
+  it('keeps sharing demand after transport loss', async () => {
+    const f = setupReconnecting({ offerRemoteControl: false });
+    f.client.start();
+    await flush();
+    admit(f.sockets[0]!);
+    await flush();
+    f.sockets[0]!.close(1006, 'lost');
+    await flush();
+    expect(f.client.diagnostics().control).toBe('reconnecting');
+    expect(f.disabled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(f.socketFactory).toHaveBeenCalledTimes(2);
+    admit(f.sockets[1]!);
+    await flush();
+    expect(f.client.isAvailable()).toBe(true);
     await f.client.stop();
   });
 
@@ -3215,338 +3325,6 @@ describe('Uplink connection demand', () => {
     admit(f.sockets.at(-1)!, ['remote-control']);
     await assertion;
     await f.client.stop();
-  });
-});
-
-describe('coordinated Uplink recordings', () => {
-  const runId = '11111111-1111-4111-8111-111111111111';
-  async function ready(capability: boolean | 2 | 3 = true) {
-    const fixture = setup({
-      offerRemoteControl: true,
-      reserveRemoteConnector: vi.fn(async () => ({
-        diagnosticId: runId,
-        attach: async () => {},
-        release: () => {},
-      })),
-    });
-    fixture.client.start();
-    await flush();
-    fixture.socket.open();
-    fixture.socket.message({
-      type: 'welcome',
-      installationId: 'installation-1',
-      handle: Buffer.alloc(16, 7).toString('base64url'),
-      features: ['sharing', 'remote-control'],
-      leaseUntil: new Date(Date.now() + 60000).toISOString(),
-      capabilities: [
-        'remote-control-v1',
-        ...(capability ? ['remote-diagnostics-v1'] : []),
-        ...(capability === 2 ? ['remote-diagnostics-v2'] : []),
-        ...(capability === 3 ? ['remote-diagnostics-v3'] : []),
-      ],
-      channels: ['http', 'ws', 'remote'],
-    });
-    await flush();
-    return fixture;
-  }
-  function reply(socket: FakeSocket, fields: Record<string, unknown> = {}) {
-    const request = JSON.parse(socket.sent.at(-1)!) as Record<string, unknown>;
-    socket.message({
-      type: 'diagnostics.started',
-      requestId: request.requestId,
-      runId,
-      state: 'recording',
-      expiresAt: new Date(Date.now() + 120000).toISOString(),
-      retainedUntil: new Date(Date.now() + 3600000).toISOString(),
-      collectorReady: true,
-      recordCount: 0,
-      droppedRecords: 0,
-      ...fields,
-    });
-    return request;
-  }
-  it('requires negotiated capture support and leaves old Uplinks untouched', async () => {
-    const { client, socket } = await ready(false);
-    await expect(client.startRecording(runId, 120000)).rejects.toThrow('diagnostics_not_available');
-    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
-    await client.stop();
-  });
-  it('sends an installation-bound request and waits for the armed acknowledgement', async () => {
-    const { client, socket } = await ready();
-    const pending = client.startRecording(runId, 120000);
-    const request = reply(socket);
-    expect(request).toEqual({
-      type: 'diagnostics.start',
-      requestId: expect.any(String),
-      runId,
-      durationMs: 120000,
-    });
-    await expect(pending).resolves.toBeUndefined();
-    await client.stop();
-  });
-  it.each([
-    { runId: '22222222-2222-4222-8222-222222222222' },
-    { collectorReady: false },
-    { state: 'stopped' },
-    { recordCount: -1 },
-    { payload: 'x'.repeat(33000) },
-  ])('rejects malformed or mismatched acknowledgement %j', async (fields) => {
-    const { client, socket } = await ready();
-    const pending = client.startRecording(runId, 120000);
-    reply(socket, fields);
-    await expect(pending).rejects.toThrow();
-    await client.stop();
-  });
-  it('bounds a lost acknowledgement and ignores its late response', async () => {
-    vi.useFakeTimers();
-    const { client, socket } = await ready();
-    const pending = client.startRecording(runId, 120000);
-    const assertion = expect(pending).rejects.toThrow('timed out');
-    await vi.advanceTimersByTimeAsync(10000);
-    await assertion;
-    reply(socket);
-    await flush();
-    expect(socket.close).not.toHaveBeenCalled();
-    await client.stop();
-    vi.useRealTimers();
-  });
-  it('projects a stopped paginated export and rejects a stalled cursor', async () => {
-    const { client, socket } = await ready();
-    const event = {
-      event: 'remote.return_path',
-      schemaVersion: 1,
-      session: '0000000000000000',
-      generation: '1111111111111111',
-      party: 'installation',
-      direction: 'in',
-      stage: 'emitted_message',
-      outcome: 'observed',
-      eventOrder: 1,
-      elapsedMs: 3,
-      encodedBytes: 100,
-      payload: 'secret',
-    };
-    const dates = {
-      expiresAt: new Date(Date.now() + 120000).toISOString(),
-      retainedUntil: new Date(Date.now() + 3600000).toISOString(),
-    };
-    const pending = client.exportRecording(runId);
-    reply(socket, {
-      ...dates,
-      type: 'diagnostics.exported',
-      state: 'stopped',
-      cursor: 0,
-      nextCursor: 1,
-      recordCount: 2,
-      records: [event],
-    });
-    await flush();
-    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({
-      type: 'diagnostics.export',
-      cursor: 1,
-    });
-    reply(socket, {
-      ...dates,
-      type: 'diagnostics.exported',
-      state: 'stopped',
-      cursor: 1,
-      nextCursor: null,
-      recordCount: 2,
-      records: [{ ...event, eventOrder: 2 }],
-    });
-    const result = await pending;
-    expect(JSON.stringify(result)).not.toContain('secret');
-    expect(result).toMatchObject({
-      recordCount: 2,
-      records: [{ eventOrder: 1 }, { eventOrder: 2 }],
-    });
-    const stalled = client.exportRecording(runId);
-    reply(socket, {
-      type: 'diagnostics.exported',
-      state: 'stopped',
-      cursor: 0,
-      nextCursor: 0,
-      recordCount: 1,
-      records: [],
-    });
-    await expect(stalled).rejects.toThrow('invalid_diagnostics_cursor');
-    await client.stop();
-  });
-  it('pins v2, verifies a paginated golden export and rejects modified evidence', async () => {
-    const fixture = JSON.parse(
-      readEvidenceFixture(
-        new URL('../../events/src/fixtures/socket-evidence-v2.json', import.meta.url),
-        'utf8',
-      ),
-    ) as {
-      document: { runId: string; records: unknown[] } & Record<string, unknown>;
-      exportHash: string;
-    };
-    const { client, socket } = await ready(2);
-    const id = fixture.document.runId;
-    const start = client.startRecording(id, 120000, 2);
-    const request = reply(socket, {
-      ...fixture.document,
-      records: undefined,
-      runId: id,
-      state: 'recording',
-      endedAt: null,
-      stopReason: null,
-      exportHash: null,
-      expiresAt: new Date(Date.now() + 120000).toISOString(),
-    });
-    expect(request.diagnosticsVersion).toBe(2);
-    await start;
-    const sendPage = (cursor: number, nextCursor: number | null, exportHash = fixture.exportHash) =>
-      reply(socket, {
-        ...fixture.document,
-        type: 'diagnostics.exported',
-        exportHash,
-        cursor,
-        nextCursor,
-        records: fixture.document.records.slice(cursor, cursor + 1),
-      });
-    const pending = client.exportRecording(id);
-    sendPage(0, 1);
-    await flush();
-    sendPage(1, null);
-    await expect(pending).resolves.toEqual({ ...fixture.document, exportHash: fixture.exportHash });
-    const corrupted = client.exportRecording(id);
-    sendPage(0, 1, '0'.repeat(64));
-    await flush();
-    sendPage(1, null, '0'.repeat(64));
-    await expect(corrupted).rejects.toThrow('invalid_diagnostics_hash');
-    const mutated = client.exportRecording(id);
-    const first = fixture.document.records[0] as Record<string, unknown>;
-    reply(socket, {
-      ...fixture.document,
-      type: 'diagnostics.exported',
-      exportHash: fixture.exportHash,
-      cursor: 0,
-      nextCursor: 1,
-      records: [{ ...first, lagMs: 1 }],
-    });
-    await flush();
-    sendPage(1, null);
-    await expect(mutated).rejects.toThrow('invalid_diagnostics_hash');
-    const changed = client.exportRecording(id);
-    sendPage(0, 1);
-    await flush();
-    sendPage(1, null, '0'.repeat(64));
-    await expect(changed).rejects.toThrow('diagnostics_export_changed');
-    await expect(client.startRecording(id, 120000, 1)).rejects.toThrow(
-      'diagnostics_version_conflict',
-    );
-    await client.stop();
-  });
-  it('pins v3 selection, returns authoritative status and rejects changed paginated metadata', async () => {
-    const { createHash } = await import('node:crypto');
-    const { canonicalEvidenceJson } = await import('@verity/events');
-    const fixture = JSON.parse(
-      readEvidenceFixture(
-        new URL('../../events/src/fixtures/socket-evidence-v3.json', import.meta.url),
-        'utf8',
-      ),
-    ) as {
-      document: { runId: string; records: Record<string, unknown>[] } & Record<string, unknown>;
-      preparing: Record<string, unknown>;
-      ready: Record<string, unknown>;
-    };
-    vi.useFakeTimers();
-    vi.setSystemTime(Date.parse(fixture.preparing.startedAt as string));
-    const { client, socket } = await ready(3);
-    const target = 'selected-session';
-    const targetSession = createHash('sha256').update(target).digest('hex').slice(0, 16);
-    const document = {
-      ...fixture.document,
-      targetSession,
-      records: fixture.document.records.map((record) => ({ ...record, session: targetSession })),
-    };
-    const exportHash = createHash('sha256').update(canonicalEvidenceJson(document)).digest('hex');
-    const id = document.runId;
-    socket.message({
-      type: 'session.request',
-      requestId: 'selected_request',
-      sessionId: target,
-      capability: 'remote-control-v1',
-      decisionExpiresAt: Date.now() + 15000,
-    });
-    await flush();
-    socket.message({
-      type: 'session.ticket',
-      sessionId: target,
-      ticket: 'ticket',
-      expiresAt: Date.now() + 15000,
-      capability: 'remote-control-v1',
-    });
-    await flush();
-    const start = client.startRecording(id, 30000, 3, target);
-    const request = reply(socket, {
-      ...fixture.preparing,
-      requestId: JSON.parse(socket.sent.at(-1)!).requestId,
-      targetSession,
-    });
-    expect(request).toMatchObject({
-      diagnosticsVersion: 3,
-      targetSessionId: target,
-      durationMs: 30000,
-    });
-    await start;
-    const status = client.recordingStatus(id);
-    reply(socket, {
-      ...fixture.ready,
-      requestId: JSON.parse(socket.sent.at(-1)!).requestId,
-      targetSession,
-    });
-    await expect(status).resolves.toMatchObject({
-      version: 3,
-      targetSession,
-      readiness: { ready: true },
-    });
-    const page = (cursor: number, changed = false) =>
-      reply(socket, {
-        ...document,
-        type: 'diagnostics.exported',
-        exportHash,
-        cursor,
-        nextCursor: cursor === 0 ? 3 : null,
-        records: document.records.slice(cursor, cursor + 3),
-        ...(changed ? { burstStartedAt: fixture.document.startedAt } : {}),
-      });
-    const exported = client.exportRecording(id);
-    page(0);
-    await flush();
-    page(3);
-    await expect(exported).resolves.toEqual({ ...document, exportHash });
-    const changed = client.exportRecording(id);
-    page(0);
-    await flush();
-    page(3, true);
-    await expect(changed).rejects.toThrow('diagnostics_export_changed');
-    const wrong = client.recordingStatus(id);
-    reply(socket, { ...fixture.ready, requestId: JSON.parse(socket.sent.at(-1)!).requestId });
-    await expect(wrong).rejects.toThrow('diagnostics_selection_mismatch');
-    await expect(client.startRecording(id, 30000, 3, 'other-target')).rejects.toThrow(
-      'diagnostics_version_conflict',
-    );
-    await client.stop();
-    vi.useRealTimers();
-  });
-  it('does not silently downgrade v3 on a v2 peer', async () => {
-    const { client, socket } = await ready(2);
-    await expect(client.startRecording(runId, 30000, 3, 'target')).rejects.toThrow(
-      'diagnostics_version_unavailable',
-    );
-    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
-    await client.stop();
-  });
-  it('does not silently downgrade an explicit v2 request on an old Uplink', async () => {
-    const { client, socket } = await ready();
-    await expect(client.startRecording(runId, 120000, 2)).rejects.toThrow(
-      'diagnostics_version_unavailable',
-    );
-    expect(socket.sent.some((raw) => raw.includes('diagnostics.start'))).toBe(false);
-    await client.stop();
   });
 });
 

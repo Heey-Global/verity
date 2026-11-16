@@ -213,6 +213,32 @@ describe('useBranches live updates', () => {
     expect(hook.result.current.pullRequest?.phase).toBe('open');
   });
 
+  it.each(['merge_status_pending', 'merge_status_unavailable'])(
+    'preserves %s as retryable while refreshing status',
+    async (code) => {
+      const slow = deferred<BranchList>();
+      const client = {
+        getBranches: jest.fn().mockResolvedValueOnce(branches()).mockReturnValue(slow.promise),
+        mergePullRequest: jest.fn().mockRejectedValue(
+          new VerityApiError(code === 'merge_status_pending' ? 409 : 503, 'Refresh status.', {
+            code,
+          }),
+        ),
+      } as unknown as VerityClient;
+      const hook = renderHook(() => useBranches(client, 's'));
+      await advance(0);
+      await act(async () => {
+        expect(await hook.result.current.mergePullRequest(42)).toMatchObject({
+          ok: false,
+          retryable: true,
+        });
+      });
+      expect(client.getBranches).toHaveBeenCalledTimes(2);
+      hook.unmount();
+      await act(async () => slow.resolve(branches()));
+    },
+  );
+
   it('updates cached merge state immediately while revalidation is pending', async () => {
     const slow = deferred<BranchList>();
     const client = {

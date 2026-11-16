@@ -16,6 +16,9 @@ apps/mobile/ota-promotion.json
 version.txt
 # Reproducible esbuild output; format its typed sources instead.
 features/verity-sandbox-toolkit/bin/verity-runner-worker.mjs
+# The same for the boundary binaries built from features/verity-sandbox-toolkit/src/.
+features/verity-sandbox-toolkit/bin/verity-agent-spawn-broker.mjs
+features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs
 # Per-project dev-container scaffold — owned separately, not formatted here.
 .dev-server/
 # Local session metadata is not repository source.

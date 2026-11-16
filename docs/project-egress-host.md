@@ -76,8 +76,9 @@ bundle at `/opt/verity-egress`, Node 26, nftables, a local rootful Docker daemon
 and the unit/drop-in files together. RuntimeDirectory cleanup removes stale
 sockets between service invocations; the application never steals an existing
 socket pathname. `LiveRestoreEnabled` and rootless Docker are rejected by the
-control entrypoint. The experimental entrypoint accepts Docker 29.9.2, matching
-the pinned runtime fixture; other daemon versions require explicit validation.
+control entrypoint. The experimental entrypoint accepts Docker 29.8.0, 29.9.2 or
+29.9.3; the pinned runtime fixture uses 29.9.3. Other daemon versions require
+explicit validation.
 Systemd >=249 must run as PID 1: Docker continuously upholds
 the controller, and `BindsTo`/`PartOf` plus ordering couple controller teardown and
 revalidation to daemon transitions. `Type=notify` reports readiness only after
@@ -301,7 +302,7 @@ sudo python3 project-egress-install.py preflight
 
 Its candidate requirements are x86_64 little-endian Linux, systemd >=249 as PID 1,
 Node >=26.12.1 within 26.x, rootful local
-Docker 29.9.2 with live restore disabled, the reviewed `runsc-project` and
+Docker 29.9.2 or 29.9.3 with live restore disabled, the reviewed `runsc-project` and
 `runsc-relay` runtimes, required network/BPF utilities, Python `setns`, libnftables,
 the private pin directory, and trusted configuration paths. Runtime names do not
 attest their executable versions or runtime arguments; those remain a release

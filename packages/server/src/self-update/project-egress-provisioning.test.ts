@@ -1,4 +1,4 @@
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,6 +11,7 @@ import {
 import { beforeEach, expect, it, vi } from 'vitest';
 import { sealDeploymentSpec, type ServerDeploymentSpec } from './deployment-spec.js';
 import {
+  admitProjectEgressProvision,
   provisionProjectEgressHost,
   reconcileInstalledProjectEgressHost,
   PROJECT_EGRESS_PROVISION_LABEL,
@@ -136,11 +137,28 @@ it('independently verifies the release before authorizing the bounded host onesh
     capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
   });
   expect(jobs[1]?.binds).not.toContain('/:/host');
+  expect(jobs[1]?.binds).toContain('/run/systemd:/run/systemd');
+  expect(jobs[1]?.binds?.some((bind) => bind.includes('/run/dbus'))).toBe(false);
   expect(jobs[1]?.binds).toContain('/opt/verity-egress-recovery:/opt/verity-egress-recovery');
   expect(jobs[1]?.entrypoint).toEqual(['timeout', '--kill-after=5s', '750s', 'bash']);
   expect(jobs[1]?.command).toEqual(['/opt/verity-install/deploy/host/verity-egress-provision']);
   expect(jobs[1]?.env).toContain('VERITY_EGRESS_DEPLOYMENT_NETWORK=verity-net');
 });
+it('removes successful verification before downstream preparation can fail', async () => {
+  const daemon = docker();
+  daemon.listContainers.mockResolvedValue([]);
+  await expect(
+    provisionProjectEgressHost({
+      docker: daemon as unknown as DockerClient,
+      journal,
+      spec: spec(),
+      environment: { DATABASE_URL: 'postgres://verity:private@postgres/verity' },
+    }),
+  ).rejects.toThrow('requires one control-plane database');
+  expect(runHostRenewalJob).toHaveBeenCalledOnce();
+  expect(daemon.removeContainer).toHaveBeenCalledWith('job');
+});
+
 it('refuses a protected deployment whose predecessor cannot recover its authority', async () => {
   const initial = spec();
   const protectedSpec = {
@@ -205,6 +223,88 @@ it('does not run host writes when independent target verification fails', async 
   expect(vi.mocked(runHostRenewalJob).mock.calls[0]?.[1].labels?.['verity.renewal-stage']).toBe(
     'verify',
   );
+});
+
+function withInstallerState(
+  mount: ServerDeploymentSpec['mounts'][number] | undefined,
+): ServerDeploymentSpec {
+  const initial = spec();
+  const mounts = initial.mounts.filter((entry) => entry.target !== '/run/verity-pairing');
+  return { ...initial, mounts: mount === undefined ? mounts : [...mounts, mount] };
+}
+
+it('admits provisioning from the sealed installer state bind without running anything', async () => {
+  expect(
+    await admitProjectEgressProvision(docker() as unknown as DockerClient, journal, spec()),
+  ).toEqual({
+    deploymentId: 'test',
+    operationId: 'update',
+    installedDigest: previous,
+    targetDigest: target,
+  });
+  expect(runHostRenewalJob).not.toHaveBeenCalled();
+});
+
+it('defers admission without throwing while the installed image lacks the contract', async () => {
+  const onSkip = vi.fn();
+  expect(
+    await admitProjectEgressProvision(
+      docker(false) as unknown as DockerClient,
+      journal,
+      withInstallerState(undefined),
+      onSkip,
+    ),
+  ).toBe(false);
+  expect(onSkip).toHaveBeenCalledWith('installed_contract_missing');
+});
+
+// The installer lock lives in this directory and the host writes are scoped by it;
+// any source other than a safe host bind would hand that authority to whatever
+// the source names. These must keep failing closed for real hosts and the
+// smoke alike, since the smoke runs this same admission.
+it.each([
+  ['a missing installer state mount', undefined],
+  [
+    'an installer state volume',
+    {
+      source: { kind: 'volume' as const, name: 'verity-pairing' },
+      target: '/run/verity-pairing',
+      readOnly: true,
+    },
+  ],
+  [
+    'an unsafe installer state path',
+    {
+      source: { kind: 'bind' as const, path: '/etc/../verity' },
+      target: '/run/verity-pairing',
+      readOnly: true,
+    },
+  ],
+])('refuses admission and provisioning for %s', async (_name, mount) => {
+  const unsafe = withInstallerState(mount);
+  await expect(
+    admitProjectEgressProvision(docker() as unknown as DockerClient, journal, unsafe),
+  ).rejects.toThrow('Project egress provisioning requires installer state authority');
+  await expect(
+    provisionProjectEgressHost({
+      docker: docker() as unknown as DockerClient,
+      journal,
+      spec: unsafe,
+      environment: {},
+    }),
+  ).rejects.toThrow('Project egress provisioning requires installer state authority');
+  expect(runHostRenewalJob).not.toHaveBeenCalled();
+});
+
+it('binds the install lock from the admitted installer state path', async () => {
+  await provisionProjectEgressHost({
+    docker: docker() as unknown as DockerClient,
+    journal,
+    spec: spec(),
+    environment: { DATABASE_URL: 'postgres://verity:private@postgres/verity' },
+  });
+  const install = vi.mocked(runHostRenewalJob).mock.calls[1]?.[1];
+  expect(install?.binds).toContain('/etc/verity/.verity-install.lock:/run/verity-install.lock');
 });
 
 async function stagingFixture(protectedMounts = false) {
@@ -326,6 +426,15 @@ it('reconciles installed staging once per image using its own signature authorit
     'org.verity.project-egress-deployment': '1',
   });
   try {
+    await writeFile(
+      join(directory, 'project-egress-staging-assessment.json'),
+      JSON.stringify({
+        version: 1,
+        image: previous,
+        operationId: 'a'.repeat(24),
+        completed: true,
+      }),
+    );
     expect(
       await reconcileInstalledProjectEgressHost({
         docker: daemon as unknown as DockerClient,

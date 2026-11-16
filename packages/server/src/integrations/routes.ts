@@ -126,6 +126,8 @@ export function registerIntegrationRoutes(
     onMatrixConfigured?: () => Promise<void>;
     /** Queue background text extraction for a stored attachment; ignores non-images. */
     extractImageText?: (job: ImageTextJob) => void;
+    /** A chat day of a project changed in its Sources (Wiki maintenance occasion). */
+    onChatDay?: (projectId: string, path: string, room: string) => Promise<void>;
   },
 ): void {
   const { store } = deps;
@@ -377,7 +379,7 @@ export function registerIntegrationRoutes(
             return reply
               .code(409)
               .send({ error: 'Room binding changed', code: 'source_binding_changed' });
-          await projectChatHistory(store, deps.dataRoot, {
+          const days = await projectChatHistory(store, deps.dataRoot, {
             accountId: input.accountId,
             sourceId: input.sourceId,
             projectId: result.projectId,
@@ -386,6 +388,8 @@ export function registerIntegrationRoutes(
             day,
             originalId: input.targetEventId ?? input.eventId,
           });
+          for (const path of days)
+            await deps.onChatDay?.(result.projectId, path, binding.displayName);
           if (input.kind === 'redaction' && target?.body) {
             const prefix = `Attachment: ${KNOWLEDGE_MATRIX_DIR}/`;
             const marker = createHash('sha256').update(target.eventId).digest('hex').slice(0, 24);
@@ -494,7 +498,7 @@ export function registerIntegrationRoutes(
         }
         // The event is persisted before the file write; a failed write stays in the
         // connector outbox and is retried until the original and projection exist.
-        await projectChatHistory(store, deps.dataRoot, {
+        const days = await projectChatHistory(store, deps.dataRoot, {
           accountId: input.accountId,
           sourceId: input.sourceId,
           projectId: result.projectId,
@@ -503,6 +507,8 @@ export function registerIntegrationRoutes(
           day: input.occurredAt.toISOString().slice(0, 10),
           originalId: input.eventId,
         });
+        for (const path of days)
+          await deps.onChatDay?.(result.projectId, path, binding.displayName);
         await store.markProjected(input.accountId, input.sourceId);
         return { accepted: result.inserted, path: relative };
       },

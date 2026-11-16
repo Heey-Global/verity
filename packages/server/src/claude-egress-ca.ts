@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { sandboxPersonTag } from './sandbox-identity.js';
 import { execFile } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -247,7 +248,7 @@ export async function issueGatewayServerCertificate(
  */
 export async function issueProjectClientCertificate(
   ca: EgressCa,
-  options: { projectId: string; validityDays?: number },
+  options: { projectId: string; userId?: string; validityDays?: number },
 ): Promise<ProjectClientCertificate> {
   assertSafeSubjectValue(options.projectId, 'project id');
   const leaf = await issueLeaf(ca, {
@@ -257,6 +258,11 @@ export async function issueProjectClientCertificate(
       'basicConstraints=critical,CA:FALSE',
       'keyUsage=critical,digitalSignature',
       'extendedKeyUsage=clientAuth',
+      // The sandbox's person, as a hashed tag (ADR 0023 §4). Informational: the
+      // gateway resolves the person from the fingerprint binding, never from here.
+      ...(options.userId === undefined
+        ? []
+        : [`subjectAltName=URI:urn:verity:sandbox:${sandboxPersonTag(options.userId)}`]),
       '',
     ].join('\n'),
   });
@@ -275,12 +281,15 @@ export async function issueProjectClientCertificate(
 export function gatewayMtlsMaterial(
   ca: EgressCa,
   server: PemCertificate,
-  clients: readonly ProjectClientCertificate[],
+  clients: readonly (ProjectClientCertificate & { userId?: string })[],
 ): GatewayMtlsMaterial {
   return {
     tls: { ca: ca.caCertPem, cert: server.certPem, key: server.keyPem },
+    // The person must be part of every binding the gateway starts from, not only
+    // of later updates, or a restarted gateway would know no sandbox's person.
     peerBindings: clients.map((client) => ({
       projectId: client.projectId,
+      ...(client.userId === undefined ? {} : { userId: client.userId }),
       fingerprint256: client.fingerprint256,
     })),
   };

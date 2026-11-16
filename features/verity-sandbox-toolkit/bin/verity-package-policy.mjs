@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 // Yarn 4.10.0 release; Bun 1.3 release; pip 26.1 news; uv 0.9.17 changelog.
 export const RELEASE_DELAY_POLICIES = {
   npm: {
-    minimumVersion: '11.10.0',
+    minimumVersion: '11.15.0',
     file: '.npmrc',
     key: 'min-release-age',
     value: '3',
@@ -70,6 +70,15 @@ const INSTALL_COMMANDS = {
     'up',
     'upgrade',
     'ci',
+    'clean-install',
+    'ic',
+    'install-test',
+    'install-ci-test',
+    'clean-install-test',
+    'it',
+    'cit',
+    'init',
+    'create',
     'exec',
     'x',
   ],
@@ -81,6 +90,15 @@ const INSTALL_COMMANDS = {
 };
 const VALUE_OPTIONS = new Set([
   '--prefix',
+  '--min-release-age',
+  '--omit',
+  '--include',
+  '--loglevel',
+  '--install-strategy',
+  '--cpu',
+  '--os',
+  '--libc',
+  '--before',
   '--cwd',
   '--dir',
   '-C',

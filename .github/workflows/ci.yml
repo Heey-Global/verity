@@ -45,14 +45,9 @@ env:
   VERITY_TEST_TIMEOUT_MS: '60000'
 
 concurrency:
-  # PRs group by source branch, so a force-push cancels its own stale run. Pushes to
-  # main group by commit SHA (unique per merge) so back-to-back merges NEVER cancel
-  # each other: a cancelled run reports `cancelled`, which the `ci-checks` gate treats
-  # as failure and stamps a false red X on the merge commit (seen with #465, cancelled
-  # 3s later by #464's merge). `github.head_ref` is empty on push, so the fallback picks
-  # the SHA there.
-  # Targeted diagnostics must not cancel full manual CI on the same commit.
-  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}${{ github.event_name == 'workflow_dispatch' && inputs['lint-comparison-only'] && '-lint-comparison' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}
+  # A title/body edit must never cancel the source run for the same PR head.
+  # PR duplicates reuse validated tree evidence below; older heads stay isolated.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.run_id || github.sha }}${{ github.event_name == 'workflow_dispatch' && inputs['lint-comparison-only'] && '-lint-comparison' || '' }}${{ github.event_name == 'workflow_dispatch' && inputs['check-suite'] == 'server-image' && '-server-image' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -77,7 +72,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # Merged release PRs are authored by the release app, whose `<slug>[bot]`
       # login the barrier must trust next to github-actions[bot]. The slug is an
       # output of minting a token, so mint one that can only read metadata.
@@ -111,6 +106,85 @@ jobs:
           fi
 
   changes:
+    # Only local classification belongs here; evidence waits have their own job.
+    timeout-minutes: 5
+    if: ${{ !inputs['lint-comparison-only'] }}
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      tree: ${{ steps.classify.outputs.tree }}
+      event_kind: ${{ steps.classify.outputs.event_kind }}
+      path_count: ${{ steps.classify.outputs.path_count }}
+    steps:
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Validate Conventional Commit title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: .github/scripts/validate-release-title "$PR_TITLE"
+      - name: Classify local event and changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          event_kind="$EVENT_NAME"
+          path_count=unknown
+          before=''
+          separator='..'
+          if [ "$EVENT_NAME" = pull_request ]; then
+            event_kind="pull_request:${EVENT_ACTION:-unknown}"
+            before="$PR_BASE"
+            separator='...'
+          elif [ "$EVENT_NAME" = push ]; then
+            before="$PUSH_BEFORE"
+            if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              before="$(git rev-parse --verify --quiet 'HEAD^' || true)"
+            fi
+          fi
+          if [ -n "$before" ] && git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            # Capture the command status: process substitution would hide a bad diff.
+            paths="$(git diff --no-renames --name-only "$before$separator"HEAD)"
+            path_count=0
+            if [ -n "$paths" ]; then
+              path_count="$(printf '%s\n' "$paths" | wc -l | tr -d ' ')"
+            fi
+          fi
+          {
+            echo "tree=$tree"
+            echo "event_kind=$event_kind"
+            echo "path_count=$path_count"
+          } >> "$GITHUB_OUTPUT"
+          printf 'Classified %s (%s paths); evidence waits run in Resolve required checks.\n' "$event_kind" "$path_count"
+      - name: Record PR checkout context
+        if: github.event_name == 'pull_request'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: node scripts/ci-pr-evidence.mjs write "$RUNNER_TEMP/ci-context.json"
+      # renovate: datasource=github-actions depName=actions/upload-artifact
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        with:
+          name: ci-context-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-context.json
+          retention-days: 3
+
+  resolve-check-plan:
+    name: Resolve required checks
+    needs: changes
+    timeout-minutes: 65
     if: ${{ !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     # `actions: read` is for the base commit's own CI verdict, which the
@@ -137,16 +211,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Validate Conventional Commit title
+          ref: ${{ github.sha }}
+      - name: Bind check plan to classified checkout
+        env:
+          CLASSIFIED_TREE: ${{ needs.changes.outputs.tree }}
+        run: |
+          set -euo pipefail
+          test -n "$CLASSIFIED_TREE"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$CLASSIFIED_TREE"
+          # Both evidence paths share one budget, starting after runner allocation.
+          node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV, `CI_EVIDENCE_DEADLINE=${Date.now() + 60 * 60 * 1000}\n`)'
+      - name: Reuse identical PR checkout checks
+        id: duplicate
         if: github.event_name == 'pull_request'
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: .github/scripts/validate-release-title "$PR_TITLE"
-      # Generated release and promotion PRs are authored by the release app and
-      # scoped below by author and head branch. The app's `<slug>[bot]` login is
-      # an output of minting a token, so mint one that can only read metadata,
-      # and only for the branches that can be release PRs; a fork PR has no
-      # secrets and runs the full suite like any other PR.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: echo "reuse=$(node scripts/ci-pr-evidence.mjs read)" >> "$GITHUB_OUTPUT"
       - name: Resolve release app identity
         id: app-token
         if: >-
@@ -169,6 +251,7 @@ jobs:
           CHECK_SUITE: ${{ inputs['check-suite'] || 'full' }}
           RELEASE_TRAIN: ${{ inputs['release-train'] || 'full' }}
           RELEASE_PR: ${{ inputs['release-pr'] || '' }}
+          REUSE_PR_CHECKS: ${{ steps.duplicate.outputs.reuse || 'false' }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login || '' }}
           PR_HEAD: ${{ github.event.pull_request.head.ref || '' }}
@@ -355,20 +438,13 @@ jobs:
             if [ "$release_only" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
               # Main routing and release inheritance both depend on the exact
               # base having completed successfully. Anything else fails broad.
-              runs="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${verdict_base}&event=push&per_page=1"
-              verdict="$(gh api "$runs" --jq \
-                '(.workflow_runs[0] // {}) | "\(.status // "missing")/\(.conclusion // "none")"' \
-                2>/dev/null || echo 'unreadable/none')"
               # Release Please opens its metadata PR while main CI is still
-              # running. Wait for that exact base instead of starting a second
-              # full suite; source-bearing pushes retain their existing routing.
+              # running. Only metadata PRs may wait; main pushes query once.
+              wait_args=()
               if [ "$release_only" = "true" ] && [ "${{ github.event_name }}" != "push" ]; then
-                case "$verdict" in
-                  queued/none|in_progress/none|pending/none|waiting/none)
-                    verdict="$(node scripts/ci-base-verdict.mjs "$verdict_base" "$verdict" || echo 'unreadable/none')"
-                    ;;
-                esac
+                wait_args=(--wait)
               fi
+              verdict="$(node scripts/ci-base-verdict.mjs "$verdict_base" "${wait_args[@]}" || echo 'unreadable/none')"
               if [ "$verdict" = "completed/success" ]; then
                 base_green=true
               elif [ "$release_only" = "true" ]; then
@@ -379,7 +455,11 @@ jobs:
             fi
           fi
 
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${REUSE_PR_CHECKS:-false}" = "true" ]; then
+            lint=false; typecheck=false; test=false; contract_test=false; coverage=false
+            installer=false; mobile=false; mobile_app=false; server_image=false; agent_seed_drift=false
+            echo "::notice::Identical PR checkout already passed ci-checks; retaining current title validation"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
             # The expensive repository-wide threshold belongs to one predictable
             # integration run, not every merge. It runs without first repeating
             # the same suite in the uninstrumented shard job.
@@ -649,7 +729,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - name: Install pinned Gitleaks
         shell: bash
@@ -679,8 +759,8 @@ jobs:
             .
 
   lint:
-    needs: changes
-    if: needs.changes.outputs.lint == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.lint == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -688,7 +768,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # ESLint covers every Node package but deliberately ignores the Expo app
       # (see eslint.config.js). Install that exact workspace set plus the root
@@ -793,6 +873,7 @@ jobs:
         shell: bash
         env:
           CI: 'true'
+          VERITY_LINT_PROFILE: '1'
           LINT_MEASUREMENT_DIR: ${{ runner.temp }}/lint-measurement
         run: |
           set -euo pipefail
@@ -806,7 +887,8 @@ jobs:
           # Reuse content-validated ambient metadata within this job. CI still
           # disables clean-result reuse, so every lint group is checked.
           # GNU time reports peak individual-process RSS in KiB, not aggregate
-          # container memory. Keep the normal worker heap and sequential policy.
+          # container memory. Workers stay sequential; CI sizes their heap from the
+          # runner's memory (scripts/lint-runner.mjs, CI_HEAP_CAP_MIB).
           /usr/bin/time --verbose --output="$LINT_MEASUREMENT_DIR/resources.txt" \
             npm run lint 2>&1 | tee "$LINT_MEASUREMENT_DIR/lint.log"
       - name: Upload lint measurement
@@ -821,8 +903,8 @@ jobs:
       - run: npm run format
 
   knip:
-    needs: changes
-    if: needs.changes.outputs.lint == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.lint == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -830,7 +912,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Knip analyzes the whole monorepo, so install every workspace. Its parser
       # has a platform-specific optional binding, which rules out the lint lane's
@@ -840,8 +922,8 @@ jobs:
       - run: npm run knip
 
   typecheck:
-    needs: changes
-    if: needs.changes.outputs.typecheck == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.typecheck == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -849,7 +931,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # Deliberately no `cache: npm`: the archive is roughly 2 GB and duplicates
           # the lockfile-derived install across parallel jobs. Keep the repository's
           # limited Actions cache available for the smaller targeted tool caches and
@@ -873,8 +955,8 @@ jobs:
       - run: npm run build
 
   test:
-    needs: changes
-    if: needs.changes.outputs.test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.test == 'true'
     runs-on: ubuntu-26.04
     strategy:
       # Every shard reports, so one red shard never hides another's verdict.
@@ -899,7 +981,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Root Vitest explicitly excludes packages/mobile and the Expo app. Install
       # only the Server dependency closure plus root test tooling; the Expo graph
@@ -940,7 +1022,7 @@ jobs:
           container-name: verity-test-postgres-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
       - name: Run one isolated test shard
         env:
-          CONTRACT_TEST_SELECTED: ${{ needs.changes.outputs.contract_test }}
+          CONTRACT_TEST_SELECTED: ${{ needs.resolve-check-plan.outputs.contract_test }}
           SHARD: ${{ matrix.shard }}
           VERITY_TEST_SHARED_POSTGRES_URL: ${{ steps.postgres.outputs.url }}
         run: |
@@ -978,8 +1060,8 @@ jobs:
   # Repository script contracts validate declarative inputs and workflow wiring
   # without booting the Server/Store test matrix or PostgreSQL.
   contract-test:
-    needs: changes
-    if: needs.changes.outputs.contract_test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.contract_test == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -987,7 +1069,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # The DOM host contract imports the web app and its Expo/Apps SDK dependencies.
       - run: npm ci --workspace @verity/server --workspace @verity/mobile-app --include-workspace-root --ignore-scripts
       - name: Run repository contract suites
@@ -1016,13 +1098,13 @@ jobs:
   # network or Docker socket. It creates a mount namespace without uid remapping;
   # the ordinary installer suite stays non-root and capability-less.
   installer:
-    needs: changes
-    if: needs.changes.outputs.installer == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.installer == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     env:
       # Same pin the Dockerfiles carry, so Renovate moves one version for all of them.
-      VERITY_INSTALLER_IMAGE: node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9
+      VERITY_INSTALLER_IMAGE: node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
       VERITY_INSTALLER_SANDBOX: --rm --cap-drop ALL --network none --security-opt seccomp=unconfined
       # Mount-only root fixture: no user namespace/uid_map, host mounts or Docker socket.
       VERITY_BACKUP_TEST_SANDBOX: --rm --cap-drop ALL --cap-add SYS_ADMIN --network none --security-opt seccomp=unconfined --security-opt apparmor=unconfined
@@ -1102,8 +1184,8 @@ jobs:
         run: docker image rm "verity-installer-ci:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true
 
   runner-postgres-race:
-    needs: changes
-    if: needs.changes.outputs.test == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.test == 'true'
     runs-on: ubuntu-26.04
     env:
       VERITY_RUNNER_RACE_POSTGRES: verity-runner-race-postgres-${{ github.run_id }}-${{ github.run_attempt }}
@@ -1113,7 +1195,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci --workspace @verity/server --include-workspace-root
       # Only the PostgreSQL-gated suites run here, and the sole reason they need
@@ -1161,14 +1243,14 @@ jobs:
         run: docker rm -f "$VERITY_RUNNER_RACE_POSTGRES" >/dev/null 2>&1 || true
 
   coverage:
-    needs: changes
+    needs: resolve-check-plan
     # Coverage runs the WHOLE suite with instrumentation (required for the
     # repo-wide threshold gate in vitest.config.ts) — the single slowest check,
     # and on a PR it just re-runs what the `test` job already ran. So it runs on
     # nightly. Pull requests and routed main pushes already run the relevant
     # uninstrumented tests; repeating the whole repository after every merge was
     # the slowest job in the pipeline and did not improve path-specific feedback.
-    if: needs.changes.outputs.coverage == 'true'
+    if: needs.resolve-check-plan.outputs.coverage == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1176,7 +1258,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       # Coverage exercises the same root Vitest package set as the sharded test
       # jobs, so it needs the Server closure and root tooling, not Mobile/Expo.
@@ -1230,8 +1312,8 @@ jobs:
   # native build are verified in the operator's RN environment. Root build/test
   # exclude packages/mobile; this job covers it.
   mobile:
-    needs: changes
-    if: needs.changes.outputs.mobile == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.mobile == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1239,7 +1321,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       # The full mobile dependency closure grows the shared npm cache to roughly
       # 1.8 GB. Restoring and extracting it immediately before the full `npm ci`
       # has repeatedly pushed the GitHub-hosted runner into an external SIGTERM.
@@ -1261,8 +1343,8 @@ jobs:
   # `moduleNameMapper` also resolves @verity/mobile to that dist), and the native
   # build/bundle is verified in the operator's Expo environment, not CI.
   mobile-app:
-    needs: changes
-    if: needs.changes.outputs.mobile_app == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.mobile_app == 'true'
     runs-on: ubuntu-26.04
     steps:
       # renovate: datasource=github-actions depName=actions/checkout
@@ -1280,7 +1362,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # DELIBERATELY no `cache: npm` — see the note on the `typecheck` job.
       - run: npm ci
       # renovate: datasource=github-actions depName=actions/cache
@@ -1358,8 +1440,8 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/heey-global/verity/verity-matrix-connector:buildcache-amd64
 
   server-image-build:
-    needs: changes
-    if: needs.changes.outputs.server_image == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.server_image == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     # Failed installer reruns reuse the successful producer from the same run.
@@ -1474,7 +1556,7 @@ jobs:
           # host first and then `docker save | load`-ing into the empty host
           # unpacked the image twice and re-packed it once in between — about
           # a minute for the host load and a minute and a half per copy — and
-          # the managed leg never runs the image on the host at all.
+          # the managed and recovery legs never run the image on the host at all.
           outputs: type=docker,dest=${{ runner.temp }}/${{ env.VERITY_CI_IMAGE_ARCHIVE }}
           tags: ${{ env.VERITY_CI_IMAGE }}
           build-args: |
@@ -1516,7 +1598,7 @@ jobs:
           # was evicting the very blobs being written.
           cache-from: type=gha,scope=verity-server-amd64
           #
-          # One producer writes this scope; both installer legs only load its archive.
+          # One producer writes this scope; every server-image leg only loads its archive.
           cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=verity-server-amd64,ignore-error=true' || '' }}
       # Avoid recompressing the multi-GB Docker archive on the runner.
       - name: Upload Server image archive
@@ -1538,8 +1620,8 @@ jobs:
         run: rm -f "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
   server-image:
-    needs: [changes, server-image-build]
-    if: needs.changes.outputs.server_image == 'true'
+    needs: [resolve-check-plan, server-image-build]
+    if: needs.resolve-check-plan.outputs.server_image == 'true'
     runs-on: ubuntu-26.04
     # Bounded below the cache janitor's grace period (`CACHE_MIN_AGE_MINUTES` in
     # cache-janitor.yml). The janitor only deletes entries nothing has read for
@@ -1550,14 +1632,19 @@ jobs:
     # bound only ever catches a hang. scripts/ci-workflow.test.ts enforces it for
     # every step in the repo that reads or writes a gha cache.
     timeout-minutes: 45
-    # Both installer paths exercise the exact same archive from one build.
-    # Independent verdicts remain visible when either installer fails.
+    # Both installer paths and the backup recovery acceptance exercise the
+    # exact same archive from one build. Independent verdicts remain visible
+    # when any of them fails. Recovery is its own leg: its separate-host
+    # capture/restore acceptance takes about 14 minutes, and run after the
+    # managed installer it made that leg the critical path of every main run
+    # — which every release PR waits for.
     strategy:
       fail-fast: false
       matrix:
         include:
           - installer: compose
           - installer: managed
+          - installer: recovery
     # Namespace every mutable smoke-test resource. This remains useful for local
     # reproduction and protects against future runner-layout changes.
     env:
@@ -1832,11 +1919,22 @@ jobs:
           VERITY_MANAGED_INSTALL_DAEMON_ID="$isolated_id" DOCKER_HOST="$isolated" \
             deploy/bin/verity-managed-install-smoke "$VERITY_CI_IMAGE" "$VERITY_CI_MANAGED_DIND"
 
-          # Reclaim the completed fixture's image store before recovery loads
-          # and builds another copy. Stopping alone retains the full data volume.
-          docker --host unix:///var/run/docker.sock rm --force "$VERITY_CI_MANAGED_DIND" >/dev/null
-          docker --host unix:///var/run/docker.sock volume rm "$VERITY_CI_MANAGED_DIND_VOLUME" >/dev/null
-          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$managed_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
+      - name: Verify backup recovery on separate disposable Docker hosts
+        if: matrix.installer == 'recovery'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The recovery hosts run the same pinned runsc daemon fixture with the
+          # installer prerequisites as the managed leg; this leg builds its own.
+          gvisor_image="verity-gvisor-recovery:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          recovery_dind_image="verity-recovery:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_recovery_images() {
+            docker --host unix:///var/run/docker.sock image rm --force "$recovery_dind_image" "$gvisor_image" >/dev/null 2>&1 || true
+          }
+          trap cleanup_recovery_images EXIT
+          docker build --file deploy/gvisor-ci.Dockerfile --tag "$gvisor_image" .
+          docker build --file deploy/managed-install-ci.Dockerfile --build-arg "VERITY_GVISOR_CI_IMAGE=$gvisor_image" --tag "$recovery_dind_image" .
+          deploy/bin/verity-backup-restore-smoke "$VERITY_CI_IMAGE" "$recovery_dind_image" "$RUNNER_TEMP/$VERITY_CI_IMAGE_ARCHIVE"
 
       - name: Clean Docker smoke artifacts
         if: always()
@@ -1889,8 +1987,8 @@ jobs:
   # repo-root tree is the single source of truth and this guard fails the PR if
   # the bundled copy silently drifts.
   agent-seed-drift:
-    needs: changes
-    if: needs.changes.outputs.agent_seed_drift == 'true'
+    needs: resolve-check-plan
+    if: needs.resolve-check-plan.outputs.agent_seed_drift == 'true'
     runs-on: ubuntu-26.04
     permissions:
       contents: read
@@ -1922,6 +2020,7 @@ jobs:
     needs:
       [
         changes,
+        resolve-check-plan,
         public-snapshot,
         lint,
         knip,
@@ -1944,6 +2043,22 @@ jobs:
     if: ${{ always() && !cancelled() && !inputs['lint-comparison-only'] }}
     runs-on: ubuntu-26.04
     steps:
+      # Parallel PR events may carry different title snapshots. Read the live
+      # title at the required gate so an older run cannot green a now-invalid title.
+      # renovate: datasource=github-actions depName=actions/checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+      - name: Validate current PR title
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)"
+          .github/scripts/validate-release-title "$title"
       - name: Verify all required jobs succeeded
         run: |
           set -euo pipefail
@@ -1974,19 +2089,20 @@ jobs:
           }
 
           require_success changes "${{ needs.changes.result }}"
+          require_success resolve-check-plan "${{ needs.resolve-check-plan.result }}"
           require_success public-snapshot "${{ needs.public-snapshot.result }}"
-          require_when_changed lint "${{ needs.lint.result }}" "${{ needs.changes.outputs.lint }}"
-          require_when_changed knip "${{ needs.knip.result }}" "${{ needs.changes.outputs.lint }}"
-          require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.changes.outputs.agent_seed_drift }}"
-          require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.changes.outputs.typecheck }}"
-          require_when_changed test "${{ needs.test.result }}" "${{ needs.changes.outputs.test }}"
-          require_when_changed contract-test "${{ needs.contract-test.result }}" "${{ needs.changes.outputs.contract_test }}"
-          require_when_changed installer "${{ needs.installer.result }}" "${{ needs.changes.outputs.installer }}"
-          require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.changes.outputs.test }}"
-          require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.changes.outputs.coverage }}"
-          require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.changes.outputs.mobile }}"
-          require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.changes.outputs.mobile_app }}"
+          require_when_changed lint "${{ needs.lint.result }}" "${{ needs.resolve-check-plan.outputs.lint }}"
+          require_when_changed knip "${{ needs.knip.result }}" "${{ needs.resolve-check-plan.outputs.lint }}"
+          require_when_changed agent-seed-drift "${{ needs.agent-seed-drift.result }}" "${{ needs.resolve-check-plan.outputs.agent_seed_drift }}"
+          require_when_changed typecheck "${{ needs.typecheck.result }}" "${{ needs.resolve-check-plan.outputs.typecheck }}"
+          require_when_changed test "${{ needs.test.result }}" "${{ needs.resolve-check-plan.outputs.test }}"
+          require_when_changed contract-test "${{ needs.contract-test.result }}" "${{ needs.resolve-check-plan.outputs.contract_test }}"
+          require_when_changed installer "${{ needs.installer.result }}" "${{ needs.resolve-check-plan.outputs.installer }}"
+          require_when_changed runner-postgres-race "${{ needs.runner-postgres-race.result }}" "${{ needs.resolve-check-plan.outputs.test }}"
+          require_when_changed coverage "${{ needs.coverage.result }}" "${{ needs.resolve-check-plan.outputs.coverage }}"
+          require_when_changed mobile "${{ needs.mobile.result }}" "${{ needs.resolve-check-plan.outputs.mobile }}"
+          require_when_changed mobile-app "${{ needs.mobile-app.result }}" "${{ needs.resolve-check-plan.outputs.mobile_app }}"
           require_success matrix-connector-image "${{ needs.matrix-connector-image.result }}"
-          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.changes.outputs.server_image }}"
-          require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.changes.outputs.server_image }}"
+          require_when_changed server-image-build "${{ needs.server-image-build.result }}" "${{ needs.resolve-check-plan.outputs.server_image }}"
+          require_when_changed server-image "${{ needs.server-image.result }}" "${{ needs.resolve-check-plan.outputs.server_image }}"
           echo "all required CI jobs succeeded"

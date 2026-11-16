@@ -177,12 +177,17 @@ export function describeServerUpdate(status: ServerUpdateStatus): ServerUpdateVi
           ...outcome,
           detail: 'Host runtime support is ready. Your current version keeps serving.',
         };
-      if (host.stage === 'recovery-required')
-        return {
+      if (host.stage === 'recovery-required') {
+        outcome = {
           ...outcome,
           detail:
             'Host runtime recovery needs attention. Restoration could not be verified. Inspect the host service journal or re-run the Verity installer; your current version keeps serving.',
         };
+        // Recovery belongs to the failed target. A different offered image
+        // still goes through the updater's full host preparation checks.
+        if (status.state !== 'available' || status.release.serverImage === operation.targetDigest)
+          return outcome;
+      }
     }
     if (status.state !== 'available') return outcome;
     const digest = status.release.serverImage;
@@ -627,7 +632,7 @@ function panelParts(status: ServerUpdateStatus): Omit<ServerUpdatePanel, 'tag'> 
 
   // Failed or rolled back: the outcome stays visible, and a way forward is
   // offered on the same card when it is the same release, else on its own.
-  const outcome = describeOperation(operation);
+  const outcome = view;
   const failure: ServerUpdateCard = {
     key: operation.updateId,
     status: {
@@ -639,7 +644,10 @@ function panelParts(status: ServerUpdateStatus): Omit<ServerUpdatePanel, 'tag'> 
         ? outcome.title
         : `Update to ${target.version} ${operation.state === 'rolled-back' ? 'was rolled back' : 'failed'}`,
     release: target?.publishedAt ? target : null,
-    detail: outcome.detail,
+    detail:
+      status.state === 'current'
+        ? `${outcome.detail} No newer release is currently offered by the selected channel.`
+        : outcome.detail,
     progress: null,
     stalled: null,
     error,
@@ -666,7 +674,7 @@ function panelParts(status: ServerUpdateStatus): Omit<ServerUpdatePanel, 'tag'> 
     };
   return {
     installed,
-    cards: [failure, availabilityCard(status, offer)],
+    cards: [failure, availabilityCard({ ...status, operation: null }, offer)],
   };
 }
 

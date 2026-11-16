@@ -588,3 +588,74 @@ operations and unknown consumers remain authoritative blockers. After the durabl
 native-retired marker is written, native configuration rollback is unavailable;
 the overlay worker and shared daemon metadata are preserved. A host helper update
 is required; updating only the Server does not enable host-root cleanup.
+
+## Protected build release toolchain
+
+Signed Server images carry a second-stage host manifest containing the exact
+Node binary, the integrity-locked devcontainer CLI bundle, the checked buildx
+binary and the fixed protected-attempt supervisor. The immutable egress release
+holds these files together with `protected-build-toolchain.json`; the supervisor
+resolves that release once before starting an attempt. The whitelist contains
+the release's digest-pinned Node Feature and, when published, the separately
+verified toolkit Feature digest. Images without that toolkit digest cannot
+admit protected builds. No project supplies tool paths or Feature authority.
+
+The managed controller transaction installs the fixed executable supervisor and
+private attempt directories, and restores them on rollback. Its previous-release
+validation continues to accept the older immutable asset inventory so an update
+can recover to a release that predates protected builds. Native host Docker
+utilities, including `dockerd`, remain prerequisites: private attempt daemons
+must never replace or restart the host Docker daemon.
+
+Ordinary and protected builders share `verity-buildkit.slice`. The slice uses
+the ordinary builder's host budget and preserves a smaller explicitly installed
+budget. Writing a slice drop-in does not move an already running ordinary
+builder: it must be renewed through the regular managed builder update before
+protected admission can establish the shared budget. Until verified, protected
+build readiness fails closed. No additional host-sized memory allowance is
+assigned for protected attempts.
+
+Protected builds use a separate authenticated host attempt identity, independent
+of the project's running sandbox generation. The private host-control socket
+accepts fixed operations only; the Server supplies the project ID and an
+immutable attempt ID, never host commands, executable paths or network grants.
+A lost reply is retried with that same identity. At most one attempt owns the
+host build slot. Missing prerequisites refuse admission without selecting the
+ordinary unrestricted builder.
+
+The host creates a dedicated, initially denied Docker namespace using the
+release-authorized relay image with pulling disabled. The devcontainer CLI,
+private metadata Docker daemon and gVisor BuildKit worker all use that namespace.
+The inner CNI bridge and its private results cache cannot expose host Docker
+sockets or another project's cache. Both daemons and the fixed anchor count
+against the shared builder slice. Registry credentials are scoped to GHCR,
+written only to private attempt files and removed when the attempt ends.
+
+Builds have a temporary public Internet policy independent of runtime project
+grants. New projects can download base images, Features, packages, remote sources
+and registry redirects without first collecting destination approvals. Public
+package and forge services (including npm, PyPI, GitHub and GHCR) are reachable;
+the runtime broker address inventory is not applied to this temporary build policy.
+The CLI,
+metadata daemon and RUN steps share the same policy, including direct public IP
+connections and TCP/UDP ports. A private attempt-bound Unix socket supplies DNS.
+Private, reserved and transition addresses, host-connected networks and every
+Docker network remain blocked, including publicly addressed host/project networks.
+The host refreshes that exclusion inventory with each authenticated renewal;
+inventory errors revoke access. Short nft timeouts and kernel packet deadlines
+remain independent of the build's process lifetime. The running project sandbox
+continues to require its ordinary project destination grants.
+
+Authenticated heartbeats renew access; reads do not. A host sweep contains
+abandoned attempts, and systemd bounds their total lifetime. Cancellation,
+restart and storage release require evidence that the entire worker cgroup has
+ended. A CLI exit or ordinary BuildKit idleness cannot release protected work.
+The Server imports an archive only after the supervisor confirms success and
+termination. Uncertain transport outcomes retain storage reservations. A host
+restart restores denial rather than resuming old network access.
+
+Protected image tags include project identity. A tag alone is not accepted as
+proof of protected provenance: reuse goes through the host's project-private
+layer cache. Native install/update/reboot, actual CLI/daemon/RUN builds and
+independent dual-stack packet observations are still required for acceptance;
+unit tests alone do not authorize a production host profile.

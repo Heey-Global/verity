@@ -1,9 +1,11 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { SessionStorage } from './session-storage.js';
 import type { Backend, Conductor, EventBus } from '@verity/session';
 import type {
   EventStore,
   ProjectRecord,
+  ProviderConnectionKind,
   SealableSecretCipher,
   VeritySettingsPatch,
   VeritySettingsRecord,
@@ -49,13 +51,16 @@ import type { ProjectSandboxLifecycleTelemetry } from './project-lifecycle-telem
 import type { ProjectRepository } from './project-repo-route.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
-import type { Deprovisioner, Provisioner } from './provisioner.js';
+import type { Deprovisioner } from './deprovisioner.js';
+import type { Provisioner } from './provisioner.js';
 import type { PushSender } from './push-sender.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import type { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import type { SandboxUpdateChecker } from './sandbox-updates.js';
 import type { ReleaseChannelResolver } from './self-update/release-channel.js';
 import type { ServerUpdateController } from './server-update-routes.js';
+import type { TurnCredentials } from './turn-credentials.js';
+import type { GitHubUserAuthorization } from './github-user-authorization.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
@@ -216,11 +221,38 @@ export interface ServerDeps {
   /** Serializes a credential DB write with propagation into live sandbox mounts. */
   persistAgentCredentials?:
     ((patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>) | undefined;
+  /** Runs a write to one person's own provider login in that person's queue, so it
+   *  never interleaves with a refresh or rotation of the same login. */
+  persistPersonalProviderCredentials?:
+    | ((
+        userId: string,
+        provider: ProviderConnectionKind,
+        write: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
   /** Single serialized Claude OAuth provider shared by turns and usage polling. */
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads a short-lived Codex access token from the Agent Gateway, which owns the
    * rotating login (ADR 0010). Absent → the Codex usage probe stays inert. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** What Core knows for an invitation's join link (team contract D5). */
+  teamLinkIdentity?:
+    | (() =>
+        | {
+            serverId: string;
+            identityKey: string;
+            uplinkOrigin: string;
+            installationId: string;
+            installationHandle: string;
+          }
+        | undefined)
+    | undefined;
+  /** Ends a removed member's access to a project at once (ADR 0023 §6). */
+  onMemberRemoved?: ((projectId: string, userId: string) => Promise<void>) | undefined;
+  /** A fresh access token for a person's own Claude login, if they have one. */
+  personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
+  /** A person's own Codex access token from the gateway (ADR 0023 §3). */
+  codexGatewayCredentialFor?: ((userId: string) => CodexUsageCredentialProvider) | undefined;
   /** Runs after a successful first initialization or unlock. Used by services whose
    * encrypted runtime material could not be loaded while the store was sealed. */
   onSecretUnlocked?: (() => Promise<void>) | undefined;
@@ -288,6 +320,8 @@ export interface ServerDeps {
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
+  /** Open pull requests of a project's repositories, with merge, for its Repositories page. */
+  projectPullRequests?: ProjectPullRequestBackend;
   branchPrStatus?: (branch: string, worktree: string) => Promise<PullRequestStatus | null>;
   /**
    * Live compact PR status for a session spanning SEVERAL branches — the most-
@@ -495,6 +529,11 @@ export interface ServerDeps {
   sshSign?: SshSignSpawner | undefined;
   /** Project-bound signing authority accepted only on a matching project Unix socket. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  /** Each person's own GitHub App authorization; shared with the forge proxy so
+   *  one renewal serves both. Defaults to a store-backed instance. */
+  githubUserAuthorization?: GitHubUserAuthorization | undefined;
+  /** Per-turn sandbox credentials; resolve a calling turn and its person. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
   /** Network-origin guard for `/internal/*` routes (audit H1 follow-up). When set,
    *  a request to any `/internal/*` path is 404'd unless this predicate returns
    *  true — wired to {@link requestArrivedInternally} so the commit-signing broker
@@ -514,6 +553,8 @@ export interface ServerDeps {
   googleDriveDocumentIsWithinProject?: (input: {
     projectId: string;
     sessionId: string;
+    /** The calling turn; only its initiator's Drive accounts and folders count. */
+    turnId: string;
     url: string;
     accountId?: string | undefined;
     folderLinkId?: string | undefined;

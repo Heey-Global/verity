@@ -1,3 +1,4 @@
+import { dockerNetworkSchema, type DockerNetwork } from './project-network-cleanup.js';
 import { normalizeSecurityOptions } from './docker-security-options.js';
 /**
  * Minimal Docker Engine HTTP client (concept §17, #174). Talks to the Docker
@@ -56,7 +57,7 @@ export interface ContainerReplacementConfig {
 }
 
 /** Identity of a local image, for the durable audit trail. */
-interface DockerImageIdentity {
+export interface DockerImageIdentity {
   id: string;
   sizeBytes: number | null;
   repoDigests: string[];
@@ -169,12 +170,20 @@ export interface DockerClient {
    *  `GET /images/{ref}/json`), for the durable audit trail. `undefined` on 404. */
   inspectImageIdentity?(ref: string): Promise<DockerImageIdentity | undefined>;
   /** Create a user-defined bridge network if absent (Engine `POST /networks/create`),
-   *  idempotent — an existing network (409) is a no-op. Used for per-project sandbox
+   *  idempotent — an existing project network must prove matching ownership. Used for per-project sandbox
    *  network isolation (security review H2). Optional so pre-existing test fakes stay
    *  valid; the real {@link createDockerClient} always provides it. */
   ensureNetwork?(name: string, opts?: { labels?: Record<string, string> }): Promise<void>;
+  inspectNetwork?(id: string): Promise<DockerNetwork | undefined>;
+  listNetworks?(): Promise<DockerNetwork[]>;
+  /** Exact immutable ID only; never force-disconnect endpoints. */
+  removeNetwork?(id: string): Promise<void>;
   /** Create-only generation bridge. Conflicts must never adopt an existing network. */
-  createEgressNetwork?(name: string, bridge: string): Promise<{ id: string }>;
+  createEgressNetwork?(
+    name: string,
+    bridge: string,
+    labels?: Record<string, string>,
+  ): Promise<{ id: string }>;
   /** Create a named local volume if absent (Engine `POST /volumes/create`) and
    *  resolve its daemon-side `Mountpoint`. Idempotent: the local driver answers a
    *  create for an existing name with that volume, labels untouched. Optional so
@@ -246,6 +255,8 @@ export interface DockerImageSummary {
 /** One entry of `GET /containers/json`, narrowed to what the GC needs. */
 export interface DockerContainerSummary {
   id: string;
+  networkMode?: string;
+  networkNames?: string[];
   /** Resolved image content id (`sha256:…`), NOT the human-readable `repo:tag`. */
   imageId: string;
   state?: string;
@@ -532,10 +543,14 @@ export interface ContainerInspect {
 /** Mutually-exclusive typed errors so the {@link Provisioner}'s catch blocks can
  *  switch without re-parsing HTTP status codes. Wrapped in an {@link Error} so
  *  ESLint's `only-throw-error` is satisfied and stack traces work. */
+export const DOCKER_ADDRESS_POOL_EXHAUSTED =
+  'Docker network address pool exhausted. Configure a non-overlapping default-address-pools range with smaller per-network subnets (for example /24); existing networks retain their allocations.';
+
 export type DockerClientError =
   | { kind: 'image_not_found'; image: string; message: string }
   | { kind: 'container_not_found'; id: string }
   | { kind: 'conflict'; message: string }
+  | { kind: 'address_pool_exhausted'; message: string }
   | { kind: 'other'; status: number; message: string }
   | { kind: 'network'; cause: unknown }
   /** An image pull made no progress for its idle window (see
@@ -886,6 +901,12 @@ async function buildDockerErrorPayload(
   } catch {
     // Engine occasionally sends no JSON; keep the status-only message.
   }
+  if (
+    /all predefined address pools have been fully subnetted|could not find an available, non-overlapping IPv4 address pool/i.test(
+      message,
+    )
+  )
+    return { kind: 'address_pool_exhausted', message: DOCKER_ADDRESS_POOL_EXHAUSTED };
   if (response.status === 409) return { kind: 'conflict', message };
   if (response.status === 404) return { kind: 'other', status: 404, message };
   return { kind: 'other', status: response.status, message };
@@ -2404,18 +2425,66 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       };
     },
     ensureNetwork: async (name, opts) => {
-      // POST /networks/create. A user-defined bridge (egress stays open — H2 blocks
-      // only lateral movement, not egress). Idempotent: a 409 means it already
-      // exists, which is exactly the desired end state.
       const res = await callDocker(doFetch, `${base}/networks/create`, 'POST', timeoutMs, {
         Name: name,
         Driver: 'bridge',
+        CheckDuplicate: true,
         ...(opts?.labels !== undefined ? { Labels: opts.labels } : {}),
       });
-      if (res.ok || res.status === 409) return;
-      throw await toDockerError(res);
+      if (!res.ok && res.status !== 409) throw await toDockerError(res);
+      const projectId = opts?.labels?.['verity.project-id'];
+      if (projectId !== undefined) {
+        // Docker does not update an existing network's labels. A matching name is not ownership.
+        const inspected = await callDocker(
+          doFetch,
+          `${base}/networks/${encodeURIComponent(name)}`,
+          'GET',
+          timeoutMs,
+        );
+        if (!inspected.ok) throw await toDockerError(inspected);
+        const network = dockerNetworkSchema.parse(await inspected.json());
+        if (
+          network.Name !== name ||
+          network.Labels?.['verity.project-id'] !== projectId ||
+          (network.Labels['verity.component'] !== undefined &&
+            network.Labels['verity.component'] !== 'project-network')
+        )
+          throw new Error('Project network ownership is unproven');
+      }
     },
-    createEgressNetwork: async (name, bridge) => {
+    inspectNetwork: async (id) => {
+      const res = await callDocker(
+        doFetch,
+        `${base}/networks/${encodeURIComponent(id)}`,
+        'GET',
+        timeoutMs,
+      );
+      if (res.status === 404) return undefined;
+      if (!res.ok) throw await toDockerError(res);
+      const network = dockerNetworkSchema.parse(await res.json());
+      if (network.Id !== id && network.Name !== id) throw new Error('Network identity mismatch');
+      return network;
+    },
+    listNetworks: async () => {
+      const res = await callDocker(doFetch, `${base}/networks`, 'GET', timeoutMs);
+      if (!res.ok) throw await toDockerError(res);
+      const rows: unknown = await res.json();
+      if (!Array.isArray(rows) || rows.length > 10000) throw new Error('Invalid network inventory');
+      // List replies omit Containers; callers inspect candidates before any mutation.
+      return rows.flatMap((row: unknown) => {
+        const parsed = dockerNetworkSchema.safeParse({
+          ...(typeof row === 'object' && row !== null ? row : {}),
+          Containers: {},
+        });
+        return parsed.success ? [parsed.data] : [];
+      });
+    },
+    removeNetwork: async (id) => {
+      if (!/^[a-f0-9]{64}$/u.test(id)) throw new Error('Invalid network deletion identity');
+      const res = await callDocker(doFetch, `${base}/networks/${id}`, 'DELETE', timeoutMs);
+      if (!res.ok && res.status !== 404) throw await toDockerError(res);
+    },
+    createEgressNetwork: async (name, bridge, labels) => {
       if (!/^verity-egress-[a-f0-9]{32}$/u.test(name) || !/^vep[a-f0-9]{12}$/u.test(bridge))
         throw new Error('Invalid generation network');
       const digest = name.slice('verity-egress-'.length);
@@ -2425,6 +2494,7 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
         Driver: 'bridge',
         CheckDuplicate: true,
         EnableIPv6: true,
+        ...(labels ? { Labels: labels } : {}),
         IPAM: { Config: [{ Subnet: subnet }] },
         Options: { 'com.docker.network.bridge.name': bridge },
       });
@@ -2513,7 +2583,8 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
       return json.map((entry): DockerContainerSummary => {
         if (typeof entry !== 'object' || entry === null || Array.isArray(entry))
           throw invalidInventory();
-        const { Id, ImageID, Names, Labels, Created, State } = entry as Record<string, unknown>;
+        const { Id, ImageID, Names, Labels, Created, State, HostConfig, NetworkSettings } =
+          entry as Record<string, unknown>;
         if (
           typeof Id !== 'string' ||
           Id.trim() === '' ||
@@ -2528,6 +2599,20 @@ export function createDockerClient(opts: DockerClientOptions): DockerClient {
           : [];
         return {
           id: Id,
+          ...(typeof HostConfig === 'object' &&
+          HostConfig !== null &&
+          'NetworkMode' in HostConfig &&
+          typeof HostConfig.NetworkMode === 'string'
+            ? { networkMode: HostConfig.NetworkMode }
+            : {}),
+          ...(typeof NetworkSettings === 'object' &&
+          NetworkSettings !== null &&
+          'Networks' in NetworkSettings &&
+          typeof NetworkSettings.Networks === 'object' &&
+          NetworkSettings.Networks !== null &&
+          !Array.isArray(NetworkSettings.Networks)
+            ? { networkNames: Object.keys(NetworkSettings.Networks) }
+            : {}),
           imageId: ImageID,
           ...(typeof State === 'string' ? { state: State } : {}),
           names,

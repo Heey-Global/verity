@@ -14,6 +14,16 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_SKILL_MANIFEST_HASH } from '../packages/events/src/agent-assets.generated.js';
 
 describe('built-in agent assets', () => {
+  it('keeps the review Skill from recommending a detached review', () => {
+    const skill = readFileSync('agent/skills/push-review/SKILL.md', 'utf8');
+    expect(skill).toContain('synchronous');
+    expect(skill).toContain('nohup');
+    expect(skill).toContain('wait or poll');
+    expect(skill).toContain('exit status');
+    expect(skill).toContain('report the concrete failure');
+    expect(skill).toContain('Do not mark a failed or interrupted review');
+  });
+
   it('installs every helper dispatched by the canonical CLI', () => {
     const cli = readFileSync('agent/cli/verity', 'utf8');
     const installer = readFileSync('features/verity-sandbox-toolkit/install.sh', 'utf8');

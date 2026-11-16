@@ -118,10 +118,10 @@ keys use the platform monospace font. All sizes scale with the in-app font-zoom 
 
 **Elevation:**
 
-| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                |
-| -------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                      |
-| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                             |
+| Level    | Look                                                    | Use                                                                                                                                                                                                                                                                                                                                      |
+| -------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Flat     | 1 px `border`, no shadow                                | Cards and lists — the default                                                                                                                                                                                                                                                                                                            |
+| Floating | Soft dark shadow downward (`0 18px 50px` black at 60 %) | Sheets, menus, dialogs                                                                                                                                                                                                                                                                                                                   |
 | Glow     | Colored halo                                            | Four uses only: brand moments in `signature` (success check), Verity's presence in a live meeting or on Home in `signature` (§ 5.8), the selected card in `action`, and success and attention status dots in their tone. Buttons never glow. Dark theme only — in light, the selected card keeps its plain border and dots have no halo. |
 
 **Website.** `docs/website/site/index.html` uses the same roles, Inter, the
@@ -143,11 +143,13 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
 | ----------- | ------------------------------------------------------------- | -------------------------------------------------- |
 | Primary     | Tonal: `action` at 14 % fill, 35 % border, `actionLabel` text | The single main action of a screen                 |
 | Secondary   | `surfaceAlt` fill, `border` outline, `text` label             | Further actions, Cancel                            |
+| Answer      | `surfaceAlt` fill, `action` outline (35 %), `action` label    | A list row's in-place answers (§ 5.2 Row)          |
 | Text        | No container, `action` label                                  | Quiet actions inside cards ("Replace")             |
 | Destructive | No fill, `attention` outline and label                        | Remove, delete — always preceded by a confirmation |
 
 - Sizes: **large 48** (full width, pinned at the bottom of a flow), **compact 36** (inside
-  cards and rows, as wide as its label), **icon 40** (square, one symbol).
+  cards and rows, as wide as its label), **small 32** (a row's answers, 13 semibold),
+  **icon 40** (square, one symbol).
 - States: default, pressed, disabled, loading. Loading keeps the label, adds a spinner in
   front and keeps the width; the button is locked while loading.
 - At most one primary button per screen. Labels are verbs ("Activate", "Copy", "Remove key"),
@@ -171,15 +173,53 @@ Disabled is always 40 % opacity; pressed is always a slight darkening.
     tint with the icon in `textMuted`. The Premium row uses `signature` instead of `action`. A status-bearing icon may use
     `leading.intent`: `needsSetup` uses attention and `ready` uses success, both with
     the shared fill tint. Vulnerability finding rows use this to retain their severity
-    while still allowing navigation.
+    while still allowing navigation. `transient` uses the `action` tile for something in
+    motion, and `quiet` keeps the neutral tile in a row that can be tapped when the icon
+    states a fact rather than an action.
+  - **Tile marks (optional):** a 12 px filled disc (`TileMark`) on the tile's right corners,
+    with a 1.5 px ring in `surface` and its glyph cut out in `background`. The top corner
+    carries the subject's own state, the bottom corner a verdict; both corners use the same
+    mark, so a tile with two reads as one pair. Session rows in a project's Work list put the
+    agent's state on top (pulsing `signature` while working, `action` for a new answer,
+    `attention` with "?" while it waits) and an open pull request's checks below.
   - **Center:** title in `Row`, at most one subtitle in `Subtitle`. Never more than two lines.
   - **Trailing:** exactly one of value (muted), status, toggle or compact button. A trailing
     value is short ("On", "2"); a long one such as an address goes in the subtitle, so the
     title never wraps to make room. The trailing side takes at most 45 % of the row; a
     status longer than that truncates, so the title is never squeezed. The chevron `›`
-    appears only when the row navigates.
-- States: default, pressed (slightly darker surface), disabled (40 %), selected (`action`
-  border with glow).
+    appears only when the row navigates. An inbox row ("Needs you") puts its status tag
+    at the start of the subtitle line instead (`tag`), so the title keeps the full width
+    beside the chevron. A subtitle that does not fit beside the tag continues on the next
+    line at the full width rather than wrapping into a narrow column next to it.
+  - **Action (optional):** a row that opens its subject may still offer one icon button at
+    its end (`action`), drawn beside the pressable area rather than inside it, so
+    VoiceOver reaches both. It takes the place of the trailing element. The hand-over to
+    Verity on a task or issue row is the one use today.
+  - **Answers (optional):** a row that waits on a decision the operator can make in place
+    (a question's options, a repair) shows those answers as small answer buttons (an
+    `action` outline and label without the primary's tonal fill, so they read as
+    tappable) in a strip under it, aligned with the title. None is primary: a list holds many such rows,
+    and a primary in each would leave the screen without a single main action. Sending one
+    answer locks only that row's answers; the other rows stay answerable. Up to three answers
+    of at most 24 characters show as buttons; otherwise the strip holds one "N answers"
+    button that opens a sheet listing every answer in full under the question, since a
+    sentence cut or wrapped into a pill is nothing to decide from. A row's answers move
+    together, never half in place and half in the sheet. The strip sits outside the
+    row's pressable area, so VoiceOver reaches each button; the row itself still opens
+    its subject. Rows without such a decision never carry one.
+- States: default, pressed (slightly darker surface), disabled (40 %), settled (60 %),
+  selected (`action` border with glow). Settled marks a row whose subject is finished and
+  only kept around — a session whose pull request merged — so it recedes while staying
+  fully usable.
+- A row that opens something may keep its secondary actions (rename, favorite, delete)
+  behind a long press (`onLongPress`), never behind a second button in the row. The
+  `accessibilityHint` names them, since a long press is invisible.
+- **Swipe actions** (`SwipeableSessionRow`): rows of things the operator keeps — sessions,
+  tasks — swipe like an iOS list. Left reveals Edit and Delete; right reveals the leading
+  action, which is the favorite star on a session and Done (or Reopen) on a task. A long
+  swipe fires the outermost action; a browser's right-click opens the same actions as a
+  menu. With a screen reader on, a task row shows its actions as answers under it, since
+  a swipe is out of reach.
 
 ### 5.2a Log list
 
@@ -218,20 +258,43 @@ title; a log list keeps them dense and scannable.
   - **Single line**
   - **Secret:** masked, with a reveal control, never offered to the password manager
   - **Multiline:** grows up to six lines
+  - **In place** (`InlineEdit`): text that is edited where it stands, such as the project's
+    name and description. At rest it reads as the surrounding text; a tap turns it into a slim
+    field in the same typography — no box, an `action` underline and a small check beside it.
+    Leaving the field, Return and the check save; Escape restores the old text. A failed save
+    keeps the typed text, turns the underline `attention` and names the reason in one line
+    below. Someone who may not change the text sees it plain.
 
 ### 5.4 Status
 
 - **Tag** — the state of a single element: uppercase `Label` text on a 14 % tint of its
-  tone, radius 6. Tones: success (`success`), attention (`attention`) and neutral
+  tone, radius 6. Tones: action (`action`) for normal review requests, success (`success`), attention (`attention`) and neutral
   (`textMuted` label on a 6 % `text` tint). Examples: `ACTIVE`, `SOON`, `UPDATE`.
+  A tag beside a row whose icon and subtitle already carry the tone (e.g. `2 NEED YOU` on
+  the Repositories row) is drawn neutral; its spoken label keeps the intent.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
+- **Home tab count** — how many items wait for the person: the number in `Label` on
+  a 14 % `attention` tint. Its spoken label names what is counted.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
+- **Project cards** follow the session rows (§ 5.2): the initial's tile is the project
+  itself and its top corner is the agents. The tile has three states only — `action`
+  tint while the project runs, the neutral tile with a `textFaint` initial while it does
+  not (paused, asleep, starting) and `attention` tint on an error. Work Verity does on a
+  running sandbox in the background (an update, a rebuild) leaves the tile alone. The
+  corner carries the most urgent mark of the project's sessions with the rows' priority
+  and drawing: `attention` "?" while something waits for the person, the pulsing
+  `signature` mark while a session works, `action` when an idle session has something
+  unread. Everything else is said in the subtitle: "N waiting for you" first in
+  `attention`, then what runs and what is new, then a short state note ("Starting…",
+  "asleep", "Runs as root", "Needs repair · Container stopped"; `attention` when there
+  is something to do). Nothing sits before the chevron — no count, no tag.
 - Mapping from the status intents in [§ 8](#8-status-intents):
 
   | Intent       | Tag                                                      | Dot and word         |
   | ------------ | -------------------------------------------------------- | -------------------- |
+  | `action`     | action tone                                              | static action dot    |
   | `ready`      | success tone                                             | success dot          |
   | `needsSetup` | attention tone                                           | attention dot        |
   | `optional`   | muted word; neutral tag only for `Soon` on feature cards | faint dot            |
@@ -246,6 +309,35 @@ title; a log list keeps them dense and scannable.
 - States: on, off, disabled, switching (spinner in the knob until the server confirms).
 - The whole row is tappable, not just the toggle. Switching something off that has
   consequences (e.g. revoking public links) asks first.
+
+### 5.5a Filter chips
+
+- A single-choice row above a list (`FilterChips`). The selected chip takes the tonal
+  `action` fill of the primary button; the others are bordered and muted.
+- A chip may show a symbol instead of a word when the symbol is unmistakable, such as the
+  favorites star. Its label is still required and becomes the spoken name.
+- An action next to the chips (starting something new) is an icon button, not a labelled
+  button, so the row fits a phone without scrolling.
+
+### 5.5b Usage ring
+
+- One quota window as a small ring (`UsageRing`): the arc is the share used, filling
+  clockwise from 12 o'clock, a short line across the ring in `textMuted` marks how much
+  of the window has passed (where usage would sit now at an even pace), and the window's
+  name (`5h`, `W`) sits inside in `Caption`.
+- The arc is the reading, so it is the brightest mark: `text` while there is room and
+  `attention` once the window is spent. Both ends are round and inset by half a stroke,
+  so the arc starts exactly at 12 o'clock and ends exactly at the used share; a full ring
+  and a sliver shorter than the stroke have straight ends instead. The pace
+  line cuts a gap in `surface` through the arc so it stays readable on top of it. A spent
+  window has no pace left to keep and draws no line.
+- A meter is a state, never an action or brand moment. The reset time stands beside the
+  ring. A figure appears only from 90 % (`93%`) or as `Limit` in `attention`; below that
+  the ring and pace line carry the reading.
+- A window a provider does not report is left out, not drawn empty. Provider marks are
+  monochrome in `text`.
+- The ring is decoration for the text beside it; the group around it carries the spoken
+  label with figure, reset and pace for every window.
 
 ### 5.6 Sheet
 
@@ -303,9 +395,25 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
-- **Capture:** reuse the shared text-field and tonal action treatments. Signature
-  identifies Verity; typing, microphone and send controls use `action`. The meeting's
-  model selector is not part of this Home pattern.
+- **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
+  panel) and the panel's composer. Match the session chat composer: full-width text
+  above a row of circular microphone and send controls. Idle controls use `surface`
+  with a border and muted icons; enabled send uses `action` with an `onAction` arrow.
+  While dictating, the microphone uses `action` with an `onAction` check to finish
+  dictation and keep the text. The Home doorway retains its inline layout with the
+  same circular microphone. Signature identifies Verity. Listening is said once,
+  in the field. The meeting's model selector is not part of this Home pattern.
+- **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
+  Home and her page, flat on the floating V, in her panel's header and before her
+  answers there.
+- **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
+  half outside it. On a phone's Home it steps back, since Home has her header and field.
+- **Hand-over:** her flat V in the square icon button (40, `control` corners, the default
+  border) at the end of a task or issue row hands the item to her; a tap starts the work
+  at once, with no confirmation. This and the floating V are the only places her
+  `signature` mark is tappable. Its label names the action and the item ("Let Verity
+  start: …"). Once a session has the item, the button gives way: the row's tile carries
+  the session's state mark and the row opens the session.
 - **Attribution:** a small V mark may identify Verity's recommendation inside an inbox
   item. Keep the originating project and role visible. Meeting-specific newest-answer
   borders do not automatically apply to inbox cards.
@@ -313,6 +421,55 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
   communicate identity, hierarchy or interaction, not as a checklist of effects.
   Premium branding does not imply that the Home assistant is a paid feature.
   Buttons never glow; existing typography, motion and accessibility rules still apply.
+
+### 5.9 System notice
+
+A line Verity writes into a session chat itself, rather than the agent or the
+operator: preparation, interruptions, failures and bookkeeping. Every such line
+uses one component, `SystemNotice` (`components/ui/SystemNotice.tsx`); a chat
+row never styles its own.
+
+- **Indicator:** the § 5.4 mark for its intent in a 20 px leading slot —
+  `transient` a spinner (in progress), `needsSetup` the attention dot (failed or
+  needs the operator), `unknown` the faint dot (neutral bookkeeping).
+- **Headline:** what happened, in `Subtitle` size and `text` color; semibold when
+  an explanation or actions follow, regular for a one-line note. It is always
+  present, so the state never depends on color.
+- **Explanation:** optional `Subtitle` in `textMuted`, indented under the
+  headline. It says what it means for the operator — for example that a message
+  was not sent — never a raw error.
+- **Actions:** compact buttons under the explanation. A failure the operator can
+  recover from offers `Try again` (secondary, `rotate-cw`); sign-in uses the
+  primary button. Technical output stays behind a `Details` text button, shown in
+  a `CodeBlock` on `surface`.
+- **Link:** a notice that opens something (`Agent planned 3 steps · Tasks ›`) is
+  pressable as a whole and ends with its target word.
+- **Message status:** a message's own `Sending…` or `Not sent` uses the same
+  indicator and `Subtitle` word under the bubble.
+- No bubble, card or `signature`: a system notice is not Verity speaking.
+
+### 5.10 Connection status
+
+Whether the server can be reached is said once for the whole app, by
+`ConnectionStatusBar` (`components/ConnectionStatusBar.tsx`) under the header of
+every screen. Screens do not repeat a server update or a lost route as their own
+error; they hide such errors while the bar shows them and reload by themselves
+when the server answers again.
+
+- **Frame:** the session bar (`SessionBar`): `surfaceAlt` with the default
+  border, inset from the screen edge. No tinted band and no colored border; color
+  is only on the status mark.
+- **Server is updating** (`transient`): a muted spinner in place of the dot,
+  `Reconnecting automatically · 1:24`. Nothing to tap but the bar itself.
+- **Can't reach your server** (`needsSetup`): the attention dot, `Retrying in
+  8 s`, and a compact secondary `Try now` (`rotate-cw`).
+- **Connected** (`ready`): the success dot for a moment after either state ends,
+  then the bar disappears.
+- **Details:** tapping the bar while the server is away opens a sheet named
+  `Connection`: the server and when it was last reached, each failed route in
+  words with a status dot, the next attempt, and the raw output last inside a
+  `Disclosure` (`Technical details`) with `Copy`. The sheet's single primary
+  button is `Try now`. Raw transport output never appears outside it.
 
 ## 6. Patterns
 
@@ -360,14 +517,15 @@ For diagnostics and overviews:
 
 ## 8. Status intents
 
-Every status shown anywhere in the app is one of **five intents**. The intent decides the
+Every status shown anywhere in the app is one of **six intents**. The intent decides the
 meaning and the words; [§ 5.4 Status](#54-status) decides how each intent is drawn (tag or
 dot and word) and in which color.
 
-### The five intents
+### The status intents
 
 | Intent       | Meaning                                 | Example labels                                                                      |
 | ------------ | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| `action`     | Waiting for a normal user action         | Review mockups |
 | `ready`      | Works, nothing to do                    | Connected, Configured, Active, Running, Minted, Signing ready, Unlocked, Up to date |
 | `needsSetup` | Something required is missing or failed | Needs setup, Update available, Rejected, Error                                      |
 | `optional`   | Optional and empty — not a to-do        | Optional, Not configured, Off                                                       |

@@ -111,6 +111,7 @@ function acpSpawner(
     /** Answer `session/set_config_option` with the full option set, but with the
      *  model still on the one the session opened with. */
     echoStaleModel?: boolean;
+    echoSelectedModel?: boolean;
     /** Advertise HTTP MCP support in the adapter's initialize response. */
     httpMcp?: boolean;
     cancel?: { operator?: AbortController; disconnect?: boolean };
@@ -252,9 +253,18 @@ function acpSpawner(
               jsonrpc: '2.0',
               id,
               result:
-                behavior.echoStaleModel === true && method === 'session/set_config_option'
-                  ? sessionResult('codex-session-1')
-                  : {},
+                behavior.echoSelectedModel === true && method === 'session/set_config_option'
+                  ? {
+                      configOptions: [
+                        {
+                          ...MODEL_OPTION,
+                          currentValue: (message['params'] as { value: string }).value,
+                        },
+                      ],
+                    }
+                  : behavior.echoStaleModel === true && method === 'session/set_config_option'
+                    ? sessionResult('codex-session-1')
+                    : {},
             });
           } else if (method === 'session/prompt' && behavior.promptError !== undefined) {
             for (const update of behavior.updatesBeforePromptError ?? []) {
@@ -702,9 +712,14 @@ describe('AcpCodexBackend', () => {
     },
   );
 
-  it('reports an explicit memory guard kill without calling it a provider usage limit', async () => {
+  it.each([
+    ['\nVERITY_MEMORY_GUARD_KILL\n', 'memory_limit'],
+    ['possible memory pressure', 'acp'],
+    ['quoted VERITY_MEMORY_GUARD_KILL text', 'acp'],
+  ])('attributes exit 137 only with an exact memory guard sentinel: %s', async (stderr, kind) => {
+    // A killed reviewer is not proof that the memory guard chose this agent.
     const fake = acpSpawner({
-      promptFailure: '\nVERITY_MEMORY_GUARD_KILL\n',
+      promptFailure: stderr,
       processExit: { code: 137, signal: null },
     });
     const result = await new AcpCodexBackend().run({
@@ -715,11 +730,17 @@ describe('AcpCodexBackend', () => {
       spawner: fake.spawner,
     });
     expect(result.exitCode).toBe(137);
-    expect(await ctx.store.getEvents('codex-session-1')).toContainEqual({
+    const events = await ctx.store.getEvents('codex-session-1');
+    expect(events).toContainEqual({
       t: 'error',
-      kind: 'memory_limit',
-      message: 'Memory limit reached — the memory guard stopped the agent.',
+      kind,
+      message:
+        kind === 'memory_limit'
+          ? 'Memory limit reached — the memory guard stopped the agent.'
+          : 'Agent was killed (SIGKILL, exit 137); possible memory pressure.',
     });
+    expect(events.filter((event) => event.t === 'error')).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({ t: 'status', state: 'crashed' }));
   });
 
   it.each([false, true])(
@@ -1102,21 +1123,73 @@ describe('AcpCodexBackend', () => {
     expect(fake.writes).toEqual([]);
   });
 
-  it('refuses a Verity-tools-only turn it cannot enforce', async () => {
+  it('requires a concrete model for broker-owned native tool isolation', async () => {
     const fake = acpSpawner({ httpMcp: true });
     await expect(
       new AcpCodexBackend().run({
         store: ctx.store,
-        storeSessionId: 'verity-codex-gateway-only',
+        storeSessionId: 'verity-codex-gateway-default',
         worktree: '/work/project',
         cwd: '/work/project',
         prompt: 'File this note',
         spawner: fake.spawner,
         gatewayToolsOnly: true,
+        model: 'codex/default',
       }),
-    ).rejects.toThrow('cannot run a turn limited to Verity tools');
+    ).rejects.toThrow('require a concrete');
     expect(fake.writes).toEqual([]);
   });
+
+  it('asks the broker to isolate tools and reasserts the restricted model on resume', async () => {
+    const fake = acpSpawner({ httpMcp: true, echoSelectedModel: true });
+    const spawner = vi.fn(fake.spawner);
+    await new AcpCodexBackend().run({
+      store: ctx.store,
+      storeSessionId: 'verity-codex-gateway-only',
+      worktree: '/work/project',
+      cwd: '/work/project',
+      prompt: 'File this note',
+      spawner,
+      gatewayToolsOnly: true,
+      model: 'codex/gpt-5.1-codex',
+      resumeSessionId: 'codex-session-existing',
+      mcpGateway: { url: 'http://relay:8080/mcp', token: 'gateway-token' },
+      mcpServers: [{ name: 'external', url: 'http://external/mcp', headers: [] }],
+    });
+    expect(spawner.mock.calls[0]?.[2]).toMatchObject({
+      gatewayToolsOnly: true,
+      gatewayToolsModel: 'codex/gpt-5.1-codex',
+    });
+    expect(write(fake.writes, 'session/load')).toMatchObject({
+      params: { mcpServers: [{ name: 'verity' }] },
+    });
+    expect(write(fake.writes, 'session/set_config_option')).toMatchObject({
+      params: { configId: 'model', value: 'gpt-5.1-codex' },
+    });
+    expect(fake.writes.findIndex((m) => m['method'] === 'session/set_config_option')).toBeLessThan(
+      fake.writes.findIndex((m) => m['method'] === 'session/prompt'),
+    );
+  });
+
+  it.each([{ withoutModelOption: true }, { echoStaleModel: true }, {}])(
+    'refuses unconfirmed restricted model selection: %o',
+    async (behavior) => {
+      const fake = acpSpawner({ httpMcp: true, ...behavior });
+      const result = await new AcpCodexBackend().run({
+        store: ctx.store,
+        storeSessionId: 'verity-codex-unconfirmed',
+        worktree: '/work/project',
+        cwd: '/work/project',
+        prompt: 'File this note',
+        spawner: fake.spawner,
+        gatewayToolsOnly: true,
+        model: 'codex/gpt-5.2-codex',
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain('did not confirm the restricted catalog model');
+      expect(write(fake.writes, 'session/prompt')).toBeUndefined();
+    },
+  );
 
   it('offers the turn gateway when Codex advertises HTTP MCP', async () => {
     const url = 'http://relay:8080/internal/mcp';

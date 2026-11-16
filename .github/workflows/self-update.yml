@@ -260,7 +260,7 @@ jobs:
 
       - name: Log in to ghcr.io
         # renovate: datasource=github-actions depName=docker/login-action
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -269,7 +269,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
 
       # The harness needs nothing from the registry pull, the isolated daemon or the
       # previous release, so it builds while those three run instead of after them.

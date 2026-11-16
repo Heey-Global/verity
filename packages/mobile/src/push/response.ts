@@ -144,6 +144,7 @@ export function createPushReplyPerformer(
         await client.mergePullRequest(action.sessionId, action.pullRequestNumber);
         publishPullRequestStatusMutation({
           sessionId: action.sessionId,
+          number: action.pullRequestNumber,
           pr: { phase: 'merged', pipeline: 'success', mergeable: false },
         });
         return 'done';

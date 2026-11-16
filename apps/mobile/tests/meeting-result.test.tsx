@@ -104,6 +104,17 @@ it('keeps the working and failed states recoverable on phones', async () => {
   await waitFor(() => expect(client.retryLiveMeetingResult).toHaveBeenCalledWith('s', 'm'));
   expect(await screen.findByText('Verity is summarizing…')).toBeOnTheScreen();
 });
+it('says that nothing was transcribed instead of showing an empty summary', async () => {
+  client.getLiveMeetingResult.mockResolvedValue({
+    ...ready,
+    summary: null,
+    decisions: [],
+    tasks: [],
+    openQuestions: [],
+  });
+  render(<MeetingResult {...props} />);
+  expect(await screen.findByText('Nothing was transcribed in this meeting.')).toBeOnTheScreen();
+});
 it('confirms the proposal on the server before refreshing the task list', async () => {
   jest.mocked(refreshTasks).mockResolvedValue(undefined);
   client.updateLiveMeetingResultTask.mockResolvedValue({

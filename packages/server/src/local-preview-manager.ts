@@ -6,7 +6,6 @@ import { randomBytes } from 'node:crypto';
 import { PreviewEdge, hashPreviewSecret } from '@verity/preview-tunnel';
 import type { EventStore, LocalPreviewShareRecord } from '@verity/store';
 import { DockerError } from './docker.js';
-import { projectNetworkName } from './provisioner.js';
 import { containerGenerationOf } from './project-relay-migration.js';
 import { localPreviewPorts } from './local-preview-ports.js';
 import {
@@ -335,7 +334,8 @@ export class LocalPreviewManager {
               ]),
         ],
         ...(target.staticMount ? { volumeMounts: [target.staticMount] } : {}),
-        network: projectNetworkName(target.project.id),
+        // The network of the sandbox the server runs in, and no other sandbox's.
+        network: target.project.previewNetwork,
         additionalNetworks: [this.options.connectorNetwork],
         readOnlyRootfs: true,
         tmpfs: { '/tmp': 'rw,noexec,nosuid,nodev,size=16m,mode=1777' },
@@ -480,7 +480,13 @@ export class LocalPreviewManager {
     }
   }
   /** Fence preview creation without interrupting an existing preview for GC. */
-  async withProjectStorageMutation<T>(projectId: string, mutation: () => Promise<T>): Promise<T> {
+  async withProjectStorageMutation<T>(
+    projectId: string,
+    mutation: () => Promise<T>,
+    options: { waitForIdle?: boolean } = {},
+  ): Promise<T> {
+    if (options.waitForIdle === false && this.pendingCreations({ projectId }).length > 0)
+      throw new PreviewShareConflictError('Project preview creation is in progress');
     const release = await this.beginSessionMove(projectId);
     try {
       if (this.listProject(projectId).length > 0)
@@ -579,7 +585,9 @@ export class LocalPreviewManager {
         continue;
       try {
         assertPreviewNetworkSupported(
-          await this.options.docker.inspectContainer(project.containerName),
+          await this.options.docker.inspectContainer(
+            (await this.targets.previewSandbox(project, saved.managedInstanceId)).containerName,
+          ),
         );
       } catch (error) {
         if (error instanceof PreviewNetworkProtectionError) await this.stop(saved.id);
@@ -706,7 +714,9 @@ export class LocalPreviewManager {
         }
       }
       try {
-        const sandbox = await this.options.docker.inspectContainer(project.containerName);
+        const sandbox = await this.options.docker.inspectContainer(
+          (await this.targets.previewSandbox(project, saved?.managedInstanceId)).containerName,
+        );
         assertPreviewNetworkSupported(sandbox);
         if (
           !sandbox.running ||
@@ -721,6 +731,7 @@ export class LocalPreviewManager {
         await this.targets.prepareLocalTarget(state.share.sessionId, {
           ...(state.share.targetPort === null ? {} : { targetPort: state.share.targetPort }),
           ...(state.share.staticPath === null ? {} : { staticPath: state.share.staticPath }),
+          ...(saved?.managedInstanceId ? { managedInstanceId: saved?.managedInstanceId } : {}),
         });
         if (state.share.targetPort !== null) {
           const preparedPort =

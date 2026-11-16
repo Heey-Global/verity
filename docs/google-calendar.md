@@ -123,3 +123,17 @@ for incoming messages. If the address is missing, unrecognized, or ambiguous,
 draft creation stops instead of silently switching identities. The sender remains
 part of the snapshot presented for approval before sending. Configure and verify
 new aliases in Gmail itself.
+
+## Gmail attachment downloads
+
+Read a thread to find each attachment's message ID and `partId`, then call
+`download_attachment` with those identifiers. The tool saves the original bytes
+in a `downloads/` subdirectory of the calling session's Code workspace and returns
+the file path, original filename, MIME type, and actual byte count. Attachment
+contents and Base64 data are not included in the model response. A session without
+a Code workspace cannot download attachments.
+
+Downloads have no fixed Verity size limit; Gmail availability, storage capacity,
+and network errors still apply. Downloaded filenames are sanitized and existing
+files are never overwritten. Treat attachment contents as untrusted data.
+The separate outgoing draft limits remain ten files and 17 MiB in total.

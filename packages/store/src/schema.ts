@@ -1,5 +1,92 @@
+import type { PeopleDatabase } from './schema-people.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
+
+export interface ProjectInquiryGrantsTable {
+  source_project_id: string;
+  target_project_id: string;
+  enabled: Generated<boolean>;
+  created_at: Generated<Date>;
+}
+
+export interface ProjectInquirySessionsTable {
+  source_session_id: string;
+  target_project_id: string;
+  target_session_id: string;
+  change_approved: Generated<boolean>;
+}
+
+export interface WikiOccasionsTable {
+  id: string;
+  project_id: string;
+  kind: 'source' | 'meeting' | 'decision' | 'chat' | 'session' | 'merge';
+  ref: string;
+  title: string;
+  body: string | null;
+  created_at: Generated<Date>;
+  closed_at: Date | null;
+}
+
+/** The quiet session a project's Wiki is maintained in, and its last run. */
+export interface WikiMaintenanceTable {
+  project_id: string;
+  session_id: string | null;
+  last_run_at: Date | null;
+}
+
+/** An automatic Sandbox repair still owed to a project after a failed recreate. */
+export interface SandboxRepairIntentsTable {
+  project_id: string;
+  version: number;
+  attempt_id: string;
+  status: string;
+  source_generation: string | null;
+  target_image_ref: string | null;
+  failures: number;
+  retry_at: Date;
+  storage_refused: boolean;
+  last_failure_at: Date;
+  last_failure_message: string;
+}
+
+export interface ProjectInquiriesTable {
+  id: string;
+  source_session_id: string;
+  target_session_id: string;
+  source_project_id: string;
+  target_project_id: string;
+  title: string;
+  body: string;
+  kind: 'question' | 'change';
+  status: 'provisioning' | 'pending' | 'approved' | 'rejected' | 'queued' | 'answered' | 'blocked';
+  created_at: Generated<Date>;
+  answer: string | null;
+  answer_delivered: Generated<boolean>;
+  user_id: string | null;
+  decided_by: string | null;
+}
+
+export interface ProjectRepositoriesTable {
+  id: string;
+  project_id: string;
+  name: string;
+  kind: 'github' | 'forgejo';
+  owner: string;
+  repo: string;
+  forge_connection_id: string | null;
+  default_branch: string | null;
+  removed_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
+}
+
+export interface SessionRepositoryWorkspacesTable {
+  session_id: string;
+  repository_id: string;
+  project_id: string;
+  worktree: string;
+  branch: string;
+  pull_request: ColumnType<unknown, unknown, unknown>;
+  created_at: Generated<Date>;
+}
 
 /**
  * Postgres schema for the durable source of truth (concept §5a): an append-only
@@ -57,6 +144,15 @@ export interface SessionsTable {
   >;
   planning_revision: ColumnType<number, number | undefined, number>;
   planning_plan: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Mockup review (see {@link SessionMockupState}). NULL = no mockups were presented. */
+  mockup_review: ColumnType<
+    'pending' | 'revising' | 'approved' | null,
+    'pending' | 'revising' | 'approved' | null | undefined,
+    'pending' | 'revising' | 'approved' | null
+  >;
+  mockup_revision: ColumnType<number, number | undefined, number>;
+  /** JSON array of {@link MockupScreenRecord}; written whole with each change. */
+  mockup_screens: ColumnType<unknown, string | null | undefined, string | null>;
   /** Operator-marked favorite; highlighted in the session list. */
   favorite: ColumnType<boolean, boolean | undefined, boolean>;
   created_at: ColumnType<Date, string | undefined, never>;
@@ -112,6 +208,8 @@ interface SessionSlideDecksTable {
 
 export interface GoogleAccountsTable {
   id: string;
+  /** The person who connected the account; only their turns and routes use it. */
+  owner_user_id: ColumnType<string, string | undefined, string>;
   email: string;
   subject: string | null;
   display_name: string | null;
@@ -182,6 +280,8 @@ interface ProjectGoogleConnectionsTable {
   account_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   service: 'gmail' | 'calendar' | 'contacts';
+  /** The member this choice belongs to; each member picks their own account. */
+  user_id: ColumnType<string, string | undefined, string>;
   account_email: string;
   enabled_at: ColumnType<Date, string | undefined, never>;
 }
@@ -369,6 +469,12 @@ export interface ProjectsTable {
   owner: string;
   /** Lowercase canonical repo (`verity`). */
   repo: string;
+  /** The project's own name, shown wherever the project is named. NULL only
+   *  for rows written before migration 0204 by an older writer. */
+  name: ColumnType<string | null, string | null | undefined, string | null>;
+  /** 1 for the first project of a repository; each further project of the same
+   *  repository takes the next number. Part of the unique repository identity. */
+  repository_instance: ColumnType<number, number | undefined, number>;
   /** `verity-<owner>--<repo>` — single hyphen-slug, lowercased. */
   container_name: string;
   /** `github` or `forgejo` for repository projects; `control_plane` for Verity's
@@ -462,6 +568,7 @@ interface ProjectIdentityClaimsTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   owner: string;
   repo: string;
+  repository_instance: ColumnType<number, number | undefined, never>;
   project_id: string;
   created_at: ColumnType<Date, string | undefined, never>;
 }
@@ -501,6 +608,10 @@ export interface ProjectSettingsTable {
   google_drive_folder_id: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_folder_name: ColumnType<string | null, string | null | undefined, string | null>;
   google_drive_access_mode: Generated<'read-only' | 'read-write'>;
+  /** Design module: whether plans include mockups to approve before implementation. */
+  design_level: Generated<'off' | 'on_request' | 'required'>;
+  /** One line shown under the project's name; null when none was written. */
+  description: ColumnType<string | null, string | null | undefined, string | null>;
   /** Agents sessions in this project may use; null permits every connected agent. */
   allowed_agents: ColumnType<
     ('claude' | 'codex' | 'opencode')[] | null,
@@ -578,6 +689,8 @@ export interface VeritySettingsTable {
   github_app_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_installation_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_private_key: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_id: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_secret: ColumnType<string | null, string | null | undefined, string | null>;
   /** Account-level Doppler Service Account token (#320). A secret, encrypted at
    *  rest via the store's SecretCipher. Stored globally (like the GitHub App key);
    *  later used to auto-mint scoped per-project tokens. The pre-existing
@@ -697,23 +810,6 @@ export interface AuthTokenTable {
   label: string | null;
   created_at: ColumnType<Date, string | undefined, never>;
   last_seen_at: ColumnType<Date | null, string | undefined, string | undefined>;
-}
-
-/** Local identity is separate from a paired device and from project access. */
-interface UsersTable {
-  id: string;
-  role: 'administrator' | 'member';
-  status: 'active' | 'disabled';
-  created_at: ColumnType<Date, string | undefined, never>;
-}
-
-interface ProjectMembershipsTable {
-  project_id: string;
-  user_id: string;
-  can_read: boolean;
-  can_execute: boolean;
-  can_manage: boolean;
-  created_at: ColumnType<Date, string | undefined, never>;
 }
 
 /** The current Expo push-token binding for one paired device. The auth-token id
@@ -947,6 +1043,15 @@ interface SessionPendingNoteTable {
   created_at: ColumnType<Date, string | undefined, never>;
 }
 
+/** Baselines and permanent retirement of completed PRs from active session UI. */
+interface SessionPrVisibilityTable {
+  session_id: string;
+  worktree: string;
+  pr_url: string;
+  fingerprint: string;
+  hidden: boolean;
+}
+
 /** Durable de-dupe markers for server-authored automatic turns. */
 interface SessionAutomationMarkerTable {
   session_id: string;
@@ -975,6 +1080,8 @@ interface PrReadyDeliveryTable {
 interface GhTokenCapabilitiesTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   owner: string;
   repo: string;
@@ -985,6 +1092,8 @@ interface GhTokenCapabilitiesTable {
  * the opaque capability is persisted; one row per project provides rotation. */
 interface SigningCapabilitiesTable {
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   container_generation: string;
 }
@@ -1135,6 +1244,7 @@ interface TrustedCliOutputsTable {
   session_id: string;
   expires_at: ColumnType<Date, string, string>;
   next_sequence: number;
+  started_at: ColumnType<Date, string | undefined, never>;
   /** Encrypted completion metadata; null while the invocation is running. */
   result: string | null;
 }
@@ -1184,6 +1294,8 @@ export interface ManagedDevServersTable {
     string
   >;
   approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Who approved the current command; null for approvals before people (ADR 0023). */
+  approved_by_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,
@@ -1262,6 +1374,8 @@ export interface ManagedDevServerInstancesTable {
   detail: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_command: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Whose Doppler connection resolved the last run's secrets; null without a person. */
+  last_run_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   started_at: ColumnType<Date | null, string | null | undefined, string | null>;
   last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
   /** Explicit access lifecycle start; automatic process recovery preserves it. */
@@ -1403,6 +1517,8 @@ interface ClaudeEgressCaTable {
  * fingerprint→project peer bindings. */
 interface ClaudeEgressClientCertTable {
   project_id: string;
+  /** The person whose sandbox presents the certificate (ADR 0023 §4). */
+  user_id: string;
   cert_pem: ColumnType<string, string, string>;
   key_pem: ColumnType<string, string, string>;
   fingerprint256: ColumnType<string, string, string>;
@@ -1475,6 +1591,8 @@ interface SecretProviderPermissionsTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
   remaining_uses: number | null;
   granted_by: string;
+  /** Whose consent this is (ADR 0023 §3); a prompt grant applies only in their turns. */
+  user_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Which subsystem issued this row. The table has two independent writers, and a
    *  `tool_id` prefix does not tell them apart (a catalog profile id may contain `:`),
    *  so the brokered-prompt grant store keys its list/revoke/auto-approve on this.
@@ -1667,7 +1785,23 @@ interface SessionDeletionsTable {
   cleanup_pending: Generated<boolean>;
 }
 
-export interface Database {
+interface VulnerabilityFixesTable {
+  project_id: string;
+  session_id: string;
+  finding_keys: string;
+  pending_keys: Generated<string>;
+  accepted: Generated<boolean>;
+  failed: Generated<boolean>;
+}
+
+export interface Database extends PeopleDatabase {
+  project_inquiry_grants: ProjectInquiryGrantsTable;
+  project_inquiry_sessions: ProjectInquirySessionsTable;
+  project_inquiries: ProjectInquiriesTable;
+  wiki_occasions: WikiOccasionsTable;
+  wiki_maintenance: WikiMaintenanceTable;
+  sandbox_repair_intents: SandboxRepairIntentsTable;
+  vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
   user_view_state: UserViewStateTable;
@@ -1688,6 +1822,7 @@ export interface Database {
   qa_decisions: QADecisionsTable;
   assistant_settings: AssistantSettingsTable;
   assistant_project_grants: AssistantProjectGrantsTable;
+  assistant_requests: AssistantRequestsTable;
   scheduling_requests: SchedulingRequestsTable;
   scheduling_holds: SchedulingHoldsTable;
   vuln_digests: VulnDigestsTable;
@@ -1749,8 +1884,8 @@ export interface Database {
   queued_turns: QueuedTurnsTable;
   running_turns: RunningTurnsTable;
   projects: ProjectsTable;
-  users: UsersTable;
-  project_memberships: ProjectMembershipsTable;
+  project_repositories: ProjectRepositoriesTable;
+  session_repository_workspaces: SessionRepositoryWorkspacesTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
@@ -1767,6 +1902,7 @@ export interface Database {
   session_backend_state: SessionBackendStateTable;
   session_pending_note: SessionPendingNoteTable;
   session_automation_marker: SessionAutomationMarkerTable;
+  session_pr_visibility: SessionPrVisibilityTable;
   pr_ready_delivery: PrReadyDeliveryTable;
   forge_connections: ForgeConnectionsTable;
   gh_token_capabilities: GhTokenCapabilitiesTable;
@@ -1956,6 +2092,15 @@ interface AssistantProjectGrantsTable {
   sponsor_user_id: string;
   revision: Generated<number>;
   updated_at: Generated<Date>;
+}
+interface AssistantRequestsTable {
+  request_id: string;
+  session_id: string;
+  user_id: string;
+  kind: import('./assistant.js').AssistantRequestKind;
+  question_id: string | null;
+  state: Generated<'pending' | 'accepted'>;
+  created_at: Generated<Date>;
 }
 interface SchedulingRequestsTable {
   id: string;

@@ -95,6 +95,23 @@ describe.each(roots)('%s forge test mode', (seed) => {
     ]);
     expect(result.stdout).not.toContain('stale-github-token');
   });
+  // git and gh present whatever this prints. The badge names the turn's person;
+  // a malformed value must never be sent, so the container file wins then.
+  it("prefers the turn's badge and ignores a malformed one", async () => {
+    const { dir, env } = await fixture(seed);
+    const cap = (await readFile(join(dir, 'cap'), 'utf8')).trim();
+    const badge = 'Ab_-'.repeat(10) + 'xyz';
+    const print = async (value: string) =>
+      (
+        await exec(join(seed, 'verity-gh-token'), [], {
+          env: { ...env, VERITY_TURN_CAPABILITY: value },
+        })
+      ).stdout;
+    expect(await print(badge)).toBe(`verity-broker-${badge}`);
+    expect(await print('not a badge')).toBe(`verity-broker-${cap}`);
+    expect(await print(`${badge}x`)).toBe(`verity-broker-${cap}`);
+  });
+
   it('fails closed with missing configuration rather than executing legacy helpers or gh', async () => {
     const { dir, env } = await fixture(seed);
     const invocationLog = join(dir, 'unexpected-fallback');

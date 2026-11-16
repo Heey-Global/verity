@@ -345,6 +345,9 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
     return () => verifyEgressRelay(binding, policy, f.reply, image, f.volume);
   };
   expect(check(['VERITY_FORGE_PROXY=github'])()).toHaveLength(3);
+  expect(check(['VERITY_FORGE_PROXY=github', 'VERITY_FORGE_AUTHORITY_MODE=broker'])()).toHaveLength(
+    3,
+  );
   expect(
     check([
       'VERITY_FORGE_PROXY=github',
@@ -358,6 +361,8 @@ it('accepts only the brokered Forge route settings in the relay environment', ()
   expect(check(['VERITY_FORGE_PROXY=github', 'VERITY_FORGE_AUTHORITIES=[]'])()).toHaveLength(3);
   for (const env of [
     ['VERITY_FORGE_PROXY=anything'],
+    ['VERITY_FORGE_AUTHORITY_MODE=anything'],
+    ['VERITY_FORGE_AUTHORITY_MODE=broker', 'VERITY_FORGE_AUTHORITY_MODE=broker'],
     ['VERITY_FORGE_AUTHORITIES=["github.com:0"]'],
     ['VERITY_FORGE_AUTHORITIES=["github.com:65536"]'],
     ['VERITY_FORGE_AUTHORITIES=["github.com:0443"]'],

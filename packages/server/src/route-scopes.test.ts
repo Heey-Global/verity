@@ -1,3 +1,4 @@
+import { ADMINISTRATOR_ONLY_RESOURCE_ROUTES, pairedRoutePolicy } from './paired-route-policy.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
@@ -245,6 +246,28 @@ describe('route scope declarations', () => {
       }
     }
     expect(computed).toEqual([]);
+  });
+
+  // A session or project route nobody declared silently stays administrator-only,
+  // so members of a shared project would lose it without anyone deciding that
+  // (ADR 0023 §1). Each one has to be declared for members or listed as
+  // administrator-only on purpose.
+  it('decides for every session and project route who may use it', () => {
+    const undecided = [...new Set(registeredRouteKeys())].filter((key) => {
+      const [method, url] = key.split(' ', 2) as [string, string];
+      if (!/^\/(sessions|projects)(\/|$)/u.test(url)) return false;
+      return (
+        pairedRoutePolicy(method, url).kind === 'administrator' &&
+        !ADMINISTRATOR_ONLY_RESOURCE_ROUTES.has(key)
+      );
+    });
+    expect(undecided).toEqual([]);
+    const registered = new Set(registeredRouteKeys());
+    for (const key of ADMINISTRATOR_ONLY_RESOURCE_ROUTES) {
+      const [method, url] = key.split(' ', 2) as [string, string];
+      expect(registered.has(key), `${key} is not registered`).toBe(true);
+      expect(pairedRoutePolicy(method, url).kind, `${key} is also declared`).toBe('administrator');
+    }
   });
 
   it('registers no explicit HEAD route', () => {
@@ -496,24 +519,112 @@ describe('the onRoute hook in buildServer', () => {
     // that for the exemptions nobody can recover from; the conditional ones —
     // the signing broker, the container capabilities, the MCP gateway — would
     // just start answering 401 to their own callers, with no test failing. This
-    // covers all of them at once, where the ordering actually has to hold. The
-    // route modules are covered by the same fact: they are called from
-    // `buildServer`, which is below this hook.
-    const source = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
-    const hook = source.indexOf("addHook('onRoute'");
-    expect(hook, 'server.ts must attach an onRoute hook').toBeGreaterThan(-1);
+    // covers all of them at once, where the ordering actually has to hold.
+    //
+    // The hook lives in `createServerApp` (server-http.ts), right after the
+    // Fastify constructor, and `buildServer` calls that before it registers
+    // anything. The route modules are covered by the same fact: they are called
+    // from `buildServer`, below that call.
+    const expectFirst = (file: string, marker: string, what: string): void => {
+      const source = readFileSync(join(REPO_ROOT, 'packages/server/src', file), 'utf8');
+      const at = source.indexOf(marker);
+      expect(at, `${file} must contain ${what}`).toBeGreaterThan(-1);
+      ANY_ROUTE_PATTERN.lastIndex = 0;
+      const firstRoute = ANY_ROUTE_PATTERN.exec(source);
+      if (firstRoute !== null) {
+        expect(firstRoute.index, `a route is registered above ${what} in ${file}`).toBeGreaterThan(
+          at,
+        );
+      }
+      // A plugin gets its own encapsulated context, which inherits the hooks that
+      // existed when it was created — and only those.
+      PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+      const firstRegister = PLUGIN_REGISTER_PATTERN.exec(source);
+      if (firstRegister !== null) {
+        expect(
+          firstRegister.index,
+          `a plugin is registered above ${what} in ${file}`,
+        ).toBeGreaterThan(at);
+      }
+    };
+    // createServerApp also registers @fastify/rate-limit and @fastify/compress
+    // ahead of the auth gate. Both are fastify-plugin wrappers that share the root
+    // context, so they open no encapsulated scope the gate would miss; an
+    // encapsulated plugin added there would need to follow installHttpGuards.
+    expectFirst('server-http.ts', "addHook('onRoute'", 'the onRoute hook');
+    expectFirst('server.ts', 'createServerApp(deps)', 'the createServerApp call');
+    // Something to order against, or the scan itself broke.
+    const server = readFileSync(join(REPO_ROOT, 'packages/server/src/server.ts'), 'utf8');
     ANY_ROUTE_PATTERN.lastIndex = 0;
-    const firstRoute = ANY_ROUTE_PATTERN.exec(source);
-    expect(firstRoute, 'nothing to order the hook against — the scan broke').not.toBeNull();
-    expect(firstRoute!.index, 'a route is registered above the onRoute hook').toBeGreaterThan(hook);
-    // A plugin gets its own encapsulated context, which inherits the hooks that
-    // existed when it was created — and only those.
+    expect(
+      ANY_ROUTE_PATTERN.exec(server),
+      'nothing to order against — the scan broke',
+    ).not.toBeNull();
+  });
+
+  it('installs the auth gate before any plugin that would not inherit it', () => {
+    // The gate is a root `onRequest` hook. A plugin registered before it gets an
+    // encapsulated context without the hook, so its routes would skip the
+    // bearer check, paired-route authorization and the `/internal` guard. Plugins
+    // are registered in server.ts directly or by the `server-*.ts` modules it
+    // calls, so every such call must follow `installHttpGuards`.
+    const dir = join(REPO_ROOT, 'packages/server/src');
+    const server = readFileSync(join(dir, 'server.ts'), 'utf8');
+    const gate = server.indexOf('installHttpGuards(app');
+    expect(gate, 'server.ts must install the auth gate').toBeGreaterThan(-1);
+    const registersPlugins = (source: string): boolean => {
+      PLUGIN_REGISTER_PATTERN.lastIndex = 0;
+      return PLUGIN_REGISTER_PATTERN.test(source);
+    };
+    // The exported declaration's own text, up to the next top-level export.
+    // `undefined` when the module does not declare the name itself.
+    const declaration = (source: string, name: string): string | undefined => {
+      const start = new RegExp(
+        `^export (?:async function|function|const|let|class) ${name}\\b`,
+        'mu',
+      ).exec(source)?.index;
+      if (start === undefined) return undefined;
+      const next = source.indexOf('\nexport ', start + 1);
+      return source.slice(start, next === -1 ? undefined : next);
+    };
+    // Every `install*` call wires a whole area, including route modules that may
+    // register plugins of their own, so each must follow the gate whatever its
+    // body shows. Other `server-*` helpers count when their own declaration
+    // registers a plugin, and any other module's functions when that module does.
+    const callers: string[] = [];
+    const unlocated: string[] = [];
+    for (const match of server.matchAll(/import \{([^}]*)\} from '\.\/([\w/-]+)\.js';/gu)) {
+      const [, names = '', module = ''] = match;
+      if (module === 'server-http') continue;
+      const source = readFileSync(join(dir, `${module}.ts`), 'utf8');
+      for (const entry of names.split(',').map((value) => value.trim())) {
+        if (entry === '' || entry.startsWith('type ')) continue;
+        const [imported = entry, local = imported] = entry.split(/\s+as\s+/u);
+        let counts = registersPlugins(source);
+        if (module.startsWith('server-')) {
+          const own = declaration(source, imported);
+          if (own === undefined) unlocated.push(`${module}:${imported}`);
+          counts = imported.startsWith('install') || registersPlugins(own ?? '');
+        }
+        if (counts) callers.push(local);
+      }
+    }
+    // A name this cannot read is not proof that it registers nothing.
+    expect(unlocated, 'server-* imports the scan could not locate').toEqual([]);
+    expect(
+      callers,
+      'no install or plugin-registering call found — the scan broke',
+    ).not.toHaveLength(0);
+    for (const name of callers) {
+      for (const call of server.matchAll(new RegExp(`\\b${name}\\(`, 'gu'))) {
+        expect(call.index, `${name} registers a plugin before installHttpGuards`).toBeGreaterThan(
+          gate,
+        );
+      }
+    }
     PLUGIN_REGISTER_PATTERN.lastIndex = 0;
-    const firstRegister = PLUGIN_REGISTER_PATTERN.exec(source);
-    if (firstRegister !== null) {
-      expect(firstRegister.index, 'a plugin is registered above the onRoute hook').toBeGreaterThan(
-        hook,
-      );
+    for (const call of server.matchAll(PLUGIN_REGISTER_PATTERN)) {
+      expect(call.index, 'a plugin is registered before installHttpGuards').toBeGreaterThan(gate);
     }
   });
 

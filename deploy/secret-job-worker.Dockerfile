@@ -2,7 +2,7 @@
 # adapter at /usr/local/bin/verity-secret-job-pilot; the server pins the resulting image by digest.
 
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS builder
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS builder
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
@@ -29,7 +29,7 @@ COPY features features
 RUN npm run build
 
 # renovate: datasource=docker depName=node
-FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS deps
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS deps
 WORKDIR /app
 COPY vendor/expo-router-query-string ./vendor/expo-router-query-string
 COPY package.json package-lock.json ./
@@ -47,7 +47,7 @@ RUN npm ci --omit=dev --ignore-scripts --workspace=@verity/server --include-work
 
 # Shell-less, non-root runtime. No network tools, package manager, writable worktree, or credentials.
 # renovate: datasource=docker depName=gcr.io/distroless/nodejs26-debian13
-FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:9b945e92c1b5463a4b75f11e8417515e4bea7355f6adfd79ec220fbbe905dda8 AS worker-base
+FROM gcr.io/distroless/nodejs26-debian13:nonroot@sha256:1d736cf8b5716c07a245301f92717143215d248fd55771ee1936ef4b3302e531 AS worker-base
 # Use the builder's exact Node patch; the distroless base may lag a patch release.
 COPY --from=builder /usr/local/bin/node /nodejs/bin/node
 WORKDIR /app

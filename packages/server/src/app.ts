@@ -1,11 +1,17 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
+import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
 import { renderAssignedTasksPrompt } from '@verity/events';
 import { welcomeSessionPrompt } from './welcome-session.js';
-import type { VeritySettingsPatch, EventStore, SealableSecretCipher } from '@verity/store';
+import type {
+  VeritySettingsPatch,
+  EventStore,
+  ProviderConnectionKind,
+  SealableSecretCipher,
+} from '@verity/store';
 import type { FastifyBaseLogger, FastifyInstance, FastifyRequest } from 'fastify';
 import {
   VERITY_CONTROL_PROJECT_ID,
@@ -37,7 +43,8 @@ import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { McpGatewayDeps } from './mcp-gateway.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { ProjectRecord } from '@verity/store';
-import type { Provisioner, Deprovisioner } from './provisioner.js';
+import type { Deprovisioner } from './deprovisioner.js';
+import type { Provisioner } from './provisioner.js';
 import type { ProjectRuntime } from './project-runtime.js';
 import type { ProjectEnvironmentSettings } from './project-settings-env.js';
 import type { SandboxUpdateChecker } from './sandbox-updates.js';
@@ -92,10 +99,35 @@ export interface ControlPlaneDeps {
   /** Serializes a Claude/Codex credential DB write with runtime-file propagation. */
   persistAgentCredentials?:
     ((patch: VeritySettingsPatch, persist: () => Promise<void>) => Promise<void>) | undefined;
+  /** Runs a write to one person's own provider login in that person's queue, so it
+   *  never interleaves with a refresh or rotation of the same login. */
+  persistPersonalProviderCredentials?:
+    | ((
+        userId: string,
+        provider: ProviderConnectionKind,
+        write: () => Promise<void>,
+      ) => Promise<void>)
+    | undefined;
   /** Serialized Claude OAuth access-token provider shared across all sessions. */
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads the gateway-held Codex access token for the account-global usage probe. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** What Core knows for an invitation's join link (team contract D5). */
+  teamLinkIdentity?:
+    | (() =>
+        | {
+            serverId: string;
+            identityKey: string;
+            uplinkOrigin: string;
+            installationId: string;
+            installationHandle: string;
+          }
+        | undefined)
+    | undefined;
+  /** A fresh access token for a person's own Claude login, if they have one. */
+  personalClaudeAccessToken?: ((userId: string) => Promise<string | undefined>) | undefined;
+  /** A person's own Codex access token from the gateway (ADR 0023 §3). */
+  codexGatewayCredentialFor?: ((userId: string) => CodexUsageCredentialProvider) | undefined;
   /** Activates encrypted runtime services after the store is initialized/unlocked. */
   onSecretUnlocked?: (() => Promise<void>) | undefined;
   onOpenCodeSettingsChanged?: ServerDeps['onOpenCodeSettingsChanged'];
@@ -144,6 +176,8 @@ export interface ControlPlaneDeps {
   wsAllowedOrigins?: readonly string[] | undefined;
   /** Project- and generation-bound signing authority for the relay UDS listener. */
   signingCapabilities?: SigningCapabilityRegistry | undefined;
+  turnCredentials?: ServerDeps['turnCredentials'];
+  githubUserAuthorization?: ServerDeps['githubUserAuthorization'];
   /** Network-origin guard for `/internal/*` (audit H1 follow-up) — when set, those
    *  routes 404 unless the request arrived on the internal listener. Forwarded to
    *  {@link buildServer}. */
@@ -200,6 +234,8 @@ export interface ControlPlaneDeps {
   ) => Promise<{ state: 'open' | 'closed' | 'merged' } | null>;
   qaAnalysisRead?: QAAnalysisDeps['read'];
   repairDiscovery?: (project: ProjectRecord, page: number) => Promise<RepairDiscovery>;
+  /** Open pull requests of a project's repositories, with merge, for its Repositories page. */
+  projectPullRequests?: ProjectPullRequestBackend;
   branchPrStatus?:
     ((branch: string, worktree: string) => Promise<PullRequestStatus | null>) | undefined;
   /** Compact PR strip status for a multi-branch session — the most-recently-updated
@@ -396,11 +432,21 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { googleDriveClientId: deps.googleDriveClientId }
       : {}),
     ...(deps.secretCipher !== undefined ? { secretCipher: deps.secretCipher } : {}),
+    ...(deps.persistPersonalProviderCredentials !== undefined
+      ? { persistPersonalProviderCredentials: deps.persistPersonalProviderCredentials }
+      : {}),
     ...(deps.persistAgentCredentials !== undefined
       ? { persistAgentCredentials: deps.persistAgentCredentials }
       : {}),
     ...(deps.claudeOAuthTokenProvider !== undefined
       ? { claudeOAuthTokenProvider: deps.claudeOAuthTokenProvider }
+      : {}),
+    ...(deps.teamLinkIdentity !== undefined ? { teamLinkIdentity: deps.teamLinkIdentity } : {}),
+    ...(deps.personalClaudeAccessToken !== undefined
+      ? { personalClaudeAccessToken: deps.personalClaudeAccessToken }
+      : {}),
+    ...(deps.codexGatewayCredentialFor !== undefined
+      ? { codexGatewayCredentialFor: deps.codexGatewayCredentialFor }
       : {}),
     ...(deps.codexGatewayCredentialProvider !== undefined
       ? { codexGatewayCredentialProvider: deps.codexGatewayCredentialProvider }
@@ -475,6 +521,10 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       : {}),
     ...(deps.pushSender !== undefined ? { pushSender: deps.pushSender } : {}),
     ...(deps.wsAllowedOrigins !== undefined ? { wsAllowedOrigins: deps.wsAllowedOrigins } : {}),
+    ...(deps.turnCredentials !== undefined ? { turnCredentials: deps.turnCredentials } : {}),
+    ...(deps.githubUserAuthorization !== undefined
+      ? { githubUserAuthorization: deps.githubUserAuthorization }
+      : {}),
     ...(deps.signingCapabilities !== undefined
       ? { signingCapabilities: deps.signingCapabilities }
       : {}),
@@ -499,6 +549,9 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
     ...(deps.repairPullRequest ? { repairPullRequest: deps.repairPullRequest } : {}),
     ...(deps.qaAnalysisRead !== undefined ? { qaAnalysisRead: deps.qaAnalysisRead } : {}),
     ...(deps.repairDiscovery !== undefined ? { repairDiscovery: deps.repairDiscovery } : {}),
+    ...(deps.projectPullRequests !== undefined
+      ? { projectPullRequests: deps.projectPullRequests }
+      : {}),
     ...(deps.branchPr !== undefined ? { branchPr: deps.branchPr } : {}),
     ...(deps.branchPrStatus !== undefined ? { branchPrStatus: deps.branchPrStatus } : {}),
     ...(deps.branchPrStatusForBranches !== undefined

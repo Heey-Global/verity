@@ -18,6 +18,7 @@ export function createPreviewPinBudget(
   const base = new URL(url);
   if (
     !['http:', 'https:'].includes(base.protocol) ||
+    base.pathname !== '/' ||
     base.username ||
     base.password ||
     base.search ||
@@ -39,7 +40,7 @@ export function createPreviewPinBudget(
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
       });
-      if (!response.ok || !response.body) {
+      if (response.status !== 200 || !response.body) {
         await response.body?.cancel();
         return { state: 'unavailable' };
       }

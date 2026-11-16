@@ -13,9 +13,10 @@ describe('CODE_REVIEW_SYSTEM_PROMPT', () => {
     );
   });
 
-  it('says the marker verifies nothing and names the marker path', () => {
+  it('limits mark to the reviewed HEAD, keeps triage mandatory, and names the marker path', () => {
     expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('.agents/.last-code-review-sha');
-    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/verifies nothing/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/accepts only the HEAD that the last completed/i);
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/does not check the triage/i);
   });
 
   it('triages findings without turning cleanup into more scope', () => {
@@ -40,5 +41,14 @@ describe('CODE_REVIEW_SYSTEM_PROMPT', () => {
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/inline in this chat/i);
     expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('code_review');
     expect(CODE_REVIEW_SYSTEM_PROMPT).toMatch(/--no-verify/);
+  });
+
+  it('requires the synchronous review result before ending or marking', () => {
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('synchronous');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('nohup');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('wait or poll');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('exit status');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('report the concrete failure');
+    expect(CODE_REVIEW_SYSTEM_PROMPT).toContain('Do not mark a failed or interrupted review');
   });
 });

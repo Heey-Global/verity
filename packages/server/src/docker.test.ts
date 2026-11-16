@@ -2147,6 +2147,18 @@ describe('createDockerClient network primitives (H2)', () => {
   it('ensureNetwork POSTs /networks/create as a bridge and is idempotent on 409', async () => {
     const fetch = fakeFetch([
       { match: /\/networks\/create/, method: 'POST', resp: res({ Id: 'net1' }, { status: 201 }) },
+      {
+        match: /\/networks\/verity-proj-abc/,
+        method: 'GET',
+        resp: res({
+          Id: 'a'.repeat(64),
+          Name: 'verity-proj-abc',
+          Driver: 'bridge',
+          Labels: { 'verity.project-id': 'abc' },
+          Options: {},
+          Containers: {},
+        }),
+      },
     ]);
     await client(fetch).ensureNetwork!('verity-proj-abc', {
       labels: { 'verity.project-id': 'abc' },
@@ -3228,3 +3240,48 @@ it('retains host PID visibility when inspecting a recoverable host helper', asyn
   const docker = createDockerClient({ baseUrl: 'http://127.0.0.1:9234/v1.41', fetch });
   expect(await docker.inspectContainer('helper')).toMatchObject({ pidMode: 'host', exitCode: 0 });
 });
+
+it.each([
+  'all predefined address pools have been fully subnetted',
+  'could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network',
+])('classifies network address pool exhaustion: %s', async (message) => {
+  const fetch = fakeFetch([
+    { match: /networks\/create/, resp: res({ message }, { ok: false, status: 400 }) },
+  ]);
+  const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+  await expect(docker.ensureNetwork!('verity-proj-p1')).rejects.toMatchObject({
+    kind: 'address_pool_exhausted',
+    message: expect.stringContaining('default-address-pools'),
+  });
+});
+it('never accepts a network name or deletion flags as a deletion identity', async () => {
+  const fetch = fakeFetch([]);
+  const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+  await expect(docker.removeNetwork!('bridge')).rejects.toThrow('identity');
+  await expect(docker.removeNetwork!('a'.repeat(64) + '?force=true')).rejects.toThrow('identity');
+  expect(fetch.calls).toHaveLength(0);
+});
+
+it.each([{}, { 'verity.project-id': 'foreign' }])(
+  'refuses to adopt an existing network without matching project ownership (%j)',
+  async (labels) => {
+    const fetch = fakeFetch([
+      { match: /networks\/create/, resp: res({ message: 'exists' }, { ok: false, status: 409 }) },
+      {
+        match: /networks\/verity-proj-p1/,
+        resp: res({
+          Id: 'a'.repeat(64),
+          Name: 'verity-proj-p1',
+          Driver: 'bridge',
+          Labels: labels,
+          Options: {},
+          Containers: {},
+        }),
+      },
+    ]);
+    const docker = createDockerClient({ baseUrl: 'http://docker', fetch });
+    await expect(
+      docker.ensureNetwork!('verity-proj-p1', { labels: { 'verity.project-id': 'p1' } }),
+    ).rejects.toThrow('ownership');
+  },
+);

@@ -16,6 +16,7 @@ export function makeDetail(
     defaultModel?: string | null;
     allowedAgents?: ('claude' | 'codex' | 'opencode')[] | null;
     kind?: 'github' | 'forgejo' | 'local';
+    description?: string | null;
   } = {},
 ): ProjectDetail {
   return {
@@ -39,6 +40,7 @@ export function makeDetail(
       defaultBranch: 'main',
       defaultModel: overrides.defaultModel ?? null,
       allowedAgents: overrides.allowedAgents ?? null,
+      description: overrides.description ?? null,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     },
@@ -61,6 +63,7 @@ export type ProjectClientOverrides = {
   getHealth?: jest.Mock;
   setProjectSetupStatus?: jest.Mock;
   updateProjectSettings?: jest.Mock;
+  setOwnProjectDefaultModel?: jest.Mock;
   listDopplerProjects?: jest.Mock;
   listDopplerConfigs?: jest.Mock;
   deleteProject?: jest.Mock;
@@ -120,6 +123,13 @@ export function makeClient(opts: ProjectClientOverrides = {}): VerityClient {
         .fn()
         .mockImplementation((_id: string, patch: object) =>
           Promise.resolve({ ...detail.settings, ...patch }),
+        ),
+    setOwnProjectDefaultModel:
+      opts.setOwnProjectDefaultModel ??
+      jest
+        .fn()
+        .mockImplementation((_id: string, model: string | null) =>
+          Promise.resolve({ defaultModel: model }),
         ),
     listDopplerProjects: opts.listDopplerProjects ?? jest.fn(notImplemented('listDopplerProjects')),
     listDopplerConfigs: opts.listDopplerConfigs ?? jest.fn(notImplemented('listDopplerConfigs')),

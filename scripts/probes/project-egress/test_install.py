@@ -134,11 +134,14 @@ class InstallTests(unittest.TestCase):
             ('systemd 248', 'v26.12.1', good, 'systemd'),
             ('systemd 259', 'v26.12.0', good, 'Node'),
             ('systemd 259', 'v27.0.0', good, 'Node'),
-            ('systemd 259', 'v26.12.1', {**good, 'ServerVersion': '30.0.0'}, 'Docker'),
-            ('systemd 259', 'v26.12.1', {**good, 'LiveRestoreEnabled': True}, 'Docker'),
-            ('systemd 259', 'v26.12.1', {**good, 'SecurityOptions': ['rootless']}, 'Docker'),
-            ('systemd 259', 'v26.12.1', {**good, 'Runtimes': {}}, 'runtimes'),
+            ('systemd 259', 'v26.12.1', {**good, 'ServerVersion': '30.0.0'}, 'docker_host_unsupported'),
+            ('systemd 259', 'v26.12.1', {**good, 'LiveRestoreEnabled': True}, 'docker_host_unsupported'),
+            ('systemd 259', 'v26.12.1', {**good, 'SecurityOptions': ['rootless']}, 'docker_host_unsupported'),
+            ('systemd 259', 'v26.12.1', {**good, 'Runtimes': {}}, 'relay_runtime_missing'),
+            ('systemd 259', 'v26.12.1', {**good, 'ServerVersion': '29.8.0'}, 'docker_host_unsupported'),
+            ('systemd 259', 'v26.12.1', {**good, 'ServerVersion': '29.9.4'}, 'docker_host_unsupported'),
             ('systemd 259', 'v26.12.1', good, 'native installation profile'),
+            ('systemd 259', 'v26.12.1', {**good, 'ServerVersion': '29.9.3'}, 'native installation profile'),
         ]
         for systemd, node, docker, error in cases:
             with self.subTest(error=error, node=node, docker=docker):

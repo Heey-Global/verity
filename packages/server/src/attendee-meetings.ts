@@ -17,7 +17,13 @@ import {
   normalizeAttendeeTranscript,
   verifyAttendeeSignature,
 } from './attendee-client.js';
-import { meetingCallKey } from './calendar-meeting-links.js';
+import {
+  attendeeBotSchema,
+  joinProgress,
+  providerCode,
+  type OnlineJoinStatus,
+} from './attendee-join-status.js';
+import { meetingCallKey, meetingPlatform, type MeetingPlatform } from './calendar-meeting-links.js';
 
 interface MeetingStartDiagnostic {
   requestId?: string;
@@ -122,6 +128,33 @@ interface OnlineMeeting {
   /** The call the bot joined, so a second join of the same call can find it. */
   meetingUrl?: string;
   error?: string;
+  /** Last provider bot state, kept only to log its transitions. */
+  botState?: string;
+  /** How far the bot got into the call; absent until the provider was first asked. */
+  joinStatus?: OnlineJoinStatus;
+  /** Provider failure code (for example `login_required`) when joining failed. */
+  joinReason?: string | null;
+  /** When the bot was first seen inside the call. */
+  joinedAt?: number;
+}
+
+/** What the app shows while Verity is getting into an online meeting. */
+export interface OnlineMeetingStatus {
+  status: OnlineJoinStatus;
+  reason: string | null;
+  platform: MeetingPlatform | null;
+}
+/** Operational log for the meeting data path. Never receives tokens or meeting content. */
+export interface AttendeeMeetingsLog {
+  info(entry: Record<string, unknown>, message: string): void;
+  warn(entry: Record<string, unknown>, message: string): void;
+}
+const SNAPSHOT_LOG_INTERVAL_MS = 60_000;
+function failureFields(error: unknown) {
+  return {
+    error: error instanceof Error ? error.name : 'unknown',
+    ...(error instanceof AttendeeRequestRejected ? { status: error.status } : {}),
+  };
 }
 function assigned(meeting: OwnedMeeting): LiveMeetingSyncRecord | undefined {
   return meeting.sessionId === null ? undefined : { ...meeting, sessionId: meeting.sessionId };
@@ -135,6 +168,34 @@ const webhookSchema = z.object({
   data: z.unknown(),
 });
 
+/** The enum fields of a `bot.state_change` payload; anything else stays out of the log. */
+function stateChangeFields(data: unknown) {
+  const fields = z
+    .object({
+      new_state: z.unknown(),
+      old_state: z.unknown(),
+      event_type: z.unknown(),
+      event_sub_type: z.unknown(),
+    })
+    .partial()
+    .safeParse(data);
+  if (!fields.success) return {};
+  return {
+    newState: providerCode(fields.data.new_state),
+    oldState: providerCode(fields.data.old_state),
+    eventType: providerCode(fields.data.event_type),
+    eventSubType: providerCode(fields.data.event_sub_type),
+  };
+}
+
+function onlineStatus(state: OnlineMeeting): OnlineMeetingStatus {
+  return {
+    status: state.joinStatus ?? (state.phase === 'ended' ? 'ended' : 'joining'),
+    reason: state.joinReason ?? null,
+    platform: meetingPlatform(state.meetingUrl),
+  };
+}
+
 /** The app only issues commands; this owner survives app closure and Core restart. */
 export class AttendeeMeetings {
   private receiver: Server | undefined;
@@ -147,6 +208,9 @@ export class AttendeeMeetings {
   private polling: Promise<void> | undefined;
   private readonly researchJobs = new Map<string, Promise<void>>();
   private readonly connectors = new Map<string, PreviewConnector>();
+  private readonly snapshotLogs = new Map<string, { utterances: number; at: number }>();
+  /** Last logged reconciliation failure per meeting, so a stuck meeting warns once per kind. */
+  private readonly failureLogs = new Map<string, string>();
   constructor(
     private readonly options: {
       store: EventStore;
@@ -158,6 +222,7 @@ export class AttendeeMeetings {
         requestId: string,
       ) => Promise<void>;
       client?: (key: string) => AttendeeClient;
+      log?: AttendeeMeetingsLog;
     },
   ) {
     this.unsubscribeSharing = options.edge?.onSharingDisabled?.(() => {
@@ -233,9 +298,15 @@ export class AttendeeMeetings {
 
   async open(): Promise<void> {
     this.receiver = createServer((request, response) => {
+      // Outcome only: the payload carries transcript text and the URL carries the share PIN.
+      const answer = (status: number, outcome: string, entry: Record<string, unknown> = {}) => {
+        response.writeHead(status).end();
+        // Info, not warn: the public share lets anyone probe this receiver.
+        this.options.log?.info({ status, outcome, ...entry }, 'Attendee webhook answered');
+      };
       void (async () => {
         if (request.method !== 'POST' || request.url !== ATTENDEE_WEBHOOK_PATH) {
-          response.writeHead(404).end();
+          answer(404, 'unknown_path');
           return;
         }
         const chunks: Buffer[] = [];
@@ -244,7 +315,7 @@ export class AttendeeMeetings {
           if (!Buffer.isBuffer(chunk)) throw new Error('Invalid request body');
           bytes += chunk.length;
           if (bytes > 1_000_000) {
-            response.writeHead(413).end();
+            answer(413, 'too_large');
             return;
           }
           chunks.push(Buffer.from(chunk));
@@ -257,21 +328,31 @@ export class AttendeeMeetings {
             (!row.state.botId && event.bot_metadata?.verityMeetingId === row.state.meeting.id),
         )?.state;
         const signature = request.headers['x-webhook-signature'];
-        if (
-          !state ||
-          state.phase === 'ended' ||
-          typeof signature !== 'string' ||
-          !verifyAttendeeSignature(payload, signature, state.credentials.webhookSecret)
-        ) {
-          response.writeHead(401).end();
+        const rejected = !state
+          ? 'unknown_meeting'
+          : state.phase === 'ended'
+            ? 'meeting_ended'
+            : typeof signature !== 'string'
+              ? 'signature_missing'
+              : !verifyAttendeeSignature(payload, signature, state.credentials.webhookSecret)
+                ? 'signature_invalid'
+                : undefined;
+        const entry = { trigger: event.trigger, ...(state ? { meetingId: state.meeting.id } : {}) };
+        if (rejected) {
+          answer(401, rejected, entry);
           return;
         }
         // Delivery acknowledgment is independent of provider/model calls. The durable
         // marker is a wake-up hint; full snapshots supply idempotent transcript recovery.
         await this.options.store.putAttendeeState(`event:${event.bot_id}`, event);
-        response.writeHead(202).end();
-      })().catch(() => {
-        if (!response.headersSent) response.writeHead(400).end();
+        // Only a signed delivery describes the bot; probes never reach the log with content.
+        answer(202, 'accepted', {
+          ...entry,
+          botId: event.bot_id,
+          ...(event.trigger === 'bot.state_change' ? stateChangeFields(event.data) : {}),
+        });
+      })().catch((error: unknown) => {
+        if (!response.headersSent) answer(400, 'invalid', failureFields(error));
       });
     });
     this.receiver.requestTimeout = 10_000;
@@ -311,11 +392,26 @@ export class AttendeeMeetings {
       throw new Error('Online sharing authority lost before connection');
     const generation = this.sharingGeneration;
     const connector = new PreviewConnector({
+      shareId: state.binding.shareId,
       edgeUrl: state.binding.edgeUrl,
       connectorToken: state.binding.connectorToken,
       targetOrigin: this.targetOrigin,
       maxBodyBytes: 1_000_000,
       requestTimeoutMs: 8_000,
+      onDiagnostic: (diagnostic) => {
+        try {
+          const entry = {
+            meetingId: state.meeting.id,
+            shareId: state.binding?.shareId,
+            ...diagnostic,
+          };
+          if (diagnostic.event === 'connect.failed' || diagnostic.event === 'heartbeat.timeout')
+            this.options.log?.warn(entry, 'Online meeting connector transport');
+          else this.options.log?.info(entry, 'Online meeting connector transport');
+        } catch {
+          /* Diagnostics must not affect the connection. */
+        }
+      },
     });
     await connector.connect();
     if (generation !== this.sharingGeneration || this.options.edge?.isAvailable?.() === false) {
@@ -383,8 +479,8 @@ export class AttendeeMeetings {
       let shareCreateSent = false;
       const emit = (event: MeetingStartDiagnostic['event']) => {
         try {
-          diagnostics?.emit({
-            requestId: diagnostics.requestId,
+          const entry = {
+            ...(diagnostics?.requestId === undefined ? {} : { requestId: diagnostics.requestId }),
             meetingId: id,
             phase,
             code,
@@ -392,7 +488,11 @@ export class AttendeeMeetings {
             bindingPresent: Boolean(state.binding),
             botCreateAttempted: Boolean(state.botCreateAttempted),
             event,
-          });
+          } satisfies MeetingStartDiagnostic;
+          if (diagnostics) diagnostics.emit(entry);
+          // Calendar starts have no request diagnostic callback.
+          else if (event === 'failed') this.options.log?.warn(entry, 'Online meeting start failed');
+          else this.options.log?.info(entry, 'Online meeting start progress');
         } catch {
           /* Diagnostics must not affect meeting state. */
         }
@@ -524,13 +624,30 @@ export class AttendeeMeetings {
       const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
       if (!state || state.meeting.sessionId !== sessionId)
         throw new Error('Online meeting not found.');
-      if (state.phase === 'ended') return { accepted: true };
+      // Repeated End taps must not ask the provider again; reconciliation keeps retrying.
+      if (state.phase === 'ended' || state.stopRequested) return { accepted: true };
       state.stopRequested = true;
       state.phase = 'stopping';
       await this.publish(state);
       await this.reconcileOne(state);
       return { accepted: true };
     });
+  }
+
+  /** Join progress of an online meeting in `sessionId`; undefined when it is not one. */
+  async status(sessionId: string, id: string): Promise<OnlineMeetingStatus | undefined> {
+    const state = await this.options.store.getAttendeeState<OnlineMeeting>(`meeting:${id}`);
+    if (!state || state.meeting.sessionId !== sessionId) return undefined;
+    return onlineStatus(state);
+  }
+
+  /** Join status of every running online meeting, for the floating meeting card. */
+  async joinStatuses(): Promise<Map<string, OnlineJoinStatus>> {
+    return new Map(
+      (await this.records())
+        .filter((row) => row.state.phase !== 'ended')
+        .map((row) => [row.state.meeting.id, onlineStatus(row.state).status]),
+    );
   }
 
   /** Unassigned meetings, newest first. Discarded ones are on their way out. */
@@ -615,6 +732,8 @@ export class AttendeeMeetings {
 
   /** Drops transcript and pending work so a discarded meeting keeps nothing it heard. */
   private forget(state: OnlineMeeting) {
+    this.snapshotLogs.delete(state.meeting.id);
+    this.failureLogs.delete(state.meeting.id);
     state.stopRequested = true;
     state.pendingRequests = {};
     state.meeting.transcript = '';
@@ -634,7 +753,9 @@ export class AttendeeMeetings {
   private poll() {
     if (this.closed || this.polling) return;
     this.polling = this.reconcile()
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        this.options.log?.warn(failureFields(error), 'Online meeting reconciliation failed');
+      })
       .finally(() => {
         this.polling = undefined;
       });
@@ -657,9 +778,19 @@ export class AttendeeMeetings {
             await this.finishDiscard(state);
           } else {
             if (state.phase !== 'ended') await this.reconcileOne(state);
+            this.failureLogs.delete(state.meeting.id);
             this.schedulePendingRequests(state);
           }
-        } catch {
+        } catch (error) {
+          const failure = failureFields(error);
+          const kind = JSON.stringify(failure);
+          if (this.failureLogs.get(state.meeting.id) !== kind) {
+            this.failureLogs.set(state.meeting.id, kind);
+            this.options.log?.warn(
+              { meetingId: state.meeting.id, phase: state.phase, ...failure },
+              'Online meeting reconciliation failed',
+            );
+          }
           state.error = 'Meeting connection interrupted; retrying recovery.';
           await this.save(state);
         }
@@ -705,6 +836,35 @@ export class AttendeeMeetings {
       });
     }
   }
+  /** Utterance count and newest provider timestamp, at most once a minute while it grows. */
+  private logSnapshot(
+    state: OnlineMeeting,
+    botState: string,
+    snapshot: Array<{ timestamp_ms: number }>,
+    final: boolean,
+  ) {
+    const id = state.meeting.id;
+    const previous = this.snapshotLogs.get(id);
+    const now = Date.now();
+    const changed = previous?.utterances !== snapshot.length;
+    const due = !previous || now - previous.at >= SNAPSHOT_LOG_INTERVAL_MS;
+    if (!final && !(changed && due)) return;
+    if (final) this.snapshotLogs.delete(id);
+    else this.snapshotLogs.set(id, { utterances: snapshot.length, at: now });
+    this.options.log?.info(
+      {
+        meetingId: id,
+        botState,
+        utterances: snapshot.length,
+        lastTimestampMs: snapshot.reduce<number | null>(
+          (latest, item) =>
+            latest === null ? item.timestamp_ms : Math.max(latest, item.timestamp_ms),
+          null,
+        ),
+      },
+      'Online meeting transcript snapshot',
+    );
+  }
   private async reconcileOne(state: OnlineMeeting, discard = false) {
     let event = await this.options.store.getAttendeeState<z.infer<typeof webhookSchema>>(
       `event:${state.botId ?? ''}`,
@@ -747,9 +907,9 @@ export class AttendeeMeetings {
       }
     }
     const client = this.client(state.credentials.apiKey);
-    const bot = z
-      .object({ state: z.string() })
-      .parse(await client.request(`bots/${encodeURIComponent(state.botId)}`));
+    const bot = attendeeBotSchema.parse(
+      await client.request(`bots/${encodeURIComponent(state.botId)}`),
+    );
     if (
       state.stopRequested &&
       !terminal.has(bot.state) &&
@@ -758,8 +918,36 @@ export class AttendeeMeetings {
     ) {
       await client.request(`bots/${encodeURIComponent(state.botId)}/leave`, 'POST');
     }
+    const join = joinProgress(bot, state.joinedAt !== undefined);
+    if (join.status === 'joined') state.joinedAt ??= Date.now();
+    if (
+      state.botState !== bot.state ||
+      state.joinStatus !== join.status ||
+      (state.joinReason ?? null) !== join.reason
+    ) {
+      // Content-free: provider identifiers and enum codes only, never the meeting link.
+      const entry = {
+        meetingId: state.meeting.id,
+        botId: state.botId,
+        platform: meetingPlatform(state.meetingUrl),
+        botState: providerCode(bot.state) ?? 'unrecognized',
+        previousBotState: providerCode(state.botState),
+        joinStatus: join.status,
+        reason: join.reason,
+        eventType: join.eventType,
+        eventSubType: join.eventSubType,
+      };
+      if (join.status === 'failed')
+        this.options.log?.warn(entry, 'Online meeting bot could not join');
+      else this.options.log?.info(entry, 'Online meeting bot state changed');
+      state.botState = bot.state;
+      state.joinStatus = join.status;
+      state.joinReason = join.reason;
+      await this.save(state);
+    }
     const final = terminal.has(bot.state);
     const snapshot = discard ? [] : await client.transcript(state.botId);
+    if (!discard) this.logSnapshot(state, bot.state, snapshot, final);
     if (!discard) {
       if (state.timeOriginMs === undefined && snapshot.length) {
         state.timeOriginMs = snapshot.reduce(

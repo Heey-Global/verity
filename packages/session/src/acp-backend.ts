@@ -29,6 +29,13 @@ import {
 } from './acp-adapter.js';
 import { redactProcessStderr } from '@verity/store';
 import { SessionWriter } from './ingest.js';
+import {
+  BACKGROUND_HOLD_MAX_MS,
+  BACKGROUND_HOLD_TASK_ID,
+  BACKGROUND_QUIET_MS,
+  BackgroundWork,
+  type BackgroundHoldOutcome,
+} from './background-work.js';
 import { assertSafeArgs, nodeSpawner } from './runner.js';
 
 const ZERO_USAGE: Usage = {
@@ -140,8 +147,10 @@ export interface AcpBackendProfile {
   readonly adapter?: AcpEventAdapterOptions | undefined;
   /** The agent enforces {@link RunTurnOptions.toolless} through `sessionMeta`. */
   readonly enforcesToolless?: boolean | undefined;
-  /** The agent enforces {@link RunTurnOptions.gatewayToolsOnly} through `sessionMeta`. */
+  /** The profile enforces {@link RunTurnOptions.gatewayToolsOnly} via metadata or broker policy. */
   readonly enforcesGatewayToolsOnly?: boolean | undefined;
+  /** Native tool restrictions are installed by the spawn broker, not ACP metadata. */
+  readonly gatewayToolsViaBroker?: boolean | undefined;
   /** An answered `session/load` error that, besides `resourceNotFound`, names a
    *  conversation the agent does not have — for an adapter that reports it some
    *  other way. Only for answers that are about the conversation itself. */
@@ -185,6 +194,12 @@ export interface AcpBackendProfile {
    *  having thought about it. Spelling `undefined` is a claim — "this profile pins
    *  its own mode" — and the compiler makes every author state one. */
   readonly permissionModes: readonly string[] | undefined;
+  /** Keep the turn — and with it the agent process — open after the prompt
+   *  answers while the agent reports background work through lifecycle metadata
+   *  (see `background-work.ts`). Background tasks run inside the agent process,
+   *  so ending the turn early would kill them along with the follow-up the agent
+   *  starts when they report back. */
+  readonly holdsForBackgroundWork?: boolean | undefined;
   configureSession?(setup: AcpSessionSetup, opts: RunTurnOptions): Promise<void>;
 }
 
@@ -512,6 +527,12 @@ function permissionRequest(request: RequestPermissionRequest, name: string): Per
   };
 }
 
+function formatHoldLimit(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} h`;
+  if (ms % 60_000 === 0) return `${ms / 60_000} min`;
+  return `${Math.ceil(ms / 1000)} s`;
+}
+
 async function writeAll(writer: SessionWriter, events: readonly AgentEvent[]): Promise<void> {
   for (const event of events) await writer.write(event);
 }
@@ -593,6 +614,12 @@ export async function runAcpTurn(
       env: opts.env ?? process.env,
       keepStdinOpen: true,
       ...(opts.planning === true ? { planning: true } : {}),
+      ...(opts.gatewayToolsOnly === true && profile.gatewayToolsViaBroker === true
+        ? {
+            gatewayToolsOnly: true,
+            ...(opts.model !== undefined ? { gatewayToolsModel: opts.model } : {}),
+          }
+        : {}),
     });
   let child = spawn();
   const startupRecoveryDeadline = Date.now() + 16 * 60_000;
@@ -680,7 +707,17 @@ export async function runAcpTurn(
   let turnHasAgentContent = false;
   // Replay safety is monotonic, unlike the steering/capacity classifier.
   let executionObserved = false;
+  // Background work the agent still runs after its prompt answered; undefined
+  // for profiles that end every turn at the prompt response.
+  const background = profile.holdsForBackgroundWork === true ? new BackgroundWork() : undefined;
+  // Set while the turn is held for that work: a message sent now goes to the
+  // live agent as a prompt of its own, because no prompt is open to steer into.
+  let sendHeldPrompt: ((message: SteerMessage) => void) | undefined;
   opts.onSteer?.((message) => {
+    if (sendHeldPrompt !== undefined && !stopped) {
+      sendHeldPrompt(message);
+      return true;
+    }
     if (!acceptingSteering || !turnHasAgentContent || sendSteering === undefined) return false;
     sendSteering(message);
     return true;
@@ -688,7 +725,9 @@ export async function runAcpTurn(
   const stop = (operatorCancel: boolean): void => {
     stopped = true;
     acceptingSteering = false;
+    sendHeldPrompt = undefined;
     wakeRetry?.();
+    background?.wake();
     if (operatorCancel) aborted = true;
     if (cancelSession === undefined) {
       killAgent(child, operatorCancel);
@@ -890,6 +929,7 @@ export async function runAcpTurn(
           // channel opens as soon as the agent has spoken instead of trailing the
           // persist queue.
           if (loadingSession || stopped) return Promise.resolve();
+          background?.observe(params.update._meta);
           if (isAgentContent(params.update)) executionObserved = true;
           if (profile.telemetryBackend === 'codex-acp') {
             // A provider refusal is not assistant content safe for steering.
@@ -1195,6 +1235,125 @@ export async function runAcpTurn(
             });
             if (stopped) throw new Error('ACP turn stopped during capacity retry');
             acceptingSteering = true;
+          }
+          if (
+            background !== undefined &&
+            !stopped &&
+            !capacityFailure &&
+            prompt.stopReason !== 'cancelled'
+          ) {
+            // The prompt has answered: a steer now would land in a finished prompt.
+            // Send a message from here on as a prompt of its own instead. An
+            // outstanding one counts as live work, so a message that arrives while
+            // the hold is still being decided holds the turn until it is answered,
+            // rather than waiting in the queue behind a hold that then engages.
+            acceptingSteering = false;
+            // Set once the agent process ends; it explains a lost message itself.
+            let agentExited = false;
+            sendHeldPrompt = (message) => {
+              background.beginPrompt();
+              void agent
+                .request(acp.methods.agent.session.prompt, {
+                  sessionId: session.sessionId,
+                  prompt: [
+                    { type: 'text', text: message.text },
+                    ...imageBlocks(message.attachments),
+                  ],
+                })
+                .then((answer) => {
+                  const answerUsage = usage(answer.usage);
+                  promptUsage.inputTokens += answerUsage.inputTokens;
+                  promptUsage.outputTokens += answerUsage.outputTokens;
+                  promptUsage.cacheReadTokens += answerUsage.cacheReadTokens;
+                  promptUsage.cacheCreationTokens += answerUsage.cacheCreationTokens;
+                })
+                .catch(() => {
+                  // onSteer already accepted the message; say that it did not
+                  // arrive rather than let it vanish. Queued with the session's
+                  // other events so the note lands in wire order.
+                  if (stopped || closedOut || agentExited) return;
+                  updateTail = updateTail
+                    .then(() =>
+                      writer.write({
+                        t: 'notice',
+                        text: 'Your message could not be delivered to the agent while it was waiting for background work. Send it again once this turn has ended.',
+                      }),
+                    )
+                    .catch(() => undefined);
+                })
+                .finally(() => background.endPrompt());
+            };
+            await drainUpdates();
+            const quietMs = opts.backgroundQuietMs ?? BACKGROUND_QUIET_MS;
+            if (!background.busy && background.observedWork) {
+              // Work ended during the prompt: the cycle that reacts to it may only
+              // start after the prompt answered, so give it one quiet window.
+              await background.waitUntilQuiet(quietMs, Date.now() + quietMs);
+              await drainUpdates();
+            }
+            if (!background.busy || stopped) {
+              // Decided synchronously with the check: no message can slip in between.
+              sendHeldPrompt = undefined;
+            } else {
+              // The agent's answer so far is complete prose: publish it now, so the
+              // operator reads it while the work it started keeps running.
+              await writeAll(writer, topLevelText.flush());
+              await writer.write({
+                t: 'task',
+                id: BACKGROUND_HOLD_TASK_ID,
+                phase: 'started',
+                description: 'Waiting for background work',
+              });
+              const deadline = Date.now() + (opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS);
+              // An agent that dies while held has nothing left to wait for.
+              const onAgentExit = (): void => {
+                agentExited = true;
+                // No agent is left to receive a message: let the Conductor queue it.
+                sendHeldPrompt = undefined;
+                background.wake();
+              };
+              void child.exited.then(onAgentExit, onAgentExit);
+              // Checked before every wait: a Stop during the awaits above has already
+              // fired its wake, and waiting after it would sit out the whole limit.
+              let outcome: BackgroundHoldOutcome = 'woken';
+              while (outcome === 'woken' && !stopped && !agentExited) {
+                outcome = await background.waitUntilQuiet(quietMs, deadline);
+              }
+              sendHeldPrompt = undefined;
+              if (stopped || agentExited) {
+                // Close the marker on every way out, so no reader is left with a
+                // hold that never ends; the turn's own terminal row follows.
+                await writer
+                  .write({
+                    t: 'task',
+                    id: BACKGROUND_HOLD_TASK_ID,
+                    phase: 'ended',
+                    status: stopped ? 'stopped' : 'failed',
+                  })
+                  .catch(() => undefined);
+                if (stopped) throw new Error('ACP turn cancelled');
+                throw new Error('ACP agent exited while background work was running');
+              }
+              await drainUpdates();
+              await writeAll(writer, topLevelText.flush());
+              await writer.write({
+                t: 'task',
+                id: BACKGROUND_HOLD_TASK_ID,
+                phase: 'ended',
+                status: outcome === 'deadline' ? 'stopped' : 'completed',
+              });
+              if (outcome === 'deadline') {
+                // Interrupt a cycle that is still running; the teardown below then
+                // ends the background tasks along with the agent process.
+                cancelSession?.();
+                await writer.write({
+                  t: 'notice',
+                  text: `Background work was still running after ${formatHoldLimit(
+                    opts.backgroundHoldMaxMs ?? BACKGROUND_HOLD_MAX_MS,
+                  )}; Verity ended it with this turn.`,
+                });
+              }
+            }
           }
           acceptingSteering = false;
           // A response already queued on stdout can outlive process termination.

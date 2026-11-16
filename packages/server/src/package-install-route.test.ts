@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import type { IncomingMessage } from 'node:http';
 import { request as httpRequest, type Server } from 'node:http';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Conductor, ExternalPermissionAnswer } from '@verity/session';
@@ -6,13 +8,29 @@ import type { EventStore } from '@verity/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import { markInternalConnections } from './internal-listener.js';
-import { registerPackageInstallRoute } from './package-install-route.js';
+import {
+  PUBLICATION_FACT_LIMIT,
+  PUBLICATION_FACT_TTL_MS,
+  PUBLICATION_LOOKUP_CONCURRENCY,
+  registerPackageInstallRoute,
+} from './package-install-route.js';
+import { npmInstallGrant } from './package-install-grants.js';
+import type { BrokeredHttpStreamTransport } from './brokered-http-stream.js';
+
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
-const binding = { projectId: 'p1', containerGeneration: 'g1', owner: 'o', repo: 'r' };
+const binding = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'g1',
+  owner: 'o',
+  repo: 'r',
+};
 const input = {
   action: 'check',
   sessionId: 's1',
@@ -26,8 +44,71 @@ const allow = (action: string): ExternalPermissionAnswer => ({
   decision: { behavior: 'allow', updatedInput: { action } },
   decidedBy: 'card',
 });
+const verifyInput = {
+  ...input,
+  action: 'verify',
+  packages: [{ name: 'example', version: '1.0.0' }],
+  minimumAgeDays: 3,
+};
+/** Registry document for the package named by the request path. */
+function namedMetadata(
+  published: (name: string) => unknown,
+  delayMs = 0,
+): BrokeredHttpStreamTransport {
+  return async ({ path }) => {
+    const name = decodeURIComponent(path.slice(1));
+    if (delayMs) await new Promise((done) => setTimeout(done, delayMs));
+    return Object.assign(
+      Readable.from([
+        JSON.stringify({
+          name,
+          versions: {
+            '1.0.0': {
+              name,
+              version: '1.0.0',
+              dist: {
+                tarball: `https://registry.npmjs.org/${name}/-/${name}-1.0.0.tgz`,
+                integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+              },
+            },
+          },
+          'dist-tags': { latest: '1.0.0' },
+          time: { '1.0.0': published(name) },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+  };
+}
+function packageMetadata(published: unknown): BrokeredHttpStreamTransport {
+  return async () =>
+    Object.assign(
+      Readable.from([
+        JSON.stringify({
+          name: 'example',
+          versions: {
+            '1.0.0': {
+              name: 'example',
+              version: '1.0.0',
+              dist: {
+                tarball: 'https://registry.npmjs.org/example/-/example-1.0.0.tgz',
+                integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+              },
+            },
+          },
+          'dist-tags': { latest: '1.0.0' },
+          time: { '1.0.0': published },
+        }),
+      ]),
+      { statusCode: 200, headers: {} },
+    ) as IncomingMessage;
+}
 
-function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', internal = true) {
+function fixture(
+  initial: 'undecided' | 'protected' | 'skipped' = 'undecided',
+  internal = true,
+  packageTransport?: BrokeredHttpStreamTransport,
+) {
   const app = Fastify();
   apps.push(app);
   const generation = new AbortController();
@@ -58,6 +139,7 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
     } as unknown as EventStore,
     conductor: { requestExternalPermission: prompt },
     appendNotice: notice,
+    ...(packageTransport ? { packageTransport } : {}),
   });
   const post = (body: Record<string, unknown> = input, token = 'good') =>
     app.inject({
@@ -70,6 +152,223 @@ function fixture(initial: 'undecided' | 'protected' | 'skipped' = 'undecided', i
 }
 
 describe('package install broker', () => {
+  it('verifies locked releases even after a saved Skip and does not persist an exception', async () => {
+    const f = fixture('skipped', true, packageMetadata('2030-01-01T00:00:00Z'));
+    f.prompt.mockResolvedValue(allow('install'));
+    const result = (await f.post(verifyInput)).json<{ action: string; installToken: string }>();
+    expect(result.action).toBe('continue');
+    expect(f.prompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowStandingGrant: false,
+        input: expect.objectContaining({
+          supported: false,
+          command: expect.stringContaining('example@1.0.0: available 2030-01-04T00:00:00.000Z'),
+        }),
+      }),
+    );
+    expect(npmInstallGrant(result.installToken)?.policy.exceptions.has('example@1.0.0')).toBe(true);
+    expect(f.saved()).toBe('skipped');
+    expect(f.save).not.toHaveBeenCalled();
+    await f.post(verifyInput);
+    expect(f.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires the specific install exception action and cancels denial', async () => {
+    const f = fixture('protected', true, packageMetadata('2030-01-01T00:00:00Z'));
+    f.prompt.mockResolvedValueOnce(allow('configure'));
+    expect((await f.post(verifyInput)).json()).toEqual({ action: 'cancel' });
+    f.prompt.mockResolvedValueOnce({
+      decision: { behavior: 'deny', message: 'Declined.' },
+      decidedBy: 'card',
+    });
+    expect((await f.post(verifyInput)).json()).toEqual({ action: 'cancel' });
+    expect(f.save).not.toHaveBeenCalled();
+  });
+
+  it('grants eligible packages without prompting and revokes a completed install', async () => {
+    const f = fixture('protected', true, packageMetadata('2020-01-01T00:00:00Z'));
+    const result = (await f.post(verifyInput)).json<{ action: string; installToken: string }>();
+    expect(result.action).toBe('continue');
+    expect(f.prompt).not.toHaveBeenCalled();
+    expect(npmInstallGrant(result.installToken)?.policy.packages).toEqual(
+      new Set(['example@1.0.0']),
+    );
+    expect(
+      (await f.post({ ...input, action: 'complete', installToken: result.installToken })).json(),
+    ).toEqual({ action: 'complete' });
+    expect(npmInstallGrant(result.installToken)).toBeUndefined();
+    expect(
+      (await f.post({ ...input, action: 'complete', installToken: result.installToken }))
+        .statusCode,
+    ).toBe(409);
+  });
+
+  it.each([undefined, null, 'not-a-date', '2026-02-30T00:00:00Z'])(
+    'blocks unverifiable publication time %j without offering an exception',
+    async (published) => {
+      const f = fixture('skipped', true, packageMetadata(published));
+      const result = await f.post(verifyInput);
+      expect(result.statusCode).toBe(409);
+      expect(result.json().error).toContain('example@1.0.0');
+      expect(f.prompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a stronger release age and validates verify inputs', async () => {
+    const f = fixture(
+      'protected',
+      true,
+      packageMetadata(new Date(Date.now() - 4 * 86400_000).toISOString()),
+    );
+    f.prompt.mockResolvedValue(allow('install'));
+    const response = (await f.post({ ...verifyInput, minimumAgeDays: 7 })).json<{
+      installToken: string;
+    }>();
+    expect(f.prompt).toHaveBeenCalledOnce();
+    expect(npmInstallGrant(response.installToken)?.policy.minimumAgeDays).toBe(7);
+    expect((await f.post({ ...verifyInput, minimumAgeDays: 0 })).statusCode).toBe(400);
+    expect((await f.post({ ...verifyInput, manager: 'pip' })).statusCode).toBe(400);
+    expect(
+      (await f.post({ ...verifyInput, packages: [{ name: '../escape', version: '1.0.0' }] }))
+        .statusCode,
+    ).toBe(400);
+  });
+
+  it('looks up many packages concurrently within the bound and keeps lockfile order', async () => {
+    // Serial lookups made a ~1,500-version lockfile take minutes; unbounded ones
+    // would flood the registry. Both the bound and the result must hold.
+    let active = 0;
+    let peak = 0;
+    const inner = namedMetadata((name) =>
+      name === 'pkg-3' ? new Date(Date.now() - 86400_000).toISOString() : '2020-01-01T00:00:00Z',
+    );
+    const transport = vi.fn<BrokeredHttpStreamTransport>().mockImplementation(async (request) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((done) => setTimeout(done, 20));
+      active--;
+      return inner(request);
+    });
+    const f = fixture('protected', true, transport);
+    f.prompt.mockResolvedValue(allow('install'));
+    const names = Array.from({ length: PUBLICATION_LOOKUP_CONCURRENCY * 3 }, (_, i) => `pkg-${i}`);
+    const response = await f.post({
+      ...verifyInput,
+      packages: names.map((name) => ({ name, version: '1.0.0' })),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(names.length);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(PUBLICATION_LOOKUP_CONCURRENCY);
+    expect(f.prompt).toHaveBeenCalledOnce();
+    expect(JSON.stringify(f.prompt.mock.calls[0]![0])).toContain('pkg-3@1.0.0');
+  });
+  it('stops remaining lookups after a rejection and keeps the 409', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockImplementation(
+        namedMetadata((name) => (name === 'pkg-0' ? undefined : '2020-01-01T00:00:00Z'), 20),
+      );
+    const f = fixture('protected', true, transport);
+    const names = Array.from({ length: PUBLICATION_LOOKUP_CONCURRENCY * 4 }, (_, i) => `pkg-${i}`);
+    const response = await f.post({
+      ...verifyInput,
+      packages: names.map((name) => ({ name, version: '1.0.0' })),
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>().error).toContain('pkg-0@1.0.0');
+    expect(transport.mock.calls.length).toBeLessThan(names.length);
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
+  it('fails closed when provider metadata cannot be retrieved', async () => {
+    const f = fixture('protected', true, async () => {
+      throw new Error('offline');
+    });
+    expect((await f.post(verifyInput)).statusCode).toBe(502);
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
+  it('reuses publication facts for their lifetime while rechecking floors and never caching exceptions', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockImplementation(packageMetadata(new Date(Date.now() - 4 * 86400_000).toISOString()));
+    const f = fixture('protected', true, transport);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    f.prompt.mockResolvedValue(allow('install'));
+    await f.post({ ...verifyInput, minimumAgeDays: 7 });
+    await f.post({ ...verifyInput, minimumAgeDays: 7 });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(f.prompt).toHaveBeenCalledTimes(2);
+    f.resolve.mockResolvedValueOnce(undefined);
+    expect((await f.post(verifyInput)).statusCode).toBe(401);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + PUBLICATION_FACT_TTL_MS + 1);
+    try {
+      expect((await f.post(verifyInput)).statusCode).toBe(200);
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+  it('does not cache missing publication times or failed provider responses', async () => {
+    const transport = vi
+      .fn<BrokeredHttpStreamTransport>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(packageMetadata(undefined))
+      .mockImplementation(packageMetadata('2020-01-01T00:00:00Z'));
+    const f = fixture('protected', true, transport);
+    expect((await f.post(verifyInput)).statusCode).toBe(502);
+    expect((await f.post(verifyInput)).statusCode).toBe(409);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    expect((await f.post(verifyInput)).statusCode).toBe(200);
+    expect(transport).toHaveBeenCalledTimes(3);
+  });
+  it('bounds publication facts instead of retaining every encountered release', async () => {
+    let currentVersions: string[] = [];
+    const transport = vi.fn<BrokeredHttpStreamTransport>().mockImplementation(
+      async () =>
+        Object.assign(
+          Readable.from([
+            JSON.stringify({
+              name: 'example',
+              versions: Object.fromEntries(
+                currentVersions.map((version) => [
+                  version,
+                  {
+                    version,
+                    dist: {
+                      tarball: 'https://registry.npmjs.org/example/-/example.tgz',
+                      integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+                    },
+                  },
+                ]),
+              ),
+              'dist-tags': {},
+              time: Object.fromEntries(
+                currentVersions.map((version) => [version, '2020-01-01T00:00:00Z']),
+              ),
+            }),
+          ]),
+          { statusCode: 200, headers: {} },
+        ) as IncomingMessage,
+    );
+    const f = fixture('protected', true, transport);
+    // Fill the fact cache exactly, add one more release, then ask for the first one
+    // again: it must have been evicted rather than retained beyond the bound.
+    const batch = 5000;
+    const rounds = Array.from({ length: PUBLICATION_FACT_LIMIT / batch }, (_, index) => [
+      index * batch,
+      batch,
+    ]);
+    for (const [start, count] of [...rounds, [PUBLICATION_FACT_LIMIT, 1], [0, 1]]) {
+      currentVersions = Array.from({ length: count! }, (_, index) => `1.0.${start! + index}`);
+      const response = await f.post({
+        ...verifyInput,
+        packages: currentVersions.map((version) => ({ name: 'example', version })),
+      });
+      expect(response.statusCode).toBe(200);
+    }
+    expect(transport).toHaveBeenCalledTimes(rounds.length + 2);
+  });
+
   it('keeps a saved Skip authoritative when another manager already has protection', async () => {
     const f = fixture('skipped');
     expect((await f.post({ ...input, manager: 'pip', protected: true })).json()).toEqual({

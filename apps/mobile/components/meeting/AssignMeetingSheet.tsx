@@ -1,3 +1,4 @@
+import { projectTitle } from '@verity/mobile';
 import type { ProjectRecord, SessionSummary } from '@verity/mobile';
 import { useEffect, useMemo, useState } from 'react';
 import { View } from 'react-native';
@@ -33,7 +34,7 @@ export function recentProjects(
       const ra = rank.indexOf(a.project.id);
       const rb = rank.indexOf(b.project.id);
       if (ra !== rb) return (ra === -1 ? Infinity : ra) - (rb === -1 ? Infinity : rb);
-      return a.project.repo.localeCompare(b.project.repo);
+      return projectTitle(a.project).localeCompare(projectTitle(b.project));
     });
 }
 
@@ -83,7 +84,7 @@ export function AssignMeetingSheet({
     const list = choices ?? [];
     if (!needle) return list.slice(0, 6);
     return list.filter(({ project }) =>
-      `${project.owner}/${project.repo}`.toLowerCase().includes(needle),
+      `${projectTitle(project)} ${project.owner}/${project.repo}`.toLowerCase().includes(needle),
     );
   }, [choices, query]);
 
@@ -147,7 +148,7 @@ export function AssignMeetingSheet({
               {shown.map(({ project, latestSession }) => (
                 <Row
                   key={project.id}
-                  title={project.repo}
+                  title={projectTitle(project)}
                   subtitle={latestSession ? `Latest session: ${latestSession}` : undefined}
                   navigates
                   disabled={busy !== null}

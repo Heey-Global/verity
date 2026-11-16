@@ -44,8 +44,9 @@ read-only for project agents. Each session receives its own durable Documents
 working copy; local sessions start in it, and Code sessions receive its path in
 their instructions. Global files are available read-only at
 `/knowledge/shared`, with the same `sources/` and `insights/` organization. Agents use ordinary
-file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool
-or Wiki maintenance flow.
+file tools such as `ls`, `grep`, and `cat`; there is no separate Knowledge tool.
+The built-in `wiki-maintain` Skill describes how agents set up and extend the Wiki
+(see [Wiki setup and change log](#wiki-setup-and-change-log)).
 
 Verity Control receives the Knowledge folder of its built-in `verity-control` project,
 plus Global knowledge. Control retains a writable `/knowledge/insights` mount. It does not mount other projects'
@@ -53,8 +54,9 @@ Knowledge. `verity-memory append` saves explicitly requested notes to Control's 
 project overview through its authenticated turn broker. Managed updates reconcile
 these mounts; legacy Compose deployments receive them when the updated stack is applied.
 
-Agents create or revise concise insights without asking first when their work produces a
-durable, reusable conclusion grounded in project sources. They prefer updating an existing
+Agents change Wiki content only when the user explicitly asks or confirms the concrete
+change. When their work produces a durable, reusable conclusion grounded in project
+sources, they offer it as a Wiki change and ask. They prefer updating an existing
 insight, cite relevant source paths, and mark uncertainty. They ask before preserving sensitive
 personal information or a disputed interpretation. Routine progress, transient state,
 unsupported speculation, and secrets do not belong in insights.
@@ -183,10 +185,125 @@ second database. Structured writes do not migrate existing free-form documents.
 
 ## Shared knowledge in the app
 
-Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory.
+Project settings > Project knowledge opens Decisions (`insights/decisions/`), Wiki (`insights/`) and Raw Sources (`sources/`) without requiring a session. Project context remains separately editable through Instructions and Memory; Instructions also show the read-only `AGENTS.md` of connected repositories (see [project repositories](project-collaboration.md#instructions-across-repositories)).
 
 Settings > Shared knowledge is the central browser for cross-project reference material. Personal Instructions and Memory remain separate under Settings > Personal context; project Instructions and Memory remain in project settings. Project and session file browsers show project files only. Existing Shared file links open the central Settings view.
 
 Active users can browse and download Shared files without selecting a project or session. Administrators can edit supported text files under Shared Wiki (`insights/`); writes require the version last read so concurrent changes cannot silently overwrite one another. Original sources and derived files remain protected in this editor. Publishing from a project continues to use the existing explicit publication approval.
 
 This navigation change does not move existing files, convert shared material into private context, or remove agent read access to `/knowledge/shared`.
+
+## Wiki setup and change log
+
+The project Wiki explains itself when it has no start page. An empty Wiki offers
+**Set up Wiki**; a Wiki with pages but without `insights/index.md` offers **Create
+overview** above its page list. Both open a project session with a prepared request:
+the agent asks what the project is for and what matters now, proposes topics with
+the existing pages they cover, and writes nothing until the user confirms. It then
+writes `index.md`, `wiki-conventions.md` (the project's own Wiki rules) and a
+`setup` entry in `log.md`. **How the Wiki works**, behind the ⓘ in the Wiki's
+header, explains the roles and links the conventions and the change log;
+**Rebuild overview…** runs the same setup again.
+
+`log.md` is append-only. An entry is a heading `## [YYYY-MM-DD] kind | Title` (UTC date), with
+kind `setup`, `ingest`, `chat`, `merge` or `lint`, followed by links to the pages it
+changed and the sources it used. The Wiki catalog gives every page the latest entry
+that links to it, so **Recently updated** names where a change came from; pages the
+log never names fall back to their file age.
+
+## Wiki maintenance occasions
+
+The server notes what a project's Wiki may need to reflect, once per item, in
+`wiki_occasions`: an imported or uploaded source, a filed meeting transcript, a
+recorded decision, a changed chat day from a connected room, a merged pull request
+of a project session, and a session deleted as done. Noting never fails the event
+that caused it.
+
+Deleting a session can keep its conversation for the Wiki (`DELETE
+/sessions/:id?wiki=true`). The server then stores the plain messages of the user and
+Verity, without tool output, with the occasion and deletes the session as usual.
+Only the most recent 256 KiB of the conversation is read and kept, and a deletion
+waits at most five seconds for it; a slower store may still record it afterwards. Nothing is copied into the project's knowledge; reading the occasion in a
+maintenance run drops the stored text. Without `wiki=true`, which older clients
+never send, nothing is kept and an earlier occasion of that session is forgotten.
+A merged pull request is recorded once even when the status cache reports it again
+after a restart; a chat day or re-filed meeting opens its occasion again. A
+maintenance run closes only the version it read, so an occasion reopened while the
+run works stays open with its new text. Until a maintenance run reads them, open
+occasions and their kept text remain stored, also while a deleted project is
+hidden; they are removed only with the project's database row.
+
+## Wiki maintenance runs
+
+A run starts only when something new happened, never on a fixed schedule. Every
+15 minutes the server looks at projects with open occasions and starts a run when
+all of these hold:
+
+- The project's Wiki is set up (`insights/index.md` exists while the knowledge volume is present). Without it no run
+  starts, and open occasions older than 30 days are discarded.
+- The project is active or sleeping, and not deleted. A paused, failed or still
+  provisioning project is never started for its Wiki; Verity Control has none.
+- The newest occasion is at least 2 hours old, so a burst settles into one run.
+- The last run started at least 20 hours ago.
+- A sleeping project is woken only when its oldest occasion is 3 days old or 20
+  are open; otherwise its occasions wait.
+- No session of the project is working.
+
+The run is a turn in the project's quiet maintenance session, created on first
+use with the project's default model and recorded in `wiki_maintenance` together
+with the time the last run started. The slot is claimed before the run starts, so
+two server generations never both start one; a run that could not start gives the
+slot back. The session appears in no session list or message search and sends
+no push notification; when it is gone, the next run creates a new
+one. Its fixed assignment points the agent to the `wiki-maintain` Skill, which
+reads the occasions with `verity_wiki_read_occasions` (a list, then each kept text
+in pages of 40,000 characters), proposes changes with `verity_wiki_propose` in
+mode `maintenance` and closes what it read with `verity_wiki_close_occasions`.
+Only the maintenance session may read or close occasions.
+
+Because the run reads untrusted text with nobody watching, its posture belongs to
+the session, not to the request: every turn of the maintenance session runs with
+the same read-only isolation as planning (read-only file system, no Docker) and
+with only Verity tools, also when it is recovered or queued. The agent's native
+execution tools are disabled on Claude, Codex and OpenCode. Wiki pages and source text are
+read through `verity_wiki_read_page` in bounded sections. The gateway refuses
+every external tool except this reader, the occasion operations and `propose_wiki`;
+the project's connected MCP servers refuse the session. A Sandbox toolkit without
+support for restricting native tools cannot start the run. Codex requires a concrete
+`codex/<model>` selection; `codex/default` is refused because its model metadata is
+not pinned. The broker supplies a restricted model catalog as well as disabling
+native-tool features. OpenCode denies native tool and Skill execution through
+broker-owned policies; its inert `skill` tool may remain advertised. The trusted
+maintenance Skill is included in the assignment, so loading it needs no native tool.
+The results appear as
+proposals to review on the Wiki; the run itself changes no page.
+
+## Wiki proposals
+
+Agents that have no confirmation for a concrete Wiki change propose it with
+`verity_wiki_propose`: mode `inline` at the end of an answer in chat (one per
+answer), mode `maintenance` in maintenance runs. A proposal names its sources, a
+title for the change log, and for each page its complete new Markdown and a
+one-line summary. Pages are Markdown files in the Wiki; `log.md` and decision
+records cannot be proposed.
+
+Proposals are stored as files under `<data root>/wiki-proposals/<project>/`, beside
+the project's knowledge rather than in it, so agents never read an undecided change
+as knowledge. The server records each page's version when the proposal is made. A
+change identical to one already proposed, applied or rejected, or to the page as
+it is, is skipped; at most 50 proposals per project can wait for review.
+
+`GET /projects/:id/knowledge/proposals` lists open proposals with each page's path,
+summary and whether it changed since the proposal (`stale`);
+`GET …/proposals/:proposalId` adds the proposed and the current text. Reading
+requires read access to the project. `POST …/proposals/:proposalId/apply` and `…/reject`
+decide all pending pages or those named in `paths` and require the Wiki's edit
+access (project `manage`). Applying writes through the Wiki's versioned editor
+path, so a page edited meanwhile is reported as stale and left unchanged, a page
+that cannot be written is reported as failed and stays pending, and applying adds
+one `log.md` entry with the applied pages and the sources; when that entry cannot
+be written, the apply still succeeds and returns a warning. A decided change keeps
+only a fingerprint of its text; the Wiki's own version history holds what was
+applied. Like the project's knowledge folder, proposals stay on disk when a project is
+deleted, which only hides it; while it is hidden they can be neither listed nor
+decided.

@@ -11,6 +11,27 @@ export interface AssistantSettings {
   session_id: string | null;
 }
 
+/** A device message to the assistant, or an answer to one of its questions. */
+export type AssistantRequestKind = 'message' | 'answer';
+
+export interface AssistantRequest {
+  request_id: string;
+  session_id: string;
+  user_id: string;
+  kind: AssistantRequestKind;
+  question_id: string | null;
+  state: 'pending' | 'accepted';
+  created_at: Date;
+}
+
+/** Outcome of {@link AssistantStore.claimRequest}. */
+export type AssistantRequestClaim =
+  | { claimed: true }
+  /** The id was used before; `request` is that first delivery. */
+  | { claimed: false; request: AssistantRequest }
+  /** Another request already answered this question. */
+  | { claimed: false; answeredBy: AssistantRequest };
+
 export interface AssistantGrant {
   project_id: string;
   mode: AssistantMode;
@@ -80,6 +101,77 @@ export class AssistantStore {
 
   async setGrant(projectId: string, sponsor: string, mode: AssistantMode): Promise<void> {
     await sql`insert into assistant_project_grants (project_id, sponsor_user_id, mode) values (${projectId}, ${sponsor}, ${mode}) on conflict (project_id) do update set mode = excluded.mode, sponsor_user_id = excluded.sponsor_user_id, revision = assistant_project_grants.revision + 1, updated_at = now()`.execute(
+      this.db,
+    );
+  }
+
+  /**
+   * Claims a client-minted request id before its turn is dispatched. A replay of
+   * the same id returns the first row; a second answer to the same question is
+   * refused through the partial unique index, so two devices cannot both answer.
+   * A pending row older than `staleAfterMs` was left by a dispatch that never
+   * finished (a crash between claim and turn) and is claimed again.
+   */
+  async claimRequest(input: {
+    requestId: string;
+    sessionId: string;
+    userId: string;
+    kind: AssistantRequestKind;
+    questionId?: string;
+    staleAfterMs?: number;
+  }): Promise<AssistantRequestClaim> {
+    const questionId = input.kind === 'answer' ? (input.questionId ?? null) : null;
+    const inserted = await sql`insert into assistant_requests
+        (request_id, session_id, user_id, kind, question_id)
+      values (${input.requestId}, ${input.sessionId}, ${input.userId}, ${input.kind}, ${questionId})
+      on conflict do nothing returning request_id`.execute(this.db);
+    if (inserted.rows.length > 0) return { claimed: true };
+    const existing = await this.request(input.requestId);
+    if (existing !== undefined) {
+      const stale = input.staleAfterMs ?? 120_000;
+      if (
+        existing.state === 'pending' &&
+        existing.user_id === input.userId &&
+        existing.session_id === input.sessionId &&
+        existing.kind === input.kind &&
+        existing.question_id === questionId
+      ) {
+        const reclaimed = await sql`update assistant_requests set created_at = now()
+          where request_id = ${input.requestId} and state = 'pending'
+            and created_at < now() - make_interval(secs => ${stale / 1000})
+          returning request_id`.execute(this.db);
+        if (reclaimed.rows.length > 0) return { claimed: true };
+      }
+      return { claimed: false, request: existing };
+    }
+    const answeredBy = (
+      await sql<AssistantRequest>`select * from assistant_requests
+        where session_id = ${input.sessionId} and question_id = ${questionId} and kind = 'answer'`.execute(
+        this.db,
+      )
+    ).rows[0];
+    if (answeredBy === undefined) throw new Error('assistant request claim lost a concurrent race');
+    return { claimed: false, answeredBy };
+  }
+
+  async request(requestId: string): Promise<AssistantRequest | undefined> {
+    return (
+      await sql<AssistantRequest>`select * from assistant_requests where request_id = ${requestId}`.execute(
+        this.db,
+      )
+    ).rows[0];
+  }
+
+  /** Marks a claimed request as delivered to the assistant session. */
+  async acceptRequest(requestId: string): Promise<void> {
+    await sql`update assistant_requests set state = 'accepted' where request_id = ${requestId}`.execute(
+      this.db,
+    );
+  }
+
+  /** Drops a claim whose turn was refused, so the device can retry the same id. */
+  async releaseRequest(requestId: string): Promise<void> {
+    await sql`delete from assistant_requests where request_id = ${requestId} and state = 'pending'`.execute(
       this.db,
     );
   }

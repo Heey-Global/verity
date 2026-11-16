@@ -15,6 +15,7 @@ import {
   readAgentGatewayStatus,
   startAgentGatewayControlServer,
   type AgentGatewayConfiguration,
+  type AgentGatewayPerson,
   type AgentGatewayControlServer,
 } from './agent-gateway-control.js';
 import {
@@ -66,6 +67,66 @@ describe('agent gateway Unix control channel', () => {
     await expect(readCodexCredentialUpdate(socketPath)).resolves.toBeUndefined();
   });
 
+  // Which login serves a person must never depend on entry order, and a person's
+  // rotation must be acknowledged as theirs, never as the instance login's.
+  it('accepts a personal section only with one entry per person and acks per person', async () => {
+    const socketPath = await temporarySocket();
+    const acks: Array<string | undefined> = [];
+    const configured: AgentGatewayConfiguration[] = [];
+    servers.push(
+      await startAgentGatewayControlServer({
+        socketPath,
+        configure: (configuration) => {
+          configured.push(configuration);
+        },
+        status: () => ({ ready: true, configured: true, claudePeerCount: 0 }),
+        ackCodexCredentialUpdate: (_source, _updated, userId) => {
+          acks.push(userId);
+        },
+      }),
+    );
+    const base: AgentGatewayConfiguration = {
+      revision: 'r',
+      claude: { tls: { ca: 'ca', cert: 'cert', key: 'key' }, peerBindings: [] },
+    };
+    const personal = (people: AgentGatewayPerson[]) => ({
+      ...base,
+      personal: { instanceUserId: 'admin', unsealKey: '6a'.repeat(32), people },
+    });
+    await configureAgentGateway(
+      socketPath,
+      personal([{ userId: 'lena', claude: { accessToken: 't' } }]),
+    );
+    expect(configured).toHaveLength(1);
+    await expect(
+      configureAgentGateway(
+        socketPath,
+        personal([
+          { userId: 'lena', claude: { accessToken: 'a' } },
+          { userId: 'lena', claude: { accessToken: 'b' } },
+        ]),
+      ),
+    ).rejects.toThrow('invalid gateway configuration');
+    await expect(
+      configureAgentGateway(
+        socketPath,
+        personal([{ userId: 'lena', claude: { accessToken: 'a\nb' } }]),
+      ),
+    ).rejects.toThrow('invalid gateway configuration');
+    expect(configured).toHaveLength(1);
+
+    await ackCodexCredentialUpdate(socketPath, {
+      userId: 'lena',
+      sourceRevision: '1'.repeat(64),
+      updatedRevision: '2'.repeat(64),
+    });
+    await ackCodexCredentialUpdate(socketPath, {
+      sourceRevision: '1'.repeat(64),
+      updatedRevision: '2'.repeat(64),
+    });
+    expect(acks).toEqual(['lena', undefined]);
+  });
+
   it('hands the Server a Codex access token without exposing the rotating login', async () => {
     const socketPath = await temporarySocket();
     const login: { credential?: { accessToken: string; accountId: string } } = {};
@@ -80,6 +141,39 @@ describe('agent gateway Unix control channel', () => {
     await expect(readCodexAccessToken(socketPath)).resolves.toBeUndefined();
     login.credential = { accessToken: 'access-1', accountId: 'acct-1' };
     await expect(readCodexAccessToken(socketPath)).resolves.toEqual(login.credential);
+  });
+
+  // A gateway that predates per-person logins ignores the person in the request
+  // and would answer with the administrator's login; such a gateway is never
+  // asked for a person's token at all.
+  it("reads a person's own Codex token only from a gateway that tells people apart", async () => {
+    const socketPath = await temporarySocket();
+    let capable = false;
+    const asked: Array<string | undefined> = [];
+    servers.push(
+      await startAgentGatewayControlServer({
+        socketPath,
+        configure: () => undefined,
+        status: () => ({
+          ready: true,
+          configured: true,
+          claudePeerCount: 0,
+          ...(capable ? { perUserCredentials: true } : {}),
+        }),
+        readCodexAccessToken: (userId) => {
+          asked.push(userId);
+          return { accessToken: `token-${userId ?? 'instance'}`, accountId: 'acct' };
+        },
+      }),
+    );
+    await expect(readCodexAccessToken(socketPath, 'lena')).resolves.toBeUndefined();
+    expect(asked).toEqual([]);
+    capable = true;
+    await expect(readCodexAccessToken(socketPath, 'lena')).resolves.toEqual({
+      accessToken: 'token-lena',
+      accountId: 'acct',
+    });
+    expect(asked).toEqual(['lena']);
   });
 
   it('reports a failed Codex token read structurally, without the failure detail', async () => {
