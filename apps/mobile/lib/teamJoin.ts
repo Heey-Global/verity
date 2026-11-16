@@ -2,7 +2,7 @@ import { VerityApiError, VerityClient } from '@verity/mobile';
 import { CryptoDigestAlgorithm, digest, getRandomBytes } from 'expo-crypto';
 import { requireNativeModule } from 'expo-modules-core';
 
-import { adoptStoredAuthToken, setAuthToken } from './authToken';
+import { adoptStoredAuthToken, getStoredAuthTokenId, setAuthToken } from './authToken';
 import { setVerityBaseUrl } from './client';
 import { requestRemoteControlAdmission } from './remoteControlAdmission';
 import {
@@ -90,25 +90,40 @@ async function joinTeamAttempt(
   if (saved !== null) link = saved.link;
   if (saved?.credential === undefined && link.expiresAt <= Date.now())
     throw new TeamJoinLinkError('expired');
-  // A server this app already uses keeps its own credential; a second one for
-  // the same server would sign this device in as someone else.
+  const validateConnections = async (credential?: { tokenId: string }) => {
+    const profiles = [getServerProfile(), ...getOtherServerProfiles()];
+    for (const profile of profiles) {
+      if (profile === null) continue;
+      const sameServer = profile.serverId === link.serverId;
+      const sameAddress =
+        profile.activeUrl === link.coreOrigin ||
+        profile.endpoints?.some((endpoint) => endpoint.url === link.coreOrigin);
+      if (!sameServer && !sameAddress) continue;
+      if (!sameServer) throw new TeamJoinLinkError('invalid');
+      // Only our own partially activated credential may reuse a known server.
+      // Another account paired while joining was paused must never be replaced.
+      if (
+        credential === undefined ||
+        (await getStoredAuthTokenId(profile.activeUrl)) !== credential.tokenId
+      ) {
+        throw new TeamJoinError(
+          'known_server',
+          'This app is already connected to this server with another device access.',
+        );
+      }
+      if (
+        sameAddress &&
+        profile.activeUrl !== link.coreOrigin &&
+        (await getStoredAuthTokenId(link.coreOrigin)) !== credential.tokenId
+      )
+        throw new TeamJoinError(
+          'known_server',
+          'This address already has different device access.',
+        );
+    }
+  };
+  await validateConnections(saved?.credential);
   const known = [getServerProfile(), ...getOtherServerProfiles()];
-  if (
-    saved?.credential === undefined &&
-    known.some((profile) => profile?.serverId === link.serverId)
-  ) {
-    throw new TeamJoinError('known_server', 'This app is already connected to this server.');
-  }
-  // Credentials are kept per address: a link naming the address of another
-  // server this app uses would overwrite that server's credential.
-  if (
-    saved?.credential === undefined &&
-    known.some((profile) =>
-      profile?.endpoints?.some((endpoint) => endpoint.url === link.coreOrigin),
-    )
-  ) {
-    throw new TeamJoinLinkError('invalid');
-  }
   const derived = await serverIdFor(link.identityKey, (bytes) =>
     digest(CryptoDigestAlgorithm.SHA256, bytes),
   );
@@ -390,6 +405,8 @@ async function joinTeamAttempt(
     controller.signal.throwIfAborted();
     if (joined === undefined) throw new Error('No saved device credential.');
 
+    await validateConnections(joined);
+    controller.signal.throwIfAborted();
     if (!(await setAuthToken(link.coreOrigin, joined.token, joined.tokenId, false)))
       throw new Error('Could not save the device credential. Open the invitation again.');
     controller.signal.throwIfAborted();

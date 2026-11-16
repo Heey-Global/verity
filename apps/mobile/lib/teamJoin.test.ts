@@ -23,7 +23,9 @@ const mockSetToken = jest.fn(async (..._args: unknown[]) => {
   mockCalls.push('token');
   return true;
 });
+const mockStoredTokenId = jest.fn(async (_url: string) => null as string | null);
 jest.mock('./authToken', () => ({
+  getStoredAuthTokenId: (url: string) => mockStoredTokenId(url),
   adoptStoredAuthToken: jest.fn(),
   setAuthToken: (...args: unknown[]) => mockSetToken(...args),
 }));
@@ -128,6 +130,7 @@ const deps: JoinTeamDeps = { admission, tunnel: () => tunnel };
 const finish = jest.fn();
 
 beforeEach(() => {
+  mockStoredTokenId.mockReset().mockResolvedValue(null);
   mockProgress.current = null;
   mockSaveProgress.mockImplementation(async (value: unknown) => {
     mockCalls.push('save');
@@ -492,4 +495,56 @@ it('uses one ordinary Remote Control attachment when both bootstrap and direct t
   await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
   expect(mockRemote).toHaveBeenCalledTimes(1);
   expect(mockJoin).toHaveBeenCalledTimes(1);
+});
+
+it.each(['same-server', 'same-address'])(
+  'preserves an intervening account when resuming a saved join: %s',
+  async (collision) => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    mockProfile.current = {
+      serverId: collision === 'same-server' ? link.serverId : 'another-server',
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin }],
+    };
+    mockStoredTokenId.mockResolvedValueOnce('another-account');
+    await expect(joinTeam(link, 'Lena', deps)).rejects.toBeInstanceOf(Error);
+    expect(mockSetToken).not.toHaveBeenCalled();
+    expect(mockSaveProfile).not.toHaveBeenCalled();
+  },
+);
+
+it('allows a saved join to finish its own partially activated profile', async () => {
+  const controller = new AbortController();
+  mockComplete.mockImplementationOnce(async () => {
+    controller.abort();
+    throw new Error('lost');
+  });
+  await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  mockProfile.current = {
+    serverId: link.serverId,
+    activeUrl: link.coreOrigin,
+    endpoints: [{ url: link.coreOrigin }],
+  };
+  mockStoredTokenId.mockResolvedValue('tok-1');
+  mockComplete.mockResolvedValue({ projectId: 'p1', confirmed: true });
+  await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+});
+
+it('rechecks account collisions after completion before writing the new credential', async () => {
+  mockComplete.mockImplementation(async () => {
+    mockProfile.current = {
+      serverId: link.serverId,
+      activeUrl: link.coreOrigin,
+      endpoints: [{ url: link.coreOrigin }],
+    };
+    return { projectId: 'p1', confirmed: true };
+  });
+  await expect(joinTeam(link, 'Lena', deps)).rejects.toMatchObject({ reason: 'known_server' });
+  expect(mockSetToken).not.toHaveBeenCalled();
+  expect(mockSaveProfile).not.toHaveBeenCalled();
 });
