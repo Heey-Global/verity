@@ -1,7 +1,7 @@
 import type { PeopleDatabase } from './schema-people.js';
+import type { SandboxDatabase } from './schema-sandbox.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-
 export interface ProjectInquiryGrantsTable {
   source_project_id: string;
   target_project_id: string;
@@ -1794,7 +1794,7 @@ interface VulnerabilityFixesTable {
   failed: Generated<boolean>;
 }
 
-export interface Database extends PeopleDatabase {
+export interface Database extends PeopleDatabase, SandboxDatabase {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
