@@ -537,3 +537,23 @@ migrations['0224_managed_dev_server_legacy_approver'] = {
     // Which approvers this filled in is not recorded; they stay.
   },
 };
+
+migrations['0225_team_outbox_exhaustion'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table team_outbox add column failed_at timestamptz`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table team_outbox drop column failed_at`.execute(db);
+  },
+};
+
+migrations['0226_team_join_replay_device'] = {
+  async up(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table team_join_admissions add column device_token_encrypted text,
+      add column device_token_id text`.execute(db);
+  },
+  async down(db: Kysely<unknown>): Promise<void> {
+    await sql`alter table team_join_admissions drop column device_token_encrypted,
+      drop column device_token_id`.execute(db);
+  },
+};

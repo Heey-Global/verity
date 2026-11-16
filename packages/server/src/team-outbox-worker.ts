@@ -5,6 +5,7 @@ import type { ProjectTeamStore, TeamOutboxEntry } from '@verity/store';
 type Team = Pick<
   ProjectTeamStore,
   | 'dueOperations'
+  | 'failExhaustedOperations'
   | 'completeOperation'
   | 'retryOperation'
   | 'markInvitationCreated'
@@ -111,6 +112,11 @@ export function createTeamOutboxWorker(deps: {
   };
 
   const tick = async (): Promise<void> => {
+    for (const operation of await deps.team.failExhaustedOperations(now()))
+      deps.log?.warn(
+        operation,
+        'verity: team change exhausted its retry window; awaiting the next team change',
+      );
     if (!deps.uplink.teamNegotiated()) return;
     for (const operation of await deps.team.dueOperations(now())) {
       try {

@@ -65,14 +65,35 @@ describe('team join route', () => {
         },
       });
     const first = await join();
-    expect(first.statusCode).toBe(200);
+    expect(first.statusCode, first.body).toBe(200);
     const { token, userId } = first.json<{ token: string; userId: string }>();
     expect(registry.resolveUserId(token)).toBe(userId);
     expect(userId).not.toBe(ADMIN);
 
-    // The same redemption again, as after a lost answer: same person, new device token.
+    // A lost answer must not create another device or change its bearer.
     const again = await join();
-    expect(again.json<{ userId: string }>().userId).toBe(userId);
+    expect(again.json()).toEqual(first.json());
+    expect(await registry.list()).toHaveLength(1);
+    const restartedRegistry = await createAuthTokenRegistry(ctx.store, { enabled: true });
+    const restarted = Fastify();
+    registerTeamJoinRoutes(restarted, { store: ctx.store, authRegistry: restartedRegistry });
+    try {
+      const replay = await restarted.inject({
+        method: 'POST',
+        url: '/team/join',
+        payload: {
+          invitationId: INVITATION,
+          secret,
+          redemptionId: 'r1',
+          displayName: 'Lena',
+        },
+      });
+      expect(replay.json()).toEqual(first.json());
+      expect(restartedRegistry.resolveUserId(token)).toBe(userId);
+    } finally {
+      await restarted.close();
+      restartedRegistry.dispose?.();
+    }
 
     const wrongSecret = await join({ secret: 'A'.repeat(43), redemptionId: 'r2' });
     const otherRedemption = await join({ redemptionId: 'r3' });
