@@ -1,4 +1,4 @@
-// Your AI accounts: the signed-in person's own Claude, Codex and OpenCode
+// AI Account: the signed-in person's own Claude, Codex and OpenCode
 // accounts. Their turns run only on these (ADR 0023 §3); no credential ever
 // reaches this screen, only which providers are connected.
 import type { ProviderConnectionKind, ProviderConnections, VerityClient } from '@verity/mobile';
@@ -24,7 +24,7 @@ export default function AiAccountsScreen() {
       <SettingsMessage
         title="Not connected"
         subtitle="Configure your Verity server address in setup first."
-        screenTitle="Your AI accounts"
+        screenTitle="AI Account"
       />
     );
   }
@@ -83,12 +83,7 @@ export function AiAccountsView({ client }: { client: VerityClient }) {
       : router.push({ pathname: '/settings/ai-accounts/connect', params: { provider } });
 
   return (
-    <SettingsScaffold
-      title="Your AI accounts"
-      detail
-      state={{ error, saving: busy }}
-      onRetry={load}
-    >
+    <SettingsScaffold title="AI Account" detail state={{ error, saving: busy }} onRetry={load}>
       {connected.length > 0 ? (
         <>
           <SectionHeader title="Connected" variant="eyebrow" />

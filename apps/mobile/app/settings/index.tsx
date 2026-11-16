@@ -200,7 +200,7 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
           <SettingsNavRow
             icon="cpu"
-            title="Your AI accounts"
+            title="AI Account"
             subtitle="Claude, Codex and OpenCode for your turns"
             onPress={() => router.push('/settings/ai-accounts')}
           />
