@@ -126,27 +126,34 @@ export function createSessionRepositories(deps: {
   git?: ((project: ProjectRecord, clonePath: string) => GitOutput) | undefined;
 }) {
   const pending = new Map<string, Promise<unknown>>();
-  /** A repository project's legacy Documents view stands where its checkout belongs.
-   *  Local and Verity Control projects keep their Documents view on purpose. */
-  const documentsInPlaceOfCode = (worktree: string, project: ProjectRecord | undefined) =>
-    isDocumentWorkspace(worktree) &&
+  /** Documents remains intentional for local and control projects. Repository projects
+   * must never expose either a Documents view or a missing directory as their checkout. */
+  const codeUnavailable = async (worktree: string, project: ProjectRecord | undefined) =>
     project !== undefined &&
     project.kind !== 'local' &&
-    project.kind !== 'control_plane';
+    project.kind !== 'control_plane' &&
+    (isDocumentWorkspace(worktree) ||
+      !(await stat(worktree).then(
+        (entry) => entry.isDirectory(),
+        () => false,
+      )));
   async function list(sessionId: string) {
     const session = await deps.store.getSession(sessionId);
     if (!session?.projectId) throw new Error('project session required');
     const project = await deps.store.getProject(session.projectId);
     const workspaces = await deps.store.listSessionRepositoryWorkspaces(sessionId);
+    const unavailable = await codeUnavailable(session.worktree, project);
     return {
       repositories: (
         await deps.store.listProjectRepositories(session.projectId, { includeRemoved: true })
       ).map((repository) => ({
         ...repository,
         workspace:
-          workspaces.find((workspace) => workspace.repositoryId === repository.id) ??
+          (repository.isDefault && unavailable
+            ? null
+            : workspaces.find((workspace) => workspace.repositoryId === repository.id)) ??
           // A legacy Documents view is not a checkout of the default repository.
-          (repository.isDefault && !documentsInPlaceOfCode(session.worktree, project)
+          (repository.isDefault && !unavailable
             ? {
                 sessionId,
                 repositoryId: repository.id,
@@ -178,10 +185,10 @@ export function createSessionRepositories(deps: {
           'repository not connected',
           'repository is not connected to this project',
         );
-      if (repository.isDefault && documentsInPlaceOfCode(session.worktree, project))
+      if (repository.isDefault && (await codeUnavailable(session.worktree, project)))
         throw new RepositoryCheckoutError(
           'code workspace unavailable',
-          'this session has no code workspace yet; Verity restores it before the next turn',
+          "This session's code workspace is unavailable; use Restore to recover its saved checkout.",
         );
       if (repository.isDefault)
         return {

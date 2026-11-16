@@ -207,6 +207,14 @@ it('reports an ordinary missing checkout as unavailable and keeps a present one 
       codeAvailable: false,
       codeWorkspaceUnavailable: true,
     });
+    const turn = await h.app.inject({
+      method: 'POST',
+      url: '/sessions/s/turns',
+      payload: { prompt: 'Continue' },
+    });
+    expect(turn.statusCode).toBe(409);
+    expect(turn.json()).toMatchObject({ code: 'code_workspace_unavailable' });
+    expect(h.cwd).not.toHaveBeenCalled();
     await mkdir(h.target, { recursive: true });
     await writeFile(join(h.target, 'draft.ts'), 'saved');
     const present = await h.app.inject({ method: 'GET', url: '/sessions/s/files' });

@@ -164,18 +164,36 @@ describe('legacy Documents session conversion', () => {
     expect(head(f.target)).toBe('code-s');
   });
 
-  it('starts the branch from origin when only the pushed copy remains', async () => {
+  it.each([false, true])(
+    'starts the branch from origin when only the pushed copy remains (uncached=%s)',
+    async (uncached) => {
+      const f = fixture();
+      git(['-C', f.clone, 'checkout', '-qb', 'code-s']);
+      writeFileSync(join(f.clone, 'pushed.ts'), 'pushed\n');
+      git(['-C', f.clone, 'add', 'pushed.ts']);
+      git(['-C', f.clone, 'commit', '-qm', 'pushed']);
+      git(['-C', f.clone, 'push', '-q', 'origin', 'code-s']);
+      git(['-C', f.clone, 'checkout', '-q', 'main']);
+      git(['-C', f.clone, 'branch', '-D', 'code-s']);
+      if (uncached) git(['-C', f.clone, 'update-ref', '-d', 'refs/remotes/origin/code-s']);
+      const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
+      expect(result?.source).toBe('origin');
+      expect(readFileSync(join(f.target, 'pushed.ts'), 'utf8')).toBe('pushed\n');
+    },
+  );
+
+  it('does not start fresh when origin cannot establish whether saved work remains', async () => {
     const f = fixture();
-    git(['-C', f.clone, 'checkout', '-qb', 'code-s']);
-    writeFileSync(join(f.clone, 'pushed.ts'), 'pushed\n');
-    git(['-C', f.clone, 'add', 'pushed.ts']);
-    git(['-C', f.clone, 'commit', '-qm', 'pushed']);
-    git(['-C', f.clone, 'push', '-q', 'origin', 'code-s']);
-    git(['-C', f.clone, 'checkout', '-q', 'main']);
-    git(['-C', f.clone, 'branch', '-D', 'code-s']);
-    const result = await createCodeWorkspaceRecovery(f.deps).convert('s');
-    expect(result?.source).toBe('origin');
-    expect(readFileSync(join(f.target, 'pushed.ts'), 'utf8')).toBe('pushed\n');
+    const run = f.deps.git!;
+    f.deps.git = async (args) => {
+      if (args.includes('ls-remote')) throw new Error('origin unreachable');
+      return run(args);
+    };
+    await expect(createCodeWorkspaceRecovery(f.deps).convert('s')).rejects.toThrow(
+      'origin unreachable',
+    );
+    expect(existsSync(f.target)).toBe(false);
+    expect(f.session().worktree).toBe(f.view);
   });
 
   it('creates a fresh checkout only when no trace of the old one remains', async () => {

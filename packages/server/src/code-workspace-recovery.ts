@@ -125,6 +125,32 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       () => false,
     );
 
+  async function hasRemoteBranch(clone: string, branch: string): Promise<boolean> {
+    if (await hasRef(clone, `refs/remotes/origin/${branch}`)) return true;
+    const remotes = await git(['-C', clone, 'remote']);
+    if (!remotes.split(/\s+/u).includes('origin')) return false;
+    // A new clone may have no tracking ref for saved session work. An unreachable
+    // origin proves nothing about that work and must never allow a fresh branch.
+    const remote = await git([
+      '-C',
+      clone,
+      'ls-remote',
+      '--heads',
+      'origin',
+      `refs/heads/${branch}`,
+    ]);
+    if (!remote.trim()) return false;
+    await git([
+      '-C',
+      clone,
+      'fetch',
+      '--no-tags',
+      'origin',
+      `refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+    return true;
+  }
+
   async function materialize(
     project: ProjectRecord,
     session: SessionRecord,
@@ -167,7 +193,7 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
       `refs/heads/${branch}`,
     ))
       ? ['branch', await addExistingBranchWorktree(options, branch)]
-      : (await hasRef(clone, `refs/remotes/origin/${branch}`))
+      : (await hasRemoteBranch(clone, branch))
         ? ['origin', await addExistingBranchWorktree(options, branch, `origin/${branch}`)]
         : [
             'fresh',
@@ -387,6 +413,12 @@ export function createCodeWorkspaceRecovery(deps: CodeWorkspaceRecoveryDeps) {
           starting ? async (_, fn) => ({ ran: true, value: await fn() }) : deps.claimIdle,
           starting,
         );
+        const session = await deps.store.getSession(sessionId);
+        if (deps.cloneRoot && session?.projectId && !(await exists(session.worktree))) {
+          const project = await deps.store.getProject(session.projectId);
+          if (project && project.kind !== 'local' && project.kind !== 'control_plane')
+            await restore(sessionId);
+        }
       } catch (error) {
         if (!starting && error instanceof CodeWorkspaceUnavailableError && error.reason === 'busy')
           return;

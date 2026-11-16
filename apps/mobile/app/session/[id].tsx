@@ -248,6 +248,7 @@ import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../component
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
 import { FileRowActions } from '../../components/files/FileRowActions';
 import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
+import { useCodeWorkspaceAvailability } from '../../components/files/useCodeWorkspaceAvailability';
 import { FileRootTabs } from '../../components/files/FileRootTabs';
 import { CodeWorkspaceNotice } from '../../components/files/CodeWorkspaceNotice';
 import { FileNameDialog } from '../../components/files/FileNameDialog';
@@ -5298,30 +5299,20 @@ function SessionFilesSheet({
       ? getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.tlsPin
       : undefined;
 
-  // Read by the deep-link effect below, which runs before `openWith` is declared
-  // and must not refetch whenever its identity changes.
+  // The earlier deep-link effect reads `openWith` without depending on its identity.
   const openWithRef = useRef<((filePath: string) => void) | null>(null);
 
-  useEffect(() => {
-    if (codeAvailable) return;
-    let active = true;
-    const timer = setInterval(() => {
-      void client
-        .listSessionFiles(sessionId, '', 'worktree')
-        .then((dir) => {
-          if (active && dir.codeAvailable) {
-            setCodeAvailable(true);
-            setCodeMissing(false);
-            if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
-          }
-        })
-        .catch(() => undefined);
-    }, 5000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [client, sessionId, codeAvailable, documentSession]);
+  useCodeWorkspaceAvailability({
+    client,
+    sessionId,
+    codeAvailable,
+    onAvailable: (dir) => {
+      setCodeAvailable(true);
+      setCodeMissing(false);
+      if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
+    },
+    onReload: () => setReloadKey((value) => value + 1),
+  });
 
   useEffect(() => {
     if (!initialFilePath) return;
