@@ -29,7 +29,9 @@ it('treats deleted static checkout, worktree and publish roots as offline throug
     targetKind: 'static-folder',
     staticPath: 'dist',
   } as PublicPreviewShareRecord;
-  const inspectContainer = vi.fn(async () => ({ running: true }));
+  const inspectContainer = vi
+    .fn<(id: string) => Promise<{ running: boolean }>>()
+    .mockResolvedValue({ running: true });
   const store = {
     getProject: async () => project,
     getSession: async () => ({ projectId: 'p', worktree }),
@@ -44,6 +46,25 @@ it('treats deleted static checkout, worktree and publish roots as offline throug
   try {
     await mkdir(publish, { recursive: true });
     expect(await manager.hasLiveTarget(share)).toBe(true);
+    const capture = () =>
+      createSandboxUpdateRecovery({
+        store,
+        devServers: () => undefined,
+        local: () => undefined,
+        public: () => manager,
+      }).capture('p');
+    inspectContainer.mockImplementation(async (id?: string) => {
+      if (id === 'connector') throw new Error('connector inspection unavailable');
+      return { running: true };
+    });
+    await expect(capture()).rejects.toThrow('connector inspection unavailable');
+    inspectContainer.mockImplementation(async (id?: string) => {
+      if (id === 'connector') throw new DockerError({ kind: 'container_not_found', id });
+      return { running: true };
+    });
+    expect(await manager.isOnline(share)).toBe(false);
+    expect(await (await capture())()).toMatchObject({ state: 'ready' });
+
     inspectContainer.mockRejectedValue(
       new DockerError({ kind: 'container_not_found', id: 'sandbox' }),
     );

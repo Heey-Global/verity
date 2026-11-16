@@ -1,7 +1,7 @@
 import type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
 export type { CreatePreviewShareInput, PublicPreviewShare } from './preview-share-types.js';
 import { phaseTimer, type PhaseTimer } from './preview-share-diagnostics.js';
-import { previewTargetIsLive } from './preview-target-activity.js';
+import { previewTargetIsLive, previewConnectorIsLive } from './preview-target-activity.js';
 import { validOpenCodeGatewayConfig } from './preview-artifact-validation.js';
 import {
   PreviewShareConflictError,
@@ -258,10 +258,7 @@ export class PreviewShareManager {
 
   async isOnline(share: PublicPreviewShareRecord): Promise<boolean> {
     if (!share.connectorContainerId || !(await this.hasLiveTarget(share))) return false;
-    const connector = await this.options.docker
-      .inspectContainer(share.connectorContainerId)
-      .catch(() => undefined);
-    return connector?.running === true && !connector.env?.includes('VERITY_PREVIEW_OFFLINE=1');
+    return previewConnectorIsLive(this.options.docker, share.connectorContainerId);
   }
 
   isAvailable(): boolean {

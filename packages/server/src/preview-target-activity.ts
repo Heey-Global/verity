@@ -90,3 +90,17 @@ export async function previewTargetIsLive(
     throw error;
   }
 }
+
+/** Connector absence is offline; transport failure cannot erase recovery obligations. */
+export async function previewConnectorIsLive(
+  docker: PreviewShareManagerOptions['docker'],
+  id: string,
+): Promise<boolean> {
+  try {
+    const connector = await docker.inspectContainer(id);
+    return connector.running && !connector.env?.includes('VERITY_PREVIEW_OFFLINE=1');
+  } catch (error) {
+    if (error instanceof DockerError && error.kind === 'container_not_found') return false;
+    throw error;
+  }
+}
