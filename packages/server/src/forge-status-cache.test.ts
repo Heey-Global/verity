@@ -105,7 +105,7 @@ it('does not start an invalidated read that was waiting for an upstream slot', a
 
 it('shares an opaque observation scope until mutation or credential change', async () => {
   const cache = createForgeStatusCache();
-  const load = vi.fn(async (_scope: object) => null);
+  const load = vi.fn<(scope: object) => Promise<null>>(async () => null);
   await cache.read(id, 'a', load);
   await cache.read(id, 'b', load);
   const generation = load.mock.calls[0]![0];

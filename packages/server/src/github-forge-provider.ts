@@ -75,6 +75,11 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
   });
 
   const repositoryServices = new GitHubPollCache<string, ForgePrService>(200);
+  const scopedRepositoryServices = new WeakMap<
+    object,
+    { tokenScope: string; services: GitHubPollCache<string, ForgePrService> }
+  >();
+  let nextObservationScope = 0;
   return {
     async discover(ref, page) {
       const cooldown = prFailureCooldownFor(ref.owner, ref.repo);
@@ -197,25 +202,37 @@ export function createGitHubForgeProvider(opts: GitHubForgeProviderOptions): For
         workflowsSupported: true,
       };
     },
-    repositoryPrService(ref) {
+    repositoryPrService(ref, observationScope) {
+      let services = repositoryServices;
+      let tokenScope = 'repository-status';
+      if (observationScope) {
+        let scoped = scopedRepositoryServices.get(observationScope);
+        if (!scoped) {
+          scoped = {
+            tokenScope: `repository-status:${++nextObservationScope}`,
+            services: new GitHubPollCache<string, ForgePrService>(200),
+          };
+          scopedRepositoryServices.set(observationScope, scoped);
+        }
+        services = scoped.services;
+        tokenScope = scoped.tokenScope;
+      }
       const key = JSON.stringify([ref.owner, ref.repo]);
-      let service = repositoryServices.get(key);
+      let service = services.get(key);
       if (!service) {
         service = createGitHubPrService({
           repoDir: '',
           // Repository reads are cached by the shared, mutation-invalidated status layer.
           ttlMs: 0,
           reportObservationErrors: true,
-          tokenScope: 'repository-status',
+          tokenScope,
           identity: () => Promise.resolve(ref),
           asyncToken: (owner, repo) =>
             (opts.repositoryStatusTokenMint ?? opts.projectTokenMint)({ owner, repo }),
           failureCooldownFor: prFailureCooldownFor,
           ...fetchOpt,
         });
-        if (repositoryServices.size >= 200)
-          repositoryServices.delete(repositoryServices.keys().next().value!);
-        repositoryServices.set(key, service);
+        services.set(key, service);
       }
       return service;
     },

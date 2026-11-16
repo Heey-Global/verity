@@ -34,7 +34,7 @@ function fixture() {
     ref,
     json,
     pulls,
-    rotate() {
+    rotate: () => {
       credential = 'second';
     },
   };

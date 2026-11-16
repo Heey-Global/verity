@@ -194,3 +194,80 @@ it('retains all active recovery identities while the retention budget is saturat
   expect(cache.has('first')).toBe(false);
   expect(cache.get('second')).toBe(second);
 });
+
+it('keeps rate-limit recovery waiters behind a new ordinary failure cooldown', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  let finish!: (response: HttpResponse) => void;
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response({}, 429, { 'retry-after': '120' }))
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    )
+    .mockResolvedValue(response({}, 500));
+  const mint = async () => 'fixture';
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+  });
+  const service = provider.repositoryPrService!({ owner: 'owner', repo: 'repo' });
+  await expect(service.prStatusForBranch('initial')).rejects.toMatchObject({
+    category: 'unavailable',
+  });
+  vi.setSystemTime(120_001);
+  const first = service.prStatusForBranch('one');
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  const second = service.prStatusForBranch('two');
+  await vi.advanceTimersByTimeAsync(0);
+  finish(response({}, 500));
+  await Promise.allSettled([first, second]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it('uses the new root observation scope after token minting failed for the old credential', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  const { createProjectForgeStatusReader } = await import('./project-forge-status.js');
+  let credential = 'old-fixture';
+  const mint = async () => credential;
+  const statusMint = vi
+    .fn<() => Promise<string>>()
+    .mockResolvedValueOnce('old-status-fixture')
+    .mockRejectedValueOnce(new Error('token broker unavailable'))
+    .mockResolvedValue('new-status-fixture');
+  const fetch = vi
+    .fn<HttpFetch>()
+    .mockResolvedValueOnce(response([{ number: 1 }]))
+    .mockResolvedValueOnce(response([{ number: 2 }]));
+  const provider = createGitHubForgeProvider({
+    projectTokenMint: mint,
+    repositoryStatusTokenMint: statusMint,
+    issuesTokenMint: mint,
+    installationToken: mint,
+    fetch,
+  });
+  const reader = createProjectForgeStatusReader(async () => provider);
+  const project = {
+    id: 'project',
+    kind: 'github',
+    owner: 'owner',
+    repo: 'repo',
+    forgeConnectionId: null,
+  } as import('@verity/store').ProjectRecord;
+  expect(await reader.readProjectStatus(project, 'feature')).toMatchObject({ number: 1 });
+  vi.setSystemTime(300_001);
+  expect(await reader.readProjectStatus(project, 'feature')).toMatchObject({
+    number: 1,
+    observationFailed: true,
+  });
+  credential = 'new-fixture';
+  expect(await reader.readProjectStatus(project, 'feature')).toMatchObject({ number: 2 });
+  expect(statusMint).toHaveBeenCalledTimes(3);
+  expect(fetch.mock.calls[1]?.[1]?.headers?.Authorization).toBe('Bearer new-status-fixture');
+});

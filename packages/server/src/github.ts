@@ -734,7 +734,8 @@ export function createGitHubPrService(opts: GitHubPrServiceOptions): GitHubPrSer
     if (recoveryCooldown.until > 0) {
       while (recoveryCooldown.inFlight !== undefined) {
         await recoveryCooldown.inFlight;
-        if (now() < recoveryCooldown.until) return unavailableCachedStatus();
+        if (now() < Math.max(failureCooldown.until, rateLimitCooldown.until))
+          return unavailableCachedStatus();
         if (recoveryCooldown.until === 0) break;
       }
       if (recoveryCooldown.until > 0) {
