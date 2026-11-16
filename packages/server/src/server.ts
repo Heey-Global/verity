@@ -1,3 +1,5 @@
+import { installWikiMaintenance } from './server-wiki-maintenance.js';
+import { createServerVulnerabilities } from './server-vulnerabilities.js';
 import { createServerAuthority } from './server-authority.js';
 import { createServerAutomations } from './server-automations.js';
 import { createServerModels } from './server-models.js';
@@ -17,7 +19,6 @@ import type { AgentEvent } from '@verity/events';
 import { CODEX_DEFAULT_MODEL } from '@verity/session';
 import type { ProviderConnectionKind, SessionRecord, VeritySettingsPatch } from '@verity/store';
 import { SealedError, type ProjectRecord } from '@verity/store';
-import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createProcessAgentLoginService } from './agent-login.js';
@@ -38,7 +39,7 @@ import { registerGitHubTokenRoute } from './github-token-route.js';
 import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { registerIntegrationRoutes } from './integrations/routes.js';
-import { knowledgeRef, hasProjectWiki, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
+import { knowledgeRef, noteWikiOccasion, occasionTitle } from './wiki-occasions.js';
 import { createKnowledgeImageQuery } from './knowledge-image-query.js';
 import { createImageTextExtractor, type ImageTextJob } from './knowledge-image-text.js';
 import { registerKnowledgeRoutes } from './knowledge-routes.js';
@@ -57,7 +58,6 @@ import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from
 import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
-import { containerPathFor } from './project-backend.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
 import {
@@ -70,7 +70,6 @@ import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import { projectClonePath } from './provisioner.js';
 import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { registerPushTokenRoute } from './push-token-route.js';
@@ -79,15 +78,7 @@ import { createServerUpdateNotifier } from './self-update/server-update-notifier
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { registerServerSessionFiles } from './server-session-files.js';
-import { parseSpawnRequestBody } from './session-create-schema.js';
 import { WikiProposals } from './wiki-proposals.js';
-import {
-  startWikiMaintenanceTrigger,
-  WIKI_MAINTENANCE_DISPLAY_PROMPT,
-  WIKI_MAINTENANCE_PROMPT,
-  WIKI_MAINTENANCE_SESSION_NAME,
-  type WikiMaintenanceTrigger,
-} from './wiki-maintenance-trigger.js';
 import { registerWikiProposalRoutes } from './wiki-proposal-routes.js';
 import { type ServerContext } from './server-context.js';
 import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
@@ -117,7 +108,7 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type { ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
+import type { ProjectDeleteOutcome } from './server-types.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { emitSessionEvent } from './session-event-writer.js';
@@ -127,12 +118,6 @@ import { registerViewStateRoutes } from './view-state-routes.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
-import { startVulnerabilityPush } from './vulnerability-push.js';
-import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
-import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
-import { createVulnerabilityScanService } from './vulnerability-scan.js';
-import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
-import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
@@ -144,9 +129,7 @@ import {
   hasVeritySettingsStore,
   veritySettingsStore,
   projectSettingsStore,
-  emptyProjectSettings,
   isSleepLifecycleState,
-  publicProject,
   isControlPlaneProject,
   DEFAULT_MODEL,
   VERITY_CONTROL_PROJECT_ID,
@@ -559,7 +542,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // would otherwise resolve the channel and send into a closing PushSender.
     await serverUpdateNotifier?.close();
     await pushFirePoints?.close();
-    await vulnerabilityPush?.stop();
+    await stopVulnerabilityPush();
     await pushSender?.close();
   });
   // P0b: on graceful shutdown, mark any in-flight turn `interrupted` before the
@@ -576,106 +559,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
   const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
-  const vulnerabilityService = createVulnerabilityScanService({
-    logFailure: (data) => app.log.warn(data, 'verity: vulnerability scan job failed'),
-    store: deps.eventStore.vulnerabilityScans,
-    getProject: (id) => deps.eventStore.getProject(id),
-    getSession: (id) => deps.eventStore.getSession(id),
-    sessionPath: (session, project) => {
-      if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
-      return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
-    },
-    canWakeSleeping: canWakeForScan(deps.provisioner),
-    ...(deps.provisioner?.projectSandboxLastActivityAt &&
-    deps.provisioner.tryBeginProjectSandboxActivity &&
-    deps.provisioner.endProjectSandboxActivity
-      ? {
-          acquireSandbox: vulnerabilitySandboxLease({
-            provisioner: deps.provisioner,
-            getProject: (id) => deps.eventStore.getProject(id),
-            warn: (error) =>
-              app.log.warn({ err: error }, 'Vulnerability scan sandbox restoration failed'),
-          }),
-        }
-      : {}),
-    beginActivity: (id) => {
-      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
-      return () => deps.provisioner?.endProjectSandboxActivity?.(id);
-    },
-    ...(deps.projectRuntime?.runAutomationScript
-      ? {
-          runScript: (project: ProjectRecord, script: string) =>
-            deps.projectRuntime!.runAutomationScript!(project, emptyProjectSettings(project.id), {
-              workdir: '/work',
-              script,
-              timeoutMs: 120_000,
-              maxOutputBytes: 8 * 1024 * 1024,
-            }),
-        }
-      : {}),
-    changed: (id, sessionId) => {
-      resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
-      if (sessionId)
-        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/vulnerability-scan`);
-      void vulnerabilitySessions.rebuild();
-    },
-  });
-  const vulnerabilitySessions = createVulnerabilitySessionMonitor({
-    getProject: (id) => deps.eventStore.getProject(id),
-    store: deps.eventStore.vulnerabilityScans,
+  const {
     service: vulnerabilityService,
-    getSession: (id) => deps.eventStore.getSession(id),
-    listSessions: () => deps.eventStore.listSessions(),
-    isBusy: (id) => conductor.isBusy(id),
-    changed: () => {
-      resources.invalidate('/sessions');
-      resources.invalidate('/projects');
-    },
-    warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
-  });
-  void vulnerabilitySessions.rebuild();
-  const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
-    if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
-  });
-  const vulnerabilityPush = pushSender
-    ? startVulnerabilityPush({
-        store: deps.eventStore,
-        sender: pushSender,
-        warn: (err) => app.log.warn({ err }, 'Vulnerability push failed'),
-      })
-    : undefined;
-
-  const presentProject = (...args: Parameters<typeof publicProject>): PublicProjectRecord => ({
-    ...publicProject(...args),
-    vulnerabilitySummary: vulnerabilitySessions.projects.get(args[0].id),
-  });
-  const vulnerabilityScheduler = startVulnerabilityScheduler({
-    store: deps.eventStore.vulnerabilityScans,
-    listProjects: () => deps.eventStore.listProjects(),
-    scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
-    accepts: (project) => vulnerabilityService.accepts(project),
-    log: app.log,
-  });
-  registerVulnerabilityRoutes(app, {
-    eventStore: deps.eventStore,
-    service: vulnerabilityService,
+    sessions: vulnerabilitySessions,
+    presentProject,
+    stopPush: stopVulnerabilityPush,
+  } = createServerVulnerabilities(app, ctx, {
     fixPullRequest: (session) => sessionPrCache.get(session),
-    fixLiveState: (id) =>
-      conductor.pendingPermissions(id).length
-        ? 'needs_attention'
-        : conductor.isBusy(id)
-          ? 'in_progress'
-          : undefined,
-    settingsChanged: () => {
-      vulnerabilityScheduler.wake();
-      void vulnerabilitySessions.rebuild();
-    },
-  });
-  lifecycle.onClose(async () => {
-    vulnerabilityScheduler.stop();
-    unsubscribeVulnerabilityTurns();
-    await vulnerabilitySessions.stop();
-    await vulnerabilityService.stop();
   });
 
   // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
@@ -1481,74 +1371,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   installOnboarding(app, ctx, { spawn: sessionCreate.spawn });
 
-  // Wiki maintenance runs when something new happened in a project (see
-  // wiki-maintenance-trigger.ts and docs/knowledge.md).
-  if (deps.dataRoot !== undefined) {
-    const dataRoot = deps.dataRoot;
-    let wikiMaintenance: WikiMaintenanceTrigger | undefined;
-    app.addHook('onReady', async () => {
-      try {
-        for (const id of await deps.eventStore.wikiMaintenance.sessionIds())
-          wikiMaintenanceSessions.add(id);
-      } catch (err) {
-        // The session list reads them again on every load; the runs still start.
-        app.log.warn({ err }, 'wiki maintenance sessions could not be read');
-      }
-      wikiMaintenance = startWikiMaintenanceTrigger({
-        store: deps.eventStore,
-        hasWiki: (projectId) => hasProjectWiki(dataRoot, projectId),
-        isProjectBusy: (projectId) => isProjectBusy(projectId),
-        ensureSession: async (project) => {
-          const known = (await deps.eventStore.wikiMaintenance.get(project.id))?.sessionId;
-          const existing = known ? await deps.eventStore.getSession(known) : undefined;
-          if (existing?.projectId === project.id) {
-            wikiMaintenanceSessions.add(existing.sessionId);
-            return existing.sessionId;
-          }
-          // Hidden before it exists, so no list or notification ever sees it.
-          const sessionId = randomUUID();
-          wikiMaintenanceSessions.add(sessionId);
-          const created = await sessionCreate.spawn(
-            parseSpawnRequestBody({
-              projectId: project.id,
-              sessionId,
-              name: WIKI_MAINTENANCE_SESSION_NAME,
-            }),
-            app.log,
-          );
-          if (!('sessionId' in created.result)) {
-            wikiMaintenanceSessions.delete(sessionId);
-            return undefined;
-          }
-          try {
-            await deps.eventStore.wikiMaintenance.setSession(project.id, sessionId);
-          } catch (err) {
-            // Unrecorded, it would show up in lists after a restart and never be reused.
-            await ctx.deleteSession(sessionId).catch(() => false);
-            throw err;
-          }
-          return sessionId;
-        },
-        dispatch: (sessionId) =>
-          sessionsBeingReaped.has(sessionId)
-            ? Promise.resolve({ accepted: false })
-            : conductor.dispatchTurnWhenIdle(
-                sessionId,
-                WIKI_MAINTENANCE_PROMPT,
-                {},
-                {
-                  displayPrompt: WIKI_MAINTENANCE_DISPLAY_PROMPT,
-                  validateSession: (session) =>
-                    deps.eventStore.wikiMaintenance.isSession(session.sessionId),
-                },
-              ),
-        log: app.log,
-      });
-    });
-    lifecycle.onClose(async () => {
-      await wikiMaintenance?.stop();
-    });
-  }
+  installWikiMaintenance(app, ctx, {
+    spawn: sessionCreate.spawn,
+    isProjectBusy,
+    wikiMaintenanceSessions,
+  });
 
   installSessionRoutes(app, ctx, {
     sessionOverview: {

@@ -504,3 +504,40 @@ it('retains PR incidents and safe diagnostics when Actions observation is unavai
     observation_error: expect.stringContaining('actions/runs'),
   });
 });
+
+it.each(['absent', 'sleeping'] as const)(
+  'respects project lifecycle %s during discovery',
+  async (state) => {
+    await ctx.store.repairs.configure('a', 'user', 'automatic');
+    await ctx.store.updateProjectState('a', state);
+    const { deps, supervisor } = harness();
+    await supervisor.sweep();
+    expect(deps.discover).toHaveBeenCalledTimes(state === 'absent' ? 0 : 1);
+    expect(deps.dispatch).toHaveBeenCalledTimes(state === 'absent' ? 0 : 1);
+  },
+);
+
+it('does not act on discovery that completed after the project was paused', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { deps, supervisor, observation } = harness();
+  vi.mocked(deps.discover).mockImplementation(async () => {
+    await ctx.store.updateProjectState('a', 'absent');
+    return observation;
+  });
+  await supervisor.sweep();
+  expect(deps.spawn).not.toHaveBeenCalled();
+  expect(deps.dispatch).not.toHaveBeenCalled();
+});
+
+it('rechecks project pause at durable repair admission', async () => {
+  await ctx.store.repairs.configure('a', 'user', 'automatic');
+  const { deps, supervisor } = harness();
+  vi.mocked(deps.dispatch).mockImplementation(async (_session, _prompt, _id, validate) => {
+    await ctx.store.updateProjectState('a', 'absent');
+    expect(await validate()).toBe(false);
+    return false;
+  });
+  await supervisor.sweep();
+  expect(deps.dispatch).toHaveBeenCalledTimes(1);
+  expect(await ctx.store.repairs.reservedDispatches()).toHaveLength(0);
+});

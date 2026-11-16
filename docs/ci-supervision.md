@@ -358,3 +358,18 @@ to its exact receipt. An unconfirmed stop retains ownership. Revoked permissions
 or changed QA configuration fence queued work and stop active work. The mobile
 chat renders confirmed assignment results with a link to the target session;
 historical cards describe the state at that update.
+
+## Explicit project pause
+
+Pausing a project removes its sandbox while preserving its local files (`absent`).
+The Server skips automatic session PR status refreshes, PR-ready notifications,
+and project repair discovery for that project. Deferred repair admission checks
+this state again, so a previously observed CI failure cannot start a new repair
+while the project is paused. A request already sent to the forge can finish;
+pausing does not cancel remote requests or roll back a turn already admitted.
+
+Automatic sandbox sleep (`sleeping`) keeps CI monitoring enabled. Explicit status
+requests remain available while paused, but do not authorize automatic repair.
+After a lifecycle change, background observation invalidates its previous cached
+PR status and repository snapshot before refreshing, including when pause and
+resume happen between two monitor ticks.
