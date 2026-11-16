@@ -11,6 +11,7 @@ import {
   FILE_LINE_LIMIT,
   compareWithDebt,
   generatedFiles,
+  guardedFiles,
   lineCount,
   loweredDebt,
   oversizedFiles,
@@ -80,9 +81,9 @@ describe('the repository', () => {
   it('finds the sources it guards', () => {
     // A filter that stopped matching would empty the scan, and the check would
     // fail only as "debt went down" — or pass, once the debt was removed.
-    const found = oversizedFiles(ROOT);
-    expect(Object.keys(found).length).toBeGreaterThan(0);
-    expect(found['packages/server/src/server.ts']).toBeGreaterThan(0);
+    const found = guardedFiles(ROOT);
+    expect(found).toContain('packages/server/src/server.ts');
+    expect(found).toContain('scripts/file-size-guard.mjs');
   });
 
   it('keeps every file within the limit or at its recorded size', () => {

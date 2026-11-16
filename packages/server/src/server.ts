@@ -1,3 +1,4 @@
+import { createServerVulnerabilities } from './server-vulnerabilities.js';
 import { createServerAuthority } from './server-authority.js';
 import { createServerAutomations } from './server-automations.js';
 import { createServerModels } from './server-models.js';
@@ -57,7 +58,6 @@ import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from
 import { type PushSessionContext } from './pr-ready-push.js';
 import { registerPreviewShareRoutes } from './preview-share-routes.js';
 import { resolveProjectDefaultModel } from './project-agent-policy.js';
-import { containerPathFor } from './project-backend.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProjectDnsRoute } from './project-dns-route.js';
 import {
@@ -70,7 +70,6 @@ import { registerProjectMemoryRoute } from './project-memory-route.js';
 import { appendProjectOverview, readOrMigrateProjectOverview } from './project-overview-file.js';
 import { registerProjectRepoRoute } from './project-repo-route.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import { projectClonePath } from './provisioner.js';
 import { createPushFirePoints, type PushFirePoints } from './push-fire-points.js';
 import { createPushRouter, type PushRouter } from './push-router.js';
 import { registerPushTokenRoute } from './push-token-route.js';
@@ -117,7 +116,7 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import type { ProjectDeleteOutcome, PublicProjectRecord } from './server-types.js';
+import type { ProjectDeleteOutcome } from './server-types.js';
 import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { registerSessionCreateRoute } from './session-create-route.js';
 import { emitSessionEvent } from './session-event-writer.js';
@@ -127,12 +126,6 @@ import { registerViewStateRoutes } from './view-state-routes.js';
 import { taskTitleModel } from './task-titles.js';
 import { registerTasksRoutes } from './tasks-routes.js';
 import { registerVerityControlSessionRoute } from './verity-control-session-route.js';
-import { startVulnerabilityPush } from './vulnerability-push.js';
-import { registerVulnerabilityRoutes } from './vulnerability-routes.js';
-import { canWakeForScan, vulnerabilitySandboxLease } from './vulnerability-sandbox.js';
-import { createVulnerabilityScanService } from './vulnerability-scan.js';
-import { startVulnerabilityScheduler } from './vulnerability-scheduler.js';
-import { createVulnerabilitySessionMonitor } from './vulnerability-session.js';
 import { scanStartedProjectIfNeeded } from './vulnerability-start.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
@@ -144,9 +137,7 @@ import {
   hasVeritySettingsStore,
   veritySettingsStore,
   projectSettingsStore,
-  emptyProjectSettings,
   isSleepLifecycleState,
-  publicProject,
   isControlPlaneProject,
   DEFAULT_MODEL,
   VERITY_CONTROL_PROJECT_ID,
@@ -559,7 +550,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     // would otherwise resolve the channel and send into a closing PushSender.
     await serverUpdateNotifier?.close();
     await pushFirePoints?.close();
-    await vulnerabilityPush?.stop();
+    await stopVulnerabilityPush();
     await pushSender?.close();
   });
   // P0b: on graceful shutdown, mark any in-flight turn `interrupted` before the
@@ -576,106 +567,13 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { canExecuteAs, runningTurnInitiator, assistantToolDeps } = createServerAuthority(ctx);
   const automations = createServerAutomations(app, ctx, { canExecuteAs, models: () => models });
 
-  const vulnerabilityService = createVulnerabilityScanService({
-    logFailure: (data) => app.log.warn(data, 'verity: vulnerability scan job failed'),
-    store: deps.eventStore.vulnerabilityScans,
-    getProject: (id) => deps.eventStore.getProject(id),
-    getSession: (id) => deps.eventStore.getSession(id),
-    sessionPath: (session, project) => {
-      if (!deps.projectCloneRoot) throw new Error('Project clone root unavailable');
-      return containerPathFor(session.worktree, projectClonePath(deps.projectCloneRoot, project));
-    },
-    canWakeSleeping: canWakeForScan(deps.provisioner),
-    ...(deps.provisioner?.projectSandboxLastActivityAt &&
-    deps.provisioner.tryBeginProjectSandboxActivity &&
-    deps.provisioner.endProjectSandboxActivity
-      ? {
-          acquireSandbox: vulnerabilitySandboxLease({
-            provisioner: deps.provisioner,
-            getProject: (id) => deps.eventStore.getProject(id),
-            warn: (error) =>
-              app.log.warn({ err: error }, 'Vulnerability scan sandbox restoration failed'),
-          }),
-        }
-      : {}),
-    beginActivity: (id) => {
-      if (deps.provisioner?.tryBeginProjectSandboxActivity?.(id) === false) return undefined;
-      return () => deps.provisioner?.endProjectSandboxActivity?.(id);
-    },
-    ...(deps.projectRuntime?.runAutomationScript
-      ? {
-          runScript: (project: ProjectRecord, script: string) =>
-            deps.projectRuntime!.runAutomationScript!(project, emptyProjectSettings(project.id), {
-              workdir: '/work',
-              script,
-              timeoutMs: 120_000,
-              maxOutputBytes: 8 * 1024 * 1024,
-            }),
-        }
-      : {}),
-    changed: (id, sessionId) => {
-      resources.invalidate(`/projects/${encodeURIComponent(id)}/vulnerability-scan`);
-      if (sessionId)
-        resources.invalidate(`/sessions/${encodeURIComponent(sessionId)}/vulnerability-scan`);
-      void vulnerabilitySessions.rebuild();
-    },
-  });
-  const vulnerabilitySessions = createVulnerabilitySessionMonitor({
-    getProject: (id) => deps.eventStore.getProject(id),
-    store: deps.eventStore.vulnerabilityScans,
+  const {
     service: vulnerabilityService,
-    getSession: (id) => deps.eventStore.getSession(id),
-    listSessions: () => deps.eventStore.listSessions(),
-    isBusy: (id) => conductor.isBusy(id),
-    changed: () => {
-      resources.invalidate('/sessions');
-      resources.invalidate('/projects');
-    },
-    warn: (err) => app.log.warn({ err }, 'Vulnerability session update failed'),
-  });
-  void vulnerabilitySessions.rebuild();
-  const unsubscribeVulnerabilityTurns = deps.bus.subscribeAll((id, { event }) => {
-    if (event.t === 'result' || event.t === 'interrupted') vulnerabilitySessions.schedule(id);
-  });
-  const vulnerabilityPush = pushSender
-    ? startVulnerabilityPush({
-        store: deps.eventStore,
-        sender: pushSender,
-        warn: (err) => app.log.warn({ err }, 'Vulnerability push failed'),
-      })
-    : undefined;
-
-  const presentProject = (...args: Parameters<typeof publicProject>): PublicProjectRecord => ({
-    ...publicProject(...args),
-    vulnerabilitySummary: vulnerabilitySessions.projects.get(args[0].id),
-  });
-  const vulnerabilityScheduler = startVulnerabilityScheduler({
-    store: deps.eventStore.vulnerabilityScans,
-    listProjects: () => deps.eventStore.listProjects(),
-    scan: (id) => vulnerabilityService.scan(id, { refresh: true }),
-    accepts: (project) => vulnerabilityService.accepts(project),
-    log: app.log,
-  });
-  registerVulnerabilityRoutes(app, {
-    eventStore: deps.eventStore,
-    service: vulnerabilityService,
+    sessions: vulnerabilitySessions,
+    presentProject,
+    stopPush: stopVulnerabilityPush,
+  } = createServerVulnerabilities(app, ctx, {
     fixPullRequest: (session) => sessionPrCache.get(session),
-    fixLiveState: (id) =>
-      conductor.pendingPermissions(id).length
-        ? 'needs_attention'
-        : conductor.isBusy(id)
-          ? 'in_progress'
-          : undefined,
-    settingsChanged: () => {
-      vulnerabilityScheduler.wake();
-      void vulnerabilitySessions.rebuild();
-    },
-  });
-  lifecycle.onClose(async () => {
-    vulnerabilityScheduler.stop();
-    unsubscribeVulnerabilityTurns();
-    await vulnerabilitySessions.stop();
-    await vulnerabilityService.stop();
   });
 
   // SBX-1 helper: what holds this project's sandbox in use right now — a turn in
