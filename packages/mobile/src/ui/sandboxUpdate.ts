@@ -86,6 +86,8 @@ export function sandboxUpdateWaitingLabel(update: SandboxUpdate): string {
 /** Why a blocked update cannot be applied now, and what would let it — for the
  *  dialog behind the project's Update button. */
 export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
+  if (update.overdue)
+    return `${sandboxUpdateSummary(update) ?? 'The sandbox update missed its nightly window'}. Open Sandbox settings to review the blocker or choose Update now.`;
   if (update.scheduledTonight)
     return 'Verity will update between 03:00 and 05:00, server time. To update sooner, open Sandbox settings and choose Update now. Dev servers restart automatically; share URLs and PINs stay the same.';
   switch (sandboxUpdateBlocker(update)) {
@@ -102,6 +104,8 @@ export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
 
 /** One line for the inbox item of a blocked update. */
 export function sandboxUpdateBlockedInboxMessage(update: SandboxUpdate): string {
+  if (update.overdue)
+    return sandboxUpdateSummary(update) ?? 'The sandbox update missed its nightly window';
   if (update.scheduledTonight)
     return 'A sandbox update is scheduled for tonight; dev servers and previews restart with their existing URLs.';
   switch (sandboxUpdateBlocker(update)) {
@@ -221,7 +225,7 @@ export function sandboxUpdateAlertMessage(
   project: { owner: string; repo: string },
   update: SandboxUpdate,
 ): string {
-  if (update.scheduledTonight) return sandboxUpdateBlockedDetail(update);
+  if (update.overdue || update.scheduledTonight) return sandboxUpdateBlockedDetail(update);
   const security = isSecuritySandboxUpdate(update);
   const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
   // A blocked update is not a failure and must not be described as one: Verity is

@@ -369,3 +369,18 @@ it('shows replacement failures ahead of generic unknown-image repair status', ()
     ),
   ).toBe('Update recovery failed — Replacement failed');
 });
+
+it.each(['turn', 'dev_server', 'preview', 'unknown'] as const)(
+  'reports overdue %s updates consistently when also scheduled tonight',
+  (blocker) => {
+    const value = update({ scheduledTonight: true, overdue: true, blockedBy: [blocker] });
+    for (const message of [
+      sandboxUpdateBlockedDetail(value),
+      sandboxUpdateBlockedInboxMessage(value),
+      sandboxUpdateAlertMessage({ owner: 'test', repo: 'project' }, value),
+    ]) {
+      expect(message).toContain('missed its nightly window');
+      expect(message).not.toMatch(/scheduled for tonight|will update between/i);
+    }
+  },
+);
