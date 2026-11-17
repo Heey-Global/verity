@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function git(...args) {
   return execFileSync('git', args, {
@@ -985,15 +986,20 @@ async function main() {
           'The central dependency preparation this session waited for failed; retry explicitly after correcting the preparation error.',
         );
     }
+    const gitDir = git('rev-parse', '--absolute-git-dir');
     const preserve = (directory = modules) => {
       if (!readlinkExists(directory)) return;
-      const recovery = join(
-        git('rev-parse', '--absolute-git-dir'),
-        'verity-dependencies-preserved',
-        randomUUID(),
-      );
+      const unmodified = unmodifiedSinceActivation(gitDir, root, directory);
+      const recovery = join(gitDir, 'verity-dependencies-preserved', randomUUID());
       mkdirSync(dirname(recovery), { recursive: true });
       renameSync(directory, recovery);
+      if (unmodified) {
+        // Withdrawn by the rename first: a removal that fails part-way leaves an
+        // ordinary preserved copy for the session storage sweep, never a broken tree.
+        rmSync(recovery, { recursive: true });
+        console.log('Discarded previous dependency files unchanged since their activation.');
+        return;
+      }
       console.log(`Preserved previous dependency files at ${recovery}.`);
     };
     // A skeleton can use an already verified ancestor without mutating packages.
@@ -1042,6 +1048,10 @@ async function main() {
         for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
+        await recordActivation(gitDir, root, [
+          modules,
+          ...workspaceCopies.map((entry) => entry.destination),
+        ]);
         console.log(
           'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
@@ -1200,6 +1210,55 @@ async function main() {
     unlockRoot.release();
     rootLockFd = undefined;
     if (cancelled) process.exitCode = cancelled === 'SIGINT' ? 130 : 143;
+  }
+}
+// Every activated tree is a verbatim copy of a central installation. Without this
+// record a later identity change could not tell such a copy from one carrying
+// local edits once its central identity was retired, so each change kept another
+// full copy of the dependencies in the worktree's Git directory.
+const ACTIVATION_RECORD = 'verity-dependencies-activation.json';
+function treeKey(stat) {
+  return `${stat.dev}:${stat.ino}`;
+}
+async function recordActivation(gitDir, root, trees) {
+  // Every change since activation must leave a status change time strictly after
+  // the record's, including on filesystems with coarse timestamps.
+  await delay(25);
+  const record = join(gitDir, ACTIVATION_RECORD);
+  const temporary = `${record}.${randomUUID()}`;
+  writeFileSync(
+    temporary,
+    JSON.stringify({
+      version: 1,
+      trees: Object.fromEntries(
+        trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
+      ),
+    }),
+  );
+  renameSync(temporary, record);
+}
+/** True only when `directory` is the very tree recorded at activation and no
+ *  entry in it changed status since: any write, chmod, link, creation, removal
+ *  or rename sets a status change time no tool can set back. Unknown, unreadable
+ *  or replaced trees are never claimed unmodified. */
+function unmodifiedSinceActivation(gitDir, root, directory) {
+  try {
+    const path = join(gitDir, ACTIVATION_RECORD);
+    const marker = lstatSync(path, { bigint: true });
+    const recorded = JSON.parse(readFileSync(path, 'utf8'))?.trees?.[relative(root, directory)];
+    const top = lstatSync(directory, { bigint: true });
+    if (!marker.isFile() || !top.isDirectory() || recorded !== treeKey(top)) return false;
+    const pending = [directory];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      const stat = lstatSync(current, { bigint: true });
+      if (stat.ctimeNs >= marker.ctimeNs || stat.dev !== top.dev) return false;
+      if (stat.isDirectory())
+        for (const entry of readdirSync(current)) pending.push(join(current, entry));
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 function readlinkExists(path) {
