@@ -658,7 +658,7 @@ describe('project page', () => {
     expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
   });
 
-  it('answers a permission and restores a dismissed item the way Home does', async () => {
+  it('reviews a command in its session and restores a dismissed item the way Home does', async () => {
     // The project page drew a permission as a bare row and kept no fold of
     // dismissed items; Home drew a card and offered Restore.
     const asking = session('shell', {
@@ -670,11 +670,13 @@ describe('project page', () => {
       ],
     });
     const dismissible = { ...question, inboxDismissed: [] as string[] };
-    const { client } = await renderPage([asking, dismissible]);
+    const { client, onOpenSession } = await renderPage([asking, dismissible]);
     const needs = within(screen.getByTestId('work-needs-you'));
     expect(needs.getByTestId('inbox-item-permission')).toBeTruthy();
-    expect(needs.getByRole('button', { name: 'Allow once' })).toBeTruthy();
-    expect(needs.getByTestId('inbox-line-code').props.children).toBe('npm test');
+    expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    expect(needs.queryByTestId('inbox-line-code')).toBeNull();
+    fireEvent.press(needs.getByRole('button', { name: 'Review' }));
+    expect(onOpenSession).toHaveBeenCalledWith('shell');
     fireEvent.press(needs.getAllByLabelText('Dismiss').at(-1)!);
     await act(async () => undefined);
     expect(client.setSessionInboxDismissed).toHaveBeenCalled();
