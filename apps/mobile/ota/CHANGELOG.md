@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.94.1](https://github.com/Heey-Global/verity/compare/mobile-v1.94.0...mobile-v1.94.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2650](https://github.com/Heey-Global/verity/issues/2650)) ([85659c1](https://github.com/Heey-Global/verity/commit/85659c1c6c968745cd1456f437005a43dcdee701))
+* **deps:** update dependency fast-xml-parser to v5.12.1 ([#2648](https://github.com/Heey-Global/verity/issues/2648)) ([962ebf5](https://github.com/Heey-Global/verity/commit/962ebf52295d7819418e1b9df67400797c280050))
+* **mobile:** match session listing approvals in overview ([#2658](https://github.com/Heey-Global/verity/issues/2658)) ([2e008c9](https://github.com/Heey-Global/verity/commit/2e008c93289fcf448673bf354fa2eb4727993e24))
+* **settings:** consolidate AI accounts without reconnecting ([#2637](https://github.com/Heey-Global/verity/issues/2637)) ([0a6bc82](https://github.com/Heey-Global/verity/commit/0a6bc8267d8ab7bcd8de8a7c3ac0dee12f76be56))
+
 ## [1.92.1](https://github.com/Heey-Global/verity/compare/mobile-v1.92.0...mobile-v1.92.1) (2026-11-14)
 
 
