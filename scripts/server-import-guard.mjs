@@ -32,7 +32,17 @@ function specifiers(file, text) {
   function collect(node) {
     if ((ts.isVariableDeclaration(node) || ts.isParameter(node)) && ts.isIdentifier(node.name)) {
       let scope = node.parent;
-      while (scope && !ts.isBlock(scope) && !ts.isSourceFile(scope) && !ts.isFunctionLike(scope))
+      while (
+        scope &&
+        !ts.isBlock(scope) &&
+        !ts.isSourceFile(scope) &&
+        !ts.isFunctionLike(scope) &&
+        !ts.isForStatement(scope) &&
+        !ts.isForOfStatement(scope) &&
+        !ts.isForInStatement(scope) &&
+        !ts.isCatchClause(scope) &&
+        !ts.isCaseBlock(scope)
+      )
         scope = scope.parent;
       if (!constants.has(scope)) constants.set(scope, new Map());
       const value =

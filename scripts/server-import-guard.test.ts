@@ -150,6 +150,17 @@ describe('server composition-root imports', () => {
       }),
     ).toEqual([]);
   });
+  it.each([
+    'for (const path of paths) {}',
+    'for (const path in paths) {}',
+    "for (let path = './other.js'; condition;) {}",
+    'try {} catch (path) {}',
+    "switch (value) { case 1: const path = './other.js'; break; }",
+  ])('keeps the outer constant visible after %s', (statement) => {
+    expect(
+      fixture({ 'domain.ts': `const path = './server.js'; ${statement} import(path);` }),
+    ).toHaveLength(1);
+  });
   it('ignores comments, ordinary strings and unresolved runtime expressions', () => {
     expect(
       fixture({
