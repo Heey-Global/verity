@@ -106,3 +106,14 @@ until it is split; the parts then move, and its entry is lowered or removed.
 `scripts/file-size-guard.test.ts` checks the repository against the record,
 proves that growth, new oversized files and unrecorded reductions fail, and
 checks that the guard still runs ahead of ESLint in both lint entry points.
+
+`scripts/server-import-guard.test.ts` derives the server import graph from the
+current sources with the TypeScript parser and module resolver. It rejects
+paths from server domain modules back to `server.ts`, including type imports,
+re-exports, resolvable constant dynamic imports and paths through barrels or
+workspace aliases. Workspace outputs resolve back to source even before a build.
+Outer composition roots, public entry points and test consumers are exempt as
+origins, but graph traversal continues through them to catch indirect back-imports.
+Runtime-computed module names cannot be resolved statically. The guard runs in
+the root test suite and can also be invoked with
+`node scripts/server-import-guard.mjs`.

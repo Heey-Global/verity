@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { SealedError } from '@verity/store';
-import type { ServerDeps } from './server.js';
+import type { ServerDeps } from './server-deps.js';
 import type {
   DopplerValidateResult,
   DopplerProjectSummary,

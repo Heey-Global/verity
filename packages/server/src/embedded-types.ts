@@ -1,7 +1,8 @@
 import { type Database } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { type Kysely } from 'kysely';
-import type { ServerDeps, ServerUpdateController } from './server.js';
+import type { ServerDeps } from './server-deps.js';
+import type { ServerUpdateController } from './server-update-routes.js';
 import { type DockerGcPolicy } from './docker-gc.js';
 import { type RemoteConnectorPoolOptions } from './remote-control-connector.js';
 import { type BrokeredSecretJobExecutor } from './brokered-secret-job-executor.js';
