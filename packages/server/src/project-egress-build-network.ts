@@ -36,6 +36,8 @@ export interface ProtectedBuildNetworkIO {
     pending?: boolean;
   }): Promise<void>;
   docker(args: readonly string[]): Promise<string>;
+  /** Fetch `imageRef` by its pinned digest; may take longer than other Docker calls. */
+  pullImage(ref: string): Promise<void>;
   /** Inspect a host-owned namespace inode with stat/nsenter; never evaluate a shell path. */
   readNamespace(path: string): Promise<string>;
   /** Must establish durable default-deny for all reserved veb* bridges. */
@@ -131,9 +133,27 @@ export class ProtectedBuildNetworks {
     )
       throw new Error('Protected build network attachment mismatch');
   }
+  /** The anchor is created with `--pull=never`, but nothing else installs the
+   * target release's relay image before the first protected build: the Server
+   * pulls it lazily when it starts a project relay, which a sandbox replacement
+   * does only after its devcontainer build. Without this, every protected build
+   * after an update failed until some relay happened to pull the image. The
+   * digest-pinned reference makes Docker verify the content; a bare local image
+   * ID cannot be fetched and keeps failing at creation. */
+  private async ensureAnchorImage(): Promise<void> {
+    const ref = this.io.imageRef;
+    try {
+      await this.io.docker(['image', 'inspect', '--format', '{{.Id}}', ref]);
+      return;
+    } catch (error) {
+      if (!ref.includes('@')) throw error;
+    }
+    await this.io.pullImage(ref);
+  }
   async create(projectId: string, attemptId: string): Promise<ProtectedBuildAnchor> {
     const named = names(projectId, attemptId);
     await this.io.ensureBootstrap();
+    await this.ensureAnchorImage();
     // List before creation: Docker can reuse an existing named network. Never
     // claim or remove a foreign object merely because its name matches ours.
     const listing = await this.io.docker(['network', 'ls', '--format', '{{json .}}']);

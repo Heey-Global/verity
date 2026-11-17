@@ -19,6 +19,18 @@ also require their original namespace identity. Ordinary admission and renewal
 accept only the target image. No new state field or intermediate release is
 required for old checkpoints.
 
+## Target relay image on the first build after an update
+
+A protected build anchor is created from the target release's relay image with
+`--pull=never`. Updates do not install that image ahead of time; the Server
+pulls it when it starts a project relay, and a sandbox replacement does so only
+after its devcontainer build. Before allocating any network, bridge or anchor,
+the build host therefore checks that the digest-pinned target image is present
+and otherwise pulls it by digest, so Docker verifies its content. A failed pull
+leaves no allocation behind and still reports `network_prepare_failed`. Only the
+target image is fetched; a retained cleanup image is never pulled, and a bare
+local image ID is never fetched from a registry.
+
 ## Bounded recovery procedure
 
 This is a procedure for a separately authorized maintenance window. It does not

@@ -16,10 +16,18 @@ function fixture() {
   let denyFails = false;
   let mount = false;
   let stopped = false;
+  // Fresh after an update: the target relay image is not installed locally yet.
+  let imagePresent = true;
+  let pullFails = false;
   const networkId = '1'.repeat(64),
     containerId = '2'.repeat(64);
   const io: ProtectedBuildNetworkIO = {
     imageRef: image,
+    async pullImage(ref) {
+      calls.push(['pull', ref]);
+      if (pullFails) throw new Error('registry unreachable');
+      imagePresent = true;
+    },
     async checkpoint(value) {
       calls.push([value.pending ? 'intent' : 'checkpoint']);
     },
@@ -41,6 +49,12 @@ function fixture() {
     },
     async docker(args) {
       calls.push([...args]);
+      if (args[0] === 'image' && args[1] === 'inspect') {
+        if (!imagePresent) throw new Error(`No such image: ${args.at(-1)}`);
+        return 'sha256:' + 'c'.repeat(64);
+      }
+      if (args[0] === 'container' && args[1] === 'create' && !imagePresent)
+        throw new Error(`No such image: ${args[args.indexOf('/nodejs/bin/node') + 1]}`);
       if (args[0] === 'network' && args[1] === 'ls')
         return args.includes('--filter') && !networkRemoved ? networkId : '';
       if (args[0] === 'container' && args[1] === 'ls') return removed ? '' : containerId;
@@ -137,6 +151,12 @@ function fixture() {
     },
     mount() {
       mount = true;
+    },
+    removeImage() {
+      imagePresent = false;
+    },
+    failPull() {
+      pullFails = true;
     },
   };
 }
@@ -354,4 +374,55 @@ it('retained image cleanup still rejects replaced namespaces and foreign attachm
     await expect(next.remove(anchor, async () => true)).rejects.toThrow();
     expect(f.calls.some((call) => call[1] === 'rm')).toBe(false);
   }
+});
+
+describe('anchor image after a release update', () => {
+  it('pulls the pinned relay image before allocating the first post-update anchor', async () => {
+    const f = fixture();
+    f.removeImage();
+    const anchor = await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
+    expect(anchor.containerId).toBe('2'.repeat(64));
+    const pull = f.calls.findIndex((call) => call[0] === 'pull');
+    expect(f.calls[pull]).toEqual(['pull', image]);
+    // Fetched before any bridge, network or anchor exists, so a failed pull leaves nothing.
+    expect(pull).toBeLessThan(f.calls.findIndex((call) => call[0] === 'intent'));
+    const create = f.calls.find((call) => call[0] === 'container' && call[1] === 'create')!;
+    expect(create).toContain('--pull=never');
+  });
+  it('does not contact the registry when the pinned image is installed', async () => {
+    const f = fixture();
+    await new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a');
+    expect(f.calls.some((call) => call[0] === 'pull')).toBe(false);
+  });
+  it('fails before any host allocation when the image cannot be fetched', async () => {
+    const f = fixture();
+    f.removeImage();
+    f.failPull();
+    await expect(new ProtectedBuildNetworks(f.io).create('project-a', 'attempt-a')).rejects.toThrow(
+      'registry unreachable',
+    );
+    expect(
+      f.calls.some(
+        (call) => ['intent', 'checkpoint', 'deny'].includes(call[0]!) || call[1] === 'create',
+      ),
+    ).toBe(false);
+  });
+  it('never pulls a bare local image ID, which no registry can verify', async () => {
+    const f = fixture();
+    f.removeImage();
+    const local = 'sha256:' + 'd'.repeat(64);
+    await expect(
+      new ProtectedBuildNetworks({ ...f.io, imageRef: local }).create('project-a', 'attempt-a'),
+    ).rejects.toThrow('No such image');
+    expect(f.calls.some((call) => call[0] === 'pull' || call[1] === 'create')).toBe(false);
+  });
+  it('fetches only the target image, never the retained cleanup image', async () => {
+    const f = fixture();
+    f.removeImage();
+    const target = `ghcr.io/example/server@sha256:${'e'.repeat(64)}`;
+    await new ProtectedBuildNetworks({ ...f.io, imageRef: target, cleanupImageRef: image })
+      .create('project-a', 'attempt-a')
+      .catch(() => undefined);
+    expect(f.calls.filter((call) => call[0] === 'pull')).toEqual([['pull', target]]);
+  });
 });
