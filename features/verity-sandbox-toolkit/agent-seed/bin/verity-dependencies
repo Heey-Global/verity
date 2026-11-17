@@ -1061,10 +1061,8 @@ async function main() {
           modules,
           shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache), share),
         );
-        if (!share || copied.files > 0)
-          console.log(
-            `Copied ${share ? copied.files : 'all'} dependency files that could not be shared.`,
-          );
+        if (copied.files > 0)
+          console.log(`Copied ${copied.files} dependency files that could not be shared.`);
         rewire(root, candidate);
         checkInputs();
         // Workspace-local packages take precedence over hoisted dependencies.
@@ -1369,14 +1367,11 @@ function unchangedSince(directory, record, includeTop) {
 // writable: an edit would change every session at once, and the inventory.
 /** Visits every regular file below `tree`; stops once `visit` returns true. */
 function eachFile(tree, visit) {
-  const pending = [tree];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) pending.push(path);
-      else if (entry.isFile() && visit(path, lstatSync(path))) return true;
-    }
+  for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
+    const path = join(entry.parentPath, entry.name);
+    // Tools create and remove cache files meanwhile; a vanished file is skipped.
+    const stat = entry.isFile() && lstatSync(path, { throwIfNoEntry: false });
+    if (stat && visit(path, stat)) return true;
   }
   return false;
 }
@@ -1479,6 +1474,9 @@ function privatize(root) {
         rmSync(temporary, { force: true });
       }
     });
+  // Storage collection leaves a tree marked private as it is, until it is replaced.
+  if (readlinkExists(join(root, 'node_modules')))
+    writeFileSync(join(root, 'node_modules', '.verity-private'), '');
   console.log(`Made ${files} shared dependency files private to this session.`);
 }
 function readlinkExists(path) {

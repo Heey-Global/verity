@@ -70,6 +70,8 @@ export async function shareOwnDependencyFiles(
   if (typeof identity !== 'string' || !/^[a-f0-9]{64}$/u.test(identity)) return result;
   const inventory = join(root, '.git', 'verity-dependencies', identity);
   const central = join(inventory, 'node_modules');
+  // A session that asked for its own copies (`install --private`) keeps them.
+  if (existsSync(join(modules, '.verity-private'))) return result;
   try {
     // Only a sealed inventory has read-only files that are safe to share.
     if (
@@ -122,6 +124,8 @@ export async function shareOwnDependencyFiles(
       before.nlink > 1 ||
       source.dev !== before.dev ||
       source.mode & 0o222 ||
+      // Links to another owner's file are refused; do not hash in vain.
+      source.uid !== process.geteuid?.() ||
       source.size !== before.size ||
       // Write bits are the only difference sharing introduces.
       (source.mode & 0o7555) !== (before.mode & 0o7555) ||

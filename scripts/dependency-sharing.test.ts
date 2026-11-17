@@ -107,6 +107,8 @@ describe.skipIf(!enforcesModes)('dependency files shared between sessions', () =
     expect(result.stdout).toMatch(/Made [1-9][0-9]* shared dependency files private/u);
     const file = join(f.worktree, 'node_modules', 'private', 'package.json');
     expect(statSync(file).nlink).toBe(1);
+    // Storage collection must not link the private copies back.
+    expect(existsSync(join(f.worktree, 'node_modules', '.verity-private'))).toBe(true);
     writeFileSync(file, '{"version":"patched"}');
     const central = join(
       f.root,

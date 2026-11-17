@@ -99,6 +99,13 @@ describe.skipIf(process.getuid?.() === 0)(
       expect(result.files).toBe(0);
       expect(statSync(join(elsewhere, 'dep/index.js')).nlink).toBe(1);
     });
+    it('leaves a tree alone that its session made private', async () => {
+      const f = fixture();
+      writeFileSync(join(f.modules, '.verity-private'), '');
+      const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
+      expect(result.files).toBe(0);
+      expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
+    });
     it('counts without linking in dry-run mode', async () => {
       const f = fixture();
       const result = await shareDependencyFiles(
