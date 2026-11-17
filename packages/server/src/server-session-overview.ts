@@ -144,6 +144,8 @@ export function createServerSessionOverview({
   // are more specific, actionable badges than the generic `running`, so they win
   // over the overlay; only the non-live derivations (idle/completed/crashed) are
   // upgraded to `running` when the conductor still has a turn in flight.
+  // Only a turn counts: maintenance holding the same lock (storage reclamation,
+  // branch switch, backend handoff) is not work the operator should see as running.
   const AWAITING: ReadonlySet<SessionStatus> = new Set(['awaiting_input', 'awaiting_dependency']);
   const liveStatus = (sessionId: string, events: readonly AgentEvent[]): SessionStatus =>
     liveStatusFromProjection(sessionId, events, events.length);
@@ -155,7 +157,7 @@ export function createServerSessionOverview({
     totalEventCount: number,
   ): SessionStatus => {
     const derived = deriveSessionStatusFromProjection(events, totalEventCount);
-    if (!AWAITING.has(derived) && conductor.isBusy(sessionId)) return 'running';
+    if (!AWAITING.has(derived) && conductor.isBusy(sessionId, { turnOnly: true })) return 'running';
     return derived;
   };
 
@@ -1065,7 +1067,7 @@ export function createServerSessionOverview({
         : projectedStatus === 'awaiting_input' &&
             permissionEventAwaitsInput(events) &&
             pendingPermissions.length === 0
-          ? conductor.isBusy(session.sessionId)
+          ? conductor.isBusy(session.sessionId, { turnOnly: true })
             ? 'running'
             : 'completed'
           : projectedStatus;
