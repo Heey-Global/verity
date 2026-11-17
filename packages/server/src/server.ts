@@ -44,7 +44,6 @@ import { createServerSessionOverview } from './server-session-overview.js';
 import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
 import { installConnections } from './server-connections.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
-import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { type ServerContext } from './server-context.js';
@@ -53,7 +52,7 @@ import { installProjects } from './server-projects.js';
 import { installPeople, peopleDirectQueries, sharedProjectPeople } from './server-people.js';
 import { installProjectPullRequests } from './server-project-pull-requests.js';
 import { createPrRepairTurns } from './server-pr-repair.js';
-import { installRepairSupervision } from './server-repair-supervision.js';
+import { installRepairSupervision, installRepairRoutes } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
 import {
@@ -426,8 +425,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 
-  registerRepairRoutes(app, deps.eventStore);
-  registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  installRepairRoutes(app, ctx);
   installAssistant(app, ctx, {
     assistantToolDeps,
     summarizeSession,
