@@ -76,6 +76,46 @@ keeps the other copies or an idle session's private installation in place. A dev
 server or preview holds back only its own session's pass; a project-level
 public share and the orphan pass still hold the project.
 
+## Data volume breakdown
+
+The maintenance pass also measures where the Server's data volume goes. It never
+deletes anything. Each run walks the volume with `lstat` for at most 20 seconds
+and 250,000 entries, then resumes where it stopped: in the same maintenance pass
+the next time, or on its own 15 minutes later while the round is unfinished. A
+breakdown is published only when a whole round has finished; until then the
+previous one stays in place with its own timestamp, and an unfinished round is
+never reported as zero. Runs are sequential and stop at shutdown.
+
+Entries are grouped by their path on the volume:
+
+- **Regenerable:** `node_modules` in project and session checkouts (including
+  nested ones), preserved dependency copies, the central dependency store,
+  runner package caches and `cache/` in session homes.
+- **Protected:** session and project sources, Git data, session homes outside
+  `cache/`, turn data, other runner state, knowledge, document archives, backup
+  state and build staging.
+- **Unattributed:** any other top-level entry, listed by name with its size
+  (the ten largest).
+
+The walk counts allocated blocks, counts a file with several hard links once,
+never follows symbolic links and does not enter another filesystem mounted
+inside the volume. A root that disappears or is replaced during a round starts
+the round over. An entry or directory the Server cannot read, such as a
+sandbox-private home, is counted as unreadable and its contents are left out;
+the breakdown and the capacity sentence state how many. After 500,000 files with
+several hard links the walk stops remembering them and marks the breakdown
+approximate. The totals are estimates of a tree that changes while it is
+measured. They cover only the data volume: Docker images, containerd, native
+BuildKit and host paths such as Egress staging or host CI runners are not part
+of it. Runtime diagnostics expose the latest breakdown and the progress of the
+current round as `storageReclamation.dataVolume`.
+
+A refused build and the low-disk warning add one sentence with the regenerable,
+protected and unattributed bytes and the time of the breakdown. When the
+regenerable bytes are smaller than what the build is missing, the refusal says
+that reclaiming them cannot cover the shortfall and names the largest category
+that is not regenerable. Without a finished breakdown it says so instead.
+
 ## Runner package caches and retained execution data
 
 The managed spawn broker gives each project runtime one npm download cache at

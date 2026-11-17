@@ -219,9 +219,11 @@ import { createGitHubForgeProvider } from './github-forge-provider.js';
 import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
 import {
   describeBuildCapacityReclamation,
+  dockerGcDiagnostics,
   startDockerGcScheduler,
   runDockerGc,
 } from './docker-gc.js';
+import { DataVolumeUsage } from './data-volume-usage.js';
 import { sweepOrphanedLocalPreviews } from './local-preview-orphans.js';
 import {
   PreviewShareConflictError,
@@ -3432,6 +3434,7 @@ export async function buildEmbeddedServer(
         })
       : undefined;
   let lastDockerGcReport: DockerGcReport | undefined;
+  const volumeUsage = dataVolumeRoot ? new DataVolumeUsage({ root: dataVolumeRoot }) : undefined;
   const sessionStorage =
     config.hostCloneRoot && projectDocker && provisioner?.withProjectExclusiveMutation
       ? new SessionStorage({
@@ -3961,18 +3964,8 @@ export async function buildEmbeddedServer(
         return {
           accounting:
             'Image and dependency sizes are estimates with shared layers/reflinks; do not sum categories. Unknown measurements are null. No freed-byte claim is inferred from apparent sizes.',
-          lastGc: lastDockerGcReport
-            ? {
-                observedAt: lastDockerGcReport.observedAt,
-                containersRemoved: lastDockerGcReport.containersRemoved.slice(0, 100),
-                imagesRemoved: lastDockerGcReport.imagesRemoved.length,
-                lowDisk: lastDockerGcReport.lowDisk,
-                errors: lastDockerGcReport.errors.length,
-                stoppedContainerPins: lastDockerGcReport.stoppedContainerPins,
-                keptImageReasons: lastDockerGcReport.keptImageReasons,
-                retainedContainers: lastDockerGcReport.retainedContainers,
-              }
-            : null,
+          lastGc: lastDockerGcReport ? dockerGcDiagnostics(lastDockerGcReport) : null,
+          dataVolume: volumeUsage?.diagnostics() ?? null,
           worktrees: report ? sessionStorageDiagnostics(report) : null,
           runnerCaches: runnerCacheStorage?.lastReport ?? null,
           databaseBytes,
@@ -5245,7 +5238,9 @@ export async function buildEmbeddedServer(
           .catch(() => undefined);
         await runnerCacheStorage?.runOnce();
         await sessionStorage?.runOnce();
+        await volumeUsage?.runOnce();
       },
+      describeCapacity: () => volumeUsage?.describe() ?? '',
       onReport: (report) => {
         report.nativeRequestedAt = nativeMaintenanceRequested;
         lastDockerGcReport = report;
@@ -5269,8 +5264,10 @@ export async function buildEmbeddedServer(
     buildStorage?.setReclaimer(async () =>
       describeBuildCapacityReclamation(await dockerGc.reclaimBuildCapacity()),
     );
-    app.addHook('onClose', () => {
+    buildStorage?.setCapacityDescriber((short) => volumeUsage?.describe(short) ?? '');
+    app.addHook('onClose', async () => {
       dockerGc.stop();
+      await volumeUsage?.stop();
     });
   }
   registerStorageReclamationRoutes(app, eventStore, storageReclamation);
