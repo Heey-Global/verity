@@ -1,3 +1,4 @@
+import { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
 import { startEmbeddedSystemInventory } from './embedded-system-inventory.js';
 import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
 import { validateEmbeddedConfig } from './embedded-config.js';
@@ -249,7 +250,6 @@ import {
   createDopplerSecretResolver,
   DopplerSecretResolutionError,
   listDopplerProjectSecretNames,
-  resolveDopplerProjectSecret,
 } from './doppler-secret-resolver.js';
 
 import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
@@ -316,10 +316,6 @@ import {
   withSleepingSessionGit,
 } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
-import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
-import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
-import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
-import { createBrokeredHttpTool } from './brokered-http-tool.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 import { ClaudeOAuthResolutionError } from './claudeUsage.js';
@@ -464,35 +460,13 @@ export async function buildEmbeddedServer(
     'userId' in person
       ? Promise.resolve(person.userId)
       : runningTurnPerson(person.sessionId, person.turnId);
-  const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
-  const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
-  const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
-  const getBrokeredProjectBinding = async (projectId: string) => {
-    const settings = await eventStore.getProjectSettings(projectId);
-    const dopplerProject = settings?.dopplerProject?.trim();
-    const dopplerConfig = settings?.dopplerConfig?.trim();
-    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
-  };
-  const resolveBrokerDopplerSecret = async ({
-    person,
-    ...input
-  }: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'> & {
-    person: DopplerPerson;
-  }): Promise<Uint8Array> => {
-    const token = await dopplerCredentialFor(await dopplerPersonId(person), input.projectId);
-    try {
-      return await resolveDopplerProjectSecret({ ...input, token });
-    } finally {
-      token.fill(0);
-    }
-  };
-  const brokeredHttpTool = createBrokeredHttpTool({
-    requireApprovalBinding: true,
-    getProjectBinding: getBrokeredProjectBinding,
-    resolveSecret: resolveBrokerDopplerSecret,
-    consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
-    transport: restrictedHttpTransport,
-  });
+  const {
+    brokeredHttpConsumptions,
+    brokeredHttpGrants,
+    getBrokeredProjectBinding,
+    resolveBrokerDopplerSecret,
+    brokeredHttpTool,
+  } = createEmbeddedBrokeredHttp(db, eventStore, dopplerCredentialFor, dopplerPersonId);
   const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
   const trustedCliTool = createTrustedCliTool({
     requireApprovalBinding: true,
