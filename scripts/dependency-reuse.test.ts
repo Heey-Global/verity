@@ -611,6 +611,12 @@ describe('shared dependency reuse', () => {
       readFileSync(join(preserved, copies()[0]!, 'private', 'package.json'), 'utf8'),
     ).toContain('3.0.9');
     writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
+    // A later status change of the record must not move its cutoff past the edit.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    chmodSync(
+      join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-activation.json'),
+      0o600,
+    );
     lock('4.1.0');
     expect(f.run('install').status).toBe(0);
     expect(copies()).toHaveLength(2);

@@ -1238,10 +1238,15 @@ async function recordActivation(gitDir, root, trees) {
   const record = join(gitDir, ACTIVATION_RECORD);
   const temporary = `${record}.${randomUUID()}`;
   try {
+    // Stored as well: a later chmod or chown of the record moves its own status
+    // time forward, which must never move the cutoff past an edit.
+    writeFileSync(temporary, '');
+    const at = lstatSync(temporary, { bigint: true }).ctimeNs;
     writeFileSync(
       temporary,
       JSON.stringify({
         version: 1,
+        at: String(at),
         trees: Object.fromEntries(
           trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
         ),
@@ -1258,13 +1263,16 @@ function activationRecord(gitDir, root, directory) {
   try {
     const path = join(gitDir, ACTIVATION_RECORD);
     const marker = lstatSync(path, { bigint: true });
-    const recorded = JSON.parse(readFileSync(path, 'utf8'))?.trees?.[relative(root, directory)];
+    const content = JSON.parse(readFileSync(path, 'utf8'));
+    const recorded = content?.trees?.[relative(root, directory)];
+    if (typeof content?.at !== 'string' || !/^[1-9][0-9]*$/u.test(content.at)) return undefined;
+    const at = BigInt(content.at);
     const top = lstatSync(directory, { bigint: true });
     // Status times are compared only within one filesystem: another one may keep
     // coarser timestamps or a different clock.
     if (!marker.isFile() || marker.dev !== top.dev) return undefined;
     if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
-    return { key: recorded, dev: top.dev, ctimeNs: marker.ctimeNs };
+    return { key: recorded, dev: top.dev, ctimeNs: at < marker.ctimeNs ? at : marker.ctimeNs };
   } catch {
     return undefined;
   }
