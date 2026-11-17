@@ -581,6 +581,53 @@ describe('shared dependency reuse', () => {
       ),
     ).toBe(true);
   }, 60_000);
+  it('discards an activated tree unchanged since activation and keeps an edited one', () => {
+    // Each identity change used to keep another full copy, and the copy could no
+    // longer be compared once its central identity was retired.
+    const f = fixture();
+    const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
+    const copies = () => (existsSync(preserved) ? readdirSync(preserved) : []);
+    const lock = (version: string) =>
+      writeFileSync(
+        join(f.worktree, 'package-lock.json'),
+        JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/private': { version } } }),
+      );
+    for (const version of ['1.0.0', '2.0.0', '3.0.0']) {
+      lock(version);
+      const result = f.run('install');
+      expect(result.status, result.stderr).toBe(0);
+      // A run that changes nothing must not count as a local edit.
+      if (version === '1.0.0') expect(f.run('install').status).toBe(0);
+    }
+    expect(copies()).toEqual([]);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(3);
+    const manifest = join(f.worktree, 'node_modules', 'private', 'package.json');
+    const original = readFileSync(manifest, 'utf8');
+    writeFileSync(manifest, original.replace('3.0.0', '3.0.9'));
+    lock('4.0.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(1);
+    expect(
+      readFileSync(join(preserved, copies()[0]!, 'private', 'package.json'), 'utf8'),
+    ).toContain('3.0.9');
+    writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
+    // A later status change of the record must not move its cutoff past the edit.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    chmodSync(
+      join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-activation.json'),
+      0o600,
+    );
+    lock('4.1.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(2);
+    // A tree that is not the recorded one is never claimed unmodified.
+    rmSync(join(f.worktree, 'node_modules'), { recursive: true });
+    mkdirSync(join(f.worktree, 'node_modules', 'private'), { recursive: true });
+    writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}');
+    lock('5.0.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(3);
+  }, 120_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
     const workspace = join(f.worktree, 'packages', 'source');
