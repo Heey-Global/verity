@@ -9,7 +9,8 @@ import {
   wsOriginAllowed,
 } from './auth.js';
 import { LiveHub } from './live/live-hub.js';
-import type { ResourceObserver } from './live/resource-observer.js';
+import { ResourceObserver } from './live/resource-observer.js';
+import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { authorizePairedRoute } from './paired-route-policy.js';
 import type { ServerContext, ServerLifecycle } from './server-context.js';
 import type { ServerDeps } from './server-deps.js';
@@ -209,7 +210,7 @@ export function installLive(
 }
 
 /** Invalidate resource watches after accepted HTTP mutations. */
-export function registerLiveResourceHints(app: FastifyInstance, resources: ResourceObserver): void {
+function registerLiveResourceHints(app: FastifyInstance, resources: ResourceObserver): void {
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&
@@ -273,5 +274,36 @@ export function registerLiveSessionHints(app: FastifyInstance, ctx: ServerContex
       ...(deleted ? { deleted: true, projectId: deletedSessionProjects.get(request) } : {}),
     });
     return payload;
+  });
+}
+
+export function createLiveResources(
+  app: FastifyInstance,
+  deps: ServerDeps,
+  lifecycle: ServerLifecycle,
+): ResourceObserver {
+  const resources = new ResourceObserver();
+  lifecycle.onClose(() => resources.close());
+  const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
+    deps.bus,
+    deps.eventStore,
+    app.log,
+  );
+  lifecycle.onClose(() => unsubscribeAgentProcessLogging());
+  registerLiveResourceHints(app, resources);
+  return resources;
+}
+
+export function registerLiveRevocation(
+  ctx: ServerContext,
+  liveTickets: ReturnType<typeof createLiveTickets>,
+): void {
+  const { deps, liveHub, lifecycle } = ctx;
+  const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
+    liveTickets.revokeDevice(deviceId);
+    liveHub.revokeDevice(deviceId);
+  });
+  lifecycle.onClose(() => {
+    detachStreamRevocation?.();
   });
 }

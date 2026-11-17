@@ -35,10 +35,8 @@ import { createServerInquiryTool, installProjectInquiries } from './server-proje
 import type { AgentEvent } from '@verity/events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
-import { ResourceObserver } from './live/resource-observer.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -64,7 +62,8 @@ import {
   createLiveTickets,
   createServerLiveHub,
   installLive,
-  registerLiveResourceHints,
+  createLiveResources,
+  registerLiveRevocation,
   registerLiveSessionHints,
 } from './server-live.js';
 import { createServerApp, installHttpGuards } from './server-http.js';
@@ -170,15 +169,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     vulnerabilityService: () => vulnerabilityService,
   });
   const { pushSender, describePushSession, describePushSessionById } = createServerPush(app, deps);
-  const resources = new ResourceObserver();
-  lifecycle.onClose(() => resources.close());
-  const unsubscribeAgentProcessLogging = subscribeAgentProcessLogging(
-    deps.bus,
-    deps.eventStore,
-    app.log,
-  );
-  lifecycle.onClose(() => unsubscribeAgentProcessLogging());
-  registerLiveResourceHints(app, resources);
+  const resources = createLiveResources(app, deps, lifecycle);
   const liveHub = createServerLiveHub(app, deps, { resources, lifecycle });
   const ctx: ServerContext = {
     app,
@@ -197,13 +188,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     createServerPushRuntime(app, ctx, { describePushSessionById });
   const { schedulingTool } = createServerScheduling(app, ctx, { pushRouter, pushFirePoints });
   const serverUpdateNotifier = startServerPush(app, ctx);
-  const detachStreamRevocation = deps.authRegistry?.onRevoke((deviceId) => {
-    liveTickets.revokeDevice(deviceId);
-    liveHub.revokeDevice(deviceId);
-  });
-  lifecycle.onClose(() => {
-    detachStreamRevocation?.();
-  });
+  registerLiveRevocation(ctx, liveTickets);
 
   registerPushShutdown(ctx, {
     unsubscribePushFirePoints,
