@@ -1,8 +1,18 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { link, lstat, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import {
+  link,
+  lstat,
+  open,
+  readFile,
+  readdir,
+  readlink,
+  realpath,
+  rename,
+  rm,
+} from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -73,6 +83,11 @@ export async function shareOwnDependencyFiles(
   } catch {
     return result;
   }
+  // npm resets a command target's mode whenever it links commands, so those stay
+  // private, as `verity-dependencies` keeps them. Files are replaced after the
+  // walk, once every command link is known.
+  const commands = new Set<string>();
+  const candidates: string[] = [];
   const pending = [''];
   while (pending.length > 0) {
     const directory = pending.pop()!;
@@ -86,60 +101,67 @@ export async function shareOwnDependencyFiles(
       signal.throwIfAborted();
       const name = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(name);
-      if (!entry.isFile() || directory === '') continue;
-      const path = join(modules, name);
-      const shared = join(central, name);
-      const [before, source] = await Promise.all([
-        lstat(path).catch(() => undefined),
-        lstat(shared).catch(() => undefined),
-      ]);
-      if (
-        !before?.isFile() ||
-        !source?.isFile() ||
-        before.nlink > 1 ||
-        source.dev !== before.dev ||
-        source.mode & 0o222 ||
-        source.size !== before.size ||
-        // Write bits are the only difference sharing introduces.
-        (source.mode & 0o7555) !== (before.mode & 0o7555) ||
-        (await digest(path, signal)) !== (await digest(shared, signal))
-      )
-        continue;
-      const latest = await lstat(path);
-      if (
-        latest.ino !== before.ino ||
-        latest.size !== before.size ||
-        latest.mtimeMs !== before.mtimeMs ||
-        latest.ctimeMs !== before.ctimeMs
-      )
-        continue;
-      // A directory swapped for a link since the listing must not redirect either path.
-      const placed = async () =>
-        (await realpath(dirname(path))) === dirname(path) &&
-        (await realpath(dirname(shared))) === dirname(shared);
-      if (!(await placed())) continue;
-      if (!dryRun) {
-        const temporary = `${path}.verity-share-${randomUUID()}`;
-        try {
-          try {
-            await link(shared, temporary);
-          } catch (error) {
-            // Another filesystem or link protection: this file stays a copy.
-            const code = (error as NodeJS.ErrnoException).code ?? '';
-            if (['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(code)) continue;
-            throw error;
-          }
-          // Only the very file that was compared may take the copy's place.
-          const linked = await lstat(temporary);
-          if (linked.ino !== source.ino || linked.dev !== source.dev || !(await placed())) continue;
-          await rename(temporary, path);
-        } finally {
-          await rm(temporary, { force: true });
-        }
-      }
-      result.files++;
-      result.bytes += before.blocks * 512;
+      else if (entry.isSymbolicLink() && basename(directory) === '.bin')
+        commands.add(resolve(modules, directory, await readlink(join(modules, name))));
+      // npm rewrites its top-level receipts in place; those stay private.
+      else if (entry.isFile() && directory !== '') candidates.push(name);
     }
+  }
+  for (const name of candidates) {
+    signal.throwIfAborted();
+    const path = join(modules, name);
+    if (commands.has(path)) continue;
+    const shared = join(central, name);
+    const [before, source] = await Promise.all([
+      lstat(path).catch(() => undefined),
+      lstat(shared).catch(() => undefined),
+    ]);
+    if (
+      !before?.isFile() ||
+      !source?.isFile() ||
+      before.nlink > 1 ||
+      source.dev !== before.dev ||
+      source.mode & 0o222 ||
+      source.size !== before.size ||
+      // Write bits are the only difference sharing introduces.
+      (source.mode & 0o7555) !== (before.mode & 0o7555) ||
+      (await digest(path, signal)) !== (await digest(shared, signal))
+    )
+      continue;
+    const latest = await lstat(path);
+    if (
+      latest.ino !== before.ino ||
+      latest.size !== before.size ||
+      latest.mtimeMs !== before.mtimeMs ||
+      latest.ctimeMs !== before.ctimeMs
+    )
+      continue;
+    // A directory swapped for a link since the listing must not redirect either path.
+    const placed = async () =>
+      (await realpath(dirname(path))) === dirname(path) &&
+      (await realpath(dirname(shared))) === dirname(shared);
+    if (!(await placed())) continue;
+    if (!dryRun) {
+      const temporary = `${path}.verity-share-${randomUUID()}`;
+      try {
+        try {
+          await link(shared, temporary);
+        } catch (error) {
+          // Another filesystem or link protection: this file stays a copy.
+          const code = (error as NodeJS.ErrnoException).code ?? '';
+          if (['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(code)) continue;
+          throw error;
+        }
+        // Only the very file that was compared may take the copy's place.
+        const linked = await lstat(temporary);
+        if (linked.ino !== source.ino || linked.dev !== source.dev || !(await placed())) continue;
+        await rename(temporary, path);
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    }
+    result.files++;
+    result.bytes += before.blocks * 512;
   }
   return result;
 }

@@ -46,7 +46,10 @@ adds its directories, not another copy of every package, and keeps working when
 the inventory is later retired. Writing a shared file fails with a permission
 error instead of changing every session at once; run
 `verity dependencies install --private` to give the session its own writable
-copies, for example before patching a package. Where the filesystem refuses a
+copies, for example before patching a package; if a shared file was already
+made writable, the first run withdraws the inventory and a second one completes.
+Targets of `node_modules/.bin` commands stay private copies, because npm resets
+their mode whenever it links commands. Where the filesystem refuses a
 link, activation copies that file and reports how many it copied. `install`
 checks for shared files that were made writable again (`status` does not, to
 stay fast): it withdraws the affected inventory so the next install prepares it
@@ -62,11 +65,15 @@ Sessions activated before sharing hold private copies. While such a session is
 in use, collection replaces each file that is byte-identical, with the same
 execute bits, to the sealed inventory named by the session's receipt by a link
 to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
-already shared files and npm's receipts are left as they are, as are sessions
+already shared files, command targets and npm's receipts are left as they are,
+as are sessions
 whose `node_modules` belongs to root. The conversion never runs with more rights
 than the session has: a Server running as root performs it in a worker process
 under the owner of the session's `node_modules`, and skips it when it can do
-neither. A file that changes before its replacement is kept.
+neither. A file that changes before its replacement is kept. A tree converted
+this way, or activated before this release, is no longer recorded as unchanged,
+so the next dependency change keeps it once as a preserved copy, which
+collection then removes like any other.
 
 Activating a new dependency version moves the session's previous installation
 to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as

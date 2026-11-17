@@ -46,6 +46,11 @@ function fixture(sealed = true, marker = sealed) {
   // Same bytes, different execute bits: not the same file.
   file(modules, 'dep/cli.js', 'cli', 0o644);
   file(modules, 'dep/local-only.js', 'local', 0o644);
+  // A command target identical to the inventory's: npm would reset its mode.
+  file(central, 'dep/bin.js', 'bin', sealed ? 0o555 : 0o755);
+  file(modules, 'dep/bin.js', 'bin', 0o755);
+  mkdirSync(join(modules, '.bin'));
+  symlinkSync('../dep/bin.js', join(modules, '.bin', 'dep'));
   file(modules, '.verity-install.json', JSON.stringify({ identity }), 0o644);
   if (marker) writeFileSync(join(inventory, 'sealed'), 'v1');
   return { root, worktree, central, modules };
@@ -63,8 +68,15 @@ describe.skipIf(process.getuid?.() === 0)(
       expect(result.bytes).toBeGreaterThan(0);
       for (const path of ['dep/index.js', 'dep/node_modules/nested/index.js'])
         expect(inode(join(f.modules, path))).toBe(inode(join(f.central, path)));
-      // An edit, an unknown file, a mode difference and npm's in-place receipt stay private.
-      for (const path of ['dep/edited.js', 'dep/local-only.js', 'dep/cli.js', '.package-lock.json'])
+      // An edit, an unknown file, a mode difference, a command target and npm's
+      // in-place receipt stay private.
+      for (const path of [
+        'dep/edited.js',
+        'dep/local-only.js',
+        'dep/cli.js',
+        'dep/bin.js',
+        '.package-lock.json',
+      ])
         expect(statSync(join(f.modules, path)).nlink).toBe(1);
       expect(readFileSync(join(f.modules, 'dep/edited.js'), 'utf8')).toBe('origin@l');
       const again = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
