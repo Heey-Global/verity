@@ -1,3 +1,4 @@
+import { createEmbeddedTrustedCli, installEmbeddedTrustedCli } from './embedded-trusted-cli.js';
 import { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
 import { startEmbeddedSystemInventory } from './embedded-system-inventory.js';
 import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
@@ -198,7 +199,6 @@ import { createProjectListCache } from './project-list-cache.js';
 
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
-import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { createGitWorktreeProvisioner, healAdminGitdirsAtStartup } from './worktree.js';
@@ -316,7 +316,6 @@ import {
   withSleepingSessionGit,
 } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
-import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 import { ClaudeOAuthResolutionError } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
@@ -467,13 +466,10 @@ export async function buildEmbeddedServer(
     resolveBrokerDopplerSecret,
     brokeredHttpTool,
   } = createEmbeddedBrokeredHttp(db, eventStore, dopplerCredentialFor, dopplerPersonId);
-  const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
-  const trustedCliTool = createTrustedCliTool({
-    requireApprovalBinding: true,
-    outputStore: trustedCliOutput,
-    getProjectBinding: getBrokeredProjectBinding,
-    resolveSecret: resolveBrokerDopplerSecret,
-    consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
+  const { trustedCliOutput, trustedCliTool } = createEmbeddedTrustedCli(db, secretCipher, {
+    getBrokeredProjectBinding,
+    resolveBrokerDopplerSecret,
+    brokeredHttpConsumptions,
   });
   // ── Loopback MCP gateway (ADR 0014) ───────────────────────────────────────
   // An ACP session has no model-specific tool relay, so the brokered tools reach it as an MCP
@@ -4860,22 +4856,7 @@ export async function buildEmbeddedServer(
       await localPreviewManager.close();
     });
   }
-  await trustedCliOutput.cleanup();
-  let outputSweepRunning = false;
-  const outputSweep = setInterval(() => {
-    if (outputSweepRunning) return;
-    outputSweepRunning = true;
-    void trustedCliOutput
-      .cleanup()
-      .catch(() => {
-        console.warn('verity: trusted CLI output cleanup failed');
-      })
-      .finally(() => {
-        outputSweepRunning = false;
-      });
-  }, 60_000);
-  outputSweep.unref();
-  app.addHook('onClose', () => clearInterval(outputSweep));
+  await installEmbeddedTrustedCli(app, { trustedCliOutput });
   // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
   // member's container uses memory only while that member works.
   installPersonalSandboxSleep(app, {
