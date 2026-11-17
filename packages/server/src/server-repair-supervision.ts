@@ -1,3 +1,4 @@
+import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import { worktreeExists } from '@verity/session';
 import { type FastifyInstance } from 'fastify';
 import { createQACoordinator } from './qa-coordinator.js';
@@ -180,4 +181,9 @@ export function installRepairSupervision(
       await supervisor.stop();
     });
   }
+}
+
+export function installRepairRoutes(app: FastifyInstance, ctx: ServerContext): void {
+  registerRepairRoutes(app, ctx.deps.eventStore);
+  registerQASettingsRoutes(app, ctx.deps.eventStore, (id) => ctx.conductor.cancelTurn(id));
 }
