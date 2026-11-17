@@ -1017,7 +1017,7 @@ describe('POST /settings/github/disconnect', () => {
 });
 
 it('keeps the shared PR token independent of optional legacy status access', () => {
-  const source = readFileSync(new URL('./embedded.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('./embedded-github.ts', import.meta.url), 'utf8');
   const mint = source.slice(
     source.indexOf('const repositoryStatusTokenMint ='),
     source.indexOf('const analysisChecksMint ='),
