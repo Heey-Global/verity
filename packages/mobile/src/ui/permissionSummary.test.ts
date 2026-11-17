@@ -2,8 +2,25 @@ import { describe, expect, it } from 'vitest';
 
 import { brokeredAuthSentence, brokeredHttpSummary } from './brokeredHttpSummary.js';
 import { permissionSummary } from './permissionSummary.js';
+import { listSessionsSentence, listSessionsSummary } from './sessionHandoffSummary.js';
 
 describe('permissionSummary', () => {
+  it.each([{}, { activeOnly: false }, { project: 'pulse', activeOnly: false }])(
+    'explains session listings completely so the overview can fold raw input: %j',
+    (input) => {
+      const summary = permissionSummary('verity_list_sessions', input);
+      expect(summary.lines).toEqual([
+        { kind: 'text', text: listSessionsSentence(listSessionsSummary(input)) },
+      ]);
+      expect(summary.covered).toBe(true);
+    },
+  );
+
+  it('keeps unrecognised listing fields open for review', () => {
+    const summary = permissionSummary('verity_list_sessions', { activeOnly: false, extra: true });
+    expect(summary.covered).toBe(false);
+  });
+
   it('shows where a brokered request goes, what it sends and how the secret travels', () => {
     const input = {
       method: 'POST',

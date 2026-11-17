@@ -176,6 +176,36 @@ describe('inboxItems', () => {
     expect(kinds(items)).not.toContain('question');
   });
 
+  it.each([{ activeOnly: false }, { project: 'pulse', activeOnly: false }])(
+    'shows session listings like the session card, without raw JSON: %j',
+    (input) => {
+      const items = inboxItems({
+        sessions: [
+          session('listing', {
+            status: 'awaiting_input',
+            permissionAwaitingInput: true,
+            pendingPermissions: ['list'],
+            pendingPermissionRequests: [
+              {
+                toolUseId: 'list',
+                tool: 'verity_list_sessions',
+                riskClass: 'ask',
+                input,
+              },
+            ],
+          }),
+        ],
+        projects: [project()],
+        now: NOW,
+      });
+      const item = items.find((entry) => entry.kind === 'permission');
+      expect(item?.lines).toEqual(permissionSummary('verity_list_sessions', input).lines);
+      expect(item?.request).toBeUndefined();
+      expect(item?.requestOpen).toBeUndefined();
+      expect(item?.actions.map((action) => action.kind)).toEqual(['allow', 'deny', 'open_session']);
+    },
+  );
+
   it('words a secret run the way the session card does, keeping the full input', () => {
     const input = {
       command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
