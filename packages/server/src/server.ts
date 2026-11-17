@@ -1,3 +1,4 @@
+import { installInfrastructureRoutes } from './server-infrastructure-routes.js';
 import {
   installControlSession,
   installSessionMetadata,
@@ -28,7 +29,6 @@ import { createServerAuthority } from './server-authority.js';
 import { createServerAutomations } from './server-automations.js';
 import { createServerModels } from './server-models.js';
 import { createServerScheduling } from './server-scheduling.js';
-import { installRemoteControl } from './server-remote-control.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
@@ -37,19 +37,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { subscribeAgentProcessLogging } from './agent-process-logging.js';
 import { registerAttachmentRoute } from './attachment-route.js';
-import { registerAuditRoutes } from './audit-routes.js';
-import { createBackupAlertNotifier } from './backup/alert-notifier.js';
-import { registerBackupRoutes } from './backup/routes.js';
-import { registerDiagnosticsMemoryRoute } from './diagnostics-memory-route.js';
-import { registerHealthRoute } from './health-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { ResourceObserver } from './live/resource-observer.js';
-import { registerLogRoutes } from './log-routes.js';
 import { createSessionMockups, registerMockupRoutes } from './mockups.js';
 import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import { registerPushTokenRoute } from './push-token-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
@@ -87,7 +80,6 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import { registerServerUpdateRoutes } from './server-update-routes.js';
 import { emitSessionEvent } from './session-event-writer.js';
 import { createScratchProvisioner } from './worktree.js';
 import {
@@ -261,45 +253,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
 
   installHttpGuards(app, ctx, { preAuthKeys });
 
-  if (deps.backup) {
-    lifecycle.onClose(() => deps.backup!.close());
-    deps.backup.service?.setAlertNotifier(createBackupAlertNotifier(deps.eventStore, pushSender));
-    app.addHook('onReady', (done) => {
-      deps.backup!.service?.start();
-      done();
-    });
-  }
-  registerBackupRoutes(app, {
-    userId: (request) => request.localUserId,
-    isAdministrator: (userId) => deps.eventStore.isActiveAdministrator(userId),
-    service: deps.backup?.service,
-    unavailableReason: () => deps.backup?.unavailableReason ?? 'installer-required',
-  });
-  registerHealthRoute(app, {
-    version: SERVER_VERSION,
-    pushEnabled: deps.pushEnabled === true,
-    publicPreviewsEnabled: () => deps.previewShareManager?.isAvailable() === true,
-    ...(deps.secretJobRuntimeReadiness !== undefined
-      ? { secretJobRuntimeReadiness: deps.secretJobRuntimeReadiness }
-      : {}),
-  });
-  installRemoteControl(app, ctx);
-  registerDiagnosticsMemoryRoute(app);
-  if (deps.audit !== undefined) {
-    registerLogRoutes(app, { ...deps.audit, runtimeDiagnostics: deps.runtimeDiagnostics });
-    registerAuditRoutes(app, {
-      ...deps.audit,
-      sessionName: async (sessionId) => (await deps.eventStore.getSession(sessionId))?.name ?? null,
-    });
-  }
-
-  registerServerUpdateRoutes(app, deps);
-
-  registerPushTokenRoute(app, {
-    store: deps.eventStore,
-    ...(deps.authRegistry !== undefined ? { authRegistry: deps.authRegistry } : {}),
-    ...(deps.pushEnabled !== undefined ? { pushEnabled: deps.pushEnabled } : {}),
-  });
+  installInfrastructureRoutes(app, ctx);
 
   const {
     prunePrSummaryCache,
