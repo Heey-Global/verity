@@ -1228,8 +1228,8 @@ function treeKey(stat) {
   return `${stat.dev}:${stat.ino}`;
 }
 async function recordActivation(gitDir, root, trees) {
-  // Every change since activation must leave a status change time strictly after
-  // the record's, including on filesystems with coarse timestamps.
+  // Activation's own writes must have status change times strictly before the
+  // record's; a timestamp granularity coarser than this only keeps copies.
   await delay(25);
   const record = join(gitDir, ACTIVATION_RECORD);
   const temporary = `${record}.${randomUUID()}`;
@@ -1256,7 +1256,10 @@ function activationRecord(gitDir, root, directory) {
     const marker = lstatSync(path, { bigint: true });
     const recorded = JSON.parse(readFileSync(path, 'utf8'))?.trees?.[relative(root, directory)];
     const top = lstatSync(directory, { bigint: true });
-    if (!marker.isFile() || !top.isDirectory() || recorded !== treeKey(top)) return undefined;
+    // Status times are compared only within one filesystem: another one may keep
+    // coarser timestamps or a different clock.
+    if (!marker.isFile() || marker.dev !== top.dev) return undefined;
+    if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
     return { key: recorded, dev: top.dev, ctimeNs: marker.ctimeNs };
   } catch {
     return undefined;
