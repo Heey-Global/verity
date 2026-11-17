@@ -206,7 +206,7 @@ describe('inboxItems', () => {
     },
   );
 
-  it('words a secret run the way the session card does, keeping the full input', () => {
+  it('keeps secret-run approvals compact and routes review to the session', () => {
     const input = {
       command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
       secrets: [
@@ -231,18 +231,10 @@ describe('inboxItems', () => {
     // Home showed the tool's name and a JSON dump; the session asked a question.
     expect(item?.title).toBe(permissionSummary('verity_secret_run', input).title);
     expect(item?.title).toBe('Run trusted command with 2 secrets?');
-    expect(item?.lines).toEqual([
-      { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
-      {
-        kind: 'text',
-        text: expect.stringContaining(
-          'Verity injects TAILSCALE_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_B64_FILE.',
-        ) as string,
-      },
-    ]);
+    expect(item?.lines).toBeUndefined();
     expect(item?.message).toBeUndefined();
-    // The summary is what to read first; the complete input still travels with Allow.
-    expect(item?.request).toBe(JSON.stringify(input, null, 2));
+    expect(item?.request).toBeUndefined();
+    expect(item?.actions).toEqual([{ kind: 'open_session', label: 'Review', sessionId: 'k8s' }]);
   });
 
   it('words an unknown tool by the field it is about and keeps its raw input', () => {

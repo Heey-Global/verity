@@ -13,7 +13,7 @@ import {
 import { sessionLabel } from './sessionLabel.js';
 import { permissionInputText } from './permissionInput.js';
 import { permissionSummary, type PermissionLine } from './permissionSummary.js';
-import { toolCallView } from './toolCall.js';
+import { toolCallPrimaryField, toolCallView } from './toolCall.js';
 
 /**
  * Home's inbox: everything across all projects that needs the operator, each with
@@ -239,7 +239,12 @@ function sessionItems(
       description: null,
     });
     const summary = permissionSummary(request.tool, request.input);
-    const decidable = request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
+    // Commands belong in the session review, not in the scan-friendly overview.
+    const reviewCommand =
+      request.tool === 'verity_secret_run' ||
+      toolCallPrimaryField(request.tool, request.input)?.field === 'command';
+    const decidable =
+      !reviewCommand && request.input !== undefined && !OPEN_TO_DECIDE.has(request.tool);
     items.push({
       ...base,
       key: `permission:${session.sessionId}:${request.toolUseId}`,
@@ -248,11 +253,13 @@ function sessionItems(
       tone: 'attention',
       title: summary.title,
       context: where,
-      ...(summary.lines.length > 0
-        ? { lines: summary.lines }
-        : view.subtitle
-          ? { message: view.subtitle }
-          : {}),
+      ...(reviewCommand
+        ? {}
+        : summary.lines.length > 0
+          ? { lines: summary.lines }
+          : view.subtitle
+            ? { message: view.subtitle }
+            : {}),
       ...(decidable && !(request.tool === 'verity_list_sessions' && summary.covered)
         ? {
             request: permissionInputText(request.input),
