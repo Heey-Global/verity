@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -71,6 +72,26 @@ describe.skipIf(!enforcesModes)('dependency files shared between sessions', () =
     expect(f.run('install').status).toBe(0);
     const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
     expect(existsSync(preserved) ? readdirSync(preserved) : []).toEqual([]);
+  });
+  it('keeps a replaced tree even when the new file looks read-only and old', () => {
+    // A patch unpacked with preserved times and modes is still a local edit.
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('1.0.0'));
+    expect(f.run('install').status).toBe(0);
+    const file = join(f.worktree, 'node_modules', 'private', 'package.json');
+    const { atime, mtime } = statSync(file);
+    rmSync(file);
+    writeFileSync(file, '{"version":"1.0.1"}');
+    chmodSync(file, 0o444);
+    utimesSync(file, atime, mtime);
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('2.0.0'));
+    expect(f.run('install').status).toBe(0);
+    const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).map((copy) =>
+        readFileSync(join(preserved, copy, 'private', 'package.json'), 'utf8'),
+      ),
+    ).toEqual(['{"version":"1.0.1"}']);
   });
   it('makes shared files private on request without touching the inventory', () => {
     const f = fixture();
@@ -154,7 +175,7 @@ syncBuiltinESMExports();
     writeFileSync(join(f.worktree, 'package-lock.json'), lock('1.0.0'));
     const result = f.run('install', { NODE_OPTIONS: `--import=${preload}` });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toMatch(/Copied [1-9][0-9]* dependency files that this filesystem/u);
+    expect(result.stdout).toMatch(/Copied [1-9][0-9]* dependency files that could not be shared/u);
     const file = join(f.worktree, 'node_modules', 'private', 'package.json');
     expect(statSync(file).nlink).toBe(1);
     expect(readFileSync(file, 'utf8')).toContain('1.0.0');

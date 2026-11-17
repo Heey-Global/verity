@@ -52,54 +52,58 @@ function fixture(sealed = true, marker = sealed) {
 }
 const inode = (path: string) => statSync(path).ino;
 
-describe('sharing private dependency copies with the central inventory', () => {
-  it('links only byte-identical files and leaves every other file alone', async () => {
-    const f = fixture();
-    const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
-    expect(result.files).toBe(2);
-    expect(result.bytes).toBeGreaterThan(0);
-    for (const path of ['dep/index.js', 'dep/node_modules/nested/index.js'])
-      expect(inode(join(f.modules, path))).toBe(inode(join(f.central, path)));
-    // An edit, an unknown file, a mode difference and npm's in-place receipt stay private.
-    for (const path of ['dep/edited.js', 'dep/local-only.js', 'dep/cli.js', '.package-lock.json'])
-      expect(statSync(join(f.modules, path)).nlink).toBe(1);
-    expect(readFileSync(join(f.modules, 'dep/edited.js'), 'utf8')).toBe('origin@l');
-    const again = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
-    expect(again.files).toBe(0);
-  });
-  it('shares nothing from an inventory that is not sealed', async () => {
-    // Writable files, or read-only ones a seal does not vouch for yet.
-    for (const f of [fixture(false), fixture(true, false)]) {
+// Root sessions keep their copies: root ignores read-only files.
+describe.skipIf(process.getuid?.() === 0)(
+  'sharing private dependency copies with the central inventory',
+  () => {
+    it('links only byte-identical files and leaves every other file alone', async () => {
+      const f = fixture();
+      const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
+      expect(result.files).toBe(2);
+      expect(result.bytes).toBeGreaterThan(0);
+      for (const path of ['dep/index.js', 'dep/node_modules/nested/index.js'])
+        expect(inode(join(f.modules, path))).toBe(inode(join(f.central, path)));
+      // An edit, an unknown file, a mode difference and npm's in-place receipt stay private.
+      for (const path of ['dep/edited.js', 'dep/local-only.js', 'dep/cli.js', '.package-lock.json'])
+        expect(statSync(join(f.modules, path)).nlink).toBe(1);
+      expect(readFileSync(join(f.modules, 'dep/edited.js'), 'utf8')).toBe('origin@l');
+      const again = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
+      expect(again.files).toBe(0);
+    });
+    it('shares nothing from an inventory that is not sealed', async () => {
+      // Writable files, or read-only ones a seal does not vouch for yet.
+      for (const f of [fixture(false), fixture(true, false)]) {
+        const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
+        expect(result.files).toBe(0);
+        expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
+      }
+    });
+    it('shares nothing through a node_modules that is a link to another tree', async () => {
+      const f = fixture();
+      const elsewhere = join(f.root, 'elsewhere');
+      renameSync(f.modules, elsewhere);
+      symlinkSync(elsewhere, f.modules);
       const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
       expect(result.files).toBe(0);
+      expect(statSync(join(elsewhere, 'dep/index.js')).nlink).toBe(1);
+    });
+    it('counts without linking in dry-run mode', async () => {
+      const f = fixture();
+      const result = await shareDependencyFiles(
+        f.root,
+        f.worktree,
+        new AbortController().signal,
+        true,
+      );
+      expect(result.files).toBe(2);
       expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
-    }
-  });
-  it('shares nothing through a node_modules that is a link to another tree', async () => {
-    const f = fixture();
-    const elsewhere = join(f.root, 'elsewhere');
-    renameSync(f.modules, elsewhere);
-    symlinkSync(elsewhere, f.modules);
-    const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
-    expect(result.files).toBe(0);
-    expect(statSync(join(elsewhere, 'dep/index.js')).nlink).toBe(1);
-  });
-  it('counts without linking in dry-run mode', async () => {
-    const f = fixture();
-    const result = await shareDependencyFiles(
-      f.root,
-      f.worktree,
-      new AbortController().signal,
-      true,
-    );
-    expect(result.files).toBe(2);
-    expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
-  });
-  it('stops at its budget without touching the remaining files', async () => {
-    const f = fixture();
-    const controller = new AbortController();
-    controller.abort();
-    await expect(shareDependencyFiles(f.root, f.worktree, controller.signal)).rejects.toThrow();
-    expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
-  });
-});
+    });
+    it('stops at its budget without touching the remaining files', async () => {
+      const f = fixture();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(shareDependencyFiles(f.root, f.worktree, controller.signal)).rejects.toThrow();
+      expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
+    });
+  },
+);

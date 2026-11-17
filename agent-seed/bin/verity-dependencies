@@ -1039,8 +1039,12 @@ async function main() {
       let recovery;
       const workspaceCopies = [];
       try {
-        sealInventory(cache);
+        // Root ignores permission bits, so its writes would reach every session;
+        // an inventory this process cannot seal is copied as before.
+        // Root ignores permission bits, so its writes would reach every session.
+        const share = process.getuid?.() !== 0 && sealInventory(cache);
         const copied = { files: 0 };
+        const recorded = new Map();
         for (const tree of workspaceModuleTrees(cache)) {
           const path = relative(cache, tree);
           const destination = join(root, path);
@@ -1048,17 +1052,19 @@ async function main() {
             throw new Error('Workspace dependency parent must stay inside the project.');
           const copy = candidate + '-workspace-' + workspaceCopies.length;
           workspaceCopies.push({ copy, destination });
-          shareTree(tree, copy, copied, () => withdraw(cache));
+          recorded.set(
+            destination,
+            shareTree(tree, copy, copied, () => withdraw(cache), share),
+          );
           rewire(root, copy, path + '/');
         }
-        shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache));
-        if (process.getuid?.() === 0)
+        recorded.set(
+          modules,
+          shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache), share),
+        );
+        if (!share || copied.files > 0)
           console.log(
-            'Copied dependency files instead of sharing them: root ignores read-only files.',
-          );
-        else if (copied.files > 0)
-          console.log(
-            `Copied ${copied.files} dependency files that this filesystem could not share.`,
+            `Copied ${share ? copied.files : 'all'} dependency files that could not be shared.`,
           );
         rewire(root, candidate);
         checkInputs();
@@ -1081,10 +1087,7 @@ async function main() {
         for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
-        await recordActivation(gitDir, root, placed, [
-          modules,
-          ...workspaceCopies.map((entry) => entry.destination),
-        ]).catch((error) => {
+        await recordActivation(gitDir, root, placed, recorded).catch((error) => {
           // The record only lets a later change discard this copy; without it the
           // copy is preserved as before, so its failure never fails activation.
           console.warn(`Could not record the activated dependencies: ${error.message}`);
@@ -1286,11 +1289,14 @@ async function recordActivation(gitDir, root, placed, trees) {
     writeFileSync(
       temporary,
       JSON.stringify({
-        version: 1,
+        version: 2,
         at: String(at),
         placed: String(placed),
         trees: Object.fromEntries(
-          trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
+          [...trees].map(([tree, files]) => [
+            relative(root, tree),
+            { key: treeKey(lstatSync(tree, { bigint: true })), files },
+          ]),
         ),
       }),
     );
@@ -1306,7 +1312,9 @@ function activationRecord(gitDir, root, directory) {
     const path = join(gitDir, ACTIVATION_RECORD);
     const marker = lstatSync(path, { bigint: true });
     const content = JSON.parse(readFileSync(path, 'utf8'));
-    const recorded = content?.trees?.[relative(root, directory)];
+    const entry = content?.version === 2 ? content.trees?.[relative(root, directory)] : undefined;
+    const recorded = entry?.key;
+    if (typeof entry?.files !== 'string') return undefined;
     const time = (value) =>
       typeof value === 'string' && /^[1-9][0-9]*$/u.test(value) ? BigInt(value) : undefined;
     const at = time(content?.at);
@@ -1322,7 +1330,7 @@ function activationRecord(gitDir, root, directory) {
     if (statusTime(gitDir) <= cutoff) return undefined;
     // Below the roots, a change while activation finished must count as an edit.
     const below = placed < cutoff ? placed : cutoff;
-    return { key: recorded, dev: top.dev, ctimeNs: cutoff, below };
+    return { key: recorded, files: entry.files, dev: top.dev, ctimeNs: cutoff, below };
   } catch {
     return undefined;
   }
@@ -1333,6 +1341,7 @@ function activationRecord(gitDir, root, directory) {
  *  past the record could hide a change. */
 function unchangedSince(directory, record, includeTop) {
   try {
+    const files = [];
     const pending = [directory];
     while (pending.length > 0) {
       const current = pending.pop();
@@ -1342,17 +1351,16 @@ function unchangedSince(directory, record, includeTop) {
         if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
         if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
       } else if (stat.ctimeNs >= record.below && !stat.isDirectory()) {
-        // A directory's status changes with its entries, which are checked
-        // themselves; a removed entry takes no content with it. Linking a shared
-        // file into another session, or retiring its central inventory, changes
-        // its status time. A read-only file cannot be edited without making it
-        // writable, and a write sets its modification time.
+        // Directories change status with their entries, which are checked below.
+        // Sharing a file or retiring its inventory changes its status time, but a
+        // read-only file cannot be written, and a write sets its modification time.
         if (!stat.isFile() || stat.mode & 0o222n || stat.mtimeNs >= record.below) return false;
       }
+      if (stat.isFile()) files.push(fileIdentity(relative(directory, current), stat));
       if (stat.isDirectory())
         for (const entry of readdirSync(current)) pending.push(join(current, entry));
     }
-    return true;
+    return filesKey(files) === record.files;
   } catch {
     return false;
   }
@@ -1360,6 +1368,7 @@ function unchangedSince(directory, record, includeTop) {
 // Sessions share the central inventory's files as hardlinks instead of a full
 // copy each. A shared file is one inode for every session, so it must never be
 // writable: an edit would change every session at once, and the inventory.
+/** Visits every regular file below `tree`; stops once `visit` returns true. */
 function eachFile(tree, visit) {
   const pending = [tree];
   while (pending.length > 0) {
@@ -1367,39 +1376,42 @@ function eachFile(tree, visit) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(path);
-      else if (entry.isFile()) visit(path, lstatSync(path), directory === tree);
+      else if (entry.isFile() && visit(path, lstatSync(path))) return true;
     }
   }
+  return false;
 }
-/** A session's own tree: a symlinked `node_modules` belongs to something else. */
-function ownTree(tree) {
+/** A session's own trees: a symlinked `node_modules` belongs to something else. */
+function ownTrees(root) {
+  return [join(root, 'node_modules'), ...workspaceModuleTrees(root)].filter((tree) =>
+    lstatSync(tree, { throwIfNoEntry: false })?.isDirectory(),
+  );
+}
+/** Drops the write bits of an inventory's files once, under its identity lock; false when it cannot. */
+function sealInventory(cache) {
   try {
-    return lstatSync(tree).isDirectory();
-  } catch {
+    if (read(join(cache, 'sealed')) !== 'v1') {
+      for (const tree of ownTrees(cache))
+        eachFile(tree, (path, stat) => {
+          if (stat.mode & 0o222) chmodSync(path, stat.mode & 0o7555);
+        });
+      writeFileSync(join(cache, 'sealed'), 'v1');
+    }
+    return true;
+  } catch (error) {
+    console.warn(`The dependency inventory cannot be sealed (${error.message}).`);
     return false;
   }
 }
-function inventoryTrees(cache) {
-  return [join(cache, 'node_modules'), ...workspaceModuleTrees(cache)];
-}
-/** Drops the write bits of an inventory's files once; the caller holds its identity lock. */
-function sealInventory(cache) {
-  if (read(join(cache, 'sealed')) === 'v1') return;
-  for (const tree of inventoryTrees(cache))
-    eachFile(tree, (path, stat) => {
-      if (stat.mode & 0o222) chmodSync(path, stat.mode & 0o7555);
-    });
-  writeFileSync(join(cache, 'sealed'), 'v1');
-}
 /** Recreates `source` at `destination`: directories and top-level files are the
  *  session's own, symlinks are reproduced, and package files are shared links. */
-function shareTree(source, destination, copied, drifted) {
-  // Root ignores permission bits, so its writes would reach every session.
-  const share = process.getuid?.() !== 0;
+function shareTree(source, destination, copied, drifted, share) {
+  const files = [];
   const pending = [[source, destination]];
   while (pending.length > 0) {
     const [from, to] = pending.pop();
     const stat = lstatSync(from);
+    const name = relative(source, from);
     if (stat.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
     else if (stat.isDirectory()) {
       mkdirSync(to);
@@ -1407,12 +1419,13 @@ function shareTree(source, destination, copied, drifted) {
       for (const entry of readdirSync(from)) pending.push([join(from, entry), join(to, entry)]);
     } else if (!stat.isFile()) throw new Error('Unsupported entry in the central inventory.');
     // A writable inventory file may already carry an edit made through a link.
-    else if (stat.mode & 0o222) drifted();
+    else if (share && stat.mode & 0o222) drifted();
     else {
       // npm rewrites its top-level receipts in place; those stay private copies.
       if (share && dirname(from) !== source)
         try {
           linkSync(from, to);
+          files.push(fileIdentity(name, lstatSync(from, { bigint: true })));
           continue;
         } catch (error) {
           if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
@@ -1420,9 +1433,15 @@ function shareTree(source, destination, copied, drifted) {
         }
       copyFileSync(from, to);
       chmodSync(to, (stat.mode & 0o7777) | 0o200);
+      files.push(fileIdentity(name, lstatSync(to, { bigint: true })));
     }
   }
+  return filesKey(files);
 }
+// Which inode holds each file of an activated tree: replacing or removing a file
+// changes this even when its times and mode look untouched.
+const fileIdentity = (name, stat) => `${name}\0${stat.ino}`;
+const filesKey = (files) => createHash('sha256').update(files.sort().join('\n')).digest('hex');
 /** Retires an inventory whose shared files became writable; the next install prepares it afresh. */
 function withdraw(cache) {
   const retired = join(dirname(cache), '.retired-' + randomUUID());
@@ -1434,43 +1453,28 @@ function withdraw(cache) {
 }
 /** True when a file shared with other sessions has write bits again. */
 function sharedDrift(root) {
-  const drift = new Error('drift');
-  try {
-    for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
-      if (ownTree(tree))
-        eachFile(tree, (_, stat) => {
-          if (stat.nlink > 1 && stat.mode & 0o222) throw drift;
-        });
-    return false;
-  } catch (error) {
-    if (error === drift) return true;
-    throw error;
-  }
+  return ownTrees(root).some((tree) =>
+    eachFile(tree, (_, stat) => stat.nlink > 1 && (stat.mode & 0o222) !== 0),
+  );
 }
 /** `install --private`: replaces this session's shared files with its own copies. */
 function privatize(root) {
   let files = 0;
-  for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
-    if (ownTree(tree))
-      eachFile(tree, (path, stat) => {
-        if (stat.nlink < 2) {
-          // Left read-only once every other name is gone, e.g. a retired inventory.
-          if (!(stat.mode & 0o200)) {
-            chmodSync(path, (stat.mode & 0o7777) | 0o200);
-            files++;
-          }
-          return;
-        }
-        const temporary = `${path}.verity-private-${randomUUID()}`;
-        try {
-          copyFileSync(path, temporary);
-          chmodSync(temporary, (stat.mode & 0o7777) | 0o200);
-          renameSync(temporary, path);
-          files++;
-        } finally {
-          rmSync(temporary, { force: true });
-        }
-      });
+  for (const tree of ownTrees(root))
+    eachFile(tree, (path, stat) => {
+      if (stat.nlink < 2 && stat.mode & 0o200) return;
+      files++;
+      // Read-only without other names once, for example, its inventory is retired.
+      if (stat.nlink < 2) return chmodSync(path, (stat.mode & 0o7777) | 0o200);
+      const temporary = `${path}.verity-private-${randomUUID()}`;
+      try {
+        copyFileSync(path, temporary);
+        chmodSync(temporary, (stat.mode & 0o7777) | 0o200);
+        renameSync(temporary, path);
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+    });
   console.log(`Made ${files} shared dependency files private to this session.`);
 }
 function readlinkExists(path) {

@@ -121,7 +121,14 @@ export async function shareOwnDependencyFiles(
       if (!dryRun) {
         const temporary = `${path}.verity-share-${randomUUID()}`;
         try {
-          await link(shared, temporary);
+          try {
+            await link(shared, temporary);
+          } catch (error) {
+            // Another filesystem or link protection: this file stays a copy.
+            const code = (error as NodeJS.ErrnoException).code ?? '';
+            if (['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(code)) continue;
+            throw error;
+          }
           // Only the very file that was compared may take the copy's place.
           const linked = await lstat(temporary);
           if (linked.ino !== source.ino || linked.dev !== source.dev || !(await placed())) continue;
