@@ -1721,6 +1721,15 @@ function nodeRuntimeRoots() {
 }
 
 // features/verity-sandbox-toolkit/src/spawn-broker/launch.mjs
+function claudePolicyRoots(command) {
+  if (command !== "claude-agent-acp") return [];
+  const path = "/etc/claude-code";
+  const metadata = lstatSync2(path, { throwIfNoEntry: false });
+  if (!metadata) return [];
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== 0 || (metadata.mode & 18) !== 0)
+    throw new Error("Invalid Claude managed policy directory");
+  return ["--read-root", path];
+}
 function normalSessionRoots(options, agentPath) {
   const roots = [];
   for (const [flag, path] of [
@@ -1827,6 +1836,7 @@ function agentLaunchSpec(request, options) {
         ...planningRuntimeRoots(request, options).flatMap((path) => ["--runtime-root", path]),
         ...normalConfinement ? normalSessionRoots(options, agentPath) : [],
         ...request.planning || request.knowledgeIsolation ? nodeRuntimeRoots() : [],
+        ...claudePolicyRoots(request.command),
         "--"
       ] : [],
       ...options.signalTraceSeconds === void 0 || request.command !== "codex-acp" || request.knowledgeIsolation ? [] : [

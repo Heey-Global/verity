@@ -39,6 +39,24 @@ import {
   restrictedOpenCodePolicies,
 } from './session-home.mjs';
 
+function claudePolicyRoots(command) {
+  if (command !== 'claude-agent-acp') return [];
+  const path = '/etc/claude-code';
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+  if (!metadata) return [];
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    metadata.uid !== 0 ||
+    (metadata.mode & 0o022) !== 0
+  )
+    throw new Error('Invalid Claude managed policy directory');
+  // The SDK reads both managed-settings.json and managed-settings.d. Without
+  // directory access Landlock reports EACCES even for absent policy files.
+  // Keep the system policy read-only, outside the writable session home.
+  return ['--read-root', path];
+}
+
 function normalSessionRoots(options, agentPath) {
   const roots = [];
   for (const [flag, path] of [
@@ -174,6 +192,7 @@ export function agentLaunchSpec(request, options) {
             ...planningRuntimeRoots(request, options).flatMap((path) => ['--runtime-root', path]),
             ...(normalConfinement ? normalSessionRoots(options, agentPath) : []),
             ...(request.planning || request.knowledgeIsolation ? nodeRuntimeRoots() : []),
+            ...claudePolicyRoots(request.command),
             '--',
           ]
         : []),
