@@ -1,3 +1,4 @@
+import { startEmbeddedSystemInventory } from './embedded-system-inventory.js';
 import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
 import { validateEmbeddedConfig } from './embedded-config.js';
 import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
@@ -19,7 +20,6 @@ import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { createStoreDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
-import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -88,7 +88,6 @@ export {
   RUNNER_CONTAINER_PROJECT_ROOT,
 } from './embedded-runner-wiring.js';
 import { resolveForgeRepositoryBinding } from './forge-repository-binding.js';
-import { createProjectEgressInventorySynchronizer } from './project-egress-system-inventory.js';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
@@ -422,36 +421,7 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
-  const systemInventorySync =
-    config.projectEgressSocketPath && config.projectEgressKeyPath
-      ? createProjectEgressInventorySynchronizer({
-          enabled: config.projectEgressInventoryRequired ?? (() => false),
-          command: createProjectEgressHostClient({
-            socketPath: config.projectEgressSocketPath,
-            token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
-          }),
-          readUrls: () => eventStore.readEgressDestinationUrls(),
-          transaction: (action) => eventStore.withEgressDestinationTransaction(action),
-        })
-      : undefined;
-  if (systemInventorySync) eventStore.setEgressDestinationMutation(systemInventorySync.mutate);
-  // A controller restart starts incomplete; periodic re-synchronization repairs
-  // that state. Configuration writes always use the synchronous prechange barrier.
-  const synchronizeSystemInventory = () =>
-    systemInventorySync?.refresh().catch((error: unknown) => {
-      console.warn('verity: system destination inventory synchronization unavailable', {
-        operation: 'inventory-refresh',
-        reason: error instanceof ProjectEgressInventoryError ? error.reason : 'host_not_ready',
-        ...(error instanceof ProjectEgressInventoryError && error.correlationId
-          ? { correlationId: error.correlationId }
-          : {}),
-      });
-    });
-  await synchronizeSystemInventory();
-  const systemInventoryTimer = systemInventorySync
-    ? setInterval(() => void synchronizeSystemInventory(), 10_000)
-    : undefined;
-  systemInventoryTimer?.unref();
+  const stopSystemInventory = await startEmbeddedSystemInventory(config, eventStore);
 
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
@@ -5005,7 +4975,7 @@ export async function buildEmbeddedServer(
   app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
-  app.addHook('onClose', () => clearInterval(systemInventoryTimer));
+  app.addHook('onClose', stopSystemInventory);
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());
