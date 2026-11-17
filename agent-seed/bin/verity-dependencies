@@ -989,11 +989,14 @@ async function main() {
     const gitDir = git('rev-parse', '--absolute-git-dir');
     const preserve = (directory = modules) => {
       if (!readlinkExists(directory)) return;
-      const unmodified = unmodifiedSinceActivation(gitDir, root, directory);
+      const record = activationRecord(gitDir, root, directory);
+      const unmodified = record !== undefined && unchangedSince(directory, record, true);
       const recovery = join(gitDir, 'verity-dependencies-preserved', randomUUID());
       mkdirSync(dirname(recovery), { recursive: true });
       renameSync(directory, recovery);
-      if (unmodified) {
+      // Checked again once withdrawn, so a write between the walk and the rename
+      // is kept. The rename itself changes only the top directory's status.
+      if (unmodified && unchangedSince(recovery, record, false)) {
         // Withdrawn by the rename first: a removal that fails part-way leaves an
         // ordinary preserved copy for the session storage sweep, never a broken tree.
         rmSync(recovery, { recursive: true });
@@ -1051,7 +1054,11 @@ async function main() {
         await recordActivation(gitDir, root, [
           modules,
           ...workspaceCopies.map((entry) => entry.destination),
-        ]);
+        ]).catch((error) => {
+          // The record only lets a later change discard this copy; without it the
+          // copy is preserved as before, so its failure never fails activation.
+          console.warn(`Could not record the activated dependencies: ${error.message}`);
+        });
         console.log(
           'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
@@ -1226,33 +1233,49 @@ async function recordActivation(gitDir, root, trees) {
   await delay(25);
   const record = join(gitDir, ACTIVATION_RECORD);
   const temporary = `${record}.${randomUUID()}`;
-  writeFileSync(
-    temporary,
-    JSON.stringify({
-      version: 1,
-      trees: Object.fromEntries(
-        trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
-      ),
-    }),
-  );
-  renameSync(temporary, record);
+  try {
+    writeFileSync(
+      temporary,
+      JSON.stringify({
+        version: 1,
+        trees: Object.fromEntries(
+          trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
+        ),
+      }),
+    );
+    renameSync(temporary, record);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
-/** True only when `directory` is the very tree recorded at activation and no
- *  entry in it changed status since: any write, chmod, link, creation, removal
- *  or rename sets a status change time no tool can set back. Unknown, unreadable
- *  or replaced trees are never claimed unmodified. */
-function unmodifiedSinceActivation(gitDir, root, directory) {
+/** The recorded identity and time of `directory`'s activation, if it is the very
+ *  tree that was activated; undefined for unknown, unreadable or replaced trees. */
+function activationRecord(gitDir, root, directory) {
   try {
     const path = join(gitDir, ACTIVATION_RECORD);
     const marker = lstatSync(path, { bigint: true });
     const recorded = JSON.parse(readFileSync(path, 'utf8'))?.trees?.[relative(root, directory)];
     const top = lstatSync(directory, { bigint: true });
-    if (!marker.isFile() || !top.isDirectory() || recorded !== treeKey(top)) return false;
+    if (!marker.isFile() || !top.isDirectory() || recorded !== treeKey(top)) return undefined;
+    return { key: recorded, dev: top.dev, ctimeNs: marker.ctimeNs };
+  } catch {
+    return undefined;
+  }
+}
+/** True only when no entry changed status since the record: any write, chmod,
+ *  link, creation, removal or rename sets a status change time that file tools
+ *  cannot set back. Only a host clock stepped backwards could hide a change. */
+function unchangedSince(directory, record, includeTop) {
+  try {
     const pending = [directory];
     while (pending.length > 0) {
       const current = pending.pop();
       const stat = lstatSync(current, { bigint: true });
-      if (stat.ctimeNs >= marker.ctimeNs || stat.dev !== top.dev) return false;
+      if (stat.dev !== record.dev) return false;
+      if (current === directory) {
+        if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
+        if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
+      } else if (stat.ctimeNs >= record.ctimeNs) return false;
       if (stat.isDirectory())
         for (const entry of readdirSync(current)) pending.push(join(current, entry));
     }

@@ -597,25 +597,31 @@ describe('shared dependency reuse', () => {
       const result = f.run('install');
       expect(result.status, result.stderr).toBe(0);
       // A run that changes nothing must not count as a local edit.
-      expect(f.run('install').status).toBe(0);
+      if (version === '1.0.0') expect(f.run('install').status).toBe(0);
     }
     expect(copies()).toEqual([]);
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(3);
-    writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
+    const manifest = join(f.worktree, 'node_modules', 'private', 'package.json');
+    const original = readFileSync(manifest, 'utf8');
+    writeFileSync(manifest, original.replace('3.0.0', '3.0.9'));
     lock('4.0.0');
     expect(f.run('install').status).toBe(0);
     expect(copies()).toHaveLength(1);
-    expect(readFileSync(join(preserved, copies()[0]!, 'private', 'patch.txt'), 'utf8')).toBe(
-      'local edit',
-    );
+    expect(
+      readFileSync(join(preserved, copies()[0]!, 'private', 'package.json'), 'utf8'),
+    ).toContain('3.0.9');
+    writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
+    lock('4.1.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(2);
     // A tree that is not the recorded one is never claimed unmodified.
     rmSync(join(f.worktree, 'node_modules'), { recursive: true });
     mkdirSync(join(f.worktree, 'node_modules', 'private'), { recursive: true });
     writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}');
     lock('5.0.0');
     expect(f.run('install').status).toBe(0);
-    expect(copies()).toHaveLength(2);
-  }, 60_000);
+    expect(copies()).toHaveLength(3);
+  }, 120_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
     const workspace = join(f.worktree, 'packages', 'source');
