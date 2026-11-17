@@ -1,6 +1,10 @@
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { link, lstat, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 export async function digest(path: string, signal: AbortSignal): Promise<string> {
   const file = await open(path, 'r');
@@ -35,7 +39,7 @@ export interface DependencySharing {
  * Callers hold the session's claim, so no turn of the session runs meanwhile;
  * a write that lands during the comparison still keeps the file.
  */
-export async function shareDependencyFiles(
+export async function shareOwnDependencyFiles(
   root: string,
   worktree: string,
   signal: AbortSignal,
@@ -109,12 +113,18 @@ export async function shareDependencyFiles(
         latest.ctimeMs !== before.ctimeMs
       )
         continue;
-      // A directory swapped for a link since the listing must not redirect the rename.
-      if ((await realpath(dirname(path))) !== dirname(path)) continue;
+      // A directory swapped for a link since the listing must not redirect either path.
+      const placed = async () =>
+        (await realpath(dirname(path))) === dirname(path) &&
+        (await realpath(dirname(shared))) === dirname(shared);
+      if (!(await placed())) continue;
       if (!dryRun) {
         const temporary = `${path}.verity-share-${randomUUID()}`;
         try {
           await link(shared, temporary);
+          // Only the very file that was compared may take the copy's place.
+          const linked = await lstat(temporary);
+          if (linked.ino !== source.ino || linked.dev !== source.dev || !(await placed())) continue;
           await rename(temporary, path);
         } finally {
           await rm(temporary, { force: true });
@@ -125,4 +135,42 @@ export async function shareDependencyFiles(
     }
   }
   return result;
+}
+
+const run = promisify(execFile);
+
+/**
+ * Runs {@link shareOwnDependencyFiles} with no more rights than the session has:
+ * the paths it links and renames are under the session's control, so a Server
+ * with other rights would let a session redirect them. With the owner's own uid
+ * it runs in process; as root, in a worker process under the owner's uid and
+ * gid. Otherwise, and for installations that belong to root, it shares nothing.
+ */
+export async function shareDependencyFiles(
+  root: string,
+  worktree: string,
+  signal: AbortSignal,
+  dryRun = false,
+  worker = fileURLToPath(new URL('./dependency-sharing-main.js', import.meta.url)),
+): Promise<DependencySharing> {
+  let owner;
+  try {
+    owner = await lstat(join(worktree, 'node_modules'));
+  } catch {
+    return { files: 0, bytes: 0 };
+  }
+  const uid = process.geteuid?.();
+  if (!owner.isDirectory() || owner.uid === 0 || uid === undefined) return { files: 0, bytes: 0 };
+  if (uid === owner.uid) return shareOwnDependencyFiles(root, worktree, signal, dryRun);
+  if (uid !== 0 || !existsSync(worker)) return { files: 0, bytes: 0 };
+  const { stdout } = await run(
+    process.execPath,
+    [worker, root, worktree, dryRun ? 'dry-run' : 'apply'],
+    { uid: owner.uid, gid: owner.gid, env: { PATH: process.env.PATH }, signal, maxBuffer: 4096 },
+  );
+  const result = JSON.parse(stdout) as Partial<DependencySharing>;
+  return {
+    files: Number.isSafeInteger(result.files) ? result.files! : 0,
+    bytes: Number.isSafeInteger(result.bytes) ? result.bytes! : 0,
+  };
 }

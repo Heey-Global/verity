@@ -50,9 +50,10 @@ copies, for example before patching a package. Where the filesystem refuses a
 link, activation copies that file and reports how many it copied. `install`
 checks for shared files that were made writable again (`status` does not, to
 stay fast): it withdraws the affected inventory so the next install prepares it
-afresh. The edit stays in the session that made it; another session that shared
-the edited file keeps it until its own next `install` finds it and activates the
-fresh inventory. An inventory that is already edited is never linked into
+afresh. The edit stays in the session that made it, or, when other sessions still
+share the file, in a preserved copy once that session installs again; another
+session that shared the edited file keeps it until its own next `install` finds
+it and activates the fresh inventory. An inventory that is already edited is never linked into
 another session. The protection rests on permission bits: a process running as
 root copies files instead of sharing them, and a file deliberately made writable,
 edited and made read-only again is not detected.
@@ -62,8 +63,10 @@ in use, collection replaces each file that is byte-identical, with the same
 execute bits, to the sealed inventory named by the session's receipt by a link
 to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
 already shared files and npm's receipts are left as they are, as are sessions
-whose `node_modules` belongs to root. A file that changes before its replacement
-is kept.
+whose `node_modules` belongs to root. The conversion never runs with more rights
+than the session has: a Server running as root performs it in a worker process
+under the owner of the session's `node_modules`, and skips it when it can do
+neither. A file that changes before its replacement is kept.
 
 Activating a new dependency version moves the session's previous installation
 to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as
@@ -127,8 +130,8 @@ Entries are grouped by their path on the volume:
   (the ten largest).
 
 The walk counts allocated blocks, counts a file with several hard links once
-and reports the further names as `sharedBytes`: what sessions sharing their
-dependency files would otherwise hold as copies. It never follows symbolic
+and reports the further names as `sharedBytes`, mostly what sessions sharing
+their dependency files would otherwise hold as copies. It never follows symbolic
 links and does not enter another filesystem mounted inside the volume. A root that disappears or is replaced during a round starts
 the round over. An entry or directory the Server cannot read, such as a
 sandbox-private home, is counted as unreadable and its contents are left out;

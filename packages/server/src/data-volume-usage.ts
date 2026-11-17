@@ -88,8 +88,8 @@ export interface DataVolumeBreakdown {
   /** True when more multi-link files existed than were remembered: totals may count some twice. */
   approximate: boolean;
   categories: Record<Category, number>;
-  /** Further names of multi-link files: what sessions sharing their dependency
-   *  files with the central inventory would otherwise hold as private copies. */
+  /** Further names of multi-link files, mostly what sessions sharing their
+   *  dependency files with the central inventory would otherwise hold as copies. */
   sharedBytes: number;
   regenerableBytes: number;
   protectedBytes: number;

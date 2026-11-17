@@ -3,8 +3,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -72,6 +74,15 @@ describe('sharing private dependency copies with the central inventory', () => {
       expect(result.files).toBe(0);
       expect(statSync(join(f.modules, 'dep/index.js')).nlink).toBe(1);
     }
+  });
+  it('shares nothing through a node_modules that is a link to another tree', async () => {
+    const f = fixture();
+    const elsewhere = join(f.root, 'elsewhere');
+    renameSync(f.modules, elsewhere);
+    symlinkSync(elsewhere, f.modules);
+    const result = await shareDependencyFiles(f.root, f.worktree, new AbortController().signal);
+    expect(result.files).toBe(0);
+    expect(statSync(join(elsewhere, 'dep/index.js')).nlink).toBe(1);
   });
   it('counts without linking in dry-run mode', async () => {
     const f = fixture();

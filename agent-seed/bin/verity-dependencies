@@ -1341,10 +1341,12 @@ function unchangedSince(directory, record, includeTop) {
       if (current === directory) {
         if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
         if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
-      } else if (stat.ctimeNs >= record.below) {
-        // Linking a shared file into another session, or retiring its central
-        // inventory, changes its status time. A read-only file cannot be edited
-        // without making it writable, and a write sets its modification time.
+      } else if (stat.ctimeNs >= record.below && !stat.isDirectory()) {
+        // A directory's status changes with its entries, which are checked
+        // themselves; a removed entry takes no content with it. Linking a shared
+        // file into another session, or retiring its central inventory, changes
+        // its status time. A read-only file cannot be edited without making it
+        // writable, and a write sets its modification time.
         if (!stat.isFile() || stat.mode & 0o222n || stat.mtimeNs >= record.below) return false;
       }
       if (stat.isDirectory())
@@ -1367,6 +1369,14 @@ function eachFile(tree, visit) {
       if (entry.isDirectory()) pending.push(path);
       else if (entry.isFile()) visit(path, lstatSync(path), directory === tree);
     }
+  }
+}
+/** A session's own tree: a symlinked `node_modules` belongs to something else. */
+function ownTree(tree) {
+  try {
+    return lstatSync(tree).isDirectory();
+  } catch {
+    return false;
   }
 }
 function inventoryTrees(cache) {
@@ -1427,7 +1437,7 @@ function sharedDrift(root) {
   const drift = new Error('drift');
   try {
     for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
-      if (readlinkExists(tree))
+      if (ownTree(tree))
         eachFile(tree, (_, stat) => {
           if (stat.nlink > 1 && stat.mode & 0o222) throw drift;
         });
@@ -1441,7 +1451,7 @@ function sharedDrift(root) {
 function privatize(root) {
   let files = 0;
   for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
-    if (readlinkExists(tree))
+    if (ownTree(tree))
       eachFile(tree, (path, stat) => {
         if (stat.nlink < 2) {
           // Left read-only once every other name is gone, e.g. a retired inventory.
