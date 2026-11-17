@@ -122,6 +122,11 @@ function fixture() {
     recent: () => {
       activity = now;
     },
+    /** Time passes while the session keeps working: it is never idle. */
+    active: (days: number) => {
+      now += days * 86400000;
+      activity = now;
+    },
     /** Idle for `days`: below three, private dependencies are only slimmed by comparison. */
     idleDays: (days: number) => {
       activity = now - days * 86400000;
@@ -525,6 +530,189 @@ describe('safe session storage reclamation', () => {
     stopAt = '';
     await service.runOnce();
     expect(visited).toEqual(['c', 'a', 'b']);
+  });
+  // A session that is never idle for three days kept every preserved copy it
+  // ever made: the central store keeps only a few identities, so a copy from an
+  // older one can never be compared and was retained as a blocker forever.
+  it('removes preserved copies of an active session three days after first seeing them', async () => {
+    const f = fixture();
+    f.recent();
+    const gitDir = join(f.root, '.git', 'worktrees', 'session');
+    const preserved = join(gitDir, 'verity-dependencies-preserved');
+    const copy = (id: string, receipt: boolean) => {
+      const path = join(preserved, id);
+      mkdirSync(join(path, 'dep'), { recursive: true });
+      writeFileSync(join(path, 'dep', 'index.js'), 'earlier install with a local patch');
+      if (receipt)
+        writeFileSync(
+          join(path, '.verity-install.json'),
+          JSON.stringify({ identity: 'b'.repeat(64) }),
+        );
+      return path;
+    };
+    const older = copy('55555555-5555-4555-8555-555555555555', true);
+    const unreceipted = copy('66666666-6666-4666-8666-666666666666', false);
+    await f.service.runOnce();
+    expect(f.service.lastReport?.blockers.map((b) => b.reason)).toEqual(
+      expect.arrayContaining([
+        'Central installation for preserved dependencies is unavailable',
+        'Preserved dependencies have no installation receipt',
+      ]),
+    );
+    f.active(2);
+    const newer = copy('77777777-7777-4777-8777-777777777777', true);
+    await f.service.runOnce();
+    expect([older, unreceipted, newer].map((path) => existsSync(path))).toEqual([true, true, true]);
+    f.active(1.5);
+    await f.service.runOnce();
+    // The window runs from first observation, not from the session's activity.
+    expect([older, unreceipted, newer].map((path) => existsSync(path))).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(f.service.lastReport?.dependenciesRemoved).toEqual(
+      expect.arrayContaining([older, unreceipted]),
+    );
+    // Only the copies go; the active session keeps its source.
+    expect(existsSync(join(f.path, 'package.json'))).toBe(true);
+    const journal = join(gitDir, 'verity-dependencies-preserved.observed.json');
+    expect(Object.keys(JSON.parse(readFileSync(journal, 'utf8')) as object)).toEqual([
+      '77777777-7777-4777-8777-777777777777',
+    ]);
+    f.active(2);
+    await f.service.runOnce();
+    expect(existsSync(newer)).toBe(false);
+  });
+  it('never shortens the preserved-copy window from a corrupt, future or symlinked journal', async () => {
+    const f = fixture();
+    f.recent();
+    const gitDir = join(f.root, '.git', 'worktrees', 'session');
+    const copy = join(
+      gitDir,
+      'verity-dependencies-preserved',
+      '88888888-8888-4888-8888-888888888888',
+    );
+    mkdirSync(join(copy, 'dep'), { recursive: true });
+    writeFileSync(join(copy, 'dep', 'index.js'), 'local patch');
+    const journal = join(gitDir, 'verity-dependencies-preserved.observed.json');
+    const elsewhere = join(f.dir, 'elsewhere.json');
+    writeFileSync(elsewhere, JSON.stringify({ '88888888-8888-4888-8888-888888888888': 1 }));
+    for (const plant of [
+      () => writeFileSync(journal, '{not json'),
+      () => symlinkSync(elsewhere, journal),
+      () =>
+        writeFileSync(
+          journal,
+          JSON.stringify({ '88888888-8888-4888-8888-888888888888': Date.now() + 365 * 86400000 }),
+        ),
+    ]) {
+      rmSync(journal, { force: true });
+      plant();
+      await f.service.runOnce();
+      expect(existsSync(copy)).toBe(true);
+    }
+    // The symlinked journal was replaced, never written through.
+    expect(JSON.parse(readFileSync(elsewhere, 'utf8'))).toEqual({
+      '88888888-8888-4888-8888-888888888888': 1,
+    });
+    // A future timestamp is clamped to the pass, so the copy still goes in time.
+    f.active(3);
+    await f.service.runOnce();
+    expect(existsSync(copy)).toBe(false);
+  });
+  it('does not mutate preserved copies or their journal in dry-run mode', async () => {
+    const f = fixture();
+    f.recent();
+    const gitDir = join(f.root, '.git', 'worktrees', 'session');
+    const copy = join(
+      gitDir,
+      'verity-dependencies-preserved',
+      '99999999-9999-4999-8999-999999999999',
+    );
+    mkdirSync(copy, { recursive: true });
+    const service = new SessionStorage({ ...f.deps, dryRun: true });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce();
+    f.active(4);
+    await service.runOnce();
+    expect(existsSync(copy)).toBe(true);
+    expect(existsSync(join(gitDir, 'verity-dependencies-preserved.observed.json'))).toBe(false);
+  });
+  // Skipped sessions left no trace: a pass that never reached a session's
+  // storage looked exactly like one that found nothing to reclaim.
+  it('counts the sessions a pass reached and why it skipped them', async () => {
+    const f = fixture();
+    const sessions = ['held', 'quiet', 'busy', 's'].map((id) => ({
+      ...f.session,
+      sessionId: id,
+      worktree: id === 's' ? f.path : join(f.root, '.verity-sessions', id),
+    }));
+    const log = vi.fn();
+    const service = new SessionStorage({
+      ...f.deps,
+      log,
+      listSessions: async () => sessions,
+      activity: async (id) => (id === 'quiet' ? null : Date.now()),
+    });
+    service.bind(
+      async (id, operation) =>
+        id === 'busy' ? { ran: false } : { ran: true, value: await operation() },
+      (_, sessionId) => sessionId === 'held',
+    );
+    await service.runOnce();
+    const coverage = { total: 4, visited: 4, held: 1, noActivity: 1, busy: 1 };
+    expect(service.lastReport?.sessions).toEqual(coverage);
+    expect(log.mock.calls[0]![0]).toMatchObject({ completed: true, sessions: coverage });
+  });
+  // The daily pass alone reached only what one 60-second budget covers.
+  it('continues a pass cut short on its own until one completes', async () => {
+    const f = fixture();
+    f.recent();
+    let failures = 1;
+    const passes: boolean[] = [];
+    const service = new SessionStorage({
+      ...f.deps,
+      continueAfterMs: 5,
+      log: (summary) => passes.push(summary.completed),
+      activity: async () => {
+        if (failures-- > 0) throw new Error('budget');
+        return Date.now();
+      },
+    });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce().catch(() => undefined);
+    await vi.waitFor(() => expect(passes).toEqual([false, true]));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(passes).toEqual([false, true]);
+    await service.stop();
+  });
+  it('schedules no continuation after shutdown', async () => {
+    const f = fixture();
+    const passes: boolean[] = [];
+    const service = new SessionStorage({
+      ...f.deps,
+      continueAfterMs: 5,
+      log: (summary) => passes.push(summary.completed),
+      activity: async () => {
+        // Not awaited: stop() drains this very pass.
+        void service.stop();
+        throw new Error('stopped');
+      },
+    });
+    service.bind(
+      async (_, operation) => ({ ran: true, value: await operation() }),
+      () => false,
+    );
+    await service.runOnce().catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(passes).toEqual([false]);
   });
   it('logs one summary per pass with its blockers', async () => {
     const f = fixture();
