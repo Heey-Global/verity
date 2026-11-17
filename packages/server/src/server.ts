@@ -42,7 +42,6 @@ import { createServerScheduling } from './server-scheduling.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
-import { registerAttachmentRoute } from './attachment-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
@@ -69,6 +68,7 @@ import {
 import { createServerApp, installHttpGuards } from './server-http.js';
 import { installOnboarding } from './server-onboarding.js';
 import {
+  installSessionAttachments,
   installSessionHistory,
   installSessionList,
   installSessionReads,
@@ -392,12 +392,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   installWikiFiles();
 
-  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
-  // event references images by this id; the client fetches them lazily (only the
-  // visible ones), so opening a session never transfers the whole image backlog.
-  // Content-addressed → the bytes for a given id never change, so it's cached
-  // forever (immutable). 404 for an unknown hash.
-  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
+  installSessionAttachments(app, ctx);
 
   installSessionHistory(app, ctx, {
     hasMeetingJob,
