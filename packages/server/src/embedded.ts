@@ -1,3 +1,4 @@
+import { createEmbeddedBranches } from './embedded-branches.js';
 import {
   createEmbeddedWorktreeForge,
   createEmbeddedWorktreeStatus,
@@ -143,7 +144,6 @@ import { createGitHubForgeAdapter } from './brokered-forge-github.js';
 import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
 import { issueGatewayServerCertificate } from './claude-egress-ca.js';
 import { loadForgeProxyIdentity } from './brokered-forge-identity.js';
-import { MANAGED_CONTROL_PLANE_RUNNER_NAME } from './self-update/managed-control-plane-runner.js';
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
 import { localPreviewPorts } from './local-preview-ports.js';
@@ -202,10 +202,9 @@ import { createRuntimeDiagnostics } from './runtime-diagnostics.js';
 import { createProjectListCache } from './project-list-cache.js';
 
 import { createAuthTokenRegistry } from './auth.js';
-import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
+import { ensureControlPlaneProject } from './control-plane-project.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { healAdminGitdirsAtStartup } from './worktree.js';
-import { createGitBranchService } from './branches.js';
 import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
@@ -306,12 +305,7 @@ import { defaultSshKeygenSpawner } from './signing-key.js';
 import { requestArrivedInternally } from './internal-listener.js';
 
 import { containerPathFor, DockerExecBackend, dockerHostFor } from './project-backend.js';
-import {
-  createSleepingSessionGit,
-  sandboxIsRunning,
-  createSandboxGit,
-  withSleepingSessionGit,
-} from './sandbox-git.js';
+import { createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 import { ClaudeOAuthResolutionError } from './claudeUsage.js';
@@ -543,140 +537,17 @@ export async function buildEmbeddedServer(
   // One-time, best-effort heal of admin `gitdir` links git cannot follow (see
   // healAdminGitdirsAtStartup): a heal failure must never block server boot.
   healAdminGitdirsAtStartup(config.repoDir, config.hostCloneRoot);
-  // Branch switcher for each session's worktree (#91). A dev checkout may provide
-  // one global repo root; the multi-project runner deliberately sets VERITY_REPO_DIR=''
-  // and instead resolves repo-wide git operations through each session worktree.
-  const branches =
-    config.repoDir || config.hostCloneRoot
-      ? createGitBranchService({
-          ...(config.repoDir ? { repoDir: config.repoDir } : {}),
-          baseBranch: 'main',
-          ...(config.dockerBaseUrl && config.hostCloneRoot
-            ? {
-                withGit: async (worktree, operation) => {
-                  const docker = projectDocker;
-                  if (!docker) throw new Error('Project Docker runtime is unavailable');
-                  const session = (await eventStore.listSessions()).find(
-                    (s) => s.worktree === worktree,
-                  );
-                  if (!session) throw new Error('Git requires persistent session context');
-                  const project = await eventStore.getProject(
-                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
-                  );
-                  if (!project) throw new Error('Project is unavailable');
-                  const containerName =
-                    project.kind === 'control_plane' && config.controlPlaneRunner === true
-                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
-                      : project.containerName;
-                  const hostRoot = projectClonePath(config.hostCloneRoot!, project);
-                  if (!(await sandboxIsRunning(() => docker.inspectContainer(containerName)))) {
-                    if (config.dataVolume && !dataVolumeRoot)
-                      throw new Error('Data volume root is unavailable');
-                    return withSleepingSessionGit(
-                      {
-                        docker,
-                        templateContainer: containerName,
-                        fallback: {
-                          imageId:
-                            typeof defaultProjectImage === 'function'
-                              ? await defaultProjectImage()
-                              : defaultProjectImage,
-                          runtime: PROJECT_RUNSC_RUNTIME,
-                          memoryBytes: 512 * 1024 ** 2,
-                          nanoCpus: 1_000_000_000,
-                          pidsLimit: 128,
-                        },
-                        projectId: project.id,
-                        hostRoot,
-                        dockerBaseUrl: config.dockerBaseUrl,
-                        ...(config.dataVolume
-                          ? { dataVolume: { name: config.dataVolume, root: dataVolumeRoot! } }
-                          : {}),
-                      },
-                      operation,
-                    );
-                  }
-                  return operation(
-                    createSandboxGit({
-                      containerName,
-                      hostRoot,
-                      dockerBaseUrl: config.dockerBaseUrl,
-                      inspect: () => docker.inspectContainer(containerName),
-                      timeoutMs: 10_000,
-                    }),
-                  );
-                },
-                git: async (args: readonly string[]) => {
-                  // Repository helpers must run with the same privileges as the agent.
-                  const index = args.indexOf('-C');
-                  const path = index < 0 ? undefined : args[index + 1];
-                  const session = (await eventStore.listSessions()).find(
-                    (row) => row.worktree === path,
-                  );
-                  if (!session || !projectDocker)
-                    throw new Error('Git operation has no project session context');
-                  const project = await eventStore.getProject(
-                    session.projectId ?? CONTROL_PLANE_PROJECT_ID,
-                  );
-                  if (!project) throw new Error('Project is unavailable');
-                  const containerName =
-                    project.kind === 'control_plane' && config.controlPlaneRunner === true
-                      ? MANAGED_CONTROL_PLANE_RUNNER_NAME
-                      : project.containerName;
-                  const readOnly =
-                    [
-                      'rev-parse',
-                      'for-each-ref',
-                      'symbolic-ref',
-                      'reflog',
-                      'status',
-                      'diff',
-                      'log',
-                      'show',
-                      'merge-base',
-                      'show-ref',
-                    ].includes(args[index + 2] ?? '') ||
-                    (args[index + 2] === 'worktree' && args[index + 3] === 'list');
-                  if (
-                    readOnly &&
-                    !(await sandboxIsRunning(() => projectDocker.inspectContainer(containerName)))
-                  ) {
-                    if (config.dataVolume && !dataVolumeRoot)
-                      throw new Error('Data volume root is unavailable');
-                    return createSleepingSessionGit({
-                      docker: projectDocker,
-                      templateContainer: containerName,
-                      fallback: {
-                        imageId:
-                          typeof defaultProjectImage === 'function'
-                            ? await defaultProjectImage()
-                            : defaultProjectImage,
-                        runtime: PROJECT_RUNSC_RUNTIME,
-                        memoryBytes: 512 * 1024 ** 2,
-                        nanoCpus: 1_000_000_000,
-                        pidsLimit: 128,
-                      },
-                      projectId: project.id,
-                      hostRoot: projectClonePath(config.hostCloneRoot!, project),
-                      ...(config.dataVolume
-                        ? {
-                            dataVolume: { name: config.dataVolume, root: dataVolumeRoot! },
-                          }
-                        : {}),
-                      dockerBaseUrl: config.dockerBaseUrl,
-                    })(args);
-                  }
-                  return createSandboxGit({
-                    containerName: containerName,
-                    hostRoot: projectClonePath(config.hostCloneRoot!, project),
-                    dockerBaseUrl: config.dockerBaseUrl,
-                    inspect: () => projectDocker.inspectContainer(containerName),
-                  })(args);
-                },
-              }
-            : {}),
-        })
-      : undefined;
+  const branches = createEmbeddedBranches(config, eventStore, {
+    get projectDocker() {
+      return projectDocker;
+    },
+    get defaultProjectImage() {
+      return defaultProjectImage;
+    },
+    get dataVolumeRoot() {
+      return dataVolumeRoot;
+    },
+  });
   const {
     resolveGithubAppCreds,
     baseMintOpts,
