@@ -1,3 +1,4 @@
+import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
 import { validateEmbeddedConfig } from './embedded-config.js';
 import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
 import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
@@ -123,8 +124,6 @@ import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
-import { createGoogleAccountAccessToken } from './google-account-token.js';
-import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
@@ -201,13 +200,6 @@ import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
-import { createGoogleSlidesTool } from './google-slides-tool.js';
-import { createGoogleDocsTool } from './google-docs-tool.js';
-import { createGoogleContactsTool } from './google-contacts-tool.js';
-import { createGoogleCalendarTool } from './google-calendar-tool.js';
-import { createGmailTool } from './gmail-tool.js';
-import { createGoogleSheetsTool } from './google-sheets-tool.js';
-import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { createGitWorktreeProvisioner, healAdminGitdirsAtStartup } from './worktree.js';
 import { createGitBranchService } from './branches.js';
@@ -464,27 +456,19 @@ export async function buildEmbeddedServer(
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
   }
-  const googleAccessToken = createGoogleAccountAccessToken(eventStore, {
-    isSealed: () => secretCipher.isSealed(),
-  });
-  const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
-  const invokeGoogleSlides = googleSlidesTool.invoke;
-  const googleDocsTool = createGoogleDocsTool({ eventStore, googleAccessToken });
-  const invokeGoogleDocs: typeof googleDocsTool.invoke = (input) => googleDocsTool.invoke(input);
-  const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
-  const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
-    googleSheetsTool.invoke(input);
-  const googleContactsTool = createGoogleContactsTool({ eventStore, googleAccessToken });
-  const invokeGoogleContacts: typeof googleContactsTool.invoke = (input) =>
-    googleContactsTool.invoke(input);
-  const googleCalendarTool = createGoogleCalendarTool({ eventStore, googleAccessToken });
-  const invokeGoogleCalendar: typeof googleCalendarTool.invoke = (input) =>
-    googleCalendarTool.invoke(input);
-  const matrixTool = createMatrixTool({ eventStore });
-  const gmailTool = createGmailTool({ eventStore, googleAccessToken });
-  const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
-  const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
-  const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
+  const {
+    googleAccessToken,
+    googleSlidesTool,
+    invokeGoogleSlides,
+    invokeGoogleDocs,
+    invokeGoogleSheets,
+    invokeGoogleContacts,
+    invokeGoogleCalendar,
+    matrixTool,
+    invokeGmail,
+    googleDriveTool,
+    invokeGoogleDrive,
+  } = createEmbeddedIntegrationTools(eventStore, secretCipher);
   // The administrator's instance token; only the instance-level Doppler routes and
   // the per-person rule below read it.
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
