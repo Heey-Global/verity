@@ -994,8 +994,9 @@ async function main() {
       const recovery = join(gitDir, 'verity-dependencies-preserved', randomUUID());
       mkdirSync(dirname(recovery), { recursive: true });
       renameSync(directory, recovery);
-      // Checked again once withdrawn, so a write between the walk and the rename
-      // is kept. The rename itself changes only the top directory's status.
+      // Checked again once withdrawn, so content written between the walk and the
+      // rename is kept. The rename changes the top directory's status, so a bare
+      // removal of a direct entry in that window is not seen; it loses no content.
       if (unmodified && unchangedSince(recovery, record, false)) {
         // Withdrawn by the rename first: a removal that fails part-way leaves an
         // ordinary preserved copy for the session storage sweep, never a broken tree.
@@ -1052,10 +1053,20 @@ async function main() {
         // Validate at the final path; keep recovery files if activation ever fails.
         preserve();
         recovery = true;
+        // Entries below the activated roots must predate this; only the renames
+        // into place and the checks below may follow it.
+        await delay(25);
+        const placed = (() => {
+          try {
+            return statusTime(gitDir);
+          } catch {
+            return undefined;
+          }
+        })();
         for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
-        await recordActivation(gitDir, root, [
+        await recordActivation(gitDir, root, placed, [
           modules,
           ...workspaceCopies.map((entry) => entry.destination),
         ]).catch((error) => {
@@ -1231,7 +1242,18 @@ const ACTIVATION_RECORD = 'verity-dependencies-activation.json';
 function treeKey(stat) {
   return `${stat.dev}:${stat.ino}`;
 }
-async function recordActivation(gitDir, root, trees) {
+/** The filesystem's current status change time, read from a probe file. */
+function statusTime(gitDir) {
+  const probe = join(gitDir, `${ACTIVATION_RECORD}.${randomUUID()}`);
+  try {
+    writeFileSync(probe, '');
+    return lstatSync(probe, { bigint: true }).ctimeNs;
+  } finally {
+    rmSync(probe, { force: true });
+  }
+}
+async function recordActivation(gitDir, root, placed, trees) {
+  if (placed === undefined) throw new Error('activation time is unknown');
   // Activation's own writes must have status change times strictly before the
   // record's; a timestamp granularity coarser than this only keeps copies.
   await delay(25);
@@ -1247,6 +1269,7 @@ async function recordActivation(gitDir, root, trees) {
       JSON.stringify({
         version: 1,
         at: String(at),
+        placed: String(placed),
         trees: Object.fromEntries(
           trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
         ),
@@ -1265,8 +1288,11 @@ function activationRecord(gitDir, root, directory) {
     const marker = lstatSync(path, { bigint: true });
     const content = JSON.parse(readFileSync(path, 'utf8'));
     const recorded = content?.trees?.[relative(root, directory)];
-    if (typeof content?.at !== 'string' || !/^[1-9][0-9]*$/u.test(content.at)) return undefined;
-    const at = BigInt(content.at);
+    const time = (value) =>
+      typeof value === 'string' && /^[1-9][0-9]*$/u.test(value) ? BigInt(value) : undefined;
+    const at = time(content?.at);
+    const placed = time(content?.placed);
+    if (at === undefined || placed === undefined) return undefined;
     const top = lstatSync(directory, { bigint: true });
     // Status times are compared only within one filesystem: another one may keep
     // coarser timestamps or a different clock.
@@ -1274,16 +1300,10 @@ function activationRecord(gitDir, root, directory) {
     if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
     const cutoff = at < marker.ctimeNs ? at : marker.ctimeNs;
     // A clock that is still behind the record would date later edits before it.
-    const probe = join(gitDir, `${ACTIVATION_RECORD}.${randomUUID()}`);
-    let now;
-    try {
-      writeFileSync(probe, '');
-      now = lstatSync(probe, { bigint: true }).ctimeNs;
-    } finally {
-      rmSync(probe, { force: true });
-    }
-    if (now <= cutoff) return undefined;
-    return { key: recorded, dev: top.dev, ctimeNs: cutoff };
+    if (statusTime(gitDir) <= cutoff) return undefined;
+    // Below the roots, a change while activation finished must count as an edit.
+    const below = placed < cutoff ? placed : cutoff;
+    return { key: recorded, dev: top.dev, ctimeNs: cutoff, below };
   } catch {
     return undefined;
   }
@@ -1302,7 +1322,7 @@ function unchangedSince(directory, record, includeTop) {
       if (current === directory) {
         if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
         if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
-      } else if (stat.ctimeNs >= record.ctimeNs) return false;
+      } else if (stat.ctimeNs >= record.below) return false;
       if (stat.isDirectory())
         for (const entry of readdirSync(current)) pending.push(join(current, entry));
     }
