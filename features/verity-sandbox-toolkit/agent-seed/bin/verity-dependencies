@@ -20,6 +20,8 @@ import {
   readSync,
   statSync,
   chmodSync,
+  copyFileSync,
+  linkSync,
 } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -895,11 +897,13 @@ async function main() {
       verified = true;
     }
   };
-  const ready = () =>
+  // Walking every shared file costs seconds, so only install checks for drift.
+  const ready = (thorough = false) =>
     installed(root) &&
     receiptMatches(root, identity(root)) &&
-    staleWorkspaceModuleTrees(root).length === 0;
-  if (ready()) {
+    staleWorkspaceModuleTrees(root).length === 0 &&
+    !(thorough && sharedDrift(root));
+  if (ready(action === 'install')) {
     await verify();
     if (action === 'install')
       console.log('Using existing compatible project dependencies; no install needed.');
@@ -972,7 +976,7 @@ async function main() {
       unlockIdentity = await lock(join(cacheRoot, currentIdentity + '.lock'));
     }
     checkInputs();
-    if (ready()) {
+    if (ready(true)) {
       await verify();
       return;
     }
@@ -1035,6 +1039,8 @@ async function main() {
       let recovery;
       const workspaceCopies = [];
       try {
+        sealInventory(cache);
+        const copied = { files: 0 };
         for (const tree of workspaceModuleTrees(cache)) {
           const path = relative(cache, tree);
           const destination = join(root, path);
@@ -1042,14 +1048,14 @@ async function main() {
             throw new Error('Workspace dependency parent must stay inside the project.');
           const copy = candidate + '-workspace-' + workspaceCopies.length;
           workspaceCopies.push({ copy, destination });
-          cpSync(tree, copy, { recursive: true, dereference: false, verbatimSymlinks: true });
+          shareTree(tree, copy, copied, () => withdraw(cache));
           rewire(root, copy, path + '/');
         }
-        cpSync(join(cache, 'node_modules'), candidate, {
-          recursive: true,
-          dereference: false,
-          verbatimSymlinks: true,
-        });
+        shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache));
+        if (copied.files > 0)
+          console.log(
+            `Copied ${copied.files} dependency files that this filesystem could not share.`,
+          );
         rewire(root, candidate);
         checkInputs();
         // Workspace-local packages take precedence over hoisted dependencies.
@@ -1196,6 +1202,7 @@ async function main() {
         join(stage, 'node_modules', '.verity-install.json'),
         JSON.stringify({ identity: currentIdentity }),
       );
+      sealInventory(stage);
       const publication = await lock(join(cacheRoot, 'publication.lock'));
       try {
         if (!(await snapshotSlot(cacheRoot, currentIdentity)))
@@ -1330,7 +1337,12 @@ function unchangedSince(directory, record, includeTop) {
       if (current === directory) {
         if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
         if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
-      } else if (stat.ctimeNs >= record.below) return false;
+      } else if (stat.ctimeNs >= record.below) {
+        // Linking a shared file into another session, or retiring its central
+        // inventory, changes its status time. A read-only file cannot be edited
+        // without making it writable, and a write sets its modification time.
+        if (!stat.isFile() || stat.mode & 0o222n || stat.mtimeNs >= record.below) return false;
+      }
       if (stat.isDirectory())
         for (const entry of readdirSync(current)) pending.push(join(current, entry));
     }
@@ -1338,6 +1350,102 @@ function unchangedSince(directory, record, includeTop) {
   } catch {
     return false;
   }
+}
+// Sessions share the central inventory's files as hardlinks instead of a full
+// copy each. A shared file is one inode for every session, so it must never be
+// writable: an edit would change every session at once, and the inventory.
+function eachFile(tree, visit) {
+  const pending = [tree];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile()) visit(path, lstatSync(path), directory === tree);
+    }
+  }
+}
+function inventoryTrees(cache) {
+  return [join(cache, 'node_modules'), ...workspaceModuleTrees(cache)];
+}
+/** Drops the write bits of an inventory's files once; the caller holds its identity lock. */
+function sealInventory(cache) {
+  if (read(join(cache, 'sealed')) === 'v1') return;
+  for (const tree of inventoryTrees(cache))
+    eachFile(tree, (path, stat) => {
+      if (stat.mode & 0o222) chmodSync(path, stat.mode & 0o7555);
+    });
+  writeFileSync(join(cache, 'sealed'), 'v1');
+}
+/** Recreates `source` at `destination`: directories and top-level files are the
+ *  session's own, symlinks are reproduced, and package files are shared links. */
+function shareTree(source, destination, copied, drifted) {
+  const pending = [[source, destination]];
+  while (pending.length > 0) {
+    const [from, to] = pending.pop();
+    const stat = lstatSync(from);
+    if (stat.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
+    else if (stat.isDirectory()) {
+      mkdirSync(to);
+      chmodSync(to, (stat.mode & 0o7777) | 0o700);
+      for (const entry of readdirSync(from)) pending.push([join(from, entry), join(to, entry)]);
+    } else if (!stat.isFile()) throw new Error('Unsupported entry in the central inventory.');
+    // A writable inventory file may already carry an edit made through a link.
+    else if (stat.mode & 0o222) drifted();
+    else {
+      // npm rewrites its top-level receipts in place; those stay private copies.
+      if (dirname(from) !== source)
+        try {
+          linkSync(from, to);
+          continue;
+        } catch (error) {
+          if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
+          copied.files++;
+        }
+      copyFileSync(from, to);
+      chmodSync(to, (stat.mode & 0o7777) | 0o200);
+    }
+  }
+}
+/** Retires an inventory whose shared files became writable; the next install prepares it afresh. */
+function withdraw(cache) {
+  const retired = join(dirname(cache), '.retired-' + randomUUID());
+  renameSync(cache, retired);
+  rmSync(retired, { recursive: true, force: true });
+  throw new Error(
+    'A shared dependency file was made writable and may have been edited, so this central inventory was withdrawn. Run verity dependencies install again to prepare it afresh.',
+  );
+}
+/** True when a file shared with other sessions has write bits again. */
+function sharedDrift(root) {
+  try {
+    for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
+      eachFile(tree, (_, stat) => {
+        if (stat.nlink > 1 && stat.mode & 0o222) throw new Error('drift');
+      });
+    return false;
+  } catch {
+    return true;
+  }
+}
+/** `install --private`: replaces this session's shared files with its own copies. */
+function privatize(root) {
+  let files = 0;
+  for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
+    if (readlinkExists(tree))
+      eachFile(tree, (path, stat) => {
+        if (stat.nlink < 2) return;
+        const temporary = `${path}.verity-private-${randomUUID()}`;
+        try {
+          copyFileSync(path, temporary);
+          chmodSync(temporary, (stat.mode & 0o7777) | 0o200);
+          renameSync(temporary, path);
+          files++;
+        } finally {
+          rmSync(temporary, { force: true });
+        }
+      });
+  console.log(`Made ${files} shared dependency files private to this session.`);
 }
 function readlinkExists(path) {
   try {
@@ -1347,7 +1455,12 @@ function readlinkExists(path) {
     return false;
   }
 }
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode ??= 1;
-});
+main()
+  .then(() => {
+    if (process.argv[2] === 'install' && process.argv.includes('--private') && !process.exitCode)
+      privatize(git('rev-parse', '--show-toplevel'));
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exitCode ??= 1;
+  });

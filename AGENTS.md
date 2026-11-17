@@ -20,7 +20,10 @@ Install dependencies with `npm install`. Inside a Verity session worktree, run
 `verity dependencies install` instead: it prepares each dependency version once
 per project and reuses it across sessions, where `npm install` gives every
 session its own full installation. Use `npm install <pkg>` there only to change
-dependencies, then run `verity dependencies install`. The root `.npmrc` refuses to resolve
+dependencies, then run `verity dependencies install`. Activated package files are
+read-only hard links shared with other sessions; run
+`verity dependencies install --private` before patching a package in place.
+The root `.npmrc` refuses to resolve
 any npm release younger than three days, which is the same window Renovate
 applies through the org preset `renovate.json` extends. `npm ci` is unaffected —
 it installs what the lockfile already pins — so CI and image builds do not see

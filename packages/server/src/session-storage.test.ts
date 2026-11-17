@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -9,6 +10,7 @@ import {
   readdirSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -440,6 +442,25 @@ describe('safe session storage reclamation', () => {
     expect(f.service.lastReport?.blockers.map((blocker) => blocker.path)).toEqual(
       expect.arrayContaining([patched, unknown]),
     );
+  });
+  it("shares an active session's unchanged dependency files with the sealed inventory", async () => {
+    const f = fixture();
+    f.recent();
+    const identity = 'c'.repeat(64);
+    const inventory = join(f.root, '.git', 'verity-dependencies', identity);
+    for (const base of [join(inventory, 'node_modules'), join(f.path, 'node_modules')]) {
+      mkdirSync(join(base, 'dep'), { recursive: true });
+      writeFileSync(join(base, 'dep', 'index.js'), 'shared dependency');
+      writeFileSync(join(base, '.verity-install.json'), JSON.stringify({ identity }));
+    }
+    // Only the write bits may differ; the test's umask must not decide that.
+    chmodSync(join(inventory, 'node_modules', 'dep', 'index.js'), 0o444);
+    chmodSync(join(f.path, 'node_modules', 'dep', 'index.js'), 0o644);
+    writeFileSync(join(inventory, 'sealed'), 'v1');
+    await f.service.runOnce();
+    const ino = (base: string) => statSync(join(base, 'node_modules', 'dep', 'index.js')).ino;
+    expect(ino(f.path)).toBe(ino(inventory));
+    expect(f.service.lastReport?.sharedDependencyBytes).toBeGreaterThan(0);
   });
   // A server or preview in one session used to defer collection for the whole
   // project, so a project that always had one running never reclaimed anything.

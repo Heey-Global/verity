@@ -34,7 +34,31 @@ protected. A modified or unknown package protects the entire private installatio
 preserving dependency resolution through locally patched transitive packages.
 Matching relative links to different source trees also protect an installation;
 matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
-copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
+copies are outside Node's ancestor lookup. No package-manager migration is required, and writable files are never shared.
+
+Activation shares the central inventory's files instead of copying them. Each
+package file in the session's `node_modules`, and in workspace `node_modules`
+trees, is a hard link to the inventory's file, which is made read-only first.
+Directories, symbolic links and npm's top-level receipts such as
+`.package-lock.json` stay the session's own, so tools can still create caches
+inside `node_modules`, and module resolution is unchanged. A session therefore
+adds its directories, not another copy of every package, and keeps working when
+the inventory is later retired. Writing a shared file fails with a permission
+error instead of changing every session at once; run
+`verity dependencies install --private` to give the session its own writable
+copies, for example before patching a package. Where the filesystem refuses a
+link, activation copies that file and reports how many it copied. `install`
+checks for shared files that were made writable again (`status` does not, to
+stay fast): it withdraws the affected inventory so the next install prepares it
+afresh, and the edit stays in the session that made it. An inventory that is
+already edited is never linked into another session.
+
+Sessions activated before sharing hold private copies. While such a session is
+in use, collection replaces each file that is byte-identical, with the same
+execute bits, to the sealed inventory named by the session's receipt by a link
+to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
+already shared files and npm's receipts are left as they are, and a file that
+changes during the comparison is kept.
 
 Activating a new dependency version moves the session's previous installation
 to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as
@@ -97,9 +121,10 @@ Entries are grouped by their path on the volume:
 - **Unattributed:** any other top-level entry, listed by name with its size
   (the ten largest).
 
-The walk counts allocated blocks, counts a file with several hard links once,
-never follows symbolic links and does not enter another filesystem mounted
-inside the volume. A root that disappears or is replaced during a round starts
+The walk counts allocated blocks, counts a file with several hard links once
+and reports the further names as `sharedBytes`: what sessions sharing their
+dependency files would otherwise hold as copies. It never follows symbolic
+links and does not enter another filesystem mounted inside the volume. A root that disappears or is replaced during a round starts
 the round over. An entry or directory the Server cannot read, such as a
 sandbox-private home, is counted as unreadable and its contents are left out;
 the breakdown and the capacity sentence state how many. After 500,000 files with

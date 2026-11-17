@@ -1,4 +1,5 @@
 import { dependencyInputIdentity } from './dependency-inputs.js';
+import { digest, shareDependencyFiles } from './dependency-sharing.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   lstat,
@@ -69,6 +70,7 @@ export function sessionStorageDiagnostics(report: SessionStorageReport) {
     dependenciesRemoved: report.dependenciesRemoved.length,
     worktreesRetired: report.worktreesRetired.length,
     comparedDependencyBytes: report.comparedDependencyBytes,
+    sharedDependencyBytes: report.sharedDependencyBytes,
     worktreeSampledBytes: report.worktreeSampledBytes,
     dependencySampledBytes: report.dependencySampledBytes,
     usageComplete: report.usageComplete,
@@ -104,6 +106,8 @@ export interface SessionStorageReport {
    *  same sessions every time reclaims nothing from them. */
   sessions: SessionCoverage;
   comparedDependencyBytes: number;
+  /** Private copies of central dependency files replaced by links to them. */
+  sharedDependencyBytes: number;
   worktreeSampledBytes: number | null;
   dependencySampledBytes: number | null;
   usageComplete: boolean;
@@ -160,21 +164,6 @@ async function exists(path: string): Promise<boolean> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
-  }
-}
-async function digest(path: string, signal: AbortSignal): Promise<string> {
-  const file = await open(path, 'r');
-  try {
-    const hash = createHash('sha256');
-    const buffer = Buffer.alloc(128 * 1024);
-    for (;;) {
-      signal.throwIfAborted();
-      const { bytesRead } = await file.read(buffer);
-      if (!bytesRead) return hash.digest('hex');
-      hash.update(buffer.subarray(0, bytesRead));
-    }
-  } finally {
-    await file.close();
   }
 }
 /** A file is disposable only if another compatible installation still holds the same bytes. */
@@ -326,7 +315,8 @@ export async function compareDependencyTrees(
     !local.isFile() ||
     !shared.isFile() ||
     local.size !== shared.size ||
-    (local.mode & 0o777) !== (shared.mode & 0o777) ||
+    // Shared inventories are read-only; write bits never carry an edit.
+    (local.mode & 0o555) !== (shared.mode & 0o555) ||
     (await digest(privatePath, signal)) !== (await digest(sharedPath, signal))
   ) {
     throw new Error('Dependency has local edits or no shared copy');
@@ -627,6 +617,7 @@ export class SessionStorage {
       blockers: [],
       sessions: { total: 0, visited: 0, held: 0, noActivity: 0, busy: 0 },
       comparedDependencyBytes: 0,
+      sharedDependencyBytes: 0,
       worktreeSampledBytes: null,
       dependencySampledBytes: null,
       usageComplete: false,
@@ -815,7 +806,14 @@ export class SessionStorage {
     // installation of an idle session in place, nor the other way round.
     for (const step of [
       () => this.reclaimPreservedDependencies(root, path, git, report, signal, idleDependencies),
-      () => (idleDependencies ? this.removeIdleDependencies(path, git, report) : Promise.resolve()),
+      // An idle session gives its installation up; an active one shares it.
+      async () => {
+        if (idleDependencies) await this.removeIdleDependencies(path, git, report);
+        else
+          report.sharedDependencyBytes += (
+            await shareDependencyFiles(root, path, signal, this.deps.dryRun)
+          ).bytes;
+      },
     ])
       try {
         await step();

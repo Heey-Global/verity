@@ -88,6 +88,9 @@ export interface DataVolumeBreakdown {
   /** True when more multi-link files existed than were remembered: totals may count some twice. */
   approximate: boolean;
   categories: Record<Category, number>;
+  /** Further names of multi-link files: what sessions sharing their dependency
+   *  files with the central inventory would otherwise hold as private copies. */
+  sharedBytes: number;
   regenerableBytes: number;
   protectedBytes: number;
   unknownBytes: number;
@@ -109,6 +112,7 @@ interface Round {
   unreadable: number;
   approximate: boolean;
   categories: Record<Category, number>;
+  shared: number;
   unknown: Map<string, number>;
   /** `dev:ino` of files with several links, so each is counted once. */
   linked: Set<string>;
@@ -221,6 +225,7 @@ export class DataVolumeUsage {
         unreadable: 0,
         approximate: false,
         categories: emptyCategories(),
+        shared: 0,
         unknown: new Map(),
         linked: new Set(),
         stack: [{ path: this.deps.root, segments: [], next: 0 }],
@@ -276,7 +281,10 @@ export class DataVolumeUsage {
       if (stat.dev !== round.device) continue;
       if (!stat.isDirectory() && stat.nlink > 1) {
         const key = `${stat.dev}:${stat.ino}`;
-        if (round.linked.has(key)) continue;
+        if (round.linked.has(key)) {
+          round.shared += stat.blocks * 512;
+          continue;
+        }
         if (round.linked.size < (this.deps.linkedLimit ?? LINKED_LIMIT)) round.linked.add(key);
         else round.approximate = true;
       }
@@ -316,6 +324,7 @@ export class DataVolumeUsage {
       unreadable: round.unreadable,
       approximate: round.approximate,
       categories: { ...round.categories },
+      sharedBytes: round.shared,
       regenerableBytes: sum(REGENERABLE),
       protectedBytes: sum(PROTECTED),
       unknownBytes: round.categories.unknown,
