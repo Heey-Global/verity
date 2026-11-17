@@ -1,4 +1,9 @@
 import {
+  createEmbeddedWorktreeForge,
+  createEmbeddedWorktreeStatus,
+  createEmbeddedWorktrees,
+} from './embedded-worktrees.js';
+import {
   createEmbeddedRepositoryAccess,
   createEmbeddedRepositoryPullRequests,
 } from './embedded-repositories.js';
@@ -29,7 +34,6 @@ import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import {
-  resolveRepoWorktreeFetchAuthHeader,
   isProjectSettingsReader,
   materializeControlPlaneAgentEnv,
   startClaudeCredentialSync,
@@ -189,7 +193,7 @@ import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { chmod, chown, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fetchCodexBundledModels, startCodexModelCatalog } from './codex-model-catalog.js';
 
@@ -200,7 +204,7 @@ import { createProjectListCache } from './project-list-cache.js';
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
-import { createGitWorktreeProvisioner, healAdminGitdirsAtStartup } from './worktree.js';
+import { healAdminGitdirsAtStartup } from './worktree.js';
 import { createGitBranchService } from './branches.js';
 import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
@@ -683,30 +687,14 @@ export async function buildEmbeddedServer(
     githubForge,
   } = createEmbeddedGitHub(config, eventStore);
   const forgeRepositoryAccess = createEmbeddedRepositoryAccess(eventStore);
-  const forgeForWorktree = async (worktree: string) => {
-    if (config.hostCloneRoot) {
-      for (const project of await eventStore.listProjects({ includeHidden: true })) {
-        const suffix = relative(projectClonePath(config.hostCloneRoot, project), worktree);
-        if (
-          suffix === '' ||
-          (suffix !== '..' && !suffix.startsWith(`..${sep}`) && !suffix.startsWith(sep))
-        ) {
-          return projectForgeProvider(eventStore, githubForge, project);
-        }
-      }
-    }
-    return githubForge;
-  };
+  const forgeForWorktree = createEmbeddedWorktreeForge(config, eventStore, githubForge);
   const { readProjectStatus, invalidateProjectStatus, projectPullRequests } =
     createEmbeddedRepositoryPullRequests(eventStore, githubForge);
-  const readWorktreeStatus = async (branch: string, worktree: string) => {
-    const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
-    const project = session?.projectId ? await eventStore.getProject(session.projectId) : undefined;
-    return project
-      ? readProjectStatus(project, branch)
-      : ((await forgeForWorktree(worktree))?.prServiceFor(worktree).prStatusForBranch(branch) ??
-          null);
-  };
+  const readWorktreeStatus = createEmbeddedWorktreeStatus(
+    eventStore,
+    readProjectStatus,
+    forgeForWorktree,
+  );
   const installationService: GitHubInstallationService = {
     listInstallationRepos: () => githubForge.listRepositories(),
   };
@@ -717,27 +705,7 @@ export async function buildEmbeddedServer(
   // frequently-called credential helper doesn't hammer GitHub).
   const ghTokenCapabilities = createGhTokenCapabilityRegistry(db);
   const signingCapabilities = createSigningCapabilityRegistry(db);
-  // Real git worktrees only when a project repo is configured; else the server's
-  // scratch-dir default (spawned agents start on an empty dir, no repo).
-  // Verity Control/default Verity sessions branch from `/work`, so their refresh fetch
-  // must authenticate through the DB-backed GitHub App too. DB-only onboarding
-  // deployments intentionally do not carry a broad `.gh-token`; without this header
-  // `git fetch origin main` fails before the Verity Control session can be created.
-  const worktrees = config.repoDir
-    ? createGitWorktreeProvisioner({
-        repoDir: config.repoDir,
-        worktreeRoot: config.workspacesDir ?? join(tmpdir(), 'verity-sessions'),
-        baseBranch: 'main',
-        // Fetch `main` from origin before branching so each spawn starts from
-        // the latest integration tip, not the clone's last-synced `main`.
-        refreshBase: true,
-        fetchAuthHeader: () =>
-          resolveRepoWorktreeFetchAuthHeader(
-            githubForge.identityFor(config.repoDir as string),
-            cachedProjectTokenMint,
-          ),
-      })
-    : undefined;
+  const worktrees = createEmbeddedWorktrees(config, githubForge, cachedProjectTokenMint);
 
   // Durable server storage for clone-config backups; without it Repair only reports the key.
   const durableServerRoot = config.dataVolumeRoot || config.dataDir || config.workspacesDir;
