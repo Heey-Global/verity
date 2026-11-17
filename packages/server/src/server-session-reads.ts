@@ -1,3 +1,4 @@
+import { registerAttachmentRoute } from './attachment-route.js';
 import type { FastifyInstance } from 'fastify';
 import {
   attentionSignals,
@@ -274,7 +275,7 @@ export function installSessionReads(
           : projectedStatus === 'awaiting_input' &&
               permissionEventAwaitsInput(events) &&
               pendingPermissions.length === 0
-            ? conductor.isBusy(id)
+            ? conductor.isBusy(id, { turnOnly: true })
               ? 'running'
               : 'completed'
             : projectedStatus;
@@ -475,5 +476,16 @@ export function installSessionHistory(
       },
     });
     done();
+  });
+}
+
+export function installSessionAttachments(app: FastifyInstance, ctx: ServerContext): void {
+  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
+  // event references images by this id; the client fetches them lazily (only the
+  // visible ones), so opening a session never transfers the whole image backlog.
+  // Content-addressed → the bytes for a given id never change, so it's cached
+  // forever (immutable). 404 for an unknown hash.
+  registerAttachmentRoute(app, {
+    getAttachment: (hash) => ctx.deps.eventStore.getAttachment(hash),
   });
 }

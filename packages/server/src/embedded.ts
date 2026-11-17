@@ -1,3 +1,8 @@
+import { createEmbeddedTrustedCli, installEmbeddedTrustedCli } from './embedded-trusted-cli.js';
+import { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
+import { startEmbeddedSystemInventory } from './embedded-system-inventory.js';
+import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
+import { validateEmbeddedConfig } from './embedded-config.js';
 import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
 import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
@@ -17,7 +22,6 @@ import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { legacyAdministratorId } from './view-state-routes.js';
 import { createStoreDopplerCredentials, type DopplerPerson } from './doppler-credential.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
-import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
   resolveInstallationListToken,
   resolveRepoWorktreeFetchAuthHeader,
@@ -26,7 +30,6 @@ import {
   startClaudeCredentialSync,
   withControlPlaneAgentCredentials,
   prepareControlPlaneRunnerForTurn,
-  isUntaggedImageRepository,
   startRunnerSupervisorReconciler,
   CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
@@ -87,7 +90,6 @@ export {
   RUNNER_CONTAINER_PROJECT_ROOT,
 } from './embedded-runner-wiring.js';
 import { resolveForgeRepositoryBinding } from './forge-repository-binding.js';
-import { createProjectEgressInventorySynchronizer } from './project-egress-system-inventory.js';
 import { AGENT_SKILL_MANIFEST_HASH } from '@verity/events';
 import { resolveAgentContext } from './agent-context.js';
 import { createGitHubQAAnalysis } from './github-qa-analysis.js';
@@ -123,8 +125,6 @@ import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
-import { createGoogleAccountAccessToken } from './google-account-token.js';
-import { createMatrixTool } from './matrix-tool.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
 import { CoordinatedRecordingManager } from './coordinated-recording.js';
 import { ReturnPathActivation } from './remote-return-path-activation.js';
@@ -155,7 +155,6 @@ import {
   type SandboxEgressProbe,
 } from './sandbox-turn-readiness.js';
 import {
-  ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
   AcpCodexBackend,
   AcpOpenCodeBackend,
@@ -200,15 +199,7 @@ import { createProjectListCache } from './project-list-cache.js';
 
 import { createAuthTokenRegistry } from './auth.js';
 import { CONTROL_PLANE_PROJECT_ID, ensureControlPlaneProject } from './control-plane-project.js';
-import { createTrustedCliOutputStore } from './trusted-cli-output.js';
 import { createMcpGatewayToolExecutor, createTrustedCliPreflight } from './mcp-gateway-tools.js';
-import { createGoogleSlidesTool } from './google-slides-tool.js';
-import { createGoogleDocsTool } from './google-docs-tool.js';
-import { createGoogleContactsTool } from './google-contacts-tool.js';
-import { createGoogleCalendarTool } from './google-calendar-tool.js';
-import { createGmailTool } from './gmail-tool.js';
-import { createGoogleSheetsTool } from './google-sheets-tool.js';
-import { createGoogleDriveAgentTool } from './google-drive-agent-tool.js';
 import { createExpoPushTransport, createPushSender } from './push-sender.js';
 import { createGitWorktreeProvisioner, healAdminGitdirsAtStartup } from './worktree.js';
 import { createGitBranchService } from './branches.js';
@@ -216,7 +207,7 @@ import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
-import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
+import { DockerError, createDockerClient, type DockerClient } from './docker.js';
 import {
   describeBuildCapacityReclamation,
   dockerGcDiagnostics,
@@ -259,7 +250,6 @@ import {
   createDopplerSecretResolver,
   DopplerSecretResolutionError,
   listDopplerProjectSecretNames,
-  resolveDopplerProjectSecret,
 } from './doppler-secret-resolver.js';
 
 import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
@@ -271,10 +261,7 @@ import { registerSecretProviderRoutes } from './secret-provider-routes.js';
 import { createPostgresSecretRevocationStore } from './secret-revocation.js';
 import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
 import type { RunGrantClaims } from '@verity/secret-contracts';
-import {
-  createRuntimeReadinessGate,
-  validateRuntimeReadinessTtl,
-} from './runtime-readiness-gate.js';
+import { createRuntimeReadinessGate } from './runtime-readiness-gate.js';
 import {
   pendingSessionCleanups,
   createSessionCleanupProcessor,
@@ -329,11 +316,6 @@ import {
   withSleepingSessionGit,
 } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
-import { createNodeRestrictedHttpJsonTransport } from './restricted-http-json-connector.js';
-import { createBrokeredHttpConsumptionStore } from './brokered-http-consumption.js';
-import { createBrokeredHttpGrantStore } from './brokered-http-grants.js';
-import { createBrokeredHttpTool } from './brokered-http-tool.js';
-import { createTrustedCliTool } from './trusted-cli-tool.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 import { ClaudeOAuthResolutionError } from './claudeUsage.js';
 import type { CodexUsageCredentialProvider } from './codexUsage.js';
@@ -401,60 +383,7 @@ import type { VeritySettingsRecord } from '@verity/store';
 export async function buildEmbeddedServer(
   config: EmbeddedServerConfig = {},
 ): Promise<EmbeddedServer> {
-  const untypedConfig = config as EmbeddedServerConfig & Record<string, unknown>;
-  for (const removed of [
-    'signingBrokerUrl',
-    'sandboxNetwork',
-    'perProjectNetwork',
-    'selfContainerName',
-  ]) {
-    if (untypedConfig[removed] !== undefined) {
-      throw new Error(`${removed} was removed; project relay wiring is mandatory`);
-    }
-  }
-  if (
-    config.permissionMode !== undefined &&
-    !(ALLOWED_PERMISSION_MODES as readonly string[]).includes(config.permissionMode)
-  ) {
-    throw new Error(
-      `invalid permissionMode "${config.permissionMode}": expected one of ${ALLOWED_PERMISSION_MODES.join(', ')}`,
-    );
-  }
-  if (
-    config.secretJobRuntimeRequired === true &&
-    config.secretJobRuntimeReadiness === undefined &&
-    config.dockerBaseUrl === undefined
-  ) {
-    throw new Error('dockerBaseUrl is required when the Secret Job runtime is required');
-  }
-  validateRuntimeReadinessTtl(config.secretJobRuntimeReadinessTtlMs);
-  if (config.secretJobs !== undefined) {
-    if (
-      (config.secretJobs.resolveSecrets === undefined) ===
-      (config.secretJobs.doppler === undefined)
-    ) {
-      throw new Error('Secret Jobs require exactly one of resolveSecrets or doppler');
-    }
-    if (
-      config.secretJobs.doppler !== undefined &&
-      config.secretJobs.authorizeProviderAdministration === undefined
-    ) {
-      throw new Error('Doppler Secret Jobs require provider administration authorization');
-    }
-    if (config.dockerBaseUrl === undefined) {
-      throw new Error('dockerBaseUrl is required when Secret Jobs are configured');
-    }
-    if (!config.dockerBaseUrl.startsWith('unix://')) {
-      throw new Error('Secret Jobs require a unix Docker socket for authenticated attach');
-    }
-    const { socketPath } = parseUnixBaseUrl(config.dockerBaseUrl);
-    if (!socketPath.startsWith('/') || socketPath === '/') {
-      throw new Error('Secret Jobs require an absolute, non-empty unix Docker socket path');
-    }
-    if (!isUntaggedImageRepository(config.secretJobs.executorImageRepository)) {
-      throw new Error('Secret Job executor image repository must be an untagged repository');
-    }
-  }
+  validateEmbeddedConfig(config);
 
   // Fail closed rather than silently opening an ephemeral store: a deployment
   // that lost its DATABASE_URL must not come up looking healthy on an empty
@@ -487,61 +416,24 @@ export async function buildEmbeddedServer(
   // 503 until unlock.
   const secretCipher = createSealableSecretCipher();
   const eventStore = new EventStore(db, secretCipher);
-  const systemInventorySync =
-    config.projectEgressSocketPath && config.projectEgressKeyPath
-      ? createProjectEgressInventorySynchronizer({
-          enabled: config.projectEgressInventoryRequired ?? (() => false),
-          command: createProjectEgressHostClient({
-            socketPath: config.projectEgressSocketPath,
-            token: () => readFileSync(config.projectEgressKeyPath!, 'utf8').trim(),
-          }),
-          readUrls: () => eventStore.readEgressDestinationUrls(),
-          transaction: (action) => eventStore.withEgressDestinationTransaction(action),
-        })
-      : undefined;
-  if (systemInventorySync) eventStore.setEgressDestinationMutation(systemInventorySync.mutate);
-  // A controller restart starts incomplete; periodic re-synchronization repairs
-  // that state. Configuration writes always use the synchronous prechange barrier.
-  const synchronizeSystemInventory = () =>
-    systemInventorySync?.refresh().catch((error: unknown) => {
-      console.warn('verity: system destination inventory synchronization unavailable', {
-        operation: 'inventory-refresh',
-        reason: error instanceof ProjectEgressInventoryError ? error.reason : 'host_not_ready',
-        ...(error instanceof ProjectEgressInventoryError && error.correlationId
-          ? { correlationId: error.correlationId }
-          : {}),
-      });
-    });
-  await synchronizeSystemInventory();
-  const systemInventoryTimer = systemInventorySync
-    ? setInterval(() => void synchronizeSystemInventory(), 10_000)
-    : undefined;
-  systemInventoryTimer?.unref();
+  const stopSystemInventory = await startEmbeddedSystemInventory(config, eventStore);
 
   if (config.controlPlaneRunner === true) {
     await ensureControlPlaneProject(eventStore);
   }
-  const googleAccessToken = createGoogleAccountAccessToken(eventStore, {
-    isSealed: () => secretCipher.isSealed(),
-  });
-  const googleSlidesTool = createGoogleSlidesTool({ eventStore, googleAccessToken });
-  const invokeGoogleSlides = googleSlidesTool.invoke;
-  const googleDocsTool = createGoogleDocsTool({ eventStore, googleAccessToken });
-  const invokeGoogleDocs: typeof googleDocsTool.invoke = (input) => googleDocsTool.invoke(input);
-  const googleSheetsTool = createGoogleSheetsTool({ eventStore, googleAccessToken });
-  const invokeGoogleSheets: typeof googleSheetsTool.invoke = (input) =>
-    googleSheetsTool.invoke(input);
-  const googleContactsTool = createGoogleContactsTool({ eventStore, googleAccessToken });
-  const invokeGoogleContacts: typeof googleContactsTool.invoke = (input) =>
-    googleContactsTool.invoke(input);
-  const googleCalendarTool = createGoogleCalendarTool({ eventStore, googleAccessToken });
-  const invokeGoogleCalendar: typeof googleCalendarTool.invoke = (input) =>
-    googleCalendarTool.invoke(input);
-  const matrixTool = createMatrixTool({ eventStore });
-  const gmailTool = createGmailTool({ eventStore, googleAccessToken });
-  const invokeGmail: typeof gmailTool.invoke = (input) => gmailTool.invoke(input);
-  const googleDriveTool = createGoogleDriveAgentTool({ eventStore, googleAccessToken });
-  const invokeGoogleDrive: typeof googleDriveTool.invoke = (input) => googleDriveTool.invoke(input);
+  const {
+    googleAccessToken,
+    googleSlidesTool,
+    invokeGoogleSlides,
+    invokeGoogleDocs,
+    invokeGoogleSheets,
+    invokeGoogleContacts,
+    invokeGoogleCalendar,
+    matrixTool,
+    invokeGmail,
+    googleDriveTool,
+    invokeGoogleDrive,
+  } = createEmbeddedIntegrationTools(eventStore, secretCipher);
   // The administrator's instance token; only the instance-level Doppler routes and
   // the per-person rule below read it.
   const readBrokerDopplerCredential = (): Promise<Buffer | undefined> =>
@@ -567,42 +459,17 @@ export async function buildEmbeddedServer(
     'userId' in person
       ? Promise.resolve(person.userId)
       : runningTurnPerson(person.sessionId, person.turnId);
-  const brokeredHttpConsumptions = createBrokeredHttpConsumptionStore(db);
-  const brokeredHttpGrants = createBrokeredHttpGrantStore(db);
-  const restrictedHttpTransport = createNodeRestrictedHttpJsonTransport();
-  const getBrokeredProjectBinding = async (projectId: string) => {
-    const settings = await eventStore.getProjectSettings(projectId);
-    const dopplerProject = settings?.dopplerProject?.trim();
-    const dopplerConfig = settings?.dopplerConfig?.trim();
-    return !dopplerProject || !dopplerConfig ? undefined : { dopplerProject, dopplerConfig };
-  };
-  const resolveBrokerDopplerSecret = async ({
-    person,
-    ...input
-  }: Omit<Parameters<typeof resolveDopplerProjectSecret>[0], 'token'> & {
-    person: DopplerPerson;
-  }): Promise<Uint8Array> => {
-    const token = await dopplerCredentialFor(await dopplerPersonId(person), input.projectId);
-    try {
-      return await resolveDopplerProjectSecret({ ...input, token });
-    } finally {
-      token.fill(0);
-    }
-  };
-  const brokeredHttpTool = createBrokeredHttpTool({
-    requireApprovalBinding: true,
-    getProjectBinding: getBrokeredProjectBinding,
-    resolveSecret: resolveBrokerDopplerSecret,
-    consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
-    transport: restrictedHttpTransport,
-  });
-  const trustedCliOutput = createTrustedCliOutputStore(db, secretCipher);
-  const trustedCliTool = createTrustedCliTool({
-    requireApprovalBinding: true,
-    outputStore: trustedCliOutput,
-    getProjectBinding: getBrokeredProjectBinding,
-    resolveSecret: resolveBrokerDopplerSecret,
-    consumeApproval: (input) => brokeredHttpConsumptions.consume(input),
+  const {
+    brokeredHttpConsumptions,
+    brokeredHttpGrants,
+    getBrokeredProjectBinding,
+    resolveBrokerDopplerSecret,
+    brokeredHttpTool,
+  } = createEmbeddedBrokeredHttp(db, eventStore, dopplerCredentialFor, dopplerPersonId);
+  const { trustedCliOutput, trustedCliTool } = createEmbeddedTrustedCli(db, secretCipher, {
+    getBrokeredProjectBinding,
+    resolveBrokerDopplerSecret,
+    brokeredHttpConsumptions,
   });
   // ── Loopback MCP gateway (ADR 0014) ───────────────────────────────────────
   // An ACP session has no model-specific tool relay, so the brokered tools reach it as an MCP
@@ -4989,22 +4856,7 @@ export async function buildEmbeddedServer(
       await localPreviewManager.close();
     });
   }
-  await trustedCliOutput.cleanup();
-  let outputSweepRunning = false;
-  const outputSweep = setInterval(() => {
-    if (outputSweepRunning) return;
-    outputSweepRunning = true;
-    void trustedCliOutput
-      .cleanup()
-      .catch(() => {
-        console.warn('verity: trusted CLI output cleanup failed');
-      })
-      .finally(() => {
-        outputSweepRunning = false;
-      });
-  }, 60_000);
-  outputSweep.unref();
-  app.addHook('onClose', () => clearInterval(outputSweep));
+  await installEmbeddedTrustedCli(app, { trustedCliOutput });
   // A person's own sandbox sleeps once nothing needs it (ADR 0023 §4), so a
   // member's container uses memory only while that member works.
   installPersonalSandboxSleep(app, {
@@ -5078,7 +4930,7 @@ export async function buildEmbeddedServer(
   app.addHook('onClose', () => clearInterval(dockerExecDiagnosticTimer));
   app.addHook('onClose', () => listenerDiscovery?.close());
   app.addHook('onClose', () => projectEgress?.close());
-  app.addHook('onClose', () => clearInterval(systemInventoryTimer));
+  app.addHook('onClose', stopSystemInventory);
   if (!localPreviewManager) previewRecoveryReady = true;
   managedDevServerLog.current = (message, detail) => app.log.info(detail ?? {}, message);
   app.addHook('onClose', () => managedDevServerManager?.close());

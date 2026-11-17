@@ -1,3 +1,9 @@
+import {
+  startServerMessageProjection,
+  createServerConductor,
+  createServerEventPublisher,
+  createServerWorktrees,
+} from './server-runtime.js';
 import { installInfrastructureRoutes } from './server-infrastructure-routes.js';
 import {
   installControlSession,
@@ -18,7 +24,11 @@ import {
   registerPushShutdown,
 } from './server-push.js';
 import { registerServerShutdownDrain, createServerQueueRecovery } from './server-queue-recovery.js';
-import { createServerAgentCredentials, createServerUsage } from './server-agent-credentials.js';
+import {
+  createServerAgentCredentials,
+  createServerUsage,
+  installProviderUsage,
+} from './server-agent-credentials.js';
 import {
   createServerProjectRuntime,
   createServerProjectSandboxRuntime,
@@ -32,29 +42,17 @@ import { createServerScheduling } from './server-scheduling.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
-import type { AgentEvent } from '@verity/events';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { registerAttachmentRoute } from './attachment-route.js';
-import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
+import { installConnections } from './server-connections.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
-import { registerProjectEgressRoutes } from './project-egress-routes.js';
-import { registerProviderLimitsRoute } from './provider-limits-route.js';
-import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { type ServerContext } from './server-context.js';
 import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
 import { installProjects } from './server-projects.js';
-import {
-  installPeople,
-  peopleDirectQueries,
-  personalUsageProbes,
-  sharedProjectPeople,
-} from './server-people.js';
+import { installPeople, peopleDirectQueries, sharedProjectPeople } from './server-people.js';
 import { installProjectPullRequests } from './server-project-pull-requests.js';
 import { createPrRepairTurns } from './server-pr-repair.js';
-import { installRepairSupervision } from './server-repair-supervision.js';
+import { installRepairSupervision, installRepairRoutes } from './server-repair-supervision.js';
 import { installSessionRoutes } from './server-session-routes.js';
 import { installAssistant } from './server-assistant.js';
 import {
@@ -68,6 +66,7 @@ import {
 import { createServerApp, installHttpGuards } from './server-http.js';
 import { installOnboarding } from './server-onboarding.js';
 import {
+  installSessionAttachments,
   installSessionHistory,
   installSessionList,
   installSessionReads,
@@ -78,8 +77,6 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import { emitSessionEvent } from './session-event-writer.js';
-import { createScratchProvisioner } from './worktree.js';
 import {
   isProjectSessionModel,
   SERVER_VERSION,
@@ -126,16 +123,10 @@ export {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
-  // Resume the bounded search backfill independently of requests.
-  if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
-    deps.eventStore.scheduleMessageProjection();
-  }
+  startServerMessageProjection(deps);
   const { app, lifecycle, preAuthKeys } = createServerApp(deps);
-  // The conductor factory needs the app logger for background failures.
-  const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
-  deps.onConductorReady?.(conductor);
-  const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
-    emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
+  const conductor = createServerConductor(app, deps);
+  const publishSessionEvent = createServerEventPublisher(deps);
   const sessionDesign = createServerSessionDesign(deps, {
     conductor,
     sessionsBeingReaped: () => sessionsBeingReaped,
@@ -210,9 +201,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus: (session) => sessionPrStatus(session),
   });
   const { recoverQueuedTurns } = createServerQueueRecovery(app, ctx);
-  const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
-  // Real git worktree when injected (deployment); else an empty scratch dir.
-  const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
+  const worktrees = createServerWorktrees(deps);
   const { dbClaudeOAuthTokenProvider, claudeUsage, codexUsage } = createServerUsage(
     app,
     ctx,
@@ -272,14 +261,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
   });
 
-  // Both probes are cached, backed off and never throw. An unconfigured provider
-  // simply contributes nothing.
-  registerProviderLimitsRoute(app, {
-    claudeUsage,
-    codexUsage,
-    // Each person sees the quota of their own accounts.
-    probesFor: personalUsageProbes(ctx),
-  });
+  installProviderUsage(app, ctx, { claudeUsage, codexUsage });
 
   installSettings(app, ctx, {
     storeAgentCredentials,
@@ -346,10 +328,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     availableModels: () => availableModels(),
     projectDefaultModel: (projectId) => projectDefaultModel(projectId),
   });
-  registerHttpMcpConnectionRoutes(app, deps.eventStore, {
-    browserRequestOrigin: deps.browserRequestOrigin,
-  });
-  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
+  installConnections(app, ctx);
 
   installControlSession(app, ctx, {
     worktrees,
@@ -408,12 +387,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   });
   installWikiFiles();
 
-  // Serve a content-addressed image attachment by its SHA-256 hash. The `prompt`
-  // event references images by this id; the client fetches them lazily (only the
-  // visible ones), so opening a session never transfers the whole image backlog.
-  // Content-addressed → the bytes for a given id never change, so it's cached
-  // forever (immutable). 404 for an unknown hash.
-  registerAttachmentRoute(app, { getAttachment: (hash) => deps.eventStore.getAttachment(hash) });
+  installSessionAttachments(app, ctx);
 
   installSessionHistory(app, ctx, {
     hasMeetingJob,
@@ -451,8 +425,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   installVulnerabilityFix(app, ctx, { sessionCreate, sessionPrCache });
   installMeetingIntake(app, ctx, { attendeeMeetings, spawn: sessionCreate.spawn });
 
-  registerRepairRoutes(app, deps.eventStore);
-  registerQASettingsRoutes(app, deps.eventStore, (id) => conductor.cancelTurn(id));
+  installRepairRoutes(app, ctx);
   installAssistant(app, ctx, {
     assistantToolDeps,
     summarizeSession,

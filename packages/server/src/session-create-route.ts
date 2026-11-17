@@ -26,12 +26,8 @@ import {
   ProjectAgentNotAllowedError,
   resolveProjectDefaultModel,
 } from './project-agent-policy.js';
-import type {
-  ServerDeps,
-  SpawnResult,
-  ProjectSettingsRecord,
-  PublicProjectRecord,
-} from './server.js';
+import type { SpawnResult, ProjectSettingsRecord, PublicProjectRecord } from './server-types.js';
+import type { ServerDeps } from './server-deps.js';
 
 export interface SessionCreateRouteDeps extends Pick<
   ServerDeps,
