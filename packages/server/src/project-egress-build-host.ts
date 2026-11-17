@@ -508,6 +508,10 @@ export async function createNativeProtectedBuildHost(options: NativeProtectedBui
     imageRef: options.imageRef,
     ...(options.cleanupImageRef === undefined ? {} : { cleanupImageRef: options.cleanupImageRef }),
     docker,
+    async pullImage(ref) {
+      // Bounded below the worker's 30-minute attempt budget; begin is retried idempotently.
+      await run('/usr/bin/docker', ['pull', '--quiet', ref], 15 * 60_000);
+    },
     readNamespace: async (path) =>
       (
         await run('/usr/bin/nsenter', ['--net=' + path, '/usr/bin/readlink', '/proc/self/ns/net'])
