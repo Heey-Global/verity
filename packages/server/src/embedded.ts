@@ -1,3 +1,7 @@
+import {
+  createEmbeddedRepositoryAccess,
+  createEmbeddedRepositoryPullRequests,
+} from './embedded-repositories.js';
 import { createEmbeddedGitHub } from './embedded-github.js';
 import { createEmbeddedDoppler } from './embedded-doppler.js';
 import { createEmbeddedMcpGateway } from './embedded-mcp-gateway.js';
@@ -117,9 +121,6 @@ import {
 import type { DockerGcReport } from './docker-gc.js';
 import { createServerLogSource } from './server-log-source.js';
 import { selectBranchStatus } from './forge-status-cache.js';
-import { createProjectForgeStatusReader } from './project-forge-status.js';
-import type { ForgeDiscoveryPage, PullRequestStatus } from './forge-provider.js';
-import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import { createBuildDiagnosticStore } from './build-diagnostics.js';
 import { brokeredDopplerBindingId } from './brokered-doppler-binding.js';
 import { BuildStorage } from './build-storage.js';
@@ -134,7 +135,6 @@ import { createGhcrForgeAdapter } from './brokered-forge-ghcr.js';
 import { loadForgePackageMap } from './brokered-forge-package-map.js';
 import { createBrokeredForgeProxy } from './brokered-http-tool.js';
 import { createForgejoForgeAdapter } from './brokered-forge-forgejo.js';
-import { ForgejoTransport } from './forgejo-transport.js';
 import { createGitHubForgeAdapter } from './brokered-forge-github.js';
 import { brokeredHttpStreamTransport } from './brokered-http-stream.js';
 import { issueGatewayServerCertificate } from './claude-egress-ca.js';
@@ -682,29 +682,7 @@ export async function buildEmbeddedServer(
     githubQAAnalysis,
     githubForge,
   } = createEmbeddedGitHub(config, eventStore);
-  const forgeRepositoryAccess = async (target: {
-    owner: string;
-    repo: string;
-    forgeConnectionId?: string | null;
-  }) => {
-    if (!target.forgeConnectionId || target.forgeConnectionId === 'legacy-github') return undefined;
-    const connection = await eventStore.forgeConnections.get(target.forgeConnectionId);
-    if (!connection || connection.provider !== 'forgejo')
-      throw new Error('Forgejo connection unavailable');
-    const token = (await eventStore.forgeConnections.credentials(connection.id))?.personalToken;
-    if (!token) throw new Error('Forgejo credentials unavailable');
-    const transport = new ForgejoTransport(
-      connection.baseUrl,
-      () => Promise.resolve(token),
-      connection.customCaPem,
-    );
-    return {
-      url: `${transport.baseUrl}/${encodeURIComponent(target.owner)}/${encodeURIComponent(target.repo)}.git`,
-      token,
-      authorization: `Authorization: Basic ${Buffer.from(`oauth2:${token}`).toString('base64')}`,
-      customCaPem: connection.customCaPem ?? null,
-    };
-  };
+  const forgeRepositoryAccess = createEmbeddedRepositoryAccess(eventStore);
   const forgeForWorktree = async (worktree: string) => {
     if (config.hostCloneRoot) {
       for (const project of await eventStore.listProjects({ includeHidden: true })) {
@@ -719,78 +697,8 @@ export async function buildEmbeddedServer(
     }
     return githubForge;
   };
-  const { readProjectStatus, statusIdentity, invalidateStatus, invalidateProjectStatus } =
-    createProjectForgeStatusReader((project) =>
-      projectForgeProvider(eventStore, githubForge, project),
-    );
-  const isDefaultRepository = async (project: ProjectRecord) => {
-    const stored = await eventStore.getProject(project.id);
-    return (
-      stored !== undefined &&
-      stored.kind === project.kind &&
-      stored.owner === project.owner &&
-      stored.repo === project.repo
-    );
-  };
-  const projectPullRequests: ProjectPullRequestBackend = {
-    list: async (project) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      if (!provider?.discover) throw new Error('Pull request listing unsupported');
-      const pulls = new Map<number, ForgeDiscoveryPage['pulls'][number]>();
-      // Three pages cover any open list a person scans on a phone; the host's
-      // pages are newest first, so a cut drops the oldest pull requests.
-      for (let page = 1; page <= 3; page += 1) {
-        const result = await provider.discover(project, page);
-        if (result.errors?.some((error) => error.step === 'pulls'))
-          throw new Error('Pull requests unavailable');
-        for (const pull of result.pulls) pulls.set(pull.number, pull);
-        if (result.pulls.length < 30) break;
-      }
-      const remember = await isDefaultRepository(project);
-      const deadline = Date.now() + 12_000;
-      const rows = [...pulls.values()];
-      const statuses = new Array<PullRequestStatus | null>(rows.length).fill(null);
-      let next = 0;
-      // Statuses are read a few at a time against one budget: a cold cache over
-      // many pull requests leaves the slow ones without status instead of
-      // turning the whole repository unavailable.
-      const worker = async () => {
-        while (next < rows.length && Date.now() < deadline) {
-          const index = next++;
-          const pull = rows[index]!;
-          if (pull.fork) continue;
-          let timer: NodeJS.Timeout | undefined;
-          const status = await Promise.race([
-            readProjectStatus(project, pull.branch, remember).catch(() => null),
-            new Promise<null>((resolve) => {
-              timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
-            }),
-          ]).finally(() => clearTimeout(timer));
-          statuses[index] =
-            status && status.number === pull.number && status.phase === 'open' ? status : null;
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(6, rows.length) }, worker));
-      return {
-        webUrl: provider.cloneUrl(project).replace(/\.git$/u, ''),
-        pulls: rows.map((pull, index) => ({ ...pull, status: statuses[index] ?? null })),
-      };
-    },
-    status: async (project, branch) =>
-      readProjectStatus(project, branch, await isDefaultRepository(project)),
-    merge: async (project, number, expectedHeadSha) => {
-      const provider = await projectForgeProvider(eventStore, githubForge, project);
-      if (!provider?.repositoryPrService) return false;
-      try {
-        return await provider.repositoryPrService(project).mergePr(number, expectedHeadSha);
-      } finally {
-        // A failed cache invalidation must not turn a completed merge into an error.
-        await statusIdentity(project, provider)
-          .then(invalidateStatus)
-          .catch(() => undefined);
-      }
-    },
-  };
+  const { readProjectStatus, invalidateProjectStatus, projectPullRequests } =
+    createEmbeddedRepositoryPullRequests(eventStore, githubForge);
   const readWorktreeStatus = async (branch: string, worktree: string) => {
     const session = (await eventStore.listSessions()).find((row) => row.worktree === worktree);
     const project = session?.projectId ? await eventStore.getProject(session.projectId) : undefined;
