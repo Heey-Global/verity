@@ -50,15 +50,20 @@ copies, for example before patching a package. Where the filesystem refuses a
 link, activation copies that file and reports how many it copied. `install`
 checks for shared files that were made writable again (`status` does not, to
 stay fast): it withdraws the affected inventory so the next install prepares it
-afresh, and the edit stays in the session that made it. An inventory that is
-already edited is never linked into another session.
+afresh. The edit stays in the session that made it; another session that shared
+the edited file keeps it until its own next `install` finds it and activates the
+fresh inventory. An inventory that is already edited is never linked into
+another session. The protection rests on permission bits: a process running as
+root copies files instead of sharing them, and a file deliberately made writable,
+edited and made read-only again is not detected.
 
 Sessions activated before sharing hold private copies. While such a session is
 in use, collection replaces each file that is byte-identical, with the same
 execute bits, to the sealed inventory named by the session's receipt by a link
 to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
-already shared files and npm's receipts are left as they are, and a file that
-changes during the comparison is kept.
+already shared files and npm's receipts are left as they are, as are sessions
+whose `node_modules` belongs to root. A file that changes before its replacement
+is kept.
 
 Activating a new dependency version moves the session's previous installation
 to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as

@@ -1052,7 +1052,11 @@ async function main() {
           rewire(root, copy, path + '/');
         }
         shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache));
-        if (copied.files > 0)
+        if (process.getuid?.() === 0)
+          console.log(
+            'Copied dependency files instead of sharing them: root ignores read-only files.',
+          );
+        else if (copied.files > 0)
           console.log(
             `Copied ${copied.files} dependency files that this filesystem could not share.`,
           );
@@ -1380,6 +1384,8 @@ function sealInventory(cache) {
 /** Recreates `source` at `destination`: directories and top-level files are the
  *  session's own, symlinks are reproduced, and package files are shared links. */
 function shareTree(source, destination, copied, drifted) {
+  // Root ignores permission bits, so its writes would reach every session.
+  const share = process.getuid?.() !== 0;
   const pending = [[source, destination]];
   while (pending.length > 0) {
     const [from, to] = pending.pop();
@@ -1394,7 +1400,7 @@ function shareTree(source, destination, copied, drifted) {
     else if (stat.mode & 0o222) drifted();
     else {
       // npm rewrites its top-level receipts in place; those stay private copies.
-      if (dirname(from) !== source)
+      if (share && dirname(from) !== source)
         try {
           linkSync(from, to);
           continue;
@@ -1418,14 +1424,17 @@ function withdraw(cache) {
 }
 /** True when a file shared with other sessions has write bits again. */
 function sharedDrift(root) {
+  const drift = new Error('drift');
   try {
     for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
-      eachFile(tree, (_, stat) => {
-        if (stat.nlink > 1 && stat.mode & 0o222) throw new Error('drift');
-      });
+      if (readlinkExists(tree))
+        eachFile(tree, (_, stat) => {
+          if (stat.nlink > 1 && stat.mode & 0o222) throw drift;
+        });
     return false;
-  } catch {
-    return true;
+  } catch (error) {
+    if (error === drift) return true;
+    throw error;
   }
 }
 /** `install --private`: replaces this session's shared files with its own copies. */
@@ -1434,7 +1443,14 @@ function privatize(root) {
   for (const tree of [join(root, 'node_modules'), ...workspaceModuleTrees(root)])
     if (readlinkExists(tree))
       eachFile(tree, (path, stat) => {
-        if (stat.nlink < 2) return;
+        if (stat.nlink < 2) {
+          // Left read-only once every other name is gone, e.g. a retired inventory.
+          if (!(stat.mode & 0o200)) {
+            chmodSync(path, (stat.mode & 0o7777) | 0o200);
+            files++;
+          }
+          return;
+        }
         const temporary = `${path}.verity-private-${randomUUID()}`;
         try {
           copyFileSync(path, temporary);

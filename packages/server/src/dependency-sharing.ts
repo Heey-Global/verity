@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { link, lstat, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export async function digest(path: string, signal: AbortSignal): Promise<string> {
   const file = await open(path, 'r');
@@ -61,7 +61,9 @@ export async function shareDependencyFiles(
     if (
       (await readFile(join(inventory, 'sealed'), 'utf8')) !== 'v1' ||
       (await realpath(central)) !== central ||
-      (await realpath(modules)) !== modules
+      (await realpath(modules)) !== modules ||
+      // A session running as root ignores read-only files; it keeps its copies.
+      (await lstat(modules)).uid === 0
     )
       return result;
   } catch {
@@ -107,6 +109,8 @@ export async function shareDependencyFiles(
         latest.ctimeMs !== before.ctimeMs
       )
         continue;
+      // A directory swapped for a link since the listing must not redirect the rename.
+      if ((await realpath(dirname(path))) !== dirname(path)) continue;
       if (!dryRun) {
         const temporary = `${path}.verity-share-${randomUUID()}`;
         try {

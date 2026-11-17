@@ -22,7 +22,8 @@ const identities = (root: string) =>
 // Root ignores permission bits, so a write check proves nothing there.
 const enforcesModes = process.getuid?.() !== 0;
 
-describe('dependency files shared between sessions', () => {
+// Root copies instead of sharing: its writes would ignore read-only files.
+describe.skipIf(!enforcesModes)('dependency files shared between sessions', () => {
   it('links package files read-only and keeps top-level receipts private', () => {
     const f = fixture();
     const sibling = f.sibling();
@@ -42,10 +43,9 @@ describe('dependency files shared between sessions', () => {
     expect(manifest(join(f.worktree, 'node_modules')).ino).toBe(manifest(central).ino);
     expect(manifest(join(sibling, 'node_modules')).ino).toBe(manifest(central).ino);
     expect(manifest(central).mode & 0o222).toBe(0);
-    if (enforcesModes)
-      expect(() =>
-        writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}'),
-      ).toThrow(/EACCES/u);
+    expect(() =>
+      writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}'),
+    ).toThrow(/EACCES/u);
     expect(
       readFileSync(join(sibling, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
@@ -95,6 +95,21 @@ describe('dependency files shared between sessions', () => {
     expect(statSync(central).mode & 0o222).toBe(0);
     // A private file is the session's own; a later install leaves it alone.
     expect(f.run('install').status).toBe(0);
+    expect(readFileSync(file, 'utf8')).toContain('patched');
+  });
+  it('makes files writable on request once their inventory is retired', () => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock('1.0.0'));
+    expect(f.run('install').status).toBe(0);
+    rmSync(join(f.root, '.git', 'verity-dependencies', identities(f.root)[0]!), {
+      recursive: true,
+    });
+    // Unshared but still read-only: patching would fail without this.
+    const result = f.run('install', {}, '--private');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/Made [1-9][0-9]* shared dependency files private/u);
+    const file = join(f.worktree, 'node_modules', 'private', 'package.json');
+    writeFileSync(file, '{"version":"patched"}');
     expect(readFileSync(file, 'utf8')).toContain('patched');
   });
   it('withdraws an inventory whose shared file was made writable and keeps the edit', () => {
