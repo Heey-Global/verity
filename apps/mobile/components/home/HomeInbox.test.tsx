@@ -406,9 +406,7 @@ it('hides "Tell Verity" while quick capture cannot open', async () => {
   expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
 });
 
-it('shows a permission’s whole command next to Allow and its raw input one tap away', async () => {
-  // Home opened on a JSON dump for every tool without its own summary.
-  const command = Array.from({ length: 30 }, (_, i) => `step ${String(i)}`).join(' && ');
+it('keeps commands out of the overview and opens their session for review', async () => {
   await renderInbox([
     session('shell', {
       status: 'awaiting_input',
@@ -419,25 +417,19 @@ it('shows a permission’s whole command next to Allow and its raw input one tap
           toolUseId: 't1',
           tool: 'Bash',
           riskClass: 'ask',
-          // A field no tool summary shows: approving must not hide it.
-          input: { command, description: 'hidden-detail' },
+          input: {
+            command: 'python /work/very-long-script.py --many-arguments',
+            description: 'Run evaluation',
+          },
         },
       ],
     }),
   ]);
-  await screen.findByRole('button', { name: 'Allow once' });
-  // The command is read whole, never squashed to a headline: its tail is the risk.
-  const line = screen.getByTestId('inbox-line-code');
-  expect(line.props.numberOfLines).toBeUndefined();
-  expect(line.props.children).toBe(command);
-  expect(screen.queryByText(/"command"/)).toBeNull();
-  // Every other field still travels with Allow, unclipped, behind one tap.
+  await screen.findByRole('button', { name: 'Review' });
+  expect(screen.queryByTestId('inbox-line-code')).toBeNull();
   expect(screen.queryByTestId('inbox-request')).toBeNull();
-  fireEvent.press(screen.getByText('Full request'));
-  const request = screen.getByTestId('inbox-request');
-  expect(request.props.numberOfLines).toBeUndefined();
-  expect(request.props.children).toContain('step 29');
-  expect(request.props.children).toContain('hidden-detail');
+  expect(screen.queryByText('Full request')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
 });
 
 it('keeps a write’s content in view next to Allow', async () => {
@@ -498,7 +490,7 @@ it('keeps a session with a permission and a ready pull request in one card', asy
   expect(needs.queryByText('Unread')).toBeNull();
 });
 
-it('words a secret run first and keeps its full request one tap away', async () => {
+it('shows only a compact secret-run approval with a session review action', async () => {
   // Home showed "Verity · Secret · Run" over a JSON dump, while the session asked
   // which secrets would go to which command.
   await renderInbox([
@@ -520,15 +512,12 @@ it('words a secret run first and keeps its full request one tap away', async () 
     }),
   ]);
   expect(await screen.findByText('Run trusted command with KUBECONFIG?')).toBeOnTheScreen();
-  expect(screen.getByTestId('inbox-line-code').props.children).toBe(
-    '"/usr/local/bin/cluster-inspect" "job" "e2e"',
-  );
-  expect(screen.getByTestId('inbox-line-text').props.children).toContain(
-    'KUBECONFIG as a file at KUBECONFIG_FILE',
-  );
+  expect(screen.queryByTestId('inbox-line-code')).toBeNull();
+  expect(screen.queryByTestId('inbox-line-text')).toBeNull();
   expect(screen.queryByTestId('inbox-request')).toBeNull();
-  fireEvent.press(screen.getByText('Full request'));
-  expect(screen.getByTestId('inbox-request').props.children).toContain('"secretAlias"');
+  expect(screen.queryByText('Full request')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Review' })).toBeOnTheScreen();
 });
 
 describe('dismissing', () => {
