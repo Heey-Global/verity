@@ -30,7 +30,17 @@ function specifiers(file, text) {
   const constants = new Map();
   /** @param {ts.Node} node */
   function collect(node) {
-    if ((ts.isVariableDeclaration(node) || ts.isParameter(node)) && ts.isIdentifier(node.name)) {
+    if (
+      (ts.isFunctionExpression(node) ||
+        ts.isClassExpression(node) ||
+        ts.isFunctionDeclaration(node) ||
+        ts.isClassDeclaration(node)) &&
+      node.name
+    ) {
+      if (!constants.has(node)) constants.set(node, new Map());
+      constants.get(node).set(node.name.text, undefined);
+    }
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
       let scope = node.parent;
       while (
         scope &&
@@ -51,7 +61,15 @@ function specifiers(file, text) {
         node.parent.flags & ts.NodeFlags.Const
           ? node.initializer
           : undefined;
-      constants.get(scope).set(node.name.text, value);
+      /** @param {ts.BindingName} name @param {ts.Expression | undefined} expression */
+      function bind(name, expression) {
+        if (ts.isIdentifier(name)) constants.get(scope).set(name.text, expression);
+        else
+          for (const element of name.elements) {
+            if (ts.isBindingElement(element)) bind(element.name, undefined);
+          }
+      }
+      bind(node.name, value);
     }
     ts.forEachChild(node, collect);
   }
@@ -60,7 +78,14 @@ function specifiers(file, text) {
   function literal(node, seen = new Set()) {
     if (!node) return undefined;
     if (ts.isStringLiteralLike(node)) return node.text;
-    if (ts.isParenthesizedExpression(node)) return literal(node.expression, seen);
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertionExpression(node) ||
+      ts.isSatisfiesExpression(node) ||
+      ts.isNonNullExpression(node)
+    )
+      return literal(node.expression, seen);
     if (ts.isIdentifier(node)) {
       for (let scope = node.parent; scope; scope = scope.parent) {
         const bindings = constants.get(scope);

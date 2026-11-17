@@ -55,6 +55,7 @@ describe('server composition-root imports', () => {
     "import server = require('./server.js');",
     "const path = './server.js'; import(path);",
     "import('./' + 'server.js');",
+    "import('./server.js' as string);",
     "const stem = 'server'; import(`./${stem}.js`);",
   ])('rejects %s', (text) => {
     expect(fixture({ 'domain.ts': text })).toEqual([`${prefix}domain.ts -> ${prefix}server.ts`]);
@@ -160,6 +161,17 @@ describe('server composition-root imports', () => {
     expect(
       fixture({ 'domain.ts': `const path = './server.js'; ${statement} import(path);` }),
     ).toHaveLength(1);
+  });
+  it.each([
+    'function load({ path }) { return import(path); }',
+    'const load = function path() { return import(path); };',
+    'const load = class path { load() { return import(path); } };',
+    'function load([path]) { return import(path); }',
+    '{ const { path } = runtime; import(path); }',
+    '{ const { nested: { path } } = runtime; import(path); }',
+    '{ const [path] = runtime; import(path); }',
+  ])('treats destructured shadows as runtime values: %s', (statement) => {
+    expect(fixture({ 'domain.ts': `const path = './server.js'; ${statement}` })).toEqual([]);
   });
   it('ignores comments, ordinary strings and unresolved runtime expressions', () => {
     expect(
