@@ -210,7 +210,7 @@ export function installLive(
 }
 
 /** Invalidate resource watches after accepted HTTP mutations. */
-export function registerLiveResourceHints(app: FastifyInstance, resources: ResourceObserver): void {
+function registerLiveResourceHints(app: FastifyInstance, resources: ResourceObserver): void {
   app.addHook('onResponse', (request, reply, done) => {
     if (
       reply.statusCode < 400 &&
