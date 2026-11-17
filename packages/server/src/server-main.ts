@@ -25,7 +25,7 @@ import {
   toolkitFeatureRefIsConfigured,
   type EmbeddedServer,
 } from './embedded.js';
-import { SERVER_VERSION } from './server.js';
+import { SERVER_VERSION } from './server-support.js';
 import { resolveGoogleOAuthClientId } from './google-drive.js';
 import { parseSandboxDnsServers } from './gvisor-project-network.js';
 import { readAgentSeedStamp, sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';

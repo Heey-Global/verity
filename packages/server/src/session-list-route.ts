@@ -1,7 +1,7 @@
 import { measureLatencyPhase, type EventStore, type SessionRecord } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import type { AttentionSignal } from './attention.js';
-import type { SessionSummary, SessionListEnvelope } from './server.js';
+import type { SessionSummary, SessionListEnvelope } from './server-types.js';
 import { viewerId } from './view-state-routes.js';
 
 export interface SessionListRouteDeps {
