@@ -1272,14 +1272,26 @@ function activationRecord(gitDir, root, directory) {
     // coarser timestamps or a different clock.
     if (!marker.isFile() || marker.dev !== top.dev) return undefined;
     if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
-    return { key: recorded, dev: top.dev, ctimeNs: at < marker.ctimeNs ? at : marker.ctimeNs };
+    const cutoff = at < marker.ctimeNs ? at : marker.ctimeNs;
+    // A clock that is still behind the record would date later edits before it.
+    const probe = join(gitDir, `${ACTIVATION_RECORD}.${randomUUID()}`);
+    let now;
+    try {
+      writeFileSync(probe, '');
+      now = lstatSync(probe, { bigint: true }).ctimeNs;
+    } finally {
+      rmSync(probe, { force: true });
+    }
+    if (now <= cutoff) return undefined;
+    return { key: recorded, dev: top.dev, ctimeNs: cutoff };
   } catch {
     return undefined;
   }
 }
 /** True only when no entry changed status since the record: any write, chmod,
  *  link, creation, removal or rename sets a status change time that file tools
- *  cannot set back. Only a host clock stepped backwards could hide a change. */
+ *  cannot set back. Only a host clock stepped backwards and then forward again
+ *  past the record could hide a change. */
 function unchangedSince(directory, record, includeTop) {
   try {
     const pending = [directory];
