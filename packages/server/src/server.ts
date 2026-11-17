@@ -1,3 +1,9 @@
+import {
+  startServerMessageProjection,
+  createServerConductor,
+  createServerEventPublisher,
+  createServerWorktrees,
+} from './server-runtime.js';
 import { installInfrastructureRoutes } from './server-infrastructure-routes.js';
 import {
   installControlSession,
@@ -32,9 +38,6 @@ import { createServerScheduling } from './server-scheduling.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
-import type { AgentEvent } from '@verity/events';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
@@ -78,8 +81,6 @@ import {
   installMeetingIntake,
   installMeetings,
 } from './server-meetings.js';
-import { emitSessionEvent } from './session-event-writer.js';
-import { createScratchProvisioner } from './worktree.js';
 import {
   isProjectSessionModel,
   SERVER_VERSION,
@@ -126,16 +127,10 @@ export {
 
 export function buildServer(deps: ServerDeps): FastifyInstance {
   const liveTickets = createLiveTickets(deps);
-  // Resume the bounded search backfill independently of requests.
-  if (typeof deps.eventStore.scheduleMessageProjection === 'function') {
-    deps.eventStore.scheduleMessageProjection();
-  }
+  startServerMessageProjection(deps);
   const { app, lifecycle, preAuthKeys } = createServerApp(deps);
-  // The conductor factory needs the app logger for background failures.
-  const conductor = typeof deps.conductor === 'function' ? deps.conductor(app.log) : deps.conductor;
-  deps.onConductorReady?.(conductor);
-  const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
-    emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
+  const conductor = createServerConductor(app, deps);
+  const publishSessionEvent = createServerEventPublisher(deps);
   const sessionDesign = createServerSessionDesign(deps, {
     conductor,
     sessionsBeingReaped: () => sessionsBeingReaped,
@@ -210,9 +205,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionPrStatus: (session) => sessionPrStatus(session),
   });
   const { recoverQueuedTurns } = createServerQueueRecovery(app, ctx);
-  const spawnWorktreeRoot = deps.spawnWorktreeRoot ?? join(tmpdir(), 'verity-sessions');
-  // Real git worktree when injected (deployment); else an empty scratch dir.
-  const worktrees = deps.worktrees ?? createScratchProvisioner({ worktreeRoot: spawnWorktreeRoot });
+  const worktrees = createServerWorktrees(deps);
   const { dbClaudeOAuthTokenProvider, claudeUsage, codexUsage } = createServerUsage(
     app,
     ctx,
