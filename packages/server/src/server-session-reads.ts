@@ -274,7 +274,7 @@ export function installSessionReads(
           : projectedStatus === 'awaiting_input' &&
               permissionEventAwaitsInput(events) &&
               pendingPermissions.length === 0
-            ? conductor.isBusy(id)
+            ? conductor.isBusy(id, { turnOnly: true })
               ? 'running'
               : 'completed'
             : projectedStatus;

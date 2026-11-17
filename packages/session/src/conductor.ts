@@ -1838,9 +1838,9 @@ export class Conductor {
     return first.result;
   }
 
-  /** True while a turn for `sessionId` is in flight. */
-  isBusy(sessionId: string): boolean {
-    return this.inFlight.has(sessionId);
+  /** True while a turn or maintenance holds the lock; `turnOnly` asks only for a turn. */
+  isBusy(sessionId: string, { turnOnly = false }: { turnOnly?: boolean } = {}): boolean {
+    return this.inFlight.has(sessionId) && !(turnOnly && this.maintenanceLocks.has(sessionId));
   }
 
   /** Available before backend initialization requests its first MCP catalog. */
