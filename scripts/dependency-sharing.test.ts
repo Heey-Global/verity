@@ -50,6 +50,11 @@ describe.skipIf(!enforcesModes)('dependency files shared between sessions', () =
     expect(
       readFileSync(join(sibling, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
+    // npm resets a command target's mode whenever it links commands; a shared
+    // target would turn writable for every session and withdraw the inventory.
+    const command = statSync(join(f.worktree, 'node_modules', 'private', 'cli.js'));
+    expect(command.nlink).toBe(1);
+    expect(command.mode & 0o200).toBe(0o200);
     // npm rewrites its hidden lockfile in place; a shared one would fail every npm run.
     const receipt = statSync(join(f.worktree, 'node_modules', '.package-lock.json'));
     expect(receipt.nlink).toBe(1);

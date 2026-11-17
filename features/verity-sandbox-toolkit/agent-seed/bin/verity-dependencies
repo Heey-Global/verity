@@ -23,7 +23,7 @@ import {
   copyFileSync,
   linkSync,
 } from 'node:fs';
-import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
+import { basename, dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -1041,7 +1041,6 @@ async function main() {
       try {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
-        // Root ignores permission bits, so its writes would reach every session.
         const share = process.getuid?.() !== 0 && sealInventory(cache);
         const copied = { files: 0 };
         const recorded = new Map();
@@ -1407,39 +1406,44 @@ function sealInventory(cache) {
  *  session's own, symlinks are reproduced, and package files are shared links. */
 function shareTree(source, destination, copied, drifted, share) {
   const files = [];
+  const regular = [];
+  const commands = new Set(); // npm resets command targets' modes whenever it links them.
   const pending = [[source, destination]];
   while (pending.length > 0) {
     const [from, to] = pending.pop();
     const stat = lstatSync(from);
-    const name = relative(source, from);
-    if (stat.isSymbolicLink()) symlinkSync(readlinkSync(from), to);
-    else if (stat.isDirectory()) {
+    if (stat.isSymbolicLink()) {
+      const target = readlinkSync(from);
+      symlinkSync(target, to);
+      if (basename(dirname(from)) === '.bin') commands.add(resolve(dirname(from), target));
+    } else if (stat.isDirectory()) {
       mkdirSync(to);
       chmodSync(to, (stat.mode & 0o7777) | 0o700);
       for (const entry of readdirSync(from)) pending.push([join(from, entry), join(to, entry)]);
     } else if (!stat.isFile()) throw new Error('Unsupported entry in the central inventory.');
-    // A writable inventory file may already carry an edit made through a link.
-    else if (share && stat.mode & 0o222) drifted();
-    else {
-      // npm rewrites its top-level receipts in place; those stay private copies.
-      if (share && dirname(from) !== source)
-        try {
-          linkSync(from, to);
-          files.push(fileIdentity(name, lstatSync(from, { bigint: true })));
-          continue;
-        } catch (error) {
-          if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
-          copied.files++;
-        }
-      copyFileSync(from, to);
-      chmodSync(to, (stat.mode & 0o7777) | 0o200);
-      files.push(fileIdentity(name, lstatSync(to, { bigint: true })));
+    else regular.push([from, to, stat]);
+  }
+  for (const [from, to, stat] of regular) {
+    // npm rewrites its top-level receipts in place; those stay private copies.
+    if (share && dirname(from) !== source && !commands.has(from)) {
+      // A writable inventory file may already carry an edit made through a link.
+      if (stat.mode & 0o222) drifted();
+      try {
+        linkSync(from, to);
+        files.push(fileIdentity(relative(source, from), lstatSync(from, { bigint: true })));
+        continue;
+      } catch (error) {
+        if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
+        copied.files++;
+      }
     }
+    copyFileSync(from, to);
+    chmodSync(to, (stat.mode & 0o7777) | 0o200);
+    files.push(fileIdentity(relative(source, from), lstatSync(to, { bigint: true })));
   }
   return filesKey(files);
 }
-// Which inode holds each file of an activated tree: replacing or removing a file
-// changes this even when its times and mode look untouched.
+// Which inode backs each file: replacing or removing one changes it whatever its times.
 const fileIdentity = (name, stat) => `${name}\0${stat.ino}`;
 const filesKey = (files) => createHash('sha256').update(files.sort().join('\n')).digest('hex');
 /** Retires an inventory whose shared files became writable; the next install prepares it afresh. */
