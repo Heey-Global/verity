@@ -37,8 +37,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerAttachmentRoute } from './attachment-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
-import { createSessionMockups, registerMockupRoutes } from './mockups.js';
-import { createSessionPlanning, registerPlanningRoutes, type PlanningDeps } from './planning.js';
+import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
@@ -137,25 +136,11 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   deps.onConductorReady?.(conductor);
   const publishSessionEvent = (sessionId: string, event: AgentEvent): Promise<void> =>
     emitSessionEvent(deps.eventStore, deps.bus, sessionId, event);
-  const dispatchServerTurn: PlanningDeps['dispatchTurn'] = (
-    sessionId,
-    prompt,
-    opts,
-    dispatchOpts,
-  ) => {
-    // No await before dispatch: deletion must not reopen a quiesced worktree.
-    if (sessionsBeingReaped.has(sessionId)) {
-      throw Object.assign(new Error('session is being deleted with its project'), {
-        statusCode: 409,
-      });
-    }
-    return conductor.dispatchTurn(sessionId, prompt, opts, dispatchOpts);
-  };
-  const sessionPlanning = createSessionPlanning({
-    eventStore: deps.eventStore,
-    dispatchTurn: dispatchServerTurn,
+  const sessionDesign = createServerSessionDesign(deps, {
+    conductor,
+    sessionsBeingReaped: () => sessionsBeingReaped,
   });
-  const sessionMockups = createSessionMockups({ eventStore: deps.eventStore });
+  const { sessionPlanning, sessionMockups } = sessionDesign;
   const {
     projectsBeingDeleted,
     sessionsBeingReaped,
@@ -340,8 +325,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     SERVER_VERSION,
     VERITY_CONTROL_PROJECT_ID,
   });
-  registerPlanningRoutes(app, { eventStore: deps.eventStore, planning: sessionPlanning });
-  registerMockupRoutes(app, { mockups: sessionMockups });
+  installSessionDesign(app, ctx, sessionDesign);
   automations.installRoutes();
 
   installPreviews(app, ctx);
