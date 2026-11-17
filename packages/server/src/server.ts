@@ -24,7 +24,11 @@ import {
   registerPushShutdown,
 } from './server-push.js';
 import { registerServerShutdownDrain, createServerQueueRecovery } from './server-queue-recovery.js';
-import { createServerAgentCredentials, createServerUsage } from './server-agent-credentials.js';
+import {
+  createServerAgentCredentials,
+  createServerUsage,
+  installProviderUsage,
+} from './server-agent-credentials.js';
 import {
   createServerProjectRuntime,
   createServerProjectSandboxRuntime,
@@ -42,19 +46,13 @@ import { registerAttachmentRoute } from './attachment-route.js';
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
 import { registerProjectEgressRoutes } from './project-egress-routes.js';
-import { registerProviderLimitsRoute } from './provider-limits-route.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
 import { type ServerContext } from './server-context.js';
 import { createSessionDeletion, installSessionDeletion } from './server-session-deletion.js';
 import { installProjects } from './server-projects.js';
-import {
-  installPeople,
-  peopleDirectQueries,
-  personalUsageProbes,
-  sharedProjectPeople,
-} from './server-people.js';
+import { installPeople, peopleDirectQueries, sharedProjectPeople } from './server-people.js';
 import { installProjectPullRequests } from './server-project-pull-requests.js';
 import { createPrRepairTurns } from './server-pr-repair.js';
 import { installRepairSupervision } from './server-repair-supervision.js';
@@ -265,14 +263,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     sessionOverview: { prunePrSummaryCache, pruneBranchCache, summarizeSessions },
   });
 
-  // Both probes are cached, backed off and never throw. An unconfigured provider
-  // simply contributes nothing.
-  registerProviderLimitsRoute(app, {
-    claudeUsage,
-    codexUsage,
-    // Each person sees the quota of their own accounts.
-    probesFor: personalUsageProbes(ctx),
-  });
+  installProviderUsage(app, ctx, { claudeUsage, codexUsage });
 
   installSettings(app, ctx, {
     storeAgentCredentials,

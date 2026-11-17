@@ -7,6 +7,8 @@ import {
   createClaudeUsageService,
   type ClaudeOAuthTokenProvider,
 } from './claudeUsage.js';
+import { registerProviderLimitsRoute } from './provider-limits-route.js';
+import { personalUsageProbes } from './server-people.js';
 import { createCodexUsageService } from './codexUsage.js';
 import type { ServerContext } from './server-context.js';
 import { hasVeritySettingsStore, veritySettingsStore } from './server-support.js';
@@ -103,4 +105,20 @@ export function createServerUsage(
       credentialProvider: deps.codexGatewayCredentialProvider,
     });
   return { dbClaudeOAuthTokenProvider, claudeUsage, codexUsage };
+}
+
+/** Register usage limits after HTTP guards, keeping probes scoped to the viewer. */
+export function installProviderUsage(
+  app: FastifyInstance,
+  ctx: ServerContext,
+  usage: Pick<ReturnType<typeof createServerUsage>, 'claudeUsage' | 'codexUsage'>,
+): void {
+  // Both probes are cached, backed off and never throw. An unconfigured provider
+  // simply contributes nothing.
+  registerProviderLimitsRoute(app, {
+    claudeUsage: usage.claudeUsage,
+    codexUsage: usage.codexUsage,
+    // Each person sees the quota of their own accounts.
+    probesFor: personalUsageProbes(ctx),
+  });
 }
