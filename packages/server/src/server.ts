@@ -42,9 +42,8 @@ import { createServerScheduling } from './server-scheduling.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
 import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
-import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
+import { installConnections } from './server-connections.js';
 import { createServerSessionDesign, installSessionDesign } from './server-session-design.js';
-import { registerProjectEgressRoutes } from './project-egress-routes.js';
 import { registerQASettingsRoutes, registerRepairRoutes } from './repair-routes.js';
 import type { ServerDeps } from './server-deps.js';
 import { registerServerMcpRoutes } from './server-mcp-routes.js';
@@ -330,10 +329,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     availableModels: () => availableModels(),
     projectDefaultModel: (projectId) => projectDefaultModel(projectId),
   });
-  registerHttpMcpConnectionRoutes(app, deps.eventStore, {
-    browserRequestOrigin: deps.browserRequestOrigin,
-  });
-  registerProjectEgressRoutes(app, deps.eventStore.projectEgress);
+  installConnections(app, ctx);
 
   installControlSession(app, ctx, {
     worktrees,
