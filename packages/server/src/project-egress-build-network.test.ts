@@ -420,9 +420,13 @@ describe('anchor image after a release update', () => {
     const f = fixture();
     f.removeImage();
     const target = `ghcr.io/example/server@sha256:${'e'.repeat(64)}`;
-    await new ProtectedBuildNetworks({ ...f.io, imageRef: target, cleanupImageRef: image })
-      .create('project-a', 'attempt-a')
-      .catch(() => undefined);
+    // The fixture's anchor still reports the old image, so only the contract check refuses it.
+    await expect(
+      new ProtectedBuildNetworks({ ...f.io, imageRef: target, cleanupImageRef: image }).create(
+        'project-a',
+        'attempt-a',
+      ),
+    ).rejects.toThrow('anchor contract mismatch');
     expect(f.calls.filter((call) => call[0] === 'pull')).toEqual([['pull', target]]);
   });
 });
