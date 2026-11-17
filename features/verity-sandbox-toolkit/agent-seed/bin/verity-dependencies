@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 function git(...args) {
   return execFileSync('git', args, {
@@ -985,16 +986,33 @@ async function main() {
           'The central dependency preparation this session waited for failed; retry explicitly after correcting the preparation error.',
         );
     }
+    const gitDir = git('rev-parse', '--absolute-git-dir');
     const preserve = (directory = modules) => {
       if (!readlinkExists(directory)) return;
-      const recovery = join(
-        git('rev-parse', '--absolute-git-dir'),
-        'verity-dependencies-preserved',
-        randomUUID(),
-      );
+      const record = activationRecord(gitDir, root, directory);
+      const unmodified = record !== undefined && unchangedSince(directory, record, true);
+      const recovery = join(gitDir, 'verity-dependencies-preserved', randomUUID());
       mkdirSync(dirname(recovery), { recursive: true });
       renameSync(directory, recovery);
-      console.log(`Preserved previous dependency files at ${recovery}.`);
+      // Checked again once withdrawn, so content written between the walk and the
+      // rename is kept. The rename changes the top directory's status, so a bare
+      // removal of a direct entry in that window is not seen; it loses no content.
+      if (unmodified && unchangedSince(recovery, record, false)) unchanged.push(recovery);
+      else console.log(`Preserved previous dependency files at ${recovery}.`);
+    };
+    // Unchanged copies are discarded only once their replacement is in place; a
+    // failed activation keeps them as ordinary preserved copies. A removal that
+    // fails part-way likewise leaves a preserved copy for the storage sweep.
+    const unchanged = [];
+    const discardUnchanged = () => {
+      for (const recovery of unchanged.splice(0)) {
+        try {
+          rmSync(recovery, { recursive: true });
+          console.log(`Discarded ${recovery}: unchanged since its activation.`);
+        } catch {
+          console.log(`Preserved previous dependency files at ${recovery}.`);
+        }
+      }
     };
     // A skeleton can use an already verified ancestor without mutating packages.
     // Shadowing private files are preserved only when a replacement is available.
@@ -1004,6 +1022,7 @@ async function main() {
       for (const tree of workspaceModuleTrees(root)) preserve(tree);
       preserve();
       restoreWorkspaceLinks(root);
+      discardUnchanged();
       return;
     }
     const activate = async () => {
@@ -1039,14 +1058,35 @@ async function main() {
         // Validate at the final path; keep recovery files if activation ever fails.
         preserve();
         recovery = true;
+        // Entries below the activated roots must predate this; only the renames
+        // into place and the checks below may follow it.
+        await delay(25);
+        const placed = (() => {
+          try {
+            return statusTime(gitDir);
+          } catch {
+            return undefined;
+          }
+        })();
         for (const { copy, destination } of workspaceCopies) renameSync(copy, destination);
         renameSync(candidate, modules);
         if (!ready()) throw new Error('Activated dependencies failed completeness validation.');
+        await recordActivation(gitDir, root, placed, [
+          modules,
+          ...workspaceCopies.map((entry) => entry.destination),
+        ]).catch((error) => {
+          // The record only lets a later change discard this copy; without it the
+          // copy is preserved as before, so its failure never fails activation.
+          console.warn(`Could not record the activated dependencies: ${error.message}`);
+        });
+        discardUnchanged();
         console.log(
           'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
       } catch (error) {
         if (recovery && readlinkExists(modules)) preserve();
+        for (const kept of unchanged.splice(0))
+          console.log(`Preserved previous dependency files at ${kept}.`);
         throw error;
       } finally {
         for (const { copy } of workspaceCopies) rmSync(copy, { recursive: true, force: true });
@@ -1200,6 +1240,103 @@ async function main() {
     unlockRoot.release();
     rootLockFd = undefined;
     if (cancelled) process.exitCode = cancelled === 'SIGINT' ? 130 : 143;
+  }
+}
+// Every activated tree is a verbatim copy of a central installation. Without this
+// record a later identity change could not tell such a copy from one carrying
+// local edits once its central identity was retired, so each change kept another
+// full copy of the dependencies in the worktree's Git directory.
+const ACTIVATION_RECORD = 'verity-dependencies-activation.json';
+function treeKey(stat) {
+  return `${stat.dev}:${stat.ino}`;
+}
+/** The filesystem's current status change time, read from a probe file. */
+function statusTime(gitDir) {
+  const probe = join(gitDir, `${ACTIVATION_RECORD}.${randomUUID()}`);
+  try {
+    writeFileSync(probe, '');
+    return lstatSync(probe, { bigint: true }).ctimeNs;
+  } finally {
+    rmSync(probe, { force: true });
+  }
+}
+async function recordActivation(gitDir, root, placed, trees) {
+  if (placed === undefined) throw new Error('activation time is unknown');
+  // Activation's own writes must have status change times strictly before the
+  // record's; a timestamp granularity coarser than this only keeps copies.
+  await delay(25);
+  const record = join(gitDir, ACTIVATION_RECORD);
+  const temporary = `${record}.${randomUUID()}`;
+  try {
+    // Stored as well: a later chmod or chown of the record moves its own status
+    // time forward, which must never move the cutoff past an edit.
+    writeFileSync(temporary, '');
+    const at = lstatSync(temporary, { bigint: true }).ctimeNs;
+    writeFileSync(
+      temporary,
+      JSON.stringify({
+        version: 1,
+        at: String(at),
+        placed: String(placed),
+        trees: Object.fromEntries(
+          trees.map((tree) => [relative(root, tree), treeKey(lstatSync(tree, { bigint: true }))]),
+        ),
+      }),
+    );
+    renameSync(temporary, record);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+/** The recorded identity and time of `directory`'s activation, if it is the very
+ *  tree that was activated; undefined for unknown, unreadable or replaced trees. */
+function activationRecord(gitDir, root, directory) {
+  try {
+    const path = join(gitDir, ACTIVATION_RECORD);
+    const marker = lstatSync(path, { bigint: true });
+    const content = JSON.parse(readFileSync(path, 'utf8'));
+    const recorded = content?.trees?.[relative(root, directory)];
+    const time = (value) =>
+      typeof value === 'string' && /^[1-9][0-9]*$/u.test(value) ? BigInt(value) : undefined;
+    const at = time(content?.at);
+    const placed = time(content?.placed);
+    if (at === undefined || placed === undefined) return undefined;
+    const top = lstatSync(directory, { bigint: true });
+    // Status times are compared only within one filesystem: another one may keep
+    // coarser timestamps or a different clock.
+    if (!marker.isFile() || marker.dev !== top.dev) return undefined;
+    if (!top.isDirectory() || recorded !== treeKey(top)) return undefined;
+    const cutoff = at < marker.ctimeNs ? at : marker.ctimeNs;
+    // A clock that is still behind the record would date later edits before it.
+    if (statusTime(gitDir) <= cutoff) return undefined;
+    // Below the roots, a change while activation finished must count as an edit.
+    const below = placed < cutoff ? placed : cutoff;
+    return { key: recorded, dev: top.dev, ctimeNs: cutoff, below };
+  } catch {
+    return undefined;
+  }
+}
+/** True only when no entry changed status since the record: any write, chmod,
+ *  link, creation, removal or rename sets a status change time that file tools
+ *  cannot set back. Only a host clock stepped backwards and then forward again
+ *  past the record could hide a change. */
+function unchangedSince(directory, record, includeTop) {
+  try {
+    const pending = [directory];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      const stat = lstatSync(current, { bigint: true });
+      if (stat.dev !== record.dev) return false;
+      if (current === directory) {
+        if (!stat.isDirectory() || treeKey(stat) !== record.key) return false;
+        if (includeTop && stat.ctimeNs >= record.ctimeNs) return false;
+      } else if (stat.ctimeNs >= record.below) return false;
+      if (stat.isDirectory())
+        for (const entry of readdirSync(current)) pending.push(join(current, entry));
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 function readlinkExists(path) {
