@@ -1,3 +1,4 @@
+import { validateEmbeddedConfig } from './embedded-config.js';
 import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
 import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
 import { withPreviewStorageMutation } from './preview-storage-mutation.js';
@@ -26,7 +27,6 @@ import {
   startClaudeCredentialSync,
   withControlPlaneAgentCredentials,
   prepareControlPlaneRunnerForTurn,
-  isUntaggedImageRepository,
   startRunnerSupervisorReconciler,
   CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
@@ -155,7 +155,6 @@ import {
   type SandboxEgressProbe,
 } from './sandbox-turn-readiness.js';
 import {
-  ALLOWED_PERMISSION_MODES,
   AcpClaudeBackend,
   AcpCodexBackend,
   AcpOpenCodeBackend,
@@ -216,7 +215,7 @@ import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
 import { createGitHubForgeProvider } from './github-forge-provider.js';
-import { DockerError, createDockerClient, parseUnixBaseUrl, type DockerClient } from './docker.js';
+import { DockerError, createDockerClient, type DockerClient } from './docker.js';
 import {
   describeBuildCapacityReclamation,
   dockerGcDiagnostics,
@@ -271,10 +270,7 @@ import { registerSecretProviderRoutes } from './secret-provider-routes.js';
 import { createPostgresSecretRevocationStore } from './secret-revocation.js';
 import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
 import type { RunGrantClaims } from '@verity/secret-contracts';
-import {
-  createRuntimeReadinessGate,
-  validateRuntimeReadinessTtl,
-} from './runtime-readiness-gate.js';
+import { createRuntimeReadinessGate } from './runtime-readiness-gate.js';
 import {
   pendingSessionCleanups,
   createSessionCleanupProcessor,
@@ -401,60 +397,7 @@ import type { VeritySettingsRecord } from '@verity/store';
 export async function buildEmbeddedServer(
   config: EmbeddedServerConfig = {},
 ): Promise<EmbeddedServer> {
-  const untypedConfig = config as EmbeddedServerConfig & Record<string, unknown>;
-  for (const removed of [
-    'signingBrokerUrl',
-    'sandboxNetwork',
-    'perProjectNetwork',
-    'selfContainerName',
-  ]) {
-    if (untypedConfig[removed] !== undefined) {
-      throw new Error(`${removed} was removed; project relay wiring is mandatory`);
-    }
-  }
-  if (
-    config.permissionMode !== undefined &&
-    !(ALLOWED_PERMISSION_MODES as readonly string[]).includes(config.permissionMode)
-  ) {
-    throw new Error(
-      `invalid permissionMode "${config.permissionMode}": expected one of ${ALLOWED_PERMISSION_MODES.join(', ')}`,
-    );
-  }
-  if (
-    config.secretJobRuntimeRequired === true &&
-    config.secretJobRuntimeReadiness === undefined &&
-    config.dockerBaseUrl === undefined
-  ) {
-    throw new Error('dockerBaseUrl is required when the Secret Job runtime is required');
-  }
-  validateRuntimeReadinessTtl(config.secretJobRuntimeReadinessTtlMs);
-  if (config.secretJobs !== undefined) {
-    if (
-      (config.secretJobs.resolveSecrets === undefined) ===
-      (config.secretJobs.doppler === undefined)
-    ) {
-      throw new Error('Secret Jobs require exactly one of resolveSecrets or doppler');
-    }
-    if (
-      config.secretJobs.doppler !== undefined &&
-      config.secretJobs.authorizeProviderAdministration === undefined
-    ) {
-      throw new Error('Doppler Secret Jobs require provider administration authorization');
-    }
-    if (config.dockerBaseUrl === undefined) {
-      throw new Error('dockerBaseUrl is required when Secret Jobs are configured');
-    }
-    if (!config.dockerBaseUrl.startsWith('unix://')) {
-      throw new Error('Secret Jobs require a unix Docker socket for authenticated attach');
-    }
-    const { socketPath } = parseUnixBaseUrl(config.dockerBaseUrl);
-    if (!socketPath.startsWith('/') || socketPath === '/') {
-      throw new Error('Secret Jobs require an absolute, non-empty unix Docker socket path');
-    }
-    if (!isUntaggedImageRepository(config.secretJobs.executorImageRepository)) {
-      throw new Error('Secret Job executor image repository must be an untagged repository');
-    }
-  }
+  validateEmbeddedConfig(config);
 
   // Fail closed rather than silently opening an ephemeral store: a deployment
   // that lost its DATABASE_URL must not come up looking healthy on an empty
