@@ -16,6 +16,7 @@ import { matrixSendSummary } from './matrixSendSummary.js';
 import { packageInstallSummary } from './packageInstallSummary.js';
 import { schedulingApprovalSummary } from './schedulingSummary.js';
 import {
+  listSessionsSentence,
   listSessionsSummary,
   listSessionsTitle,
   recentSessionMessagesSummary,
@@ -184,7 +185,11 @@ function summarize(
       ),
     };
   const listing = tool === 'verity_list_sessions' ? listSessionsSummary(input) : null;
-  if (listing !== null) return { title: listSessionsTitle(listing), lines: [] };
+  if (listing !== null)
+    return {
+      title: listSessionsTitle(listing),
+      lines: [{ kind: 'text', text: listSessionsSentence(listing) }],
+    };
   const progress = tool === 'verity_session_progress' ? sessionProgressSummary(input) : null;
   if (progress !== null)
     return { title: `Read progress for session ${progress.sessionId}?`, lines: [] };

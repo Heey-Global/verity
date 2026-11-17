@@ -253,7 +253,7 @@ function sessionItems(
         : view.subtitle
           ? { message: view.subtitle }
           : {}),
-      ...(decidable
+      ...(decidable && !(request.tool === 'verity_list_sessions' && summary.covered)
         ? {
             request: permissionInputText(request.input),
             ...(summary.covered ? {} : { requestOpen: true }),
