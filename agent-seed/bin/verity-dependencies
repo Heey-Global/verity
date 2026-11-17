@@ -997,18 +997,22 @@ async function main() {
       // Checked again once withdrawn, so content written between the walk and the
       // rename is kept. The rename changes the top directory's status, so a bare
       // removal of a direct entry in that window is not seen; it loses no content.
-      if (unmodified && unchangedSince(recovery, record, false)) {
-        // Withdrawn by the rename first: a removal that fails part-way leaves an
-        // ordinary preserved copy for the session storage sweep, never a broken tree.
+      if (unmodified && unchangedSince(recovery, record, false)) unchanged.push(recovery);
+      else console.log(`Preserved previous dependency files at ${recovery}.`);
+    };
+    // Unchanged copies are discarded only once their replacement is in place; a
+    // failed activation keeps them as ordinary preserved copies. A removal that
+    // fails part-way likewise leaves a preserved copy for the storage sweep.
+    const unchanged = [];
+    const discardUnchanged = () => {
+      for (const recovery of unchanged.splice(0)) {
         try {
           rmSync(recovery, { recursive: true });
-          console.log('Discarded previous dependency files unchanged since their activation.');
-          return;
+          console.log(`Discarded ${recovery}: unchanged since its activation.`);
         } catch {
-          // Whatever remains is an ordinary preserved copy for the storage sweep.
+          console.log(`Preserved previous dependency files at ${recovery}.`);
         }
       }
-      console.log(`Preserved previous dependency files at ${recovery}.`);
     };
     // A skeleton can use an already verified ancestor without mutating packages.
     // Shadowing private files are preserved only when a replacement is available.
@@ -1018,6 +1022,7 @@ async function main() {
       for (const tree of workspaceModuleTrees(root)) preserve(tree);
       preserve();
       restoreWorkspaceLinks(root);
+      discardUnchanged();
       return;
     }
     const activate = async () => {
@@ -1074,11 +1079,14 @@ async function main() {
           // copy is preserved as before, so its failure never fails activation.
           console.warn(`Could not record the activated dependencies: ${error.message}`);
         });
+        discardUnchanged();
         console.log(
           'Activated compatible central dependencies; copied independent files and restored session workspace links.',
         );
       } catch (error) {
         if (recovery && readlinkExists(modules)) preserve();
+        for (const kept of unchanged.splice(0))
+          console.log(`Preserved previous dependency files at ${kept}.`);
         throw error;
       } finally {
         for (const { copy } of workspaceCopies) rmSync(copy, { recursive: true, force: true });
