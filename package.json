@@ -80,7 +80,7 @@
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
     "pg-connection-string": "2.14.1",
-    "playwright": "1.65.0",
+    "playwright": "1.65.1",
     "prettier": "3.10.1",
     "query-string": "file:vendor/expo-router-query-string",
     "react": "19.2.3",
