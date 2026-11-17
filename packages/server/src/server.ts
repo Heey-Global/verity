@@ -31,7 +31,7 @@ import { createServerModels } from './server-models.js';
 import { createServerScheduling } from './server-scheduling.js';
 import { type FastifyInstance } from 'fastify';
 import { createServerSessionOverview } from './server-session-overview.js';
-import { registerProjectInquiryRuntime } from './project-inquiry-runtime.js';
+import { createServerInquiryTool, installProjectInquiries } from './server-project-inquiries.js';
 import type { AgentEvent } from '@verity/events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -327,23 +327,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   const { wikiProposals, installWikiFiles } = createServerWikiProposals(app, ctx);
   const decidePendingLinkedMessage = registerServerMcpRoutes({
     wikiProposals,
-    inquiryTool: async (sessionId, userId, input) => {
-      const request = input as { operation: string; inquiryId: string; answer: string };
-      if (request.operation === 'list') {
-        const session = await deps.eventStore.getSession(sessionId);
-        return {
-          grants: session?.projectId
-            ? await deps.eventStore.projectInquiries.grants(session.projectId)
-            : [],
-          inquiries: await deps.eventStore.projectInquiries.list(sessionId),
-        };
-      }
-      if (request.operation === 'answer')
-        return projectInquiries.answer(sessionId, request.inquiryId, request.answer);
-      const body = { ...(input as Record<string, unknown>) };
-      delete body.operation;
-      return projectInquiries.request(sessionId, userId, body);
-    },
+    inquiryTool: createServerInquiryTool(ctx, () => projectInquiries),
     deps,
     app,
     conductor,
@@ -491,10 +475,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     availableModels,
     presentProject,
   });
-  const projectInquiries = registerProjectInquiryRuntime({
-    app,
-    store: deps.eventStore,
-    conductor,
+  const projectInquiries = installProjectInquiries(app, ctx, {
     authorized: canExecuteAs,
     spawn: sessionCreate.spawn,
   });
