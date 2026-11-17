@@ -6,6 +6,22 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.96.0](https://github.com/Heey-Global/verity/compare/v4.95.1...v4.96.0) (2026-11-17)
+
+
+### Features
+
+* **server:** report the data volume breakdown in capacity messages ([#2651](https://github.com/Heey-Global/verity/issues/2651)) ([215b51b](https://github.com/Heey-Global/verity/commit/215b51bca99a151c3c58dbb858ab87f7bef34024))
+
+
+### Bug Fixes
+
+* **deps:** update agent clis ([#2650](https://github.com/Heey-Global/verity/issues/2650)) ([85659c1](https://github.com/Heey-Global/verity/commit/85659c1c6c968745cd1456f437005a43dcdee701))
+* **deps:** update dependency fast-xml-parser to v5.12.1 ([#2648](https://github.com/Heey-Global/verity/issues/2648)) ([962ebf5](https://github.com/Heey-Global/verity/commit/962ebf52295d7819418e1b9df67400797c280050))
+* **server:** stop reporting maintenance locks as running sessions ([#2659](https://github.com/Heey-Global/verity/issues/2659)) ([d981f8f](https://github.com/Heey-Global/verity/commit/d981f8f70501e7075aafd613b49131fb3a3ff211))
+* **settings:** consolidate AI accounts without reconnecting ([#2637](https://github.com/Heey-Global/verity/issues/2637)) ([0a6bc82](https://github.com/Heey-Global/verity/commit/0a6bc8267d8ab7bcd8de8a7c3ac0dee12f76be56))
+* **storage:** bound preserved dependency copies and Egress stages and bundles ([#2644](https://github.com/Heey-Global/verity/issues/2644)) ([f8a0b4f](https://github.com/Heey-Global/verity/commit/f8a0b4fdd850fdc9022cfe6796e84378bceda390))
+
 ## [4.95.1](https://github.com/Heey-Global/verity/compare/v4.95.0...v4.95.1) (2026-11-16)
 
 
