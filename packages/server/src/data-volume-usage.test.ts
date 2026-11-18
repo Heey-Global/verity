@@ -203,6 +203,8 @@ describe('data volume usage', () => {
     const f = fixture();
     const exact = await complete(new DataVolumeUsage({ root: f.root, continueAfterMs: 0 }));
     expect(exact.approximate).toBe(false);
+    // The fixture's hard link is the saving that shared dependency files report.
+    expect(exact.sharedBytes).toBeGreaterThan(0);
     const bounded = await complete(
       new DataVolumeUsage({ root: f.root, continueAfterMs: 0, linkedLimit: 0 }),
     );
@@ -265,6 +267,7 @@ describe('data volume capacity description', () => {
     entries: 1,
     unreadable: 0,
     approximate: false,
+    sharedBytes: 0,
     categories: {
       dependencies: regenerable,
       preservedDependencies: 0,

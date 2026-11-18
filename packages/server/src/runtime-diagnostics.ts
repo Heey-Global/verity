@@ -176,6 +176,8 @@ const storageReclamationSchema = z.object({
       dependenciesRemoved: number,
       worktreesRetired: number,
       comparedDependencyBytes: number,
+      // Optional: passes from servers before shared dependency files omit it.
+      sharedDependencyBytes: number.optional(),
       worktreeSampledBytes: number.nullable(),
       dependencySampledBytes: number.nullable(),
       usageComplete: z.boolean(),
@@ -196,6 +198,8 @@ const storageReclamationSchema = z.object({
           unreadable: number,
           approximate: z.boolean(),
           categories: z.record(z.string().max(40), number),
+          // Optional: breakdowns from servers before shared dependency files omit it.
+          sharedBytes: number.optional(),
           regenerableBytes: number,
           protectedBytes: number,
           unknownBytes: number,
