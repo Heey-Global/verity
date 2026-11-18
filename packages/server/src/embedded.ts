@@ -3043,10 +3043,10 @@ export async function buildEmbeddedServer(
     teamLinkIdentity: () => {
       const identity = config.devicePairing?.identity();
       const installation = uplinkControl?.teamInstallation();
-      return identity === undefined || installation === undefined
-        ? undefined
-        : { ...identity, ...installation };
+      return identity && installation && { ...identity, ...installation };
     },
+    // No Uplink control client: no invitation link can ever appear.
+    teamSharing: () => uplinkControl?.teamAvailability() ?? 'unavailable',
     personalClaudeAccessToken: (userId: string) =>
       personalProviderCredentials.claudeAccessToken(userId),
     persistPersonalProviderCredentials: (userId, provider, write) =>

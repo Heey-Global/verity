@@ -7,6 +7,7 @@ import {
 } from '@verity/store';
 import { z } from 'zod';
 import './fastify-augmentation.js';
+import { teamInvitationsPossible, type TeamAvailability } from './uplink-feature-state.js';
 import { viewerId } from './view-state-routes.js';
 
 type Store = Pick<EventStore, 'projectTeam' | 'userProfiles'>;
@@ -66,12 +67,19 @@ export function registerProjectTeamRoutes(
           installationHandle: string;
         }
       | undefined;
+    /**
+     * Whether invitations can get their link from Uplink, or why not. Absent
+     * → not reported, and invitations are never refused for it.
+     */
+    teamSharing?: () => TeamAvailability;
     projectName: (projectId: string) => Promise<string | undefined>;
     /** Ends the person's access to the project at once (ADR 0023 §6). */
     onMemberRemoved?: (projectId: string, userId: string) => Promise<void>;
   },
 ): void {
   const team = () => deps.store.projectTeam;
+  // The app hides inviting, or explains a link that cannot come, from this.
+  const sharing = () => (deps.teamSharing === undefined ? {} : { teamSharing: deps.teamSharing() });
   const refusal = (error: unknown) => {
     if (!(error instanceof ProjectTeamError)) throw error;
     const status = error.code === 'member_not_found' ? 404 : 409;
@@ -109,6 +117,7 @@ export function registerProjectTeamRoutes(
     return {
       members: members.map(publicMember),
       invitations: invitations.map(publicInvitation),
+      ...sharing(),
     };
   });
 
@@ -116,6 +125,15 @@ export function registerProjectTeamRoutes(
     const { id } = projectParams.parse(request.params);
     const body = inviteBody.parse(request.body);
     const viewer = viewerId(request);
+    const availability = deps.teamSharing?.();
+    // Refused before anything is stored: the link could never appear, and the
+    // inviter would wait for it until the invitation expired.
+    if (availability !== undefined && !teamInvitationsPossible(availability))
+      return reply.code(409).send({
+        error: "Team sharing isn't available for this installation",
+        code: 'team_sharing_unavailable',
+        reason: availability,
+      });
     if (body.inviterName !== undefined)
       await deps.store.userProfiles.setDisplayName(viewer, body.inviterName);
     try {
@@ -126,7 +144,7 @@ export function registerProjectTeamRoutes(
         canExecute: body.canExecute,
       });
       reply.header('cache-control', 'no-store').code(201);
-      return { invitation: publicInvitation(invitation), linkFields: null };
+      return { invitation: publicInvitation(invitation), linkFields: null, ...sharing() };
     } catch (error) {
       const { status, body: answer } = refusal(error);
       return reply.code(status).send(answer);
@@ -144,6 +162,7 @@ export function registerProjectTeamRoutes(
       invitation: publicInvitation(invitation),
       // Only for the inviter's own app, which adds tlsPin and coreOrigin.
       linkFields: await linkFields(invitation, id, viewerId(request)),
+      ...sharing(),
     };
   });
 

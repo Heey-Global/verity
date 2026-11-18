@@ -207,3 +207,71 @@ it('offers to invite again where a join did not go through', async () => {
     params: { id: 'p1' },
   });
 });
+
+// Without team sharing the invitation page used to say "Preparing the link…"
+// until the invitation expired. Inviting is hidden, without anything to buy.
+it('offers no invitation where team sharing is unavailable, and says so', async () => {
+  const client = {
+    getProjectTeam: jest.fn().mockResolvedValue({
+      members: [member({})],
+      invitations: [{ ...invitation, state: 'failed' }],
+      teamSharing: 'not_entitled',
+    }),
+  } as unknown as VerityClient;
+  render(<ProjectTeamView client={client} projectId="p1" />);
+  expect(
+    await screen.findByText("Team sharing isn't available for this installation"),
+  ).toBeOnTheScreen();
+  expect(screen.queryByText('Invite a person')).not.toBeOnTheScreen();
+  // A failed invitation opens itself, to be revoked, not an invite that is refused.
+  fireEvent.press(screen.getByText('Invitation for Mia'));
+  expect(mockRouter.push).toHaveBeenCalledWith({
+    pathname: '/project/[id]/settings/invitation',
+    params: { id: 'p1', invitationId: invitation.id },
+  });
+});
+
+it('keeps offering invitations while Uplink is only offline', async () => {
+  const client = {
+    getProjectTeam: jest.fn().mockResolvedValue({
+      members: [member({})],
+      invitations: [],
+      teamSharing: 'uplink_offline',
+    }),
+  } as unknown as VerityClient;
+  render(<ProjectTeamView client={client} projectId="p1" />);
+  expect(await screen.findByText('Invite a person')).toBeOnTheScreen();
+  expect(
+    screen.queryByText("Team sharing isn't available for this installation"),
+  ).not.toBeOnTheScreen();
+});
+
+it('explains a link that cannot come instead of preparing it, and still revokes', async () => {
+  const revoke = jest.fn().mockResolvedValue(undefined);
+  const get = jest
+    .fn()
+    .mockResolvedValueOnce({ invitation, linkFields: null, teamSharing: 'uplink_offline' })
+    .mockResolvedValue({ invitation, linkFields: null, teamSharing: 'not_entitled' });
+  const client = {
+    getProjectInvitation: get,
+    revokeProjectInvitation: revoke,
+  } as unknown as VerityClient;
+  jest.useFakeTimers();
+  try {
+    render(<InvitationView client={client} projectId="p1" invitationId={invitation.id} />);
+    // Offline is temporary: the page keeps waiting, and says for what.
+    expect(await screen.findByText('Waiting for the connection to Uplink')).toBeOnTheScreen();
+    await act(async () => {
+      jest.advanceTimersByTime(3_000);
+    });
+    expect(
+      await screen.findByText("Team sharing isn't available for this installation"),
+    ).toBeOnTheScreen();
+    expect(screen.queryByText('Preparing the link…')).not.toBeOnTheScreen();
+  } finally {
+    jest.useRealTimers();
+  }
+  fireEvent.press(screen.getByText('Revoke invitation'));
+  fireEvent.press(await screen.findByText('Revoke'));
+  await waitFor(() => expect(revoke).toHaveBeenCalledWith('p1', invitation.id));
+});

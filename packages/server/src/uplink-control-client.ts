@@ -32,6 +32,18 @@ export type {
   RemoteConnectorRequest,
   TeamJoinPending,
 } from './uplink-control-frames.js';
+import type {
+  PremiumFeatureSwitches,
+  TeamAvailability,
+  UplinkDiagnostics,
+} from './uplink-feature-state.js';
+import { premiumFeatureSwitches } from './uplink-feature-state.js';
+export type {
+  PremiumFeatureSwitches,
+  TeamAvailability,
+  UplinkDiagnostics,
+} from './uplink-feature-state.js';
+export { premiumFeatureSwitches } from './uplink-feature-state.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   selectedEvidenceExportSchema,
@@ -153,44 +165,6 @@ export type RemoteControlDescriptor =
       readonly capabilities: readonly ['remote-control-v1'];
     };
 
-/** Operator switches for the paid features, read from the settings row. A
- * feature is used only when the Uplink grants it AND its switch is on. */
-export interface PremiumFeatureSwitches {
-  sharing: boolean;
-  remoteAccess: boolean;
-}
-
-interface PremiumFeatureState {
-  /** The Uplink included the feature in the current lease. */
-  granted: boolean;
-  /** The operator left the feature switched on. */
-  enabled: boolean;
-  /** `granted && enabled` — what actually works right now. */
-  effective: boolean;
-}
-
-export interface UplinkDiagnostics {
-  control: 'idle' | 'connected' | 'connecting' | 'reconnecting' | 'rejected' | 'disabled';
-  sharing: 'ready' | 'unavailable';
-  entitlement?: 'unchecked' | 'checked';
-  idleReason?: 'no-demand' | 'not-granted';
-  remoteControl: 'ready' | 'unavailable';
-  reason?: 'unknown_key' | 'revoked' | 'expired';
-  lastCloseCode?: number;
-  /** Per-feature grant/switch/effective breakdown. Always present from the
-   * client; optional in the type so hand-built fixtures stay valid. */
-  features?: { sharing: PremiumFeatureState; remoteAccess: PremiumFeatureState };
-}
-
-export function premiumFeatureSwitches(
-  settings: Pick<VeritySettingsRecord, 'premiumSharingEnabled' | 'premiumRemoteAccessEnabled'>,
-): PremiumFeatureSwitches {
-  return {
-    sharing: settings.premiumSharingEnabled !== false,
-    remoteAccess: settings.premiumRemoteAccessEnabled !== false,
-  };
-}
-
 /** Demand-driven, fail-closed client for the paid Uplink control plane. Credentials
  * are read from the encrypted settings store only. No environment/file fallback
  * is accepted by this class. */
@@ -248,6 +222,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   /** The team version the service selected in `welcome`; undefined → none. */
   private teamVersion: 1 | undefined;
+  /** Whether the last lease granted team-sharing; undefined → not checked yet.
+   * Unlike `grants` it outlives an expired lease, which is not a refusal. */
+  private teamGranted: boolean | undefined;
   private teamWanted = false;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
@@ -472,6 +449,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
     this.offlineLeaseTimer = undefined;
     this.grants = undefined;
+    if (notifyFeatureLoss) this.teamGranted = undefined;
     this.idle = false;
     this.probing = notifyFeatureLoss;
     this.lastReject = undefined;
@@ -599,6 +577,22 @@ export class UplinkControlClient implements PreviewEdgeControl {
     const uplinkUrl = new URL(this.options.url);
     uplinkUrl.protocol = 'https:';
     return { ...this.remoteInstallation, uplinkOrigin: uplinkUrl.origin };
+  }
+
+  /** Whether team invitations can reach Uplink now, or why not (TeamAvailability). */
+  teamAvailability(): TeamAvailability {
+    if (this.stopped || this.options.offerTeam !== true) return 'unavailable';
+    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
+      if (!this.features.has('team-sharing')) return 'not_entitled';
+      return this.teamNegotiated() ? 'available' : 'not_negotiated';
+    }
+    if (this.teamGranted === false) return 'not_entitled';
+    if (this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason))
+      return 'unavailable';
+    // Woken for team work and parked again without a lease: no usable key.
+    return this.idle && this.teamWanted && this.teamGranted === undefined
+      ? 'unavailable'
+      : 'uplink_offline';
   }
 
   /** Whether this connection negotiated team v1. */
@@ -1650,6 +1644,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
         : [],
     );
     this.grants = new Set(this.features);
+    this.teamGranted = this.features.has('team-sharing');
     this.grantExpiresAt = leaseUntil;
     if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
     this.offlineLeaseTimer = undefined;
