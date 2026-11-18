@@ -29,6 +29,8 @@ jest.mock('expo-camera', () => {
 import { joinRedirect } from '../app/+native-intent';
 import { JoinView } from '../app/onboarding/join';
 import { TeamJoinError } from '../lib/teamJoin';
+import { parseTeamJoinLink, type TeamJoinLink } from '../lib/teamInvitationLink';
+import { loadTeamJoinProgress } from '../lib/teamJoinState';
 
 // A valid link from the team contract's own fixtures, still valid today.
 const fixture = (
@@ -176,6 +178,25 @@ describe('scanning an invitation', () => {
     await screen.findByTestId('camera');
     act(() => mockScan?.({ data: expired }));
     expect(screen.getByText('This invitation has expired')).toBeOnTheScreen();
+  });
+
+  it('lets a late camera answer change nothing once saved progress took over', async () => {
+    let found!: (progress: { link: TeamJoinLink }) => void;
+    jest
+      .mocked(loadTeamJoinProgress)
+      .mockImplementationOnce(() => new Promise((resolve) => (found = resolve as typeof found)));
+    let answer!: (permission: { granted: boolean }) => void;
+    mockPermission.current = { granted: false };
+    mockRequestPermission.mockImplementationOnce(
+      () => new Promise((resolve) => (answer = resolve)),
+    );
+    views();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await act(async () => found({ link: parseTeamJoinLink(valid) }));
+    expect(screen.getByText('Continue joining')).toBeOnTheScreen();
+    await act(async () => answer({ granted: false }));
+    expect(screen.getByText('Continue joining')).toBeOnTheScreen();
+    expect(screen.queryByText(/Allow camera access/)).toBeNull();
   });
 
   it('keeps pasting available when camera access is refused', async () => {

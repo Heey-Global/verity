@@ -9,15 +9,8 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import {
-  Button,
-  Group,
-  QrScanner,
-  Row,
-  StepIntro,
-  SystemNotice,
-  TextField,
-} from '../../components/ui';
+import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
+import { QrScanner } from '../../components/ui/QrScanner';
 import { OnboardingProgress } from '../../components/OnboardingProgress';
 import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { bumpServerRevision } from '../../lib/serverProfile';
@@ -86,6 +79,8 @@ export function JoinView({
   const mounted = useRef(true);
   // The camera belongs to the first step; leaving it (saved progress found,
   // say) must not leave it set to reopen on its own later.
+  const phaseKind = useRef(phase.kind);
+  phaseKind.current = phase.kind;
   useEffect(() => {
     if (phase.kind !== 'enter') setScannerOpen(false);
   }, [phase.kind]);
@@ -128,7 +123,9 @@ export function JoinView({
     void (async () => {
       const permission =
         cameraPermission?.granted === true ? cameraPermission : await requestCameraPermission();
-      if (!mounted.current) return;
+      // The permission prompt may outlast the first step (saved progress
+      // found meanwhile); its answer must not reopen or replace it then.
+      if (!mounted.current || phaseKind.current !== 'enter') return;
       if (permission.granted) setScannerOpen(true);
       else
         setPhase({
@@ -136,7 +133,7 @@ export function JoinView({
           problem: 'Allow camera access in Settings to scan an invitation, or paste the link.',
         });
     })().catch(() => {
-      if (mounted.current)
+      if (mounted.current && phaseKind.current === 'enter')
         setPhase({
           kind: 'enter',
           problem: 'The camera is not available. Paste the link instead.',

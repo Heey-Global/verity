@@ -24,7 +24,8 @@ import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
-import { Button, QrScanner } from '../../components/ui';
+import { Button } from '../../components/ui';
+import { QrScanner } from '../../components/ui/QrScanner';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return isCoreOnboardingComplete(status) ? '/' : `/onboarding/${resumeStep(status)}`;

@@ -1,5 +1,6 @@
 // A full-screen camera that reads one QR code. Server pairing and joining a
-// shared project both scan a code shown on another screen.
+// shared project both scan a code shown on another screen. Screens import it
+// from this file rather than the ui index, so only they load the camera module.
 import { CameraView } from 'expo-camera';
 import { useEffect, useRef } from 'react';
 import { Modal, Text, View } from 'react-native';

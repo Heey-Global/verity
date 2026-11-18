@@ -18,6 +18,5 @@ export { HintBox, TextField } from './TextField';
 export { Toggle } from './Toggle';
 export { UsageRing, type UsageRingLevel } from './UsageRing';
 export { CaptureField } from './CaptureField';
-export { QrScanner } from './QrScanner';
 
 export { useTextPrompt } from './TextPrompt';
