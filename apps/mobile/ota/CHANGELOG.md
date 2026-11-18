@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.94.2](https://github.com/Heey-Global/verity/compare/mobile-v1.94.1...mobile-v1.94.2) (2026-11-18)
+
+
+### Features
+
+* **dependencies:** share unchanged dependency files across sessions ([#2683](https://github.com/Heey-Global/verity/issues/2683)) ([0f77af5](https://github.com/Heey-Global/verity/commit/0f77af568277f8155c8d2cf534f7f40d0a7a802d))
+* **mobile:** scan a team invitation QR code when joining a project ([#2688](https://github.com/Heey-Global/verity/issues/2688)) ([47b1b98](https://github.com/Heey-Global/verity/commit/47b1b98a8843df306cab32a8af94fc862d754cab))
+
+
+### Bug Fixes
+
+* **mobile:** keep command approvals compact in overview ([#2672](https://github.com/Heey-Global/verity/issues/2672)) ([b838899](https://github.com/Heey-Global/verity/commit/b838899ddf6caa5bc0f7f2612be9f03ed1e5ab96))
+* **mobile:** light the whole row while a row with an action or answers is pressed ([#2685](https://github.com/Heey-Global/verity/issues/2685)) ([1ce3ce8](https://github.com/Heey-Global/verity/commit/1ce3ce8d7a198429239047462ee03915cb5c121a))
+* **mobile:** stop team joins failing on React Native's AbortSignal ([#2687](https://github.com/Heey-Global/verity/issues/2687)) ([836e47e](https://github.com/Heey-Global/verity/commit/836e47edaf241a4ce8ac06d6a6097bba09ff2878))
+* **team:** report missing team sharing instead of waiting for a link forever ([#2686](https://github.com/Heey-Global/verity/issues/2686)) ([336a83d](https://github.com/Heey-Global/verity/commit/336a83d07e66654e4b866649bda2231289be32e8))
+
 ## [1.94.1](https://github.com/Heey-Global/verity/compare/mobile-v1.94.0...mobile-v1.94.1) (2026-11-17)
 
 
