@@ -76,10 +76,8 @@ export function createTeamOutboxWorker(deps: {
   // until the operations give up after seven days.
   const noteWaiting = async (): Promise<void> => {
     const queued = (await deps.team.dueOperations(now())).length;
-    if (queued === 0) {
-      waiting = undefined;
-      return;
-    }
+    // Work in backoff is not due, but still waiting: keep the wait's start.
+    if (queued === 0) return;
     const at = now().getTime();
     const reason = deps.uplink.teamAvailability?.() ?? 'uplink_offline';
     if (waiting?.reason !== reason) waiting = { reason, since: at };
