@@ -582,13 +582,12 @@ export class UplinkControlClient implements PreviewEdgeControl {
 
   /** Whether team invitations can reach Uplink now, or why not (TeamAvailability). */
   teamAvailability(): TeamAvailability {
-    if (this.stopped || this.options.offerTeam !== true) return 'unavailable';
-    if (this.teamGranted === false) return 'not_entitled';
-    if (this.teamGranted === 'granted') return 'not_negotiated';
-    if (this.teamNegotiated()) return 'available';
+    if (this.stopped || this.options.offerTeam !== true || this.keyMissing) return 'unavailable';
     if (this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason))
       return 'unavailable';
-    return this.keyMissing ? 'unavailable' : 'uplink_offline';
+    if (this.teamGranted === false) return 'not_entitled';
+    if (this.teamGranted === 'granted') return 'not_negotiated';
+    return this.teamNegotiated() ? 'available' : 'uplink_offline';
   }
 
   /** Whether this connection negotiated team v1. */

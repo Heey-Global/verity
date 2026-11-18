@@ -154,7 +154,9 @@ export function createTeamOutboxWorker(deps: {
       await noteWaiting();
       return;
     }
+    // Delivering again: the next wait is news, whenever it starts.
     waiting = undefined;
+    loggedAt = undefined;
     for (const operation of await deps.team.dueOperations(now())) {
       try {
         await send(operation);
