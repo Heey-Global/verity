@@ -821,3 +821,36 @@ describe('control-plane session tools — handoff target authorization', () => {
     }
   });
 });
+
+describe('handoffs to retained sleeping sandboxes', () => {
+  it.each(['sleeping', 'waking'] as const)(
+    'lists and dispatches all target forms while %s',
+    async (state) => {
+      const createSession = vi.fn(async () => ({ sessionId: 'new-session' }));
+      const { tools, call, dispatchTurn } = harness({
+        projects: [project({ id: 'k8s', state })],
+        sessions: [facts({ sessionId: 'sess-k8s' })],
+        createSession,
+      });
+      const listed = await tools.listSessions(call({ project: 'acme/k8s' }));
+      expect(listed.sessions).toEqual([
+        expect.objectContaining({ sessionId: 'sess-k8s', handoffEligible: true }),
+      ]);
+      for (const target of [
+        { sessionId: 'sess-k8s' },
+        { project: 'acme/k8s' },
+        { newSession: { project: 'acme/k8s' } },
+      ]) {
+        await tools.handoff(
+          call({ target, title: 'Continue work', briefing: 'Investigate the failure.' }),
+        );
+      }
+      expect(createSession).toHaveBeenCalledOnce();
+      expect(dispatchTurn.mock.calls.map(([input]) => input.sessionId)).toEqual([
+        'sess-k8s',
+        'sess-k8s',
+        'new-session',
+      ]);
+    },
+  );
+});
