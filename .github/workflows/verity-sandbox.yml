@@ -309,6 +309,10 @@ jobs:
             tmux -V
             jq --version
             openssl version
+            corepack --version
+            # The install-policy shims hand pnpm/yarn to these commands.
+            command -v pnpm
+            command -v yarn
             echo "::endgroup::"
 
             echo "::group::Agent CLIs — launch --version under a pseudo-terminal"

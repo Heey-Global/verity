@@ -98,6 +98,10 @@ failed confinement operation.
 - **Doppler CLI** (`doppler`) — pinned release tarball → `/usr/local/bin/doppler`.
 - **Claude Code CLI** (`@anthropic-ai/claude-code`) — pinned npm global install
   when `installClaude=true` (requires the node Feature; `installsAfter` it).
+- **Corepack** (`corepack`) — pinned npm global install providing `pnpm` and
+  `yarn`, which run the version a project names in its `packageManager` field.
+  Node 25 and later no longer bundle Corepack. Commands the base image already
+  provides are kept rather than replaced.
 - **npm supply-chain hardening** — global `ignore-scripts=true`, `allow-git=none`,
   `save-exact=true`, `fund=false`, written to the resolved
   `npm config get globalconfig` path (not hard-coded) and re-asserted.
