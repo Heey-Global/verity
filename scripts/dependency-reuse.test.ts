@@ -325,10 +325,11 @@ describe('shared dependency reuse', () => {
       join(sibling, 'node_modules', 'private', 'cli.js'),
     );
     // Shared read-only: one session's write must never reach another session.
-    if (process.getuid?.() !== 0)
-      expect(() =>
-        writeFileSync(join(sibling, 'node_modules', 'private', 'package.json'), '{"patched":true}'),
-      ).toThrow(/EACCES/u);
+    const write = () =>
+      writeFileSync(join(sibling, 'node_modules', 'private', 'package.json'), '{"patched":true}');
+    // Root gets private copies instead: its write must stay in its own session.
+    if (process.getuid?.() !== 0) expect(write).toThrow(/EACCES/u);
+    else write();
     expect(
       readFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
@@ -451,10 +452,9 @@ describe('shared dependency reuse', () => {
     expect(realpathSync(command)).toBe(join(sibling, 'packages/other/cli.js'));
     expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('other-cli');
     expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
-    if (process.getuid?.() !== 0)
-      expect(() => writeFileSync(join(f.worktree, nested), '{"version":"patched"}')).toThrow(
-        /EACCES/u,
-      );
+    const write = () => writeFileSync(join(f.worktree, nested), '{"version":"patched"}');
+    if (process.getuid?.() !== 0) expect(write).toThrow(/EACCES/u);
+    else write();
     expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
     const patch = join(f.worktree, 'packages/source/node_modules/local-patch.txt');
     writeFileSync(patch, 'keep local patch');

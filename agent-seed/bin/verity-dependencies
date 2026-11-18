@@ -1369,7 +1369,7 @@ function unchangedSince(directory, record, includeTop) {
 function eachFile(tree, visit, retries = 3) {
   try {
     for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
-      const path = join(entry.parentPath, entry.name);
+      const path = join(entry.parentPath ?? entry.path, entry.name);
       const stat = entry.isFile() && lstatSync(path, { throwIfNoEntry: false });
       if (stat && visit(path, stat)) return true;
     }
