@@ -1,5 +1,6 @@
-// Joining a project someone shared: open or paste their invitation link, see
+// Joining a project someone shared: scan, open or paste their invitation link, see
 // who invites you to which project, choose your name and join (ADR 0023 §7).
+import { useCameraPermissions } from 'expo-camera';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -8,7 +9,15 @@ import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { Button, Group, Row, StepIntro, SystemNotice, TextField } from '../../components/ui';
+import {
+  Button,
+  Group,
+  QrScanner,
+  Row,
+  StepIntro,
+  SystemNotice,
+  TextField,
+} from '../../components/ui';
 import { OnboardingProgress } from '../../components/OnboardingProgress';
 import { loadTeamJoinProgress } from '../../lib/teamJoinState';
 import { bumpServerRevision } from '../../lib/serverProfile';
@@ -71,6 +80,8 @@ export function JoinView({
   const [pasted, setPasted] = useState('');
   const [name, setName] = useState('');
   const [joining, setJoining] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const controller = useRef<AbortController | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -97,6 +108,35 @@ export function JoinView({
   const close = () => {
     controller.current?.abort();
     onClose();
+  };
+  // A pasted or scanned link opens the invitation; anything else stays on
+  // this step with the reason.
+  const take = (raw: string) => {
+    const next = phaseFor(raw);
+    setPhase(
+      next.kind === 'unusable' && next.reason === 'invalid'
+        ? { kind: 'enter', problem: 'This is not a Verity invitation link.' }
+        : next,
+    );
+  };
+  const openScanner = () => {
+    void (async () => {
+      const permission =
+        cameraPermission?.granted === true ? cameraPermission : await requestCameraPermission();
+      if (!mounted.current) return;
+      if (permission.granted) setScannerOpen(true);
+      else
+        setPhase({
+          kind: 'enter',
+          problem: 'Allow camera access in Settings to scan an invitation, or paste the link.',
+        });
+    })().catch(() => {
+      if (mounted.current)
+        setPhase({
+          kind: 'enter',
+          problem: 'The camera is not available. Paste the link instead.',
+        });
+    });
   };
   const run = (target: TeamJoinLink, continuing: boolean) => {
     if (controller.current !== null) return;
@@ -152,14 +192,7 @@ export function JoinView({
             <Button
               label="Continue"
               disabled={pasted.trim() === ''}
-              onPress={() => {
-                const next = phaseFor(pasted);
-                setPhase(
-                  next.kind === 'unusable' && next.reason === 'invalid'
-                    ? { kind: 'enter', problem: 'This is not a Verity invitation link.' }
-                    : next,
-                );
-              }}
+              onPress={() => take(pasted)}
               fullWidth
             />
             <Button label="Back" variant="text" onPress={close} fullWidth />
@@ -169,8 +202,9 @@ export function JoinView({
         <StepIntro
           headline="Join a"
           accent="shared project"
-          lead="Open the invitation link you received, or paste it here."
+          lead="Scan the invitation QR code, open the link you received, or paste it here."
         />
+        <Button label="Scan QR code" icon="maximize" variant="secondary" onPress={openScanner} />
         <TextField label="Invitation link" value={pasted} onChangeText={setPasted} />
         <Button
           label="Paste"
@@ -181,6 +215,15 @@ export function JoinView({
           }}
         />
         {phase.problem ? <SystemNotice intent="needsSetup" title={phase.problem} /> : null}
+        <QrScanner
+          visible={scannerOpen}
+          title="Scan the invitation QR code"
+          onScan={(data) => {
+            setScannerOpen(false);
+            take(data);
+          }}
+          onClose={() => setScannerOpen(false)}
+        />
       </Frame>
     );
   }

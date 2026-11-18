@@ -12,6 +12,19 @@ const mockPaste = jest.fn();
 jest.mock('expo-clipboard', () => ({ getStringAsync: () => mockPaste() }));
 
 jest.mock('../lib/teamJoinState', () => ({ loadTeamJoinProgress: jest.fn(async () => null) }));
+let mockScan: ((event: { data: string }) => void) | undefined;
+const mockPermission = { current: { granted: true } };
+const mockRequestPermission = jest.fn(async () => mockPermission.current);
+jest.mock('expo-camera', () => {
+  const { View } = jest.requireActual('react-native');
+  return {
+    CameraView: (props: { onBarcodeScanned: (event: { data: string }) => void }) => {
+      mockScan = props.onBarcodeScanned;
+      return <View testID="camera" />;
+    },
+    useCameraPermissions: () => [mockPermission.current, mockRequestPermission],
+  };
+});
 
 import { joinRedirect } from '../app/+native-intent';
 import { JoinView } from '../app/onboarding/join';
@@ -124,6 +137,60 @@ it('takes a pasted link and refuses one that is not an invitation', async () => 
   fireEvent.changeText(screen.getByLabelText('Invitation link'), valid);
   fireEvent.press(screen.getByLabelText('Continue'));
   expect(screen.getByText(/Holger Teske invites you to/)).toBeOnTheScreen();
+});
+
+describe('scanning an invitation', () => {
+  beforeEach(() => {
+    mockScan = undefined;
+    mockPermission.current = { granted: true };
+    mockRequestPermission.mockClear();
+  });
+
+  it('opens the invitation from a scanned code once, however often the camera reports it', async () => {
+    views();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    expect(await screen.findByTestId('camera')).toBeOnTheScreen();
+    act(() => {
+      mockScan?.({ data: valid });
+      mockScan?.({ data: 'https://example.com/not-an-invite' });
+    });
+    expect(screen.getByText(/Holger Teske invites you to/)).toBeOnTheScreen();
+    expect(screen.queryByTestId('camera')).toBeNull();
+  });
+
+  it('refuses a code that is not an invitation and lets the person scan again', async () => {
+    views();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => mockScan?.({ data: 'verity-pair://payload' }));
+    expect(screen.getByText('This is not a Verity invitation link.')).toBeOnTheScreen();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => mockScan?.({ data: valid }));
+    expect(screen.getByText(/Holger Teske invites you to/)).toBeOnTheScreen();
+  });
+
+  it('shows an expired scanned invitation as expired', async () => {
+    views();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    await screen.findByTestId('camera');
+    act(() => mockScan?.({ data: expired }));
+    expect(screen.getByText('This invitation has expired')).toBeOnTheScreen();
+  });
+
+  it('keeps pasting available when camera access is refused', async () => {
+    mockPermission.current = { granted: false };
+    views();
+    fireEvent.press(screen.getByLabelText('Scan QR code'));
+    expect(
+      await screen.findByText(
+        'Allow camera access in Settings to scan an invitation, or paste the link.',
+      ),
+    ).toBeOnTheScreen();
+    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('camera')).toBeNull();
+    expect(screen.getByLabelText('Paste')).toBeOnTheScreen();
+  });
 });
 
 describe('joinRedirect', () => {

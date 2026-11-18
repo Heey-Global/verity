@@ -10,10 +10,10 @@ import {
 import * as Application from 'expo-application';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useCameraPermissions } from 'expo-camera';
 import * as Updates from 'expo-updates';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Platform, Text, TextInput, View } from 'react-native';
+import { Platform, Text, TextInput, View } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
@@ -24,7 +24,7 @@ import { KEYBOARD_BOTTOM_OFFSET } from '../../lib/keyboardOffsets';
 import { parsePairingUri, type VerityPairingPayload } from '../../lib/pairing';
 import { establishPairing, verifyAndSaveDirectEndpoint } from '../../lib/pairingSession';
 import { describeBuild, runningReleaseVersion } from '../../lib/buildInfo';
-import { Button } from '../../components/ui';
+import { Button, QrScanner } from '../../components/ui';
 
 function onboardingRoute(status: OnboardingStatus): string {
   return isCoreOnboardingComplete(status) ? '/' : `/onboarding/${resumeStep(status)}`;
@@ -406,34 +406,22 @@ export default function OnboardingServerUrl() {
           </View>
         )}
       </KeyboardAwareScrollView>
-      <Modal
+      <QrScanner
         visible={scannerOpen}
-        animationType="slide"
-        onRequestClose={() => setScannerOpen(false)}
-      >
-        <View style={styles.scannerRoot}>
-          <CameraView
-            style={styles.scannerCamera}
-            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-            onBarcodeScanned={({ data }) => {
-              try {
-                connectPairing(parsePairingUri(data));
-              } catch (error) {
-                setScannerOpen(false);
-                setTest({
-                  kind: 'error',
-                  message: error instanceof Error ? error.message : 'Invalid pairing code.',
-                });
-              }
-            }}
-          />
-          <View style={styles.scannerOverlay} pointerEvents="box-none">
-            <Text style={styles.scannerTitle}>Scan the code shown by verity-install</Text>
-            <View style={styles.scannerFrame} />
-            <Button label="Cancel" variant="secondary" onPress={() => setScannerOpen(false)} />
-          </View>
-        </View>
-      </Modal>
+        title="Scan the code shown by verity-install"
+        onScan={(data) => {
+          try {
+            connectPairing(parsePairingUri(data));
+          } catch (error) {
+            setScannerOpen(false);
+            setTest({
+              kind: 'error',
+              message: error instanceof Error ? error.message : 'Invalid pairing code.',
+            });
+          }
+        }}
+        onClose={() => setScannerOpen(false)}
+      />
     </View>
   );
 }
@@ -487,30 +475,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   // A text button keeps the width of its label instead of spanning the column.
   inline: { flexDirection: 'row' },
-  scannerRoot: { flex: 1, backgroundColor: '#000' },
-  scannerCamera: { flex: 1 },
-  scannerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 80,
-    paddingBottom: 56,
-  },
-  scannerTitle: {
-    ...theme.typography.row,
-    color: '#fff',
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    borderRadius: theme.radius.md,
-  },
-  scannerFrame: {
-    width: 260,
-    height: 260,
-    borderWidth: 3,
-    borderColor: '#ffffff',
-    borderRadius: theme.radius.lg,
-  },
   field: {
     gap: theme.spacing.xs,
   },
