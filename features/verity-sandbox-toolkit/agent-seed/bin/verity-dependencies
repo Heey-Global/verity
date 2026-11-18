@@ -1042,7 +1042,8 @@ async function main() {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
         const share = process.getuid?.() !== 0 && sealInventory(cache);
-        const copied = { files: 0 };
+        // npm resets command targets' modes whenever it links them, in any tree.
+        const copied = { files: 0, commands: new Set() };
         const recorded = new Map();
         for (const tree of workspaceModuleTrees(cache)) {
           const path = relative(cache, tree);
@@ -1362,18 +1363,22 @@ function unchangedSince(directory, record, includeTop) {
     return false;
   }
 }
-// Sessions share the central inventory's files as hardlinks instead of a full
-// copy each. A shared file is one inode for every session, so it must never be
-// writable: an edit would change every session at once, and the inventory.
+// Sessions share the central inventory's files as read-only hardlinks: one inode
+// for every session, so an edit would change every session and the inventory.
 /** Visits every regular file below `tree`; stops once `visit` returns true. */
-function eachFile(tree, visit) {
-  for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
-    const path = join(entry.parentPath, entry.name);
-    // Tools create and remove cache files meanwhile; a vanished file is skipped.
-    const stat = entry.isFile() && lstatSync(path, { throwIfNoEntry: false });
-    if (stat && visit(path, stat)) return true;
+function eachFile(tree, visit, retries = 3) {
+  try {
+    for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
+      const path = join(entry.parentPath, entry.name);
+      const stat = entry.isFile() && lstatSync(path, { throwIfNoEntry: false });
+      if (stat && visit(path, stat)) return true;
+    }
+    return false;
+  } catch (error) {
+    // Tools create and remove cache entries meanwhile; visits are repeatable.
+    if (error.code !== 'ENOENT' || retries === 0) throw error;
+    return eachFile(tree, visit, retries - 1);
   }
-  return false;
 }
 /** A session's own trees: a symlinked `node_modules` belongs to something else. */
 function ownTrees(root) {
@@ -1397,12 +1402,10 @@ function sealInventory(cache) {
     return false;
   }
 }
-/** Recreates `source` at `destination`: directories and top-level files are the
- *  session's own, symlinks are reproduced, and package files are shared links. */
+/** Rebuilds `source` at `destination`: own directories and receipts, shared files. */
 function shareTree(source, destination, copied, drifted, share) {
   const files = [];
   const regular = [];
-  const commands = new Set(); // npm resets command targets' modes whenever it links them.
   const pending = [[source, destination]];
   while (pending.length > 0) {
     const [from, to] = pending.pop();
@@ -1410,7 +1413,7 @@ function shareTree(source, destination, copied, drifted, share) {
     if (stat.isSymbolicLink()) {
       const target = readlinkSync(from);
       symlinkSync(target, to);
-      if (basename(dirname(from)) === '.bin') commands.add(resolve(dirname(from), target));
+      if (basename(dirname(from)) === '.bin') copied.commands.add(resolve(dirname(from), target));
     } else if (stat.isDirectory()) {
       mkdirSync(to);
       chmodSync(to, (stat.mode & 0o7777) | 0o700);
@@ -1420,7 +1423,7 @@ function shareTree(source, destination, copied, drifted, share) {
   }
   for (const [from, to, stat] of regular) {
     // npm rewrites its top-level receipts in place; those stay private copies.
-    if (share && dirname(from) !== source && !commands.has(from)) {
+    if (share && dirname(from) !== source && !copied.commands.has(from)) {
       // A writable inventory file may already carry an edit made through a link.
       if (stat.mode & 0o222) drifted();
       try {
@@ -1456,7 +1459,7 @@ function sharedDrift(root) {
     eachFile(tree, (_, stat) => stat.nlink > 1 && (stat.mode & 0o222) !== 0),
   );
 }
-/** `install --private`: replaces this session's shared files with its own copies. */
+/** `install --private`: own copies of shared files, marked so storage collection keeps them. */
 function privatize(root) {
   let files = 0;
   for (const tree of ownTrees(root))
@@ -1474,8 +1477,7 @@ function privatize(root) {
         rmSync(temporary, { force: true });
       }
     });
-  // Storage collection leaves a tree marked private as it is, until it is replaced.
-  if (readlinkExists(join(root, 'node_modules')))
+  if (ownTrees(root).includes(join(root, 'node_modules')))
     writeFileSync(join(root, 'node_modules', '.verity-private'), '');
   console.log(`Made ${files} shared dependency files private to this session.`);
 }
