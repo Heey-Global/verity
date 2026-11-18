@@ -34,7 +34,47 @@ protected. A modified or unknown package protects the entire private installatio
 preserving dependency resolution through locally patched transitive packages.
 Matching relative links to different source trees also protect an installation;
 matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
-copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
+copies are outside Node's ancestor lookup. No package-manager migration is required, and writable files are never shared.
+
+Activation shares the central inventory's files instead of copying them. Each
+package file in the session's `node_modules`, and in workspace `node_modules`
+trees, is a hard link to the inventory's file, which is made read-only first.
+Directories, symbolic links and npm's top-level receipts such as
+`.package-lock.json` stay the session's own, so tools can still create caches
+inside `node_modules`, and module resolution is unchanged. A session therefore
+adds its directories, not another copy of every package, and keeps working when
+the inventory is later retired. Writing a shared file fails with a permission
+error instead of changing every session at once; run
+`verity dependencies install --private` to give the session its own writable
+copies, for example before patching a package. If a shared file was already
+made writable, the next `install` in any session that shares it withdraws the
+inventory and fails once; running it again prepares a fresh inventory.
+Executable files stay private copies, because npm resets the mode of command
+targets whenever it links commands, and so do files in dot-directories directly
+under `node_modules`, such as `.prisma`, which generators rewrite in place. Where the filesystem refuses a
+link, activation copies that file and reports how many it copied. `install`
+checks for shared files that were made writable again (`status` does not, to
+stay fast): it withdraws the affected inventory so the next install prepares it
+afresh. The edit stays in the session that made it, or, when other sessions still
+share the file, in a preserved copy once that session installs again; another
+session that shared the edited file keeps it until its own next `install` finds
+it and activates the fresh inventory. An inventory that is already edited is never linked into
+another session. The protection rests on permission bits: a process running as
+root copies files instead of sharing them, and a file deliberately made writable,
+edited and made read-only again is not detected.
+
+Sessions activated before sharing hold private copies. While such a session is
+in use, collection replaces each file that is byte-identical, with the same
+execute bits, to the sealed inventory named by the session's receipt by a link
+to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
+already shared files, executable files, dot-directories and npm's receipts are
+left as they are, as are sessions whose `node_modules` belongs to root. The conversion never runs with more rights
+than the session has: a Server running as root performs it in a worker process
+under the owner of the session's `node_modules`, and skips it when it can do
+neither. A file that changes before its replacement is kept. A tree converted
+this way, or activated before this release, is no longer recorded as unchanged,
+so the next dependency change keeps it once as a preserved copy, which
+collection then removes like any other.
 
 Activating a new dependency version moves the session's previous installation
 to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as
@@ -97,9 +137,10 @@ Entries are grouped by their path on the volume:
 - **Unattributed:** any other top-level entry, listed by name with its size
   (the ten largest).
 
-The walk counts allocated blocks, counts a file with several hard links once,
-never follows symbolic links and does not enter another filesystem mounted
-inside the volume. A root that disappears or is replaced during a round starts
+The walk counts allocated blocks, counts a file with several hard links once
+and reports the further names as `sharedBytes`, mostly what sessions sharing
+their dependency files would otherwise hold as copies. It never follows symbolic
+links and does not enter another filesystem mounted inside the volume. A root that disappears or is replaced during a round starts
 the round over. An entry or directory the Server cannot read, such as a
 sandbox-private home, is counted as unreadable and its contents are left out;
 the breakdown and the capacity sentence state how many. After 500,000 files with

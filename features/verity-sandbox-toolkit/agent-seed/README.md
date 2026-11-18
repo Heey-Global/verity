@@ -62,16 +62,18 @@ Project containers mount `/opt/agent-seed` read-only and prepend
   repository's common Git directory, keyed by dependency inputs, configuration,
   local package sources and runtime. One preparation runs per project at a time;
   equal identities wait for the same preparation. Only a complete, policy-verified
-  inventory is published atomically. A receiving session gets independent files
-  with workspace links restored to its own sources. Existing local patches and
-  incomplete files are preserved before replacement; shared writable packages and
-  hardlinks are not used. Declared workspace executables target the receiving
+  inventory is published atomically and made read-only. A receiving session gets
+  its own directories, with package files as hard links to that read-only
+  inventory (a copy where the filesystem refuses links) and workspace links
+  restored to its own sources; `install --private` replaces the links with
+  writable copies. Existing local patches and incomplete files are preserved
+  before replacement; writable files are never shared. Declared workspace executables target the receiving
   sources; like npm, activation restores executable bits and normalizes CRLF
   shebangs. Non-regular or external executable targets are rejected; CRLF
   normalization is bounded to 1 MiB.
   New central preparations require an npm lockfile with a `packages` map,
   project-local workspace links and declared workspace dependency paths. Workspace-local
-  `node_modules` trees are copied independently into each receiving worktree, alongside
+  `node_modules` trees are activated the same way in each receiving worktree, alongside
   the root tree; previous local trees are preserved before activation.
   Unsupported layouts fail explicitly rather than installing privately. Compatible
   existing installations remain reusable. The two ready inventory slots are

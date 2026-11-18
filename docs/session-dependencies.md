@@ -56,8 +56,11 @@ does not establish equivalent lockfile protection for every ecosystem.
 
 The helper prefers a complete, compatible local or reachable shared installation.
 Managed successful private installations can also be reused across session
-worktrees through independent copies, with workspace links restored for the
-destination session. Writable packages are never hardlinked between sessions.
+worktrees: each session gets its own directories, with package files as hard
+links to the read-only central inventory, and workspace links restored for the
+destination session. Writable files are never shared between sessions; writing a
+shared file fails, and `verity dependencies install --private` gives a session
+writable copies of its own.
 Compatibility includes dependency manifests, lockfiles, npm configuration and
 runtime identity (including libc), rather than only the presence of `node_modules`.
 Existing npm trees without a managed `.verity-install.json` receipt cannot prove
