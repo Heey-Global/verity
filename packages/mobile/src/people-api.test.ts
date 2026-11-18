@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { VerityClient } from './api.js';
+import { teamSharingUnavailable } from './people-api.js';
 
 interface Call {
   url: string;
@@ -97,6 +98,22 @@ describe('project team calls', () => {
     ]);
     expect(body(calls[1])).toEqual({ inviteeName: 'Mia', canExecute: false });
     expect(body(calls[4])).toEqual({ canExecute: true, canManage: true });
+  });
+
+  // Inviting is hidden on a definitive reason only. A newer server's unknown
+  // reason must not break the team page, and must hide nothing.
+  it('reads why team sharing is unavailable, and ignores a reason it does not know', async () => {
+    const { client } = clientAnswering(
+      { members: [member], invitations: [], teamSharing: 'not_entitled' },
+      { invitation, linkFields: null, teamSharing: 'teleported' },
+    );
+    const team = await client.getProjectTeam('p1');
+    expect(team.teamSharing).toBe('not_entitled');
+    expect(teamSharingUnavailable(team.teamSharing)).toBe(true);
+    const read = await client.getProjectInvitation('p1', 'inv-1');
+    expect(read.teamSharing).toBeUndefined();
+    for (const waits of [undefined, 'available', 'uplink_offline'] as const)
+      expect(teamSharingUnavailable(waits)).toBe(false);
   });
 
   it('joins a team with the invitation it was handed', async () => {

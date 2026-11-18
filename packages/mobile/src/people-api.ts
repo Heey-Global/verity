@@ -42,9 +42,23 @@ const projectInvitationSchema = z.object({
   createdAt: z.string(),
 });
 export type ProjectInvitation = z.infer<typeof projectInvitationSchema>;
+/**
+ * Whether invitations can get their link from Uplink, or why not. Absent from
+ * older servers, and an unknown value reads as absent: neither hides anything.
+ */
+const teamSharingSchema = z
+  .enum(['available', 'uplink_offline', 'not_entitled', 'not_negotiated', 'unavailable'])
+  .optional()
+  .catch(undefined);
+export type TeamSharing = NonNullable<z.infer<typeof teamSharingSchema>>;
+/** Inviting cannot work here: the link would never appear. Offline only waits. */
+export function teamSharingUnavailable(sharing: TeamSharing | undefined): boolean {
+  return sharing === 'not_entitled' || sharing === 'not_negotiated' || sharing === 'unavailable';
+}
 export const projectTeamSchema = z.object({
   members: z.array(projectMemberSchema),
   invitations: z.array(projectInvitationSchema),
+  teamSharing: teamSharingSchema,
 });
 export type ProjectTeam = z.infer<typeof projectTeamSchema>;
 /** What the server holds of a join link; the inviter's app adds pin and address. */
@@ -65,7 +79,9 @@ export type InvitationLinkFields = z.infer<typeof invitationLinkFieldsSchema>;
 const invitationResponseSchema = z.object({
   invitation: projectInvitationSchema,
   linkFields: invitationLinkFieldsSchema.nullable(),
+  teamSharing: teamSharingSchema,
 });
+type InvitationResponse = z.infer<typeof invitationResponseSchema>;
 
 /** A provider account of the signed-in person's own (ADR 0023 §3). */
 const providerConnectionKindSchema = z.enum(['claude', 'codex', 'opencode']);
@@ -125,7 +141,7 @@ export function peopleClient(request: Request) {
     createProjectInvitation: async (
       projectId: string,
       input: { inviteeName: string; canExecute: boolean; inviterName?: string },
-    ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> => {
+    ): Promise<InvitationResponse> => {
       const res = await request(`/projects/${encodeURIComponent(projectId)}/invitations`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -137,7 +153,7 @@ export function peopleClient(request: Request) {
     getProjectInvitation: async (
       projectId: string,
       invitationId: string,
-    ): Promise<{ invitation: ProjectInvitation; linkFields: InvitationLinkFields | null }> => {
+    ): Promise<InvitationResponse> => {
       const res = await request(
         `/projects/${encodeURIComponent(projectId)}/invitations/${encodeURIComponent(invitationId)}`,
         { method: 'GET' },

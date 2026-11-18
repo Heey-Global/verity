@@ -64,6 +64,7 @@ import type { GitHubUserAuthorization } from './github-user-authorization.js';
 import type { SigningCapabilityRegistry } from './signing-capability.js';
 import type { SshKeygenSpawner } from './signing-key.js';
 import type { RemoteControlDescriptor } from './uplink-control-client.js';
+import type { TeamAvailability } from './uplink-feature-state.js';
 import type { WorktreeProvisioner } from './worktree.js';
 
 export interface ServerDeps {
@@ -235,6 +236,8 @@ export interface ServerDeps {
   /** Reads a short-lived Codex access token from the Agent Gateway, which owns the
    * rotating login (ADR 0010). Absent → the Codex usage probe stays inert. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** Whether team invitations can reach Uplink, or why not. */
+  teamSharing?: (() => TeamAvailability) | undefined;
   /** What Core knows for an invitation's join link (team contract D5). */
   teamLinkIdentity?:
     | (() =>

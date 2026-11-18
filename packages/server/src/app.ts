@@ -1,6 +1,7 @@
 import type { QAAnalysisDeps } from './qa-analysis-tool.js';
 import type { ProjectPullRequestBackend } from './project-pull-requests.js';
 import type { RepairDiscovery } from './repair-supervisor.js';
+import type { TeamAvailability } from './uplink-feature-state.js';
 import { documentWorkspace, documentViewForSession } from './document-workspace.js';
 import type { ProjectGitHubIssues } from './project-github-issues.js';
 import { Conductor, type Backend, type ConductorDeps, type EventBus } from '@verity/session';
@@ -112,6 +113,8 @@ export interface ControlPlaneDeps {
   claudeOAuthTokenProvider?: ClaudeOAuthTokenProvider | undefined;
   /** Reads the gateway-held Codex access token for the account-global usage probe. */
   codexGatewayCredentialProvider?: CodexUsageCredentialProvider | undefined;
+  /** Whether team invitations can reach Uplink, or why not. */
+  teamSharing?: (() => TeamAvailability) | undefined;
   /** What Core knows for an invitation's join link (team contract D5). */
   teamLinkIdentity?:
     | (() =>
@@ -446,6 +449,7 @@ export function buildControlPlane(deps: ControlPlaneDeps): FastifyInstance {
       ? { claudeOAuthTokenProvider: deps.claudeOAuthTokenProvider }
       : {}),
     ...(deps.teamLinkIdentity !== undefined ? { teamLinkIdentity: deps.teamLinkIdentity } : {}),
+    ...(deps.teamSharing !== undefined ? { teamSharing: deps.teamSharing } : {}),
     ...(deps.personalClaudeAccessToken !== undefined
       ? { personalClaudeAccessToken: deps.personalClaudeAccessToken }
       : {}),

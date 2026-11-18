@@ -301,6 +301,7 @@ export function installPeople(
     projectName: async (projectId) =>
       (await deps.eventStore.getProject(projectId))?.name ?? undefined,
     ...(deps.teamLinkIdentity === undefined ? {} : { linkIdentity: deps.teamLinkIdentity }),
+    ...(deps.teamSharing === undefined ? {} : { teamSharing: deps.teamSharing }),
     onMemberRemoved: async (projectId, userId) => {
       await revokeMember(projectId, userId);
       await deps.onMemberRemoved?.(projectId, userId);

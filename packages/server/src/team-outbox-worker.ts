@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import type { ProjectTeamStore, TeamOutboxEntry } from '@verity/store';
 
+import type { TeamAvailability } from './uplink-feature-state.js';
+
 type Team = Pick<
   ProjectTeamStore,
   | 'clearExpiredJoinCredentials'
@@ -17,6 +19,8 @@ type Team = Pick<
 
 export interface TeamUplink {
   teamNegotiated(): boolean;
+  /** Why team v1 is not negotiated, for the log; absent → reported as offline. */
+  teamAvailability?(): TeamAvailability;
   teamRequest(
     type: string,
     fields: Record<string, unknown>,
@@ -39,6 +43,12 @@ const RESPONSES: Record<string, string> = {
 
 const backoff = (attempts: number): number => Math.min(30_000 * 2 ** attempts, 60 * 60_000);
 
+/** How often a lasting wait for team v1 is logged again. */
+export const TEAM_WAIT_LOG_MS = 60 * 60_000;
+/** How long a wait for a connection may last before it is worth a log line:
+ * waking the Uplink connection for new team work takes a moment. */
+export const TEAM_OFFLINE_GRACE_MS = 60_000;
+
 /**
  * Deliver queued team changes to Uplink (Uplink team contract D8: Core is the
  * source of truth, Uplink learns through a durable outbox). Each operation is
@@ -58,6 +68,27 @@ export function createTeamOutboxWorker(deps: {
 }) {
   const now = deps.now ?? (() => new Date());
   let running: Promise<void> | undefined;
+  let waiting: { reason: TeamAvailability; since: number } | undefined;
+  // Kept across reasons and empty passes: neither may bypass the log interval.
+  let loggedAt: number | undefined;
+
+  // Without this, queued work waits in silence: no log line, no state change,
+  // until the operations give up after seven days.
+  const noteWaiting = async (): Promise<void> => {
+    const queued = (await deps.team.dueOperations(now())).length;
+    // Work in backoff is not due, but still waiting: keep the wait's start.
+    if (queued === 0) return;
+    const at = now().getTime();
+    const reason = deps.uplink.teamAvailability?.() ?? 'uplink_offline';
+    if (waiting?.reason !== reason) waiting = { reason, since: at };
+    if (reason === 'uplink_offline' && at - waiting.since < TEAM_OFFLINE_GRACE_MS) return;
+    if (loggedAt !== undefined && at - loggedAt < TEAM_WAIT_LOG_MS) return;
+    loggedAt = at;
+    deps.log?.warn(
+      { queued, teamSharing: reason },
+      'verity: team changes are waiting; Uplink has not negotiated team v1',
+    );
+  };
 
   const send = async (operation: TeamOutboxEntry): Promise<void> => {
     const payload = operation.payload as Record<string, unknown>;
@@ -119,7 +150,13 @@ export function createTeamOutboxWorker(deps: {
         operation,
         'verity: team change exhausted its retry window; awaiting the next team change',
       );
-    if (!deps.uplink.teamNegotiated()) return;
+    if (!deps.uplink.teamNegotiated()) {
+      await noteWaiting();
+      return;
+    }
+    // Delivering again: the next wait is news, whenever it starts.
+    waiting = undefined;
+    loggedAt = undefined;
     for (const operation of await deps.team.dueOperations(now())) {
       try {
         await send(operation);
