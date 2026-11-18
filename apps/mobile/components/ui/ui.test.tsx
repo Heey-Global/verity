@@ -197,6 +197,28 @@ describe('Row', () => {
     expect(background(container)).toBeUndefined();
   });
 
+  // A plain row keeps its active highlight while pressed; a wrapped one must
+  // not trade it for the pressed tint, or the selection flickers on every tap.
+  it('keeps the active highlight while an active row with answers is pressed', () => {
+    render(
+      <Row
+        title="Question"
+        active
+        onPress={jest.fn()}
+        answers={<Button label="Answer" onPress={jest.fn()} />}
+      />,
+    );
+    const row = screen.getByRole('button', { name: 'Question' });
+    let container = row.parent!;
+    while (container.findAllByProps({ accessibilityLabel: 'Answer' }).length === 0) {
+      container = container.parent!;
+    }
+    fireEvent(row, 'pressIn');
+    expect(StyleSheet.flatten(container.props.style)).toMatchObject({
+      backgroundColor: lightTheme.colors.surfaceAlt,
+    });
+  });
+
   // The chevron promises navigation; a row that only acts in place must not show it.
   it('shows the chevron only for rows that navigate', () => {
     // Count the drawn glyph (the mocked Feather host), not the wrappers around it.

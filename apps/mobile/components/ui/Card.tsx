@@ -221,7 +221,8 @@ export function Row({
 }) {
   const { theme } = useUnistyles();
   const [held, setHeld] = useState(false);
-  const lit = held && !disabled;
+  // The active highlight wins over the pressed one, as on a plain row.
+  const lit = held && !disabled && !active;
   const choice = selected !== undefined;
   if (
     process.env.NODE_ENV !== 'production' &&
