@@ -60,3 +60,40 @@ export type TeamAvailability =
 export function teamInvitationsPossible(availability: TeamAvailability): boolean {
   return availability === 'available' || availability === 'uplink_offline';
 }
+
+/** How often a refusal is checked again with Uplink while nothing else connects. */
+export const TEAM_RECHECK_MS = 10 * 60_000;
+
+/**
+ * The team availability the routes report. A refusal is the last lease's
+ * answer, and a parked client gets no other: nothing creates team demand once
+ * inviting is refused. So a refusal read from a parked client starts a fresh
+ * check, at most every TEAM_RECHECK_MS, and team sharing granted later takes
+ * effect without a restart. Without a control client no link can ever appear.
+ */
+export function teamSharingStatus(
+  uplink:
+    | {
+        teamAvailability(): TeamAvailability;
+        diagnostics(): Pick<UplinkDiagnostics, 'control'>;
+        checkEntitlements(): Promise<unknown>;
+      }
+    | undefined,
+  now: () => number = Date.now,
+): () => TeamAvailability {
+  let checkedAt: number | undefined;
+  return () => {
+    if (uplink === undefined) return 'unavailable';
+    const availability = uplink.teamAvailability();
+    if (
+      !teamInvitationsPossible(availability) &&
+      uplink.diagnostics().control === 'idle' &&
+      (checkedAt === undefined || now() - checkedAt >= TEAM_RECHECK_MS)
+    ) {
+      checkedAt = now();
+      // The answer reaches the next read; a failed check leaves the last one.
+      void uplink.checkEntitlements().catch(() => undefined);
+    }
+    return availability;
+  };
+}

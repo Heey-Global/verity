@@ -160,22 +160,33 @@ describe('team outbox worker', () => {
     clock = at(TEAM_OFFLINE_GRACE_MS - 1);
     await worker.run();
     expect(warn).not.toHaveBeenCalled();
-    clock = at(TEAM_OFFLINE_GRACE_MS);
+    // A definitive reason is logged at once.
+    availability = 'not_entitled';
     await worker.run();
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toEqual({ queued: 1, teamSharing: 'uplink_offline' });
+    expect(warn.mock.calls[0]?.[0]).toEqual({ queued: 1, teamSharing: 'not_entitled' });
 
-    // A definitive reason is logged at once, then once per interval.
-    availability = 'not_entitled';
-    clock = at(TEAM_OFFLINE_GRACE_MS + 1);
+    // Flapping reasons do not bypass the interval.
+    availability = 'uplink_offline';
+    clock = at(2 * TEAM_OFFLINE_GRACE_MS);
     await worker.run();
-    clock = at(TEAM_OFFLINE_GRACE_MS + TEAM_WAIT_LOG_MS);
+    availability = 'not_entitled';
+    clock = at(2 * TEAM_OFFLINE_GRACE_MS + 1);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(1);
+    clock = at(TEAM_OFFLINE_GRACE_MS - 1 + TEAM_WAIT_LOG_MS);
     await worker.run();
     expect(warn).toHaveBeenCalledTimes(2);
-    expect(warn.mock.calls[1]?.[0]).toEqual({ queued: 1, teamSharing: 'not_entitled' });
-    clock = at(TEAM_OFFLINE_GRACE_MS + 1 + TEAM_WAIT_LOG_MS);
+
+    // Offline that lasts beyond the grace period is worth a line too.
+    availability = 'uplink_offline';
+    clock = at(2 * TEAM_WAIT_LOG_MS);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(2);
+    clock = at(2 * TEAM_WAIT_LOG_MS + TEAM_OFFLINE_GRACE_MS);
     await worker.run();
     expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls[2]?.[0]).toEqual({ queued: 1, teamSharing: 'uplink_offline' });
     expect(teamRequest).not.toHaveBeenCalled();
   });
 

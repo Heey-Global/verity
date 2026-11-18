@@ -2,6 +2,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventStore, VeritySettingsPatch } from '@verity/store';
 import { UplinkControlClient } from './uplink-control-client.js';
+import { teamSharingStatus } from './uplink-feature-state.js';
 
 // Whether team invitations can get their link, as the control client derives it
 // from a real control socket. An installation whose lease lacks `team-sharing`
@@ -105,5 +106,28 @@ describe('team availability of the Uplink control client', () => {
     // Without a connector an invited person could not join, whatever Uplink grants.
     notOffered.startWithTeamWork();
     expect(notOffered.client.teamAvailability()).toBe('unavailable');
+  });
+
+  // Refused invitations create no team demand, so nothing would reconnect a
+  // parked client: team sharing granted later stayed refused until a restart.
+  it('checks a refusal again, so team sharing granted later takes effect', async () => {
+    const f = await fixture();
+    f.startWithTeamWork();
+    await f.welcome({ features: ['sharing'] });
+    await vi.waitFor(() => expect(f.client.diagnostics().control).toBe('idle'));
+    f.client.setTeamDemand(false);
+    const status = teamSharingStatus(f.client, () => 0);
+
+    expect(status()).toBe('not_entitled');
+    await vi.waitFor(() => expect(f.control).toHaveLength(2), { timeout: 3_000 });
+    // One check per interval, however often the team page is read.
+    expect(status()).toBe('not_entitled');
+    await f.welcome({ features: ['sharing', 'team-sharing'], teamVersion: 1 });
+    await vi.waitFor(() => expect(f.client.diagnostics().control).toBe('idle'));
+    expect(f.control).toHaveLength(2);
+    // The new lease is kept once the check parked again.
+    expect(status()).toBe('uplink_offline');
+
+    expect(teamSharingStatus(undefined)()).toBe('unavailable');
   });
 });

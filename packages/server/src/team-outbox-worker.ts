@@ -80,7 +80,14 @@ export function createTeamOutboxWorker(deps: {
     }
     const at = now().getTime();
     const reason = deps.uplink.teamAvailability?.() ?? 'uplink_offline';
-    if (waiting?.reason !== reason) waiting = { reason, since: at };
+    // A new reason restarts the grace period, but not the log interval: an
+    // availability that flaps must not log on every flip.
+    if (waiting?.reason !== reason)
+      waiting = {
+        reason,
+        since: at,
+        ...(waiting?.loggedAt === undefined ? {} : { loggedAt: waiting.loggedAt }),
+      };
     if (reason === 'uplink_offline' && at - waiting.since < TEAM_OFFLINE_GRACE_MS) return;
     if (waiting.loggedAt !== undefined && at - waiting.loggedAt < TEAM_WAIT_LOG_MS) return;
     waiting.loggedAt = at;
