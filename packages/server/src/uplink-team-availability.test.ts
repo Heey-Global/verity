@@ -85,6 +85,11 @@ describe('team availability of the Uplink control client', () => {
     withoutVersion.startWithTeamWork();
     await withoutVersion.welcome({ features: ['team-sharing'] });
     await vi.waitFor(() => expect(withoutVersion.client.teamAvailability()).toBe('not_negotiated'));
+    // Parked once the team work is gone, the answer stays: an invitation made
+    // now would wait for a link just the same.
+    withoutVersion.client.setTeamDemand(false);
+    await vi.waitFor(() => expect(withoutVersion.client.diagnostics().control).toBe('idle'));
+    expect(withoutVersion.client.teamAvailability()).toBe('not_negotiated');
 
     const working = await fixture();
     working.startWithTeamWork();

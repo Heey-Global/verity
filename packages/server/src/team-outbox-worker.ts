@@ -68,7 +68,9 @@ export function createTeamOutboxWorker(deps: {
 }) {
   const now = deps.now ?? (() => new Date());
   let running: Promise<void> | undefined;
-  let waiting: { reason: TeamAvailability; since: number; loggedAt?: number } | undefined;
+  let waiting: { reason: TeamAvailability; since: number } | undefined;
+  // Kept across reasons and empty passes: neither may bypass the log interval.
+  let loggedAt: number | undefined;
 
   // Without this, queued work waits in silence: no log line, no state change,
   // until the operations give up after seven days.
@@ -80,17 +82,10 @@ export function createTeamOutboxWorker(deps: {
     }
     const at = now().getTime();
     const reason = deps.uplink.teamAvailability?.() ?? 'uplink_offline';
-    // A new reason restarts the grace period, but not the log interval: an
-    // availability that flaps must not log on every flip.
-    if (waiting?.reason !== reason)
-      waiting = {
-        reason,
-        since: at,
-        ...(waiting?.loggedAt === undefined ? {} : { loggedAt: waiting.loggedAt }),
-      };
+    if (waiting?.reason !== reason) waiting = { reason, since: at };
     if (reason === 'uplink_offline' && at - waiting.since < TEAM_OFFLINE_GRACE_MS) return;
-    if (waiting.loggedAt !== undefined && at - waiting.loggedAt < TEAM_WAIT_LOG_MS) return;
-    waiting.loggedAt = at;
+    if (loggedAt !== undefined && at - loggedAt < TEAM_WAIT_LOG_MS) return;
+    loggedAt = at;
     deps.log?.warn(
       { queued, teamSharing: reason },
       'verity: team changes are waiting; Uplink has not negotiated team v1',

@@ -222,8 +222,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   /** The team version the service selected in `welcome`; undefined → none. */
   private teamVersion: 1 | undefined;
-  /** Last lease granted team-sharing (undefined: unchecked); outlives an expired lease. */
-  private teamGranted: boolean | undefined;
+  /** The last lease's team-sharing, with or without team v1 (undefined: unchecked).
+   * Unlike `grants` it outlives the connection and an expired lease. */
+  private teamGranted: 'negotiated' | 'granted' | false | undefined;
   private keyMissing = false;
   private teamWanted = false;
   private controlReady = false;
@@ -582,11 +583,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   /** Whether team invitations can reach Uplink now, or why not (TeamAvailability). */
   teamAvailability(): TeamAvailability {
     if (this.stopped || this.options.offerTeam !== true) return 'unavailable';
-    if (this.welcomed && this.socket?.readyState === WebSocket.OPEN) {
-      if (!this.features.has('team-sharing')) return 'not_entitled';
-      return this.teamNegotiated() ? 'available' : 'not_negotiated';
-    }
     if (this.teamGranted === false) return 'not_entitled';
+    if (this.teamGranted === 'granted') return 'not_negotiated';
+    if (this.teamNegotiated()) return 'available';
     if (this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason))
       return 'unavailable';
     return this.keyMissing ? 'unavailable' : 'uplink_offline';
@@ -1642,7 +1641,8 @@ export class UplinkControlClient implements PreviewEdgeControl {
         : [],
     );
     this.grants = new Set(this.features);
-    this.teamGranted = this.features.has('team-sharing');
+    this.teamGranted =
+      this.features.has('team-sharing') && (this.teamVersion === 1 ? 'negotiated' : 'granted');
     this.grantExpiresAt = leaseUntil;
     if (this.offlineLeaseTimer) clearTimeout(this.offlineLeaseTimer);
     this.offlineLeaseTimer = undefined;
