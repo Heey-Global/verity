@@ -144,7 +144,11 @@ export function registerProjectTeamRoutes(
         canExecute: body.canExecute,
       });
       reply.header('cache-control', 'no-store').code(201);
-      return { invitation: publicInvitation(invitation), linkFields: null, ...sharing() };
+      return {
+        invitation: publicInvitation(invitation),
+        linkFields: null,
+        ...(availability === undefined ? {} : { teamSharing: availability }),
+      };
     } catch (error) {
       const { status, body: answer } = refusal(error);
       return reply.code(status).send(answer);

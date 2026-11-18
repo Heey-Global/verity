@@ -2,7 +2,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventStore, VeritySettingsPatch } from '@verity/store';
 import { UplinkControlClient } from './uplink-control-client.js';
-import { teamSharingStatus } from './uplink-feature-state.js';
+import { TEAM_RECHECK_MS, teamSharingStatus } from './uplink-feature-state.js';
 
 // Whether team invitations can get their link, as the control client derives it
 // from a real control socket. An installation whose lease lacks `team-sharing`
@@ -129,5 +129,31 @@ describe('team availability of the Uplink control client', () => {
     expect(status()).toBe('uplink_offline');
 
     expect(teamSharingStatus(undefined)()).toBe('unavailable');
+  });
+
+  // The team page polls every few seconds; only Uplink's own answer is worth
+  // asking again, and no more than once per interval.
+  it('rechecks only what Uplink can change, once per interval', () => {
+    let availability: 'not_entitled' | 'unavailable' = 'unavailable';
+    let clock = 0;
+    const checkEntitlements = vi.fn(async () => undefined);
+    const status = teamSharingStatus(
+      {
+        teamAvailability: () => availability,
+        diagnostics: () => ({ control: 'idle' as const }),
+        checkEntitlements,
+      },
+      () => clock,
+    );
+    status();
+    expect(checkEntitlements).not.toHaveBeenCalled();
+    availability = 'not_entitled';
+    status();
+    clock = TEAM_RECHECK_MS - 1;
+    status();
+    expect(checkEntitlements).toHaveBeenCalledTimes(1);
+    clock = TEAM_RECHECK_MS;
+    status();
+    expect(checkEntitlements).toHaveBeenCalledTimes(2);
   });
 });

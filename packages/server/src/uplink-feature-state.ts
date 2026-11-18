@@ -65,7 +65,7 @@ export function teamInvitationsPossible(availability: TeamAvailability): boolean
 export const TEAM_RECHECK_MS = 10 * 60_000;
 
 /**
- * The team availability the routes report. A refusal is the last lease's
+ * The team availability the routes report. Uplink's refusal is the last lease's
  * answer, and a parked client gets no other: nothing creates team demand once
  * inviting is refused. So a refusal read from a parked client starts a fresh
  * check, at most every TEAM_RECHECK_MS, and team sharing granted later takes
@@ -85,8 +85,10 @@ export function teamSharingStatus(
   return () => {
     if (uplink === undefined) return 'unavailable';
     const availability = uplink.teamAvailability();
+    // Only Uplink's answer can change by itself; a missing key or connector
+    // changes through the settings, which reconnect on their own.
     if (
-      !teamInvitationsPossible(availability) &&
+      (availability === 'not_entitled' || availability === 'not_negotiated') &&
       uplink.diagnostics().control === 'idle' &&
       (checkedAt === undefined || now() - checkedAt >= TEAM_RECHECK_MS)
     ) {

@@ -222,9 +222,9 @@ export class UplinkControlClient implements PreviewEdgeControl {
   private welcomed = false;
   /** The team version the service selected in `welcome`; undefined → none. */
   private teamVersion: 1 | undefined;
-  /** Whether the last lease granted team-sharing; undefined → not checked yet.
-   * Unlike `grants` it outlives an expired lease, which is not a refusal. */
+  /** Last lease granted team-sharing (undefined: unchecked); outlives an expired lease. */
   private teamGranted: boolean | undefined;
+  private keyMissing = false;
   private teamWanted = false;
   private controlReady = false;
   private messageTail: Promise<void> = Promise.resolve();
@@ -589,10 +589,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
     if (this.teamGranted === false) return 'not_entitled';
     if (this.lastReject !== undefined && IDENTITY_REJECTS.has(this.lastReject.reason))
       return 'unavailable';
-    // Woken for team work and parked again without a lease: no usable key.
-    return this.idle && this.teamWanted && this.teamGranted === undefined
-      ? 'unavailable'
-      : 'uplink_offline';
+    return this.keyMissing ? 'unavailable' : 'uplink_offline';
   }
 
   /** Whether this connection negotiated team v1. */
@@ -1102,6 +1099,7 @@ export class UplinkControlClient implements PreviewEdgeControl {
       return;
     }
     const key: string | undefined = settings?.uplinkSubscriptionKey?.trim();
+    this.keyMissing = !key;
     if (!key) {
       this.clearAuthority('Uplink subscription key is not configured');
       this.park();
