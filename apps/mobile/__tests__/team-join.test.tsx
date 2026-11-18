@@ -180,24 +180,28 @@ describe('scanning an invitation', () => {
     expect(screen.getByText('This invitation has expired')).toBeOnTheScreen();
   });
 
-  it('lets a late camera answer change nothing once saved progress took over', async () => {
-    let found!: (progress: { link: TeamJoinLink }) => void;
-    jest
-      .mocked(loadTeamJoinProgress)
-      .mockImplementationOnce(() => new Promise((resolve) => (found = resolve as typeof found)));
-    let answer!: (permission: { granted: boolean }) => void;
-    mockPermission.current = { granted: false };
-    mockRequestPermission.mockImplementationOnce(
-      () => new Promise((resolve) => (answer = resolve)),
-    );
-    views();
-    fireEvent.press(screen.getByLabelText('Scan QR code'));
-    await act(async () => found({ link: parseTeamJoinLink(valid) }));
-    expect(screen.getByText('Continue joining')).toBeOnTheScreen();
-    await act(async () => answer({ granted: false }));
-    expect(screen.getByText('Continue joining')).toBeOnTheScreen();
-    expect(screen.queryByText(/Allow camera access/)).toBeNull();
-  });
+  it.each([false, true])(
+    'lets a late camera answer (granted: %s) change nothing once saved progress took over',
+    async (granted) => {
+      let found!: (progress: { link: TeamJoinLink }) => void;
+      jest
+        .mocked(loadTeamJoinProgress)
+        .mockImplementationOnce(() => new Promise((resolve) => (found = resolve as typeof found)));
+      let answer!: (permission: { granted: boolean }) => void;
+      mockPermission.current = { granted: false };
+      mockRequestPermission.mockImplementationOnce(
+        () => new Promise((resolve) => (answer = resolve)),
+      );
+      views();
+      fireEvent.press(screen.getByLabelText('Scan QR code'));
+      await act(async () => found({ link: parseTeamJoinLink(valid) }));
+      expect(screen.getByText('Continue joining')).toBeOnTheScreen();
+      await act(async () => answer({ granted }));
+      expect(screen.getByText('Continue joining')).toBeOnTheScreen();
+      expect(screen.queryByText(/Allow camera access/)).toBeNull();
+      expect(screen.queryByTestId('camera')).toBeNull();
+    },
+  );
 
   it('keeps pasting available when camera access is refused', async () => {
     mockPermission.current = { granted: false };
