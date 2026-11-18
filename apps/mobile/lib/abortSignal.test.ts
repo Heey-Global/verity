@@ -33,14 +33,14 @@ function sourcesIn(dir: string): string[] {
 const withoutComments = (source: string) =>
   source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-/** Methods Node offers that React Native's implementation does not. */
-function missingMethods(native: object, reactNative: object): string[] {
-  return Object.getOwnPropertyNames(native).filter(
-    (name) =>
-      typeof Object.getOwnPropertyDescriptor(native, name)?.value === 'function' &&
-      name !== 'constructor' &&
-      !(name in reactNative),
-  );
+/** Members Node offers that React Native's implementation does not, either
+ *  methods or properties (such as the `reason` getter). */
+function missing(native: object, reactNative: object, kind: 'method' | 'property'): string[] {
+  return Object.getOwnPropertyNames(native).filter((name) => {
+    if (name === 'constructor' || name in reactNative) return false;
+    const isMethod = typeof Object.getOwnPropertyDescriptor(native, name)?.value === 'function';
+    return kind === 'method' ? isMethod : !isMethod;
+  });
 }
 
 describe('throwIfAborted', () => {
@@ -68,13 +68,18 @@ describe('throwIfAborted', () => {
 // team join broke that way at its first step — while every Jest suite passes
 // on Node's implementation. The list comes from the two implementations, so a
 // React Native upgrade that adds a member lifts the ban by itself.
-it('app sources call no AbortSignal method React Native lacks', () => {
-  const instance = missingMethods(AbortSignal.prototype, ReactNativeAbortSignal.prototype);
-  const statics = missingMethods(AbortSignal, ReactNativeAbortSignal);
+it('app sources use no AbortSignal member React Native lacks', () => {
+  const methods = missing(AbortSignal.prototype, ReactNativeAbortSignal.prototype, 'method');
+  const properties = missing(AbortSignal.prototype, ReactNativeAbortSignal.prototype, 'property');
+  const statics = missing(AbortSignal, ReactNativeAbortSignal, 'method');
   // Without a known gap the patterns below would be vacuous.
-  expect(instance).toContain('throwIfAborted');
+  expect(methods).toContain('throwIfAborted');
+  expect(properties).toContain('reason');
   const patterns = [
-    ...instance.map((name) => new RegExp(`\\.\\s*${name}\\s*\\(`)),
+    ...methods.map((name) => new RegExp(`\\.\\s*${name}\\s*(\\?\\.\\s*)?\\(`)),
+    // Property names are common (`descriptor.reason`), so only reads on
+    // something named like a signal count.
+    ...properties.map((name) => new RegExp(`\\b[sS]ignal\\s*\\??\\.\\s*${name}\\b`)),
     ...statics.map((name) => new RegExp(`\\bAbortSignal\\s*\\.\\s*${name}\\b`)),
   ];
   const offenders = SOURCE_DIRS.flatMap(sourcesIn).flatMap((file) => {

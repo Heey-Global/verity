@@ -104,7 +104,7 @@ jest.mock('@verity/mobile', () => {
 import { VerityApiError } from '@verity/mobile';
 
 import { withReactNativeAbortController } from '../__tests__/support/reactNativeAbortController';
-import { throwIfAborted } from './abortSignal';
+import { AbortError, throwIfAborted } from './abortSignal';
 import { parseTeamJoinLink } from './teamInvitationLink';
 import { joinTeam, TeamJoinError, type JoinTeamDeps } from './teamJoin';
 import { TeamJoinAdmissionError } from './teamJoinAdmission';
@@ -333,7 +333,9 @@ it('stops a join on React Native’s AbortController and keeps the saved progres
       controller.abort();
       throw new Error('answer lost');
     });
-    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow(
+      AbortError,
+    );
   });
   expect(mockSaveProfile).not.toHaveBeenCalled();
   expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
