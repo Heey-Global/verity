@@ -310,9 +310,13 @@ jobs:
             jq --version
             openssl version
             corepack --version
-            # The install-policy shims hand pnpm/yarn to these commands.
-            command -v pnpm
-            command -v yarn
+            # The install-policy shims hand pnpm/yarn to these commands. Node 26
+            # bundles neither, so they must resolve to the pinned Corepack, and
+            # pnpm must actually start (Corepack fetches it on first use).
+            for PACKAGE_MANAGER in pnpm yarn; do
+              realpath "$(command -v "$PACKAGE_MANAGER")" | grep -q "/.verity-cli/corepack/"
+            done
+            (cd "$(mktemp -d)" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm --version)
             echo "::endgroup::"
 
             echo "::group::Agent CLIs — launch --version under a pseudo-terminal"
