@@ -50,7 +50,8 @@ copies, for example before patching a package. If a shared file was already
 made writable, the next `install` in any session that shares it withdraws the
 inventory and fails once; running it again prepares a fresh inventory.
 Executable files stay private copies, because npm resets the mode of command
-targets whenever it links commands. Where the filesystem refuses a
+targets whenever it links commands, and so do files in dot-directories directly
+under `node_modules`, such as `.prisma`, which generators rewrite in place. Where the filesystem refuses a
 link, activation copies that file and reports how many it copied. `install`
 checks for shared files that were made writable again (`status` does not, to
 stay fast): it withdraws the affected inventory so the next install prepares it
@@ -66,9 +67,8 @@ Sessions activated before sharing hold private copies. While such a session is
 in use, collection replaces each file that is byte-identical, with the same
 execute bits, to the sealed inventory named by the session's receipt by a link
 to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
-already shared files, executable files and npm's receipts are left as they are,
-as are sessions
-whose `node_modules` belongs to root. The conversion never runs with more rights
+already shared files, executable files, dot-directories and npm's receipts are
+left as they are, as are sessions whose `node_modules` belongs to root. The conversion never runs with more rights
 than the session has: a Server running as root performs it in a worker process
 under the owner of the session's `node_modules`, and skips it when it can do
 neither. A file that changes before its replacement is kept. A tree converted

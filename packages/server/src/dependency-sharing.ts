@@ -90,8 +90,9 @@ export async function shareOwnDependencyFiles(
       signal.throwIfAborted();
       const name = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(name);
-      // npm rewrites its top-level receipts in place; those stay private.
-      else if (entry.isFile() && directory !== '') candidates.push(name);
+      // npm rewrites its top-level receipts in place, and generators rewrite their
+      // dot-directories such as `.prisma`; those stay private.
+      else if (entry.isFile() && directory !== '' && !name.startsWith('.')) candidates.push(name);
     }
   }
   for (const name of candidates) {

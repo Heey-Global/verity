@@ -36,6 +36,7 @@ function fixture(sealed = true, marker = sealed) {
     ['dep/index.js', 'shared'],
     ['dep/edited.js', 'original'],
     ['dep/node_modules/nested/index.js', 'nested'],
+    ['.prisma/client/index.js', 'generated'],
     ['.package-lock.json', '{}'],
   ] as const) {
     file(central, path, contents, sealed ? 0o444 : 0o644);
@@ -75,6 +76,7 @@ describe.skipIf(process.getuid?.() === 0)(
         'dep/local-only.js',
         'dep/cli.js',
         'dep/bin.js',
+        '.prisma/client/index.js',
         '.package-lock.json',
       ])
         expect(statSync(join(f.modules, path)).nlink).toBe(1);

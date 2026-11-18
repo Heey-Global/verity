@@ -1042,6 +1042,7 @@ async function main() {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
         const share = process.getuid?.() !== 0 && sealInventory(cache);
+        const drifted = read(join(cache, 'sealed')) === 'v1' ? () => withdraw(cache) : undefined;
         const copied = { files: 0 };
         const recorded = new Map();
         for (const tree of workspaceModuleTrees(cache)) {
@@ -1051,15 +1052,12 @@ async function main() {
             throw new Error('Workspace dependency parent must stay inside the project.');
           const copy = candidate + '-workspace-' + workspaceCopies.length;
           workspaceCopies.push({ copy, destination });
-          recorded.set(
-            destination,
-            shareTree(tree, copy, copied, () => withdraw(cache), share),
-          );
+          recorded.set(destination, shareTree(tree, copy, copied, drifted, share));
           rewire(root, copy, path + '/');
         }
         recorded.set(
           modules,
-          shareTree(join(cache, 'node_modules'), candidate, copied, () => withdraw(cache), share),
+          shareTree(join(cache, 'node_modules'), candidate, copied, drifted, share),
         );
         if (copied.files > 0)
           console.log(`Copied ${copied.files} dependency files that could not be shared.`);
@@ -1365,7 +1363,7 @@ function unchangedSince(directory, record, includeTop) {
 // Sessions share the central inventory's files as read-only hardlinks: one inode
 // for every session, so an edit would change every session and the inventory.
 /** Visits every regular file below `tree`; stops once `visit` returns true. */
-function eachFile(tree, visit, retries = 3) {
+function eachFile(tree, visit, strict = false, retries = 3) {
   try {
     for (const entry of readdirSync(tree, { recursive: true, withFileTypes: true })) {
       const path = join(entry.parentPath ?? entry.path, entry.name);
@@ -1376,9 +1374,9 @@ function eachFile(tree, visit, retries = 3) {
   } catch (error) {
     // Tools create and remove cache entries meanwhile; visits are repeatable. A
     // directory this user cannot read holds nothing it could share or edit either.
-    if (error.code === 'EACCES') return false;
+    if (error.code === 'EACCES' && !strict) return false;
     if (error.code !== 'ENOENT' || retries === 0) throw error;
-    return eachFile(tree, visit, retries - 1);
+    return eachFile(tree, visit, strict, retries - 1);
   }
 }
 /** A session's own trees: a symlinked `node_modules` belongs to something else. */
@@ -1391,10 +1389,9 @@ function ownTrees(root) {
 function sealInventory(cache) {
   try {
     if (read(join(cache, 'sealed')) !== 'v1') {
-      for (const tree of ownTrees(cache))
-        eachFile(tree, (path, stat) => {
-          if (stat.mode & 0o222) chmodSync(path, stat.mode & 0o7555);
-        });
+      // Strict: a directory it cannot read would stay unsealed behind the marker.
+      const seal = (path, stat) => stat.mode & 0o222 && chmodSync(path, stat.mode & 0o7555);
+      for (const tree of ownTrees(cache)) eachFile(tree, seal, true);
       writeFileSync(join(cache, 'sealed'), 'v1');
     }
     return true;
@@ -1421,14 +1418,15 @@ function shareTree(source, destination, copied, drifted, share) {
     else regular.push([from, to, stat]);
   }
   for (const [from, to, stat] of regular) {
-    // npm rewrites its top-level receipts in place and resets the mode of command
-    // targets whenever it links commands; those stay private copies.
-    if (share && dirname(from) !== source && !(stat.mode & 0o111)) {
-      // A writable inventory file may already carry an edit made through a link.
-      if (stat.mode & 0o222) drifted();
+    const name = relative(source, from);
+    // A writable file of a sealed inventory may carry an edit made through a link.
+    if (drifted && stat.mode & 0o222 && dirname(from) !== source) drifted();
+    // npm rewrites its top-level receipts and generated dot-directories (`.prisma`)
+    // in place and resets command targets' modes; those stay private copies.
+    if (share && dirname(from) !== source && !name.startsWith('.') && !(stat.mode & 0o111)) {
       try {
         linkSync(from, to);
-        files.push(fileIdentity(relative(source, from), lstatSync(from, { bigint: true })));
+        files.push(fileIdentity(name, lstatSync(from, { bigint: true })));
         continue;
       } catch (error) {
         if (!['EXDEV', 'EPERM', 'EMLINK', 'ENOTSUP', 'EACCES'].includes(error.code)) throw error;
@@ -1437,7 +1435,7 @@ function shareTree(source, destination, copied, drifted, share) {
     }
     copyFileSync(from, to);
     chmodSync(to, (stat.mode & 0o7777) | 0o200);
-    files.push(fileIdentity(relative(source, from), lstatSync(to, { bigint: true })));
+    files.push(fileIdentity(name, lstatSync(to, { bigint: true })));
   }
   return filesKey(files);
 }
