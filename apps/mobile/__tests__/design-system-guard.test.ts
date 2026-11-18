@@ -58,7 +58,7 @@ const EXEMPT: Partial<Record<string, Counts>> = {
   // The camera scanner sits on the live camera image: black around it, a white
   // frame and white text on a dark veil stay readable over any picture, in
   // either theme.
-  'app/onboarding/server-url.tsx': { rawColor: 4 },
+  'components/ui/QrScanner.tsx': { rawColor: 4 },
 };
 
 /** Every non-test `.ts`/`.tsx` below `dir`. Throws rather than returning
