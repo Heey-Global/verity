@@ -46,8 +46,9 @@ adds its directories, not another copy of every package, and keeps working when
 the inventory is later retired. Writing a shared file fails with a permission
 error instead of changing every session at once; run
 `verity dependencies install --private` to give the session its own writable
-copies, for example before patching a package; if a shared file was already
-made writable, the first run withdraws the inventory and a second one completes.
+copies, for example before patching a package. If a shared file was already
+made writable, the next `install` in any session that shares it withdraws the
+inventory and fails once; running it again prepares a fresh inventory.
 Executable files stay private copies, because npm resets the mode of command
 targets whenever it links commands. Where the filesystem refuses a
 link, activation copies that file and reports how many it copied. `install`

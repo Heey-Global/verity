@@ -1374,7 +1374,9 @@ function eachFile(tree, visit, retries = 3) {
     }
     return false;
   } catch (error) {
-    // Tools create and remove cache entries meanwhile; visits are repeatable.
+    // Tools create and remove cache entries meanwhile; visits are repeatable. A
+    // directory this user cannot read holds nothing it could share or edit either.
+    if (error.code === 'EACCES') return false;
     if (error.code !== 'ENOENT' || retries === 0) throw error;
     return eachFile(tree, visit, retries - 1);
   }
