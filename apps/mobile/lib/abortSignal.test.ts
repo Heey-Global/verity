@@ -67,8 +67,11 @@ describe('throwIfAborted', () => {
 // Calling one of these on a device throws "undefined is not a function" — the
 // team join broke that way at its first step — while every Jest suite passes
 // on Node's implementation. The list comes from the two implementations, so a
-// React Native upgrade that adds a member lifts the ban by itself.
-it('app sources use no AbortSignal member React Native lacks', () => {
+// React Native upgrade that adds a member lifts the ban by itself. The scan
+// catches the direct forms (`signal.reason`, `.throwIfAborted(`,
+// `AbortSignal.timeout`), not destructuring, bracket access or aliases; use
+// the helper in abortSignal.ts instead of any of them.
+it('app sources do not directly use an AbortSignal member React Native lacks', () => {
   const methods = missing(AbortSignal.prototype, ReactNativeAbortSignal.prototype, 'method');
   const properties = missing(AbortSignal.prototype, ReactNativeAbortSignal.prototype, 'property');
   const statics = missing(AbortSignal, ReactNativeAbortSignal, 'method');
