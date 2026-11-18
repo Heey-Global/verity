@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
+import { throwIfAborted } from './abortSignal';
 import type { VerityPairingPayload } from './pairing';
 import type { RemoteControlDescriptor } from '@verity/mobile';
 
@@ -244,7 +245,7 @@ export async function activateServerProfile(
   finalize?: () => Promise<void>,
 ): Promise<void> {
   const next = validateServerProfile(profile);
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   const previous = currentProfile;
   const previousOthers = otherProfiles;
   const others = otherProfiles.filter((entry) => entry.serverId !== next.serverId);
@@ -255,11 +256,11 @@ export async function activateServerProfile(
   // others without it. An interruption leaves a duplicate, never a lost server.
   try {
     await writeOthers([...others, next]);
-    signal?.throwIfAborted();
+    throwIfAborted(signal);
     await saveServerProfile(next);
-    signal?.throwIfAborted();
+    throwIfAborted(signal);
     await writeOthers(others);
-    signal?.throwIfAborted();
+    throwIfAborted(signal);
     // Finalize the URL/credential switch within the same cancellation boundary.
     await finalize?.();
   } catch (error) {
