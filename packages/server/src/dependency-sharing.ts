@@ -1,18 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import {
-  link,
-  lstat,
-  open,
-  readFile,
-  readdir,
-  readlink,
-  realpath,
-  rename,
-  rm,
-} from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
+import { link, lstat, open, readFile, readdir, realpath, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -85,10 +75,7 @@ export async function shareOwnDependencyFiles(
   } catch {
     return result;
   }
-  // npm resets a command target's mode whenever it links commands, so those stay
-  // private, as `verity-dependencies` keeps them. Files are replaced after the
-  // walk, once every command link is known.
-  const commands = new Set<string>();
+  // Files are replaced after the walk, so every candidate is known first.
   const candidates: string[] = [];
   const pending = [''];
   while (pending.length > 0) {
@@ -103,8 +90,6 @@ export async function shareOwnDependencyFiles(
       signal.throwIfAborted();
       const name = join(directory, entry.name);
       if (entry.isDirectory()) pending.push(name);
-      else if (entry.isSymbolicLink() && basename(directory) === '.bin')
-        commands.add(resolve(modules, directory, await readlink(join(modules, name))));
       // npm rewrites its top-level receipts in place; those stay private.
       else if (entry.isFile() && directory !== '') candidates.push(name);
     }
@@ -112,7 +97,6 @@ export async function shareOwnDependencyFiles(
   for (const name of candidates) {
     signal.throwIfAborted();
     const path = join(modules, name);
-    if (commands.has(path)) continue;
     const shared = join(central, name);
     const [before, source] = await Promise.all([
       lstat(path).catch(() => undefined),
@@ -129,6 +113,9 @@ export async function shareOwnDependencyFiles(
       source.size !== before.size ||
       // Write bits are the only difference sharing introduces.
       (source.mode & 0o7555) !== (before.mode & 0o7555) ||
+      // npm resets the mode of command targets whenever it links commands, so
+      // executables stay private, as `verity-dependencies` keeps them.
+      before.mode & 0o111 ||
       (await digest(path, signal)) !== (await digest(shared, signal))
     )
       continue;

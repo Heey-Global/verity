@@ -23,7 +23,7 @@ import {
   copyFileSync,
   linkSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve, isAbsolute, relative } from 'node:path';
+import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -1042,8 +1042,7 @@ async function main() {
         // Root ignores permission bits, so its writes would reach every session;
         // an inventory this process cannot seal is copied as before.
         const share = process.getuid?.() !== 0 && sealInventory(cache);
-        // npm resets command targets' modes whenever it links them, in any tree.
-        const copied = { files: 0, commands: new Set() };
+        const copied = { files: 0 };
         const recorded = new Map();
         for (const tree of workspaceModuleTrees(cache)) {
           const path = relative(cache, tree);
@@ -1411,9 +1410,7 @@ function shareTree(source, destination, copied, drifted, share) {
     const [from, to] = pending.pop();
     const stat = lstatSync(from);
     if (stat.isSymbolicLink()) {
-      const target = readlinkSync(from);
-      symlinkSync(target, to);
-      if (basename(dirname(from)) === '.bin') copied.commands.add(resolve(dirname(from), target));
+      symlinkSync(readlinkSync(from), to);
     } else if (stat.isDirectory()) {
       mkdirSync(to);
       chmodSync(to, (stat.mode & 0o7777) | 0o700);
@@ -1422,8 +1419,9 @@ function shareTree(source, destination, copied, drifted, share) {
     else regular.push([from, to, stat]);
   }
   for (const [from, to, stat] of regular) {
-    // npm rewrites its top-level receipts in place; those stay private copies.
-    if (share && dirname(from) !== source && !copied.commands.has(from)) {
+    // npm rewrites its top-level receipts in place and resets the mode of command
+    // targets whenever it links commands; those stay private copies.
+    if (share && dirname(from) !== source && !(stat.mode & 0o111)) {
       // A writable inventory file may already carry an edit made through a link.
       if (stat.mode & 0o222) drifted();
       try {

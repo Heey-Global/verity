@@ -80,6 +80,7 @@ const complete = () => {
       fs.writeFileSync(path.join(file, 'package.json'), JSON.stringify({version:value.version}));
       if (file === 'node_modules/private') {
         fs.writeFileSync(path.join(file,'cli.js'),'// private cli');
+        fs.chmodSync(path.join(file,'cli.js'),0o755);
         fs.mkdirSync('node_modules/.bin',{recursive:true});
         fs.symlinkSync('../private/cli.js','node_modules/.bin/private');
       }
