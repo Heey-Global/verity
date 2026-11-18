@@ -15,6 +15,7 @@ import {
   type VerityServerProfile,
 } from './serverProfile';
 import { resetVeritySettingsStore } from './settingsStore';
+import { throwIfAborted } from './abortSignal';
 import { exitDemoMode, hydrateDemoMode, isDemoMode } from './demoMode';
 import { serverConnection } from './serverConnection';
 import { DEMO_BASE_URL, demoFetch } from './demoTransport';
@@ -127,14 +128,14 @@ export async function setVerityBaseUrl(
   if (normalized === null) {
     throw new Error('Server URL must not be empty.');
   }
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   const previous = currentBaseUrl;
   try {
     await AsyncStorage.setItem(STORAGE_KEY, normalized);
     // Enrollment adopts its credential only at the final commit boundary.
     // Until then demo exit must preserve the previous connection's credential.
     if (isDemoMode()) await exitDemoMode(onCommit === undefined ? normalized : previous);
-    signal?.throwIfAborted();
+    throwIfAborted(signal);
   } catch (error) {
     if (previous === null) await AsyncStorage.removeItem(STORAGE_KEY);
     else await AsyncStorage.setItem(STORAGE_KEY, previous);

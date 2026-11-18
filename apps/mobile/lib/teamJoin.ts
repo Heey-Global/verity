@@ -20,6 +20,7 @@ import {
   type VerityServerProfile,
 } from './serverProfile';
 import { serverIdFor, TeamJoinLinkError, type TeamJoinLink } from './teamInvitationLink';
+import { throwIfAborted } from './abortSignal';
 import { requestTeamJoinAdmission, TeamJoinAdmissionError } from './teamJoinAdmission';
 
 function randomId(): string {
@@ -244,7 +245,7 @@ async function joinTeamAttempt(
           signal: controller.signal,
         });
       }
-      controller.signal.throwIfAborted();
+      throwIfAborted(controller.signal);
       const attach = async (
         ticket: string,
         sessionId: string,
@@ -381,7 +382,7 @@ async function joinTeamAttempt(
       deps.onPhase?.('confirming');
       let confirmed = false;
       for (let attempt = 0; attempt < 12; attempt++) {
-        controller.signal.throwIfAborted();
+        throwIfAborted(controller.signal);
         try {
           const result = await client.people.completeTeamJoin();
           if (result.projectId !== joined.projectId)
@@ -422,14 +423,14 @@ async function joinTeamAttempt(
       admission.finish();
       await tunnel.stop().catch(() => undefined);
     }
-    controller.signal.throwIfAborted();
+    throwIfAborted(controller.signal);
     if (joined === undefined) throw new Error('No saved device credential.');
 
     await validateConnections(joined);
-    controller.signal.throwIfAborted();
+    throwIfAborted(controller.signal);
     if (!(await setAuthToken(link.coreOrigin, joined.token, joined.tokenId, false)))
       throw new Error('Could not save the device credential. Open the invitation again.');
-    controller.signal.throwIfAborted();
+    throwIfAborted(controller.signal);
     const profile: VerityServerProfile = {
       version: 1,
       serverId: link.serverId,
@@ -460,7 +461,7 @@ async function joinTeamAttempt(
 }
 
 function bounded<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(new Error('Join interrupted. Saved progress can be continued.'));
     signal.addEventListener('abort', abort, { once: true });

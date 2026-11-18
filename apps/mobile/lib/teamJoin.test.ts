@@ -30,7 +30,7 @@ jest.mock('./authToken', () => ({
   setAuthToken: (...args: unknown[]) => mockSetToken(...args),
 }));
 const mockSetBaseUrl = jest.fn(async (_url: string, signal?: AbortSignal, commit?: () => void) => {
-  signal?.throwIfAborted();
+  throwIfAborted(signal);
   mockCalls.push('baseUrl');
   commit?.();
 });
@@ -52,7 +52,7 @@ const mockSaveProfile = jest.fn(
   async (profile: unknown, signal?: AbortSignal, finalize?: () => Promise<void>) => {
     mockCalls.push('profile');
     mockProfile.current = profile;
-    signal?.throwIfAborted();
+    throwIfAborted(signal);
     await finalize?.();
   },
 );
@@ -103,6 +103,8 @@ jest.mock('@verity/mobile', () => {
 
 import { VerityApiError } from '@verity/mobile';
 
+import { withReactNativeAbortController } from '../__tests__/support/reactNativeAbortController';
+import { throwIfAborted } from './abortSignal';
 import { parseTeamJoinLink } from './teamInvitationLink';
 import { joinTeam, TeamJoinError, type JoinTeamDeps } from './teamJoin';
 import { TeamJoinAdmissionError } from './teamJoinAdmission';
@@ -313,6 +315,28 @@ it('never authorizes activation when the credential cannot be durably saved', as
   expect(mockComplete).not.toHaveBeenCalled();
   expect(mockSaveProfile).not.toHaveBeenCalled();
   expect(tunnel.stop).toHaveBeenCalled();
+});
+
+// React Native's AbortSignal has no throwIfAborted and no reason; a join that
+// relied on either failed on a device before contacting Uplink.
+it('joins on the AbortController React Native ships', async () => {
+  await withReactNativeAbortController(async () => {
+    await expect(joinTeam(link, 'Lena', deps)).resolves.toEqual({ projectId: 'p1' });
+  });
+  expect(mockSaveProfile).toHaveBeenCalled();
+});
+
+it('stops a join on React Native’s AbortController and keeps the saved progress', async () => {
+  await withReactNativeAbortController(async () => {
+    const controller = new AbortController();
+    mockComplete.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('answer lost');
+    });
+    await expect(joinTeam(link, 'Lena', { ...deps, signal: controller.signal })).rejects.toThrow();
+  });
+  expect(mockSaveProfile).not.toHaveBeenCalled();
+  expect(mockProgress.current).toMatchObject({ credential: { token: 'device-token' } });
 });
 
 it('resumes with the saved bearer after a lost completion answer, without redeeming again', async () => {

@@ -1,4 +1,5 @@
 import { getRandomBytes } from 'expo-crypto';
+import { throwIfAborted } from './abortSignal';
 
 // The app's one request of a team join on Uplink's admission socket (team
 // bootstrap interface v1). Uplink mints the redemption; the app never makes one.
@@ -57,7 +58,7 @@ export function requestTeamJoinAdmission(options: {
   signal?: AbortSignal;
   socketFactory?: (url: string) => WebSocket;
 }): Promise<TeamJoinAdmission> {
-  options.signal?.throwIfAborted();
+  throwIfAborted(options.signal);
   const url = admissionUrl(options.uplinkOrigin);
   const id = requestId();
   const socket = (options.socketFactory ?? ((target) => new WebSocket(target)))(url);

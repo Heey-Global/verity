@@ -5,6 +5,7 @@ jest.mock('expo-crypto', () => ({
   getRandomBytes: (count: number) => new Uint8Array(count).fill(7),
 }));
 
+import { ReactNativeAbortController } from '../__tests__/support/reactNativeAbortController';
 import { requestTeamJoinAdmission, TeamJoinAdmissionError } from './teamJoinAdmission';
 
 // Frames as the contract defines them; the app's request id replaces the fixture's.
@@ -98,4 +99,24 @@ it('accepts no ready frame for another request or with extra fields', async () =
     }),
   });
   await expect(extra.admission).rejects.toThrow('Invalid team join admission response.');
+});
+
+// The join passes its signal here first; React Native's AbortSignal has no
+// throwIfAborted, so calling it stopped every join before the socket opened.
+it('opens the socket with a signal from the AbortController React Native ships', () => {
+  const controller = new ReactNativeAbortController();
+  let socket: FakeSocket | undefined;
+  void requestTeamJoinAdmission({
+    uplinkOrigin: 'https://uplink.verity.build',
+    installationHandle: 'AQEBAQEBAQEBAQEBAQEBAQ',
+    invitationId: 'MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM',
+    signal: controller.signal,
+    socketFactory: (url) => {
+      socket = new FakeSocket(url);
+      return socket as unknown as WebSocket;
+    },
+  }).catch(() => undefined);
+  expect(socket?.url).toBe('wss://uplink.verity.build/remote-control');
+  controller.abort();
+  expect(socket?.closed).toBe(true);
 });
