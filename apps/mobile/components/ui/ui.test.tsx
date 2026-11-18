@@ -184,7 +184,15 @@ describe('Row', () => {
     fireEvent(row, 'pressIn');
     expect(background(container)).toBe(pressedColor);
     // Lit once, on the outside: a second translucent layer would show as a step.
-    expect(background(row)).toBeUndefined();
+    // Asked of the style function itself, since a fired event does not set the
+    // pressed state Pressable hands to it.
+    let pressable = row;
+    while (typeof pressable.props.style !== 'function') pressable = pressable.parent!;
+    const style = pressable.props.style as (state: { pressed: boolean }) => unknown;
+    expect(
+      (StyleSheet.flatten(style({ pressed: true }) as never) as { backgroundColor?: string })
+        .backgroundColor,
+    ).toBeUndefined();
     fireEvent(row, 'pressOut');
     expect(background(container)).toBeUndefined();
   });

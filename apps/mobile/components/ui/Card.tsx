@@ -291,8 +291,8 @@ export function Row({
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
-      onPressIn={wrapped ? () => setHeld(true) : undefined}
-      onPressOut={wrapped ? () => setHeld(false) : undefined}
+      onPressIn={() => setHeld(true)}
+      onPressOut={() => setHeld(false)}
       disabled={disabled}
       accessibilityRole={choice ? 'radio' : 'button'}
       accessibilityLabel={
@@ -330,7 +330,11 @@ export function Row({
       pressable
     );
   return strip ? (
-    <View style={lit ? styles.pressed : active ? styles.rowActive : undefined}>
+    <View
+      style={
+        active || lit ? [active ? styles.rowActive : null, lit ? styles.pressed : null] : undefined
+      }
+    >
       {body}
       {strip}
     </View>
