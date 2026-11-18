@@ -63,7 +63,9 @@ export function createHandoffSessionCreator({
       if (
         project === undefined ||
         project.hiddenAt !== null ||
-        project.state !== 'active' ||
+        (project.state !== 'active' &&
+          project.state !== 'sleeping' &&
+          project.state !== 'waking') ||
         isControlPlaneProject(project)
       ) {
         throw new ControlPlaneSessionToolError('new-session handoff target is unavailable');
@@ -78,6 +80,8 @@ export function createHandoffSessionCreator({
         throw new ControlPlaneSessionToolError(
           'Local projects require configured document storage.',
         );
+      // Host-side worktree creation is safe while asleep; the delivered turn wakes
+      // the retained sandbox through the same preparation as a foreground message.
       await deps.provisioner?.prepareLocalDocuments?.(project.id);
       const releaseSpawn = beginProjectSpawn(project.id);
       try {
