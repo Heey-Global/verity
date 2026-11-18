@@ -6,6 +6,21 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.97.0](https://github.com/Heey-Global/verity/compare/v4.96.0...v4.97.0) (2026-11-18)
+
+
+### Features
+
+* **dependencies:** share unchanged dependency files across sessions ([#2683](https://github.com/Heey-Global/verity/issues/2683)) ([0f77af5](https://github.com/Heey-Global/verity/commit/0f77af568277f8155c8d2cf534f7f40d0a7a802d))
+
+
+### Bug Fixes
+
+* **dependencies:** discard activated trees unchanged since activation ([#2675](https://github.com/Heey-Global/verity/issues/2675)) ([f0d8b6a](https://github.com/Heey-Global/verity/commit/f0d8b6a77fb73319196b632709105a032f18fa5a))
+* **server:** fetch the pinned anchor image before protected builds ([#2678](https://github.com/Heey-Global/verity/issues/2678)) ([f94fbdb](https://github.com/Heey-Global/verity/commit/f94fbdbbfa5cfc5ffc393997486cdf6e0bdcae2f))
+* **server:** wake sleeping projects for session handoffs ([#2684](https://github.com/Heey-Global/verity/issues/2684)) ([4da47ba](https://github.com/Heey-Global/verity/commit/4da47ba42b3fb9e925f4b19b8ea4197f69597e9d))
+* **team:** report missing team sharing instead of waiting for a link forever ([#2686](https://github.com/Heey-Global/verity/issues/2686)) ([336a83d](https://github.com/Heey-Global/verity/commit/336a83d07e66654e4b866649bda2231289be32e8))
+
 ## [4.96.0](https://github.com/Heey-Global/verity/compare/v4.95.1...v4.96.0) (2026-11-17)
 
 
