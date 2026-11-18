@@ -1459,9 +1459,11 @@ function sharedDrift(root) {
     eachFile(tree, (_, stat) => stat.nlink > 1 && (stat.mode & 0o222) !== 0),
   );
 }
-/** `install --private`: own copies of shared files, marked so storage collection keeps them. */
+/** `install --private`: own copies of shared files, marked first so storage collection keeps them. */
 function privatize(root) {
   let files = 0;
+  if (ownTrees(root).includes(join(root, 'node_modules')))
+    writeFileSync(join(root, 'node_modules', '.verity-private'), '');
   for (const tree of ownTrees(root))
     eachFile(tree, (path, stat) => {
       if (stat.nlink < 2 && stat.mode & 0o200) return;
@@ -1477,8 +1479,6 @@ function privatize(root) {
         rmSync(temporary, { force: true });
       }
     });
-  if (ownTrees(root).includes(join(root, 'node_modules')))
-    writeFileSync(join(root, 'node_modules', '.verity-private'), '');
   console.log(`Made ${files} shared dependency files private to this session.`);
 }
 function readlinkExists(path) {
