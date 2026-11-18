@@ -77,18 +77,17 @@ export function JoinView({
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const controller = useRef<AbortController | null>(null);
   const mounted = useRef(true);
-  // The camera belongs to the first step; leaving it (saved progress found,
-  // say) must not leave it set to reopen on its own later.
+  // The camera belongs to the first step: whatever leaves that step closes it,
+  // so it never reopens on its own later.
   const phaseKind = useRef(phase.kind);
   phaseKind.current = phase.kind;
-  useEffect(() => {
-    if (phase.kind !== 'enter') setScannerOpen(false);
-  }, [phase.kind]);
   useEffect(() => {
     mounted.current = true;
     void loadTeamJoinProgress()
       .then((progress) => {
-        if (mounted.current && progress !== null) setPhase({ kind: 'resume', link: progress.link });
+        if (!mounted.current || progress === null) return;
+        setScannerOpen(false);
+        setPhase({ kind: 'resume', link: progress.link });
       })
       .catch((error: unknown) => {
         if (mounted.current)
