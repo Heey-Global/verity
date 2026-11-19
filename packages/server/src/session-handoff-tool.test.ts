@@ -729,7 +729,7 @@ it('limits diagnostic projects to existing non-Control projects without Knowledg
   await expect(harness().tools.authorizeDiagnosticProject('k8s')).resolves.toBeUndefined();
 });
 
-it('allows verified Control metadata and handoffs without exposing knowledge text', async () => {
+it('gives Control published progress but no other knowledge text across the boundary', async () => {
   const h = harness({
     allowKnowledgeControlOperations: true,
     authorizeKnowledgeCaller: async () => {
@@ -739,18 +739,26 @@ it('allows verified Control metadata and handoffs without exposing knowledge tex
     readProgress: async () => ({
       lifecycle: 'completed',
       outcomeDelivered: true,
-      publishedSummary: { summary: 'private knowledge' },
-      requiredDecision: 'private knowledge',
+      branch: 'agent/private-knowledge',
+      cachedPullRequest: { title: 'private knowledge' },
+      publishedSummary: { summary: 'Fixed and pushed', publishedAt: 5 },
+      blocker: { kind: 'published', summary: 'Waiting for review' },
+      requiredDecision: 'Merge now?',
     }),
   });
   expect((await h.tools.listSessions(h.call({}))).sessions.length).toBeGreaterThan(0);
-  await expect(h.tools.progress(h.call({ sessionId: 'sess-web' }))).resolves.toMatchObject({
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  // The handoff -> publish -> read flow: without these, Control cannot learn the result of a
+  // briefing it sent to a knowledge-bearing project at all.
+  expect(progress).toMatchObject({
     lifecycle: 'completed',
     outcomeDelivered: true,
+    publishedSummary: { summary: 'Fixed and pushed', publishedAt: 5 },
+    blocker: { kind: 'published', summary: 'Waiting for review' },
+    requiredDecision: 'Merge now?',
+    withheld: { reason: 'knowledge-boundary', fields: ['branch', 'cachedPullRequest'] },
   });
-  expect(JSON.stringify(await h.tools.progress(h.call({ sessionId: 'sess-web' })))).not.toContain(
-    'private knowledge',
-  );
+  expect(JSON.stringify(progress)).not.toContain('private knowledge');
   await h.tools.handoff(
     h.call({ target: { sessionId: 'sess-web' }, title: 'Repair', briefing: 'Check preview' }),
   );
@@ -761,6 +769,58 @@ it('allows verified Control metadata and handoffs without exposing knowledge tex
   await expect(
     h.tools.listSessions({ ...h.call({}), sessionId: 'moved-session' }),
   ).rejects.toThrow();
+});
+
+it('bounds published progress fields across the knowledge boundary', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    canAccessKnowledgeTarget: async () => false,
+    readProgress: async () => ({
+      lifecycle: 'completed',
+      publishedSummary: { summary: `${'s'.repeat(999)}😀`, extra: 'private knowledge' },
+      blocker: { kind: 'error', errorKind: 'Not A Kind', message: 'private knowledge' },
+      requiredDecision: { nested: 'private knowledge' },
+    }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress.publishedSummary).toEqual({ summary: 's'.repeat(999) });
+  expect(progress.withheld).toEqual({
+    reason: 'knowledge-boundary',
+    fields: ['blocker', 'requiredDecision'],
+  });
+  expect(JSON.stringify(progress)).not.toContain('private knowledge');
+});
+
+it('bounds Control progress when no knowledge checker is wired', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    readProgress: async () => ({ lifecycle: 'completed', branch: 'agent/private-knowledge' }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress).toMatchObject({ withheld: { fields: ['branch'] } });
+  expect(JSON.stringify(progress)).not.toContain('private-knowledge');
+});
+
+it('reports absent published fields as absent, not withheld', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    canAccessKnowledgeTarget: async () => false,
+    readProgress: async () => ({ publishedSummary: null, blocker: null, requiredDecision: null }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress).toMatchObject({ publishedSummary: null, blocker: null, requiredDecision: null });
+  expect(progress).not.toHaveProperty('withheld');
+});
+
+it('returns full progress to Control when the target has no knowledge exposure', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    canAccessKnowledgeTarget: async () => true,
+    readProgress: async () => ({ lifecycle: 'completed', branch: 'agent/1-fix' }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress).toMatchObject({ branch: 'agent/1-fix' });
+  expect(progress).not.toHaveProperty('withheld');
 });
 
 it('keeps protected target transcripts blocked for a knowledge-free Control caller', async () => {
