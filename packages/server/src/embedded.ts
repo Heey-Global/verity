@@ -1,3 +1,4 @@
+import { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
 import {
   createEmbeddedProjectRelayControl,
   validateEmbeddedProjectRelay,
@@ -54,7 +55,6 @@ import {
   createEmbeddedRunnerIdentityPublisher,
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
-import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import {
   isProjectSettingsReader,
   materializeControlPlaneAgentEnv,
@@ -107,11 +107,7 @@ export {
 } from './embedded-support.js';
 import type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
 export type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
-import {
-  buildRunnerConductorWiring,
-  runnerSandboxPath,
-  RUNNER_CONTAINER_PROJECT_ROOT,
-} from './embedded-runner-wiring.js';
+import { runnerSandboxPath, RUNNER_CONTAINER_PROJECT_ROOT } from './embedded-runner-wiring.js';
 export {
   buildRunnerConductorWiring,
   runnerSandboxPath,
@@ -174,8 +170,6 @@ import {
   isCodexModel,
   isRunnerSupervisorBackend,
   requestRunnerSupervisor,
-  brokeredGrantTarget,
-  brokeredGrantToolName,
   runnerSupervisorBackendLabel,
   type RunnerSupervisorBackend,
 } from '@verity/session';
@@ -190,7 +184,6 @@ import {
   TranscriptStore,
   type Database,
   type ProjectRecord,
-  httpMcpConnectionUsableBy,
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
@@ -2446,105 +2439,19 @@ export async function buildEmbeddedServer(
         const sandbox = await resolveTurnSandbox(eventStore, session.projectId, initiatedBy);
         return sandbox.projectDefault ? undefined : sandboxPersonTag(sandbox.userId);
       },
-      ...buildRunnerConductorWiring({
-        // The dedicated control-plane service is itself a supervisor transport;
-        // never let its feature flag coexist with loopback conductor wiring.
-        runnerSupervisor: config.runnerSupervisor === true || config.controlPlaneRunner === true,
-        runnerTransport: config.runnerTransport === true,
-        dataVolumeRoot: config.dataVolumeRoot,
-        ...(config.controlPlaneRunner === true
-          ? { controlPlaneProjectId: CONTROL_PLANE_RUNNER_PROJECT_ID }
-          : {}),
-        isControlPlaneProject: async (projectId) =>
-          (await eventStore.getProject(projectId))?.kind === 'control_plane',
-        store: eventStore,
+      ...createEmbeddedRunnerConductorWiring({
+        config,
+        eventStore,
         bus,
-        transcript: transcriptStore,
+        transcriptStore,
         allocateEventFile,
         allocateControlSocket,
-        getSession: (sessionId) => eventStore.getSession(sessionId),
-        onMissingSupervisorSocket: ({ projectId, socketPath, reason }) => {
-          app.log.warn(
-            { projectId, socketPath, reason },
-            'verity: project runner supervisor is unavailable',
-          );
-        },
-        hostCloneRoot: config.hostCloneRoot,
-        containerProjectRoot: RUNNER_CONTAINER_PROJECT_ROOT,
-        // ADR 0014 D1: the ACP tool gateway bearer registry. The
-        // registry is the Server's half of the gateway bearer — the runner client
-        // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         turnCredentials,
-        turnSandbox: (projectId, initiatedBy) =>
-          resolveTurnSandbox(eventStore, projectId, initiatedBy),
-        turnGitAuthor: (userId) =>
-          resolveTurnGitAuthor(
-            {
-              gitIdentity: (id) => eventStore.userGitIdentities.author(id),
-              githubAccount: (id) => eventStore.userGithubAuthorizations.account(id),
-              displayName: async (id) => (await eventStore.userProfiles.read(id))?.displayName,
-            },
-            userId,
-          ),
-        turnSignsCommits: (userId) =>
-          turnSignsCommits(
-            {
-              hasSigningKey: async (id) =>
-                (await eventStore.userGitIdentities.publicIdentity(id)).hasSigningKey,
-              isAdministrator: (id) => eventStore.isActiveAdministrator(id),
-            },
-            userId,
-          ),
         mcpProxyTokens,
-        listProjectHttpMcpServers: async (projectId, initiatedBy) => {
-          const [bindings, connections] = await Promise.all([
-            eventStore.listProjectMcpBindings(projectId),
-            eventStore.listHttpMcpConnections(),
-          ]);
-          const enabled = new Set(
-            bindings.filter((binding) => binding.enabled).map((binding) => binding.connectionId),
-          );
-          return connections
-            .filter(
-              (connection) =>
-                connection.enabled &&
-                enabled.has(connection.id) &&
-                httpMcpConnectionUsableBy(connection, initiatedBy?.userId),
-            )
-            .map((connection) => ({ id: connection.id, name: connection.name }));
-        },
-        // ADR 0011 D2: a standing grant answers the prompt inside the tail, before
-        // it can become an approval card or a push notification.
-        autoApprovePermission: async (sessionId, request, channel) => {
-          const toolName = brokeredGrantToolName(request.toolName);
-          if (toolName === undefined) return false;
-          const target = brokeredGrantTarget(toolName, request.input);
-          if (target === undefined) return false;
-          const session = await eventStore.getSession(sessionId);
-          const projectId =
-            session?.projectId ??
-            (session !== undefined && config.controlPlaneRunner === true
-              ? CONTROL_PLANE_RUNNER_PROJECT_ID
-              : undefined);
-          if (projectId == null) return false;
-          const bindingId = await brokeredGrantBindingId(projectId);
-          if (bindingId === undefined) return false;
-          // Only the running turn's person can have consented in advance (ADR 0023 §3).
-          const running = (await eventStore.listRunningTurns()).find(
-            (turn) => turn.sessionId === sessionId,
-          );
-          if (running === undefined) return false;
-          const initiator = await eventStore.promptInitiatorAt(sessionId, running.promptSeq);
-          return brokeredHttpGrants.check({
-            projectId,
-            sessionId,
-            userId: await personForCredential(eventStore, projectId, initiator?.userId),
-            bindingId,
-            channel,
-            ...target,
-          });
-        },
+        getLog: () => app.log,
+        brokeredGrantBindingId,
+        brokeredHttpGrants,
       }),
       ...(config.permissionMode !== undefined ? { permissionMode: config.permissionMode } : {}),
       // OpenCode backend (#143) for provider-qualified models, over ACP like every
