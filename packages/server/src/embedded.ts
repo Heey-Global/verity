@@ -1,3 +1,5 @@
+import type { CodexUsageCredentialProvider } from './codexUsage.js';
+import { createEmbeddedAgentGateway } from './embedded-agent-gateway.js';
 import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
 import { createEmbeddedUplink } from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
@@ -35,7 +37,6 @@ import {
 } from './sandbox-identity.js';
 import { projectDefaultSandboxUser, recordedDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
-import { legacyAdministratorId } from './view-state-routes.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import {
   isProjectSettingsReader,
@@ -277,12 +278,11 @@ import { createSandboxGit } from './sandbox-git.js';
 import { projectSettingsEnv } from './project-settings-env.js';
 import { reconcileProjectContainerStates } from './project-state.js';
 import { ClaudeOAuthResolutionError } from './claudeUsage.js';
-import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import {
   createClaudeEgressIdentityService,
   type ClaudeEgressIdentityService,
 } from './claude-egress-identity.js';
-import type { ClaudeEgressMtlsMaterial, ClaudeEgressPeerBinding } from './claude-egress-mtls.js';
+import type { ClaudeEgressPeerBinding } from './claude-egress-mtls.js';
 import { projectedAgentGatewayFingerprint } from './agent-gateway-projection.js';
 import {
   agentGatewayUnavailableMessage,
@@ -307,18 +307,9 @@ import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedDevcontainerBuilder } from './protected-devcontainer-builder.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import {
-  readCodexAccessToken,
-  type AgentGatewayConfiguration,
-  type AgentGatewayPerson,
-} from './agent-gateway-control.js';
+import { readCodexAccessToken } from './agent-gateway-control.js';
 import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
-import {
-  startAgentGatewaySynchronizer,
-  type AgentGatewaySynchronizer,
-} from './agent-gateway-sync.js';
-import { validateAgentGatewayRoutingConfig } from './agent-gateway-url.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
 import { createSandboxUpdateChecker } from './sandbox-updates.js';
@@ -754,15 +745,6 @@ export async function buildEmbeddedServer(
       return false;
     }
   };
-  let agentGatewayTls: ClaudeEgressMtlsMaterial | undefined;
-  let agentGatewayBindings: readonly ClaudeEgressPeerBinding[] = [];
-  let agentGatewayBindingGeneration = 0;
-  let agentGatewayBindingProjection: Promise<void> = Promise.resolve();
-  let agentGatewayAccessToken: string | null | undefined;
-  let agentGatewayCodexAuthJson: string | null | undefined;
-  let agentGatewayOpenCode: { baseUrl: string; apiKey: string | null } | undefined;
-  // Each person's own logins (ADR 0023 §3), projected beside the instance login.
-  let agentGatewayPeople: readonly AgentGatewayPerson[] = [];
   const personalProviderCredentials = createPersonalProviderCredentials({
     store: eventStore,
     onError: (error) => {
@@ -803,155 +785,22 @@ export async function buildEmbeddedServer(
       console.warn(`verity: personal OpenCode configuration not refreshed: ${String(error)}`);
     });
   });
-  let agentGatewayPersonalClaudeTokens = new Map<string, string>();
-  const { url: agentGatewayUrl } = validateAgentGatewayRoutingConfig({
-    url: config.agentGatewayUrl,
-    controlSocket: config.agentGatewayControlSocket,
-    unsealKey: config.agentGatewayUnsealKey,
-    legacyGatewayUrl: config.claudeEgressGatewayUrl,
-    connectorPort: config.claudeConnectorPort,
-    listenerPort: config.agentGatewayClaudePort,
+  const {
+    state: agentGatewayState,
+    agentGatewayUrl,
+    agentGatewaySynchronizer,
+    codexGatewayControlSocket,
+    codexGatewayCredentialProvider,
+    agentGatewayConfiguration,
+    syncAgentGateway,
+    synchronizeAgentGatewayForTurn,
+  } = createEmbeddedAgentGateway({
+    config,
+    personalProviderCredentials,
+    getClaudeCredentialSync: () => claudeCredentialSync,
+    onError: (error) =>
+      app.log.warn({ err: error }, 'Standalone agent gateway reconciliation failed'),
   });
-  const agentGatewaySynchronizer: AgentGatewaySynchronizer | undefined =
-    config.agentGatewayControlSocket === undefined
-      ? undefined
-      : startAgentGatewaySynchronizer({
-          socketPath: config.agentGatewayControlSocket,
-          onError(error): void {
-            app.log.warn({ err: error }, 'Standalone agent gateway reconciliation failed');
-          },
-          persistCodexCredentialUpdate: (update) =>
-            update.userId === undefined
-              ? claudeCredentialSync.persistCodexCredentialUpdate(update)
-              : personalProviderCredentials.persistCodexUpdate({
-                  ...update,
-                  userId: update.userId,
-                }),
-        });
-  const codexGatewayControlSocket = config.agentGatewayControlSocket;
-  // Passed straight through: `readCodexAccessToken` already throws a
-  // `CodexSignInUnusableError` subclass when the gateway says the sign-in is what
-  // failed, which is exactly the distinction the usage probe acts on. Anything
-  // else it throws stays an ordinary failure, because signing in again would not
-  // fix a socket that did not answer.
-  const codexGatewayCredentialProvider: CodexUsageCredentialProvider | undefined =
-    codexGatewayControlSocket === undefined
-      ? undefined
-      : () => readCodexAccessToken(codexGatewayControlSocket);
-  const agentGatewayConfiguration = (): AgentGatewayConfiguration | undefined => {
-    if (config.agentGatewayControlSocket === undefined || agentGatewayTls === undefined) {
-      return undefined;
-    }
-    const { ca, cert, key } = agentGatewayTls;
-    if (typeof ca !== 'string' || typeof cert !== 'string' || typeof key !== 'string') {
-      throw new Error('Agent gateway requires PEM-string TLS material');
-    }
-    // Every project is routed, so every binding belongs on the gateway.
-    const routedBindings = agentGatewayBindings;
-    const revision = createHash('sha256')
-      .update(cert)
-      .update(
-        agentGatewayAccessToken === undefined
-          ? '\0credential-pending'
-          : agentGatewayAccessToken === null
-            ? '\0credential-revoked'
-            : `\0credential:${agentGatewayAccessToken}`,
-      )
-      .update(
-        agentGatewayCodexAuthJson === undefined
-          ? '\0codex-pending'
-          : agentGatewayCodexAuthJson === null
-            ? '\0codex-revoked'
-            : `\0codex:${agentGatewayCodexAuthJson}`,
-      )
-      .update(
-        agentGatewayOpenCode === undefined
-          ? '\0opencode-pending'
-          : `\0opencode:${agentGatewayOpenCode.baseUrl}:${agentGatewayOpenCode.apiKey ?? '\0revoked'}`,
-      )
-      .update(
-        routedBindings
-          .map(
-            (binding) => `${binding.projectId}:${binding.userId ?? ''}:${binding.fingerprint256}`,
-          )
-          .sort()
-          .join('\n'),
-      )
-      .update(`\0personal:${JSON.stringify(agentGatewayPeople)}`)
-      .digest('hex');
-    return {
-      revision,
-      claude: {
-        tls: { ca, cert, key },
-        peerBindings: routedBindings,
-        ...(config.agentGatewayUnsealKey === undefined
-          ? {}
-          : {
-              credential: {
-                unsealKey: config.agentGatewayUnsealKey,
-                // An unresolved token must recover spill rather than revoke it
-                // when another provider's credential update is projected.
-                ...(agentGatewayAccessToken === undefined
-                  ? {}
-                  : { accessToken: agentGatewayAccessToken }),
-              },
-            }),
-      },
-      ...(config.agentGatewayUnsealKey === undefined || agentGatewayCodexAuthJson === undefined
-        ? {}
-        : {
-            codex: {
-              credential: {
-                unsealKey: config.agentGatewayUnsealKey,
-                sourceRevision: createHash('sha256')
-                  .update(agentGatewayCodexAuthJson ?? '\0revoked')
-                  .digest('hex'),
-                authJson: agentGatewayCodexAuthJson,
-              },
-            },
-          }),
-      ...(agentGatewayOpenCode === undefined ? {} : { opencode: agentGatewayOpenCode }),
-      ...(config.agentGatewayUnsealKey === undefined
-        ? {}
-        : {
-            personal: {
-              // Every project's original sandbox is the administrator's, whose
-              // login the instance login was.
-              instanceUserId: legacyAdministratorId,
-              unsealKey: config.agentGatewayUnsealKey,
-              people: agentGatewayPeople,
-            },
-          }),
-    };
-  };
-  const syncAgentGateway = (): void => {
-    const configuration = agentGatewayConfiguration();
-    if (configuration === undefined) return;
-    agentGatewaySynchronizer?.update(configuration);
-  };
-  const synchronizeAgentGatewayForTurn = async (): Promise<void> => {
-    if (config.agentGatewayControlSocket === undefined) {
-      throw new Error('Agent Gateway control socket is not configured');
-    }
-    for (;;) {
-      const bindingGeneration = agentGatewayBindingGeneration;
-      await agentGatewayBindingProjection;
-      // Identity/container work and token refreshes are asynchronous. Accept the
-      // snapshot only if no issuance or revocation began while we waited.
-      const accessToken = await claudeCredentialSync.getAccessToken();
-      if (bindingGeneration !== agentGatewayBindingGeneration) continue;
-      agentGatewayAccessToken = accessToken ?? null;
-      const configuration = agentGatewayConfiguration();
-      if (configuration === undefined) {
-        throw new Error('Agent Gateway identity material is unavailable');
-      }
-      if (agentGatewaySynchronizer === undefined) {
-        throw new Error('Agent Gateway synchronizer is unavailable');
-      }
-      await agentGatewaySynchronizer.updateAndWait(configuration);
-      return;
-    }
-  };
   /** Ask the project's runner supervisor whether its agent connections accept
    *  connects yet. A toolkit without the request keeps its previous behaviour. */
   const probeSandboxEgressReadiness = async (
@@ -999,7 +848,7 @@ export async function buildEmbeddedServer(
     const fingerprint = projectedAgentGatewayFingerprint(secretRoot, sandbox.projectId, inspected);
     return (
       fingerprint !== undefined &&
-      agentGatewayBindings.some(
+      agentGatewayState.bindings.some(
         (binding) =>
           binding.projectId === sandbox.projectId &&
           binding.fingerprint256 === fingerprint &&
@@ -1014,7 +863,7 @@ export async function buildEmbeddedServer(
     sandbox: ProjectRelaySandboxRef,
     inspected: Awaited<ReturnType<DockerClient['inspectContainer']>>,
   ): Promise<boolean> => {
-    await agentGatewayBindingProjection;
+    await agentGatewayState.bindingProjection;
     return (
       (await healthyRelayGeneration(sandbox, inspected)) &&
       hasProjectedAgentGatewayBinding(sandbox, inspected)
@@ -1198,7 +1047,7 @@ export async function buildEmbeddedServer(
         const transient =
           error instanceof DockerError &&
           (error.kind === 'network' || (error.kind === 'other' && (error.status ?? 0) >= 500));
-        const previouslyRouted = agentGatewayBindings.some(
+        const previouslyRouted = agentGatewayState.bindings.some(
           (routed) =>
             routed.projectId === binding.projectId &&
             routed.userId === binding.userId &&
@@ -1505,33 +1354,33 @@ export async function buildEmbeddedServer(
           ? {}
           : { additionalServerNames: [agentGatewayUrl.hostname] }),
         async onBindingsChanged(bindings): Promise<void> {
-          agentGatewayBindingGeneration += 1;
-          const bindingGeneration = agentGatewayBindingGeneration;
+          agentGatewayState.bindingGeneration += 1;
+          const bindingGeneration = agentGatewayState.bindingGeneration;
           const currentFingerprints = new Set(
             bindings.map((binding) => `${binding.projectId}\0${binding.fingerprint256}`),
           );
           // Denials are synchronous and never depend on Docker: remove revoked
           // fingerprints from the projected cache before inspecting containers
           // to decide whether newly issued bindings may be authorized.
-          agentGatewayBindings = agentGatewayBindings.filter((binding) =>
+          agentGatewayState.bindings = agentGatewayState.bindings.filter((binding) =>
             currentFingerprints.has(`${binding.projectId}\0${binding.fingerprint256}`),
           );
           const denialConfiguration = agentGatewayConfiguration();
           if (denialConfiguration !== undefined && agentGatewaySynchronizer !== undefined) {
             await agentGatewaySynchronizer.updateAndWait(denialConfiguration);
           }
-          if (bindingGeneration !== agentGatewayBindingGeneration) return;
+          if (bindingGeneration !== agentGatewayState.bindingGeneration) return;
           const projection = (async (): Promise<void> => {
             const routedBindings = await routedAgentGatewayBindings(bindings);
-            if (bindingGeneration !== agentGatewayBindingGeneration) return;
-            agentGatewayBindings = routedBindings;
+            if (bindingGeneration !== agentGatewayState.bindingGeneration) return;
+            agentGatewayState.bindings = routedBindings;
             syncAgentGateway();
           })();
-          agentGatewayBindingProjection = projection;
+          agentGatewayState.bindingProjection = projection;
           await projection;
         },
         onGatewayLeafChanged(material): void {
-          agentGatewayTls = material;
+          agentGatewayState.tls = material;
           syncAgentGateway();
         },
       });
@@ -2118,7 +1967,7 @@ export async function buildEmbeddedServer(
     const projectCredential = async (): Promise<void> => {
       // Only a missing or unusable login revokes the credential. A transient
       // refresh failure must retain the last projection for the next retry.
-      let projected = agentGatewayAccessToken;
+      let projected = agentGatewayState.accessToken;
       let credentialError: Error | undefined;
       try {
         projected = (await claudeCredentialSync.getAccessToken()) ?? null;
@@ -2143,18 +1992,20 @@ export async function buildEmbeddedServer(
         openCodeApiKey.length === 0
           ? undefined
           : { baseUrl: openCodeBaseUrl, apiKey: openCodeApiKey };
-      const personal = await personalProviderCredentials.people(agentGatewayPersonalClaudeTokens);
+      const personal = await personalProviderCredentials.people(
+        agentGatewayState.personalClaudeTokens,
+      );
       if (
-        projected !== agentGatewayAccessToken ||
-        projectedCodex !== agentGatewayCodexAuthJson ||
-        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayOpenCode) ||
-        JSON.stringify(personal.people) !== JSON.stringify(agentGatewayPeople)
+        projected !== agentGatewayState.accessToken ||
+        projectedCodex !== agentGatewayState.codexAuthJson ||
+        JSON.stringify(projectedOpenCode) !== JSON.stringify(agentGatewayState.openCode) ||
+        JSON.stringify(personal.people) !== JSON.stringify(agentGatewayState.people)
       ) {
-        agentGatewayAccessToken = projected;
-        agentGatewayCodexAuthJson = projectedCodex;
-        agentGatewayOpenCode = projectedOpenCode;
-        agentGatewayPeople = personal.people;
-        agentGatewayPersonalClaudeTokens = personal.claudeTokens;
+        agentGatewayState.accessToken = projected;
+        agentGatewayState.codexAuthJson = projectedCodex;
+        agentGatewayState.openCode = projectedOpenCode;
+        agentGatewayState.people = personal.people;
+        agentGatewayState.personalClaudeTokens = personal.claudeTokens;
         syncAgentGateway();
       }
       // Claude refresh must not hold another provider's logout hostage. Report
@@ -2216,24 +2067,24 @@ export async function buildEmbeddedServer(
     // empty container and give up waiting for a health it cannot reach yet, so
     // resolve the credential here, before the generation-guarded loop. Once it
     // is resolved this is skipped, which keeps the per-container-start path free.
-    if (agentGatewayAccessToken === undefined) await refreshAgentGatewayCredential();
+    if (agentGatewayState.accessToken === undefined) await refreshAgentGatewayCredential();
     for (;;) {
-      const bindingGeneration = agentGatewayBindingGeneration;
+      const bindingGeneration = agentGatewayState.bindingGeneration;
       const material = await claudeEgressIdentity.gatewayMaterial();
       const routedBindings = await routedAgentGatewayBindings(material.peerBindings);
       // Issuance/revocation callbacks advance the generation before doing their
       // own asynchronous Docker inspection. Never let an older snapshot overtake
       // one of those mutations and re-authorize a revoked certificate.
-      if (bindingGeneration !== agentGatewayBindingGeneration) continue;
-      agentGatewayTls = material.tls;
-      agentGatewayBindings = routedBindings;
+      if (bindingGeneration !== agentGatewayState.bindingGeneration) continue;
+      agentGatewayState.tls = material.tls;
+      agentGatewayState.bindings = routedBindings;
       // A sealed store must not revoke recovery spill. Once another provider's
       // settings are readable, its updates may proceed with Claude in recovery
       // mode even while Claude's token resolution remains unavailable.
       if (
-        agentGatewayAccessToken !== undefined ||
-        agentGatewayCodexAuthJson !== undefined ||
-        agentGatewayOpenCode !== undefined
+        agentGatewayState.accessToken !== undefined ||
+        agentGatewayState.codexAuthJson !== undefined ||
+        agentGatewayState.openCode !== undefined
       ) {
         const configuration = agentGatewayConfiguration();
         if (configuration !== undefined && agentGatewaySynchronizer !== undefined && confirm) {
@@ -2857,7 +2708,7 @@ export async function buildEmbeddedServer(
       }
       await projectAgentGatewayIdentity(inspected > 0);
       app.log.info(
-        { inspected, repaired, deferred, projectedBindings: agentGatewayBindings.length },
+        { inspected, repaired, deferred, projectedBindings: agentGatewayState.bindings.length },
         'Agent Gateway identity reconciliation completed after secret unlock',
       );
       // Publishes what the sealed boot had to skip. Ordered after the gateway
