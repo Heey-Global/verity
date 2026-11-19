@@ -371,6 +371,10 @@ export function projectProgressAcrossKnowledgeBoundary(
   const withheld: string[] = [];
   for (const [key, value] of Object.entries(result)) {
     if (key === 'diagnostics' || value === undefined) continue;
+    if (value === null && (key === 'blocker' || key === 'requiredDecision')) {
+      projected[key] = null;
+      continue;
+    }
     if (BOUNDARY_PROGRESS_SCALARS.has(key)) {
       if (['string', 'number', 'boolean'].includes(typeof value) || value === null)
         projected[key] = value;

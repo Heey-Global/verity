@@ -801,6 +801,17 @@ it('bounds Control progress when no knowledge checker is wired', async () => {
   expect(JSON.stringify(progress)).not.toContain('private-knowledge');
 });
 
+it('reports absent published fields as absent, not withheld', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    canAccessKnowledgeTarget: async () => false,
+    readProgress: async () => ({ publishedSummary: null, blocker: null, requiredDecision: null }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress).toMatchObject({ publishedSummary: null, blocker: null, requiredDecision: null });
+  expect(progress).not.toHaveProperty('withheld');
+});
+
 it('returns full progress to Control when the target has no knowledge exposure', async () => {
   const h = harness({
     allowKnowledgeControlOperations: true,
