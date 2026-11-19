@@ -1,3 +1,4 @@
+import { createEmbeddedUplink } from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
@@ -132,9 +133,6 @@ import { BuildStorage } from './build-storage.js';
 import { createProjectImageReferences } from './derived-image-references.js';
 import { pinToolkitFeature, releaseToolkitFeature } from './devcontainer-feature-pin.js';
 import { createManagedDevServerSecretResolver } from './managed-dev-server-secrets.js';
-import { CoordinatedRecordingManager } from './coordinated-recording.js';
-import { ReturnPathActivation } from './remote-return-path-activation.js';
-import { returnPathSelection } from './remote-return-path-diagnostics.js';
 import { ensureStarterProject } from './welcome-session.js';
 import { previewSharingCapability } from './preview-capability.js';
 import { LocalPreviewManager } from './local-preview-manager.js';
@@ -214,11 +212,9 @@ import {
   PreviewShareManager,
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
-import { UplinkControlClient, premiumFeatureSwitches } from './uplink-control-client.js';
+import { premiumFeatureSwitches } from './uplink-control-client.js';
 import { teamSharingStatus } from './uplink-feature-state.js';
 import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
-import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
-import { createDeferredLogger } from './deferred-logger.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
 import {
   PINNED_PROJECT_RUNSC_ARGS,
@@ -649,94 +645,13 @@ export async function buildEmbeddedServer(
       public: () => previewShareManager,
     },
   );
-  // Every line the Uplink client writes is conditional on this option being
-  // present. Without it the handshake record, the close code and the refusal
-  // reason are all no-ops, and a control channel that is being refused is
-  // indistinguishable from one nobody configured - which is how an outage ran
-  // for 13 days with no server-side trace of its cause. It cannot simply be
-  // `app.log`: that does not exist yet here, and will not for another thousand
-  // lines. Allocated whether or not a client is built, so the binding below
-  // needs no second copy of the conditions that decide it.
-  const uplinkLog = createDeferredLogger();
-  const returnPath: ReturnPathActivation = new ReturnPathActivation(
-    () => uplinkControl?.remoteControlDescriptor() ?? { enabled: false },
-    returnPathSelection(process.env),
-  );
-  let coordinatedRecording: CoordinatedRecordingManager | undefined;
-  const remoteConnector = config.publicPreviews?.remoteControl
-    ? createRemoteConnectorPool({
-        dataUrl: remoteDataUrlForControl(config.publicPreviews.uplinkUrl),
-        ...config.publicPreviews.remoteControl,
-        onReturnPathSnapshot: (snapshot) => coordinatedRecording?.observe(snapshot),
-        returnPathExpiry: (sessionHash, connectorId): number | undefined =>
-          returnPath.expiry(sessionHash, connectorId),
-        returnPathInstallation: (): string | undefined => {
-          const descriptor = uplinkControl?.remoteControlDescriptor();
-          return descriptor?.enabled ? descriptor.installationId : undefined;
-        },
-        returnPathBeforeStopSubscribe: (listener) => returnPath.beforeStop(listener),
-        returnPathSubscribe: (listener) => returnPath.subscribe(listener),
-        log: uplinkLog,
-      })
-    : undefined;
-  const uplinkControl =
-    config.publicPreviews !== undefined && projectDocker !== undefined
-      ? new UplinkControlClient({
-          url: config.publicPreviews.uplinkUrl,
-          // Team v1 is only used once the service selects it in welcome, and
-          // only offered where an invited person can join through the Remote Control connector.
-          offerTeam: remoteConnector !== undefined,
-          admitTeamJoin: (pending, signal) =>
-            eventStore.projectTeam.admitJoin({ ...pending, signal }),
-          rollbackTeamJoin: (pending) => eventStore.projectTeam.rollbackJoinAdmission(pending),
-          ...(config.publicPreviews.expectedInstallationId === undefined
-            ? {}
-            : { expectedInstallationId: config.publicPreviews.expectedInstallationId }),
-          store: eventStore,
-          serverVersion: config.publicPreviews.serverVersion,
-          restoreShareIds: async () => {
-            const previews = (await eventStore.listPublicPreviewShares())
-              .filter((share) => share.state === 'active' && share.expiresAt.getTime() > Date.now())
-              .map((share) => share.id);
-            const meetings = await eventStore.listAttendeeState<{
-              phase: string;
-              binding?: { shareId: string; expiresAt: string };
-            }>();
-            return [
-              ...previews,
-              ...meetings
-                .filter(
-                  (row) =>
-                    row.id.startsWith('meeting:') &&
-                    row.state.phase !== 'ended' &&
-                    row.state.binding &&
-                    Date.parse(row.state.binding.expiresAt) > Date.now(),
-                )
-                .map((row) => row.state.binding!.shareId),
-            ];
-          },
-          ...(remoteConnector === undefined
-            ? {}
-            : { offerRemoteControl: true, reserveRemoteConnector: remoteConnector.reserve }),
-          log: uplinkLog,
-          onFeaturesDisabled: (reason) =>
-            previewShareManager?.disableAll(reason) ?? Promise.resolve(),
-          onSharePinLocked: (shareId) => eventStore.lockPublicPreviewSharePin(shareId),
-          onShareExpired: (shareId) =>
-            previewShareManager?.finishExpiredByUplink(shareId) ?? Promise.resolve(),
-        })
-      : undefined;
-  if (uplinkControl && remoteConnector) {
-    coordinatedRecording = new CoordinatedRecordingManager(returnPath, {
-      selectedConnectorId: (targetSessionId) =>
-        uplinkControl.selectedRecordingConnectorId(targetSessionId),
-      start: (runId, durationMs, version, targetSessionId) =>
-        uplinkControl.startRecording(runId, durationMs, version, targetSessionId),
-      status: (runId) => uplinkControl.recordingStatus(runId),
-      stop: (runId) => uplinkControl.stopRecording(runId),
-      export: (runId) => uplinkControl.exportRecording(runId),
+  const { uplinkLog, returnPath, coordinatedRecording, remoteConnector, uplinkControl } =
+    createEmbeddedUplink({
+      config,
+      eventStore,
+      projectDocker,
+      getPreviewShareManager: () => previewShareManager,
     });
-  }
   if (
     uplinkControl !== undefined &&
     projectDocker !== undefined &&
