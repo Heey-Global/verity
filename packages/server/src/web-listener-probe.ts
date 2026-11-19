@@ -76,7 +76,6 @@ export class WebListenerClassifier {
           (cache.get(identity(a))?.at ?? -Infinity) - (cache.get(identity(b))?.at ?? -Infinity),
       );
       const selected = stale.slice(0, WEB_PROBE_BATCH_SIZE);
-      const selectedKeys = new Set(selected.map(identity));
       if (selected.length) {
         let results: unknown;
         try {
@@ -103,8 +102,7 @@ export class WebListenerClassifier {
         const entry = cache.get(identity(p));
         // A deferred recheck does not revoke evidence for the same live socket.
         // Rebinding prunes the identity above; an actual negative probe removes it.
-        // Explicit fresh reads may only return evidence checked in this batch.
-        if (!entry?.result || (fresh && !selectedKeys.has(identity(p)))) return raw;
+        if (!entry?.result) return raw;
         return {
           ...raw,
           webProtocol: entry.result.protocol,

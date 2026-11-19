@@ -30,7 +30,12 @@ export class ListenerDiscovery {
   >();
   private readonly scans = new Map<
     string,
-    { containerName: string; promise: Promise<ListeningProcess[]>; invalidated: boolean }
+    {
+      containerName: string;
+      promise: Promise<ListeningProcess[]>;
+      invalidated: boolean;
+      fresh: boolean;
+    }
   >();
   private readonly snapshots = new Map<string, string>();
   private readonly dirty = new Map<string, ProjectRecord>();
@@ -46,7 +51,7 @@ export class ListenerDiscovery {
       hostCloneRoot: string;
       dockerBaseUrl?: string;
       resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
-      scan: (project: ProjectRecord) => Promise<ListeningProcess[]>;
+      scan: (project: ProjectRecord, options: { fresh: boolean }) => Promise<ListeningProcess[]>;
       /** Sees every successful scan, e.g. to stop orphaned managed servers. */
       onScan?: (project: ProjectRecord, processes: ListeningProcess[]) => void;
     },
@@ -119,6 +124,7 @@ export class ListenerDiscovery {
     if (pending?.containerName === project.containerName) {
       // Port allocation and publication need a result started after the change,
       // rather than the obsolete read a watcher has already invalidated.
+      if (fresh && !pending.fresh) pending.invalidated = true;
       return fresh ? freshResult(pending) : pending.promise;
     }
     const cached = this.scanResults.get(project.id);
@@ -139,7 +145,8 @@ export class ListenerDiscovery {
     const entry = {
       containerName: project.containerName,
       invalidated: false,
-      promise: Promise.resolve().then(() => this.options.scan(project)),
+      fresh,
+      promise: Promise.resolve().then(() => this.options.scan(project, { fresh })),
     };
     entry.promise = entry.promise
       .then((processes) => {

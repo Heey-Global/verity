@@ -1126,7 +1126,7 @@ export async function buildEmbeddedServer(
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
-          scan: (project) => listenerRuntime.listWebListeningProcesses(project),
+          scan: (project, options) => listenerRuntime.listWebListeningProcesses(project, options),
         })
       : undefined;
 
