@@ -8,6 +8,7 @@ import { sessionGroupsSpec } from './session-groups';
 import { factorySpec } from './factory-spec';
 import { homeAnswersSpec } from './home-answers';
 import { instructionSourcesSpec } from './instruction-sources';
+import { mcpOAuthDetectionSpec } from './mcp-oauth-detection';
 import { mockupReviewSpec } from './mockup-review';
 import { meetingRecoverySpec } from './meeting-recovery';
 import { planCardSpec } from './plan-card';
@@ -33,6 +34,7 @@ export const MOCKUP_SPECS: readonly MockupSpec[] = [
   mockupReviewSpec,
   meetingRecoverySpec,
   instructionSourcesSpec,
+  mcpOAuthDetectionSpec,
   planCardSpec,
   projectNamesSpec,
   repositoriesSpec,
