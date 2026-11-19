@@ -139,7 +139,7 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
           message:
             caught instanceof Error
               ? caught.message
-              : 'Could not save the MCP connection. Use a public HTTPS URL.',
+              : 'Could not save the MCP connection. Use an HTTPS URL the Verity server can reach.',
         }),
       )
       .finally(() => {
