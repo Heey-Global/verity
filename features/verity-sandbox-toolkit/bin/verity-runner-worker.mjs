@@ -26691,6 +26691,7 @@ var zSessionConfigOptionCategory = z21.union([
   z21.literal("mode"),
   z21.literal("model"),
   z21.literal("model_config"),
+  z21.literal("speed"),
   z21.literal("thought_level"),
   z21.string()
 ]);
@@ -26926,22 +26927,15 @@ var zPlanItems = z21.object({
   entries: requiredDefaultOnError(vecSkipError(zPlanEntry), () => []),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
-var zPlanFile = z21.object({
-  planId: zPlanId,
-  uri: z21.string(),
-  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
-});
 var zPlanMarkdown = z21.object({
   planId: zPlanId,
   content: z21.string(),
+  path: defaultOnError(z21.string().nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zPlanUpdateContent = z21.union([
   zPlanItems.and(z21.object({
     type: z21.literal("items")
-  })),
-  zPlanFile.and(z21.object({
-    type: z21.literal("file")
   })),
   zPlanMarkdown.and(z21.object({
     type: z21.literal("markdown")
@@ -27024,6 +27018,14 @@ var zCompactionUpdate = z21.object({
 var zCompactionSummaryChunk = z21.object({
   compactionId: zCompactionId,
   content: zContentBlock,
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestion = z21.object({
+  prompt: z21.array(zContentBlock).min(1),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsUpdate = z21.object({
+  suggestions: vecSkipError(zPromptSuggestion),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSessionCancelCapabilities = z21.object({
@@ -27179,6 +27181,9 @@ var zSessionUpdate = z21.union([
   zCompactionSummaryChunk.and(z21.object({
     sessionUpdate: z21.literal("compaction_summary_chunk")
   })),
+  zPromptSuggestionsUpdate.and(z21.object({
+    sessionUpdate: z21.literal("prompt_suggestions_update")
+  })),
   zSubagentUpdate.and(z21.object({
     sessionUpdate: z21.literal("subagent_update")
   })),
@@ -27227,10 +27232,26 @@ var zSessionConfigOptionsCapabilities = z21.object({
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zNoticeCapabilities = z21.record(z21.string(), z21.unknown());
+var zPromptSuggestionsImageCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsAudioCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsEmbeddedContextCapabilities = z21.object({
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
+var zPromptSuggestionsCapabilities = z21.object({
+  image: defaultOnError(zPromptSuggestionsImageCapabilities.nullish(), () => void 0),
+  audio: defaultOnError(zPromptSuggestionsAudioCapabilities.nullish(), () => void 0),
+  embeddedContext: defaultOnError(zPromptSuggestionsEmbeddedContextCapabilities.nullish(), () => void 0),
+  _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
+});
 var zClientSessionCapabilities = z21.object({
   compaction: defaultOnError(zCompactionCapabilities.nullish(), () => void 0),
   configOptions: defaultOnError(zSessionConfigOptionsCapabilities.nullish(), () => void 0),
   notices: defaultOnError(zNoticeCapabilities.nullish(), () => void 0),
+  promptSuggestions: defaultOnError(zPromptSuggestionsCapabilities.nullish(), () => void 0),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zSubagentCapabilities = z21.object({
@@ -27404,6 +27425,7 @@ var zForkSessionRequest = z21.object({
   additionalDirectories: defaultOnNull(z21.array(z21.string()), () => []).optional(),
   mcpServers: defaultOnNull(z21.array(zMcpServer), () => []).optional(),
   systemPrompt: zSystemPrompt.nullish(),
+  configOptions: defaultOnNull(z21.array(zInitialSessionConfigOption), () => []).optional(),
   _meta: defaultOnError(z21.record(z21.string(), z21.unknown()).nullish(), () => void 0)
 });
 var zArchiveSessionRequest = z21.object({
@@ -30190,6 +30212,8 @@ var AcpEventAdapter = class {
       case "current_mode_update":
       case "config_option_update":
       case "session_info_update":
+        return lifecycle;
+      case "prompt_suggestions_update":
         return lifecycle;
       case "notice":
         return lifecycle;
