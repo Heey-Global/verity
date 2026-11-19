@@ -63,21 +63,27 @@ function transportError(error: unknown, target: URL): McpOAuthDiscoveryError {
  * Whether the MCP server behind `url` is on a private network or the tailnet.
  * Token requests use it to keep a public server's endpoints public after setup,
  * when the probe that classified the server is long gone. An unresolvable host
- * counts as public: the stricter answer, and its token request fails anyway.
+ * fails the request as `dns_failed` rather than being reported as public.
  */
 export async function mcpServerIsInternal(url: string): Promise<boolean> {
   const host = upstreamUrl(url).hostname.replace(/^\[(.*)\]$/u, '$1');
   if (isIP(host) !== 0) return isInternalMcpUpstreamAddress(host);
-  return new Promise((resolve) => {
-    lookup(host, { all: true, verbatim: true }, (error, addresses) =>
-      resolve(
-        // Every address, not any: a public server must not become "internal" by
-        // adding one private record next to its public one.
-        error === null &&
-          addresses.length > 0 &&
-          addresses.every(({ address }) => isInternalMcpUpstreamAddress(address)),
-      ),
-    );
+  return new Promise((resolve, reject) => {
+    lookup(host, { all: true, verbatim: true }, (error, addresses) => {
+      if (error !== null || addresses.length === 0) {
+        reject(
+          new McpOAuthDiscoveryError(
+            'dns_failed',
+            `The Verity server could not resolve the MCP server ${host}${error?.code ? ` (${error.code})` : ''}.`,
+            { host },
+          ),
+        );
+        return;
+      }
+      // Every address, not any: a public server must not become "internal" by
+      // adding one private record next to its public one.
+      resolve(addresses.every(({ address }) => isInternalMcpUpstreamAddress(address)));
+    });
   });
 }
 

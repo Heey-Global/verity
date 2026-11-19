@@ -143,6 +143,19 @@ it('refuses internal peers when only public ones are allowed', async () => {
   ).rejects.toMatchObject({ code: 'address_refused' });
 });
 
+// Reporting an unresolvable tailnet host as public would blame a policy that
+// does not apply; the token request fails with the actual cause instead.
+it('fails the token-time classification when the MCP host cannot be resolved', async () => {
+  mocks.lookup.mockImplementation(
+    (_host: string, _options: unknown, callback: (error: Error | null, a: unknown[]) => void) =>
+      callback(Object.assign(new Error('not found'), { code: 'EAI_AGAIN' }), []),
+  );
+  await expect(mcpServerIsInternal('https://docs.example.ts.net/mcp')).rejects.toMatchObject({
+    code: 'dns_failed',
+    message: 'The Verity server could not resolve the MCP server docs.example.ts.net (EAI_AGAIN).',
+  });
+});
+
 it('does not report a mixed public and private answer as internal', async () => {
   const response = oauthHttpRequest('https://metadata.example/');
   mocks.lookup.mockImplementation(
@@ -180,7 +193,6 @@ it.each([
   ['https://8.8.8.8/mcp', null, false],
   ['https://docs.example.ts.net/mcp', '100.101.2.3', true],
   ['https://mcp.example.com/mcp', '8.8.8.8', false],
-  ['https://gone.example/mcp', 'ENOTFOUND', false],
   ['https://mixed.example/mcp', ['8.8.8.8', '10.0.0.5'], false],
 ])(
   'classifies %s (DNS answer %s) as internal: %s for later token requests',
@@ -191,15 +203,13 @@ it.each([
         _options: unknown,
         callback: (error: Error | null, addresses: { address: string; family: number }[]) => void,
       ) =>
-        answer === 'ENOTFOUND'
-          ? callback(Object.assign(new Error('not found'), { code: 'ENOTFOUND' }), [])
-          : callback(
-              null,
-              (Array.isArray(answer) ? answer : [answer ?? '']).map((address) => ({
-                address,
-                family: 4,
-              })),
-            ),
+        callback(
+          null,
+          (Array.isArray(answer) ? answer : [answer ?? '']).map((address) => ({
+            address,
+            family: 4,
+          })),
+        ),
     );
     await expect(mcpServerIsInternal(url)).resolves.toBe(expected);
     if (answer === null) expect(mocks.lookup).not.toHaveBeenCalled();
