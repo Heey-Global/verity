@@ -1,3 +1,4 @@
+import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
 import { createEmbeddedBranches } from './embedded-branches.js';
 import {
@@ -200,7 +201,7 @@ import { healAdminGitdirsAtStartup } from './worktree.js';
 import { cloneConfigRepairOptions, startCloneConfigSweep } from './clone-config-guard.js';
 import { type GitHubInstallationService } from './github.js';
 import { projectForgeProvider } from './project-forge-provider.js';
-import { DockerError, createDockerClient, type DockerClient } from './docker.js';
+import { DockerError, type DockerClient } from './docker.js';
 import {
   describeBuildCapacityReclamation,
   dockerGcDiagnostics,
@@ -260,7 +261,6 @@ import {
   createSessionCleanupWorker,
 } from './pending-session-cleanup.js';
 
-import { removeRetiredSessionSandboxes } from './retired-session-sandboxes.js';
 import { createRunnerArtifactPurge } from './runner-artifact-purge.js';
 import { startOrphanTranscriptSweep, type SweepResult } from './orphan-transcript-sweep.js';
 import { purgeSessionArtifacts as purgeSessionArtifactFiles } from './session-artifacts.js';
@@ -633,56 +633,7 @@ export async function buildEmbeddedServer(
     return selectedOpenCodeModels(settings).map((model) => `verity/${model}`);
   };
 
-  // DB-backed GitHub App credentials and managed Docker infrastructure.
-  const logDockerPull = (message: string): void => {
-    console.info(`verity: ${message}`);
-  };
-  const projectDocker =
-    config.dockerBaseUrl && config.hostCloneRoot
-      ? createDockerClient({
-          baseUrl: config.dockerBaseUrl,
-          ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
-          pullLog: logDockerPull,
-        })
-      : undefined;
-  if (projectDocker !== undefined) {
-    // Per-session sandboxes from a Server that ran sessions in private containers
-    // have no owner here; see removeRetiredSessionSandboxes.
-    void removeRetiredSessionSandboxes(projectDocker)
-      .then((result) => {
-        if (result.containers + result.volumes + result.failed > 0) {
-          console.info(`verity: removed retired session sandboxes ${JSON.stringify(result)}`);
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn('verity: could not remove retired session sandboxes', error);
-      });
-  }
-  const runtimeDocker = config.dockerBaseUrl
-    ? (projectDocker ??
-      createDockerClient({
-        baseUrl: config.dockerBaseUrl,
-        ...(config.registryAuth !== undefined ? { registryAuth: config.registryAuth } : {}),
-        pullLog: logDockerPull,
-      }))
-    : undefined;
-  const resolvePreviewUser = async (project: ProjectRecord): Promise<string | undefined> => {
-    const sandbox = await projectDocker?.inspectContainer(project.containerName);
-    const env = Object.fromEntries(
-      (sandbox?.env ?? []).map((entry) => {
-        const index = entry.indexOf('=');
-        return [entry.slice(0, index), entry.slice(index + 1)];
-      }),
-    );
-    if (env.VERITY_RUNNER_RUNTIME) {
-      const uid = env.VERITY_AGENT_UID,
-        gid = env.VERITY_AGENT_GID;
-      if (!uid || !gid || !/^\d+$/.test(uid) || !/^\d+$/.test(gid))
-        throw new Error('sandbox agent identity is unavailable');
-      return `${uid}:${gid}`;
-    }
-    return sandbox?.user || undefined;
-  };
+  const { projectDocker, runtimeDocker, resolvePreviewUser } = createEmbeddedDocker(config);
   // Filled once the managed dev server manager exists, further down.
   const managedLinkEnded: { current?: (instanceId: string, shareId: string) => void } = {};
   const listenerRuntime = new DockerProjectRuntime({
