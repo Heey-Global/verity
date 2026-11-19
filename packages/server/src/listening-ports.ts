@@ -3,6 +3,11 @@ import { posix } from 'node:path';
 /** A TCP listener inside a project sandbox, joined to the process that owns it. */
 export interface ListeningProcess {
   sessionId?: string;
+  socketInode?: string;
+  sandboxGeneration?: string;
+  listenerAddress?: string;
+  webProtocol?: 'http' | 'https';
+  webCertificateFingerprint?: string;
   /** `VERITY_DEV_SERVER_INSTANCE` of the owning process: a managed dev server. */
   instanceId?: string;
   announcedName?: string;
@@ -43,6 +48,9 @@ const MAX_COMMAND_CHARS = 300;
  * broker, root helpers) are unreadable to the exec user and drop out by design.
  */
 export const LISTENING_PORTS_SCRIPT = [
+  "echo '#generation'",
+  "{ cat /proc/sys/kernel/random/boot_id; sed 's/.*) //' /proc/1/stat | cut -d' ' -f20; } 2>/dev/null | tr '\\n' ':'",
+  'echo',
   "echo '#tcp'",
   'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null',
   "echo '#fd'",
@@ -69,6 +77,14 @@ export const LISTENING_PORTS_SCRIPT = [
   'true',
 ].join('\n');
 
+function listenerAddress(hex: string): string {
+  if (/^0+$/u.test(hex)) return hex.length === 8 ? '127.0.0.1' : '::1';
+  const bytes = hex.match(/.{8}/gu)!.flatMap((word) => word.match(/../gu)!.reverse());
+  return hex.length === 8
+    ? bytes.map((byte) => Number.parseInt(byte, 16)).join('.')
+    : bytes.join('').match(/.{4}/gu)!.join(':');
+}
+
 function bindOf(hexAddress: string): ListeningProcess['bind'] {
   const address = hexAddress.toUpperCase();
   // Node's default IPv6 wildcard also accepts IPv4 on a dual-stack socket.
@@ -92,6 +108,7 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
       bind: ListeningProcess['bind'];
       ipv6Wildcard?: boolean;
       loopbackAddress?: string;
+      listenerAddress: string;
     }
   >();
   const owners = new Map<string, number>();
@@ -100,14 +117,23 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
   const sessions = new Map<number, string>();
   const instances = new Map<number, string>();
   const announcements = new Map<number, { name: string; pid: number; sessionId?: string }>();
+  let generation: string | undefined;
   let section = '';
   let fdPid: number | null = null;
   for (const line of output.split('\n')) {
-    if (line === '#tcp' || line === '#fd' || line === '#proc' || line === '#announce') {
+    if (
+      line === '#generation' ||
+      line === '#tcp' ||
+      line === '#fd' ||
+      line === '#proc' ||
+      line === '#announce'
+    ) {
       section = line;
       continue;
     }
-    if (section === '#tcp') {
+    if (section === '#generation') {
+      if (line && line !== ':') generation = line;
+    } else if (section === '#tcp') {
       const fields = line.trim().split(/\s+/u);
       // sl local rem st tx:rx tr:when retrnsmt uid timeout inode
       if (fields.length < 10 || fields[3] !== '0A') continue;
@@ -116,6 +142,7 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
       if (!address || !portHex || !inode || inode === '0') continue;
       listeners.set(inode, {
         port: Number.parseInt(portHex, 16),
+        listenerAddress: listenerAddress(address),
         bind: bindOf(address),
         ...(bindOf(address) === 'loopback'
           ? {
@@ -195,6 +222,8 @@ export function parseListeningProcesses(output: string): ListeningProcess[] {
     const instanceId = instances.get(pid);
     byPort.set(listener.port, {
       ...listener,
+      socketInode: inode,
+      ...(generation ? { sandboxGeneration: generation } : {}),
       pid,
       ...process,
       ...(sessionId ? { sessionId } : {}),
@@ -259,4 +288,17 @@ export function sessionDevServers(
       },
     ];
   });
+}
+
+/** Only verified web protocols are eligible for automatic preview offers. */
+export function webSessionDevServers(
+  processes: readonly ListeningProcess[],
+  worktree: string,
+  sessionId?: string,
+): SessionDevServer[] {
+  return sessionDevServers(
+    processes.filter((p) => p.webProtocol !== undefined),
+    worktree,
+    sessionId,
+  );
 }

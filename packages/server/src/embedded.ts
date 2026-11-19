@@ -597,7 +597,7 @@ export async function buildEmbeddedServer(
   });
   const listListeningProcesses = (project: ProjectRecord, options?: { fresh?: boolean }) =>
     listenerDiscovery?.listListeningProcesses(project, options) ??
-    listenerRuntime.listListeningProcesses(project);
+    listenerRuntime.listWebListeningProcesses(project, options);
   let previewShareManager: PreviewShareManager | undefined;
   const { withPreviewProjectMutation, withStorageProjectMutation } = createEmbeddedPreviewMutations(
     {
@@ -1126,7 +1126,7 @@ export async function buildEmbeddedServer(
           onScan: (project, processes) => {
             void managedDevServerManager?.sweepOrphans(project, processes);
           },
-          scan: (project) => listenerRuntime.listListeningProcesses(project),
+          scan: (project) => listenerRuntime.listWebListeningProcesses(project),
         })
       : undefined;
 

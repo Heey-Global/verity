@@ -5,7 +5,7 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import { containerPathFor, dockerHostFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import {
-  sessionDevServers,
+  webSessionDevServers,
   type ListeningProcess,
   type SessionDevServer,
 } from './listening-ports.js';
@@ -206,7 +206,7 @@ export class ListenerDiscovery {
     });
     return attributed.flatMap(({ process, owner }) => {
       if (owner && owner.id !== sessionId) return [];
-      const server = sessionDevServers(
+      const server = webSessionDevServers(
         [{ ...process, sessionId }],
         owner?.path ?? process.cwd,
         sessionId,
@@ -350,7 +350,7 @@ export class ListenerDiscovery {
     const finish = () => {
       if (this.watchers.get(project.id)?.child === child) {
         this.watchers.delete(project.id);
-        this.clearScans(project.id, false);
+        this.clearScans(project.id);
       }
     };
     child.once('exit', finish);
@@ -386,7 +386,12 @@ export class ListenerDiscovery {
           if (project) await this.refresh(project);
         }
       }
-      for (const project of projects) if (this.active(project)) await this.watch(project);
+      for (const project of projects) {
+        if (!this.active(project)) continue;
+        await this.watch(project);
+        // A bound socket can become HTTP-ready without changing its inode.
+        await this.refresh(project, false);
+      }
     } catch {
       /* Retry discovery after the store or Docker recovers. */
     }
