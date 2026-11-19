@@ -122,6 +122,8 @@ beforeEach(() => {
 it('says so when nothing needs the operator', async () => {
   const { onCountChange } = await renderInbox([session('quiet')]);
   expect(await screen.findByText('Nothing needs you right now.')).toBeTruthy();
+  // The line waits for the sections' first report; an empty list must still send one.
+  expect(screen.getByTestId('home-quiet')).toBeTruthy();
   expect(screen.queryByText('For you')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
 });
