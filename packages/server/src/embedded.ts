@@ -49,7 +49,7 @@ import {
   sandboxPersonTag,
   sandboxRunnerDir,
 } from './sandbox-identity.js';
-import { projectDefaultSandboxUser, recordedDefaultSandboxUser } from './project-sandbox.js';
+import { projectDefaultSandboxUser } from './project-sandbox.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import { resolveTurnGitAuthor, turnSignsCommits } from './turn-git-author.js';
 import {
@@ -300,7 +300,7 @@ import {
   claudeTransportRefusal,
 } from './claude-egress-agent-env.js';
 import { ensureProjectSandboxReadyForTurn } from './project-auto-wake.js';
-import { createProjectRelayRuntime } from './project-relay-runtime.js';
+import { installEmbeddedProjectRelayRuntime } from './embedded-project-relay-runtime.js';
 import { originalSandbox, type ProjectRelayLifecycle } from './project-relay-lifecycle.js';
 import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
@@ -842,7 +842,7 @@ export async function buildEmbeddedServer(
     state: agentGatewayState,
     healthyRelayGeneration,
   });
-  let projectRelayLifecycle: ProjectRelayLifecycle | undefined;
+  let projectRelayLifecycle: ProjectRelayLifecycle | undefined = undefined;
   const projectRelayEnabled = (config.projectRelayImage ?? '').trim().length > 0;
   const { forgeIdentity, forgeProxyEnabled, forgeProxy } = await createEmbeddedForgeProxy({
     projectRelayEnabled,
@@ -3561,53 +3561,18 @@ export async function buildEmbeddedServer(
     app.addHook('onClose', () => codexModelCatalog.close());
   }
 
-  if (projectRelayEnabled) {
-    if (
-      docker === undefined ||
-      config.dataVolumeRoot === undefined ||
-      config.dataVolume === undefined
-    )
-      throw new Error('project relay Docker runtime is unavailable');
-    const relayGid = config.projectRelayGid ?? 65_532;
-    if (!(process.getgroups?.() ?? []).includes(relayGid) && process.getgid?.() !== relayGid) {
-      throw new Error(`project relay requires server membership in group ${String(relayGid)}`);
-    }
-    const brokerSocketRoot = join(config.dataVolumeRoot, 'relay', 'broker');
-    const claudeSocketRoot = join(config.dataVolumeRoot, 'relay', 'claude');
-    const codexSocketRoot = join(config.dataVolumeRoot, 'relay', 'codex');
-    mkdirSync(brokerSocketRoot, { recursive: true, mode: 0o700 });
-    mkdirSync(claudeSocketRoot, { recursive: true, mode: 0o700 });
-    mkdirSync(codexSocketRoot, { recursive: true, mode: 0o700 });
-    projectRelayLifecycle = createProjectRelayRuntime({
-      app,
-      docker,
-      signingCapabilities,
-      githubCapabilities: ghTokenCapabilities,
-      forgeProxy,
-      forgeProxyEnabled,
-      forgeAuthorities: async (projectId) => {
-        const project = await eventStore.getProject(projectId);
-        if (project?.kind !== 'forgejo')
-          return ['github.com:443', 'api.github.com:443', 'uploads.github.com:443', 'ghcr.io:443'];
-        const connection = project.forgeConnectionId
-          ? await eventStore.forgeConnections.get(project.forgeConnectionId)
-          : undefined;
-        if (!connection || connection.provider !== 'forgejo') return [];
-        const url = new URL(connection.baseUrl);
-        return [`${url.hostname}:${url.port || '443'}`];
-      },
-      image: config.projectRelayImage!,
-      dataVolume: config.dataVolume,
-      dataVolumeRoot: config.dataVolumeRoot,
-      brokerSocketRoot,
-      claudeSocketRoot,
-      codexSocketRoot,
-      socketOwnerUid: process.getuid?.() ?? 1000,
-      relayGid,
-      sandboxNetwork: sandboxNetworkName,
-      defaultSandboxUser: (projectId) => recordedDefaultSandboxUser(eventStore, projectId),
-    });
-  }
+  projectRelayLifecycle = installEmbeddedProjectRelayRuntime({
+    app,
+    config,
+    projectRelayEnabled,
+    docker,
+    signingCapabilities,
+    ghTokenCapabilities,
+    forgeProxy,
+    forgeProxyEnabled,
+    eventStore,
+    sandboxNetworkName,
+  });
   if (
     provisioner !== undefined &&
     (config.runnerSupervisor === true || claudeEgressIdentity !== undefined)
