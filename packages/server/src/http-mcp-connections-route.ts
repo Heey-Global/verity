@@ -30,7 +30,7 @@ const connectionName = z
   .max(80, 'Use at most 80 characters for the connection name.')
   .regex(
     /^[A-Za-z0-9][A-Za-z0-9_-]*$/u,
-    'Use only letters, digits, hyphens and underscores in the connection name, starting with a letter or digit — for example heey-docs-privat.',
+    'Use only letters, digits, hyphens and underscores in the connection name, starting with a letter or digit — for example my-tools.',
   )
   .refine((name) => name.toLowerCase() !== 'verity', 'The name verity is reserved.');
 

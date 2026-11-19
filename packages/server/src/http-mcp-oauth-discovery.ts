@@ -336,9 +336,11 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   if (resource === undefined)
     throw new McpOAuthDiscoveryError(
       'metadata_missing',
-      advertised === undefined
-        ? `${target.href} answered HTTP ${probe.status} without an OAuth challenge, so Verity cannot tell how to sign in.`
-        : `The protected-resource metadata advertised by ${host} was not found (HTTP 404).`,
+      advertised !== undefined
+        ? `The protected-resource metadata advertised by ${host} was not found (HTTP 404).`
+        : challenge === undefined
+          ? `${target.href} answered HTTP ${probe.status} without an OAuth challenge, so Verity cannot tell how to sign in.`
+          : `${target.href} answered HTTP ${probe.status} with an OAuth challenge that names no resource metadata, and none was found at the well-known paths.`,
       { host, status: probe.status },
     );
   if (resource.resource !== target.href)

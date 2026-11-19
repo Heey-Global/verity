@@ -229,6 +229,18 @@ describe('generic MCP OAuth discovery', () => {
         'https://tools.example/mcp answered HTTP 200 without an OAuth challenge, so Verity cannot tell how to sign in.',
     });
   });
+  it('does not call a challenge without resource_metadata a missing challenge', async () => {
+    const send = vi.fn(async (url: string) =>
+      url === resourceUrl
+        ? response({}, 401, { 'www-authenticate': 'Bearer realm="tools"' })
+        : response({}, 404),
+    );
+    await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
+      code: 'metadata_missing',
+      message:
+        'https://tools.example/mcp answered HTTP 401 with an OAuth challenge that names no resource metadata, and none was found at the well-known paths.',
+    });
+  });
   it('says when the advertised resource metadata does not exist', async () => {
     const send = vi.fn(async (url: string) =>
       url === resourceUrl
