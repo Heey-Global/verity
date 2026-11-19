@@ -359,7 +359,7 @@ const publishedText = (value: unknown, max: number): string | undefined => {
  * — branch, Issue and PR association — stays behind, and `withheld` names it, so an absent
  * field reads as a policy outcome instead of as "nothing there".
  */
-export function projectProgressAcrossKnowledgeBoundary(
+function projectProgressAcrossKnowledgeBoundary(
   result: Record<string, unknown>,
 ): Record<string, unknown> {
   const projected: Record<string, unknown> = {
