@@ -6,6 +6,14 @@
 
 - **web:** Include the CSS-variable theme tint fix in the Server image so the bundled `/app/` client starts without a `tint()` error. Native hex color output is unchanged ([#1582](https://github.com/Heey-Global/verity/pull/1582)).
 
+## [4.97.1](https://github.com/Heey-Global/verity/compare/v4.97.0...v4.97.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v2.7.0 ([#2692](https://github.com/Heey-Global/verity/issues/2692)) ([5acf3b5](https://github.com/Heey-Global/verity/commit/5acf3b5b8946d3bd36b685936d00ac422b26ffdf))
+* **sandbox:** provide pnpm and yarn through pinned Corepack ([#2689](https://github.com/Heey-Global/verity/issues/2689)) ([26db6fa](https://github.com/Heey-Global/verity/commit/26db6fa44dced309721d1d067ea9bf4a03842d57))
+
 ## [4.97.0](https://github.com/Heey-Global/verity/compare/v4.96.0...v4.97.0) (2026-11-18)
 
 
