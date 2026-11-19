@@ -273,7 +273,8 @@ could not be reached or presented an untrusted certificate, redirected, answered
 without an OAuth challenge, or returned metadata that is missing, unreadable or
 names a different resource or issuer. The same step is logged on the server as
 `verity: MCP OAuth discovery failed` with its code, host, address and HTTP status,
-never with response bodies or credentials.
+never with response bodies, credentials or URL paths, which some providers use
+for access secrets.
 
 OAuth state and PKCE are bound to a user, connection and exact callback on your
 Verity server. Access and refresh tokens stay encrypted on that server. Pending

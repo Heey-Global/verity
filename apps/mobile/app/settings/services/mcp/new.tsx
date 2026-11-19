@@ -86,8 +86,11 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
         setManual(true);
         // The server names the step that failed (an unresolvable host, a refused
         // address, a missing OAuth challenge…); without it only "check the URL" is left.
+        // Only a discovery step carries a code; a bare "invalid request" says nothing more.
         const reason =
-          caught instanceof VerityApiError && caught.status === 400 ? `${caught.message} ` : '';
+          caught instanceof VerityApiError && caught.status === 400 && caught.code !== undefined
+            ? `${caught.message} `
+            : '';
         setError({
           title: 'OAuth not detected',
           message: `${reason}Check the URL or enter the provider settings under Advanced.`,

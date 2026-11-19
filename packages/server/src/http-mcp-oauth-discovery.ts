@@ -195,7 +195,6 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
             response.destroy(
               new McpOAuthDiscoveryError('metadata_invalid', `${host} returned more than 1 MiB.`, {
                 host,
-                path: target.pathname,
                 status,
               }),
             );
@@ -216,7 +215,6 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
         req.destroy(
           new McpOAuthDiscoveryError('timeout', `${host} did not answer within 15 seconds.`, {
             host,
-            path: target.pathname,
           }),
         ),
       15_000,
@@ -275,7 +273,7 @@ async function readMetadata<T extends z.ZodType>(
   what: string,
 ): Promise<z.infer<T> | undefined> {
   const parsed = upstreamUrl(url);
-  const detail = { host: parsed.hostname, path: parsed.pathname };
+  const detail = { host: parsed.hostname };
   const response = await get(parsed.href);
   if (response.status === 404) return undefined;
   if (response.status !== 200)
@@ -312,7 +310,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
     throw new McpOAuthDiscoveryError(
       'redirect',
       `${target.href} redirects (HTTP ${probe.status}). Enter the final MCP URL instead.`,
-      { host, path: target.pathname, status: probe.status },
+      { host, status: probe.status },
     );
   // A public MCP server's metadata must stay public too; see OAuthHttpRequest.
   const get = (metadataUrl: string) =>
@@ -341,13 +339,13 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
       advertised === undefined
         ? `${target.href} answered HTTP ${probe.status} without an OAuth challenge, so Verity cannot tell how to sign in.`
         : `The protected-resource metadata advertised by ${host} was not found (HTTP 404).`,
-      { host, path: target.pathname, status: probe.status },
+      { host, status: probe.status },
     );
   if (resource.resource !== target.href)
     throw new McpOAuthDiscoveryError(
       'resource_mismatch',
       `The protected-resource metadata describes a different resource than ${target.href}.`,
-      { host, path: target.pathname },
+      { host },
     );
   // Use the first declared authority consistently; never silently switch accounts or issuers.
   const issuer = new URL(resource.authorization_servers[0]!);
@@ -369,7 +367,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
     );
     if (authority !== undefined) break;
   }
-  const issuerDetail = { host: issuer.hostname, path: issuer.pathname };
+  const issuerDetail = { host: issuer.hostname };
   if (authority === undefined)
     throw new McpOAuthDiscoveryError(
       'metadata_missing',
@@ -432,7 +430,7 @@ export async function registerMcpOAuthClient(
       'This provider requires an OAuth client ID. Register an application with the displayed callback URL.',
     );
   const registrationUrl = new URL(registration);
-  const detail = { host: registrationUrl.hostname, path: registrationUrl.pathname };
+  const detail = { host: registrationUrl.hostname };
   const supported = authority.token_endpoint_auth_methods_supported ?? ['client_secret_basic'];
   const method = supported.includes('none')
     ? 'none'

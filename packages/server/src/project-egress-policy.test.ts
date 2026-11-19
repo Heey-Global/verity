@@ -46,7 +46,7 @@ it('separates network grants from trusted broker and system decisions', () => {
     );
 });
 // MCP connections may reach the tailnet and private networks; sandbox egress
-// shares the address parser but must keep refusing them.
+// imports its address check from the MCP proxy module but must keep refusing them.
 it('denies nonpublic addresses including mapped IPv6 before any DNS request', () => {
   for (const host of [
     '100.64.0.1',

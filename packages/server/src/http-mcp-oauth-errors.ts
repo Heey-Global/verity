@@ -23,12 +23,14 @@ export type McpOAuthDiscoveryStage =
   | 'grant_unsupported'
   | 'registration_failed';
 
-/** What the server log may record about a failed step. Never response bodies or credentials. */
+/**
+ * What the server log may record about a failed step. Never response bodies,
+ * credentials or URL paths: some MCP providers put the access secret in the path.
+ */
 export interface McpOAuthDiscoveryDetail {
   host?: string;
   address?: string;
   range?: string;
-  path?: string;
   status?: number;
 }
 

@@ -164,7 +164,7 @@ describe('generic MCP OAuth discovery', () => {
       message: expect.not.stringContaining('paste-your-token'),
     });
   });
-  it('names the metadata host and status, and logs the path, when it is neither found nor missing', async () => {
+  it('names the metadata host and status when it is neither found nor missing', async () => {
     const send = vi.fn(async (url: string) =>
       url === resourceUrl
         ? response({}, 401, {
@@ -175,7 +175,7 @@ describe('generic MCP OAuth discovery', () => {
     await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
       code: 'metadata_status',
       message: 'tools.example answered HTTP 503 instead of protected-resource metadata.',
-      detail: { host: 'tools.example', path: '/metadata', status: 503 },
+      detail: { host: 'tools.example', status: 503 },
     });
   });
   it('reports unreadable metadata without echoing the body', async () => {
@@ -194,6 +194,32 @@ describe('generic MCP OAuth discovery', () => {
     const send = vi.fn(async () => response({}, 302, { location: 'https://internal.example' }));
     await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toThrow(/redirect/u);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+  // Some providers put the access secret in the MCP URL path; the server log
+  // receives `detail`, so it must never carry a path.
+  it('keeps URL paths out of the logged detail', async () => {
+    const secretUrl = 'https://tools.example/api/mcp/s/sk-live-secret/mcp';
+    const failures = [
+      discoverMcpOAuth(
+        secretUrl,
+        vi.fn(async () => response({}, 200)),
+      ),
+      discoverMcpOAuth(
+        secretUrl,
+        vi.fn(async () => response({}, 302)),
+      ),
+      discoverMcpOAuth(
+        secretUrl,
+        vi.fn(async (url: string) =>
+          url === secretUrl ? response({}, 401) : response({}, url.includes('sk-live') ? 500 : 404),
+        ),
+      ),
+    ];
+    for (const failure of failures) {
+      const error = await failure.catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: 'McpOAuthDiscoveryError' });
+      expect(JSON.stringify((error as { detail: unknown }).detail)).not.toContain('sk-live');
+    }
   });
   it('says when the server answered without an OAuth challenge', async () => {
     const send = vi.fn(async (url: string) => response({}, url === resourceUrl ? 200 : 404));

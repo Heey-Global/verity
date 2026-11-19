@@ -453,7 +453,9 @@ describe('settings/services/mcp/new — adding one', () => {
       'heey-docs.example.ts.net resolves to 127.0.0.1 (loopback), which MCP connections may not reach.';
     const api = makeClient('unlocked');
     Object.assign(api, {
-      discoverHttpMcpOAuth: jest.fn().mockRejectedValue(new VerityApiError(400, reason)),
+      discoverHttpMcpOAuth: jest
+        .fn()
+        .mockRejectedValue(new VerityApiError(400, reason, { code: 'address_refused' })),
     });
     mockCreateVerityClient.mockReturnValue(api);
     render(<NewMcpConnectionScreen />);
@@ -471,10 +473,13 @@ describe('settings/services/mcp/new — adding one', () => {
     ).toBeOnTheScreen();
   });
 
-  it('does not show transport error text as a detection reason', async () => {
+  it.each([
+    ['a transport error', new Error('Network request failed')],
+    ['a 400 without a discovery step', new VerityApiError(400, 'invalid request')],
+  ])('does not show %s as a detection reason', async (_label, failure) => {
     const api = makeClient('unlocked');
     Object.assign(api, {
-      discoverHttpMcpOAuth: jest.fn().mockRejectedValue(new Error('Network request failed')),
+      discoverHttpMcpOAuth: jest.fn().mockRejectedValue(failure),
     });
     mockCreateVerityClient.mockReturnValue(api);
     render(<NewMcpConnectionScreen />);
