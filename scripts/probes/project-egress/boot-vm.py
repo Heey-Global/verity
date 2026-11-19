@@ -97,6 +97,14 @@ class BootVM:
     def ssh(self, command, timeout=30):
         try:
             return subprocess.check_output(self.ssh_command(command), text=True, timeout=timeout, stderr=subprocess.STDOUT)
+        except subprocess.TimeoutExpired as error:
+            # TimeoutExpired keeps partial output as bytes even in text mode.
+            self.failures += 1
+            output = error.output or b''
+            if isinstance(output, bytes):
+                output = output.decode('utf-8', errors='replace')
+            (self.evidence / f'ssh-failure-{self.failures:03d}.txt').write_text(output)
+            raise
         except subprocess.CalledProcessError as error:
             # Keep the command's actual diagnostic; CalledProcessError.__str__
             # otherwise discards all apt/Docker/service output after guest cleanup.
