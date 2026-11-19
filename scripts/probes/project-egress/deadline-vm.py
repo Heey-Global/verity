@@ -126,7 +126,9 @@ def main():
                 bundle.add(probe.parents[2] / 'deploy/egress/project-egress-deadline.bpf.c', arcname='project-egress-deadline.bpf.c')
                 bundle.add(probe.parents[2] / 'deploy/egress/project-egress-deadline.py', arcname='project-egress-deadline.py')
             vm.upload(archive.name)
-        vm.ssh('sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool nftables iproute2 util-linux', timeout=300)
+        # Cold package indexes and LLVM downloads can exceed five minutes over QEMU usernet.
+        vm.configure_apt()
+        vm.ssh('sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev bpftool nftables iproute2 util-linux', timeout=1200)
         setup = call('setup', timeout=60)
         (root / 'setup.json').write_text(json.dumps(setup))
         try:

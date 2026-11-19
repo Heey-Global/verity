@@ -11,6 +11,39 @@ spec.loader.exec_module(boot_vm)
 
 
 class BootEvidenceTests(unittest.TestCase):
+    def test_guest_apt_configuration_is_accepted_by_apt(self):
+        if not boot_vm.shutil.which('apt-config'):
+            self.skipTest('APT is only available on Debian-family hosts')
+        vm = object.__new__(boot_vm.BootVM)
+        vm.ssh = unittest.mock.Mock()
+        vm.configure_apt()
+        command = vm.ssh.call_args.args[0]
+        config = command.split("<<'APT'\n", 1)[1].rsplit('\nAPT', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'apt.conf'
+            path.write_text(config)
+            result = boot_vm.subprocess.check_output(['apt-config', '-c', str(path), 'shell',
+                'appstream', 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled',
+                'cnf', 'Acquire::IndexTargets::deb::CNF::DefaultEnabled',
+                'http', 'Acquire::http::Timeout', 'https', 'Acquire::https::Timeout',
+                'retries', 'Acquire::Retries'], text=True)
+            dump = boot_vm.subprocess.check_output(['apt-config', '-c', str(path), 'dump'], text=True)
+        self.assertIn('Acquire::Languages:: "none";', dump)
+        self.assertEqual(result, "appstream='false'\ncnf='false'\nhttp='30'\nhttps='30'\nretries='3'\n")
+
+    def test_timeout_preserves_partial_guest_diagnostics(self):
+        for output in (b'apt download stalled\n', 'docker load stalled\n', None):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as directory:
+                vm = boot_vm.BootVM('base.qcow2', directory)
+                error = boot_vm.subprocess.TimeoutExpired('ssh', 600, output=output)
+                with unittest.mock.patch.object(boot_vm.subprocess, 'check_output', side_effect=error):
+                    with self.assertRaises(boot_vm.subprocess.TimeoutExpired) as caught:
+                        vm.ssh('install', timeout=600)
+                self.assertIs(caught.exception, error)
+                expected = output.decode() if isinstance(output, bytes) else output or ''
+                self.assertEqual((Path(directory) / 'ssh-failure-001.txt').read_text(), expected)
+                vm.close()
+
     def test_guest_upload_does_not_inherit_runner_ownership_or_writable_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / 'assets.tar'
