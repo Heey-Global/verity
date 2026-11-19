@@ -144,10 +144,9 @@ import {
   KnowledgePaneContext,
   type KnowledgePane,
 } from '../components/knowledge/KnowledgePane';
-import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
-import { setHomeShowsVerity } from '../lib/homeVerity';
+import { KnowledgeColumn } from '../components/knowledge/KnowledgeBrowser';
+import { SHARED, type KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { ProjectCard } from '../components/project/ProjectCard';
-import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
 import { useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
@@ -708,12 +707,6 @@ function SessionList({ client }: { client: VerityClient }) {
   useEffect(() => {
     if (!projectListVisible) reorder.cancel();
   }, [projectListVisible, reorder.cancel]);
-  // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
-  const homeShowsVerity = newDesign && !wide && homeTab === 'home';
-  useEffect(() => {
-    setHomeShowsVerity(homeShowsVerity);
-    return () => setHomeShowsVerity(false);
-  }, [homeShowsVerity]);
   const openProject = useCallback(
     (projectId: string) => {
       if (!wide) {
@@ -726,28 +719,17 @@ function SessionList({ client }: { client: VerityClient }) {
     [wide],
   );
   // `/project/[id]` hands a wide screen over to this column with a `project` param.
-  const { project: projectParam, verity: verityParam } = useLocalSearchParams<{
-    project?: string;
-    verity?: string;
-  }>();
-  // Verity's page in the wide layout's left column, in place of Home. On a phone
-  // it is its own route.
-  const [verityOpen, setVerityOpen] = useState(false);
-  const openVerity = useCallback(() => {
+  const { project: projectParam } = useLocalSearchParams<{ project?: string }>();
+  // Shared knowledge from Home's last row: in the wide layout's left column, in
+  // place of Home, so a page opens beside it; on a phone its own route.
+  const [sharedOpen, setSharedOpen] = useState(false);
+  const openSharedKnowledge = useCallback(() => {
     if (!wide) {
-      router.push('/verity');
+      router.push('/settings/shared-knowledge');
       return;
     }
-    setVerityOpen(true);
-    setHomeTab('home');
+    setSharedOpen(true);
   }, [wide]);
-  // `/verity` hands a wide screen over to this column with a `verity` param.
-  useEffect(() => {
-    if (!verityParam || !newDesign) return;
-    setVerityOpen(true);
-    setHomeTab('home');
-    router.setParams({ verity: undefined });
-  }, [verityParam, newDesign]);
   useEffect(() => {
     if (!projectParam || !newDesign) return;
     setOpenProjectId(projectParam);
@@ -761,9 +743,9 @@ function SessionList({ client }: { client: VerityClient }) {
       tab: homeTab,
       setTab: setHomeTab,
       projectOpen: wide && openProjectId !== null,
-      verityOpen: wide && verityOpen,
+      sharedKnowledgeOpen: wide && sharedOpen,
       closeProject: () => setOpenProjectId(null),
-      closeVerity: () => setVerityOpen(false),
+      closeSharedKnowledge: () => setSharedOpen(false),
       scrollProjects: () =>
         (reorder.listRef.current as FlatList | null)?.scrollToOffset({ offset: 0, animated: true }),
       scrollHome: () => homeScrollRef.current?.scrollTo({ y: 0, animated: true }),
@@ -1242,14 +1224,18 @@ function SessionList({ client }: { client: VerityClient }) {
     <View style={styles.flex}>
       {/* Both stay mounted so switching keeps scroll positions and Home's count
           stays current while the project list is open. */}
-      {/* Home stays mounted under Verity's page, so its count keeps up. */}
-      {wide && verityOpen && homeTab === 'home' ? (
-        <VerityPage client={client} onBack={() => setVerityOpen(false)} />
+      {/* Home stays mounted under Shared knowledge, so its count keeps up. */}
+      {wide && sharedOpen && homeTab === 'home' ? (
+        <KnowledgeColumn
+          client={client}
+          scope={SHARED}
+          exit={{ label: 'Home', onPress: () => setSharedOpen(false) }}
+        />
       ) : null}
       <View
         style={[
           styles.flex,
-          homeTab === 'home' && !(wide && verityOpen) ? null : styles.hiddenPane,
+          homeTab === 'home' && !(wide && sharedOpen) ? null : styles.hiddenPane,
         ]}
       >
         <HomeInbox
@@ -1269,7 +1255,7 @@ function SessionList({ client }: { client: VerityClient }) {
           onOpenProject={wide ? openProject : undefined}
           onRepairProject={repairFromHome}
           onCountChange={setHomeCount}
-          onOpenVerity={openVerity}
+          onOpenSharedKnowledge={openSharedKnowledge}
         />
       </View>
       <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>

@@ -7,9 +7,9 @@ export function pressHomeTab(
     tab: HomeTab;
     setTab: (tab: HomeTab) => void;
     projectOpen: boolean;
-    verityOpen: boolean;
+    sharedKnowledgeOpen: boolean;
     closeProject: () => void;
-    closeVerity: () => void;
+    closeSharedKnowledge: () => void;
     scrollProjects: () => void;
     scrollHome: () => void;
   },
@@ -22,7 +22,7 @@ export function pressHomeTab(
     if (navigation.projectOpen) navigation.closeProject();
     else navigation.scrollProjects();
   } else {
-    if (navigation.verityOpen) navigation.closeVerity();
+    if (navigation.sharedKnowledgeOpen) navigation.closeSharedKnowledge();
     else navigation.scrollHome();
   }
 }

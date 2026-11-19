@@ -206,8 +206,8 @@ function SettingsIndexView({ client }: { client: VerityClient }) {
           />
         </SettingsListPanel>
       </SettingsGroup>
-      {/* The new design keeps Shared knowledge on Verity's page; until the stored
-          choice is known the group stays away rather than show and vanish. */}
+      {/* The new design opens Shared knowledge from the end of Home; until the
+          stored choice is known the group stays away rather than show and vanish. */}
       {designChoice !== false ? null : (
         <SettingsGroup title="Knowledge">
           <SettingsListPanel>

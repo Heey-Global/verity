@@ -1,6 +1,5 @@
 import { ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
-import { VerityHeader } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import {
   Button,
@@ -129,7 +128,6 @@ export function HomeGroups() {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="2 need you · 2 in progress · 2 new results" />
         <Sections home />
       </ScrollView>
       <HomeTabBar tab="home" onChange={ignore} count={2} bottomInset={0} />

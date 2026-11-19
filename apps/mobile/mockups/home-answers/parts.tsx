@@ -2,7 +2,6 @@ import type { InboxAction, InboxItem } from '@verity/mobile';
 import { ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { VerityHeader } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import { AnswerSheet } from '../../components/project/AnswerSheet';
 import {
@@ -46,7 +45,6 @@ export function HomeSample({
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="2 questions · 1 plan to review" />
         <SectionHeader title="For you" />
         <Card stacked>
           <CardHead
