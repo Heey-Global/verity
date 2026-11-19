@@ -813,6 +813,8 @@ it('keeps read results in place, appends new results and clears them only on exp
   expect(labels()).toEqual(['first-result, acme/website', 'second-result, acme/website']);
   view.rerender(page([read, { ...second, lastSeenEventCount: 6 }], 1));
   expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(within(screen.getByTestId('work-recent')).getByText('first-result')).toBeTruthy();
+  expect(within(screen.getByTestId('work-recent')).getByText('second-result')).toBeTruthy();
 });
 
 it('appends a session to its destination category and keeps live actions current', async () => {
@@ -848,6 +850,24 @@ it('appends a session to its destination category and keeps live actions current
   expect(screen.getAllByText('result')).toHaveLength(1);
 });
 
+it('lists recent sessions the sections above do not hold, newest first', async () => {
+  const running = session('working', { status: 'running', lastActivityAt: 90 });
+  const unread = session('unread', { eventCount: 8, lastSeenEventCount: 2, lastActivityAt: 80 });
+  const quiet = Array.from({ length: 12 }, (_, index) =>
+    session(`quiet-${String(index)}`, { lastActivityAt: index + 1 }),
+  );
+  await renderInbox([...quiet, running, unread]);
+  const recent = within(screen.getByTestId('work-recent'));
+  expect(screen.getByText('Recent')).toBeTruthy();
+  // Newest first, the two oldest dropped by the limit, and nothing shown twice.
+  expect(recent.getAllByText(/^quiet-/).map((row) => row.props.children as string)).toEqual(
+    Array.from({ length: 10 }, (_, index) => `quiet-${String(11 - index)}`),
+  );
+  expect(recent.queryByText('working')).toBeNull();
+  expect(recent.queryByText('unread')).toBeNull();
+  expect(screen.getAllByText('working')).toHaveLength(1);
+});
+
 it('drops retained results when they leave the project, are archived or deleted', async () => {
   const client = fakeClient();
   const unread = session('retained', { eventCount: 5, lastSeenEventCount: 2 });
@@ -868,7 +888,8 @@ it('drops retained results when they leave the project, are archived or deleted'
   view.rerender(page([read]));
   expect(screen.getByText('retained')).toBeTruthy();
   view.rerender(page([{ ...read, projectId: 'other' }]));
-  expect(screen.queryByText('retained')).toBeNull();
+  expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(within(screen.getByTestId('work-recent')).getByText('retained')).toBeTruthy();
   view.rerender(page([unread]));
   view.rerender(page([read], [{ ...project, archived: true }]));
   expect(screen.queryByText('retained')).toBeNull();
