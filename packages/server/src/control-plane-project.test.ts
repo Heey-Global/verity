@@ -42,9 +42,22 @@ describe('control-plane project initialization', () => {
     const embedded = await readFile('packages/server/src/embedded.ts', 'utf8');
     const storeCreated = embedded.indexOf('const eventStore = new EventStore');
     const ensured = embedded.indexOf('await ensureControlPlaneProject(eventStore)', storeCreated);
-    const identityIssued = embedded.indexOf('.sandboxMaterial(', ensured);
+    const identityCreated = embedded.indexOf(
+      'await createEmbeddedControlPlaneRunnerIdentity(',
+      ensured,
+    );
+    const identityPublished = embedded.indexOf(
+      "await publishRunnerIdentity('startup')",
+      identityCreated,
+    );
+    const identityModule = await readFile(
+      'packages/server/src/embedded-control-plane-runner-identity.ts',
+      'utf8',
+    );
     expect(storeCreated).toBeGreaterThan(-1);
     expect(ensured).toBeGreaterThan(storeCreated);
-    expect(identityIssued).toBeGreaterThan(ensured);
+    expect(identityCreated).toBeGreaterThan(ensured);
+    expect(identityPublished).toBeGreaterThan(identityCreated);
+    expect(identityModule).toContain('await claudeEgressIdentity.sandboxMaterial(');
   });
 });
