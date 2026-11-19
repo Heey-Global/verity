@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.94.3](https://github.com/Heey-Global/verity/compare/mobile-v1.94.2...mobile-v1.94.3) (2026-11-19)
+
+
+### Bug Fixes
+
+* **deps:** update dependency @agentclientprotocol/sdk to v2.7.0 ([#2692](https://github.com/Heey-Global/verity/issues/2692)) ([5acf3b5](https://github.com/Heey-Global/verity/commit/5acf3b5b8946d3bd36b685936d00ac422b26ffdf))
+
 ## [1.94.2](https://github.com/Heey-Global/verity/compare/mobile-v1.94.1...mobile-v1.94.2) (2026-11-18)
 
 
