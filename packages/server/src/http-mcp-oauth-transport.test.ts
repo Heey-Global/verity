@@ -2,7 +2,11 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { RequestOptions } from 'node:https';
 import { beforeEach, expect, it, vi } from 'vitest';
-import { discoverMcpOAuth, oauthHttpRequest } from './http-mcp-oauth-discovery.js';
+import {
+  discoverMcpOAuth,
+  mcpServerIsInternal,
+  oauthHttpRequest,
+} from './http-mcp-oauth-discovery.js';
 const mocks = vi.hoisted(() => ({ request: vi.fn(), lookup: vi.fn() }));
 vi.mock('node:https', () => ({ request: mocks.request }));
 vi.mock('node:dns', () => ({ lookup: mocks.lookup }));
@@ -147,6 +151,27 @@ it('reports whether the peer was internal', async () => {
   const literal = oauthHttpRequest('https://8.8.8.8/');
   incoming.end('{}');
   expect(await literal).toMatchObject({ internal: false });
+});
+
+it.each([
+  ['https://100.102.249.21/mcp', null, true],
+  ['https://8.8.8.8/mcp', null, false],
+  ['https://docs.example.ts.net/mcp', '100.102.249.21', true],
+  ['https://mcp.example.com/mcp', '8.8.8.8', false],
+  ['https://gone.example/mcp', 'ENOTFOUND', false],
+])('classifies %s as internal=%s for later token requests', async (url, answer, expected) => {
+  mocks.lookup.mockImplementation(
+    (
+      _host: string,
+      _options: unknown,
+      callback: (error: Error | null, addresses: { address: string; family: number }[]) => void,
+    ) =>
+      answer === 'ENOTFOUND'
+        ? callback(Object.assign(new Error('not found'), { code: 'ENOTFOUND' }), [])
+        : callback(null, [{ address: answer ?? '', family: 4 }]),
+  );
+  await expect(mcpServerIsInternal(url)).resolves.toBe(expected);
+  if (answer === null) expect(mocks.lookup).not.toHaveBeenCalled();
 });
 
 it('says the server could not resolve the host', async () => {

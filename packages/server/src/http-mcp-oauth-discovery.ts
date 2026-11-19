@@ -15,6 +15,8 @@ const TLS_ERROR =
 /**
  * A parsed MCP or OAuth URL. `label` names a URL a remote server supplied, so
  * its text is never echoed into the form; a URL the user typed is quoted back.
+ * Messages about remote URLs name only their host, which cannot carry prose;
+ * the path goes to the server log.
  */
 function upstreamUrl(value: string, label?: string): URL {
   try {
@@ -50,6 +52,24 @@ function transportError(error: unknown, target: URL): McpOAuthDiscoveryError {
     `The Verity server could not connect to ${host}${typeof code === 'string' ? ` (${code})` : ''}.`,
     { host },
   );
+}
+
+/**
+ * Whether the MCP server behind `url` is on a private network or the tailnet.
+ * Token requests use it to keep a public server's endpoints public after setup,
+ * when the probe that classified the server is long gone. An unresolvable host
+ * counts as public: the stricter answer, and its token request fails anyway.
+ */
+export async function mcpServerIsInternal(url: string): Promise<boolean> {
+  const host = upstreamUrl(url).hostname.replace(/^\[(.*)\]$/u, '$1');
+  if (isIP(host) !== 0) return isInternalMcpUpstreamAddress(host);
+  return new Promise((resolve) => {
+    lookup(host, { all: true, verbatim: true }, (error, addresses) =>
+      resolve(
+        error === null && addresses.some(({ address }) => isInternalMcpUpstreamAddress(address)),
+      ),
+    );
+  });
 }
 
 export interface OAuthHttpResponse {
@@ -162,11 +182,11 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
           size += chunk.length;
           if (size > 1024 * 1024)
             response.destroy(
-              new McpOAuthDiscoveryError(
-                'metadata_invalid',
-                `${target.href} returned more than 1 MiB.`,
-                { host, path: target.pathname, status },
-              ),
+              new McpOAuthDiscoveryError('metadata_invalid', `${host} returned more than 1 MiB.`, {
+                host,
+                path: target.pathname,
+                status,
+              }),
             );
           else chunks.push(chunk);
         });
@@ -250,7 +270,7 @@ async function readMetadata<T extends z.ZodType>(
   if (response.status !== 200)
     throw new McpOAuthDiscoveryError(
       'metadata_status',
-      `${parsed.href} answered HTTP ${response.status} instead of ${what}.`,
+      `${parsed.hostname} answered HTTP ${response.status} instead of ${what}.`,
       { ...detail, status: response.status },
     );
   let body: unknown;
@@ -263,7 +283,7 @@ async function readMetadata<T extends z.ZodType>(
   if (!result.success)
     throw new McpOAuthDiscoveryError(
       'metadata_invalid',
-      `${parsed.href} did not return valid ${what}${
+      `${parsed.hostname} did not return valid ${what}${
         result.error.issues[0]?.path.length
           ? ` (field ${result.error.issues[0].path.map(String).join('.')})`
           : ''
@@ -309,7 +329,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
       'metadata_missing',
       advertised === undefined
         ? `${target.href} answered HTTP ${probe.status} without an OAuth challenge, so Verity cannot tell how to sign in.`
-        : `The protected-resource metadata ${metadataUrls[0]} named by ${host} was not found (HTTP 404).`,
+        : `The protected-resource metadata advertised by ${host} was not found (HTTP 404).`,
       { host, path: target.pathname, status: probe.status },
     );
   if (resource.resource !== target.href)
@@ -342,19 +362,19 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   if (authority === undefined)
     throw new McpOAuthDiscoveryError(
       'metadata_missing',
-      `No OAuth authorization server metadata was found for ${issuer.href} (HTTP 404 at every well-known path).`,
+      `No OAuth authorization server metadata was found at ${issuer.hostname} (HTTP 404 at every well-known path).`,
       issuerDetail,
     );
   if (authority.issuer !== issuer.href)
     throw new McpOAuthDiscoveryError(
       'issuer_mismatch',
-      `The authorization server metadata names a different issuer than ${issuer.href}.`,
+      `The authorization server metadata at ${issuer.hostname} names a different issuer than ${host} declared.`,
       issuerDetail,
     );
   if (!authority.code_challenge_methods_supported?.includes('S256'))
     throw new McpOAuthDiscoveryError(
       'pkce_unsupported',
-      `The OAuth server ${issuer.href} does not offer PKCE with S256.`,
+      `The OAuth server ${issuer.hostname} does not offer PKCE with S256.`,
       issuerDetail,
     );
   if (
@@ -365,7 +385,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   )
     throw new McpOAuthDiscoveryError(
       'grant_unsupported',
-      `The OAuth server ${issuer.href} does not support the authorization code flow.`,
+      `The OAuth server ${issuer.hostname} does not support the authorization code flow.`,
       issuerDetail,
     );
   const scopes =
@@ -432,7 +452,7 @@ export async function registerMcpOAuthClient(
   if (response.status !== 200 && response.status !== 201)
     throw new McpOAuthDiscoveryError(
       'registration_failed',
-      `Client registration at ${registration} answered HTTP ${response.status}. Check that the provider accepts the callback URLs, or configure a client manually.`,
+      `Client registration at ${registrationUrl.hostname} answered HTTP ${response.status}. Check that the provider accepts the callback URLs, or configure a client manually.`,
       { ...detail, status: response.status },
     );
   let registered: unknown;
@@ -452,7 +472,7 @@ export async function registerMcpOAuthClient(
   if (!parsed.success)
     throw new McpOAuthDiscoveryError(
       'registration_failed',
-      `Client registration at ${registration} returned an unreadable response.`,
+      `Client registration at ${registrationUrl.hostname} returned an unreadable response.`,
       { ...detail, status: response.status },
     );
   const result = parsed.data;
@@ -462,7 +482,7 @@ export async function registerMcpOAuthClient(
   if (missingRedirect !== undefined)
     throw new McpOAuthDiscoveryError(
       'registration_failed',
-      `Client registration at ${registration} did not accept the callback URL ${missingRedirect}.`,
+      `Client registration at ${registrationUrl.hostname} did not accept the callback URL ${missingRedirect}.`,
       { ...detail, status: response.status },
     );
   if (
@@ -471,13 +491,13 @@ export async function registerMcpOAuthClient(
   )
     throw new McpOAuthDiscoveryError(
       'registration_failed',
-      `Client registration at ${registration} returned a different client authentication method than requested (${method}).`,
+      `Client registration at ${registrationUrl.hostname} returned a different client authentication method than requested (${method}).`,
       { ...detail, status: response.status },
     );
   if (method !== 'none' && result.client_secret === undefined)
     throw new McpOAuthDiscoveryError(
       'registration_failed',
-      `Client registration at ${registration} returned no client secret for ${method}.`,
+      `Client registration at ${registrationUrl.hostname} returned no client secret for ${method}.`,
       { ...detail, status: response.status },
     );
   return {

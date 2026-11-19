@@ -4,6 +4,13 @@ import type { EventStore, HttpMcpConnectionRecord } from '@verity/store';
 
 import { completeHttpMcpOAuth, httpMcpAuthorization } from './http-mcp-oauth.js';
 
+const transport = vi.hoisted(() => ({ request: vi.fn(), internal: vi.fn() }));
+vi.mock('./http-mcp-oauth-discovery.js', async (original) => ({
+  ...(await original<typeof import('./http-mcp-oauth-discovery.js')>()),
+  oauthHttpRequest: transport.request,
+  mcpServerIsInternal: transport.internal,
+}));
+
 const connection: HttpMcpConnectionRecord = {
   id: 'gmail',
   name: 'gmail',
@@ -226,4 +233,34 @@ it('uses the registered token authentication method for code exchange and refres
       } else expect(call[2]).toBeUndefined();
     }
   }
+});
+
+// Discovery keeps a public MCP server's endpoints public, but the token endpoint
+// is stored and used later; without this check a public server's metadata could
+// still send the code, verifier and client secret into the operator's network.
+describe('token requests after setup', () => {
+  it.each([
+    [false, 'a public MCP server'],
+    [true, 'a tailnet or private MCP server'],
+  ])('allow internal token endpoints only for %s (%s)', async (internal) => {
+    transport.internal.mockResolvedValue(internal);
+    transport.request.mockResolvedValue({
+      status: 200,
+      headers: {},
+      body: JSON.stringify({ access_token: 'fresh', expires_in: 3600 }),
+    });
+    const update = vi.fn().mockResolvedValue(true);
+    await expect(httpMcpAuthorization(oauthStore(update), connection)).resolves.toBe(
+      'Bearer fresh',
+    );
+    expect(transport.internal).toHaveBeenCalledWith(connection.url);
+    expect(transport.request).toHaveBeenCalledWith(
+      connection.oauthTokenEndpoint,
+      expect.any(String),
+      'application/x-www-form-urlencoded',
+      undefined,
+      false,
+      internal,
+    );
+  });
 });

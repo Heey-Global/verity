@@ -164,7 +164,7 @@ describe('generic MCP OAuth discovery', () => {
       message: expect.not.stringContaining('paste-your-token'),
     });
   });
-  it('names the metadata URL and status when it is neither found nor missing', async () => {
+  it('names the metadata host and status, and logs the path, when it is neither found nor missing', async () => {
     const send = vi.fn(async (url: string) =>
       url === resourceUrl
         ? response({}, 401, {
@@ -174,8 +174,7 @@ describe('generic MCP OAuth discovery', () => {
     );
     await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
       code: 'metadata_status',
-      message:
-        'https://tools.example/metadata answered HTTP 503 instead of protected-resource metadata.',
+      message: 'tools.example answered HTTP 503 instead of protected-resource metadata.',
       detail: { host: 'tools.example', path: '/metadata', status: 503 },
     });
   });
@@ -215,7 +214,7 @@ describe('generic MCP OAuth discovery', () => {
     await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
       code: 'metadata_missing',
       message:
-        'The protected-resource metadata https://tools.example/metadata named by tools.example was not found (HTTP 404).',
+        'The protected-resource metadata advertised by tools.example was not found (HTTP 404).',
     });
   });
   it('registers exact native and web callbacks and keeps returned secrets private', async () => {
@@ -258,7 +257,7 @@ describe('generic MCP OAuth discovery', () => {
     ).rejects.toMatchObject({
       code: 'registration_failed',
       message:
-        'Client registration at https://identity.example/tenant/register did not accept the callback URL https://verity.build/mcp/oauth/callback.',
+        'Client registration at identity.example did not accept the callback URL https://verity.build/mcp/oauth/callback.',
     });
   });
 });
