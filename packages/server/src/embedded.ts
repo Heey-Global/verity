@@ -1,3 +1,8 @@
+import {
+  createEmbeddedPersonalProviderCredentials,
+  createEmbeddedClaudeCredentialSync,
+  createEmbeddedProviderCredentialBindings,
+} from './embedded-provider-credentials.js';
 import { createEmbeddedSessionBackend } from './embedded-session-backend.js';
 import { createEmbeddedRunnerConductorWiring } from './embedded-runner-conductor.js';
 import {
@@ -14,7 +19,6 @@ import {
   createEmbeddedAgentGatewayIdentityProjection,
 } from './embedded-agent-gateway-identity.js';
 import { createEmbeddedAgentGatewayCredentials } from './embedded-agent-gateway-credentials.js';
-import type { CodexUsageCredentialProvider } from './codexUsage.js';
 import { createEmbeddedAgentGateway } from './embedded-agent-gateway.js';
 import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
 import { createEmbeddedUplink } from './embedded-uplink.js';
@@ -52,7 +56,6 @@ import {
 } from './embedded-control-plane-runner-identity.js';
 import { createBrokeredSecretAliases } from './brokered-secret-aliases.js';
 import {
-  startClaudeCredentialSync,
   startRunnerSupervisorReconciler,
   CONTROL_PLANE_RUNNER_PROJECT_ID,
   SWEEP_SHUTDOWN_WAIT_MS,
@@ -172,7 +175,7 @@ import {
 } from '@verity/store';
 import type { FastifyBaseLogger } from 'fastify';
 import { sql, type Kysely } from 'kysely';
-import { existsSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { hostname, tmpdir } from 'node:os';
@@ -244,8 +247,6 @@ import {
   devcontainerBuilderIdle,
   ensureOpenCodeSettingsMaterialized,
   materializeOpenCodeSettings,
-  materializePersonalOpenCodeSettings,
-  personalOpenCodeSubdir,
   type ProjectImageRefSource,
   type DevcontainerFeatureSource,
 } from './provisioner.js';
@@ -270,8 +271,6 @@ import { ProjectEgressLifecycle } from './project-egress-lifecycle.js';
 import { projectEgressAvailability } from './project-egress-health.js';
 import { createProtectedBuildClient } from './project-egress-build-client.js';
 import { createProjectEgressHostClient } from './project-egress-host-client.js';
-import { readCodexAccessToken } from './agent-gateway-control.js';
-import { createPersonalProviderCredentials } from './personal-provider-credentials.js';
 import { installTeamOutbox } from './team-outbox-worker.js';
 import { DockerProjectRuntime } from './project-runtime.js';
 import { DEFAULT_SANDBOX_IMAGE_FALLBACK } from './sandbox-artifacts.js';
@@ -686,45 +685,10 @@ export async function buildEmbeddedServer(
   const publishRunnerIdentity = createEmbeddedRunnerIdentityPublisher(
     () => refreshControlPlaneRunnerIdentity,
   );
-  const personalProviderCredentials = createPersonalProviderCredentials({
+  const personalProviderCredentials = createEmbeddedPersonalProviderCredentials({
     store: eventStore,
-    onError: (error) => {
-      if (error instanceof SealedError) return;
-      // Never include credential contents in this diagnostic.
-      console.warn(`verity: a personal provider login could not be refreshed: ${String(error)}`);
-    },
-  });
-  // A person's sandbox reads its OpenCode models from its own file; rewrite every
-  // person's file when anyone's logins change, so a connected, changed or removed
-  // provider reaches their running sandbox (the directory bind sees the swap).
-  personalProviderCredentials.onChanged(() => {
-    void (async () => {
-      const connections = await eventStore.userProviderConnections.listByProvider('opencode');
-      const written = new Set<string>();
-      for (const connection of connections) {
-        const tag = sandboxPersonTag(connection.userId);
-        materializePersonalOpenCodeSettings(
-          connection,
-          secretRoot,
-          tag,
-          config.claudeConnectorPort,
-        );
-        written.add(personalOpenCodeSubdir(tag));
-      }
-      const prefix = personalOpenCodeSubdir('');
-      for (const entry of existsSync(secretRoot) ? readdirSync(secretRoot) : []) {
-        if (entry.startsWith(prefix) && !written.has(entry))
-          materializePersonalOpenCodeSettings(
-            undefined,
-            secretRoot,
-            entry.slice(prefix.length),
-            config.claudeConnectorPort,
-          );
-      }
-    })().catch((error: unknown) => {
-      if (error instanceof SealedError) return;
-      console.warn(`verity: personal OpenCode configuration not refreshed: ${String(error)}`);
-    });
+    secretRoot,
+    config,
   });
   const {
     state: agentGatewayState,
@@ -1235,11 +1199,7 @@ export async function buildEmbeddedServer(
   // ServerTranscript} sink — both are stateless handles over the same `db`.
   const transcriptStore = new TranscriptStore(db);
 
-  const claudeCredentialSync = startClaudeCredentialSync(eventStore, secretRoot, (error) => {
-    if (error instanceof SealedError) return;
-    // Never include credential contents in this diagnostic.
-    console.warn(`verity: failed to synchronize rotated Claude credentials: ${String(error)}`);
-  });
+  const claudeCredentialSync = createEmbeddedClaudeCredentialSync(eventStore, secretRoot);
   const { refreshAgentGatewayCredential, stopAgentGatewayCredentialProjection } =
     createEmbeddedAgentGatewayCredentials({
       config,
@@ -1780,10 +1740,16 @@ export async function buildEmbeddedServer(
       : {}),
     ...(uplinkControl ? { attendeeEdge: uplinkControl } : {}),
     googleAccessToken,
-    onOpenCodeSettingsChanged: async (settings) => {
-      materializeOpenCodeSettings(settings, secretRoot, config.claudeConnectorPort);
-      await refreshAgentGatewayCredential();
-    },
+    ...createEmbeddedProviderCredentialBindings({
+      secretRoot,
+      config,
+      claudeCredentialSync,
+      personalProviderCredentials,
+      refreshAgentGatewayCredential,
+      codexModelCatalog,
+      codexGatewayCredentialProvider,
+      codexGatewayControlSocket,
+    }),
     ...(config.stagingGoogleClientId !== undefined
       ? { stagingGoogleClientId: config.stagingGoogleClientId }
       : {}),
@@ -1795,34 +1761,12 @@ export async function buildEmbeddedServer(
     ) => googleDriveTool.canReadDocumentWithoutApproval(input),
     onGoogleCredentialsChanged: () => googleAccessToken.invalidate(),
     secretCipher,
-    persistAgentCredentials: async (patch, persist) => {
-      await claudeCredentialSync.persistCredentials(patch, persist);
-      if (patch.codexAuthJson !== undefined) await codexModelCatalog?.refresh();
-    },
-    claudeOAuthTokenProvider: claudeCredentialSync.getAccessToken,
     teamLinkIdentity: () => {
       const identity = config.devicePairing?.identity();
       const installation = uplinkControl?.teamInstallation();
       return identity && installation && { ...identity, ...installation };
     },
     teamSharing: teamSharingStatus(uplinkControl),
-    personalClaudeAccessToken: (userId: string) =>
-      personalProviderCredentials.claudeAccessToken(userId),
-    persistPersonalProviderCredentials: (userId, provider, write) =>
-      personalProviderCredentials.persist(userId, provider, write),
-    // The Codex quota probe reads its token from the gateway, the single refresh
-    // authority for the rotating Codex login (ADR 0010) — deliberately not from the
-    // stored `codexAuthJson`, which would make the Server a second writer. Without a
-    // gateway the probe stays inert and the meter keeps its per-session signal.
-    ...(codexGatewayCredentialProvider === undefined ? {} : { codexGatewayCredentialProvider }),
-    ...(codexGatewayControlSocket === undefined
-      ? {}
-      : {
-          codexGatewayCredentialFor:
-            (userId: string): CodexUsageCredentialProvider =>
-            () =>
-              readCodexAccessToken(codexGatewayControlSocket, userId),
-        }),
     onSecretUnlocked: async () => {
       // Restore process-local relay listeners before filtering persisted gateway
       // certificates. A new Server owns none yet; treating that as identity drift
