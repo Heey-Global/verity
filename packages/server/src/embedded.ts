@@ -18,9 +18,8 @@ import { createEmbeddedBrokeredHttp } from './embedded-brokered-http.js';
 import { startEmbeddedSystemInventory } from './embedded-system-inventory.js';
 import { createEmbeddedIntegrationTools } from './embedded-integration-tools.js';
 import { validateEmbeddedConfig } from './embedded-config.js';
-import { withPreviewProjectMutation as mutatePreviewProject } from './preview-project-mutation.js';
+import { createEmbeddedPreviewMutations } from './embedded-preview-mutations.js';
 import { sandboxUpdateLifecycleHooks } from './sandbox-update-recovery.js';
-import { withPreviewStorageMutation } from './preview-storage-mutation.js';
 import { DeprovisionerImpl } from './deprovisioner.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { installPersonalSandboxSleep } from './personal-sandbox-sleep.js';
@@ -644,27 +643,12 @@ export async function buildEmbeddedServer(
     listenerDiscovery?.listListeningProcesses(project, options) ??
     listenerRuntime.listListeningProcesses(project);
   let previewShareManager: PreviewShareManager | undefined;
-  const withPreviewProjectMutation = async <T>(
-    projectId: string,
-    mutation: () => Promise<T>,
-    beforeRetire?: () => Promise<void>,
-  ): Promise<T> =>
-    mutatePreviewProject(
-      projectId,
-      mutation,
-      { local: localPreviewManager, public: previewShareManager },
-      beforeRetire,
-    );
-  const withStorageProjectMutation = async <T>(
-    projectId: string,
-    mutation: () => Promise<T>,
-    options: { waitForIdle?: boolean } = {},
-  ): Promise<T> =>
-    withPreviewStorageMutation(projectId, mutation, {
-      local: localPreviewManager,
-      public: previewShareManager,
-      waitForIdle: options.waitForIdle ?? true,
-    });
+  const { withPreviewProjectMutation, withStorageProjectMutation } = createEmbeddedPreviewMutations(
+    {
+      local: () => localPreviewManager,
+      public: () => previewShareManager,
+    },
+  );
   // Every line the Uplink client writes is conditional on this option being
   // present. Without it the handshake record, the close code and the refusal
   // reason are all no-ops, and a control channel that is being refused is
