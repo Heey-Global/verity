@@ -14,7 +14,7 @@ const working = {
 };
 
 /** Home without Verity's header: the list starts with the work. Sample data only. */
-export function HomeList({ selected = false }: { selected?: boolean }) {
+function HomeList({ selected = false }: { selected?: boolean }) {
   return (
     // Room under the last row, so it scrolls clear of the floating V.
     <ScrollView contentContainerStyle={[styles.content, styles.clearOfV]}>
@@ -97,7 +97,7 @@ export function HomeList({ selected = false }: { selected?: boolean }) {
 }
 
 /** The floating V as VerityBubble draws it, at its resting place. */
-export function FloatingV() {
+function FloatingV() {
   return (
     <View style={styles.bubble} pointerEvents="none">
       <VerityMark size={40} glow={false} />
