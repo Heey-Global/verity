@@ -74,26 +74,104 @@ describe('generic MCP OAuth discovery', () => {
     expect(urls).toContain('https://tools.example/.well-known/oauth-protected-resource/mcp');
     expect(urls).toContain('https://identity.example/.well-known/openid-configuration/tenant');
   });
+  // Each step names itself, so the form can say what to fix instead of "not detected".
   it.each([
-    [{ ...resource, resource: 'https://other.example/mcp' }, authority],
-    [resource, { ...authority, issuer: 'https://other.example' }],
-    [resource, { ...authority, token_endpoint: 'http://private.example/token' }],
-    [resource, { ...authority, authorization_endpoint: 'https://127.0.0.1/authorize' }],
-    [resource, { ...authority, code_challenge_methods_supported: ['plain'] }],
-    [resource, { ...authority, grant_types_supported: ['client_credentials'] }],
-    [resource, { ...authority, response_types_supported: ['token'] }],
-  ])('rejects mismatched or unsafe metadata', async (res, auth) => {
-    await expect(discoverMcpOAuth(resourceUrl, transport(res, auth))).rejects.toThrow();
+    ['resource_mismatch', { ...resource, resource: 'https://other.example/mcp' }, authority],
+    ['issuer_mismatch', resource, { ...authority, issuer: 'https://other.example' }],
+    [
+      'metadata_invalid',
+      resource,
+      { ...authority, token_endpoint: 'http://private.example/token' },
+    ],
+    [
+      'metadata_invalid',
+      resource,
+      { ...authority, authorization_endpoint: 'https://127.0.0.1/authorize' },
+    ],
+    [
+      'metadata_invalid',
+      resource,
+      { ...authority, authorization_endpoint: 'https://[::1]/authorize' },
+    ],
+    ['pkce_unsupported', resource, { ...authority, code_challenge_methods_supported: ['plain'] }],
+    [
+      'grant_unsupported',
+      resource,
+      { ...authority, grant_types_supported: ['client_credentials'] },
+    ],
+    ['grant_unsupported', resource, { ...authority, response_types_supported: ['token'] }],
+  ])('rejects mismatched or unsafe metadata as %s', async (code, res, auth) => {
+    await expect(discoverMcpOAuth(resourceUrl, transport(res, auth))).rejects.toMatchObject({
+      name: 'McpOAuthDiscoveryError',
+      code,
+    });
+  });
+  it('accepts tailnet and private endpoints in metadata, with explicit ports', async () => {
+    const auth = {
+      ...authority,
+      authorization_endpoint: 'https://100.102.249.21:8443/authorize',
+      token_endpoint: 'https://[fd7a:115c:a1e0::1]/token',
+    };
+    await expect(discoverMcpOAuth(resourceUrl, transport(resource, auth))).resolves.toMatchObject({
+      discovery: {
+        authorizationEndpoint: 'https://100.102.249.21:8443/authorize',
+        tokenEndpoint: 'https://[fd7a:115c:a1e0::1]/token',
+      },
+    });
+  });
+  it('names the metadata URL and status when it is neither found nor missing', async () => {
+    const send = vi.fn(async (url: string) =>
+      url === resourceUrl
+        ? response({}, 401, {
+            'www-authenticate': 'Bearer resource_metadata="https://tools.example/metadata"',
+          })
+        : response({}, 503),
+    );
+    await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
+      code: 'metadata_status',
+      message:
+        'https://tools.example/metadata answered HTTP 503 instead of protected-resource metadata.',
+      detail: { host: 'tools.example', path: '/metadata', status: 503 },
+    });
+  });
+  it('reports unreadable metadata without echoing the body', async () => {
+    const send = vi.fn(async (url: string) =>
+      url === resourceUrl
+        ? response({}, 401, {
+            'www-authenticate': 'Bearer resource_metadata="https://tools.example/metadata"',
+          })
+        : { status: 200, headers: {}, body: '<html>secret-session-token</html>' },
+    );
+    const failure = discoverMcpOAuth(resourceUrl, send);
+    await expect(failure).rejects.toMatchObject({ code: 'metadata_invalid' });
+    await expect(failure).rejects.not.toThrow(/secret-session-token/u);
   });
   it('rejects redirects rather than following a new discovery target', async () => {
     const send = vi.fn(async () => response({}, 302, { location: 'https://internal.example' }));
     await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toThrow(/redirect/u);
     expect(send).toHaveBeenCalledTimes(1);
   });
-  it('explains the manual fallback when metadata is missing', async () => {
-    await expect(discoverMcpOAuth(resourceUrl, async () => response({}, 404))).rejects.toThrow(
-      /manually/u,
+  it('says when the server answered without an OAuth challenge', async () => {
+    const send = vi.fn(async (url: string) => response({}, url === resourceUrl ? 200 : 404));
+    await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
+      code: 'metadata_missing',
+      message:
+        'https://tools.example/mcp answered HTTP 200 without an OAuth challenge, so Verity cannot tell how to sign in.',
+    });
+  });
+  it('says when the advertised resource metadata does not exist', async () => {
+    const send = vi.fn(async (url: string) =>
+      url === resourceUrl
+        ? response({}, 401, {
+            'www-authenticate': 'Bearer resource_metadata="https://tools.example/metadata"',
+          })
+        : response({}, 404),
     );
+    await expect(discoverMcpOAuth(resourceUrl, send)).rejects.toMatchObject({
+      code: 'metadata_missing',
+      message:
+        'The protected-resource metadata https://tools.example/metadata named by tools.example was not found (HTTP 404).',
+    });
   });
   it('registers exact native and web callbacks and keeps returned secrets private', async () => {
     const { authority: discovered } = await discoverMcpOAuth(resourceUrl, transport());
@@ -132,7 +210,11 @@ describe('generic MCP OAuth discovery', () => {
         async () =>
           response({ client_id: 'client', redirect_uris: ['https://other.example'] }, 201),
       ),
-    ).rejects.toThrow(/incompatible/u);
+    ).rejects.toMatchObject({
+      code: 'registration_failed',
+      message:
+        'Client registration at https://identity.example/tenant/register did not accept the callback URL https://verity.build/mcp/oauth/callback.',
+    });
   });
 });
 

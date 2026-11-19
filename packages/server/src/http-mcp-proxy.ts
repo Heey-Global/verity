@@ -83,19 +83,51 @@ export function isForbiddenHttpMcpAddress(address: string): boolean {
   }
 }
 
+/**
+ * Address ranges a user-configured MCP server may live in besides the public
+ * internet: private networks and the Tailscale tailnet (100.64.0.0/10 and
+ * fd7a:115c:a1e0::/48, which `uniqueLocal` covers). Loopback, link-local (and
+ * with it cloud metadata), translation and tunnel prefixes stay refused, since
+ * they reach the Verity host itself or hide another address behind a public one.
+ * Sandbox egress keeps the stricter {@link isForbiddenHttpMcpAddress}.
+ */
+const MCP_UPSTREAM_RANGES = new Set(['unicast', 'private', 'carrierGradeNat', 'uniqueLocal']);
+
+/** The range name of a refused MCP upstream address, or undefined when it is allowed. */
+export function refusedMcpUpstreamRange(address: string): string | undefined {
+  try {
+    const parsed = ipaddr.parse(address);
+    const normalized =
+      parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()
+        ? (parsed as ipaddr.IPv6).toIPv4Address()
+        : parsed;
+    const range = normalized.range();
+    return MCP_UPSTREAM_RANGES.has(range) ? undefined : range;
+  } catch {
+    return 'invalid';
+  }
+}
+
+export function isRefusedMcpUpstreamAddress(address: string): boolean {
+  return refusedMcpUpstreamRange(address) !== undefined;
+}
+
 export function parseHttpMcpUpstream(value: string): URL {
   const url = new URL(value);
+  const literal = url.hostname.replace(/^\[(.*)\]$/u, '$1');
+  const validHost =
+    isIP(literal) !== 0
+      ? !isRefusedMcpUpstreamAddress(literal)
+      : url.hostname.length <= 253 &&
+        /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(
+          url.hostname,
+        );
   if (
     url.protocol !== 'https:' ||
     url.username !== '' ||
     url.password !== '' ||
     url.hash !== '' ||
-    url.port !== '' ||
-    isIP(url.hostname) !== 0 ||
-    url.hostname.length > 253 ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(
-      url.hostname,
-    )
+    !validHost
   ) {
     throw new Error('invalid HTTP MCP upstream');
   }
@@ -163,7 +195,7 @@ export async function forwardHttpMcp(
             if (
               error !== null ||
               addresses.length === 0 ||
-              addresses.some((a) => isForbiddenHttpMcpAddress(a.address))
+              addresses.some((a) => isRefusedMcpUpstreamAddress(a.address))
             ) {
               callback(new Error('HTTP MCP upstream resolution rejected'), []);
               return;

@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
 import { discoverMcpOAuth, registerMcpOAuthClient } from './http-mcp-oauth-discovery.js';
+import { McpOAuthDiscoveryError } from './http-mcp-oauth-errors.js';
 import { McpOAuthFlows, NATIVE_MCP_CALLBACK, mcpWebCallback } from './http-mcp-oauth-flows.js';
 
 const connectionParams = z.object({ connectionId: z.string().min(1).max(128) });
@@ -13,15 +14,26 @@ const projectConnectionParams = z.object({
   id: z.string().min(1),
   connectionId: z.string().min(1).max(128),
 });
+/**
+ * The name is a routing identifier, not a label: agents receive it as the MCP
+ * server key, so it becomes part of tool names such as `mcp__<name>__<tool>` and
+ * of Codex's `mcp_servers.<name>` table, which only accept these characters.
+ * `verity` is the gateway's own server key.
+ */
+const connectionName = z
+  .string()
+  .trim()
+  .min(1, 'Enter a connection name.')
+  .max(80, 'Use at most 80 characters for the connection name.')
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9_-]*$/u,
+    'Use only letters, digits, hyphens and underscores in the connection name, starting with a letter or digit — for example heey-docs-privat.',
+  )
+  .refine((name) => name.toLowerCase() !== 'verity', 'The name verity is reserved.');
+
 const connectionBody = z
   .object({
-    name: z
-      .string()
-      .trim()
-      .min(1)
-      .max(80)
-      .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
-      .refine((name) => name.toLowerCase() !== 'verity', 'the name verity is reserved'),
+    name: connectionName,
     url: z.string().max(2048),
     authorization: z.string().min(1).max(8192).nullable().optional(),
     authType: z.enum(['none', 'static', 'oauth']).optional(),
@@ -71,6 +83,34 @@ function connectionOwnerId(request: { localUserId: string | null }): string {
   return request.localUserId ?? legacyAdministratorId;
 }
 
+function invalidConnectionMessage(issue: z.ZodError['issues'][number] | undefined): string {
+  if (issue === undefined) return 'invalid request';
+  if (issue.path[0] === 'name' || issue.code === 'custom') return issue.message;
+  const field = issue.path.map(String).join('.');
+  return field === '' ? 'invalid request' : `invalid ${field}`;
+}
+
+/**
+ * A failed discovery or registration step as the form shows it, logged once with
+ * its stage so the cause is visible on the server too. Unexpected errors keep a
+ * generic answer: their messages are not written for users.
+ */
+function oauthSetupFailure(
+  request: FastifyRequest,
+  error: unknown,
+  fallback: string,
+): { error: string; code: string } {
+  if (error instanceof McpOAuthDiscoveryError) {
+    request.log.warn({ code: error.code, ...error.detail }, 'verity: MCP OAuth discovery failed');
+    return { error: error.message, code: error.code };
+  }
+  request.log.warn(
+    { errorName: error instanceof Error ? error.name : typeof error },
+    'verity: MCP OAuth setup failed',
+  );
+  return { error: fallback, code: 'setup_failed' };
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -98,10 +138,16 @@ export function registerHttpMcpConnectionRoutes(
       .parse(request.body);
     try {
       return (await discoverMcpOAuth(body.url)).discovery;
-    } catch {
-      return reply.code(400).send({
-        error: 'OAuth discovery failed. Check the server URL or configure OAuth manually.',
-      });
+    } catch (error) {
+      return reply
+        .code(400)
+        .send(
+          oauthSetupFailure(
+            request,
+            error,
+            'OAuth discovery failed. Check the server URL or configure OAuth manually.',
+          ),
+        );
     }
   });
   app.get('/mcp-connections', async (request) => ({
@@ -123,7 +169,14 @@ export function registerHttpMcpConnectionRoutes(
   }));
 
   app.post('/mcp-connections', async (request, reply) => {
-    const body = connectionBody.parse(request.body);
+    // The form needs to say which rule failed; the global handler only answers
+    // "invalid request". Messages are this schema's own, never request content.
+    const parsed = connectionBody.safeParse(request.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({ error: invalidConnectionMessage(issue) });
+    }
+    const body = parsed.data;
     let url: string;
     try {
       url = parseHttpMcpUpstream(body.url).toString();
@@ -167,12 +220,13 @@ export function registerHttpMcpConnectionRoutes(
         parseHttpMcpUpstream(body.oauthAuthorizationEndpoint);
         parseHttpMcpUpstream(body.oauthTokenEndpoint);
       }
-    } catch {
+    } catch (error) {
       reply.code(400);
-      return {
-        error:
-          'MCP setup failed. Use public HTTPS endpoints and a valid OAuth client, or configure OAuth manually.',
-      };
+      return oauthSetupFailure(
+        request,
+        error,
+        'MCP setup failed. Use HTTPS endpoints Verity may reach and a valid OAuth client, or configure OAuth manually.',
+      );
     }
     const connection = {
       id: randomUUID(),
