@@ -354,7 +354,7 @@ const publishedText = (value: unknown, max: number): string | undefined => {
  *
  * The published summary, blocker and required decision cross: the target's agent wrote them
  * for exactly this reader through an approved `verity_publish_session_progress` call, they
- * are bounded by that tool's schema and redacted when projected, and without them Control has
+ * are bounded by that tool’s schema and already credential-redacted by `readProgress`, and without them Control has
  * no way to learn the result of a handoff it sent. Everything else that is not a fixed scalar
  * — branch, Issue and PR association — stays behind, and `withheld` names it, so an absent
  * field reads as a policy outcome instead of as "nothing there".
