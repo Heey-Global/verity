@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionPr, SessionSummary } from '../api.js';
 import { inboxItems } from './inbox.js';
-import { retainWorkMembers, sessionWorkSections } from './sessionWork.js';
+import {
+  RECENT_SESSION_LIMIT,
+  recentSessions,
+  retainWorkMembers,
+  sessionWorkSections,
+} from './sessionWork.js';
 
 function session(id: string, fields: Partial<SessionSummary> = {}): SessionSummary {
   return {
@@ -164,5 +169,40 @@ describe('retainWorkMembers', () => {
       'new-question',
     ]);
     expect(retainWorkMembers(['b', 'a'], ['a'])).toEqual(['a']);
+  });
+});
+
+describe('recentSessions', () => {
+  const ids = (list: readonly SessionSummary[]) => list.map((s) => s.sessionId);
+
+  it('lists the newest activity first and leaves out sessions shown elsewhere', () => {
+    const list = [
+      session('old', { lastActivityAt: 1 }),
+      session('newest', { lastActivityAt: 30 }),
+      session('shown', { lastActivityAt: 40 }),
+      session('middle', { lastActivityAt: 20 }),
+    ];
+    // A session already in Needs you, In progress or Results must not repeat here.
+    expect(ids(recentSessions(list, new Set(['shown'])))).toEqual(['newest', 'middle', 'old']);
+  });
+
+  it('sorts sessions without activity last, keeping their input order', () => {
+    const list = [
+      session('none-a', { lastActivityAt: null }),
+      session('dated', { lastActivityAt: 5 }),
+      session('none-b', { lastActivityAt: undefined }),
+    ];
+    expect(ids(recentSessions(list, new Set()))).toEqual(['dated', 'none-a', 'none-b']);
+  });
+
+  it('keeps only the most recent ones up to the limit', () => {
+    const list = Array.from({ length: RECENT_SESSION_LIMIT + 3 }, (_, index) =>
+      session(`s${String(index)}`, { lastActivityAt: index }),
+    );
+    const recent = recentSessions(list, new Set());
+    expect(recent).toHaveLength(RECENT_SESSION_LIMIT);
+    // The oldest are the ones dropped, not whatever came last in the input.
+    expect(recent[0]?.sessionId).toBe(`s${String(RECENT_SESSION_LIMIT + 2)}`);
+    expect(recent.at(-1)?.sessionId).toBe('s3');
   });
 });

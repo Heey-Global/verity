@@ -10,7 +10,7 @@ import {
 import { randomUUID } from 'expo-crypto';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, View } from 'react-native';
+import { Alert, ScrollView, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
 import { MockupThumbs } from '../session/MockupReview';
@@ -27,6 +27,11 @@ import { Disclosure } from '../ui/Disclosure';
 
 /** What Resume sends: a crashed session continues by taking a new turn. */
 export const RESUME_PROMPT = 'Continue where you stopped.';
+/** Lines a permission's summary takes in a work list when the full input sits under it. */
+export const INBOX_LINE_CLAMP = 3;
+/** Height of the viewport that holds a request read in full next to Allow. */
+export const INBOX_REQUEST_MAX_HEIGHT = 180;
+
 const TAG_INTENT = {
   attention: 'needsSetup',
   action: 'action',
@@ -364,6 +369,10 @@ export function InboxCard({
             key={index}
             variant={line.kind === 'code' ? 'code' : 'bodySmall'}
             tone={line.kind === 'code' ? undefined : 'muted'}
+            // A work list is scanned, so an agent's long message must not stretch
+            // its card. Clamped only where the complete input is drawn below it:
+            // without a request, these lines are all there is to read.
+            numberOfLines={item.request === undefined ? undefined : INBOX_LINE_CLAMP}
             selectable
             testID={`inbox-line-${line.kind}`}
           >
@@ -373,10 +382,18 @@ export function InboxCard({
         {item.request === undefined ? null : item.requestOpen === true ? (
           // The words leave part of the input unsaid (a file's content, a field no
           // summary knows), so it is the thing to read and is shown whole; Allow
-          // must never stand next to text the operator cannot read in full.
-          <Text variant="code" testID="inbox-request" selectable>
-            {item.request}
-          </Text>
+          // must never stand next to text the operator cannot read in full. Whole,
+          // but in a bounded viewport: scrolled, not clipped, and the card stays short.
+          <ScrollView
+            style={styles.request}
+            nestedScrollEnabled
+            testID="inbox-request-viewport"
+            accessibilityLabel="Full request"
+          >
+            <Text variant="code" testID="inbox-request" selectable>
+              {item.request}
+            </Text>
+          </ScrollView>
         ) : (
           // Read in words first; the complete input stays one tap away, never
           // clipped, so Allow is never decided from a summary that could not be
@@ -477,4 +494,5 @@ const styles = StyleSheet.create((theme) => ({
   hiddenToggle: { alignItems: 'center', marginTop: theme.spacing.sm },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm },
   headTrailing: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  request: { maxHeight: INBOX_REQUEST_MAX_HEIGHT, flexGrow: 0 },
 }));

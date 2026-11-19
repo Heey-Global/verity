@@ -1,4 +1,12 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  realpathSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -103,6 +111,77 @@ it('uses the native npm root instead of trusting an ancestor lockfile', () => {
     mode: 0o755,
   });
   expect(npmProjectRoot(executable, nested, process.env, ['install'])).toBe(nested);
+});
+
+it('resolves a project root that npm masks because its path contains a UUID', () => {
+  // npm prints `…/code-***` for a session worktree named after its session id;
+  // trusting that output made every installation in such a session fail with
+  // ENOENT on a path that does not exist.
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  const worktree = join(root, 'code-cbacfc7a-29be-46ff-924f-55f6614d3e0a');
+  const nested = join(worktree, 'server');
+  mkdirSync(nested, { recursive: true });
+  writeFileSync(join(worktree, 'package.json'), '{"name":"root"}');
+  const userConfig = join(root, 'user.npmrc');
+  writeFileSync(userConfig, '');
+  const env = {
+    ...process.env,
+    npm_config_userconfig: userConfig,
+    NPM_CONFIG_USERCONFIG: userConfig,
+  };
+  expect(npmProjectRoot('npm', nested, env, [])).toBe(realpathSync(worktree));
+});
+
+it('maps each masked segment of a reported root to the enclosing directory it stands for', () => {
+  // Independent of the installed npm's masking heuristic: a fake npm reports
+  // the root the way npm 11 does, with several masked segments.
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  const worktree = join(root, '0b7b2a52-3c1f-4c5e-9a6d-1f2e3d4c5b6a', 'code-x-***-y');
+  const nested = join(worktree, 'packages', 'web');
+  mkdirSync(nested, { recursive: true });
+  const executable = join(root, 'npm');
+  const masked = join(root, '***', 'code-x-***-y');
+  writeFileSync(executable, `#!${process.execPath}\nconsole.log(${JSON.stringify(masked)});\n`, {
+    mode: 0o755,
+  });
+  // A matching directory npm could not have rooted a project in is no answer.
+  expect(() => npmProjectRoot(executable, nested, process.env, ['install'])).toThrow(
+    /masked project root/u,
+  );
+  writeFileSync(join(worktree, 'package.json'), '{"name":"root"}');
+  // `npm run` exports the global prefix as npm_config_prefix; it must not block this.
+  const env = { ...process.env, npm_config_prefix: '/usr/local' };
+  expect(npmProjectRoot(executable, nested, env, ['install'])).toBe(realpathSync(worktree));
+});
+
+it('accepts a masked install directory that npm falls back to without project markers', () => {
+  // With no package.json or node_modules on the way up, npm reports the
+  // directory itself; a fresh install there must not stay blocked.
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  const fresh = join(root, 'code-cbacfc7a-29be-46ff-924f-55f6614d3e0a');
+  mkdirSync(fresh);
+  const executable = join(root, 'npm');
+  writeFileSync(
+    executable,
+    `#!${process.execPath}\nconsole.log(${JSON.stringify(join(root, 'code-***'))});\n`,
+    { mode: 0o755 },
+  );
+  expect(npmProjectRoot(executable, fresh, process.env, ['install', 'foo'])).toBe(
+    realpathSync(fresh),
+  );
+});
+
+it('refuses a masked project root that no enclosing directory matches', () => {
+  const root = fixture({ lockfileVersion: 3, packages: {} });
+  const executable = join(root, 'npm');
+  writeFileSync(
+    executable,
+    `#!${process.execPath}\nconsole.log(${JSON.stringify(join(root, 'elsewhere-***'))});\n`,
+    { mode: 0o755 },
+  );
+  expect(() => npmProjectRoot(executable, root, process.env, ['install'])).toThrow(
+    /masked project root/u,
+  );
 });
 
 it('follows actual npm workspace membership and keeps independent nested projects separate', () => {

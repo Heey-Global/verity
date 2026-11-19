@@ -830,6 +830,8 @@ export {
   sessionAgentWorking,
   sessionWorkActive,
   retainWorkMembers,
+  recentSessions,
+  RECENT_SESSION_LIMIT,
   WORK_PROBLEM_LABELS,
   type SessionWorkEntry,
   type SessionWorkSections,
