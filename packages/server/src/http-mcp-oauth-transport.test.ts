@@ -115,6 +115,40 @@ it.each(['100.102.249.21', '100.64.0.1', 'fd7a:115c:a1e0::1', '10.0.0.1', '192.1
   },
 );
 
+it('refuses internal peers when only public ones are allowed', async () => {
+  const response = oauthHttpRequest(
+    'https://metadata.example/',
+    undefined,
+    undefined,
+    undefined,
+    false,
+    false,
+  );
+  const callback = resolveThroughHook({ error: null, address: '100.102.249.21' });
+  expect(callback).toHaveBeenCalledWith(
+    expect.objectContaining({
+      code: 'address_refused',
+      detail: expect.objectContaining({ range: 'internal' }),
+    }),
+    [],
+  );
+  incoming.end('{}');
+  await response;
+  await expect(
+    oauthHttpRequest('https://10.0.0.5/token', undefined, undefined, undefined, false, false),
+  ).rejects.toMatchObject({ code: 'address_refused' });
+});
+
+it('reports whether the peer was internal', async () => {
+  const response = oauthHttpRequest('https://metadata.example/');
+  resolveThroughHook({ error: null, address: '100.102.249.21' });
+  incoming.end('{}');
+  expect(await response).toMatchObject({ internal: true });
+  const literal = oauthHttpRequest('https://8.8.8.8/');
+  incoming.end('{}');
+  expect(await literal).toMatchObject({ internal: false });
+});
+
 it('says the server could not resolve the host', async () => {
   const response = oauthHttpRequest('https://metadata.example/');
   const callback = resolveThroughHook({

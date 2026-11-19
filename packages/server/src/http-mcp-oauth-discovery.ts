@@ -2,21 +2,37 @@ import { lookup } from 'node:dns';
 import { request } from 'node:https';
 import { z } from 'zod';
 import { McpOAuthDiscoveryError } from './http-mcp-oauth-errors.js';
-import { parseHttpMcpUpstream, refusedMcpUpstreamRange } from './http-mcp-proxy.js';
+import { isIP } from 'node:net';
+import {
+  isInternalMcpUpstreamAddress,
+  parseHttpMcpUpstream,
+  refusedMcpUpstreamRange,
+} from './http-mcp-proxy.js';
 
 const TLS_ERROR =
   /^(?:ERR_TLS_|ERR_SSL_|CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_(?:VERIFY|GET_ISSUER)|HOSTNAME_MISMATCH)/u;
 
-/** A parsed MCP or OAuth URL; anything else is reported as the URL it was. */
-function upstreamUrl(value: string): URL {
+/**
+ * A parsed MCP or OAuth URL. `label` names a URL a remote server supplied, so
+ * its text is never echoed into the form; a URL the user typed is quoted back.
+ */
+function upstreamUrl(value: string, label?: string): URL {
   try {
     return parseHttpMcpUpstream(value);
   } catch {
     throw new McpOAuthDiscoveryError(
       'invalid_url',
-      `${value.slice(0, 300)} is not a usable HTTPS URL. Use https:// without credentials or a fragment, and not a loopback or link-local address.`,
+      `${label ?? value.slice(0, 300)} is not a usable HTTPS URL. Use https:// without credentials or a fragment, and not a loopback or link-local address.`,
     );
   }
+}
+
+function internalRefusal(host: string, address: string): McpOAuthDiscoveryError {
+  return new McpOAuthDiscoveryError(
+    'address_refused',
+    `${host} resolves to the internal address ${address}, but the MCP server URL is public. OAuth endpoints of a public MCP server may not point into an internal network.`,
+    { host, address, range: 'internal' },
+  );
 }
 
 function transportError(error: unknown, target: URL): McpOAuthDiscoveryError {
@@ -40,13 +56,21 @@ export interface OAuthHttpResponse {
   status: number;
   headers: Record<string, string | undefined>;
   body: string;
+  /** Whether the peer was a private or tailnet address; undefined when unknown. */
+  internal?: boolean;
 }
+/**
+ * `allowInternal: false` refuses private and tailnet peers. Discovery passes it
+ * once the MCP server itself turned out to be public, so a public server's
+ * metadata cannot steer Verity's requests into the operator's network.
+ */
 export type OAuthHttpRequest = (
   url: string,
   body?: string,
   contentType?: string,
   authorization?: string,
   headersOnly?: boolean,
+  allowInternal?: boolean,
 ) => Promise<OAuthHttpResponse>;
 
 /** No redirects, cookies or ambient credentials; DNS is checked on the actual socket. */
@@ -56,10 +80,15 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
   contentType,
   authorization,
   headersOnly,
+  allowInternal = true,
 ) => {
   const target = upstreamUrl(url);
+  const host = target.hostname;
+  const literal = host.replace(/^\[(.*)\]$/u, '$1');
+  // Node connects to an IP literal without calling the lookup hook below.
+  let internal = isIP(literal) === 0 ? undefined : isInternalMcpUpstreamAddress(literal);
+  if (internal === true && !allowInternal) throw internalRefusal(host, literal);
   return new Promise((resolve, reject) => {
-    const host = target.hostname;
     const req = request(
       target,
       {
@@ -80,6 +109,9 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
             const refused = addresses
               ?.map(({ address }) => ({ address, range: refusedMcpUpstreamRange(address) }))
               .find(({ range }) => range !== undefined);
+            const internalAddress = addresses?.find(({ address }) =>
+              isInternalMcpUpstreamAddress(address),
+            )?.address;
             if (error !== null || addresses.length === 0) {
               callback(
                 new McpOAuthDiscoveryError(
@@ -98,8 +130,13 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
                 ),
                 [],
               );
-            } else if (typeof options === 'object' && options.all) callback(null, addresses);
-            else callback(null, addresses[0]!.address, addresses[0]!.family);
+            } else if (internalAddress !== undefined && !allowInternal) {
+              callback(internalRefusal(host, internalAddress), []);
+            } else {
+              internal = internalAddress !== undefined;
+              if (typeof options === 'object' && options.all) callback(null, addresses);
+              else callback(null, addresses[0]!.address, addresses[0]!.family);
+            }
           });
         },
       },
@@ -115,7 +152,7 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
         // A Streamable HTTP GET can remain open indefinitely. Discovery needs
         // only its challenge headers, so release the socket before reading data.
         if (headersOnly) {
-          resolve({ status, headers, body: '' });
+          resolve({ status, headers, body: '', ...(internal === undefined ? {} : { internal }) });
           response.destroy();
           return;
         }
@@ -138,6 +175,7 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
             status,
             headers,
             body: Buffer.concat(chunks).toString('utf8'),
+            ...(internal === undefined ? {} : { internal }),
           }),
         );
       },
@@ -200,14 +238,14 @@ function challengeParameter(header: string | undefined, parameter: string): stri
 
 /** Reads one metadata document; a 404 means "try the next candidate". */
 async function readMetadata<T extends z.ZodType>(
-  send: OAuthHttpRequest,
+  get: (url: string) => Promise<OAuthHttpResponse>,
   url: string,
   schema: T,
   what: string,
 ): Promise<z.infer<T> | undefined> {
   const parsed = upstreamUrl(url);
   const detail = { host: parsed.hostname, path: parsed.pathname };
-  const response = await send(parsed.href);
+  const response = await get(parsed.href);
   if (response.status === 404) return undefined;
   if (response.status !== 200)
     throw new McpOAuthDiscoveryError(
@@ -245,6 +283,11 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
       `${target.href} redirects (HTTP ${probe.status}). Enter the final MCP URL instead.`,
       { host, path: target.pathname, status: probe.status },
     );
+  // A public MCP server's metadata must stay public too; see OAuthHttpRequest.
+  const get = (metadataUrl: string) =>
+    probe.internal === false
+      ? send(metadataUrl, undefined, undefined, undefined, false, false)
+      : send(metadataUrl);
   const challenge = probe.headers['www-authenticate'];
   const advertised = challengeParameter(challenge, 'resource_metadata');
   const metadataUrls =
@@ -255,10 +298,10 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
             `${target.origin}/.well-known/oauth-protected-resource`,
           ]),
         ]
-      : [upstreamUrl(advertised).href];
+      : [upstreamUrl(advertised, `The resource_metadata URL advertised by ${host}`).href];
   let resource: z.infer<typeof resourceSchema> | undefined;
   for (const metadataUrl of metadataUrls) {
-    resource = await readMetadata(send, metadataUrl, resourceSchema, 'protected-resource metadata');
+    resource = await readMetadata(get, metadataUrl, resourceSchema, 'protected-resource metadata');
     if (resource !== undefined) break;
   }
   if (resource === undefined)
@@ -272,7 +315,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   if (resource.resource !== target.href)
     throw new McpOAuthDiscoveryError(
       'resource_mismatch',
-      `The protected-resource metadata describes ${resource.resource.slice(0, 300)}, not ${target.href}.`,
+      `The protected-resource metadata describes a different resource than ${target.href}.`,
       { host, path: target.pathname },
     );
   // Use the first declared authority consistently; never silently switch accounts or issuers.
@@ -288,7 +331,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   let authority: z.infer<typeof authorizationSchema> | undefined;
   for (const metadataUrl of metadataUrlsForIssuer) {
     authority = await readMetadata(
-      send,
+      get,
       metadataUrl,
       authorizationSchema,
       'OAuth authorization server metadata',
@@ -305,7 +348,7 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
   if (authority.issuer !== issuer.href)
     throw new McpOAuthDiscoveryError(
       'issuer_mismatch',
-      `The authorization server metadata names issuer ${authority.issuer.slice(0, 300)}, not ${issuer.href}.`,
+      `The authorization server metadata names a different issuer than ${issuer.href}.`,
       issuerDetail,
     );
   if (!authority.code_challenge_methods_supported?.includes('S256'))
@@ -329,6 +372,8 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
     challengeParameter(challenge, 'scope') ?? resource.scopes_supported?.join(' ') ?? '';
   return {
     authority,
+    /** False when the MCP server is public; registration then stays public too. */
+    ...(probe.internal === undefined ? {} : { internal: probe.internal }),
     discovery: {
       authorizationEndpoint: authority.authorization_endpoint,
       tokenEndpoint: authority.token_endpoint,
@@ -343,6 +388,7 @@ export async function registerMcpOAuthClient(
   redirectUris: string[],
   scopes: string,
   send: OAuthHttpRequest = oauthHttpRequest,
+  allowInternal = true,
 ): Promise<{
   clientId: string;
   clientSecret: string | null;
@@ -370,19 +416,19 @@ export async function registerMcpOAuthClient(
       'Automatic registration is unavailable for this token authentication method. Configure a client manually.',
       detail,
     );
-  const response = await send(
-    registration,
-    JSON.stringify({
-      client_name: 'Verity',
-      redirect_uris: redirectUris,
-      grant_types: authority.grant_types_supported?.includes('refresh_token')
-        ? ['authorization_code', 'refresh_token']
-        : ['authorization_code'],
-      response_types: ['code'],
-      token_endpoint_auth_method: method,
-      ...(scopes === '' ? {} : { scope: scopes }),
-    }),
-  );
+  const payload = JSON.stringify({
+    client_name: 'Verity',
+    redirect_uris: redirectUris,
+    grant_types: authority.grant_types_supported?.includes('refresh_token')
+      ? ['authorization_code', 'refresh_token']
+      : ['authorization_code'],
+    response_types: ['code'],
+    token_endpoint_auth_method: method,
+    ...(scopes === '' ? {} : { scope: scopes }),
+  });
+  const response = allowInternal
+    ? await send(registration, payload)
+    : await send(registration, payload, undefined, undefined, false, false);
   if (response.status !== 200 && response.status !== 201)
     throw new McpOAuthDiscoveryError(
       'registration_failed',
@@ -420,13 +466,18 @@ export async function registerMcpOAuthClient(
       { ...detail, status: response.status },
     );
   if (
-    (result.token_endpoint_auth_method !== undefined &&
-      result.token_endpoint_auth_method !== method) ||
-    (method !== 'none' && result.client_secret === undefined)
+    result.token_endpoint_auth_method !== undefined &&
+    result.token_endpoint_auth_method !== method
   )
     throw new McpOAuthDiscoveryError(
       'registration_failed',
       `Client registration at ${registration} returned a different client authentication method than requested (${method}).`,
+      { ...detail, status: response.status },
+    );
+  if (method !== 'none' && result.client_secret === undefined)
+    throw new McpOAuthDiscoveryError(
+      'registration_failed',
+      `Client registration at ${registration} returned no client secret for ${method}.`,
       { ...detail, status: response.status },
     );
   return {

@@ -87,29 +87,63 @@ export function isForbiddenHttpMcpAddress(address: string): boolean {
  * Address ranges a user-configured MCP server may live in besides the public
  * internet: private networks and the Tailscale tailnet (100.64.0.0/10 and
  * fd7a:115c:a1e0::/48, which `uniqueLocal` covers). Loopback, link-local (and
- * with it cloud metadata), translation and tunnel prefixes stay refused, since
- * they reach the Verity host itself or hide another address behind a public one.
- * Sandbox egress keeps the stricter {@link isForbiddenHttpMcpAddress}.
+ * with it most cloud metadata), translation and tunnel prefixes stay refused,
+ * since they reach the Verity host itself or hide another address behind a
+ * public one. Sandbox egress keeps the stricter {@link isForbiddenHttpMcpAddress}.
+ *
+ * Internal ranges can still contain the Docker gateway or the host's own LAN
+ * address; HTTPS with certificate verification is what keeps those out.
  */
 const MCP_UPSTREAM_RANGES = new Set(['unicast', 'private', 'carrierGradeNat', 'uniqueLocal']);
+const INTERNAL_RANGES = new Set(['private', 'carrierGradeNat', 'uniqueLocal']);
+
+/** Host services inside otherwise allowed ranges. */
+const REFUSED_ADDRESSES = new Map([
+  ['100.100.100.100', 'tailscaleService'],
+  ['fd7a:115c:a1e0::53', 'tailscaleService'],
+  ['100.100.100.200', 'cloudMetadata'],
+  ['fd00:ec2::254', 'cloudMetadata'],
+]);
+
+function normalizedAddress(address: string): ipaddr.IPv4 | ipaddr.IPv6 {
+  const parsed = ipaddr.parse(address);
+  return parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()
+    ? (parsed as ipaddr.IPv6).toIPv4Address()
+    : parsed;
+}
 
 /** The range name of a refused MCP upstream address, or undefined when it is allowed. */
 export function refusedMcpUpstreamRange(address: string): string | undefined {
+  let normalized: ipaddr.IPv4 | ipaddr.IPv6;
   try {
-    const parsed = ipaddr.parse(address);
-    const normalized =
-      parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()
-        ? (parsed as ipaddr.IPv6).toIPv4Address()
-        : parsed;
-    const range = normalized.range();
-    return MCP_UPSTREAM_RANGES.has(range) ? undefined : range;
+    normalized = normalizedAddress(address);
   } catch {
     return 'invalid';
   }
+  const service = REFUSED_ADDRESSES.get(normalized.toString());
+  if (service !== undefined) return service;
+  const range = normalized.range();
+  // IPv4-compatible IPv6 (::a.b.c.d) is deprecated and may reach the IPv4 address.
+  if (
+    range === 'unicast' &&
+    normalized.kind() === 'ipv6' &&
+    (normalized as ipaddr.IPv6).parts.slice(0, 6).every((part) => part === 0)
+  )
+    return 'ipv4Compatible';
+  return MCP_UPSTREAM_RANGES.has(range) ? undefined : range;
 }
 
 export function isRefusedMcpUpstreamAddress(address: string): boolean {
   return refusedMcpUpstreamRange(address) !== undefined;
+}
+
+/** A private or tailnet address: allowed, but only where an internal MCP server was chosen. */
+export function isInternalMcpUpstreamAddress(address: string): boolean {
+  try {
+    return INTERNAL_RANGES.has(normalizedAddress(address).range());
+  } catch {
+    return false;
+  }
 }
 
 export function parseHttpMcpUpstream(value: string): URL {

@@ -1,6 +1,6 @@
 import { Writable } from 'node:stream';
 import Fastify from 'fastify';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventStore } from '@verity/store';
 
 import { registerHttpMcpConnectionRoutes } from './http-mcp-connections-route.js';
@@ -20,6 +20,7 @@ registerHttpMcpConnectionRoutes(app, {
 } as unknown as EventStore);
 
 afterEach(() => upsert.mockClear());
+afterAll(() => app.close());
 
 async function create(payload: Record<string, unknown>) {
   return app.inject({ method: 'POST', url: '/mcp-connections', payload });
@@ -82,6 +83,7 @@ describe('OAuth discovery failures', () => {
     listHttpMcpConnections: async () => [],
     upsertHttpMcpConnection: upsert,
   } as unknown as EventStore);
+  afterAll(() => logged.close());
   afterEach(() => {
     lines.length = 0;
     discovery.discover.mockReset();

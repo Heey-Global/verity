@@ -186,7 +186,7 @@ export function registerHttpMcpConnectionRoutes(
           body.oauthTokenEndpoint == null ||
           body.oauthClientId == null
         ) {
-          const { authority, discovery } = await discoverMcpOAuth(url);
+          const { authority, discovery, internal } = await discoverMcpOAuth(url);
           // Do not send registration credentials to endpoints supplied by the form.
           if (
             (body.oauthAuthorizationEndpoint != null &&
@@ -211,6 +211,8 @@ export function registerHttpMcpConnectionRoutes(
               authority,
               callbacks,
               body.oauthScopes ?? '',
+              undefined,
+              internal !== false,
             );
             body.oauthClientId = registered.clientId;
             body.oauthClientSecret = registered.clientSecret;

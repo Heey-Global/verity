@@ -174,6 +174,9 @@ describe('MCP OAuth API', () => {
           'https://trusted.tail.example/app/mcp/oauth/callback',
         ],
         'read',
+        undefined,
+        // Discovery did not report a public MCP server, so internal endpoints stay allowed.
+        true,
       );
       expect(upsert).toHaveBeenCalledWith(
         expect.objectContaining({

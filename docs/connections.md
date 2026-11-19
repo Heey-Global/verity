@@ -250,10 +250,18 @@ the public internet, a private network (`10.0.0.0/8`, `172.16.0.0/12`,
 `192.168.0.0/16`, `fc00::/7`) or a Tailscale tailnet (`100.64.0.0/10`,
 `fd7a:115c:a1e0::/48`), and their URLs may use an explicit port or an IP address.
 Loopback, link-local (including cloud metadata such as `169.254.169.254`),
-unspecified, multicast and translation or tunnel prefixes are always refused,
-because they reach the Verity host itself or hide another address. HTTPS is
-required. Sandbox network access does not follow this rule and still refuses
+unspecified, multicast and translation or tunnel prefixes are always refused, as
+are known host services inside the allowed ranges (Tailscale's `100.100.100.100`
+and the cloud metadata addresses `100.100.100.200` and `fd00:ec2::254`). Private
+ranges can still contain the Docker gateway or the host's own LAN address; HTTPS
+with certificate verification is what keeps unrelated services there out of
+reach. Sandbox network access does not follow this rule and still refuses
 private and tailnet addresses.
+
+When the MCP server itself is public, its OAuth metadata, authorization server
+and client registration must be public too, so a public server cannot point
+Verity's requests into your network. OAuth endpoints you enter manually under
+Advanced are used as entered.
 
 The server must also be able to resolve the MCP host name. For `*.ts.net` names
 this needs Tailscale's DNS (MagicDNS) to be available to the Verity server

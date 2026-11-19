@@ -115,6 +115,13 @@ describe('MCP upstream address ranges', () => {
     ['64:ff9b::7f00:1', 'rfc6052'],
     ['2002:7f00:1::', '6to4'],
     ['2001::1', 'teredo'],
+    ['::7f00:1', 'ipv4Compatible'],
+    ['::a9fe:a9fe', 'ipv4Compatible'],
+    ['100.100.100.100', 'tailscaleService'],
+    ['fd7a:115c:a1e0::53', 'tailscaleService'],
+    ['100.100.100.200', 'cloudMetadata'],
+    ['fd00:ec2::254', 'cloudMetadata'],
+    ['::ffff:100.100.100.200', 'cloudMetadata'],
     ['not-an-address', 'invalid'],
   ])('refuses %s as %s', (address, range) => {
     expect(refusedMcpUpstreamRange(address)).toBe(range);
