@@ -76,10 +76,12 @@ function fixture() {
     probeSandboxEgressReadiness: vi.fn(async () => ({ kind: 'unsupported' as const })),
     repairPersonalSandboxForAgentTurn: vi.fn(async () => ({ ready: true })),
     repairSandboxForAgentTurn: vi.fn(async () => ({ ready: true })),
-    serializeProjectTurnPreparation: vi.fn(async (_projectId, _sessionId, _canWait, prepare) => {
-      order.push('serialize');
-      return prepare(new Set(['session']));
-    }),
+    serializeProjectTurnPreparation: vi.fn<Context['serializeProjectTurnPreparation']>(
+      async (_projectId, _sessionId, _canWait, prepare) => {
+        order.push('serialize');
+        return prepare(new Set(['session']));
+      },
+    ),
     runtime,
   };
   const session: Session = {
