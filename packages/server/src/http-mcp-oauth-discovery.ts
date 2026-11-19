@@ -35,9 +35,13 @@ export function parseMcpServerUrl(value: string): URL {
 }
 
 function internalRefusal(host: string, address: string): McpOAuthDiscoveryError {
+  const where =
+    host === address
+      ? `${address} is an internal address`
+      : `${host} resolves to the internal address ${address}`;
   return new McpOAuthDiscoveryError(
     'address_refused',
-    `${host} resolves to the internal address ${address}, but the MCP server URL is public. OAuth endpoints of a public MCP server may not point into an internal network.`,
+    `${where}, but the MCP server URL is public. OAuth endpoints of a public MCP server may not point into an internal network.`,
     { host, address, range: 'internal' },
   );
 }
@@ -122,7 +126,7 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
   const literal = host.replace(/^\[(.*)\]$/u, '$1');
   // Node connects to an IP literal without calling the lookup hook below.
   let internal = isIP(literal) === 0 ? undefined : isInternalMcpUpstreamAddress(literal);
-  if (internal === true && !allowInternal) throw internalRefusal(host, literal);
+  if (internal === true && !allowInternal) throw internalRefusal(literal, literal);
   return new Promise((resolve, reject) => {
     const req = request(
       target,

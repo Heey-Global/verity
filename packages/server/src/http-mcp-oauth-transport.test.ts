@@ -140,7 +140,12 @@ it('refuses internal peers when only public ones are allowed', async () => {
   await response;
   await expect(
     oauthHttpRequest('https://10.0.0.5/token', undefined, undefined, undefined, false, false),
-  ).rejects.toMatchObject({ code: 'address_refused' });
+  ).rejects.toMatchObject({
+    code: 'address_refused',
+    message: expect.stringMatching(
+      /^10\.0\.0\.5 is an internal address, but the MCP server URL is public\./u,
+    ),
+  });
 });
 
 // Reporting an unresolvable tailnet host as public would blame a policy that

@@ -113,6 +113,8 @@ describe('MCP upstream address ranges', () => {
     ['255.255.255.255', 'broadcast'],
     ['240.0.0.1', 'reserved'],
     ['64:ff9b::7f00:1', 'rfc6052'],
+    // RFC 8215 local-use NAT64 can also reach loopback through a gateway.
+    ['64:ff9b:1::7f00:1', 'rfc6052'],
     ['2002:7f00:1::', '6to4'],
     ['2001::1', 'teredo'],
     ['::7f00:1', 'ipv4Compatible'],
