@@ -329,6 +329,88 @@ export interface ControlPlaneSessionTools {
   authorizeDiagnosticProject(projectId: string): Promise<void>;
 }
 
+const BOUNDARY_PROGRESS_SCALARS = new Set([
+  'lifecycle',
+  'status',
+  'projectionTruncated',
+  'lastActivityAt',
+  'activeTurnStartedAt',
+  'activeTurnAgeMs',
+  'turnCompleted',
+  'outcomeDelivered',
+]);
+
+const SESSION_ERROR_KIND = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
+
+const publishedText = (value: unknown, max: number): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
+
+/**
+ * Progress for a Control caller reading a target whose knowledge it may not read.
+ *
+ * The published summary, blocker and required decision cross: the target's agent wrote them
+ * for exactly this reader through an approved `verity_publish_session_progress` call, they
+ * are bounded by that tool's schema and redacted when projected, and without them Control has
+ * no way to learn the result of a handoff it sent. Everything else that is not a fixed scalar
+ * — branch, Issue and PR association — stays behind, and `withheld` names it, so an absent
+ * field reads as a policy outcome instead of as "nothing there".
+ */
+export function projectProgressAcrossKnowledgeBoundary(
+  result: Record<string, unknown>,
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {
+    diagnostics: z
+      .array(controlDiagnosticRecordSchema)
+      .max(20)
+      .parse(result.diagnostics ?? []),
+  };
+  const withheld: string[] = [];
+  for (const [key, value] of Object.entries(result)) {
+    if (key === 'diagnostics' || value === undefined) continue;
+    if (BOUNDARY_PROGRESS_SCALARS.has(key)) {
+      if (['string', 'number', 'boolean'].includes(typeof value) || value === null)
+        projected[key] = value;
+      else withheld.push(key);
+    } else if (key === 'publishedSummary') {
+      const summary =
+        typeof value === 'object' && value !== null
+          ? publishedText((value as Record<string, unknown>).summary, 1_000)
+          : undefined;
+      const publishedAt =
+        typeof value === 'object' && value !== null
+          ? (value as Record<string, unknown>).publishedAt
+          : undefined;
+      if (value === null) projected.publishedSummary = null;
+      else if (summary !== undefined)
+        projected.publishedSummary = {
+          summary,
+          ...(typeof publishedAt === 'number' ? { publishedAt } : {}),
+        };
+      else withheld.push(key);
+    } else if (key === 'blocker') {
+      const blocker = typeof value === 'object' && value !== null ? value : {};
+      const { kind, summary, errorKind } = blocker as Record<string, unknown>;
+      const text = publishedText(summary, 500);
+      if (kind === 'published' && text !== undefined) projected.blocker = { kind, summary: text };
+      else if (
+        kind === 'error' &&
+        typeof errorKind === 'string' &&
+        SESSION_ERROR_KIND.test(errorKind)
+      )
+        projected.blocker = { kind, errorKind };
+      else withheld.push(key);
+    } else if (key === 'requiredDecision') {
+      const text = publishedText(value, 500);
+      if (text !== undefined) projected.requiredDecision = text;
+      else withheld.push(key);
+    } else if (key !== 'sessionId' && key !== 'projectId' && key !== 'project') {
+      withheld.push(key);
+    }
+  }
+  if (withheld.length > 0) projected.withheld = { reason: 'knowledge-boundary', fields: withheld };
+  return projected;
+}
+
 function isControlPlaneTarget(project: ProjectRecord, controlProjectId: string): boolean {
   return project.kind === 'control_plane' || project.id === controlProjectId;
 }
@@ -396,6 +478,14 @@ export function createControlPlaneSessionTools(
       throw new ControlPlaneSessionToolError('target is unavailable for cross-project access');
     }
   };
+
+  // Control runs with `allowKnowledgeControlOperations`, so `requireKnowledgeTarget` admits it
+  // to targets whose knowledge it may not otherwise read. Only those reads take the bounded
+  // projection; a target without knowledge exposure gets the same answer as any caller.
+  const crossesKnowledgeBoundary = async (projectId: string, sessionId: string) =>
+    deps.allowKnowledgeControlOperations === true &&
+    deps.canAccessKnowledgeTarget !== undefined &&
+    !(await deps.canAccessKnowledgeTarget({ projectId, sessionId }));
 
   const requireObservableTarget = async (
     sessionId: string,
@@ -824,31 +914,8 @@ export function createControlPlaneSessionTools(
         sessionId: target.facts.sessionId,
         projectId: target.project.id,
         project: `${target.project.owner}/${target.project.repo}`,
-        ...(deps.allowKnowledgeControlOperations
-          ? {
-              diagnostics: z
-                .array(controlDiagnosticRecordSchema)
-                .max(20)
-                .parse(result.diagnostics ?? []),
-              ...Object.fromEntries(
-                [
-                  'lifecycle',
-                  'status',
-                  'projectionTruncated',
-                  'lastActivityAt',
-                  'activeTurnStartedAt',
-                  'activeTurnAgeMs',
-                  'turnCompleted',
-                  'outcomeDelivered',
-                ]
-                  .filter(
-                    (key) =>
-                      ['string', 'number', 'boolean'].includes(typeof result[key]) ||
-                      result[key] === null,
-                  )
-                  .map((key) => [key, result[key]]),
-              ),
-            }
+        ...((await crossesKnowledgeBoundary(target.project.id, target.facts.sessionId))
+          ? projectProgressAcrossKnowledgeBoundary(result)
           : result),
       };
     },

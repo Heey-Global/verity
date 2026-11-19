@@ -478,6 +478,13 @@ text. A completed turn is reported separately from an outcome-delivered claim;
 absence of a bounded published claim is `null`, not inferred success.
 `projectionTruncated` says when the bounded event tail may have omitted an older
 turn start or publication.
+When a Verity Control caller reads a target whose knowledge it may not read, the
+response carries lifecycle/timing, diagnostics and the published summary, blocker
+and required decision, and nothing else; a `withheld` field names what was left
+out. The published fields cross deliberately: the target's agent wrote them for
+this reader through an approved, bounded publish call, and without them Control
+cannot learn the result of a handoff it sent. Transcript reads stay refused
+across that boundary.
 The publish tool is bound to its authenticated calling session and writes a
 bounded canonical event containing summary, blocker/decision when present, and
 an explicit outcome-delivered boolean. It cannot name or update another session.
