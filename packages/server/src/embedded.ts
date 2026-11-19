@@ -1,3 +1,4 @@
+import { createEmbeddedSecretJobs, installEmbeddedSecretJobs } from './embedded-secret-jobs.js';
 import { createEmbeddedUplink } from './embedded-uplink.js';
 import { createEmbeddedDocker } from './embedded-docker.js';
 import { createEmbeddedForgeProxy } from './embedded-forge-proxy.js';
@@ -88,7 +89,7 @@ export {
   refreshProjectGitHubToken,
   createProjectWorktreeFactory,
 } from './embedded-support.js';
-import type { EmbeddedServerConfig, EmbeddedServer, EmbeddedSecretJobs } from './embedded-types.js';
+import type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
 export type { EmbeddedServerConfig, EmbeddedServer } from './embedded-types.js';
 import {
   buildRunnerConductorWiring,
@@ -218,12 +219,9 @@ import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import { createDockerGvisorRuntimeVerifier } from './docker-gvisor-runtime-verifier.js';
 import {
   PINNED_PROJECT_RUNSC_ARGS,
-  PINNED_RUNSC_ARGS,
   PINNED_RUNSC_PATH,
   PROJECT_RUNSC_RUNTIME,
 } from './gvisor-runtime-config.js';
-import { createBrokeredSecretJobExecutor } from './brokered-secret-job-executor.js';
-import { createSecretAuditRecorder } from './secret-audit-recorder.js';
 import { createPostgresSecretAuditLog } from './secret-audit-log.js';
 import { createPostgresAuditLog, type AuditServerIdentity } from './audit-log.js';
 import { createAuditRecorder } from './audit-recorder.js';
@@ -231,24 +229,8 @@ import { runtimeServerVersion } from './runtime-version.js';
 import { createGatewayRequestMacKeyring } from './gateway-request-mac.js';
 import { createTurnCredentials } from './turn-credentials.js';
 import { createGitHubUserAuthorization } from './github-user-authorization.js';
-import { createSecretEnvelopeSealer } from './secret-envelope-crypto.js';
-import { createPostgresSecretGrantStore, createSecretGrantBroker } from './secret-grant-broker.js';
-import {
-  createDopplerSecretNameLister,
-  createDopplerSecretResolver,
-  listDopplerProjectSecretNames,
-} from './doppler-secret-resolver.js';
+import { listDopplerProjectSecretNames } from './doppler-secret-resolver.js';
 
-import { createPostgresSecretJobFrameSpool } from './secret-job-frame-spool.js';
-import { createSecretJobService } from './secret-job-service.js';
-import { registerSecretJobRoutes } from './secret-job-routes.js';
-import { createPostgresSecretJobStore } from './secret-job-store.js';
-import { createPostgresSecretProviderCatalog } from './secret-provider-catalog.js';
-import { registerSecretProviderRoutes } from './secret-provider-routes.js';
-import { createPostgresSecretRevocationStore } from './secret-revocation.js';
-import { createSecretWorkerRecipientKeyRegistry } from './secret-worker-recipient-key-registry.js';
-import type { RunGrantClaims } from '@verity/secret-contracts';
-import { createRuntimeReadinessGate } from './runtime-readiness-gate.js';
 import {
   pendingSessionCleanups,
   createSessionCleanupProcessor,
@@ -716,100 +698,15 @@ export async function buildEmbeddedServer(
     // lands, so a client dialling a thousand lines earlier is not a client that
     // can serve a request any sooner.
   }
-  let secretJobRuntimeReadiness = config.secretJobRuntimeReadiness;
-  if (config.secretJobRuntimeRequired === true && secretJobRuntimeReadiness === undefined) {
-    // Validated before opening the DB above; retain the local narrowing for TypeScript.
-    const dockerBaseUrl = config.dockerBaseUrl;
-    if (dockerBaseUrl === undefined) throw new Error('unreachable: missing dockerBaseUrl');
-    if (runtimeDocker === undefined) throw new Error('unreachable: missing runtime Docker client');
-    const verifier = createDockerGvisorRuntimeVerifier({
-      docker: runtimeDocker,
-      expectedPath: PINNED_RUNSC_PATH,
-      expectedArgs: PINNED_RUNSC_ARGS,
+  const { secretJobRuntimeReadiness, embeddedSecretJobs, secretProviderCatalog } =
+    createEmbeddedSecretJobs({
+      config,
+      runtimeDocker,
+      db,
+      secretCipher,
+      secretAuditLog,
+      dopplerCredentialFor,
     });
-    secretJobRuntimeReadiness = createRuntimeReadinessGate(() => verifier.verify('runsc'), {
-      ...(config.secretJobRuntimeReadinessTtlMs !== undefined
-        ? { ttlMs: config.secretJobRuntimeReadinessTtlMs }
-        : {}),
-    });
-  }
-  let embeddedSecretJobs: EmbeddedSecretJobs | undefined;
-  const secretProviderCatalog =
-    config.secretJobs?.doppler !== undefined ? createPostgresSecretProviderCatalog(db) : undefined;
-  if (config.secretJobs !== undefined) {
-    const secretJobsConfig = config.secretJobs;
-    if (runtimeDocker === undefined || config.dockerBaseUrl === undefined) {
-      throw new Error('unreachable: missing Secret Job Docker configuration');
-    }
-    const audit = createSecretAuditRecorder(secretAuditLog, {
-      failureMode: 'fail-closed',
-    });
-    const revocations = createPostgresSecretRevocationStore(db);
-    const recipientKeys = createSecretWorkerRecipientKeyRegistry();
-    const sealEnvelope = createSecretEnvelopeSealer({
-      resolveRecipientPublicKey: (publicKeyId, jobId) => recipientKeys.resolve(publicKeyId, jobId),
-    });
-    const broker = createSecretGrantBroker({
-      store: createPostgresSecretGrantStore(db),
-      resolveSecrets:
-        secretJobsConfig.doppler !== undefined
-          ? createDopplerSecretResolver({
-              ...secretJobsConfig.doppler,
-              catalog: secretProviderCatalog!,
-              readCredential: (_ref, { projectId, userId }) =>
-                dopplerCredentialFor(userId, projectId),
-            })
-          : secretJobsConfig.resolveSecrets!,
-      sealEnvelope,
-      authorizeWorkload: secretJobsConfig.authorizeWorkload,
-      authorizeCurrentClaims: async (claims) => {
-        if (
-          !(await revocations.isClaimsActive(claims)) ||
-          !(await secretJobsConfig.authorizeCurrentClaims(claims))
-        ) {
-          return false;
-        }
-        if (secretJobsConfig.doppler === undefined) return true;
-        return secretProviderCatalog!.checkClaimsPermissions(claims);
-      },
-      ...(secretJobsConfig.doppler === undefined
-        ? {}
-        : {
-            authorizeResolvedClaims: (claims: RunGrantClaims) =>
-              secretProviderCatalog!.authorizeClaimsPermissions(claims),
-          }),
-      recorder: audit,
-    });
-    const frames = createPostgresSecretJobFrameSpool(db, secretCipher);
-    const executor = createBrokeredSecretJobExecutor({
-      broker,
-      docker: runtimeDocker,
-      dockerBaseUrl: config.dockerBaseUrl,
-      frames,
-      redactorProfile: secretJobsConfig.redactorProfile,
-      recipientKeys,
-      expectedRuntimePath: PINNED_RUNSC_PATH,
-      expectedRuntimeArgs: PINNED_RUNSC_ARGS,
-      executorImageRepository: secretJobsConfig.executorImageRepository,
-    });
-    const service = createSecretJobService({
-      authorization: secretJobsConfig.createAuthorization(broker),
-      executor,
-      frames,
-      store: createPostgresSecretJobStore(db),
-      authorizeInvocation: secretJobsConfig.authorizeInvocation,
-      onExecutorError: (jobId, error) =>
-        console.error(`verity: Secret Job ${jobId} executor failed`, error),
-    });
-    // Container cleanup and output retention are deliberately independent. Completed frames remain
-    // replayable until an explicit retention/acknowledgement reaper calls frames.deleteJob/purge.
-    embeddedSecretJobs = {
-      broker,
-      executor,
-      frames,
-      service,
-    };
-  }
   let docker: DockerClient | undefined;
   let projectEgress: ProjectEgressLifecycle | undefined = config.projectEgress;
   const projectEgressHealth = projectEgressAvailability(
@@ -3944,42 +3841,13 @@ export async function buildEmbeddedServer(
     await sessionStorage?.stop();
   });
 
-  if (embeddedSecretJobs !== undefined) {
-    registerSecretJobRoutes(app, embeddedSecretJobs.service, (header) => {
-      const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];
-      const actorId = authRegistry.resolveId(token);
-      if (token === undefined || actorId === undefined) return undefined;
-      return {
-        actorId,
-        authorizationHash: createHash('sha256')
-          .update(`verity.secret-job-approval.v1\0${token}`)
-          .digest('hex'),
-      };
-    });
-    app.addHook('onClose', () => embeddedSecretJobs.service.close());
-  }
-  if (secretProviderCatalog !== undefined) {
-    const dopplerOptions = config.secretJobs!.doppler!;
-    registerSecretProviderRoutes(
-      app,
-      secretProviderCatalog,
-      createDopplerSecretNameLister({
-        ...dopplerOptions,
-        readCredential: (_ref, { projectId, userId }) => dopplerCredentialFor(userId, projectId),
-      }),
-      async (header, projectId) => {
-        const token = /^Bearer ([^\s]+)$/i.exec(header ?? '')?.[1];
-        const actorId = token === undefined ? undefined : authRegistry.resolveId(token);
-        if (
-          actorId === undefined ||
-          !(await config.secretJobs!.authorizeProviderAdministration!(actorId, projectId))
-        ) {
-          return undefined;
-        }
-        return actorId;
-      },
-    );
-  }
+  installEmbeddedSecretJobs(app, {
+    config,
+    embeddedSecretJobs,
+    secretProviderCatalog,
+    authRegistry,
+    dopplerCredentialFor,
+  });
   // Adopt the handed-off key (ADR 0008 D8) only now that everything is built.
   // Every component above was therefore constructed against a sealed store, the
   // way it is on an interactive boot, and the key goes in through the same door
