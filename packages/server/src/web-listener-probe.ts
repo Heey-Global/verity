@@ -37,7 +37,6 @@ export class WebListenerClassifier {
     Map<string, { at: number; result: WebListenerResult | null }>
   >();
   private readonly pending = new Map<string, Promise<ListeningProcess[]>>();
-  private readonly offsets = new Map<string, number>();
 
   async classify(
     sandbox: string,
@@ -71,12 +70,13 @@ export class WebListenerClassifier {
           fresh || !entry || now - entry.at >= (entry.result ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS)
         );
       });
-      const offset = (this.offsets.get(sandbox) ?? 0) % Math.max(1, stale.length);
-      const selected = [...stale.slice(offset), ...stale.slice(0, offset)].slice(
-        0,
-        WEB_PROBE_BATCH_SIZE,
+      // Oldest evidence first prevents deferred listeners from starving.
+      stale.sort(
+        (a, b) =>
+          (cache.get(identity(a))?.at ?? -Infinity) - (cache.get(identity(b))?.at ?? -Infinity),
       );
-      this.offsets.set(sandbox, offset + selected.length);
+      const selected = stale.slice(0, WEB_PROBE_BATCH_SIZE);
+      const selectedKeys = new Set(selected.map(identity));
       if (selected.length) {
         let results: unknown;
         try {
@@ -101,7 +101,10 @@ export class WebListenerClassifier {
         delete raw.webProtocol;
         delete raw.webCertificateFingerprint;
         const entry = cache.get(identity(p));
-        if (!entry?.result || Date.now() - entry.at >= POSITIVE_TTL_MS) return raw;
+        // A deferred recheck does not revoke evidence for the same live socket.
+        // Rebinding prunes the identity above; an actual negative probe removes it.
+        // Explicit fresh reads may only return evidence checked in this batch.
+        if (!entry?.result || (fresh && !selectedKeys.has(identity(p)))) return raw;
         return {
           ...raw,
           webProtocol: entry.result.protocol,

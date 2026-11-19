@@ -194,3 +194,30 @@ it('fails closed on probe failure and malformed protocol metadata without losing
   );
   expect(failed.every((p) => p.webProtocol === undefined)).toBe(true);
 });
+
+it('preserves verified offers across expired batches and removes a negative recheck', async () => {
+  let now = 0;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  const classifier = new WebListenerClassifier();
+  const processes = Array.from({ length: WEB_PROBE_BATCH_SIZE * 2 + 1 }, (_, i) =>
+    listener({ port: 3000 + i }),
+  );
+  const missing = new Set<number>();
+  const probe = vi.fn(async (targets: readonly { port: number }[]) =>
+    targets.map((target) => (missing.has(target.port) ? null : { protocol: 'http' })),
+  );
+  let result: ListeningProcess[] = [];
+  for (let i = 0; i < 3; i++) result = await classifier.classify('p', processes, probe);
+  expect(result.filter((p) => p.webProtocol)).toHaveLength(processes.length);
+  now = 30_000;
+  result = await classifier.classify('p', processes, probe);
+  expect(result.filter((p) => p.webProtocol)).toHaveLength(processes.length);
+  missing.add(3000);
+  for (let i = 0; i < 3; i++) {
+    now += 30_000;
+    result = await classifier.classify('p', processes, probe);
+  }
+  expect(result.find((p) => p.port === 3000)?.webProtocol).toBeUndefined();
+  expect(result.filter((p) => p.webProtocol)).toHaveLength(processes.length - 1);
+  expect(probe.mock.calls.every(([targets]) => targets.length <= WEB_PROBE_BATCH_SIZE)).toBe(true);
+});
