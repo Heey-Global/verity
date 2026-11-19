@@ -342,8 +342,12 @@ const BOUNDARY_PROGRESS_SCALARS = new Set([
 
 const SESSION_ERROR_KIND = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 
-const publishedText = (value: unknown, max: number): string | undefined =>
-  typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
+const publishedText = (value: unknown, max: number): string | undefined => {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  const cut = value.slice(0, max);
+  // Never end on half of a surrogate pair.
+  return /[\uD800-\uDBFF]$/u.test(cut) ? cut.slice(0, -1) : cut;
+};
 
 /**
  * Progress for a Control caller reading a target whose knowledge it may not read.
@@ -484,8 +488,9 @@ export function createControlPlaneSessionTools(
   // projection; a target without knowledge exposure gets the same answer as any caller.
   const crossesKnowledgeBoundary = async (projectId: string, sessionId: string) =>
     deps.allowKnowledgeControlOperations === true &&
-    deps.canAccessKnowledgeTarget !== undefined &&
-    !(await deps.canAccessKnowledgeTarget({ projectId, sessionId }));
+    // Fails closed: without the checker, nothing proves the target is free of knowledge.
+    (deps.canAccessKnowledgeTarget === undefined ||
+      !(await deps.canAccessKnowledgeTarget({ projectId, sessionId })));
 
   const requireObservableTarget = async (
     sessionId: string,

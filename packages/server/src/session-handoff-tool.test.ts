@@ -777,18 +777,28 @@ it('bounds published progress fields across the knowledge boundary', async () =>
     canAccessKnowledgeTarget: async () => false,
     readProgress: async () => ({
       lifecycle: 'completed',
-      publishedSummary: { summary: 's'.repeat(5_000), extra: 'private knowledge' },
+      publishedSummary: { summary: `${'s'.repeat(999)}😀`, extra: 'private knowledge' },
       blocker: { kind: 'error', errorKind: 'Not A Kind', message: 'private knowledge' },
       requiredDecision: { nested: 'private knowledge' },
     }),
   });
   const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
-  expect((progress.publishedSummary as { summary: string }).summary).toHaveLength(1_000);
+  expect(progress.publishedSummary).toEqual({ summary: 's'.repeat(999) });
   expect(progress.withheld).toEqual({
     reason: 'knowledge-boundary',
     fields: ['blocker', 'requiredDecision'],
   });
   expect(JSON.stringify(progress)).not.toContain('private knowledge');
+});
+
+it('bounds Control progress when no knowledge checker is wired', async () => {
+  const h = harness({
+    allowKnowledgeControlOperations: true,
+    readProgress: async () => ({ lifecycle: 'completed', branch: 'agent/private-knowledge' }),
+  });
+  const progress = await h.tools.progress(h.call({ sessionId: 'sess-web' }));
+  expect(progress).toMatchObject({ withheld: { fields: ['branch'] } });
+  expect(JSON.stringify(progress)).not.toContain('private-knowledge');
 });
 
 it('returns full progress to Control when the target has no knowledge exposure', async () => {
