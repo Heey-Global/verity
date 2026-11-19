@@ -23,7 +23,7 @@ describe('HTTP MCP proxy upstream validation', () => {
 
   it.each([
     ['https://mcp.example.com:8443/gmail', 'https://mcp.example.com:8443/gmail'],
-    ['https://100.102.249.21/mcp/privat', 'https://100.102.249.21/mcp/privat'],
+    ['https://100.101.2.3/mcp/privat', 'https://100.101.2.3/mcp/privat'],
     ['https://10.0.0.5:9443/mcp', 'https://10.0.0.5:9443/mcp'],
     ['https://[fd7a:115c:a1e0::1]/mcp', 'https://[fd7a:115c:a1e0::1]/mcp'],
   ])('accepts a port or a tailnet/private IP literal: %s', (url, expected) => {
@@ -82,7 +82,7 @@ describe('MCP upstream address ranges', () => {
     '8.8.8.8',
     '2606:4700:4700::1111',
     '100.64.0.1',
-    '100.102.249.21',
+    '100.101.2.3',
     '100.127.255.254',
     'fd7a:115c:a1e0::1',
     '10.0.0.1',
@@ -90,7 +90,7 @@ describe('MCP upstream address ranges', () => {
     '172.31.255.254',
     '192.168.0.1',
     'fd00::1',
-    '::ffff:100.102.249.21',
+    '::ffff:100.101.2.3',
     '::ffff:192.168.0.1',
   ])('allows %s', (address) => {
     expect(isRefusedMcpUpstreamAddress(address)).toBe(false);

@@ -109,12 +109,12 @@ describe('generic MCP OAuth discovery', () => {
   it('accepts tailnet and private endpoints in metadata, with explicit ports', async () => {
     const auth = {
       ...authority,
-      authorization_endpoint: 'https://100.102.249.21:8443/authorize',
+      authorization_endpoint: 'https://100.101.2.3:8443/authorize',
       token_endpoint: 'https://[fd7a:115c:a1e0::1]/token',
     };
     await expect(discoverMcpOAuth(resourceUrl, transport(resource, auth))).resolves.toMatchObject({
       discovery: {
-        authorizationEndpoint: 'https://100.102.249.21:8443/authorize',
+        authorizationEndpoint: 'https://100.101.2.3:8443/authorize',
         tokenEndpoint: 'https://[fd7a:115c:a1e0::1]/token',
       },
     });

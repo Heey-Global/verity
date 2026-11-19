@@ -6,7 +6,9 @@ import { completeHttpMcpOAuth } from './http-mcp-oauth.js';
 import { discoverMcpOAuth, registerMcpOAuthClient } from './http-mcp-oauth-discovery.js';
 
 vi.mock('./http-mcp-oauth.js', () => ({ completeHttpMcpOAuth: vi.fn(async () => undefined) }));
-vi.mock('./http-mcp-oauth-discovery.js', () => ({
+vi.mock('./http-mcp-oauth-discovery.js', async (original) => ({
+  parseMcpServerUrl: (await original<typeof import('./http-mcp-oauth-discovery.js')>())
+    .parseMcpServerUrl,
   discoverMcpOAuth: vi.fn(),
   registerMcpOAuthClient: vi.fn(),
 }));

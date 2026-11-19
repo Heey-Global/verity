@@ -50,7 +50,7 @@ it('separates network grants from trusted broker and system decisions', () => {
 it('denies nonpublic addresses including mapped IPv6 before any DNS request', () => {
   for (const host of [
     '100.64.0.1',
-    '100.102.249.21',
+    '100.101.2.3',
     'fd7a:115c:a1e0::1',
     '192.168.1.20',
     '127.0.0.1',

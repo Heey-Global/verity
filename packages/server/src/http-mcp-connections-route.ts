@@ -4,8 +4,11 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { EventStore } from '@verity/store';
 import { z } from 'zod';
 
-import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
-import { discoverMcpOAuth, registerMcpOAuthClient } from './http-mcp-oauth-discovery.js';
+import {
+  discoverMcpOAuth,
+  parseMcpServerUrl,
+  registerMcpOAuthClient,
+} from './http-mcp-oauth-discovery.js';
 import { McpOAuthDiscoveryError } from './http-mcp-oauth-errors.js';
 import { McpOAuthFlows, NATIVE_MCP_CALLBACK, mcpWebCallback } from './http-mcp-oauth-flows.js';
 
@@ -179,7 +182,7 @@ export function registerHttpMcpConnectionRoutes(
     const body = parsed.data;
     let url: string;
     try {
-      url = parseHttpMcpUpstream(body.url).toString();
+      url = parseMcpServerUrl(body.url).toString();
       if (body.authType === 'oauth') {
         if (
           body.oauthAuthorizationEndpoint == null ||
@@ -219,8 +222,8 @@ export function registerHttpMcpConnectionRoutes(
             body.oauthTokenAuthMethod = registered.tokenAuthMethod;
           }
         }
-        parseHttpMcpUpstream(body.oauthAuthorizationEndpoint);
-        parseHttpMcpUpstream(body.oauthTokenEndpoint);
+        parseMcpServerUrl(body.oauthAuthorizationEndpoint);
+        parseMcpServerUrl(body.oauthTokenEndpoint);
       }
     } catch (error) {
       reply.code(400);

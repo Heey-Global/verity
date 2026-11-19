@@ -106,7 +106,7 @@ it.each([
 });
 
 // A self-hosted MCP server on the tailnet or a LAN is a deliberate target.
-it.each(['100.102.249.21', '100.64.0.1', 'fd7a:115c:a1e0::1', '10.0.0.1', '192.168.1.20'])(
+it.each(['100.101.2.3', '100.64.0.1', 'fd7a:115c:a1e0::1', '10.0.0.1', '192.168.1.20'])(
   'connects when DNS resolves to the tailnet or private address %s',
   async (address) => {
     const response = oauthHttpRequest('https://metadata.example/');
@@ -128,7 +128,7 @@ it('refuses internal peers when only public ones are allowed', async () => {
     false,
     false,
   );
-  const callback = resolveThroughHook({ error: null, address: '100.102.249.21' });
+  const callback = resolveThroughHook({ error: null, address: '100.101.2.3' });
   expect(callback).toHaveBeenCalledWith(
     expect.objectContaining({
       code: 'address_refused',
@@ -143,9 +143,31 @@ it('refuses internal peers when only public ones are allowed', async () => {
   ).rejects.toMatchObject({ code: 'address_refused' });
 });
 
+it('does not report a mixed public and private answer as internal', async () => {
+  const response = oauthHttpRequest('https://metadata.example/');
+  mocks.lookup.mockImplementation(
+    (
+      _host: string,
+      _options: unknown,
+      callback: (error: Error | null, addresses: { address: string; family: number }[]) => void,
+    ) =>
+      callback(null, [
+        { address: '8.8.8.8', family: 4 },
+        { address: '10.0.0.5', family: 4 },
+      ]),
+  );
+  (options.lookup as (h: string, o: { all: boolean }, c: () => void) => void)(
+    'metadata.example',
+    { all: true },
+    () => undefined,
+  );
+  incoming.end('{}');
+  expect(await response).toMatchObject({ internal: false });
+});
+
 it('reports whether the peer was internal', async () => {
   const response = oauthHttpRequest('https://metadata.example/');
-  resolveThroughHook({ error: null, address: '100.102.249.21' });
+  resolveThroughHook({ error: null, address: '100.101.2.3' });
   incoming.end('{}');
   expect(await response).toMatchObject({ internal: true });
   const literal = oauthHttpRequest('https://8.8.8.8/');
@@ -154,25 +176,35 @@ it('reports whether the peer was internal', async () => {
 });
 
 it.each([
-  ['https://100.102.249.21/mcp', null, true],
+  ['https://100.101.2.3/mcp', null, true],
   ['https://8.8.8.8/mcp', null, false],
-  ['https://docs.example.ts.net/mcp', '100.102.249.21', true],
+  ['https://docs.example.ts.net/mcp', '100.101.2.3', true],
   ['https://mcp.example.com/mcp', '8.8.8.8', false],
   ['https://gone.example/mcp', 'ENOTFOUND', false],
-])('classifies %s as internal=%s for later token requests', async (url, answer, expected) => {
-  mocks.lookup.mockImplementation(
-    (
-      _host: string,
-      _options: unknown,
-      callback: (error: Error | null, addresses: { address: string; family: number }[]) => void,
-    ) =>
-      answer === 'ENOTFOUND'
-        ? callback(Object.assign(new Error('not found'), { code: 'ENOTFOUND' }), [])
-        : callback(null, [{ address: answer ?? '', family: 4 }]),
-  );
-  await expect(mcpServerIsInternal(url)).resolves.toBe(expected);
-  if (answer === null) expect(mocks.lookup).not.toHaveBeenCalled();
-});
+  ['https://mixed.example/mcp', ['8.8.8.8', '10.0.0.5'], false],
+])(
+  'classifies %s (DNS answer %s) as internal: %s for later token requests',
+  async (url, answer, expected) => {
+    mocks.lookup.mockImplementation(
+      (
+        _host: string,
+        _options: unknown,
+        callback: (error: Error | null, addresses: { address: string; family: number }[]) => void,
+      ) =>
+        answer === 'ENOTFOUND'
+          ? callback(Object.assign(new Error('not found'), { code: 'ENOTFOUND' }), [])
+          : callback(
+              null,
+              (Array.isArray(answer) ? answer : [answer ?? '']).map((address) => ({
+                address,
+                family: 4,
+              })),
+            ),
+    );
+    await expect(mcpServerIsInternal(url)).resolves.toBe(expected);
+    if (answer === null) expect(mocks.lookup).not.toHaveBeenCalled();
+  },
+);
 
 it('says the server could not resolve the host', async () => {
   const response = oauthHttpRequest('https://metadata.example/');

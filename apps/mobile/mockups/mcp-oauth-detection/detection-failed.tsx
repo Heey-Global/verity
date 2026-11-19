@@ -19,7 +19,7 @@ import {
 } from '../../components/ui';
 
 const ignore = () => undefined;
-const URL = 'https://heey-docs.serengeti-panga.ts.net/mcp/privat';
+const URL = 'https://docs.example.ts.net/mcp/privat';
 
 /**
  * Add MCP connection after "Detect OAuth settings" failed. The hint carries
@@ -50,12 +50,7 @@ export default function DetectionFailedMockup() {
       >
         <SettingsGroup title="Server">
           <SettingsPanel>
-            <TextField
-              label="Connection name"
-              value="heey-docs-privat"
-              onChangeText={ignore}
-              literal
-            />
+            <TextField label="Connection name" value="docs-private" onChangeText={ignore} literal />
             <TextField label="Remote HTTPS MCP URL" value={URL} onChangeText={ignore} literal />
           </SettingsPanel>
         </SettingsGroup>

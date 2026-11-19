@@ -29,6 +29,11 @@ function upstreamUrl(value: string, label?: string): URL {
   }
 }
 
+/** The user's MCP server URL, rejected with the same `invalid_url` step as discovery. */
+export function parseMcpServerUrl(value: string): URL {
+  return upstreamUrl(value);
+}
+
 function internalRefusal(host: string, address: string): McpOAuthDiscoveryError {
   return new McpOAuthDiscoveryError(
     'address_refused',
@@ -66,7 +71,11 @@ export async function mcpServerIsInternal(url: string): Promise<boolean> {
   return new Promise((resolve) => {
     lookup(host, { all: true, verbatim: true }, (error, addresses) =>
       resolve(
-        error === null && addresses.some(({ address }) => isInternalMcpUpstreamAddress(address)),
+        // Every address, not any: a public server must not become "internal" by
+        // adding one private record next to its public one.
+        error === null &&
+          addresses.length > 0 &&
+          addresses.every(({ address }) => isInternalMcpUpstreamAddress(address)),
       ),
     );
   });
@@ -153,7 +162,9 @@ export const oauthHttpRequest: OAuthHttpRequest = async (
             } else if (internalAddress !== undefined && !allowInternal) {
               callback(internalRefusal(host, internalAddress), []);
             } else {
-              internal = internalAddress !== undefined;
+              // Internal only when every answer is: a mixed answer may connect to
+              // the public address, and must not unlock internal endpoints.
+              internal = addresses.every(({ address }) => isInternalMcpUpstreamAddress(address));
               if (typeof options === 'object' && options.all) callback(null, addresses);
               else callback(null, addresses[0]!.address, addresses[0]!.family);
             }

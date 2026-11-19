@@ -141,3 +141,12 @@ describe('OAuth discovery failures', () => {
     );
   });
 });
+
+it('explains an unusable MCP URL instead of a generic setup failure', async () => {
+  const response = await create({ name: 'tools', url: 'https://127.0.0.1/mcp' });
+  expect(response.statusCode).toBe(400);
+  expect(response.json()).toMatchObject({
+    code: 'invalid_url',
+    error: expect.stringMatching(/^https:\/\/127\.0\.0\.1\/mcp is not a usable HTTPS URL\./u),
+  });
+});
