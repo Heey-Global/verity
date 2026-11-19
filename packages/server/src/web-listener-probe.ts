@@ -121,7 +121,7 @@ export class WebListenerClassifier {
   }
 }
 
-export function parseWebListenerResult(value: unknown): WebListenerResult | null {
+function parseWebListenerResult(value: unknown): WebListenerResult | null {
   if (!value || typeof value !== 'object') return null;
   const result = value as Partial<WebListenerResult>;
   if (result.protocol === 'http') return { protocol: 'http' };
