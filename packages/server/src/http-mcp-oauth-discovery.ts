@@ -409,6 +409,24 @@ export async function discoverMcpOAuth(url: string, send: OAuthHttpRequest = oau
       `The OAuth server ${issuer.hostname} does not support the authorization code flow.`,
       issuerDetail,
     );
+  if (probe.internal === false) {
+    // Discovery never contacts these endpoints, so an internal IP literal named
+    // by a public server would only fail at the first token request.
+    for (const [field, value] of [
+      ['authorization_endpoint', authority.authorization_endpoint],
+      ['token_endpoint', authority.token_endpoint],
+      ['registration_endpoint', authority.registration_endpoint],
+    ] as const) {
+      const literal =
+        value === undefined ? '' : new URL(value).hostname.replace(/^\[(.*)\]$/u, '$1');
+      if (isIP(literal) !== 0 && isInternalMcpUpstreamAddress(literal))
+        throw new McpOAuthDiscoveryError(
+          'address_refused',
+          `The ${field} of ${issuer.hostname} is the internal address ${literal}, but the MCP server URL is public.`,
+          { ...issuerDetail, address: literal, range: 'internal' },
+        );
+    }
+  }
   const scopes =
     challengeParameter(challenge, 'scope') ?? resource.scopes_supported?.join(' ') ?? '';
   return {

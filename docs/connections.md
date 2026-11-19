@@ -260,10 +260,13 @@ private and tailnet addresses.
 
 When the MCP server itself is public, its OAuth metadata, authorization server,
 client registration and token endpoint must be public too, so a public server
-cannot point Verity's requests into your network. Before every token request,
+cannot point Verity's requests into your network. Discovery rejects internal
+endpoint addresses named by a public server, and before every token request,
 including for endpoints entered manually under Advanced, Verity resolves the MCP
 server again and allows an internal token endpoint only when every address of the
-MCP server is internal.
+MCP server is internal. The classification follows DNS, so whoever controls a
+public MCP server's DNS can change it; HTTPS certificate verification still
+limits which internal services such a request can reach.
 
 The server must also be able to resolve the MCP host name. For `*.ts.net` names
 this needs Tailscale's DNS (MagicDNS) to be available to the Verity server
