@@ -272,6 +272,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Icon, type IconName } from '../../components/Icon';
+import { LinkedSessionChips } from '../../components/LinkedSessionChips';
 import {
   AutomationBar,
   AutomationProposalCard,
@@ -857,6 +858,18 @@ export const SessionChat = memo(function SessionChat({
       })
       .finally(() => setDecidingLinkedMessage(null));
   };
+  // Beside Home the linked session replaces this one in the right pane; on its
+  // own screen it opens on top, so back returns here.
+  const openLinkedSession = (link: { sessionId: string }) =>
+    embedded
+      ? router.setParams({
+          selected: link.sessionId,
+          targetMessageId: undefined,
+          targetSearchQuery: undefined,
+          retrySecret: undefined,
+          mockups: undefined,
+        })
+      : router.push({ pathname: '/session/[id]', params: { id: link.sessionId } });
   const disconnectLinkedSession = (link: (typeof linkedSessions)[number]) => {
     Alert.alert(
       'Disconnect sessions?',
@@ -4021,31 +4034,11 @@ export const SessionChat = memo(function SessionChat({
           ) : null}
         </View>
       </View>
-      {linkedSessions.length > 0 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.headerLinks}
-          accessibilityLabel="Linked sessions"
-        >
-          {linkedSessions.map((link) => (
-            <View key={link.sessionId} style={styles.headerLinkChip}>
-              <Icon name="link" size={13} color={theme.colors.action} />
-              <Text style={styles.headerLinkText} numberOfLines={1}>
-                {link.projectName} · {link.name ?? link.sessionId}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Disconnect ${link.name ?? link.sessionId}`}
-                hitSlop={8}
-                onPress={() => disconnectLinkedSession(link)}
-              >
-                <Icon name="x" size={15} color={theme.colors.textMuted} />
-              </Pressable>
-            </View>
-          ))}
-        </ScrollView>
-      ) : null}
+      <LinkedSessionChips
+        links={linkedSessions}
+        onOpen={openLinkedSession}
+        onDisconnect={disconnectLinkedSession}
+      />
     </View>
   );
 
@@ -10658,26 +10651,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 3,
-  },
-  // A quiet pill: muted caption text on a faint surface, distinct from the title.
-  headerLinks: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
-  headerLinkChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    maxWidth: 250,
-    paddingHorizontal: 10,
-    minHeight: 30,
-    borderRadius: theme.radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surfaceAlt,
-  },
-  headerLinkText: {
-    flexShrink: 1,
-    color: theme.colors.textMuted,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
   },
   headerMetaChip: {
     color: theme.colors.textMuted,
