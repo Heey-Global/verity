@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.94.4](https://github.com/Heey-Global/verity/compare/mobile-v1.94.3...mobile-v1.94.4) (2026-11-19)
+
+
+### Bug Fixes
+
+* **mcp:** reach tailnet and private MCP servers and explain setup failures ([#2704](https://github.com/Heey-Global/verity/issues/2704)) ([0ca6992](https://github.com/Heey-Global/verity/commit/0ca6992601f127da47e403568af432801d8a807d))
+* **server:** return published session progress to Verity Control ([#2709](https://github.com/Heey-Global/verity/issues/2709)) ([9d3bcc1](https://github.com/Heey-Global/verity/commit/9d3bcc12d8a7978a4deb2a9811d3084258e16290))
+
 ## [1.94.3](https://github.com/Heey-Global/verity/compare/mobile-v1.94.2...mobile-v1.94.3) (2026-11-19)
 
 
