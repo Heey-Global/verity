@@ -317,8 +317,15 @@ describe('ACP turns held open for background work', () => {
     const run = new AcpClaudeBackend().run(
       turn(spawner, 'held-stop', { signal: controller.signal }),
     );
+    // Stop must arrive while the turn is held. Waiting only for the text raced
+    // the hold: a Stop before it began left no hold task to end.
     await vi.waitFor(async () => {
-      expect((await events('held-stop')).some((event) => event.t === 'text')).toBe(true);
+      expect(
+        (await events('held-stop')).some(
+          (event) =>
+            event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID && event.phase === 'started',
+        ),
+      ).toBe(true);
     });
     controller.abort();
     expect(agent.kill).toHaveBeenCalledWith('SIGKILL');

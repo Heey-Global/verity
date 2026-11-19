@@ -1,5 +1,5 @@
 // Remote HTTP MCP setup uses metadata discovery, with manual OAuth as a fallback.
-import { type VerityClient } from '@verity/mobile';
+import { type VerityClient, VerityApiError } from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
@@ -13,6 +13,7 @@ import {
   SettingsScaffold,
 } from '../../../../components/settings/SettingsChrome';
 import { createVerityClient } from '../../../../lib/client';
+import { connectionNameProblem } from '../../../../lib/mcpConnectionName';
 import { mcpOAuthCallbackUri } from '../../../../lib/mcpOAuth';
 import {
   Button,
@@ -80,12 +81,22 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
       setOauthScopes(result.scopes);
       setRegistrationAvailable(result.registrationAvailable);
       setDiscoveredUrl(requestedUrl);
-    } catch {
+    } catch (caught) {
       if (revision === discoveryRevision.current) {
         setManual(true);
+        // The server names the step that failed (an unresolvable host, a refused
+        // address, a missing OAuth challenge…); without it only "check the URL" is left.
+        // Only a discovery step carries a code; a bare "invalid request" says nothing more.
+        const reason =
+          caught instanceof VerityApiError &&
+          caught.status === 400 &&
+          caught.code !== undefined &&
+          caught.code !== 'setup_failed'
+            ? `${caught.message} `
+            : '';
         setError({
           title: 'OAuth not detected',
-          message: 'Check the URL or enter the provider settings under Advanced.',
+          message: `${reason}Check the URL or enter the provider settings under Advanced.`,
         });
       }
     } finally {
@@ -128,7 +139,7 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
           message:
             caught instanceof Error
               ? caught.message
-              : 'Could not save the MCP connection. Use a public HTTPS URL.',
+              : 'Could not save the MCP connection. Use an HTTPS URL the Verity server can reach.',
         }),
       )
       .finally(() => {
@@ -136,8 +147,10 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
         setBusy(false);
       });
   };
+  const nameProblem = connectionNameProblem(name);
   const incomplete =
     name.trim() === '' ||
+    nameProblem !== undefined ||
     url.trim() === '' ||
     (useOAuth &&
       (unsupportedWeb ||
@@ -176,6 +189,11 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
             placeholder="my-tools"
             literal
             disabled={busy}
+            error={
+              nameProblem === undefined
+                ? undefined
+                : { title: 'Invalid name', message: nameProblem }
+            }
           />
           <TextField
             label="Remote HTTPS MCP URL"

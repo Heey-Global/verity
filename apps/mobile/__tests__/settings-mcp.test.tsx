@@ -6,6 +6,7 @@
 // The list reloads on focus for exactly that reason, and the first test below
 // is what keeps it honest.
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { VerityApiError } from '@verity/mobile';
 
 jest.mock('expo-clipboard', () => require('./support/settingsHarness').clipboardMock());
 jest.mock('react-native/Libraries/Linking/Linking', () =>
@@ -273,6 +274,30 @@ describe('settings/services/mcp/new — adding one', () => {
     await waitFor(() => expect(add).toBeEnabled());
   });
 
+  // The server rejects a display-style name, and before this check the form only
+  // reported "invalid request" after the round trip, with nothing to fix by.
+  it('explains a name the server would reject and suggests one it accepts', async () => {
+    const createHttpMcpConnection = jest.fn();
+    mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { createHttpMcpConnection }));
+    render(<NewMcpConnectionScreen />);
+
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'Heey Docs Privat');
+    fireEvent.changeText(
+      screen.getByLabelText('Remote HTTPS MCP URL'),
+      'https://mcp.example.test/mcp/privat',
+    );
+
+    expect(screen.getByText('Invalid name')).toBeOnTheScreen();
+    expect(screen.getByText(/for example heey-docs-privat\./u)).toBeOnTheScreen();
+    const add = screen.getByLabelText('Add MCP connection');
+    expect(add).toBeDisabled();
+
+    fireEvent.changeText(screen.getByLabelText('Connection name'), 'heey-docs-privat');
+    expect(screen.queryByText('Invalid name')).toBeNull();
+    await waitFor(() => expect(add).toBeEnabled());
+    expect(createHttpMcpConnection).not.toHaveBeenCalled();
+  });
+
   it('creates an unauthenticated connection and returns to the list', async () => {
     const createHttpMcpConnection = jest.fn().mockResolvedValue(undefined);
     mockCreateVerityClient.mockReturnValue(makeClient('unlocked', { createHttpMcpConnection }));
@@ -419,6 +444,62 @@ describe('settings/services/mcp/new — adding one', () => {
     fireEvent.changeText(screen.getByLabelText('Token endpoint'), 'https://identity.example/token');
     expect(screen.getByLabelText('Add MCP connection')).toBeEnabled();
     expect(screen.getByText('Copy callback URL')).toBeOnTheScreen();
+  });
+
+  // A bare "OAuth not detected" sent people looking for a fault in their MCP
+  // server when the Verity server had refused its address or could not resolve it.
+  it('shows the server’s reason when OAuth detection fails', async () => {
+    const reason =
+      'heey-docs.example.ts.net resolves to 127.0.0.1 (loopback), which MCP connections may not reach.';
+    const api = makeClient('unlocked');
+    Object.assign(api, {
+      discoverHttpMcpOAuth: jest
+        .fn()
+        .mockRejectedValue(new VerityApiError(400, reason, { code: 'address_refused' })),
+    });
+    mockCreateVerityClient.mockReturnValue(api);
+    render(<NewMcpConnectionScreen />);
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'docs');
+    fireEvent.changeText(
+      screen.getByLabelText('Remote HTTPS MCP URL'),
+      'https://heey-docs.example.ts.net/mcp/privat',
+    );
+    fireEvent.press(screen.getByText('Use OAuth 2.0'));
+    fireEvent.press(screen.getByText('Detect OAuth settings'));
+
+    expect(await screen.findByText('OAuth not detected')).toBeOnTheScreen();
+    expect(
+      screen.getByText(`${reason} Check the URL or enter the provider settings under Advanced.`),
+    ).toBeOnTheScreen();
+  });
+
+  it.each([
+    ['a transport error', new Error('Network request failed')],
+    ['a 400 without a discovery step', new VerityApiError(400, 'invalid request')],
+    [
+      'an unexpected setup failure',
+      new VerityApiError(400, 'OAuth discovery failed. Check the server URL.', {
+        code: 'setup_failed',
+      }),
+    ],
+  ])('does not show %s as a detection reason', async (_label, failure) => {
+    const api = makeClient('unlocked');
+    Object.assign(api, {
+      discoverHttpMcpOAuth: jest.fn().mockRejectedValue(failure),
+    });
+    mockCreateVerityClient.mockReturnValue(api);
+    render(<NewMcpConnectionScreen />);
+    fireEvent.changeText(await screen.findByLabelText('Connection name'), 'docs');
+    fireEvent.changeText(
+      screen.getByLabelText('Remote HTTPS MCP URL'),
+      'https://tools.example/mcp',
+    );
+    fireEvent.press(screen.getByText('Use OAuth 2.0'));
+    fireEvent.press(screen.getByText('Detect OAuth settings'));
+
+    expect(
+      await screen.findByText('Check the URL or enter the provider settings under Advanced.'),
+    ).toBeOnTheScreen();
   });
 
   it('explains a rejected connection instead of leaving the button silent', async () => {
