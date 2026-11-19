@@ -12,7 +12,7 @@ export const homeVerityEntrySpec: MockupSpec = {
   title: 'Home without Verity header',
   screens: {
     'home-phone': { title: 'Home', Component: HomePhoneMockup },
-    'home-ipad': { title: 'Verity', Component: HomeIpadMockup },
+    'home-ipad': { title: 'Home', Component: HomeIpadMockup },
     'shared-knowledge': { title: 'Shared knowledge', Component: SharedKnowledgeMockup },
   },
 };

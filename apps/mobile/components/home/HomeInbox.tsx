@@ -22,6 +22,8 @@ import { syncWatchInbox } from '../../lib/watchCapture';
 // The inbox mechanics live with every work list; kept importable from Home.
 export { InboxCard, RESUME_PROMPT, replyFor, useInboxFeed } from '../inbox/InboxFeed';
 
+type SectionCounts = { needs: number; active: number; results: number };
+
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
 /** Re-evaluates the meeting window and "in N min" without new data. */
@@ -98,9 +100,12 @@ export function HomeInbox({
     onOpenProject,
     onRepairProject,
   });
-  const [counts, setCounts] = useState({ needs: 0, active: 0, results: 0 });
-  const onSectionsChange = useCallback((next: typeof counts) => {
+  // `null` until the sections first report, so the quiet line cannot flash
+  // on mount before the work is placed.
+  const [counts, setCounts] = useState<SectionCounts | null>(null);
+  const onSectionsChange = useCallback((next: SectionCounts) => {
     setCounts((current) =>
+      current !== null &&
       current.needs === next.needs &&
       current.active === next.active &&
       current.results === next.results
@@ -108,10 +113,14 @@ export function HomeInbox({
         : next,
     );
   }, []);
-  useEffect(() => onCountChange?.(counts.needs), [counts.needs, onCountChange]);
+  const needs = counts?.needs ?? 0;
+  useEffect(() => onCountChange?.(needs), [needs, onCountChange]);
   const meetingItems = feed.items.filter((item) => item.kind === 'meeting');
   // Without a header, an empty Home would show nothing but the knowledge row.
-  const quiet = counts.needs + counts.active + counts.results === 0 && meetingItems.length === 0;
+  const quiet =
+    counts !== null &&
+    counts.needs + counts.active + counts.results === 0 &&
+    meetingItems.length === 0;
   const changed = useCallback(
     (sessionId: string, deleted: boolean) => {
       if (onSessionChanged) onSessionChanged(sessionId, deleted);
