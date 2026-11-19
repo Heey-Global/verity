@@ -113,6 +113,19 @@ class BootVM:
                 (self.evidence / f'ssh-failure-{self.failures:03d}.txt').write_text(error.output or '')
             raise
 
+    def configure_apt(self):
+        # Only package indexes are needed in these disposable, noninteractive guests.
+        # Bound stalled mirror requests instead of spending the whole provisioning
+        # budget on an optional metadata transfer.
+        self.ssh("""sudo tee /etc/apt/apt.conf.d/99verity-probe >/dev/null <<'APT'
+Acquire::Languages "none";
+Acquire::IndexTargets::deb::DEP-11::DefaultEnabled "false";
+Acquire::IndexTargets::deb::CNF::DefaultEnabled "false";
+Acquire::http::Timeout "30";
+Acquire::https::Timeout "30";
+Acquire::Retries "3";
+APT""")
+
     def upload(self, archive, destination='/opt/verity-fixture'):
         if destination != '/opt/verity-fixture':
             raise ValueError('Only the disposable asset directory is writable')
