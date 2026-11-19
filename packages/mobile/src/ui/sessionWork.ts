@@ -110,3 +110,28 @@ export function retainWorkMembers(
   const known = new Set(kept);
   return [...kept, ...candidates.filter((id) => !known.has(id))];
 }
+
+/** How many sessions Home's "Recent" section lists. */
+export const RECENT_SESSION_LIMIT = 10;
+
+/**
+ * The most recently used sessions not already shown in another section, newest
+ * first, so a session that leaves "In progress" or "Results" stays one tap away.
+ * Last use is the session's last activity, the timestamp the work order reads;
+ * sessions without one sort last.
+ */
+export function recentSessions(
+  sessions: readonly SessionSummary[],
+  shown: ReadonlySet<string>,
+  limit: number = RECENT_SESSION_LIMIT,
+): SessionSummary[] {
+  return sessions
+    .filter((session) => !shown.has(session.sessionId))
+    .map((session, index) => ({ session, index }))
+    .sort(
+      (a, b) =>
+        (b.session.lastActivityAt ?? 0) - (a.session.lastActivityAt ?? 0) || a.index - b.index,
+    )
+    .slice(0, Math.max(0, limit))
+    .map(({ session }) => session);
+}

@@ -5,6 +5,7 @@ import {
   inboxItems,
   markerAttention,
   projectDisplayName,
+  recentSessions,
   sessionWorkSections,
   retainWorkMembers,
   WORK_PROBLEM_LABELS,
@@ -381,6 +382,18 @@ export function ProjectWork({
     results: results.map((id) => live.get(id)!),
   };
   const listed = ids.map((id) => live.get(id)!);
+  // Home only: the latest sessions none of the sections above holds, so one that
+  // finished and was read stays reachable without opening its project.
+  const recent = overview
+    ? recentSessions(
+        sessions,
+        new Set([
+          ...now.needsYou.flatMap((e) => (e.kind === 'session' ? [e.session.sessionId] : [])),
+          ...now.active.map((s) => s.sessionId),
+          ...now.results.map((s) => s.sessionId),
+        ]),
+      )
+    : [];
   const needsCount = leadingRows.length + now.needsYou.length;
   const nowCount = needsCount + now.active.length + now.results.length;
   useEffect(() => {
@@ -785,6 +798,12 @@ export function ProjectWork({
             <View style={styles.section} testID="work-results">
               <SectionHeader title={`Results · ${String(now.results.length)}`} flush />
               <Group>{now.results.map((session) => sessionRow(session))}</Group>
+            </View>
+          ) : null}
+          {recent.length > 0 ? (
+            <View style={styles.section} testID="work-recent">
+              <SectionHeader title="Recent" flush />
+              <Group>{recent.map((session) => sessionRow(session))}</Group>
             </View>
           ) : null}
         </>
