@@ -476,6 +476,12 @@ describe('settings/services/mcp/new — adding one', () => {
   it.each([
     ['a transport error', new Error('Network request failed')],
     ['a 400 without a discovery step', new VerityApiError(400, 'invalid request')],
+    [
+      'an unexpected setup failure',
+      new VerityApiError(400, 'OAuth discovery failed. Check the server URL.', {
+        code: 'setup_failed',
+      }),
+    ],
   ])('does not show %s as a detection reason', async (_label, failure) => {
     const api = makeClient('unlocked');
     Object.assign(api, {

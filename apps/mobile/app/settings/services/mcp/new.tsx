@@ -88,7 +88,10 @@ function NewMcpConnectionView({ client }: { client: VerityClient }) {
         // address, a missing OAuth challenge…); without it only "check the URL" is left.
         // Only a discovery step carries a code; a bare "invalid request" says nothing more.
         const reason =
-          caught instanceof VerityApiError && caught.status === 400 && caught.code !== undefined
+          caught instanceof VerityApiError &&
+          caught.status === 400 &&
+          caught.code !== undefined &&
+          caught.code !== 'setup_failed'
             ? `${caught.message} `
             : '';
         setError({
