@@ -433,7 +433,8 @@ export function createControlPlaneSessionTools(
     // project reading as eligible is the failure a caller arriving from elsewhere would get.
     if (project.hiddenAt !== null) return `project ${project.id} has been deleted`;
     if (project.archived === true) return `project ${project.id} is archived`;
-    if (project.state !== 'active')
+    // Delivery uses foreground turn preparation, which wakes retained sandboxes.
+    if (project.state !== 'active' && project.state !== 'sleeping' && project.state !== 'waking')
       return `project ${project.id} sandbox is not active (${project.state}) — repair it and retry`;
     return undefined;
   };

@@ -2,7 +2,11 @@ import { readFileSync } from 'node:fs';
 import { createIsolatedTestDb, truncateAll, type TestDb } from '@verity/store/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createTeamOutboxWorker } from './team-outbox-worker.js';
+import {
+  createTeamOutboxWorker,
+  TEAM_OFFLINE_GRACE_MS,
+  TEAM_WAIT_LOG_MS,
+} from './team-outbox-worker.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
 const IDENTITY_KEY = 'MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERE';
@@ -123,6 +127,67 @@ describe('team outbox worker', () => {
     expect(resumed.give_up_at.getTime()).toBeGreaterThan(now.getTime());
     await worker.run();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  // Work queued while Uplink withholds team v1 used to wait in silence for
+  // seven days. The reason must reach the log, without one line per pass.
+  it('logs queued team work that waits for team v1, with its reason and rate-limited', async () => {
+    const start = new Date();
+    let clock = start;
+    let availability: 'uplink_offline' | 'not_entitled' = 'uplink_offline';
+    const warn = vi.fn();
+    const teamRequest = vi.fn();
+    const worker = createTeamOutboxWorker({
+      team: ctx.store.projectTeam,
+      uplink: { teamNegotiated: () => false, teamAvailability: () => availability, teamRequest },
+      identityKey: () => IDENTITY_KEY,
+      now: () => clock,
+      log: { warn },
+    });
+    await worker.run();
+    expect(warn).not.toHaveBeenCalled();
+
+    await ctx.store.projectTeam.createInvitation({
+      projectId: 'p1',
+      inviterUserId: ADMIN,
+      inviteeName: 'Neil',
+      canExecute: true,
+      now: start,
+    });
+    const at = (ms: number) => new Date(start.getTime() + ms);
+    // Waking the connection for new work takes a moment; that is no news.
+    await worker.run();
+    clock = at(TEAM_OFFLINE_GRACE_MS - 1);
+    await worker.run();
+    expect(warn).not.toHaveBeenCalled();
+    // A definitive reason is logged at once.
+    availability = 'not_entitled';
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toEqual({ queued: 1, teamSharing: 'not_entitled' });
+
+    // Flapping reasons do not bypass the interval.
+    availability = 'uplink_offline';
+    clock = at(2 * TEAM_OFFLINE_GRACE_MS);
+    await worker.run();
+    availability = 'not_entitled';
+    clock = at(2 * TEAM_OFFLINE_GRACE_MS + 1);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(1);
+    clock = at(TEAM_OFFLINE_GRACE_MS - 1 + TEAM_WAIT_LOG_MS);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(2);
+
+    // Offline that lasts beyond the grace period is worth a line too.
+    availability = 'uplink_offline';
+    clock = at(2 * TEAM_WAIT_LOG_MS);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(2);
+    clock = at(2 * TEAM_WAIT_LOG_MS + TEAM_OFFLINE_GRACE_MS);
+    await worker.run();
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls[2]?.[0]).toEqual({ queued: 1, teamSharing: 'uplink_offline' });
+    expect(teamRequest).not.toHaveBeenCalled();
   });
 
   // Team messages are strict: Uplink rejects an unknown field and a missing one.

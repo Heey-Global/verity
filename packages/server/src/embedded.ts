@@ -215,6 +215,7 @@ import {
   sweepOrphanedPreviewShares,
 } from './preview-share-manager.js';
 import { UplinkControlClient, premiumFeatureSwitches } from './uplink-control-client.js';
+import { teamSharingStatus } from './uplink-feature-state.js';
 import { applyPremiumFeatureSwitches } from './premium-feature-switches.js';
 import { createRemoteConnectorPool, remoteDataUrlForControl } from './remote-control-connector.js';
 import { createDeferredLogger } from './deferred-logger.js';
@@ -3043,10 +3044,9 @@ export async function buildEmbeddedServer(
     teamLinkIdentity: () => {
       const identity = config.devicePairing?.identity();
       const installation = uplinkControl?.teamInstallation();
-      return identity === undefined || installation === undefined
-        ? undefined
-        : { ...identity, ...installation };
+      return identity && installation && { ...identity, ...installation };
     },
+    teamSharing: teamSharingStatus(uplinkControl),
     personalClaudeAccessToken: (userId: string) =>
       personalProviderCredentials.claudeAccessToken(userId),
     persistPersonalProviderCredentials: (userId, provider, write) =>

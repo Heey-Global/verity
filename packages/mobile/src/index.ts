@@ -837,7 +837,9 @@ export {
 export {
   invitationLinkFieldsSchema,
   projectTeamSchema,
+  teamSharingUnavailable,
   type InvitationLinkFields,
+  type TeamSharing,
   type TeamJoined,
   type ProjectInvitation as TeamInvitation,
   type ProjectMember,

@@ -1,7 +1,13 @@
 // An invitation to share: its QR code and link, who it is for, its right and
 // how long it can be used, and revoking it. The link is completed here with the
 // TLS pin this app verified when it paired (Uplink team contract D5).
-import type { InvitationLinkFields, TeamInvitation, VerityClient } from '@verity/mobile';
+import {
+  teamSharingUnavailable,
+  type InvitationLinkFields,
+  type TeamInvitation,
+  type TeamSharing,
+  type VerityClient,
+} from '@verity/mobile';
 import * as Clipboard from 'expo-clipboard';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -60,6 +66,7 @@ export function InvitationView({
   const { theme } = useUnistyles();
   const [invitation, setInvitation] = useState<TeamInvitation | null>(null);
   const [fields, setFields] = useState<InvitationLinkFields | null>(null);
+  const [sharing, setSharing] = useState<TeamSharing | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [copied, setCopied] = useState(false);
   const [confirm, confirmSheet] = useConfirm();
@@ -70,6 +77,7 @@ export function InvitationView({
       .then((answer) => {
         setInvitation(answer.invitation);
         setFields(answer.linkFields);
+        setSharing(answer.teamSharing);
       })
       .catch((caught: unknown) =>
         setError(caught instanceof Error ? caught.message : 'Could not load the invitation'),
@@ -77,6 +85,8 @@ export function InvitationView({
   }, [client, projectId, invitationId]);
   useEffect(load, [load]);
   // Uplink creates the invitation in the background; until then there is no link.
+  // Polling goes on while team sharing is unavailable, so the link still
+  // appears if it becomes available before the invitation expires.
   useEffect(() => {
     if (fields !== null || invitation?.state === 'expired' || invitation?.state === 'failed')
       return;
@@ -85,6 +95,7 @@ export function InvitationView({
   }, [fields, invitation?.state, load]);
 
   const link = fields === null ? undefined : invitationLink(fields, getServerProfile());
+  const unavailable = fields === null && teamSharingUnavailable(sharing);
   const revoke = () =>
     confirm({
       title: 'Revoke this invitation?',
@@ -117,15 +128,25 @@ export function InvitationView({
       }
     >
       {name ? <SectionHeader title={`Send to ${name}`} variant="eyebrow" /> : null}
-      {link === undefined ? (
+      {unavailable ? (
+        <Group>
+          <Row
+            leading={{ icon: 'info', quiet: true }}
+            title="Team sharing isn't available for this installation"
+            subtitle="This invitation can't get a link. You can revoke it."
+          />
+        </Group>
+      ) : link === undefined ? (
         <Group>
           <Row
             leading={{ element: <ActivityIndicator color={theme.colors.action} /> }}
             title={fields === null ? 'Preparing the link…' : 'This phone cannot complete the link'}
             subtitle={
-              fields === null
-                ? 'It appears once the invitation is registered'
-                : 'Open it on a device paired directly with this server'
+              fields !== null
+                ? 'Open it on a device paired directly with this server'
+                : sharing === 'uplink_offline'
+                  ? 'Waiting for the connection to Uplink'
+                  : 'It appears once the invitation is registered'
             }
           />
         </Group>

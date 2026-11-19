@@ -1,4 +1,4 @@
-import { Children, Fragment, isValidElement, type ReactNode } from 'react';
+import { Children, Fragment, isValidElement, useState, type ReactNode } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -220,6 +220,9 @@ export function Row({
   wrap?: boolean;
 }) {
   const { theme } = useUnistyles();
+  const [held, setHeld] = useState(false);
+  // The active highlight wins over the pressed one, as on a plain row.
+  const lit = held && !disabled && !active;
   const choice = selected !== undefined;
   if (
     process.env.NODE_ENV !== 'production' &&
@@ -281,10 +284,16 @@ export function Row({
       row
     );
   }
+  // With an action beside it or answers under it, the row is more than its
+  // pressable area; a press then lights the whole row, not just the part that
+  // was touched, or the card looks split in two.
+  const wrapped = action !== undefined || strip !== null;
   const pressable = (
     <Pressable
       onPress={onPress}
       onLongPress={onLongPress}
+      onPressIn={() => setHeld(true)}
+      onPressOut={() => setHeld(false)}
       disabled={disabled}
       accessibilityRole={choice ? 'radio' : 'button'}
       accessibilityLabel={
@@ -298,8 +307,8 @@ export function Row({
         styles.row,
         action !== undefined ? styles.rowBesideAction : null,
         disabled ? styles.muted : settled ? styles.settled : null,
-        pressed && !disabled ? styles.pressed : null,
-        active && strip === null && action === undefined ? styles.rowActive : null,
+        pressed && !disabled && !wrapped ? styles.pressed : null,
+        active && !wrapped ? styles.rowActive : null,
       ]}
     >
       {content}
@@ -308,7 +317,13 @@ export function Row({
   const body =
     action !== undefined ? (
       // The action dims itself when disabled; the wrapper must not dim it again.
-      <View style={[styles.withAction, active && strip === null ? styles.rowActive : null]}>
+      <View
+        style={[
+          styles.withAction,
+          active && strip === null ? styles.rowActive : null,
+          lit && strip === null ? styles.pressed : null,
+        ]}
+      >
         {pressable}
         <View style={styles.action}>{action}</View>
       </View>
@@ -316,7 +331,11 @@ export function Row({
       pressable
     );
   return strip ? (
-    <View style={active ? styles.rowActive : undefined}>
+    <View
+      style={
+        active || lit ? [active ? styles.rowActive : null, lit ? styles.pressed : null] : undefined
+      }
+    >
       {body}
       {strip}
     </View>

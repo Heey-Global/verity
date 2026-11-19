@@ -387,6 +387,13 @@ if command -v npm >/dev/null 2>&1; then
     printf '{\n  "autoupdate": false\n}\n' > "$REMOTE_HOME/.config/opencode/opencode.json"
     WRITTEN_PATHS+=("$REMOTE_HOME/.config/opencode")
   fi
+  # Node 25+ no longer bundles Corepack, so an npm-only image has no pnpm or
+  # Yarn, and the F10 install-policy shims then fail with "pnpm is not
+  # installed". Corepack provides both commands and runs the version a project
+  # names in its `packageManager` field. Commands the base image already ships
+  # are kept; the version is pinned by npm/corepack (Renovate-managed lock).
+  echo ">> verity-sandbox-toolkit: installing corepack (pnpm and yarn)"
+  node "$FEATURE_DIR/bin/verity-cli-install.mjs" corepack
 else
   echo "!! verity-sandbox-toolkit: npm not on PATH — skipping codex/opencode." >&2
   # Make the skip real state, not just a message: F10 below still reads

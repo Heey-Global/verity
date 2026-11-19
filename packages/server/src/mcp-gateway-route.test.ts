@@ -1815,7 +1815,7 @@ async function withInternalTcpListener(
 // and nothing said so. There was no test for a control-plane `tools/list`, which is what hid
 // it; these are that test.
 describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
-  it('preserves Codex handoff fallback and refuses an unconfigured project default', async () => {
+  it.each(['active', 'sleeping', 'waking'] as const)('creates handoffs while %s', async (state) => {
     const harness = build({ sessionTools: true, projectSpawns: true });
     await harness.store.createProject({
       id: VERITY_CONTROL_PROJECT_ID,
@@ -1837,7 +1837,7 @@ describe('POST /internal/control-plane/mcp (control-plane gateway)', () => {
       owner: '__local__',
       repo: 'website',
       containerName: 'verity-website',
-      state: 'active',
+      state,
     });
     await ctx.db
       .deleteFrom('project_knowledge_spaces')

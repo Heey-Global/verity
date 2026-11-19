@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { authorizePairedRoute } from './paired-route-policy.js';
 import { registerProjectTeamRoutes } from './project-team-routes.js';
+import type { TeamAvailability } from './uplink-feature-state.js';
 
 const ADMIN = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
@@ -43,7 +44,10 @@ beforeEach(async () => {
     .execute();
 });
 
-function server(onMemberRemoved = vi.fn(async () => undefined)) {
+function server(
+  onMemberRemoved = vi.fn(async () => undefined),
+  teamSharing?: () => TeamAvailability,
+) {
   const app = Fastify();
   app.decorateRequest('localUserId', null);
   app.addHook('onRequest', async (request) => {
@@ -64,6 +68,7 @@ function server(onMemberRemoved = vi.fn(async () => undefined)) {
     store: ctx.store,
     projectName: async () => 'app',
     onMemberRemoved,
+    ...(teamSharing === undefined ? {} : { teamSharing }),
     linkIdentity: () => ({
       serverId: 'srv_EREREREREREREREREREREQ',
       identityKey: 'MCowBQYDK2VwAyEAERERERERERERERERERERERERERERERERERERERE',
@@ -193,5 +198,44 @@ describe('project team routes', () => {
     const other = await as(app, 'reader', 'GET', `/projects/p1/invitations/${id}`);
     expect(other.statusCode).toBe(200);
     expect(other.json<{ linkFields: unknown }>().linkFields).toBeNull();
+  });
+
+  // Without team-sharing from Uplink the link never comes; the app showed
+  // "Preparing the link…" until the invitation expired.
+  it('refuses an invitation Uplink cannot register, and tells the app why', async () => {
+    let availability: TeamAvailability = 'not_entitled';
+    const { app } = server(undefined, () => availability);
+    for (const reason of ['not_entitled', 'not_negotiated', 'unavailable'] as const) {
+      availability = reason;
+      const refused = await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
+        inviteeName: 'Neil',
+        canExecute: true,
+        inviterName: 'Holger',
+      });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json()).toMatchObject({ code: 'team_sharing_unavailable', reason });
+    }
+    expect(await ctx.store.projectTeam.listInvitations('p1')).toEqual([]);
+    // Nothing of the refused request is kept, not even the inviter's name.
+    expect((await ctx.store.userProfiles.read(ADMIN))?.displayName ?? null).toBeNull();
+    availability = 'not_entitled';
+    expect((await as(app, ADMIN, 'GET', '/projects/p1/team')).json()).toMatchObject({
+      teamSharing: 'not_entitled',
+    });
+
+    // Offline is temporary: the invitation is created and waits for its link.
+    availability = 'uplink_offline';
+    const created = await as(app, ADMIN, 'POST', '/projects/p1/invitations', {
+      inviteeName: 'Neil',
+      canExecute: true,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ teamSharing: 'uplink_offline', linkFields: null });
+    const { id } = created.json<{ invitation: { id: string } }>().invitation;
+    // Entitlement can end after the invitation was made; its page must say so.
+    availability = 'not_entitled';
+    const read = await as(app, ADMIN, 'GET', `/projects/p1/invitations/${id}`);
+    expect(read.json()).toMatchObject({ teamSharing: 'not_entitled', linkFields: null });
+    expect((await as(app, ADMIN, 'DELETE', `/projects/p1/invitations/${id}`)).statusCode).toBe(204);
   });
 });

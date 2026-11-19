@@ -1,6 +1,11 @@
 // Project › Settings › Team: who works in the project, open invitations, and
 // each member's right (ADR 0023 §1). Only managers reach it.
-import type { ProjectMember, ProjectTeam, VerityClient } from '@verity/mobile';
+import {
+  teamSharingUnavailable,
+  type ProjectMember,
+  type ProjectTeam,
+  type VerityClient,
+} from '@verity/mobile';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 
@@ -110,6 +115,9 @@ export function ProjectTeamView({
     });
 
   const name = (member: ProjectMember) => member.displayName ?? 'Member';
+  // Without team sharing an invitation never gets its link: offer none, and
+  // say so plainly (only managers see this page).
+  const canInvite = !teamSharingUnavailable(team?.teamSharing);
   return (
     <SettingsScaffold title="Team" detail state={{ error, saving: busy }} onRetry={load}>
       {team === null ? null : (
@@ -167,7 +175,7 @@ export function ProjectTeamView({
                     }
                     navigates
                     onPress={() =>
-                      invitation.state === 'failed'
+                      invitation.state === 'failed' && canInvite
                         ? router.push({
                             pathname: '/project/[id]/settings/invite',
                             params: { id: projectId },
@@ -182,14 +190,27 @@ export function ProjectTeamView({
               </Group>
             </>
           ) : null}
-          <Button
-            label="Invite a person"
-            icon="user-plus"
-            onPress={() =>
-              router.push({ pathname: '/project/[id]/settings/invite', params: { id: projectId } })
-            }
-            fullWidth
-          />
+          {canInvite ? (
+            <Button
+              label="Invite a person"
+              icon="user-plus"
+              onPress={() =>
+                router.push({
+                  pathname: '/project/[id]/settings/invite',
+                  params: { id: projectId },
+                })
+              }
+              fullWidth
+            />
+          ) : (
+            <Group>
+              <Row
+                leading={{ icon: 'info', quiet: true }}
+                title="Team sharing isn't available for this installation"
+                subtitle="People can't be invited to this project at the moment"
+              />
+            </Group>
+          )}
         </>
       )}
       <Sheet
