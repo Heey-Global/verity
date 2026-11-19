@@ -195,16 +195,20 @@ export async function forwardHttpMcp(
   signal = projectTransportSignal(signal ?? new AbortController().signal);
   signal.throwIfAborted();
   const url = parseHttpMcpUpstream(connection.url);
+  const upstreamHost = url.hostname.replace(/^\[(.*)\]$/u, '$1');
   return new Promise((resolve, reject) => {
     let connected = false;
     const request = httpsRequest(
       {
         protocol: 'https:',
-        hostname: url.hostname,
-        port: 443,
+        // URL keeps IPv6 literals bracketed and drops a default port; Node needs
+        // the bare address and the explicit port of a self-hosted server.
+        hostname: upstreamHost,
+        port: url.port === '' ? 443 : Number(url.port),
         method,
         path: `${url.pathname}${url.search}`,
-        servername: url.hostname,
+        // SNI carries host names only (RFC 6066); an IP literal sends none.
+        ...(isIP(upstreamHost) === 0 ? { servername: upstreamHost } : {}),
         agent: false,
         ...(signal === undefined ? {} : { signal }),
         headers: {
