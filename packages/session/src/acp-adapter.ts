@@ -290,6 +290,9 @@ export class AcpEventAdapter {
         // configuration and usage state is handled by the ACP session/result
         // path. A removed plan stays in history as the snapshot it last showed.
         return lifecycle;
+      case 'prompt_suggestions_update':
+        // Suggested future prompts are not messages in the session history.
+        return lifecycle;
       case 'notice':
         // ACP notices are live advisories, not session history. The session
         // adapter must not persist them as transcript content.
