@@ -627,6 +627,48 @@ it('answers names read-only from enforcement, never for unknown or retired gener
   expect(enforcement.requestDirect).toHaveBeenCalledTimes(1);
 });
 
+it('waits for destination request recording before returning an unresolved DNS answer', async () => {
+  let finishRecording!: () => void;
+  const recording = new Promise<void>((resolve) => {
+    finishRecording = resolve;
+  });
+  const { deps } = fixture();
+  const host = new ProjectEgressHost(
+    { version: 1, records: [] },
+    {
+      ...deps,
+      bootId: '00000000-0000-4000-8000-000000000000',
+      enforcement: {
+        directAuthority: () => true,
+        invalidate: vi.fn(),
+        connect: vi.fn(),
+        deny: vi.fn(async () => undefined),
+        refresh: vi.fn(async () => undefined),
+        revoke: vi.fn(async () => undefined),
+        admitted: () => undefined,
+        requestDirect: () => recording,
+      },
+    },
+  );
+  await host.execute({ operation: 'register', binding });
+  let replied = false;
+  const answer = host
+    .execute({
+      operation: 'resolve-direct',
+      projectId: binding.projectId,
+      generation: binding.generation,
+      name: 'other.example.com',
+    })
+    .then((result) => {
+      replied = true;
+      return result;
+    });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(replied).toBe(false);
+  finishRecording();
+  expect(await answer).toEqual({ state: 'unresolved', generation: binding.generation });
+});
+
 it('does not advertise health when read-only host compatibility checks fail', async () => {
   const { deps } = fixture();
   const verifyHealth = vi.fn(async () => {

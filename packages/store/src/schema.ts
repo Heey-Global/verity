@@ -1,4 +1,7 @@
+import type { BrokeredApprovalDatabase, SecretKeyMetaTable } from './schema-brokered-approvals.js';
+export type { SecretKeyMetaTable } from './schema-brokered-approvals.js';
 import type { PeopleDatabase } from './schema-people.js';
+import type { SessionCoordinationDatabase } from './schema-session-coordination.js';
 import type { SandboxDatabase } from './schema-sandbox.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
@@ -27,14 +30,12 @@ export interface WikiOccasionsTable {
   closed_at: Date | null;
 }
 
-/** The quiet session a project's Wiki is maintained in, and its last run. */
 export interface WikiMaintenanceTable {
   project_id: string;
   session_id: string | null;
   last_run_at: Date | null;
 }
 
-/** An automatic Sandbox repair still owed to a project after a failed recreate. */
 export interface SandboxRepairIntentsTable {
   project_id: string;
   version: number;
@@ -757,22 +758,6 @@ export interface VeritySettingsTable {
    *  Drop in a later release. */
   sandbox_auto_update_security: ColumnType<boolean, boolean | undefined, boolean>;
   sandbox_auto_update_normal: ColumnType<boolean, boolean | undefined, boolean>;
-  created_at: ColumnType<Date, string | undefined, never>;
-  updated_at: ColumnType<Date, string | undefined, string | undefined>;
-}
-
-/**
- * Master-password key-derivation metadata (singleton, id='global'). Non-secret:
- * the scrypt `salt` and a `verifier` (a fixed marker encrypted under the derived
- * key). Kept in its OWN table, not in {@link VeritySettingsTable}, so it can be
- * read while the store is SEALED — reading verity_settings decrypts the secret
- * columns and would itself require an unlocked cipher. The raw key is never
- * persisted; it lives only in server memory after unlock.
- */
-export interface SecretKeyMetaTable {
-  id: string;
-  salt: string;
-  verifier: string;
   created_at: ColumnType<Date, string | undefined, never>;
   updated_at: ColumnType<Date, string | undefined, string | undefined>;
 }
@@ -1794,7 +1779,8 @@ interface VulnerabilityFixesTable {
   failed: Generated<boolean>;
 }
 
-export interface Database extends PeopleDatabase, SandboxDatabase {
+export interface Database
+  extends PeopleDatabase, SandboxDatabase, SessionCoordinationDatabase, BrokeredApprovalDatabase {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;

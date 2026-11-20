@@ -127,8 +127,8 @@ export interface ProjectEgressHostEnforcement {
     name: string,
   ): { addresses: readonly string[]; ttlSeconds: number } | undefined;
   /** A name the Sandbox asked for without a grant becomes a pending destination request.
-   * Never awaited: the DNS answer stays a refusal and does not wait on the policy store. */
-  requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void;
+   * Recorded before returning refusal; no admission, bounded by the control transport deadline. */
+  requestDirect?(binding: ProjectEgressNetworkBinding, name: string): void | Promise<void>;
 }
 interface Dependencies {
   systemInventory?: {
@@ -540,8 +540,13 @@ export class ProjectEgressHost {
         record &&
         this.deps.systemInventory?.ready() !== false &&
         this.deps.enforcement?.admitted(record.binding, request.name);
-      if (record && !answer) this.deps.enforcement?.requestDirect?.(record.binding, request.name);
-      return Promise.resolve(
+      // Persist a pending request before DNS failure lets the calling turn finish.
+      // This never grants admission; the control transport retains its total deadline.
+      const recorded =
+        record && !answer
+          ? this.deps.enforcement?.requestDirect?.(record.binding, request.name)
+          : undefined;
+      return Promise.resolve(recorded).then(() =>
         answer
           ? {
               state: 'resolved',

@@ -90,3 +90,9 @@ it('reopens only an explicitly selected target at the current policy revision', 
     }),
   ]);
 });
+
+it('accepts durable unanswered requests and older finite deadlines', () => {
+  expect(projectEgressPolicySchema.parse(policy).requests['example']?.expiresAt).toBe(1000);
+  const durable = { ...policy, requests: { example: { ...request, expiresAt: null } } };
+  expect(projectEgressPolicySchema.parse(durable).requests['example']?.expiresAt).toBeNull();
+});

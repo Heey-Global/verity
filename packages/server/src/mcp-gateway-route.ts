@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { bearerToken } from './auth.js';
 import {
   internalConnectionIdentity,
@@ -10,6 +10,29 @@ import type { McpGateway } from './mcp-gateway.js';
 export interface McpGatewayRouteDeps {
   gateway: McpGateway;
   controlProjectId: string;
+}
+
+/** A closed app stream is unrelated to this connection: only the tool caller's
+ * disconnect cancels the held request, so leaving the app does not deny approval. */
+async function withCallerCancellation(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  serve: (signal: AbortSignal) => ReturnType<McpGateway['handle']>,
+): ReturnType<McpGateway['handle']> {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort(new Error('Tool caller disconnected.'));
+  const close = (): void => {
+    if (!reply.raw.writableFinished) abort();
+  };
+  request.raw.once('aborted', abort);
+  reply.raw.once('close', close);
+  if (request.raw.aborted || reply.raw.destroyed) abort();
+  try {
+    return await serve(controller.signal);
+  } finally {
+    request.raw.off('aborted', abort);
+    reply.raw.off('close', close);
+  }
 }
 
 /** Registers the project-bound and control-plane MCP gateway transports. */
@@ -27,12 +50,15 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
       }
       const signal = internalConnectionGenerationSignal(request);
       const presented = bearerToken(request.headers.authorization);
-      const response = await deps.gateway.handle({
-        projectId: socketIdentity.projectId,
-        token: presented,
-        body: request.body,
-        ...(signal === undefined ? {} : { transport: { identity: socketIdentity, signal } }),
-      });
+      const response = await withCallerCancellation(request, reply, (callerSignal) =>
+        deps.gateway.handle({
+          projectId: socketIdentity.projectId,
+          token: presented,
+          body: request.body,
+          signal: callerSignal,
+          ...(signal === undefined ? {} : { transport: { identity: socketIdentity, signal } }),
+        }),
+      );
       reply.code(response.status);
       // MCP acknowledges a notification with an empty 202. Returning undefined from an
       // async handler leaves the reply unsent and returning null writes the four bytes
@@ -65,11 +91,14 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, deps: McpGatewayR
         return { error: 'unauthorized' };
       }
       const presented = bearerToken(request.headers.authorization);
-      const response = await deps.gateway.handle({
-        projectId: deps.controlProjectId,
-        token: presented,
-        body: request.body,
-      });
+      const response = await withCallerCancellation(request, reply, (signal) =>
+        deps.gateway.handle({
+          projectId: deps.controlProjectId,
+          token: presented,
+          body: request.body,
+          signal,
+        }),
+      );
       reply.code(response.status);
       return response.body === undefined ? reply.send() : response.body;
     },

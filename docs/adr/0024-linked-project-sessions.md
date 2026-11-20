@@ -37,3 +37,10 @@ The existing Verity Control handoff remains one-way and approval-gated. Session
 links do not expose transcripts or grant filesystem, secret, or tool authority.
 They authorize exchange of the text an agent chooses to send; the receiver runs
 with its existing authority.
+
+## Extension
+
+[ADR 0030](0030-session-coordination-from-chat.md) adds authorized metadata
+discovery and approval-gated creation and linking from chat. Its dedicated
+discovery surface extends the linked-peer-only listing described above; message
+delivery, directional allowances and peer-origin protections remain unchanged.

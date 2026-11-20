@@ -26,6 +26,8 @@ import {
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
+import { createSecretApprovalsClient, pendingPermissionRequestSchema } from './secretApprovals.js';
+export type { PendingPermissionRequest } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -286,13 +288,6 @@ const openChoicesSchema = z.object({
 
 /** One parked permission prompt with what it asks. `input` is absent when the
  * server judged it too large to carry; the app then opens the session instead. */
-const pendingPermissionRequestSchema = z.object({
-  toolUseId: z.string().min(1),
-  tool: z.string().min(1),
-  riskClass: z.string().min(1),
-  input: z.unknown().optional(),
-});
-
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
  * server itself reads it. A value this build does not understand reads as absent
@@ -544,6 +539,8 @@ export const sessionActivitySchema = z.object({
    * for compatibility with older servers. The durable `permission` event carries
    * the card contents; this list is the polling/reconnect re-arm signal. */
   pendingPermissions: z.array(z.string().min(1)).optional(),
+  /** Full pending cards also restore detached approvals after a turn or server restart. */
+  pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
   /** Whether a model switch is outstanding. Two shapes share this bit: on an older
    * server it meant "accepted, applies at the current turn's settle boundary"; on a
    * current one it means "the handover is running RIGHT NOW" — the switch interrupts
@@ -2728,6 +2725,7 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
   // Team and personal connection calls (people-api.ts); set before the fields below.
   readonly people = peopleClient((path, init) => this.request(path, init));
   readonly getProjectTeam = this.people.getProjectTeam;

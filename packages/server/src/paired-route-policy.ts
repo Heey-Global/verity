@@ -25,6 +25,14 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'project_creator', parameter: 'id' },
   ],
   [
+    routeScopeKey('GET', '/sessions/:id/secret-approvals'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
+    routeScopeKey('POST', '/sessions/:id/secret-approvals/:approvalId/reopen'),
+    { kind: 'session', parameter: 'id', permission: 'execute' },
+  ],
+  [
     routeScopeKey('POST', '/sessions/:id/mockups'),
     { kind: 'session', parameter: 'id', permission: 'execute' },
   ],

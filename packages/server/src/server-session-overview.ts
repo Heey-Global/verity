@@ -1036,6 +1036,7 @@ export function createServerSessionOverview({
     preparedEvents?: AgentEvent[],
     preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
+    await conductor.refreshDetachedPermissions?.(session.sessionId);
     const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
@@ -1047,22 +1048,22 @@ export function createServerSessionOverview({
     const rateLimit = rateLimits[0];
     const conductorPermissions = conductor.pendingPermissions(session.sessionId);
     const pendingPermissions = [...new Set([...conductorPermissions, ...pendingLinks])];
-    const pendingPermissionRequests = pendingPermissionRequestsFromProjection(
-      events,
-      conductorPermissions,
-    );
+    const pendingPermissionRequests = [
+      ...new Map(
+        [
+          ...pendingPermissionRequestsFromProjection(events, conductorPermissions),
+          ...(conductor.detachedPermissionRequests?.(session.sessionId) ?? []),
+        ].map((request) => [request.toolUseId, request]),
+      ).values(),
+    ];
     // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
       events,
       facts.lastEventSeq === 0 ? 0 : 1,
     );
-    // A permission event is durable so reconnect can rebuild its card, but its
-    // answer travels over the live runner channel. Once that channel no longer
-    // reports the prompt, do not let the historical event keep the overview in
-    // "Needs input" while the approved operation continues or settles.
     const status =
-      pendingLinks.length > 0
+      pendingPermissions.length > 0
         ? 'awaiting_input'
         : projectedStatus === 'awaiting_input' &&
             permissionEventAwaitsInput(events) &&
