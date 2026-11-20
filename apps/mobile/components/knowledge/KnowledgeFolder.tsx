@@ -143,7 +143,7 @@ export function KnowledgeFolder({
   // the same More and Delete, as the rows of a folder.
   const catalogActions = useMemo(
     () => ({
-      menu: (path: string, label: string) => explorer.openMenu(catalogEntry(path, label)),
+      menu: (path: string) => explorer.openMenu(catalogEntry(path)),
       remove: (path: string) => explorer.remove([path]),
     }),
     [explorer],
@@ -333,9 +333,17 @@ export function KnowledgeFolder({
   );
 }
 
-/** A catalog page as the explorer's entry, for its menu. */
-function catalogEntry(path: string, label: string): SessionFileEntry {
-  return { path, name: label, kind: 'file', size: null, modifiedAt: null };
+/** A catalog page as the explorer's entry, for its menu. Its name is the file
+ *  name, not the page's title: Rename starts from it, and a title as the new
+ *  name would drop the `.md` that makes the file a Wiki page. */
+function catalogEntry(path: string): SessionFileEntry {
+  return {
+    path,
+    name: path.split('/').at(-1) ?? path,
+    kind: 'file',
+    size: null,
+    modifiedAt: null,
+  };
 }
 
 /** A project's Decisions ahead of the Wiki's other entries; the rest keep the

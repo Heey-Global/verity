@@ -395,6 +395,8 @@ export function useKnowledgeExplorer({
                     const result = await moveKnowledge(client, scope, path, destination);
                     pane?.moved?.(scope, path, result.path);
                     results.push(result);
+                    // A retry after a failure moves only what is still left.
+                    setMoving((current) => current?.filter((moved) => moved !== path) ?? null);
                   }
                 } finally {
                   // What moved before a failure is listed in its new place.
