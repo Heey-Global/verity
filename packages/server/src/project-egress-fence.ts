@@ -65,6 +65,24 @@ const tableName = (projectId: string): string =>
 const generationKey = (binding: ProjectFenceBinding): string =>
   binding.projectId + ':' + binding.generation;
 const hexId = /^[a-f0-9]{64}$/u;
+/** Set-name suffix of one authority expiry; `null` is the standing authority.
+ * The root deadline helper derives the same names when it records expiry. */
+export function projectFenceExpiryIdentity(expiry: number | null): string {
+  return createHash('sha256')
+    .update(expiry === null ? 'standing' : String(expiry))
+    .digest('hex')
+    .slice(0, 16);
+}
+/** Kernel expiry tombstones that the root deadline helper requires in every
+ * fence table before it revokes or renews a packet guard. */
+export function projectFenceExpirySets(identity: string): string {
+  return [4, 6]
+    .map(
+      (family) =>
+        `set expired${family}_${identity} { type ipv${family}_addr; flags dynamic; size 1; }`,
+    )
+    .join('\n');
+}
 export function projectFenceTable(binding: ProjectFenceBinding): string {
   validateBinding(binding);
   return tableName(binding.projectId + ':' + binding.generation);
@@ -203,10 +221,7 @@ export function projectFenceRules(
     if (expiry !== null && (!Number.isSafeInteger(expiry) || expiry < 0))
       throw new Error('Invalid absolute packet expiry');
     return {
-      identity: createHash('sha256')
-        .update(expiry === null ? 'standing' : String(expiry))
-        .digest('hex')
-        .slice(0, 16),
+      identity: projectFenceExpiryIdentity(expiry),
       // nft date syntax rounds down, so permission can only close early.
       date:
         expiry === null
@@ -214,14 +229,7 @@ export function projectFenceRules(
           : new Date(Math.floor(expiry / 1000) * 1000).toISOString().slice(0, 19).replace('T', ' '),
     };
   });
-  const expirySets = deadlines
-    .flatMap(({ identity }) =>
-      [4, 6].map(
-        (family) =>
-          `set expired${family}_${identity} { type ipv${family}_addr; flags dynamic; size 1; }`,
-      ),
-    )
-    .join('\n');
+  const expirySets = deadlines.map(({ identity }) => projectFenceExpirySets(identity)).join('\n');
   const expiry = (reverse: boolean): string =>
     [4, 6]
       .map((family) => {

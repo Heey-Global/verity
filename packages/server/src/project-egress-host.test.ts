@@ -1153,6 +1153,71 @@ it('carries a correlated startup refusal through host control and confirms relea
   }
 });
 
+it('carries the refused authority step, but not its message, to the build client', async () => {
+  const { createProtectedBuildClient } = await import('./project-egress-build-client.js');
+  const { superviseProtectedBuild } = await import('./project-egress-build-worker.js');
+  const { ProtectedBuildFailure } = await import('./project-egress-build-error.js');
+  const { host } = fixture();
+  const root = await directory();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const buildRequest = {
+    projectId: 'project-a',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    snapshot: 'attempt-a/verity-build-a',
+    image: `verity-devc-repo:${'a'.repeat(12)}`,
+    noCache: false,
+  };
+  try {
+    const builds = new ProtectedBuildHost(
+      {
+        ready: async () => true,
+        prepare: async () => {
+          throw new ProtectedBuildFailure('authority_prepare_failed', {
+            cause: new Error('SECRET /private/path'),
+            detail: 'packet_revoke',
+          });
+        },
+        renew: async () => {},
+        start: async () => {},
+        status: async () => 'failed',
+        deny: async () => {},
+        stop: async () => {},
+        ended: async () => true,
+        remove: async () => {},
+      },
+      async () => {},
+    );
+    servers.push(
+      await listenProjectEgressHost({
+        directory: root,
+        token: 'a'.repeat(64),
+        controller: host,
+        builds,
+      }),
+    );
+    const client = createProtectedBuildClient({
+      socketPath: join(root, 'control.sock'),
+      token: () => 'a'.repeat(64),
+    });
+    const result = await superviseProtectedBuild(buildRequest, client);
+    expect(result.failure).toMatchObject({
+      reason: 'authority_prepare_failed',
+      detail: 'packet_revoke',
+      correlationId: expect.stringMatching(/^[a-f0-9-]{36}$/u),
+    });
+    // The journal line carries the same class under the same reference.
+    expect(warn).toHaveBeenCalledWith('verity: protected build operation refused', {
+      operation: 'begin',
+      ...result.failure,
+    });
+    expect(JSON.stringify(result) + JSON.stringify(warn.mock.calls)).not.toMatch(
+      /SECRET|\/private/u,
+    );
+  } finally {
+    warn.mockRestore();
+  }
+});
+
 it('keeps an address-pool refusal on the build route parseable with its correlation id', async () => {
   // A reason outside the build allowlist made the client drop both the reason and the reference.
   const { createProtectedBuildClient } = await import('./project-egress-build-client.js');

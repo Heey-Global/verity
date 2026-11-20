@@ -365,7 +365,10 @@ export class ProtectedBuildHost {
         } catch (error) {
           throw new ProtectedBuildFailure(
             cause instanceof ProtectedBuildFailure ? cause.reason : 'prepare_failed',
-            { cause: new AggregateError([cause, error]) },
+            {
+              cause: new AggregateError([cause, error]),
+              detail: cause instanceof ProtectedBuildFailure ? cause.detail : undefined,
+            },
           );
         }
         throw cause;
