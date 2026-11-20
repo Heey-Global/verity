@@ -1,3 +1,4 @@
+import { WebListenerClassifier, WEB_LISTENER_PROBE_SCRIPT } from './web-listener-probe.js';
 import { measureDockerExec } from './docker-exec-diagnostics.js';
 import { execFile } from 'node:child_process';
 import { posix } from 'node:path';
@@ -145,25 +146,8 @@ function dockerHostHealthCheckUrl(value: string, dockerBaseUrl: string | undefin
   return url;
 }
 
-/** The state retains the relay port so active connectors survive helper restarts. */
-export const PREVIEW_FORWARDER_SCRIPT = `
-const fs=require('node:fs'),net=require('node:net'),cp=require('node:child_process');
-const address=process.argv[2]||'127.0.0.1';const port=Number(process.argv[1]),dir=process.env.VERITY_PREVIEW_FORWARDER_STATE_DIR||'/tmp/verity-preview-forwarders';
-fs.mkdirSync(dir,{recursive:true});const path=dir+'/'+port+'.json';let previous;
-function ownsListener(pid,relay){
-  try{
-    const env=fs.readFileSync('/proc/'+pid+'/environ','utf8').split('\\0');
-    if(!env.includes('VERITY_PREVIEW_FORWARDER='+port))return false;
-    const inodes=new Set(fs.readdirSync('/proc/'+pid+'/fd').flatMap(f=>{try{return [fs.readlinkSync('/proc/'+pid+'/fd/'+f).match(/^socket:\\[(\\d+)\\]$/)?.[1]]}catch{return []}}));
-    return fs.readFileSync('/proc/net/tcp','utf8').split('\\n').some(line=>{const f=line.trim().split(/\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===relay&&inodes.has(f[9])});
-  }catch{return false}
-}
-try{previous=JSON.parse(fs.readFileSync(path,'utf8'));if(Number.isInteger(previous.port)&&previous.port>0&&previous.port<65536&&ownsListener(previous.pid,previous.port)){const env=fs.readFileSync('/proc/'+previous.pid+'/environ','utf8').split('\\0');if(env.includes('VERITY_PREVIEW_FORWARDER_ADDRESS='+address)){console.log(previous.port);process.exit(0)}process.kill(previous.pid);previous=undefined;}}catch{}
-const relay=Number.isInteger(previous?.port)&&previous.port>0&&previous.port<65536?previous.port:0;
-const code=\`const net=require('node:net'),fs=require('node:fs');const port=Number(process.env.VERITY_PREVIEW_FORWARDER),relay=Number(process.env.VERITY_PREVIEW_FORWARDER_PORT);const server=net.createServer(client=>{const target=net.connect({host:process.env.VERITY_PREVIEW_FORWARDER_ADDRESS,port});client.pipe(target);target.pipe(client);client.on('error',()=>target.destroy());target.on('error',()=>client.destroy());client.on('close',()=>target.destroy());target.on('close',()=>client.destroy())});server.on('error',()=>process.exit(1));server.listen(relay,'0.0.0.0',()=>{process.send({port:server.address().port});process.disconnect()});setInterval(()=>{try{const present=['/proc/net/tcp','/proc/net/tcp6'].some(p=>fs.readFileSync(p,'utf8').split('\\\\n').some(l=>{const f=l.trim().split(/\\\\s+/);return f[3]==='0A'&&parseInt(f[1]?.split(':')[1],16)===port}));if(!present)process.exit(0)}catch{}},2000).unref();\`;
-const child=cp.spawn(process.execPath,['-e',code],{detached:true,env:{...process.env,VERITY_PREVIEW_FORWARDER:String(port),VERITY_PREVIEW_FORWARDER_PORT:String(relay),VERITY_PREVIEW_FORWARDER_ADDRESS:address},stdio:['ignore','ignore','ignore','ipc']});
-child.on('message',value=>{fs.writeFileSync(path,JSON.stringify({pid:child.pid,port:value.port}),{mode:0o600});console.log(value.port);child.unref()});child.on('error',()=>process.exit(1));child.on('exit',()=>process.exit(1));setTimeout(()=>process.exit(1),4000).unref();
-`;
+export { PREVIEW_FORWARDER_SCRIPT } from './preview-forwarder.js';
+import { PREVIEW_FORWARDER_SCRIPT } from './preview-forwarder.js';
 
 const defaultRunner: RuntimeRunner = async (command, args, opts) => {
   if (opts?.stdin !== undefined) {
@@ -553,15 +537,16 @@ export class DockerProjectRuntime implements ProjectRuntime {
     return user ? ['--user', user] : [];
   }
 
-  /** A separate high port avoids colliding with the original loopback socket. */
+  /** Normalize loopback and pinned HTTPS targets to a sandbox HTTP relay. */
   async ensurePreviewTarget(project: ProjectRecord, port: number): Promise<number> {
-    const listener = (await this.listListeningProcesses(project, { fresh: true })).find(
-      (value) => value.port === port,
+    const listener = (await this.listWebListeningProcesses(project, { fresh: true }, port)).find(
+      (value) => value.port === port && value.webProtocol !== undefined,
     );
-    if (!listener) throw new Error('the preview target stopped listening');
-    if (listener.bind !== 'loopback') return port;
+    if (!listener) throw new Error('the preview target stopped serving HTTP');
+    if (listener.bind !== 'loopback' && listener.webProtocol !== 'https') return port;
+    if (listener.webProtocol === 'https' && !listener.webCertificateFingerprint)
+      throw new Error('the HTTPS preview target certificate is unverified');
     // Inline execution supports existing sandbox images before their seed refresh.
-    const script = PREVIEW_FORWARDER_SCRIPT;
     const result = await this.runner(
       this.opts.dockerCommand ?? 'docker',
       [
@@ -570,16 +555,53 @@ export class DockerProjectRuntime implements ProjectRuntime {
         project.containerName,
         'node',
         '-e',
-        script,
+        PREVIEW_FORWARDER_SCRIPT,
         String(port),
-        listener.loopbackAddress ?? '127.0.0.1',
+        listener.listenerAddress ?? listener.loopbackAddress ?? '127.0.0.1',
+        ...(listener.webProtocol === 'https' ? ['https', listener.webCertificateFingerprint!] : []),
       ],
       { env: this.dockerEnv(), timeoutMs: 5000, maxBuffer: 4096 },
     );
     const targetPort = Number(result?.stdout.trim());
     if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535)
-      throw new Error('could not start the loopback preview forwarder');
+      throw new Error('could not start the preview forwarder');
     return targetPort;
+  }
+
+  private readonly webListeners = new WebListenerClassifier();
+
+  /** Annotates raw listeners without removing infrastructure needed by supervision. */
+  async listWebListeningProcesses(
+    project: ProjectRecord,
+    options: { fresh?: boolean } = {},
+    targetPort?: number,
+  ): Promise<ListeningProcess[]> {
+    const rawProcesses = await this.listListeningProcesses(project, options);
+    const processes =
+      targetPort === undefined
+        ? rawProcesses
+        : rawProcesses.filter((listener) => listener.port === targetPort);
+    return this.webListeners.classify(
+      `${project.id}:${project.containerName}`,
+      processes,
+      async (targets) => {
+        const result = await this.runner(
+          this.opts.dockerCommand ?? 'docker',
+          [
+            'exec',
+            ...(await this.userArgs(project)),
+            project.containerName,
+            'node',
+            '-e',
+            WEB_LISTENER_PROBE_SCRIPT,
+            JSON.stringify(targets),
+          ],
+          { env: this.dockerEnv(), timeoutMs: 15_000, maxBuffer: 32 * 1024 },
+        );
+        return JSON.parse(result?.stdout ?? '[]') as unknown;
+      },
+      options.fresh,
+    );
   }
 
   async listListeningProcesses(

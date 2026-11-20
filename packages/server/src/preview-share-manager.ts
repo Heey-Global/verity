@@ -32,7 +32,7 @@ import { DockerError, type DockerClient } from './docker.js';
 import { SIGNING_BROKER_TOKEN_HASH_LABEL } from './git-signer.js';
 import { PROJECT_RUNSC_RUNTIME } from './gvisor-runtime-config.js';
 import {
-  sessionDevServers,
+  webSessionDevServers as sessionDevServers,
   type ListeningProcess,
   type SessionDevServer,
 } from './listening-ports.js';
