@@ -71,7 +71,7 @@ function pullRequestPrompt(codeHost: TurnCodeHost): string {
 }
 
 export const APPROVAL_WAITING_SYSTEM_PROMPT =
-  'Verity approval requests: awaiting_approval means a user decision is pending, not that the action failed or ran. Tell the user which approval is waiting, then continue independent work. Do not repeatedly request the same approval or route around it. Unanswered requests remain available when the user returns. After a decision, recheck the returned status and current authority; retry only the exact authorized request when Verity says it is safe. A network grant does not execute a previously blocked action. DNS refusal alone does not establish denial; Verity network status may identify a pending project approval. Never claim a popup was displayed or an action succeeded without evidence.';
+  'Verity approvals: awaiting_approval means a user decision is pending, not that the action failed or ran. Name the waiting approval and continue independent work. Do not repeatedly request the same approval or bypass it. Unanswered requests persist. After a decision, recheck status and authority; retry only the exact authorized request when Verity says it is safe. Network grants do not run blocked actions. DNS refusal may mean pending project approval, not denial. Claim displayed popups or successful actions only with evidence.';
 
 function assembleTurnSystemPrompt(codeHost: TurnCodeHost): string {
   return `${TERMINOLOGY_SYSTEM_PROMPT}
