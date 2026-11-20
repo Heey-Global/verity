@@ -15,7 +15,9 @@ The agent searches projects and sessions you may access. It uses session names,
 status and published progress summaries, without reading another session's
 transcript. Summaries may be missing or outdated, so a result is evidence of a
 possible match. When several matches are plausible, the agent asks you to choose.
-Control sessions are supported when your permissions allow them.
+Control sessions are supported when your permissions allow them. Large projects
+are searched in bounded pages; an initial partial scan does not establish that
+no matching session exists.
 
 Creation and linking follow managed approval. Review the selected project,
 session and requested handover before approving. These actions are unavailable

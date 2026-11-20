@@ -319,4 +319,73 @@ describe('user-requested session coordination', () => {
     await expect(h.call(start)).rejects.toThrow('Source session project changed');
     expect(h.store.createSessionLink).not.toHaveBeenCalled();
   });
+  it('continues beyond the summary scan limit to find a newer exact-name match', async () => {
+    const h = harness();
+    h.sessions.clear();
+    h.sessions.set('source', { sessionId: 'source', projectId: 'app', name: 'Source' });
+    for (let i = 0; i < 201; i++)
+      h.sessions.set(`session-${i}`, {
+        sessionId: `session-${i}`,
+        projectId: 'app',
+        name: i === 200 ? 'Newest exact topic' : `Old session ${i}`,
+      });
+    const first = await h.call({
+      operation: 'discover',
+      targetProjectId: 'app',
+      query: 'Newest exact topic',
+    });
+    expect(first).toMatchObject({ sessions: [], nextSessionOffset: 200, scanTruncated: true });
+    expect(h.readProgress).toHaveBeenCalledTimes(200);
+    const next = await h.call({
+      operation: 'discover',
+      targetProjectId: 'app',
+      query: 'Newest exact topic',
+      sessionOffset: first.nextSessionOffset,
+    });
+    expect(next).toMatchObject({
+      sessions: [{ sessionId: 'session-200' }],
+      nextSessionOffset: null,
+      hasMore: false,
+    });
+  });
+
+  it('does not skip matching sessions when the result limit ends a page before the scan limit', async () => {
+    const h = harness();
+    for (let i = 0; i < 5; i++)
+      h.sessions.set(`match-${i}`, {
+        sessionId: `match-${i}`,
+        projectId: 'app',
+        name: `Mobile rendering ${i}`,
+      });
+    const found: string[] = [];
+    let sessionOffset = 0;
+    for (let page = 0; page < 10; page++) {
+      const result = await h.call({
+        operation: 'discover',
+        targetProjectId: 'app',
+        query: 'rendering',
+        limit: 1,
+        sessionOffset,
+      });
+      found.push(...(result.sessions as { sessionId: string }[]).map((item) => item.sessionId));
+      if (typeof result.nextSessionOffset !== 'number') break;
+      sessionOffset = result.nextSessionOffset;
+    }
+    expect(found).toEqual(['peer', 'match-0', 'match-1', 'match-2', 'match-3', 'match-4']);
+  });
+
+  it('continues the project list independently of session pagination', async () => {
+    const h = harness();
+    expect(await h.call({ operation: 'discover', limit: 1 })).toMatchObject({
+      projects: [{ projectId: 'app' }],
+      nextProjectOffset: 1,
+    });
+    expect(await h.call({ operation: 'discover', limit: 1, projectOffset: 1 })).toMatchObject({
+      projects: [{ projectId: 'control' }],
+      nextProjectOffset: null,
+    });
+    expect(
+      await h.call({ operation: 'discover', query: 'Private', projectOffset: 1 }),
+    ).toMatchObject({ projects: [], sessions: [], nextProjectOffset: null });
+  });
 });

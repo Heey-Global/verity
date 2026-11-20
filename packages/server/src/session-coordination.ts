@@ -95,6 +95,8 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
     if (request.operation === 'discover') {
       const limit = request.limit ?? 20;
       const query = request.query?.toLocaleLowerCase();
+      const sessionOffset = request.sessionOffset ?? 0;
+      const projectOffset = request.projectOffset ?? 0;
       const projects = [];
       for (const project of await deps.store.listProjects()) {
         if (request.targetProjectId && project.id !== request.targetProjectId) continue;
@@ -114,7 +116,9 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
       const sessions = [];
       // Bound summary reads even when a project contains thousands of sessions.
       const scanLimit = 200;
-      for (const session of candidates.slice(0, scanLimit)) {
+      let scanned = 0;
+      for (const session of candidates.slice(sessionOffset, sessionOffset + scanLimit)) {
+        scanned++;
         const project = allowed.get(session.projectId!)!;
         const progress = await deps.readProgress(session.sessionId);
         const summary = progress.summary?.slice(0, 1000);
@@ -135,27 +139,34 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
             ? { summary, updatedAt: progress.updatedAt ?? null, stale: progress.stale ?? true }
             : { summary: null, stale: true },
         });
+        if (sessions.length === limit) break;
       }
+      const nextSessionOffset =
+        sessionOffset + scanned < candidates.length ? sessionOffset + scanned : null;
       // Project discovery is separate from session-topic matching, so an empty project remains findable.
       const matchingProjects = projects.filter(
         (project) =>
           !query || [project.name, project.repo].join(' ').toLocaleLowerCase().includes(query),
       );
+      const projectPage = matchingProjects.slice(projectOffset, projectOffset + limit);
+      const nextProjectOffset =
+        projectOffset + projectPage.length < matchingProjects.length
+          ? projectOffset + projectPage.length
+          : null;
       await validateSource();
-      for (const project of matchingProjects.slice(0, limit)) await available(userId, project.id);
+      for (const project of projectPage) await available(userId, project.id);
       return {
-        projects: matchingProjects.slice(0, limit).map((project) => ({
+        projects: projectPage.map((project) => ({
           projectId: project.id,
           name: project.name || project.repo,
           kind: project.kind,
           state: project.state,
         })),
         sessions: sessions.slice(0, limit),
-        hasMore:
-          sessions.length > limit ||
-          matchingProjects.length > limit ||
-          candidates.length > scanLimit,
-        scanTruncated: candidates.length > scanLimit,
+        hasMore: nextSessionOffset !== null || nextProjectOffset !== null,
+        nextSessionOffset,
+        nextProjectOffset,
+        scanTruncated: scanned === scanLimit && nextSessionOffset !== null,
         selectionRequired: sessions.length > 1,
       };
     }

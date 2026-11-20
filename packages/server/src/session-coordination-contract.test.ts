@@ -80,6 +80,8 @@ describe('session coordination gateway contracts', () => {
 
   it.each([
     ['verity_session_coordinate_discover', { limit: 51 }],
+    ['verity_session_coordinate_discover', { sessionOffset: -1 }],
+    ['verity_session_coordinate_discover', { projectOffset: 0.5 }],
     ['verity_session_coordinate_discover', { query: ' ' }],
     ['verity_session_coordinate_link', { ...link, targetProjectId: undefined }],
     ['verity_session_coordinate_link', { ...link, userId: 'another-user' }],

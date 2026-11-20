@@ -9,6 +9,20 @@ export const sessionCoordinationRequestSchema = z.discriminatedUnion('operation'
       targetProjectId: id.optional(),
       query: z.string().trim().min(1).max(200).optional(),
       limit: z.number().int().min(1).max(50).optional(),
+      sessionOffset: z
+        .number()
+        .int()
+        .min(0)
+        .max(1000000)
+        .optional()
+        .describe('Resume the authorized session scan at nextSessionOffset with the same filters.'),
+      projectOffset: z
+        .number()
+        .int()
+        .min(0)
+        .max(1000000)
+        .optional()
+        .describe('Resume the matching project list at nextProjectOffset with the same filters.'),
     })
     .strict(),
   z
