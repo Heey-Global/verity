@@ -143,7 +143,7 @@ export function KnowledgeFolder({
   // the same More and Delete, as the rows of a folder.
   const catalogActions = useMemo(
     () => ({
-      menu: (path: string) => explorer.openMenu(catalogEntry(path)),
+      menu: (path: string) => explorer.openCatalogMenu(catalogEntry(path)),
       remove: (path: string) => explorer.remove([path]),
     }),
     [explorer],

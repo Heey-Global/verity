@@ -70,6 +70,9 @@ export function useKnowledgeExplorer({
   const pane = useKnowledgePane();
   const [busy, setBusy] = useState(false);
   const [menuFor, setMenuFor] = useState<SessionFileEntry | null>(null);
+  // A catalog row (a topic's page) has a menu but is no row of this list, so
+  // there is nothing to select it among.
+  const [menuFromCatalog, setMenuFromCatalog] = useState(false);
   const [adding, setAdding] = useState(false);
   const [naming, setNaming] = useState<'folder' | 'page' | null>(null);
   const [renaming, setRenaming] = useState<SessionFileEntry | null>(null);
@@ -257,7 +260,7 @@ export function useKnowledgeExplorer({
     const change = canChangeKnowledgeEntry(entry.path);
     return fileActions({
       open: () => (file ? onOpenFile(entry.path) : onOpenFolder(entry.path)),
-      select: file ? () => startSelection(entry) : undefined,
+      select: file && !menuFromCatalog ? () => startSelection(entry) : undefined,
       openWith: file ? () => openWith(entry.path) : undefined,
       edit:
         file && isWikiPage(entry.path) && change && isTextPreviewCandidate(entry.path)
@@ -279,7 +282,10 @@ export function useKnowledgeExplorer({
       inert: selecting && !selectable,
       disabled: busy,
       onLongPress: !selecting && selectable ? () => startSelection(entry) : undefined,
-      onMenu: () => setMenuFor(entry),
+      onMenu: () => {
+        setMenuFromCatalog(false);
+        setMenuFor(entry);
+      },
       onDelete: change ? () => remove([entry.path]) : undefined,
       /** In selection mode a press picks the row instead of opening it. */
       press: selecting ? () => toggle(entry) : undefined,
@@ -434,7 +440,11 @@ export function useKnowledgeExplorer({
     deleteSelected: () => remove(selected),
     canChangeSelected: selected.every(canChangeKnowledgeEntry),
     rowProps,
-    openMenu: setMenuFor,
+    /** The menu of a catalog row, which offers everything but Select. */
+    openCatalogMenu: (entry: SessionFileEntry) => {
+      setMenuFromCatalog(true);
+      setMenuFor(entry);
+    },
     remove,
     overlays,
   };
