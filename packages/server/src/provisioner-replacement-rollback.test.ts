@@ -356,6 +356,27 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
     });
   });
 
+  it('keeps the fallback when a running replacement has not completed lifecycle commands', async () => {
+    const id = await seedActiveProject();
+    await ctx.store.updateProjectState(id, 'container_starting');
+    const docker = statefulDocker(id);
+    parkedSandbox(docker);
+    docker.containers.set('replacement', {
+      id: 'replacement',
+      name: CONTAINER_NAME,
+      running: true,
+      image: 'verity-devc-example-org-example-repo:new',
+      labels: { [PROJECT_ID_LABEL]: id, [CONTAINER_GENERATION_LABEL]: 'generation-new' },
+    });
+    const relay = sleepingRelay();
+    const provisioner = provisionerFor({ docker, relay: relay.control });
+    await provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {});
+    expect(docker.containers.has('previous')).toBe(true);
+    expect(docker.containers.get('replacement')).toMatchObject({ running: true });
+    expect(relay.discardGeneration).not.toHaveBeenCalled();
+    expect(relay.reactivate).not.toHaveBeenCalled();
+  });
+
   // A container under the Sandbox name, even a stopped one, is newer than the
   // parked Sandbox. Restoring would delete it and silently undo the update.
   it('preserves a provision registered while reconciliation inspects the live name', async () => {

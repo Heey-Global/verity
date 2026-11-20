@@ -349,7 +349,7 @@ export async function reconcileRetainedSandboxes(
     }
     // A stopped replacement may be new data or an interrupted startup. Preserve
     // both copies until normal repair establishes whether it can run.
-    if (current !== undefined && !current.running) continue;
+    if (current !== undefined && (!current.running || project.state !== 'active')) continue;
     // A running replacement owns the live name.
     // A vacant name can be left by a restart in any provisioning phase.
     const vacant = current === undefined;
