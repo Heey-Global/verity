@@ -251,6 +251,19 @@ describe('reconcileRetainedSandboxes', () => {
     expect(h.removeContainer).toHaveBeenCalledWith('previous');
   });
 
+  it('keeps the parked Sandbox when egress protection cannot be queried', async () => {
+    const h = inventoryHost(new Error('unused'));
+    h.value.egressIdle = async () => {
+      throw new Error('egress unavailable');
+    };
+    await expect(reconcileRetainedSandboxes(h.value, [failed], hooks)).rejects.toThrow(
+      'reconcile failed',
+    );
+    expect(h.resume).not.toHaveBeenCalled();
+    expect(h.removeContainer).not.toHaveBeenCalled();
+    expect(h.renameContainer).not.toHaveBeenCalled();
+  });
+
   it('does not start the parked Sandbox once egress protection is on', async () => {
     const h = inventoryHost(new Error('unused'));
     h.value.egressIdle = async () => false;

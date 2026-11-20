@@ -352,7 +352,16 @@ export async function reconcileRetainedSandboxes(
     const vacant = current === undefined;
     // Protection may have been turned on while the Server was down; a parked
     // generation would then start outside it.
-    let restore = vacant && (await host.egressIdle(project.id).catch(() => false));
+    let restore = false;
+    if (vacant) {
+      try {
+        restore = await host.egressIdle(project.id);
+      } catch (error) {
+        // Unknown protection state cannot justify destroying the only copy.
+        failures.push(error);
+        continue;
+      }
+    }
     let lost: string | undefined =
       vacant && !restore ? 'project egress protection is on' : undefined;
     for (const parked of retained) {
