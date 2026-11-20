@@ -193,10 +193,14 @@ describe('devcontainer build filesystem boundary', () => {
       const root = repository();
       writeFileSync(join(root, 'run.sh'), '#!/bin/sh\n');
       chmodSync(join(root, 'run.sh'), 0o755);
-      git(root, 'add', 'run.sh');
+      mkdirSync(join(root, 'lib', 'nested'));
+      writeFileSync(join(root, 'lib', 'nested', 'deep.js'), '1\n');
+      git(root, 'add', 'run.sh', 'lib/nested/deep.js');
       git(root, 'commit', '-q', '-m', 'script');
       chmodSync(join(root, 'app.js'), 0o600);
       chmodSync(join(root, 'lib', 'util.js'), 0o640);
+      chmodSync(join(root, 'lib', 'nested', 'deep.js'), 0o600);
+      chmodSync(join(root, 'lib', 'nested'), 0o700);
       chmodSync(join(root, 'lib'), 0o700);
       chmodSync(join(root, 'run.sh'), 0o700);
       writeFileSync(join(root, '.devcontainer', 'local.env'), 'x\n', { mode: 0o600 });
@@ -205,6 +209,8 @@ describe('devcontainer build filesystem boundary', () => {
       expect(mode('app.js')).toBe(0o644);
       expect(mode('lib/util.js')).toBe(0o644);
       expect(mode('lib')).toBe(0o755);
+      expect(mode('lib/nested')).toBe(0o755);
+      expect(mode('lib/nested/deep.js')).toBe(0o644);
       expect(mode('run.sh')).toBe(0o755);
       // Never committed: nothing says what a checkout of it would look like.
       expect(mode('.devcontainer/local.env')).toBe(0o600);
