@@ -44,7 +44,7 @@ export function appDocument(html: string, resourceMeta: unknown): string {
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy.replaceAll('"', '&quot;')}"><meta name="referrer" content="no-referrer"></head><body>${html}</body></html>`;
 }
 
-export function appDocumentPolicy(resourceMeta: unknown): string {
+function appDocumentPolicy(resourceMeta: unknown): string {
   const csp = object(object(object(resourceMeta).ui).csp);
   const resources = domains(csp.resourceDomains);
   const connections = domains(csp.connectDomains);

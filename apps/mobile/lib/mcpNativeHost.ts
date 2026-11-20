@@ -1,5 +1,5 @@
 export const MCP_NATIVE_MESSAGE_LIMIT = 1024 * 1024;
-export const MCP_NATIVE_DOCUMENT_LIMIT = 8 * 1024 * 1024;
+const MCP_NATIVE_DOCUMENT_LIMIT = 8 * 1024 * 1024;
 
 /** Safe inside both an HTML script element and an injected JavaScript expression. */
 export function scriptValue(value: unknown): string {
