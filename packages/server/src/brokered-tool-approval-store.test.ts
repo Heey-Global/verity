@@ -268,6 +268,8 @@ it('blocks concurrent recovery while a reusable grant save is pending or fails',
     decision: { behavior: 'allow' },
     options: { actorId: 'manager', scope: 'project' },
     persistScoped: async () => {
+      const retry = await store.createOrFindPending({ ...input, invocationId: 'concurrent-retry' });
+      expect(retry.id).toBe(pending.id);
       await permissions.resumeApproved('session');
       const restarted = createBrokeredToolApprovalStore(ctx.db, () => now);
       expect(await restarted.listApproved('session')).toEqual([]);

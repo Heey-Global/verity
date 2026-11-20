@@ -17,6 +17,7 @@ export function NetworkApprovalPrompt({
     projectId: string;
     policy: ProjectEgressPolicy;
   }>();
+  const [selectedTarget, setSelectedTarget] = useState<string>();
   const [error, setError] = useState<string>();
   const [working, setWorking] = useState(false);
   const refresh = useRef<(() => Promise<void>) | undefined>(undefined);
@@ -30,6 +31,7 @@ export function NetworkApprovalPrompt({
     let fetching = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     setSnapshot(undefined);
+    setSelectedTarget(undefined);
     setError(undefined);
     setWorking(false);
     busy.current = false;
@@ -72,7 +74,9 @@ export function NetworkApprovalPrompt({
   const pending = Object.values(policy?.requests ?? {})
     .filter((request) => request.status === 'pending')
     .sort((a, b) => a.createdAt - b.createdAt);
-  const request = pending[0];
+  const targetKey = (target: ProjectEgressPolicy['requests'][string]['target']) =>
+    JSON.stringify([target.host, target.protocol, target.port]);
+  const request = pending.find((entry) => targetKey(entry.target) === selectedTarget) ?? pending[0];
   usePermissionHaptic(true, request?.id);
 
   const decide = async (allow: boolean | 'review'): Promise<void> => {
@@ -84,6 +88,7 @@ export function NetworkApprovalPrompt({
     setError(undefined);
     try {
       if (allow === 'review') {
+        setSelectedTarget(targetKey(request.target));
         await client.reopenProjectEgress(projectId, {
           target: request.target,
           revision: policy.revision,

@@ -24,7 +24,8 @@ export const brokeredToolApprovalMigration: Migration = {
       decided_at timestamptz
     )`.execute(db);
     await sql`create unique index brokered_tool_approvals_live_binding
-      on brokered_tool_approvals(binding_digest) where status <> 'consumed'`.execute(db);
+      on brokered_tool_approvals(binding_digest) where status <> 'consumed' or (scope in ('session', 'project')
+          and scope_saved = false and consumed_invocation_id is null)`.execute(db);
     await sql`create unique index brokered_tool_approvals_consumed_invocation
       on brokered_tool_approvals(binding_digest, consumed_invocation_id)
       where consumed_invocation_id is not null`.execute(db);

@@ -107,3 +107,39 @@ it('does not carry a request over to a different project after a delayed fetch',
   await act(async () => finish(policy));
   expect(screen.queryByText('example.com · TCP 443')).toBeNull();
 });
+
+it('keeps the reviewed target selected when another stale request becomes oldest', async () => {
+  const client = clientMock();
+  const second = {
+    ...request,
+    id: 'second',
+    createdAt: 1,
+    target: { ...request.target, host: 'second.example' },
+  };
+  client.getProjectEgress.mockResolvedValue({
+    ...policy,
+    revision: 2,
+    requests: { target: request, second },
+  });
+  render(<NetworkApprovalPrompt client={client as unknown as VerityClient} projectId="p1" />);
+  await screen.findByText('example.com · TCP 443');
+  client.getProjectEgress.mockResolvedValue({
+    ...policy,
+    revision: 3,
+    requests: {
+      target: { ...request, id: 'reviewed', createdAt: 2, revision: 3 },
+      second,
+    },
+  });
+  fireEvent.press(screen.getByText('Review current request'));
+  await screen.findByText('Allow for one hour');
+  expect(screen.getByText('example.com · TCP 443')).toBeTruthy();
+  fireEvent.press(screen.getByText('Allow for one hour'));
+  await waitFor(() =>
+    expect(client.decideProjectEgress).toHaveBeenCalledWith('p1', {
+      requestId: 'reviewed',
+      revision: 3,
+      allow: true,
+    }),
+  );
+});

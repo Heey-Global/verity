@@ -93,7 +93,8 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           ${randomUUID()}, ${input.projectId}, ${input.sessionId}, ${input.invocationId}, null,
           ${input.toolName}, ${input.canonicalInput}, ${input.requestMac}, ${input.macKeyId},
           ${input.authorizationSnapshot}, ${digest}, 'pending', null, null, ${new Date(now())}, null
-        ) on conflict (binding_digest) where status <> 'consumed'
+        ) on conflict (binding_digest) where status <> 'consumed' or (scope in ('session', 'project')
+          and scope_saved = false and consumed_invocation_id is null)
           do update set binding_digest = excluded.binding_digest returning *`.execute(tx);
         return record(result.rows[0]!);
       });
