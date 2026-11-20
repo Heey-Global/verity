@@ -55,7 +55,7 @@ function isWithin(path: string, entry: string): boolean {
 }
 
 /** Where `path` is after `move`, or undefined when the move did not touch it. */
-export function relocatedPath(path: string, move: KnowledgeRelocation): string | undefined {
+function relocatedPath(path: string, move: KnowledgeRelocation): string | undefined {
   return isWithin(path, move.from) ? `${move.to}${path.slice(move.from.length)}` : undefined;
 }
 
@@ -105,7 +105,7 @@ function formatHref(parsed: ParsedHref, path: string): string {
  * The scope path a link written in `page` reaches, or undefined when it leaves
  * the scope's relative layout (URLs, absolute paths, same-page anchors).
  */
-export function linkTarget(page: string, href: string): string | undefined {
+function linkTarget(page: string, href: string): string | undefined {
   const parsed = parseHref(href);
   if (!parsed) return undefined;
   return resolveIn(posix.dirname(page), parsed.path) ?? undefined;

@@ -31,7 +31,7 @@ export const fileName = z
     'invalid file name',
   );
 
-export const sessionFileUploadQuery = z.object({
+const sessionFileUploadQuery = z.object({
   root: sessionFileRoot,
   path: z.string().default(''),
   fileName,
@@ -68,7 +68,7 @@ export const sessionFileWriteBody = z.object({
 type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
 
 type SessionFileUploadQuery = z.infer<typeof sessionFileUploadQuery>;
-export type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
+type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 
 /** A resolved explorer root: the directory on disk plus the name it was reached
  *  by, which decides what is hidden from a listing and what may be written. */

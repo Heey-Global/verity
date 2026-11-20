@@ -9,7 +9,7 @@ function clamp(n: number, min: number, max: number): number {
 
 type PanHandlers = ReturnType<typeof PanResponder.create>['panHandlers'];
 
-export function useResizableSheet(): {
+function useResizableSheet(): {
   sheetStyle: Animated.WithAnimatedValue<ViewStyle>;
   panHandlers: PanHandlers;
 } {
@@ -82,7 +82,7 @@ export function useResizableSheet(): {
   };
 }
 
-export function SheetResizeHandle({ panHandlers }: { panHandlers: PanHandlers }) {
+function SheetResizeHandle({ panHandlers }: { panHandlers: PanHandlers }) {
   return (
     <View
       style={styles.filesResizeHandle}
