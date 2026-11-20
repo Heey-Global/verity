@@ -1,3 +1,4 @@
+import { createMcpAppDocumentTickets } from './mcp-apps-tickets.js';
 import { randomUUID } from 'node:crypto';
 import './fastify-augmentation.js';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -39,15 +40,20 @@ function domains(value: unknown): string {
 
 /** Put the policy before all untrusted HTML; subsequent policies can only restrict it. */
 export function appDocument(html: string, resourceMeta: unknown): string {
+  const policy = appDocumentPolicy(resourceMeta);
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy.replaceAll('"', '&quot;')}"><meta name="referrer" content="no-referrer"></head><body>${html}</body></html>`;
+}
+
+export function appDocumentPolicy(resourceMeta: unknown): string {
   const csp = object(object(object(resourceMeta).ui).csp);
   const resources = domains(csp.resourceDomains);
   const connections = domains(csp.connectDomains);
-  const policy = `default-src 'none'; script-src 'unsafe-inline' ${resources}; style-src 'unsafe-inline' ${resources}; img-src data: ${resources}; font-src ${resources || "'none'"}; media-src ${resources || "'none'"}; connect-src ${connections || "'none'"}; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none';`;
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy.replaceAll('"', '&quot;')}"><meta name="referrer" content="no-referrer"></head><body>${html}</body></html>`;
+  return `default-src 'none'; script-src 'unsafe-inline' ${resources}; style-src 'unsafe-inline' ${resources}; img-src data: ${resources}; font-src ${resources || "'none'"}; media-src ${resources || "'none'"}; connect-src ${connections || "'none'"}; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none';`;
 }
 
 export interface McpAppsRouteDeps {
   authorizeRequest(request: FastifyRequest): Promise<boolean>;
+  captureDocumentAccess(request: FastifyRequest): () => Promise<boolean>;
   resolveConnection: HttpMcpProxyDeps['resolveConnection'];
   getProjectId(sessionId: string): Promise<string | undefined>;
   getApp(sessionId: string, appId: string): Promise<McpAppEvent | undefined>;
@@ -67,6 +73,11 @@ export interface McpAppsRouteDeps {
 export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDeps): void {
   const rpc = deps.rpc ?? mcpRpc;
   const pending = new Set<string>();
+  const tickets = createMcpAppDocumentTickets();
+  app.addHook('onClose', (_instance, done) => {
+    tickets.clear();
+    done();
+  });
   // An app runs on the connection of the person using it, not of whoever's turn
   // rendered it: another member opening it must not act with that turn's account.
   const resolve = async (sessionId: string, appId: string, userId: string | undefined) => {
@@ -124,34 +135,81 @@ export function registerMcpAppsRoutes(app: FastifyInstance, deps: McpAppsRouteDe
       }
     }
   };
+  const loadDocument = async (id: string, appId: string, userId: string | undefined) => {
+    const resolved = await resolve(id, appId, userId);
+    if (!resolved) return undefined;
+    return withSession(resolved.connection, async (sessionId, version) => {
+      const { result } = await rpc(
+        resolved.connection,
+        'resources/read',
+        { uri: resolved.event.resourceUri },
+        sessionId,
+        version,
+      );
+      const resource = Array.isArray(result.contents)
+        ? result.contents
+            .map(object)
+            .find(
+              (entry) =>
+                entry.uri === resolved.event.resourceUri &&
+                entry.mimeType === 'text/html;profile=mcp-app',
+            )
+        : undefined;
+      if (!resource || typeof resource.text !== 'string') throw new Error('Missing MCP app HTML');
+      if (!(await resolve(id, appId, userId))) return undefined;
+      return {
+        document: appDocument(resource.text, resource._meta),
+        policy: appDocumentPolicy(resource._meta),
+      };
+    });
+  };
   app.get('/sessions/:id/mcp-apps/:appId', async (request, reply) => {
     const { id, appId } = paramsSchema.parse(request.params);
-    const resolved = await resolve(id, appId, request.localUserId ?? undefined);
-    if (resolved === undefined) return reply.code(404).send({ error: 'MCP app unavailable' });
     try {
-      return await withSession(resolved.connection, async (sessionId, version) => {
-        const { result } = await rpc(
-          resolved.connection,
-          'resources/read',
-          { uri: resolved.event.resourceUri },
-          sessionId,
-          version,
-        );
-        const resource = Array.isArray(result.contents)
-          ? result.contents
-              .map(object)
-              .find(
-                (entry) =>
-                  entry.uri === resolved.event.resourceUri &&
-                  entry.mimeType === 'text/html;profile=mcp-app',
-              )
-          : undefined;
-        if (resource === undefined || typeof resource.text !== 'string')
-          throw new Error('Missing MCP app HTML');
-        if ((await resolve(id, appId, request.localUserId ?? undefined)) === undefined)
-          return reply.code(404).send({ error: 'MCP app unavailable' });
-        return { document: appDocument(resource.text, resource._meta) };
-      });
+      const loaded = await loadDocument(id, appId, request.localUserId ?? undefined);
+      if (!loaded) return reply.code(404).send({ error: 'MCP app unavailable' });
+      return { document: loaded.document };
+    } catch {
+      return reply.code(502).send({ error: 'Could not load MCP app' });
+    }
+  });
+  app.post('/sessions/:id/mcp-apps/:appId/document', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { id, appId } = paramsSchema.parse(request.params);
+    if (!(await deps.authorizeRequest(request)))
+      return reply.code(403).send({ error: 'MCP app access denied' });
+    const userId = request.localUserId ?? undefined;
+    if (!(await resolve(id, appId, userId)))
+      return reply.code(404).send({ error: 'MCP app unavailable' });
+    const ticket = tickets.mint({
+      sessionId: id,
+      appId,
+      userId,
+      authorized: deps.captureDocumentAccess(request),
+    });
+    return { path: `/mcp-app-document?ticket=${ticket}` };
+  });
+  // This fixed route authenticates only its single-use document capability.
+  app.get('/mcp-app-document', { exposeHeadRoute: false }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-Content-Type-Options', 'nosniff');
+    const query = z
+      .object({ ticket: z.string().regex(/^[A-Za-z0-9_-]{43}$/) })
+      .safeParse(request.query);
+    const access = query.success ? tickets.consume(query.data.ticket) : undefined;
+    if (!access || !(await access.authorized()))
+      return reply.code(404).send({ error: 'MCP app unavailable' });
+    try {
+      const loaded = await loadDocument(access.sessionId, access.appId, access.userId);
+      if (!loaded || !(await access.authorized()))
+        return reply.code(404).send({ error: 'MCP app unavailable' });
+      // The response sandbox also isolates direct top-level navigation.
+      reply.header(
+        'Content-Security-Policy',
+        `${loaded.policy} sandbox allow-scripts; frame-ancestors 'self';`,
+      );
+      return reply.type('text/html; charset=utf-8').send(loaded.document);
     } catch {
       return reply.code(502).send({ error: 'Could not load MCP app' });
     }

@@ -1,3 +1,4 @@
+import { createMcpAppAuthorization } from './mcp-apps-authorization.js';
 import { appendProjectOverview } from './project-overview-file.js';
 import { createHandoffSessionCreator } from './handoff-session-create.js';
 import { connectorToolAvailable } from './agent-tool-availability.js';
@@ -46,7 +47,6 @@ import {
   requireAssistantSession,
   type AssistantToolDeps,
 } from './assistant-tool.js';
-import { requestCredential } from './auth.js';
 import { type GitBranchService } from './branches.js';
 import {
   brokeredDopplerBindingId,
@@ -92,7 +92,6 @@ import { registerMcpAppsRoutes } from './mcp-apps-routes.js';
 import { createMcpAppsInterceptor } from './mcp-apps.js';
 import { registerMcpGatewayRoutes } from './mcp-gateway-route.js';
 import { createMcpGateway } from './mcp-gateway.js';
-import { authorizePairedRoute } from './paired-route-policy.js';
 import {
   createSessionPlanning,
   OPEN_DECISIONS_ERROR,
@@ -492,23 +491,7 @@ export function registerServerMcpRoutes({
       }),
     });
     registerMcpAppsRoutes(app, {
-      authorizeRequest: async (request) => {
-        const registry = deps.authRegistry;
-        if (registry === undefined || !registry.isEnabled()) return true;
-        const token = requestCredential(request);
-        if (!registry.verify(token)) return false;
-        const userId = registry.resolveUserId(token);
-        if (userId === undefined || userId !== request.localUserId) return false;
-        return (
-          (await authorizePairedRoute(
-            deps.eventStore,
-            userId,
-            request.method,
-            request.routeOptions.url ?? request.url,
-            (request.params ?? {}) as Record<string, unknown>,
-          )) === 'allow'
-        );
-      },
+      ...createMcpAppAuthorization(deps),
       resolveConnection: resolveMcpAppConnection,
       getProjectId: async (sessionId) =>
         (await deps.eventStore.getSession(sessionId))?.projectId ?? undefined,
