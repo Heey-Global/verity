@@ -329,7 +329,7 @@ export async function reconcileRetainedSandboxes(
   projects: readonly ProjectRecord[],
   hooks: {
     isProvisioning(projectId: string): boolean;
-    /** Run a restore as the project's provisioning attempt. */
+    /** Serialize retained-container work with the project's provisioning attempts. */
     serialize(project: ProjectRecord, restore: () => Promise<void>): Promise<void>;
   },
 ): Promise<void> {
@@ -414,7 +414,10 @@ export async function reconcileRetainedSandboxes(
           lost = host.describe(error);
         }
       }
-      failures.push(...(await discardParkedSandbox(host, project.id, parked)));
+      await hooks.serialize(project, async () => {
+        if (hooks.isProvisioning(project.id)) return;
+        failures.push(...(await discardParkedSandbox(host, project.id, parked)));
+      });
     }
     // Nothing is left to run: say so instead of leaving the row claiming a Sandbox.
     if (lost !== undefined)

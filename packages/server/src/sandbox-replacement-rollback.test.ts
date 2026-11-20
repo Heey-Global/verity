@@ -263,6 +263,21 @@ describe('reconcileRetainedSandboxes', () => {
     expect(h.removeContainer).toHaveBeenCalledWith('previous');
   });
 
+  it('does not discard the fallback when provisioning starts during inspection', async () => {
+    const h = inventoryHost(new Error('unused'));
+    let provisioning = false;
+    h.inspectContainer.mockImplementation(async () => {
+      provisioning = true;
+      return running;
+    });
+    await reconcileRetainedSandboxes(h.value, [project], {
+      ...hooks,
+      isProvisioning: () => provisioning,
+    });
+    expect(h.removeContainer).not.toHaveBeenCalled();
+    expect(h.resume).not.toHaveBeenCalled();
+  });
+
   it('keeps the parked Sandbox when a foreign running container holds the live name', async () => {
     const h = inventoryHost(new Error('unused'));
     h.inspectContainer.mockResolvedValue({ id: 'foreign', running: true, labels: {} });
