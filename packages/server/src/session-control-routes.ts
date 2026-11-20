@@ -83,11 +83,14 @@ export function registerSessionControlRoutes(
         body.behavior === 'allow' && body.scope !== undefined
           ? await deps.conductor.decidePermission(id, toolUseId, decision, {
               scope: body.scope,
+              actorId: request.localUserId ?? '__local__',
               onScopeSaved: (saved) => {
                 scopeSaved = saved;
               },
             })
-          : await deps.conductor.decidePermission(id, toolUseId, decision);
+          : await deps.conductor.decidePermission(id, toolUseId, decision, {
+              actorId: request.localUserId ?? '__local__',
+            });
     } catch (error) {
       if (error instanceof PermissionDecisionInProgressError) {
         reply.code(409);

@@ -165,7 +165,7 @@ export function createProjectEgressHostEnforcement(options: {
         options.systemTargets?.some((target) => target.host === name)
       )
         return;
-      void options.dependencies
+      return options.dependencies
         .directTargetAllowed(name)
         .then((allowed) => {
           const id = `${binding.projectId}|${name}`;
@@ -187,6 +187,7 @@ export function createProjectEgressHostEnforcement(options: {
             port: 443,
           });
         })
+        .then(() => undefined)
         .catch((error: unknown) => options.reportRequestFailure?.(error));
     },
   };

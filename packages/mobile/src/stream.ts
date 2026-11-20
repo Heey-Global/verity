@@ -1,3 +1,5 @@
+import type { PendingPermissionRequest } from './api.js';
+import type { PendingPermission } from './happy/message.js';
 import {
   beginRuntimeSubscription,
   recordRuntimeSessionEvent,
@@ -75,6 +77,10 @@ export class SessionStream {
   // tool_use_ids whose permission prompt the server has already settled. Kept so
   // neither a reducer rebuild nor an older history page can resurrect the card.
   private readonly resolvedPermissions = new Set<string>();
+  private readonly restoredPermissions = new Map<
+    string,
+    { permission: PendingPermission; throughSeq: number; detached: boolean }
+  >();
   private timing: SwitchTiming | undefined;
   private started = false;
   private stopped = false;
@@ -118,6 +124,7 @@ export class SessionStream {
       if (!this.suppressedOutput.has(frame.seq)) this.reducer.applyFrame(frame);
     }
     for (const id of this.resolvedPermissions) this.reducer.resolvePermission(id);
+    this.restorePendingPermissions();
     return restoredCurrent;
   }
 
@@ -153,21 +160,80 @@ export class SessionStream {
     if (this.caughtUp) this.opts.onUpdate?.(this.reducer.state);
   }
 
-  reconcilePendingPermissions(toolUseIds: readonly string[], throughSeq = this.newestSeq): void {
+  reconcilePendingPermissions(
+    toolUseIds: readonly string[],
+    throughSeq = this.newestSeq,
+    requests?: readonly PendingPermissionRequest[],
+  ): void {
     const pending = this.reducer.pendingPermission;
     if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
       const permissionFrame = this.eventFrames.findLast(
         (frame) => frame.event.t === 'permission' && frame.event.id === pending.toolUseId,
       );
-      // The HTTP snapshot was taken before this streamed permission arrived. It
-      // cannot say whether the newer prompt is still pending, so leave the card
-      // for a later poll whose request started after the event.
-      if (permissionFrame === undefined || permissionFrame.seq > throughSeq) return;
+      // An older HTTP snapshot cannot retire a newer streamed or restored card.
+      const restored = this.restoredPermissions.get(pending.toolUseId);
+      if ((permissionFrame?.seq ?? restored?.throughSeq ?? 0) > throughSeq) return;
       this.resolvedPermissions.add(pending.toolUseId);
     }
+    for (const [id, restored] of this.restoredPermissions) {
+      if (!toolUseIds.includes(id) && restored.throughSeq <= throughSeq) {
+        this.restoredPermissions.delete(id);
+        this.resolvedPermissions.add(id);
+      }
+    }
     this.reducer.reconcilePendingPermissions(toolUseIds);
-    if (pending !== undefined && this.reducer.pendingPermission === undefined && this.caughtUp) {
+    for (const request of requests ?? []) {
+      if (
+        !toolUseIds.includes(request.toolUseId) ||
+        this.resolvedPermissions.has(request.toolUseId) ||
+        request.input === undefined ||
+        (request.riskClass !== 'ask' && request.riskClass !== 'auto')
+      )
+        continue;
+      const previous = this.restoredPermissions.get(request.toolUseId);
+      if (previous !== undefined && previous.throughSeq > throughSeq) continue;
+      const frame = this.eventFrames.findLast(
+        (frame) => frame.event.t === 'permission' && frame.event.id === request.toolUseId,
+      );
+      this.restoredPermissions.set(request.toolUseId, {
+        throughSeq,
+        detached: request.detached === true,
+        permission: {
+          toolUseId: request.toolUseId,
+          tool: request.tool,
+          input: request.input,
+          riskClass: request.riskClass,
+          createdAt: request.createdAt ?? previous?.permission.createdAt ?? frame?.ts ?? Date.now(),
+          ...(request.grantChannel !== undefined ? { grantChannel: request.grantChannel } : {}),
+        },
+      });
+    }
+    this.restorePendingPermissions();
+    if (pending?.toolUseId !== this.reducer.pendingPermission?.toolUseId && this.caughtUp) {
       this.opts.onUpdate?.(this.reducer.state);
+    }
+  }
+
+  private restorePendingPermissions(): void {
+    if (this.reducer.pendingPermission !== undefined) return;
+    for (const [id, restored] of this.restoredPermissions) {
+      if (this.resolvedPermissions.has(id)) continue;
+      // A snapshot cannot replace a newer prompt or resurrect a tool completed since
+      // it was requested. A later authoritative snapshot may confirm a detached card.
+      if (
+        this.eventFrames.some(
+          (frame) =>
+            frame.seq > restored.throughSeq &&
+            (frame.event.t === 'permission' ||
+              (!restored.detached &&
+                ['result', 'interrupted', 'prompt', 'session'].includes(frame.event.t)) ||
+              ((frame.event.t === 'tool_call' || frame.event.t === 'tool_result') &&
+                frame.event.id === id)),
+        )
+      )
+        continue;
+      this.reducer.restorePendingPermission(restored.permission);
+      return;
     }
   }
 
@@ -271,6 +337,7 @@ export class SessionStream {
     // Replaying the frames re-raises every `permission` in them. Re-settle the ones
     // the server already answered so scroll-up can't resurrect a dismissed card.
     for (const toolUseId of this.resolvedPermissions) this.reducer.resolvePermission(toolUseId);
+    this.restorePendingPermissions();
     this.reducer.reuseMessageSnapshots(previousMessages);
     if (notify) this.opts.onUpdate?.(this.reducer.state);
   }
@@ -335,6 +402,7 @@ export class SessionStream {
             if (!current()) return;
             markSessionSwitch(this.timing, 'replay-caught-up');
             this.caughtUp = true;
+            this.restorePendingPermissions();
             this.setConnectionState('connected');
             this.opts.onUpdate?.(this.reducer.state);
           },
@@ -394,6 +462,7 @@ export class SessionStream {
     }
     this.eventFrames.push(eventFrame);
     this.lastSeq = frame.seq;
+    this.restorePendingPermissions();
     // Batch the initial backlog: apply its events silently and emit ONCE at
     // `caught_up`, so the screen renders the whole history in a single pass and
     // the list anchors to the bottom without re-anchoring per backlog event.

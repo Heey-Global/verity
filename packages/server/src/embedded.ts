@@ -1,3 +1,4 @@
+import { createBrokeredToolApprovalStore } from './brokered-tool-approval-store.js';
 import { MaintenanceImages, MaintenanceImageError } from './maintenance-image.js';
 import { ProjectEgressInventoryError } from './project-egress-inventory-error.js';
 import {
@@ -574,6 +575,7 @@ export async function buildEmbeddedServer(
   });
   const mcpProxyTokens = createMcpGatewayTokens();
   const mcpGateway: Omit<McpGatewayDeps, 'requestApproval'> = {
+    detachedApprovals: createBrokeredToolApprovalStore(db),
     // Trusted CLI needs the project supervisor: it is the authority that proves this bearer
     // still names a live turn whose start request enabled execution. Deployments without the
     // supervisor omit the tool completely rather than advertising a permanently failing call.
@@ -4558,9 +4560,6 @@ export async function buildEmbeddedServer(
         },
         hostCloneRoot: config.hostCloneRoot,
         containerProjectRoot: RUNNER_CONTAINER_PROJECT_ROOT,
-        // ADR 0014 D1: the ACP tool gateway bearer registry. The
-        // registry is the Server's half of the gateway bearer — the runner client
-        // mints one per ACP turn and retires it when the turn settles.
         mcpGatewayTokens,
         mcpProxyTokens,
         listProjectHttpMcpServers: async (projectId) => {

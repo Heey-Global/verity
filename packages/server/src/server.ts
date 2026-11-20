@@ -3256,6 +3256,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     preparedEvents?: AgentEvent[],
     preparedResumable?: boolean,
   ): Promise<SessionSummary> => {
+    await conductor.refreshDetachedPermissions?.(session.sessionId);
     const events = preparedEvents ?? (await projectionEventsFor(session.sessionId, facts));
     const pr = prSummaryFor(session);
     const pullRequest = pr === undefined ? undefined : sessionPrCache.peek(session.worktree);
@@ -3267,22 +3268,22 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     const rateLimit = rateLimits[0];
     const conductorPermissions = conductor.pendingPermissions(session.sessionId);
     const pendingPermissions = [...new Set([...conductorPermissions, ...pendingLinks])];
-    const pendingPermissionRequests = pendingPermissionRequestsFromProjection(
-      events,
-      conductorPermissions,
-    );
+    const pendingPermissionRequests = [
+      ...new Map(
+        [
+          ...pendingPermissionRequestsFromProjection(events, conductorPermissions),
+          ...(conductor.detachedPermissionRequests?.(session.sessionId) ?? []),
+        ].map((request) => [request.toolUseId, request]),
+      ).values(),
+    ];
     // Unread counts include only agent text; the seq still identifies a nonempty log.
     const projectedStatus = liveStatusFromProjection(
       session.sessionId,
       events,
       facts.lastEventSeq === 0 ? 0 : 1,
     );
-    // A permission event is durable so reconnect can rebuild its card, but its
-    // answer travels over the live runner channel. Once that channel no longer
-    // reports the prompt, do not let the historical event keep the overview in
-    // "Needs input" while the approved operation continues or settles.
     const status =
-      pendingLinks.length > 0
+      pendingPermissions.length > 0
         ? 'awaiting_input'
         : projectedStatus === 'awaiting_input' &&
             permissionEventAwaitsInput(events) &&
@@ -5110,10 +5111,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
     getSession: async (id, viewer): Promise<SessionDetail | undefined> => {
       const session = await deps.eventStore.getSession(id);
       if (!session) return undefined;
-      // Opening a session hits this route first, and the transcript arrives over a
-      // separate paged read — so hydrating the whole log here bought nothing but
-      // latency in front of the first paint. The header's status, usage,
-      // rate-limit and count fields all come out of the projection slice.
+      await conductor.refreshDetachedPermissions?.(id);
       const facts =
         (await deps.eventStore.listSessionProjectionFacts([id], PROJECTION_TAIL)).get(id) ??
         emptyProjectionFacts();
@@ -5133,7 +5131,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         facts.lastEventSeq === 0 ? 0 : 1,
       );
       const status =
-        pendingLinks.length > 0
+        pendingPermissions.length > 0
           ? 'awaiting_input'
           : projectedStatus === 'awaiting_input' &&
               permissionEventAwaitsInput(events) &&
@@ -5148,6 +5146,7 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
         googleStatus: await sessionGoogleStatus(deps.eventStore, id),
         status,
         pendingPermissions,
+        pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
         ...(status === 'awaiting_input' && pendingPermissions.length > 0
           ? { permissionAwaitingInput: true as const }
           : {}),
@@ -5346,12 +5345,14 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
   app.register((instance, _opts, done) => {
     registerSessionHistoryRoutes(instance, {
       activity: async (reply, id) => {
+        await conductor.refreshDetachedPermissions?.(id);
         const pendingLinks =
           (await deps.eventStore.pendingSessionLinkMessageIds([id])).get(id) ?? [];
         const base = {
           busy: conductor.isBusy(id) || hasMeetingJob(id),
           queued: conductor.queuedItems(id),
           pendingPermissions: [...new Set([...conductor.pendingPermissions(id), ...pendingLinks])],
+          pendingPermissionRequests: conductor.detachedPermissionRequests?.(id) ?? [],
           modelSwitchPending:
             conductor.hasDeferredAfterCurrentTurn(id) || conductor.isBackendHandoffPending(id),
           // Busy for a reason the operator cannot see otherwise: a stop that could not

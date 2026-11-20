@@ -47,6 +47,14 @@ import type {
   TranscriptStore,
 } from '@verity/store';
 import type { EventBus } from './bus.js';
+import { startNetworkApprovalMonitor } from './network-approval-monitor.js';
+import {
+  DetachedPermissions,
+  decideDetachedPermission,
+  detachedContinuation,
+  detachedPermissionEvent,
+  type DetachedPermissionProvider,
+} from './detached-permissions.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
@@ -1208,19 +1216,10 @@ export class Conductor {
   // hence a map per session. The runner already fails any still-pending prompt safe
   // to DENY when the turn settles, so a dropped entry never lets a tool slip through.
   private readonly pendingPermissionRequests = new Map<string, Map<string, PermissionRequest>>();
-  /**
-   * The subset of {@link pendingPermissionRequests} that NO turn is waiting on, keyed
-   * `sessionId\0toolUseId` (ADR 0014 D2/D4). A prompt raised by the loopback MCP gateway
-   * arrives over HTTP rather than through a turn's held-open stdin, so there is no
-   * `RunnerTurn.answerPermission` to write the decision to — the answer resolves the
-   * caller's promise instead, and this map holds that resolver.
-   *
-   * They are tracked in the same pending map as turn-bound prompts on purpose: the app's
-   * card, the decide route, {@link pendingPermissions} on reconnect, and the standing-grant
-   * auto-approval are one surface, and a second parallel one would drift from it. What
-   * differs is only who consumes the decision and where the grant channel comes from — the
-   * caller states it, because there may be no live turn to read it off.
-   */
+  private readonly detachedPermissions = new DetachedPermissions();
+  private readonly scheduledApprovalContinuations = new Set<string>();
+  private readonly failedApprovalContinuations = new Set<string>();
+  /** Live out-of-band prompts resolve their caller; detached cards use durable receipts. */
   private readonly externalPermissions = new Map<
     string,
     {
@@ -1691,11 +1690,6 @@ export class Conductor {
         backend,
       };
     }
-    // Run the turn through the Runner contract (ADR 0006 Stage 1). The RunnerTurn
-    // owns the steer channel (#101) and permission answer channel (#27); it adopts
-    // the handle's signal for cancel (#79). Each attempt (codex resume-retry) mints a
-    // fresh RunnerTurn that rebinds the delegate — the handle always fronts the
-    // in-flight attempt.
     const runner = await this.withWorkspaceOperation(
       session.sessionId,
       () =>
@@ -1749,6 +1743,12 @@ export class Conductor {
       ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
     });
     handle.delegate = turn;
+    const stopNetworkMonitor = startNetworkApprovalMonitor(
+      this.deps.store,
+      session.projectId,
+      (text) => turn.steer({ text }),
+      { bus: this.deps.bus, sessionId },
+    );
     try {
       const result = await turn.result;
       handle.terminalResultReceived = true;
@@ -1769,6 +1769,7 @@ export class Conductor {
           : result.sessionId;
       return { result, backendSessionId: backendSessionId ?? settled, backend };
     } finally {
+      stopNetworkMonitor();
       await cleanup();
     }
   }
@@ -3097,7 +3098,77 @@ export class Conductor {
    * answer for `sessionId` (#27) — lets the server reflect what's pending (e.g.
    * re-arm the approve/deny UI on reconnect). Empty when none are parked. */
   pendingPermissions(sessionId: string): string[] {
-    return [...(this.pendingPermissionRequests.get(sessionId)?.keys() ?? [])];
+    return [
+      ...new Set([
+        ...(this.pendingPermissionRequests.get(sessionId)?.keys() ?? []),
+        ...this.detachedPermissions.ids(sessionId),
+      ]),
+    ];
+  }
+
+  configureDetachedPermissions(provider: DetachedPermissionProvider): void {
+    this.detachedPermissions.configure(provider);
+  }
+
+  detachedPermissionRequests(sessionId: string) {
+    return this.detachedPermissions.descriptors(sessionId);
+  }
+
+  async refreshDetachedPermissions(sessionId: string): Promise<void> {
+    await this.detachedPermissions.refresh(sessionId, async (request) => {
+      const event = detachedPermissionEvent(request);
+      const persisted = await this.deps.store.appendEvent(sessionId, event);
+      this.deps.bus?.publish(sessionId, { seq: persisted.seq, ts: persisted.ts, event });
+    });
+    // Continuation dispatch is optional to a read: preserve card visibility if
+    // the backend is unavailable, and retry the durable receipt on a later refresh.
+    try {
+      await this.detachedPermissions.resumeApproved(sessionId);
+    } catch (error) {
+      if (!this.failedApprovalContinuations.has(sessionId)) {
+        this.failedApprovalContinuations.add(sessionId);
+        this.reportTurnError(sessionId, error);
+        await this.emitEvent(sessionId, {
+          t: 'notice',
+          role: 'agent',
+          text: 'Your secret approval is saved, but the workflow could not resume yet. Reopen this session to retry; an expired receipt can be requested again.',
+        });
+      }
+    }
+  }
+
+  async resumeDetachedPermission(
+    sessionId: string,
+    request: PermissionRequest,
+    actorId?: string,
+    validate?: () => Promise<boolean>,
+  ): Promise<void> {
+    const { prompt, dispatch } = detachedContinuation(request, actorId);
+    const id = dispatch.durableDispatchId;
+    await this.deps.store.reserveBackgroundDispatch(id, sessionId);
+    if (this.scheduledApprovalContinuations.has(id)) return;
+    this.scheduledApprovalContinuations.add(id);
+    try {
+      await this.runWhenIdle(sessionId, async () => {
+        try {
+          const result = await this.dispatchTurnWhenIdle(
+            sessionId,
+            prompt,
+            {},
+            {
+              ...dispatch,
+              validateSession: async () => (validate ? validate() : true),
+            },
+          );
+          if (result.accepted) this.failedApprovalContinuations.delete(sessionId);
+        } finally {
+          this.scheduledApprovalContinuations.delete(id);
+        }
+      });
+    } catch (error) {
+      this.scheduledApprovalContinuations.delete(id);
+      throw error;
+    }
   }
 
   /** Close any idle backend process/thread handle for a session before destructive
@@ -3108,22 +3179,14 @@ export class Conductor {
     this.codexBackend?.closeSession?.(sessionId);
   }
 
-  /**
-   * Answer a parked permission prompt (#27): the operator allows (optionally with
-   * edited input) or denies the tool `toolUseId` proposed in `sessionId`'s
-   * in-flight turn. Writes the decision over the held-open stdin, unblocking the
-   * paused turn. Returns `true` when a matching pending prompt was resolved,
-   * `false` when none is parked under that id — the turn already ended (the runner
-   * fail-safe-denied it), the operator already answered, or the id is unknown — so
-   * the caller reports 404 and the UI drops the stale prompt. Idempotent: a second
-   * answer for the same id is a harmless no-op.
-   */
+  /** Decide a live prompt or a durable receipt; only a matching pending id can change. */
   async decidePermission(
     sessionId: string,
     toolUseId: string,
     decision: PermissionDecision,
     options?: {
       scope?: 'once' | 'session' | 'project' | 'forever';
+      actorId?: string;
       onScopeSaved?: (saved: boolean) => void;
       /** How the answer was reached. Only the standing-grant path sets `grant`; the
        *  decide route omits it, because everything arriving there is a card the
@@ -3133,6 +3196,19 @@ export class Conductor {
       decidedBy?: PermissionDecisionSource;
     },
   ): Promise<boolean> {
+    await this.refreshDetachedPermissions(sessionId);
+    const detached = await decideDetachedPermission({
+      permissions: this.detachedPermissions,
+      sessionId,
+      toolUseId,
+      decision,
+      options,
+      persistScoped: (request, scope) =>
+        this.persistBrokeredGrant(sessionId, request, scope, 'acp', request.brokeredGrantBindingId),
+      notice: (text) => this.emitEvent(sessionId, { t: 'notice', role: 'agent', text }),
+      resume: () => this.detachedPermissions.resumeApproved(sessionId),
+    });
+    if (detached !== undefined) return detached;
     const pending = this.pendingPermissionRequests.get(sessionId);
     const turn = this.turns.get(sessionId);
     const claim = `${sessionId}\0${toolUseId}`;
@@ -3333,20 +3409,7 @@ export class Conductor {
     }
   }
 
-  /** Drop all parked permission prompts for a settled turn (#27). Anything the
-   * operator left unanswered is already dead by the time this runs, so this just
-   * clears the now-stale tracker entries. Called on every turn-settle path alongside
-   * the handle cleanup.
-   *
-   * ACP makes this structural: a prompt is a `session/request_permission` JSON-RPC
-   * REQUEST, and a
-   * settled turn has torn its connection and process down, so an unanswered one can
-   * only ever end unanswered. It cannot become an allow, and it cannot hold the turn
-   * open. The invariant is the same; it is now structural rather than hand-written.
-   *
-   * Prompts raised out of band by the gateway survive it: no turn was answering them,
-   * so a turn settling says nothing about whether they are still live, and their own
-   * caller holds the deadline that ends them (ADR 0014 D2). */
+  /** Drop turn-bound prompts on settle; out-of-band callers own cancellation. */
   private clearPermissions(sessionId: string): void {
     const pending = this.pendingPermissionRequests.get(sessionId);
     if (pending === undefined) return;
@@ -3357,21 +3420,7 @@ export class Conductor {
     if (pending.size === 0) this.pendingPermissionRequests.delete(sessionId);
   }
 
-  /**
-   * Raise a permission prompt that no turn is holding open, and resolve with the answer
-   * (ADR 0014 D2). The loopback MCP gateway calls this: its request arrives over HTTP, so
-   * there is no `can_use_tool` control request to write the decision back to, and no turn
-   * whose settle would fail-safe-deny an unanswered prompt — the caller owns that deadline
-   * and passes `signal`, whose abort denies.
-   *
-   * The prompt is written and parked exactly like a turn-bound one, so the card, the decide
-   * route, {@link pendingPermissions} and the standing-grant auto-approval treat it
-   * identically. Only the grant channel differs: the caller states it, because a gateway
-   * call routinely arrives with no live turn to read it off.
-   *
-   * Rejects if the prompt cannot be written — a card the operator never sees must not leave
-   * the caller waiting on an answer that cannot come.
-   */
+  /** Surface a live out-of-band approval, cancelled when its caller's signal aborts. */
   async requestExternalPermission(params: {
     sessionId: string;
     toolUseId: string;
@@ -5488,6 +5537,12 @@ export class Conductor {
           ...(this.deps.bus !== undefined ? { bus: this.deps.bus } : {}),
         });
         handle.delegate = turn;
+        const stopNetworkMonitor = startNetworkApprovalMonitor(
+          this.deps.store,
+          contextProjectId,
+          (text) => turn.steer({ text }),
+          { bus: this.deps.bus, sessionId: boundId },
+        );
         handle.cleanupImages = () => cleanupTurnImageAttachments(runOpts.cwd, turnId);
         let publicationSafe = true;
         try {
@@ -5501,6 +5556,7 @@ export class Conductor {
           if (error instanceof BackendTerminationUnconfirmedError) publicationSafe = false;
           throw error;
         } finally {
+          stopNetworkMonitor();
           try {
             if (
               publicationSafe &&

@@ -1036,7 +1036,11 @@ export class SessionModel {
         !sameMockupReview(activity.mockupReview ?? undefined, this._mockupReview);
       if (mockupChanged) this._mockupReview = activity.mockupReview ?? undefined;
       if (activity.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(activity.pendingPermissions, seqAtRequest);
+        this.stream.reconcilePendingPermissions(
+          activity.pendingPermissions,
+          seqAtRequest,
+          activity.pendingPermissionRequests,
+        );
       }
       // The poll is now the authoritative `_busy` source — stop `loadDetail` from
       // seeding it. Set BEFORE the no-change short-circuit so a first poll that
@@ -1168,7 +1172,11 @@ export class SessionModel {
       this._googleStatus = detail.googleStatus;
       this._detailLoaded = true;
       if (detail.pendingPermissions !== undefined) {
-        this.stream.reconcilePendingPermissions(detail.pendingPermissions, seqAtRequest);
+        this.stream.reconcilePendingPermissions(
+          detail.pendingPermissions,
+          seqAtRequest,
+          detail.pendingPermissionRequests,
+        );
       }
       this._name = detail.name;
       this._projectId = detail.projectId ?? null;

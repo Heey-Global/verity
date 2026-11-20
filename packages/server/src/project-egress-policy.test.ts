@@ -59,3 +59,20 @@ it('denies nonpublic addresses including mapped IPv6 before any DNS request', ()
     expect(isPublicEgressTarget({ ...target, host }), host).toBe(false);
   expect(isPublicEgressTarget({ ...target, host: '8.8.8.8' })).toBe(true);
 });
+
+it('keeps durable pending requests askable while preserving stale-policy denial', () => {
+  const request = {
+    id: 'request',
+    target,
+    revision: 0,
+    requestedBy: ['sandbox'],
+    createdAt: 1,
+    expiresAt: null,
+    status: 'pending' as const,
+  };
+  const pending: EgressPolicy = { ...policy, requests: { download: request } };
+  expect(evaluateProjectEgress(context, pending, target, 86_400_000).decision).toBe('ask');
+  expect(
+    evaluateProjectEgress(context, { ...pending, revision: 1 }, target, 86_400_000).decision,
+  ).toBe('deny');
+});

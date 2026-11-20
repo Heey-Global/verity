@@ -1,3 +1,4 @@
+import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
 import { randomUUID } from 'node:crypto';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
@@ -5581,3 +5582,5 @@ migrations['0204_project_name'] = {
     await sql`alter table projects drop column name`.execute(db);
   },
 };
+
+migrations['0205_brokered_tool_approvals'] = brokeredToolApprovalMigration;

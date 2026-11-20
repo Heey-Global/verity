@@ -4,6 +4,7 @@ import {
   repositoryInstructionsSchema,
 } from './projectCollaboration.js';
 import { repositoryPullRequestsSchema } from './projectPullRequests.js';
+import { createSecretApprovalsClient } from './secretApprovals.js';
 import {
   projectEgressPolicySchema,
   projectEgressRequestSchema,
@@ -269,7 +270,11 @@ const pendingPermissionRequestSchema = z.object({
   tool: z.string().min(1),
   riskClass: z.string().min(1),
   input: z.unknown().optional(),
+  grantChannel: z.literal('acp').optional(),
+  createdAt: z.number().optional(),
+  detached: z.boolean().optional(),
 });
+export type PendingPermissionRequest = z.infer<typeof pendingPermissionRequestSchema>;
 
 /** A mockup review: the screens the agent presented, each marked approved,
  * discarded or still open. An older server's `comment` reads as discarded, as the
@@ -517,6 +522,8 @@ export const sessionActivitySchema = z.object({
    * for compatibility with older servers. The durable `permission` event carries
    * the card contents; this list is the polling/reconnect re-arm signal. */
   pendingPermissions: z.array(z.string().min(1)).optional(),
+  /** Full pending cards also restore detached approvals after a turn or server restart. */
+  pendingPermissionRequests: z.array(pendingPermissionRequestSchema).optional().catch(undefined),
   /** Whether a model switch is outstanding. Two shapes share this bit: on an older
    * server it meant "accepted, applies at the current turn's settle boundary"; on a
    * current one it means "the handover is running RIGHT NOW" — the switch interrupts
@@ -2764,6 +2771,7 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  readonly secretApprovals = createSecretApprovalsClient((path, init) => this.request(path, init));
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,

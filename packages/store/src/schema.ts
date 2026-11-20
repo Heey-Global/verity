@@ -1874,6 +1874,7 @@ export interface Database {
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;
   project_egress_policy: ProjectEgressPolicyTable;
+  brokered_tool_approvals: BrokeredToolApprovalsTable;
   verity_settings: VeritySettingsTable;
   secret_key_meta: SecretKeyMetaTable;
   auth_tokens: AuthTokenTable;
@@ -2238,4 +2239,23 @@ interface QAAssignmentNotificationsTable {
   assignment_id: string;
   dispatch_id: string;
   payload: string;
+}
+
+interface BrokeredToolApprovalsTable {
+  id: string;
+  project_id: string;
+  session_id: string;
+  invocation_id: string;
+  consumed_invocation_id: string | null;
+  tool_name: 'verity_http_request' | 'verity_secret_run';
+  canonical_input: string;
+  request_mac: string;
+  mac_key_id: string;
+  authorization_snapshot: string;
+  binding_digest: string;
+  status: 'pending' | 'approved' | 'denied' | 'consumed';
+  scope: 'once' | 'session' | 'project' | null;
+  decided_by: string | null;
+  created_at: Date;
+  decided_at: Date | null;
 }

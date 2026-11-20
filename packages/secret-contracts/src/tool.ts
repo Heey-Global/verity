@@ -502,9 +502,13 @@ export type TrustedCliRequest = z.infer<typeof trustedCliRequestSchema>;
  * is what the model plans against: a channel whose wording drifted would teach a
  * different tool than the one Verity approves and executes.
  */
+const BROKERED_APPROVAL_WAIT_DESCRIPTION =
+  'A result with `status: "awaiting_approval"` means the request is saved and waiting for the user, not that it failed or ran. Unanswered requests survive closing the app. Explain which approval is pending, continue independent work, and do not poll or request duplicate approval. After the user approves, Verity resumes this workflow; retry the exact original request only then, if still relevant. A once-only receipt must be redeemed within five minutes after approval; session and project grants keep their selected lifetimes. ';
+
 export const BROKERED_HTTP_TOOL_DESCRIPTION =
   'Make an HTTPS request using a named Doppler secret. Prefer this over `verity_secret_run` whenever the target speaks HTTP — including APIs that would otherwise require a local CLI — because the secret then never enters the Sandbox at all. ' +
   'Verity shows the exact destination, request, and secret name for approval. The approved host receives the secret; you receive the HTTP status and the response body with the secret value redacted. ' +
+  BROKERED_APPROVAL_WAIT_DESCRIPTION +
   'Non-2xx statuses are returned as results, not errors. ' +
   'When the API authenticates with a signed assertion rather than a static token — App Store Connect, a Google service account — use `auth.kind: "jwt"`: `secretAlias` then names the private key and Verity mints the JWT server-side. ' +
   'Claims the agent cannot know, such as an App Store Connect key id or issuer id, are named as `{"alias": "..."}` and resolved server-side too.';
@@ -516,6 +520,7 @@ export const TRUSTED_CLI_TOOL_DESCRIPTION =
   'There is no implicit shell. The executable and each argument are separate tokens, and the executable must be an installed root-owned program. A worktree entry script is allowed only when `entryScript` names its absolute path, SHA-256, and loading mode; Verity shows and verifies them. Use `loading: "isolated"` only when the script needs no mutable worktree files; Verity denies those reads and may reuse approval. Use `loading: "dynamic"` for imports, sourced files, and other worktree reads; scoped approval accepts that those files may change. Ordinary CLIs, inline eval, stdin, and modules also support once, session, and 30-day project approval bound to the exact invocation and execution directory. ' +
   'With `injection: "file"` Verity writes the secret to /run/verity-runner/secrets/<env>; because nothing expands `$VAR`, the argument has to spell that path out in full, in whichever form the tool takes. ' +
   'Verity shows the exact command, every environment variable, and every secret name for approval. The command can read or disclose the secrets; output redaction is hygiene only. ' +
+  BROKERED_APPROVAL_WAIT_DESCRIPTION +
   'If this call is cut off before it returns, do not run the command again: call verity_secret_read_output without invocationId to find the run and read its status and output. A run missing from that list either never started or its record expired or was evicted; tell the user before running it again.';
 
 export const secretCatalogToolRequestSchema = z

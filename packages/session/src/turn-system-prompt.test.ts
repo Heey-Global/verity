@@ -27,6 +27,20 @@ describe('required work completion instructions', () => {
   });
 });
 
+it.each([
+  turnSystemPrompt('github'),
+  turnSystemPrompt('local', true),
+  RESUME_SYSTEM_PROMPT,
+  COMPACT_RESUME_SYSTEM_PROMPT,
+])(
+  'distinguishes waiting for approval from execution failure across fresh and resumed contexts',
+  (prompt) => {
+    expect(prompt).toContain('awaiting_approval means a user decision is pending');
+    expect(prompt).toContain('not that the action failed or ran');
+    expect(prompt).toContain('Do not repeatedly request the same approval');
+  },
+);
+
 describe('communication instructions', () => {
   it.each([
     turnSystemPrompt('github'),

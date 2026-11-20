@@ -1,3 +1,5 @@
+import { registerSecretApprovalRoutes } from './secret-approval-routes.js';
+import { configureDetachedSecretApprovals } from './detached-secret-approvals.js';
 import { appendProjectOverview } from './project-overview-file.js';
 import { connectorToolAvailable } from './agent-tool-availability.js';
 import {
@@ -617,6 +619,26 @@ export function registerServerMcpRoutes({
 
   if (deps.mcpGateway !== undefined) {
     const gatewayDeps = deps.mcpGateway;
+    if (gatewayDeps.detachedApprovals)
+      configureDetachedSecretApprovals({
+        conductor,
+        store: deps.eventStore,
+        approvals: gatewayDeps.detachedApprovals,
+        gateway: gatewayDeps,
+        canExecute: (userId, projectId) =>
+          canExecuteAs(
+            userId === '__local__' && deps.authRegistry?.isEnabled() !== true ? undefined : userId,
+            projectId,
+          ),
+        localActor: deps.authRegistry?.isEnabled() !== true,
+      });
+    if (gatewayDeps.detachedApprovals)
+      registerSecretApprovalRoutes(app, {
+        approvals: gatewayDeps.detachedApprovals,
+        store: deps.eventStore,
+        permitted: canExecuteAs,
+        refresh: (id) => conductor.refreshDetachedPermissions(id),
+      });
     const linkedSessionTarget = async (
       sourceSessionId: string,
       requestedTarget: string | undefined,
@@ -1029,7 +1051,6 @@ export function registerServerMcpRoutes({
       runtimeReadiness: deps.secretJobRuntimeReadiness,
       uplinkDiagnostics: deps.uplinkDiagnostics,
     });
-    // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
     const vulnerabilityTool = createVulnerabilityTool({
@@ -1041,6 +1062,7 @@ export function registerServerMcpRoutes({
     });
     const gateway = createMcpGateway({
       ...gatewayDeps,
+      surfaceDetachedApproval: (sessionId) => conductor.refreshDetachedPermissions(sessionId),
       capabilityVersionForCaller: async (caller) => {
         const active = conductor.agentCapabilityVersion?.(caller.sessionId);
         if (active !== undefined) return active;

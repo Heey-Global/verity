@@ -320,13 +320,13 @@ it('records one Sandbox HTTPS request per ungranted name and caps a project', as
         },
       },
     });
-    const settle = () => vi.advanceTimersByTimeAsync(0);
-    enforcement.requestDirect!(network, 'api.example.com');
-    enforcement.requestDirect!(network, 'api.example.com');
-    // Broker names never become cards that could not take effect.
-    enforcement.requestDirect!(network, 'random.example.com');
-    enforcement.requestDirect!(network, 'mcp.exa.ai');
-    await settle();
+    await Promise.all([
+      enforcement.requestDirect!(network, 'api.example.com'),
+      enforcement.requestDirect!(network, 'api.example.com'),
+      // Broker names never become cards that could not take effect.
+      enforcement.requestDirect!(network, 'random.example.com'),
+      enforcement.requestDirect!(network, 'mcp.exa.ai'),
+    ]);
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith('a', {
       host: 'api.example.com',
@@ -334,25 +334,25 @@ it('records one Sandbox HTTPS request per ungranted name and caps a project', as
       port: 443,
     });
     await vi.advanceTimersByTimeAsync(60_001);
-    enforcement.requestDirect!(network, 'api.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'api.example.com');
     expect(request).toHaveBeenCalledTimes(2);
     // Without configured direct authority no grant could take effect, so nothing is asked.
     authority = false;
-    enforcement.requestDirect!(network, 'down.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'down.example.com');
     expect(request).toHaveBeenCalledTimes(2);
     authority = true;
     request.mockRejectedValueOnce(new Error('store down'));
-    enforcement.requestDirect!(network, 'down.example.com');
-    await settle();
+    await enforcement.requestDirect!(network, 'down.example.com');
     expect(reportRequestFailure).toHaveBeenCalledWith(new Error('store down'));
     // A Sandbox resolving many names files at most 20 new requests per project and minute.
     await vi.advanceTimersByTimeAsync(60_001);
     request.mockClear();
-    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `api.example.com`);
-    for (let i = 0; i < 30; i++) enforcement.requestDirect!(network, `n${String(i)}.example.com`);
-    await settle();
+    await Promise.all([
+      ...Array.from({ length: 30 }, () => enforcement.requestDirect!(network, 'api.example.com')),
+      ...Array.from({ length: 30 }, (_, i) =>
+        enforcement.requestDirect!(network, `n${String(i)}.example.com`),
+      ),
+    ]);
     expect(request).toHaveBeenCalledTimes(20);
   } finally {
     vi.useRealTimers();

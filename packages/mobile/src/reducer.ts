@@ -885,6 +885,11 @@ export class SessionReducer {
     }
   }
 
+  /** Restore a server-confirmed detached approval without reopening a completed turn. */
+  restorePendingPermission(permission: PendingPermission): void {
+    if (this._pendingPermission === undefined) this._pendingPermission = { ...permission };
+  }
+
   /** Reconcile a replayed permission card with the server's live pending set.
    * Permission prompts are durable transcript events, while their decisions are
    * delivered over the runner control channel. After a remount, replay can

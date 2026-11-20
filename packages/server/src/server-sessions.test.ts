@@ -2198,10 +2198,15 @@ describe('POST /sessions/:id/permissions/:toolUseId (#27)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ sessionId: 's1', toolUseId: 'toolu_a', decided: true });
-    expect(decidePermission).toHaveBeenCalledWith('s1', 'toolu_a', {
-      behavior: 'allow',
-      updatedInput: { command: 'ls -la' },
-    });
+    expect(decidePermission).toHaveBeenCalledWith(
+      's1',
+      'toolu_a',
+      {
+        behavior: 'allow',
+        updatedInput: { command: 'ls -la' },
+      },
+      { actorId: '__local__' },
+    );
   });
 
   it('denies a tool, defaulting the message when none is given', async () => {
@@ -2213,10 +2218,15 @@ describe('POST /sessions/:id/permissions/:toolUseId (#27)', () => {
       payload: { behavior: 'deny' },
     });
     expect(res.statusCode).toBe(200);
-    expect(decidePermission).toHaveBeenCalledWith('s1', 'toolu_b', {
-      behavior: 'deny',
-      message: 'Denied by the operator.',
-    });
+    expect(decidePermission).toHaveBeenCalledWith(
+      's1',
+      'toolu_b',
+      {
+        behavior: 'deny',
+        message: 'Denied by the operator.',
+      },
+      { actorId: '__local__' },
+    );
   });
 
   it('404s when no prompt is pending under that id (already answered / turn ended)', async () => {
