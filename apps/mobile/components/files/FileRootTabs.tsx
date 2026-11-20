@@ -27,27 +27,67 @@ export function FileRootTabs({
   onDrive: () => void;
 }) {
   return (
+    <FileTabs
+      disabled={disabled}
+      tabs={[
+        {
+          key: 'code',
+          icon: codeIcon,
+          label: 'Code',
+          active: codeActive,
+          disabled: codeDisabled,
+          onPress: onCode,
+        },
+        ...(drive
+          ? [
+              {
+                key: 'drive',
+                icon: 'hard-drive' as const,
+                label: 'Google Drive',
+                active: driveActive,
+                onPress: () => {
+                  if (!driveActive) onDrive();
+                },
+              },
+            ]
+          : []),
+      ]}
+    />
+  );
+}
+
+export interface FileTab {
+  key: string;
+  icon: IconName;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}
+
+/** The areas one explorer moves between — a session's Code and Google Drive,
+ * a library's Wiki and Sources — underlined, never filled: they are places,
+ * not actions. */
+export function FileTabs({
+  tabs,
+  disabled = false,
+}: {
+  tabs: readonly FileTab[];
+  disabled?: boolean;
+}) {
+  return (
     <View style={styles.bar}>
-      <RootTab
-        icon={codeIcon}
-        label="Code"
-        accessibilityLabel="Code"
-        active={codeActive}
-        disabled={disabled || codeDisabled}
-        onPress={onCode}
-      />
-      {drive ? (
+      {tabs.map((tab) => (
         <RootTab
-          icon="hard-drive"
-          label="Google Drive"
-          accessibilityLabel="Google Drive"
-          active={driveActive}
-          disabled={disabled}
-          onPress={() => {
-            if (!driveActive) onDrive();
-          }}
+          key={tab.key}
+          icon={tab.icon}
+          label={tab.label}
+          accessibilityLabel={tab.label}
+          active={tab.active}
+          disabled={disabled || tab.disabled === true}
+          onPress={tab.onPress}
         />
-      ) : null}
+      ))}
     </View>
   );
 }
