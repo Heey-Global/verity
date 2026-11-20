@@ -176,3 +176,24 @@ it('does not restore a revoked link after its committed creation response is los
   expect(await h.store.listSessionLinks('source')).toEqual([]);
   expect(h.dispatchTurn).not.toHaveBeenCalled();
 });
+
+it('reports unknown queue state after delivery succeeds but receipt persistence fails', async () => {
+  const h = await setup();
+  const update = h.store.sessionCoordination.update.bind(h.store.sessionCoordination);
+  const failure = vi
+    .spyOn(h.store.sessionCoordination, 'update')
+    .mockImplementation(async (...args) => {
+      if (args[2].phase === 'delivered') throw new Error('receipt write failed');
+      await update(...args);
+    });
+  try {
+    await expect(h.gateway.execute(h.caller)).rejects.toThrow('receipt write failed');
+  } finally {
+    failure.mockRestore();
+  }
+  expect(h.dispatchTurn).toHaveBeenCalledTimes(1);
+  const result = await createGatewaySessionCoordination(h.deps).execute(h.caller);
+  expect(result).toMatchObject({ delivery: { status: 'accepted', queued: null } });
+  expect(h.dispatchTurn).toHaveBeenCalledTimes(1);
+  expect(await createGatewaySessionCoordination(h.deps).execute(h.caller)).toEqual(result);
+});

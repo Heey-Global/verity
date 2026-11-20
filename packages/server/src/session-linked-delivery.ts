@@ -21,7 +21,7 @@ export interface LinkedSessionDelivery {
   deliverLinkedMessage(
     this: void,
     input: LinkedMessageInput,
-  ): Promise<{ sessionId: string; queued: boolean }>;
+  ): Promise<{ sessionId: string; queued: boolean | null }>;
 }
 
 /** Shared bounded delivery for manual links and user-requested coordination. */
@@ -45,7 +45,7 @@ export function createLinkedSessionDelivery(
   };
   const deliverLinkedMessage = async (
     input: LinkedMessageInput,
-  ): Promise<{ sessionId: string; queued: boolean }> => {
+  ): Promise<{ sessionId: string; queued: boolean | null }> => {
     const source = await store.getSession(input.sourceSessionId);
     const link = await linkedSessionTarget(input.sourceSessionId, input.targetSessionId);
     if (
@@ -79,7 +79,7 @@ export function createLinkedSessionDelivery(
         input.invocationId,
       )
     )
-      return { sessionId: link.peerSessionId, queued: false };
+      return { sessionId: link.peerSessionId, queued: null };
     let delivered: { queued: boolean } | undefined;
     const reservation = await store.reserveSessionLinkMessage(
       input.sourceSessionId,
