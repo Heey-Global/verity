@@ -417,3 +417,41 @@ it('fences existing packet grants before inventory ACK and leaves unchanged hear
   expect(f.deadline.arm).toHaveBeenCalledOnce();
   expect(f.deadline.revoke.mock.calls.length).toBeGreaterThan(revokes);
 });
+
+it('keeps duplicate DNS refusals waiting until their shared approval record is persisted', async () => {
+  const f = fixture();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const request = vi.fn(async () => {
+    await gate;
+    return { covered: true as const };
+  });
+  const enforcement = createProjectEgressHostEnforcement({
+    deadline: f.deadline,
+    store: { readForAdmission: f.readForAdmission },
+    requests: { requestFromSandbox: request },
+    directAuthority: () => true,
+    inspect: f.inspect,
+    dependencies: {
+      inspect: async (b) => ({ ...b }),
+      apply: f.apply,
+      directTargetAllowed: async () => true,
+      destinationAllowed: async () => true,
+      resolve: async () => {
+        throw new Error('Unexpected DNS');
+      },
+    },
+  });
+  let completed = 0;
+  const calls = [0, 1].map(async () => {
+    await enforcement.requestDirect!(network, 'api.example.com');
+    completed++;
+  });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+  expect(completed).toBe(0);
+  release();
+  await Promise.all(calls);
+  expect(completed).toBe(2);
+});

@@ -52,6 +52,7 @@ export function createProjectEgressHostEnforcement(options: {
   // name can become a card, so both are bounded: a Sandbox cannot flood the project.
   const requested = new Map<string, number>();
   const recent = new Map<string, number[]>();
+  const recording = new Map<string, Promise<unknown>>();
   const current = (binding: ProjectEgressNetworkBinding) => {
     const state = generations.get(key(binding));
     if (!state?.ready) throw new Error('Host packet enforcement is not ready');
@@ -170,6 +171,7 @@ export function createProjectEgressHostEnforcement(options: {
         .then((allowed) => {
           const id = `${binding.projectId}|${name}`;
           const now = Date.now();
+          if (allowed && recording.has(id)) return recording.get(id);
           // Broker and system names never become cards that could not take effect.
           if (!allowed || (requested.get(id) ?? -Infinity) > now - REQUEST_INTERVAL_MS) return;
           const times = (recent.get(binding.projectId) ?? []).filter(
@@ -181,10 +183,16 @@ export function createProjectEgressHostEnforcement(options: {
             if (at <= now - REQUEST_INTERVAL_MS) requested.delete(entry);
           requested.set(id, now);
           // A DNS query names no port; the card asks for HTTPS, the common provider case.
-          return requests.requestFromSandbox(binding.projectId, {
-            host: name,
-            protocol: 'tcp',
-            port: 443,
+          const pending = Promise.resolve().then(() =>
+            requests.requestFromSandbox(binding.projectId, {
+              host: name,
+              protocol: 'tcp',
+              port: 443,
+            }),
+          );
+          recording.set(id, pending);
+          return pending.finally(() => {
+            if (recording.get(id) === pending) recording.delete(id);
           });
         })
         .then(() => undefined)
