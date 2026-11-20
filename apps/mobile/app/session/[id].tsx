@@ -1,9 +1,7 @@
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { TranscriptPositionCover } from '../../components/TranscriptPositionCover';
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
-import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { connectionFailureKind, projectTitle } from '@verity/mobile';
 import { Card, CardHead } from '../../components/ui/Card';
@@ -30,8 +28,6 @@ import {
 import { SplitScreenRedirect } from '../../components/SplitScreenRedirect';
 import { sessionLayout } from '../../lib/sessionLayout';
 import type { GoogleMenuAccess } from '../../lib/attachMenu';
-import { driveOverview, singleDriveFolderPath } from '../../lib/driveHierarchy';
-import type { ProjectDriveFolder } from '@verity/mobile';
 import type { PackageFindings } from '../../components/vulnerability/PackageFindings';
 import {
   useGoogleAccountPicker,
@@ -47,7 +43,6 @@ import { SessionSettingsDialog } from '../../components/SessionSettingsDialog';
 import { CodeHostIcon } from '../../components/CodeHostIcon';
 import { useFeatureHint } from '../../components/FeatureHint';
 import { appendHelpQuestion } from '../../lib/featureHints';
-import { TranscriptTimingContext } from '../../components/TranscriptRow';
 import {
   KnowledgeSaveContext,
   KnowledgeSaveProvider,
@@ -63,8 +58,6 @@ import { markSessionSwitch, sessionSwitchTiming } from '@verity/mobile';
 import { PinnedPlan } from '../../components/PinnedPlan';
 import {
   HighlightedSearchText,
-  MarkdownLine,
-  MarkdownTable,
   MarkdownText,
   markdownStyles,
   SearchHighlightContext,
@@ -76,8 +69,6 @@ import { subscribeLiveRefresh } from '../../lib/liveConnection';
 import { openTasksPanel } from '../../lib/taskPanelEvents';
 import { ActionMenu } from '../../components/ActionMenu';
 import { SlowSpinner } from '../../components/SlowSpinner';
-import { FileTextEditor } from '../../components/files/FileTextEditor';
-import { FileContentPreview } from '../../components/files/FileContentPreview';
 // Session chat screen: the live transcript for one Claude Code session plus the
 // operator input bar. Binds @verity/mobile's headless SessionModel via useSession
 // (live WS stream → reducer → Message[]) and renders each canonical message kind
@@ -92,7 +83,6 @@ import {
   type AutomationProposalMessage,
   type AttachmentUpload,
   type BranchSwitchRequest,
-  type DriveFile,
   type SessionAutomation,
   VerityApiError,
   type VerityClient,
@@ -104,8 +94,6 @@ import {
   type PendingPermission,
   type PermissionDecision,
   type RateLimitNotice,
-  type SessionFileEntry,
-  type SessionFileContent,
   type SessionFileRoot,
   type SessionGoogleWorkspaceFile,
   type MockupReview,
@@ -170,7 +158,6 @@ import {
   packageInstallSummary,
   packageInstallDecision,
   KNOWLEDGE_PUBLISH_EXPLANATION,
-  printableFileHtml,
   sessionHandoffCaveats,
   sessionHandoffSummary,
   sessionProgressSummary,
@@ -203,7 +190,6 @@ import {
   createContext,
   memo,
   type ComponentProps,
-  type ReactNode,
   type RefObject,
   useCallback,
   useContext,
@@ -218,14 +204,12 @@ import {
   Animated,
   AppState,
   Easing,
-  FlatList,
   InteractionManager,
   Keyboard,
   Linking,
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -242,24 +226,14 @@ import { WebView } from 'react-native-webview';
 import { openLocalPreview } from '../../components/project/previewAccess';
 import { openFailureAlert, RunningServerCard } from '../../components/project/RunningServerCard';
 import { StaticPreviewSheet } from '../../components/project/StaticPreviewSheet';
-import { SessionFolderRow } from '../../components/SessionFolderRow';
-import { type FileAction, FileActionMenu } from '../../components/files/FileActionMenu';
 import { SystemNotice, SystemNoticeIndicator, useConfirm } from '../../components/ui';
 import { deleteSessionRequest } from '../../lib/deleteSessionRequest';
-import { FileRowActions } from '../../components/files/FileRowActions';
-import { FileBreadcrumb } from '../../components/files/FileBreadcrumb';
-import { useCodeWorkspaceAvailability } from '../../components/files/useCodeWorkspaceAvailability';
-import { FileRootTabs } from '../../components/files/FileRootTabs';
-import { CodeWorkspaceNotice } from '../../components/files/CodeWorkspaceNotice';
-import { FileNameDialog } from '../../components/files/FileNameDialog';
-import {
-  FileSheetHeader,
-  HeaderIconButton,
-  HeaderTextButton,
-} from '../../components/files/FileSheetHeader';
+import { ResizableSheetPanel } from '../../components/files/ResizableSheet';
+import { KNOWLEDGE_ICON } from '../../components/files/knowledgeIcon';
+import { SessionFilesSheet } from '../../components/files/session/SessionFilesSheet';
 import { usePermissionHaptic } from '../../components/usePermissionHaptic';
 import * as Clipboard from 'expo-clipboard';
-import { Directory as FsDirectory, File as FsFile, Paths } from 'expo-file-system';
+import { File as FsFile } from 'expo-file-system';
 // expo-image (not RN Image) for attachments: it lazily fetches + disk-caches by
 // URL, so a referenced image loads only when its row is on screen and is cached
 // across reopens — the backlog of images never loads up front.
@@ -280,7 +254,6 @@ import {
   SessionStarterCard,
   type AutomationProposalState,
 } from '../../components/SessionAutomation';
-import { DragSource } from '../../components/DragSource';
 import { DropZone } from '../../components/DropZone';
 import { ImageLightbox } from '../../components/ImageLightbox';
 import { PromptComposerInput } from '../../components/PromptComposerInput';
@@ -315,12 +288,8 @@ import { useSession } from '../../hooks/useSession';
 import { type VoiceState, useVoiceInput } from '../../hooks/useVoiceInput';
 import { type AttachAnchor, attachMenuRows } from '../../lib/attachMenu';
 import {
-  type DroppedFileDescriptor,
   captureImage,
   pickMeetingAudioAsset,
-  droppedFileData,
-  pickSessionFiles,
-  releaseDroppedFile,
   readMeetingAudioUpload,
   pickFiles,
   pickImagesFromLibrary,
@@ -328,12 +297,8 @@ import {
 } from '../../lib/attachments';
 import { getAuthToken } from '../../lib/authToken';
 import { createVerityClient, getVerityBaseUrl } from '../../lib/client';
-import { isDemoMode } from '../../lib/demoMode';
-import { downloadPinnedFile } from '../../lib/pinnedTransport';
-import { getServerProfile } from '../../lib/serverProfile';
 import { subscribeVoiceShortcut } from '../../lib/voiceShortcut';
 import { MEETING_AUDIO_ENABLED } from '../../lib/featureFlags';
-import { ensureGoogleWorkspaceAccess } from '../../lib/googleDrive';
 import {
   connectSessionGoogleService,
   disconnectSessionGoogleService,
@@ -341,31 +306,7 @@ import {
   GOOGLE_SERVICE_NAMES,
   type GoogleService,
 } from '../../lib/sessionGoogleAccess';
-import {
-  type ClickModifiers,
-  type DragFileItem,
-  dragItemsForRow,
-  fileNameFromPath,
-  isSelectableFile,
-  isTextPreviewCandidate,
-  mimeTypeForFile,
-  retainVisibleSelection,
-  selectionForModifierClick,
-  selectionSummary,
-  toggleFileSelection,
-} from '../../lib/fileSelection';
-import {
-  breadcrumbSegments,
-  cacheDirectoryName,
-  fileEntryMeta,
-  fileIcon,
-  loadPrintModule,
-  loadSharingModule,
-  parentPath,
-  pdfFileName,
-  fileDeletionBatch,
-  renameProblem,
-} from '../../lib/sessionFileUi';
+import { fileNameFromPath } from '../../lib/fileSelection';
 import {
   claimPendingMeetingUpload,
   meetingAudioRequestText,
@@ -423,7 +364,6 @@ const draftStore = new Map<string, string>();
 const MAX_ATTACHMENTS_PER_TURN = 8;
 // Points at 72 PPI (~18 mm). iOS takes page margins only from this option; the
 // document's own `@page` rule covers Android.
-const PRINT_MARGINS = { top: 50, bottom: 50, left: 50, right: 50 };
 // A history page is an append behind the viewport, so nothing has to be corrected
 // afterwards — but FlashList still measures the new rows over the following frames.
 // Treat the page as "settling" until then so an automatic follow-up load cannot stack
@@ -671,21 +611,6 @@ const SessionActionsContext = createContext<SessionActions | null>(null);
 // nothing rather than crashing (never happens in practice; the FlashList is always
 // wrapped).
 const BookmarksContext = createContext<Bookmarks | null>(null);
-// Knowledge — Project and Global alike — has one symbol across the app, so the
-// message "…" sheet, the Explorer tabs and its breadcrumb all read as the same
-// thing; the labels tell the two scopes apart.
-const KNOWLEDGE_ICON: IconName = 'book-open';
-// Where the native drag zone owns the long press; see the row's onLongPress.
-const longPressDrags = Platform.OS === 'ios' && Platform.isPad;
-
-const FILE_ROOT_ICON: Record<SessionFileRoot, IconName> = {
-  worktree: 'folder',
-  knowledge: KNOWLEDGE_ICON,
-  shared: KNOWLEDGE_ICON,
-  documents: KNOWLEDGE_ICON,
-  sources: KNOWLEDGE_ICON,
-  drafts: 'folder',
-};
 
 const SessionFileOpenContext = createContext<OpenLocalFile | null>(null);
 const AppLinkOpenContext = createContext<OpenAppLink | null>(null);
@@ -5096,1724 +5021,6 @@ function EngineChip({
   );
 }
 
-function clamp(n: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, n));
-}
-
-type PanHandlers = ReturnType<typeof PanResponder.create>['panHandlers'];
-
-function useResizableSheet(): {
-  sheetStyle: Animated.WithAnimatedValue<ViewStyle>;
-  panHandlers: PanHandlers;
-} {
-  const insets = useSafeAreaInsets();
-  const { height: windowHeight } = useWindowDimensions();
-  const minSheetHeight = Math.min(windowHeight * 0.7, Math.max(300, windowHeight * 0.34));
-  const maxSheetHeight = Math.max(minSheetHeight, windowHeight - insets.top - 12);
-  const defaultSheetHeight = clamp(windowHeight * 0.7, minSheetHeight, maxSheetHeight);
-  const sheetHeight = useRef(new Animated.Value(defaultSheetHeight)).current;
-  const sheetHeightRef = useRef(defaultSheetHeight);
-  const dragStartHeight = useRef(defaultSheetHeight);
-  useEffect(() => {
-    const next = clamp(sheetHeightRef.current, minSheetHeight, maxSheetHeight);
-    sheetHeightRef.current = next;
-    sheetHeight.setValue(next);
-  }, [maxSheetHeight, minSheetHeight, sheetHeight]);
-  const setClampedSheetHeight = useCallback(
-    (next: number) => {
-      const clamped = clamp(next, minSheetHeight, maxSheetHeight);
-      sheetHeightRef.current = clamped;
-      sheetHeight.setValue(clamped);
-    },
-    [maxSheetHeight, minSheetHeight, sheetHeight],
-  );
-  const settleSheetHeight = useCallback(
-    (next: number) => {
-      const clamped = clamp(next, minSheetHeight, maxSheetHeight);
-      sheetHeightRef.current = clamped;
-      Animated.spring(sheetHeight, {
-        toValue: clamped,
-        damping: 24,
-        stiffness: 260,
-        mass: 0.9,
-        useNativeDriver: false,
-      }).start();
-    },
-    [maxSheetHeight, minSheetHeight, sheetHeight],
-  );
-  const resizePan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_event, gesture) => Math.abs(gesture.dy) > 2,
-        onPanResponderGrant: () => {
-          dragStartHeight.current = sheetHeightRef.current;
-          sheetHeight.stopAnimation((height) => {
-            sheetHeightRef.current = height;
-            dragStartHeight.current = height;
-          });
-        },
-        onPanResponderMove: (_event, gesture) => {
-          setClampedSheetHeight(dragStartHeight.current - gesture.dy);
-        },
-        onPanResponderRelease: () => {
-          settleSheetHeight(sheetHeightRef.current);
-        },
-        onPanResponderTerminate: () => {
-          settleSheetHeight(sheetHeightRef.current);
-        },
-      }),
-    [setClampedSheetHeight, settleSheetHeight, sheetHeight],
-  );
-  return {
-    sheetStyle: {
-      height: sheetHeight,
-      maxHeight: maxSheetHeight,
-      paddingBottom: insets.bottom + 12,
-    },
-    panHandlers: resizePan.panHandlers,
-  };
-}
-
-function SheetResizeHandle({ panHandlers }: { panHandlers: PanHandlers }) {
-  return (
-    <View
-      style={styles.filesResizeHandle}
-      {...panHandlers}
-      accessibilityRole="adjustable"
-      accessibilityLabel="Resize sheet"
-    >
-      <View style={styles.sheetHandle} />
-    </View>
-  );
-}
-
-/** Ceiling for a file dropped into the browser for upload. The server streams
- * the body to disk and caps only on free space, but the native drop target
- * copies the file into the app's temporary directory first — so this bounds that
- * copy rather than the transfer. Far above the composer's attachment cap, which
- * exists for an unrelated reason (base64 inside a turn). */
-const MAX_DROPPED_UPLOAD_BYTES = 100_000_000;
-/** Ceiling across one drop. The native side copies every accepted file before
- * the first upload starts, so without this the per-file cap alone would let a
- * full drop take `MAX_DROPPED_UPLOADS × MAX_DROPPED_UPLOAD_BYTES` of scratch
- * space. Files past the budget are reported as skipped. */
-const MAX_DROPPED_UPLOAD_TOTAL_BYTES = 250_000_000;
-/** Files accepted from a single drop into the browser. */
-const MAX_DROPPED_UPLOADS = 24;
-
-function SessionFilesSheet({
-  client,
-  sessionId,
-  projectId,
-  baseUrl,
-  initialFilePath,
-  initialRoot = 'worktree',
-  onClose,
-}: {
-  client: VerityClient;
-  sessionId: string;
-  projectId: string | null;
-  baseUrl: string;
-  initialFilePath: string | null;
-  initialRoot?: SessionFileRoot;
-  onClose: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const sheet = useResizableSheet();
-  const [confirm, confirmSheet] = useConfirm();
-  const [documentSession, setDocumentSession] = useState(false);
-  const [codeAvailable, setCodeAvailable] = useState(true);
-  // The server reports a missing checkout instead of handing out Documents in its place.
-  const [codeMissing, setCodeMissing] = useState(false);
-  const [restore, setRestore] = useState<{ running: boolean; failure: string | null }>({
-    running: false,
-    failure: null,
-  });
-  const [documentStatus, setDocumentStatus] = useState<{
-    pending: boolean;
-    running: boolean;
-    warning?: string;
-    inspectionError?: boolean;
-    excludedEntries?: { path: string; reason: 'generated' | 'unsupported' }[];
-  }>();
-  const [path, setPath] = useState(initialFilePath ? parentPath(initialFilePath) : '');
-  const [root, setRoot] = useState<SessionFileRoot>(initialRoot);
-  const [entries, setEntries] = useState<SessionFileEntry[]>([]);
-  const [truncated, setTruncated] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<SessionFileContent | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [mutating, setMutating] = useState(false);
-  const [reloadKey, setReloadKey] = useState(0);
-  const [selecting, setSelecting] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [dropActive, setDropActive] = useState(false);
-  const [driveActive, setDriveActive] = useState(false);
-  const [driveCanWrite, setDriveCanWrite] = useState(false);
-  const [driveLinks, setDriveLinks] = useState<ProjectDriveFolder[]>([]);
-  const [driveFolderId, setDriveFolderId] = useState<string | null>(null);
-  const [drivePath, setDrivePath] = useState<Array<{ id: string; name: string }>>([]);
-  const [driveEntries, setDriveEntries] = useState<DriveFile[]>([]);
-  const [driveUnconfigured, setDriveUnconfigured] = useState(false);
-  // The file whose action menu is open, and the one being renamed. Both are drawn
-  // over the sheet (see FileActionMenu), so they live here rather than in a row.
-  const [menuFor, setMenuFor] = useState<{ path: string; inPreview: boolean } | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [editing, setEditing] = useState<SessionFileContent | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [adding, setAdding] = useState(false);
-  // Monotonic id of the newest preview fetch; a resolved fetch whose id no longer
-  // matches is a superseded tap and is dropped. See openFile.
-  const previewRequest = useRef(0);
-  // Modifier keys held at the last touch down, reported by the native row before
-  // its press fires (see DragSource). Shared by the whole list rather than kept
-  // per row, because a press only ever follows its own report — and consumed by
-  // that press, so it can never be read twice.
-  const modifiers = useRef<ClickModifiers>({ shift: false, command: false });
-  // What the next modifier-click needs to know about the last one: the row a
-  // shift-click measures its range from, and the rows the last one contributed
-  // so a smaller range can take them back. A ref, not state: it changes what the
-  // next click means, never what is on screen.
-  const modifierClick = useRef<{ anchor: string | null; range: string[] }>({
-    anchor: null,
-    range: [],
-  });
-  // Read on every render rather than memoized: the bearer lives in a module
-  // variable that a biometric unlock can fill in after this sheet has mounted,
-  // and a memo keyed on baseUrl would hand the native drag source the empty
-  // string it saw first.
-  const token = getAuthToken(baseUrl);
-  const authorization = token !== null && token.length > 0 ? `Bearer ${token}` : '';
-  const directTlsPin =
-    getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.transport === 'direct'
-      ? getServerProfile()?.endpoints.find(({ url }) => url === baseUrl)?.tlsPin
-      : undefined;
-
-  // The earlier deep-link effect reads `openWith` without depending on its identity.
-  const openWithRef = useRef<((filePath: string) => void) | null>(null);
-
-  useCodeWorkspaceAvailability({
-    client,
-    sessionId,
-    codeAvailable,
-    onAvailable: (dir) => {
-      setCodeAvailable(true);
-      setCodeMissing(false);
-      if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
-    },
-    onReload: () => setReloadKey((value) => value + 1),
-  });
-
-  useEffect(() => {
-    if (!initialFilePath) return;
-    // Shares openFile's request token so a tap during this initial fetch wins even
-    // if the deep-linked file resolves afterwards.
-    const request = (previewRequest.current += 1);
-    const active = () => previewRequest.current === request;
-    setPath(parentPath(initialFilePath));
-    setError(null);
-    setPreviewLoading(true);
-    void client
-      .getSessionFileContent(sessionId, initialFilePath, initialRoot)
-      .then((file) => {
-        if (active()) setPreview(file);
-      })
-      .catch((err) => {
-        if (!active()) return;
-        // Same hand-off as a tap in the list: a binary or oversized file opens in
-        // another app instead of dead-ending on "file is not a text file".
-        if (err instanceof VerityApiError && (err.status === 413 || err.status === 415)) {
-          openWithRef.current?.(initialFilePath);
-          return;
-        }
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (active()) setPreviewLoading(false);
-      });
-    return () => {
-      previewRequest.current += 1;
-    };
-  }, [client, sessionId, initialFilePath, initialRoot]);
-
-  useEffect(() => {
-    if (driveActive) return;
-    let active = true;
-    setLoading(true);
-    setError(null);
-    void client
-      .listSessionFiles(sessionId, path, root)
-      .then((dir) => {
-        if (!active) return;
-        setDocumentStatus(dir.documentStatus);
-        setCodeAvailable(dir.codeAvailable ?? true);
-        setCodeMissing(dir.codeWorkspaceUnavailable === true);
-        if (dir.workspaceKind) setDocumentSession(dir.workspaceKind === 'documents');
-        if (
-          !initialFilePath &&
-          root === 'worktree' &&
-          dir.codeWorkspaceUnavailable !== true &&
-          (dir.codeAvailable === false || dir.workspaceKind === 'documents') &&
-          projectId
-        )
-          setDriveActive(true);
-        setEntries(dir.entries);
-        setTruncated(dir.truncated);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setEntries([]);
-        setDocumentStatus(undefined);
-        setTruncated(false);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [
-    client,
-    driveActive,
-    sessionId,
-    path,
-    root,
-    reloadKey,
-    initialFilePath,
-    initialRoot,
-    projectId,
-  ]);
-
-  useEffect(() => {
-    if (!driveActive || !projectId) return;
-    let active = true;
-    const loadDrive = async (): Promise<void> => {
-      setDriveCanWrite(false);
-      setLoading(true);
-      setError(null);
-      setDriveUnconfigured(false);
-      try {
-        const links = await client.listProjectDriveFolders(projectId);
-        if (!active) return;
-        setDriveLinks(links);
-        if (links.length === 0) {
-          if (drivePath.length) setDrivePath([]);
-          setDriveEntries([]);
-          setDriveFolderId(null);
-          setDriveCanWrite(false);
-          setDriveUnconfigured(true);
-          return;
-        }
-        let nextPath = drivePath;
-        if (links.length === 1 && !nextPath.some((part) => part.id.startsWith('link:'))) {
-          nextPath = singleDriveFolderPath(links);
-          setDrivePath(nextPath);
-        }
-        const selectedId = nextPath.find((part) => part.id.startsWith('link:'))?.id.slice(5);
-        const link = links.find((candidate) => candidate.id === selectedId);
-        if (!link) {
-          if (selectedId) {
-            setDrivePath([]);
-            return;
-          }
-          const accountId = nextPath.find((part) => part.id.startsWith('account:'))?.id.slice(8);
-          setDriveFolderId(null);
-          setDriveCanWrite(false);
-          if (accountId && !links.some((candidate) => candidate.accountId === accountId)) {
-            setDrivePath([]);
-            return;
-          }
-          setDriveEntries(driveOverview(links, accountId));
-          return;
-        }
-        setDriveFolderId(link.id);
-        setDriveCanWrite(link.accessMode === 'read-write');
-        const last = nextPath.at(-1)?.id;
-        const parentId = !last || last.startsWith('link:') ? link.folderId : last;
-        const page = await client.listProjectGoogleDriveFiles(projectId, link.id, { parentId });
-        if (active) setDriveEntries(page.files);
-      } catch (caught) {
-        if (active) {
-          setDriveEntries([]);
-          setError(caught instanceof Error ? caught.message : String(caught));
-        }
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    void loadDrive();
-    return () => {
-      active = false;
-    };
-  }, [client, driveActive, driveFolderId, drivePath, projectId, reloadKey]);
-
-  // A reload — an upload landed, or the agent changed the tree — can retire rows
-  // the selection still names. Pruning keeps the header count honest and stops a
-  // drag from promising a file that is no longer listed.
-  useEffect(() => {
-    setSelected((current) => {
-      const retained = retainVisibleSelection(current, entries);
-      return retained.length === current.length ? current : retained;
-    });
-  }, [entries]);
-
-  // Leaving a directory ends selection outright. Every selected row belongs to
-  // the directory being left, so carrying the mode across would show an empty
-  // "0 selected" header over rows that were never chosen.
-  useEffect(() => {
-    setSelecting(false);
-    setSelected([]);
-    modifierClick.current = { anchor: null, range: [] };
-  }, [path]);
-
-  const uploadFiles = useCallback(() => {
-    void (async () => {
-      let uploaded = false;
-      let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
-      try {
-        picked = await pickSessionFiles();
-        if (picked.length === 0) return;
-        setUploading(true);
-        for (const file of picked) {
-          await client.uploadSessionFile(sessionId, {
-            path,
-            fileName: file.fileName,
-            data: new FsFile(file.uri),
-            root,
-          });
-          uploaded = true;
-        }
-      } catch (err) {
-        Alert.alert('Could not upload file', err instanceof Error ? err.message : String(err));
-      } finally {
-        // DocumentPicker copied every selected item into our cache. Dispose all
-        // copies after success or failure; otherwise repeated large selections
-        // permanently consume app storage.
-        for (const file of picked) {
-          try {
-            new FsFile(file.uri).delete();
-          } catch {
-            // Best effort; the OS may already have reaped the temporary file.
-          }
-        }
-        if (uploaded) setReloadKey((key) => key + 1);
-        setUploading(false);
-      }
-    })();
-  }, [client, path, root, sessionId]);
-
-  const uploadDriveFiles = useCallback(() => {
-    if (!projectId || !driveFolderId || drivePath.length === 0 || !driveCanWrite) return;
-    void (async () => {
-      let picked: Awaited<ReturnType<typeof pickSessionFiles>> = [];
-      try {
-        picked = await pickSessionFiles();
-        if (picked.length === 0) return;
-        setUploading(true);
-        for (const file of picked) {
-          await client.uploadProjectGoogleDriveFile(projectId, driveFolderId, {
-            parentId: drivePath.at(-1)?.id.startsWith('link:')
-              ? driveLinks.find((link) => link.id === driveFolderId)?.folderId
-              : drivePath.at(-1)?.id,
-            fileName: file.fileName,
-            mimeType: 'application/octet-stream',
-            data: new FsFile(file.uri),
-          });
-        }
-        setReloadKey((key) => key + 1);
-      } catch (caught) {
-        Alert.alert(
-          'Could not upload file',
-          caught instanceof Error ? caught.message : String(caught),
-        );
-      } finally {
-        for (const file of picked) {
-          try {
-            new FsFile(file.uri).delete();
-          } catch {
-            // Best effort cleanup of the document picker cache copy.
-          }
-        }
-        setUploading(false);
-      }
-    })();
-  }, [client, driveFolderId, drivePath, driveLinks, projectId, driveCanWrite]);
-
-  const openDriveFile = useCallback(
-    (file: DriveFile) => {
-      if (!projectId || !driveFolderId) return;
-      const canUseInChat = new Set([
-        'application/vnd.google-apps.document',
-        'application/vnd.google-apps.spreadsheet',
-        'application/vnd.google-apps.presentation',
-      ]).has(file.mimeType);
-      Alert.alert(
-        file.name,
-        'This file stays in Google Drive.',
-        [
-          ...(Platform.OS === 'android' && canUseInChat && file.webViewLink
-            ? []
-            : [{ text: 'Cancel', style: 'cancel' as const }]),
-          ...(file.webViewLink
-            ? [
-                {
-                  text: 'Open in Google Drive',
-                  onPress: () => void Linking.openURL(file.webViewLink!),
-                },
-              ]
-            : []),
-          ...(canUseInChat
-            ? [
-                {
-                  text: 'Use in this chat',
-                  onPress: () => {
-                    setMutating(true);
-                    void (async () => {
-                      if (
-                        !(await ensureGoogleWorkspaceAccess(
-                          client,
-                          file.mimeType,
-                          driveLinks.find((link) => link.id === driveFolderId)?.accountId,
-                        ))
-                      )
-                        return;
-                      await client.assignSessionGoogleWorkspaceFile(
-                        sessionId,
-                        file.id,
-                        driveLinks.find((link) => link.id === driveFolderId)?.accountId,
-                        driveFolderId,
-                      );
-                      onClose();
-                    })()
-                      .catch((caught: unknown) =>
-                        Alert.alert(
-                          'Could not use file in chat',
-                          caught instanceof Error ? caught.message : String(caught),
-                        ),
-                      )
-                      .finally(() => setMutating(false));
-                  },
-                },
-              ]
-            : []),
-          {
-            text: 'Add to Project Knowledge',
-            onPress: () => {
-              setMutating(true);
-              void client
-                .importProjectGoogleDriveFile(projectId, driveFolderId, file.id)
-                .then((result) => Alert.alert('Added to Project Knowledge', result.path))
-                .catch((caught: unknown) =>
-                  Alert.alert(
-                    'Could not add file',
-                    caught instanceof Error ? caught.message : String(caught),
-                  ),
-                )
-                .finally(() => setMutating(false));
-            },
-          },
-        ],
-        { cancelable: true },
-      );
-    },
-    [client, driveFolderId, driveLinks, onClose, projectId, sessionId],
-  );
-
-  const uploadDroppedFiles = useCallback(
-    (files: readonly DroppedFileDescriptor[]) => {
-      void (async () => {
-        let uploaded = false;
-        const failures: string[] = [];
-        setUploading(true);
-        try {
-          // Each file is its own attempt: one rejected name — a collision, an
-          // unwritable path — must not discard the rest of the drop, whose
-          // temporary copies are deleted below either way.
-          for (const file of files) {
-            try {
-              await client.uploadSessionFile(sessionId, {
-                path,
-                fileName: file.fileName,
-                data: await droppedFileData(file.uri),
-                root,
-              });
-              uploaded = true;
-            } catch (err) {
-              failures.push(
-                `${file.fileName}: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-          }
-          if (failures.length > 0) {
-            Alert.alert(
-              failures.length === 1 ? 'Could not upload file' : 'Some files were not uploaded',
-              failures.join('\n'),
-            );
-          }
-        } finally {
-          // These are the native drop target's own temporary copies. Unlike the
-          // attachment path there is no reader that disposes of them, so a
-          // failure partway through must not strand the rest.
-          for (const file of files) {
-            try {
-              releaseDroppedFile(file.uri);
-            } catch {
-              // Best effort; the OS also clears the app's temporary directory.
-            }
-          }
-          if (uploaded) setReloadKey((key) => key + 1);
-          setUploading(false);
-        }
-      })();
-    },
-    [client, path, root, sessionId],
-  );
-
-  const onUploadDropRejected = useCallback((errors: string[]) => {
-    if (errors.length > 0) Alert.alert('Could not upload', errors.join('\n'));
-  }, []);
-
-  const openWith = useCallback(
-    (filePath: string) => {
-      void (async () => {
-        const url = client.sessionFileDownloadUrl(sessionId, filePath, root);
-        try {
-          if (Platform.OS === 'web') {
-            const blob = await client.downloadSessionFile(sessionId, filePath, root);
-            const objectUrl = URL.createObjectURL(blob);
-            const anchor = document.createElement('a');
-            anchor.href = objectUrl;
-            anchor.download = fileNameFromPath(filePath);
-            anchor.click();
-            setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-            return;
-          }
-          const cacheDir = new FsDirectory(Paths.cache, cacheDirectoryName(sessionId, filePath));
-          cacheDir.create({ idempotent: true, intermediates: true });
-          const token = getAuthToken(baseUrl);
-          const destination = new FsFile(cacheDir, fileNameFromPath(filePath));
-          if (isDemoMode()) {
-            const { content } = await client.getSessionFileContent(sessionId, filePath, root);
-            destination.write(content);
-            const sharing = await loadSharingModule();
-            if (sharing !== undefined && (await sharing.isAvailableAsync())) {
-              await sharing.shareAsync(destination.uri, {
-                mimeType: mimeTypeForFile(filePath),
-                dialogTitle: `Open ${fileNameFromPath(filePath)}`,
-              });
-            }
-            return;
-          }
-          const headers =
-            token !== null && token.length > 0 ? { authorization: `Bearer ${token}` } : undefined;
-          const file = directTlsPin
-            ? new FsFile(
-                await downloadPinnedFile({
-                  url,
-                  destination: destination.uri,
-                  tlsPin: directTlsPin,
-                  useRemote: true,
-                  ...(headers ? { headers } : {}),
-                }),
-              )
-            : await FsFile.downloadFileAsync(url, destination, {
-                idempotent: true,
-                ...(headers ? { headers } : {}),
-              });
-          const sharing = await loadSharingModule();
-          if (sharing !== undefined && (await sharing.isAvailableAsync())) {
-            await sharing.shareAsync(file.uri, {
-              mimeType: mimeTypeForFile(filePath),
-              dialogTitle: `Open ${fileNameFromPath(filePath)}`,
-            });
-          } else {
-            throw new Error('No app is available to open or share this file');
-          }
-        } catch (err) {
-          Alert.alert('Could not open file', err instanceof Error ? err.message : String(err));
-        }
-      })();
-    },
-    [baseUrl, client, directTlsPin, root, sessionId],
-  );
-  openWithRef.current = openWith;
-
-  // Print or export the previewed text file. Sharing the raw file never offers
-  // "Print" on iOS — the system prints only content it renders itself, PDFs and
-  // images — so the file goes through HTML instead: straight to the print dialog,
-  // or into a PDF that the share sheet can print, mail or save.
-  // Rendering a long file takes seconds with no dialog on screen yet; a second tap
-  // would stack print dialogs or overwrite the PDF the first share is still reading.
-  const exporting = useRef(false);
-  const exportPreview = useCallback(
-    (file: { path: string; content: string }, mode: 'print' | 'pdf') => {
-      if (exporting.current) return;
-      exporting.current = true;
-      void (async () => {
-        try {
-          const print = await loadPrintModule();
-          if (print === undefined) throw new Error('Printing is not available in this build');
-          const html = printableFileHtml(file.path, file.content);
-          if (mode === 'print') {
-            try {
-              await print.printAsync({ html, margins: PRINT_MARGINS });
-            } catch (err) {
-              // iOS rejects a print dialog the operator simply dismissed.
-              if (err instanceof Error && /did not complete/i.test(err.message)) return;
-              throw err;
-            }
-            return;
-          }
-          const rendered = await print.printToFileAsync({ html, margins: PRINT_MARGINS });
-          const cacheDir = new FsDirectory(
-            Paths.cache,
-            cacheDirectoryName(sessionId, `${file.path}.pdf`),
-          );
-          cacheDir.create({ idempotent: true, intermediates: true });
-          const pdf = new FsFile(cacheDir, pdfFileName(file.path));
-          await new FsFile(rendered.uri).move(pdf, { overwrite: true });
-          const sharing = await loadSharingModule();
-          if (sharing === undefined || !(await sharing.isAvailableAsync())) {
-            throw new Error('No app is available to share this PDF');
-          }
-          await sharing.shareAsync(pdf.uri, {
-            mimeType: 'application/pdf',
-            UTI: 'com.adobe.pdf',
-            dialogTitle: `Share ${pdfFileName(file.path)}`,
-          });
-        } catch (err) {
-          Alert.alert(
-            mode === 'print' ? 'Could not print file' : 'Could not create PDF',
-            err instanceof Error ? err.message : String(err),
-          );
-        } finally {
-          exporting.current = false;
-        }
-      })();
-    },
-    [sessionId],
-  );
-
-  const chooseExport = useCallback(
-    (file: { path: string; content: string }) => {
-      Alert.alert(fileNameFromPath(file.path), undefined, [
-        { text: 'Print', onPress: () => exportPreview(file, 'print') },
-        { text: 'Share as PDF', onPress: () => exportPreview(file, 'pdf') },
-        { text: 'Cancel', style: 'cancel' },
-      ]);
-    },
-    [exportPreview],
-  );
-
-  const openFile = useCallback(
-    (entry: SessionFileEntry) => {
-      // Every tap invalidates whatever fetch is in flight: a large file takes long
-      // enough that a second tap (or a directory hop) lands first, and without this
-      // the slower response would win — showing a file the operator already left,
-      // or clearing the spinner while the newer request is still running.
-      const request = (previewRequest.current += 1);
-      if (entry.kind === 'directory') {
-        setPath(entry.path);
-        setPreview(null);
-        setPreviewLoading(false);
-        return;
-      }
-      if (entry.kind !== 'file') return;
-      setError(null);
-      // A large file takes a moment to fetch AND to lay out; without this the sheet
-      // sits unchanged after the tap and the open reads as a dead press.
-      setPreviewLoading(true);
-      void client
-        .getSessionFileContent(sessionId, entry.path, root)
-        .then((file) => {
-          if (previewRequest.current !== request) return;
-          setPreview(file);
-        })
-        .catch((err) => {
-          if (previewRequest.current !== request) return;
-          if (err instanceof VerityApiError && (err.status === 413 || err.status === 415)) {
-            openWith(entry.path);
-            return;
-          }
-          setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          if (previewRequest.current !== request) return;
-          setPreviewLoading(false);
-        });
-    },
-    [client, sessionId, openWith, root],
-  );
-
-  const toggleSelected = useCallback((entry: SessionFileEntry) => {
-    if (!isSelectableFile(entry)) return;
-    modifierClick.current = { anchor: entry.path, range: [] };
-    setSelected((current) => toggleFileSelection(current, entry.path));
-  }, []);
-
-  // Selection starts from a row, never from the header: the file you held or
-  // chose "Select" for is the first one picked, so the mode never opens empty.
-  const startSelection = useCallback(
-    (entry: SessionFileEntry) => {
-      if (mutating || driveActive || !isSelectableFile(entry)) return;
-      modifierClick.current = { anchor: entry.path, range: [] };
-      setSelected([entry.path]);
-      setSelecting(true);
-      void Haptics.selectionAsync();
-    },
-    [driveActive, mutating],
-  );
-
-  const endSelection = useCallback(() => {
-    setSelecting(false);
-    setSelected([]);
-    modifierClick.current = { anchor: null, range: [] };
-  }, []);
-
-  const confirmDelete = useCallback(
-    (
-      paths: readonly string[],
-      onDeleted: (deleted: readonly string[], complete: boolean) => void,
-    ) => {
-      if (mutating || paths.length === 0) return;
-      const folder =
-        paths.length === 1 &&
-        entries.some((entry) => entry.path === paths[0] && entry.kind === 'directory');
-      const batch = fileDeletionBatch(paths, (filePath) =>
-        client.deleteSessionFile(sessionId, root, filePath),
-      );
-      confirm({
-        title: folder
-          ? 'Delete folder and its contents?'
-          : paths.length === 1
-            ? 'Delete file?'
-            : `Delete ${paths.length} files?`,
-        message: `${paths
-          .slice(0, 5)
-          .map((filePath) => fileNameFromPath(filePath))
-          .join(
-            '\n',
-          )}\n\n${folder ? 'This permanently removes the folder and everything inside it.' : 'This permanently removes the selected files.'}`,
-        confirmLabel: 'Delete',
-        destructive: true,
-        onConfirm: async () => {
-          setMutating(true);
-          const deleted = batch.deleted;
-          try {
-            await batch.run();
-            onDeleted(deleted, true);
-          } catch (error) {
-            onDeleted(deleted, false);
-            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
-            throw error;
-          } finally {
-            if (deleted.length) setReloadKey((key) => key + 1);
-            setMutating(false);
-          }
-        },
-      });
-    },
-    [client, confirm, entries, mutating, root, sessionId],
-  );
-
-  const trashDriveFile = async (file: DriveFile) => {
-    if (!projectId || !driveFolderId || !driveCanWrite || mutating) return;
-    try {
-      const snapshot = await client.getProjectGoogleDriveFile(projectId, driveFolderId, file.id);
-      if (!snapshot.version)
-        throw new Error('This file has no version. Reload the folder and try again.');
-      const expectedVersion = snapshot.version;
-      confirm({
-        title: 'Move to Google Drive trash?',
-        message: `${file.name}\n\n${file.mimeType === 'application/vnd.google-apps.folder' ? 'The folder and its contents will be moved to the trash.' : 'The file will be moved to the trash.'}`,
-        confirmLabel: 'Move to trash',
-        destructive: true,
-        onConfirm: async () => {
-          setMutating(true);
-          try {
-            await client.trashProjectGoogleDriveFile(
-              projectId,
-              driveFolderId,
-              file.id,
-              expectedVersion,
-            );
-            setReloadKey((key) => key + 1);
-          } catch (error) {
-            Alert.alert('Could not delete', error instanceof Error ? error.message : String(error));
-            throw error;
-          } finally {
-            setMutating(false);
-          }
-        },
-      });
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const deleteSelectedFiles = useCallback(() => {
-    confirmDelete(selected, (deleted, complete) => {
-      if (complete) endSelection();
-      else setSelected((current) => current.filter((path) => !deleted.includes(path)));
-    });
-  }, [confirmDelete, endSelection, selected]);
-
-  const closePreview = useCallback(() => {
-    // Also drops a fetch still in flight, so leaving the preview can't be undone
-    // a second later by a slow response.
-    previewRequest.current += 1;
-    setPreview(null);
-    setPreviewLoading(false);
-  }, []);
-
-  const renameFile = useCallback(
-    async (filePath: string, name: string) => {
-      setMutating(true);
-      try {
-        const renamed = await client.renameSessionFile(sessionId, root, filePath, name);
-        setPreview((current) =>
-          current?.path === filePath ? { ...current, path: renamed.path } : current,
-        );
-        setRenaming(null);
-        setReloadKey((key) => key + 1);
-      } catch (err) {
-        // A server from before worktree renames answers with the knowledge-only
-        // refusal, which reads as nonsense on the Files tab.
-        if (
-          err instanceof VerityApiError &&
-          err.status === 400 &&
-          root === 'worktree' &&
-          /only knowledge files/.test(err.message)
-        ) {
-          throw new Error('Update the Verity server to rename files here.');
-        }
-        throw err;
-      } finally {
-        setMutating(false);
-      }
-    },
-    [client, root, sessionId],
-  );
-
-  const selectableEntries = useMemo(() => entries.filter(isSelectableFile), [entries]);
-  const allSelected =
-    selectableEntries.length > 0 &&
-    selectableEntries.every((entry) => selected.includes(entry.path));
-
-  const rememberModifiers = useCallback((held: ClickModifiers) => {
-    modifiers.current = held;
-  }, []);
-
-  const forgetModifiers = useCallback(() => {
-    modifiers.current = { shift: false, command: false };
-  }, []);
-
-  // What a press on a row means. A command- or shift-click selects — entering
-  // selection mode on its own, so a Mac operator never has to find the header
-  // toggle first — and anything else keeps the touch behaviour: pick the row in
-  // selection mode, open it outside of one.
-  const pressFileRow = useCallback(
-    (entry: SessionFileEntry) => {
-      if (mutating) return;
-      // Consumed, not just read: every touch reports its own flags before its
-      // press, so a press that finds a report left over is one that had no touch
-      // behind it — VoiceOver activation, say — and must not inherit whatever was
-      // held last. Touches that end in a drag or a scroll withdraw their own
-      // report (see forgetModifiers), so nothing is left standing there either.
-      const held = modifiers.current;
-      modifiers.current = { shift: false, command: false };
-      const next = selectionForModifierClick(
-        { selected, ...modifierClick.current },
-        entry,
-        held,
-        entries,
-      );
-      if (next) {
-        modifierClick.current = { anchor: next.anchor, range: next.range };
-        setSelected(next.selected);
-        setSelecting(true);
-        return;
-      }
-      if (selecting) {
-        toggleSelected(entry);
-        return;
-      }
-      openFile(entry);
-    },
-    [entries, mutating, openFile, selected, selecting, toggleSelected],
-  );
-
-  const downloadUrlFor = useCallback(
-    (filePath: string) => client.sessionFileDownloadUrl(sessionId, filePath, root),
-    [client, root, sessionId],
-  );
-
-  // Every row needs its own drag payload, and each selected row's payload is the
-  // same ordered selection — so it is built once here rather than per row, which
-  // would be quadratic in the size of the selection.
-  const dragItemsByPath = useMemo(() => {
-    const chosen = new Set(selected);
-    const anySelected = entries.find((entry) => isSelectableFile(entry) && chosen.has(entry.path));
-    const selectionItems = anySelected
-      ? dragItemsForRow(anySelected, selected, entries, downloadUrlFor)
-      : [];
-    const byPath = new Map<string, DragFileItem[]>();
-    for (const entry of entries) {
-      if (!isSelectableFile(entry)) continue;
-      byPath.set(
-        entry.path,
-        chosen.has(entry.path)
-          ? selectionItems
-          : // An empty selection is the "row outside the selection" case, which
-            // is exactly what an unselected row should drag.
-            dragItemsForRow(entry, [], entries, downloadUrlFor),
-      );
-    }
-    return byPath;
-  }, [entries, selected, downloadUrlFor]);
-
-  const editFile = async (filePath: string) => {
-    if (mutating) return;
-    setMutating(true);
-    try {
-      const file = await client.getSessionFileContent(sessionId, filePath, root);
-      if (file.editable === false) throw new Error('This preview is read-only.');
-      if (!file.version || !file.editable)
-        throw new Error('Update the Verity server to edit text files.');
-      setEditing(file);
-    } catch (error) {
-      Alert.alert('Could not edit file', error instanceof Error ? error.message : String(error));
-    } finally {
-      setMutating(false);
-    }
-  };
-  const menuActions: FileAction[] =
-    menuFor === null
-      ? []
-      : [
-          ...(!menuFor.inPreview
-            ? [
-                {
-                  key: 'open',
-                  label: 'Open',
-                  icon: 'file' as const,
-                  onPress: () => {
-                    const entry = entries.find((entry) => entry.path === menuFor.path);
-                    if (entry) void openFile(entry);
-                  },
-                },
-              ]
-            : []),
-          ...(() => {
-            // Offered only where it will do something: a file past the download
-            // limit has a menu but cannot be selected (see isSelectableFile).
-            const entry = entries.find((entry) => entry.path === menuFor.path);
-            return !menuFor.inPreview && !driveActive && entry && isSelectableFile(entry)
-              ? [
-                  {
-                    key: 'select',
-                    label: 'Select',
-                    icon: 'check-circle' as const,
-                    onPress: () => startSelection(entry),
-                  },
-                ]
-              : [];
-          })(),
-          ...(menuFor.inPreview && preview
-            ? [
-                {
-                  // Chunked rendering means native text selection stops at each
-                  // block, so drag-selecting the whole file does not work — this
-                  // copies the exact content the server returned instead.
-                  key: 'copy',
-                  label: 'Copy contents',
-                  icon: 'copy' as const,
-                  onPress: () => {
-                    void Clipboard.setStringAsync(preview.content)
-                      .then(() =>
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success),
-                      )
-                      .catch((err: unknown) =>
-                        Alert.alert(
-                          'Could not copy',
-                          err instanceof Error ? err.message : String(err),
-                        ),
-                      );
-                  },
-                },
-              ]
-            : []),
-          ...(menuFor.inPreview && preview && Platform.OS !== 'web'
-            ? [
-                {
-                  key: 'export',
-                  label: 'Print or share as PDF',
-                  icon: 'printer' as const,
-                  onPress: () => chooseExport(preview),
-                },
-              ]
-            : []),
-          {
-            key: 'open-with',
-            label: 'Open with another app',
-            icon: 'share' as const,
-            onPress: () => openWith(menuFor.path),
-          },
-          // An open file already has Edit in its header; listing it twice would
-          // make the menu disagree with the bar above it about where editing lives.
-          ...(isTextPreviewCandidate(menuFor.path) && !menuFor.inPreview
-            ? [
-                {
-                  key: 'edit',
-                  label: 'Edit text',
-                  icon: 'edit' as const,
-                  onPress: () => {
-                    void editFile(menuFor.path);
-                  },
-                },
-              ]
-            : []),
-          {
-            key: 'rename',
-            label: 'Rename…',
-            icon: 'edit-3' as const,
-            onPress: () => setRenaming(menuFor.path),
-          },
-          {
-            key: 'delete',
-            label: 'Delete…',
-            icon: 'trash-2' as const,
-            destructive: true,
-            onPress: () =>
-              confirmDelete([menuFor.path], (deleted) => {
-                if (deleted.length === 0) return;
-                setSelected((current) => current.filter((path) => !deleted.includes(path)));
-                if (menuFor.inPreview) closePreview();
-              }),
-          },
-        ];
-
-  const restoreCodeWorkspace = (): void => {
-    setRestore({ running: true, failure: null });
-    void client.restoreSessionCodeWorkspace(sessionId).then(
-      () => {
-        setRestore({ running: false, failure: null });
-        setCodeMissing(false);
-        setCodeAvailable(true);
-        setReloadKey((key) => key + 1);
-      },
-      (err: unknown) =>
-        setRestore({ running: false, failure: err instanceof Error ? err.message : String(err) }),
-    );
-  };
-  const navigateRoot = (candidate: typeof root): void => {
-    if (mutating || (!driveActive && candidate === root && path === '')) return;
-    previewRequest.current += 1;
-    endSelection();
-    setDriveActive(false);
-    setRoot(candidate);
-    setPath('');
-    setEntries([]);
-    setTruncated(false);
-    setLoading(true);
-    setPreview(null);
-    setPreviewLoading(false);
-    setError(null);
-  };
-
-  return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <GestureHandlerRootView style={styles.flex}>
-        <Pressable style={styles.sheetBackdrop} onPress={onClose} accessibilityRole="button">
-          <View />
-        </Pressable>
-        <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-          <SheetResizeHandle panHandlers={sheet.panHandlers} />
-          {!preview ? (
-            selecting ? (
-              <FileSheetHeader
-                leading={
-                  <HeaderTextButton
-                    label={allSelected ? 'Select None' : 'Select All'}
-                    disabled={mutating}
-                    onPress={() => {
-                      modifierClick.current = { anchor: null, range: [] };
-                      setSelected(allSelected ? [] : selectableEntries.map((entry) => entry.path));
-                    }}
-                  />
-                }
-                title={selected.length > 0 ? selectionSummary(selected.length) : 'Select files'}
-                trailing={
-                  // Text, not a glyph: the old toggle turned into an X beside the X
-                  // that closes the sheet, and nobody could tell which ended what.
-                  <HeaderTextButton
-                    label="Done"
-                    emphasis="strong"
-                    disabled={mutating}
-                    accessibilityLabel="Done selecting files"
-                    onPress={endSelection}
-                  />
-                }
-              />
-            ) : (
-              <FileSheetHeader
-                title="Files"
-                trailing={
-                  <>
-                    {/* One way in to adding, as in every file app's toolbar. Selecting
-                      is not up here: a long press on a row starts it, as does
-                      "Select" in the row's menu, so the bar stays two glyphs. */}
-                    <HeaderIconButton
-                      icon={driveActive ? 'upload' : 'plus'}
-                      tint
-                      busy={uploading}
-                      disabled={
-                        mutating ||
-                        root === 'drafts' ||
-                        error !== null ||
-                        (driveActive && (driveUnconfigured || !driveCanWrite))
-                      }
-                      accessibilityLabel={
-                        driveActive
-                          ? driveCanWrite
-                            ? 'Upload files to Google Drive'
-                            : 'Google Drive is read-only'
-                          : 'New or upload files'
-                      }
-                      onPress={driveActive ? uploadDriveFiles : () => setAdding(true)}
-                    />
-                    <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
-                  </>
-                }
-              />
-            )
-          ) : null}
-          {!preview ? (
-            <FileRootTabs
-              codeIcon={FILE_ROOT_ICON.worktree}
-              codeActive={!driveActive && root === 'worktree'}
-              codeDisabled={documentSession || (!codeAvailable && !codeMissing)}
-              driveActive={driveActive}
-              drive={Boolean(projectId)}
-              disabled={mutating}
-              onCode={() => navigateRoot('worktree')}
-              onDrive={() => {
-                previewRequest.current += 1;
-                endSelection();
-                setDriveActive(true);
-                setLoading(true);
-                setPreview(null);
-                setError(null);
-              }}
-            />
-          ) : null}
-          {preview ? null : driveActive ? (
-            (driveLinks.length > 1 ? drivePath.length > 0 : drivePath.length > 1) ? (
-              <FileBreadcrumb
-                rootIcon="hard-drive"
-                rootLabel={
-                  driveLinks.length > 1 ? 'Google Drive' : (drivePath[0]?.name ?? 'Google Drive')
-                }
-                segments={(driveLinks.length > 1 ? drivePath : drivePath.slice(1)).map(
-                  ({ id, name }) => ({ key: id, name }),
-                )}
-                disabled={mutating}
-                onNavigate={(index) =>
-                  setDrivePath((current) =>
-                    current.slice(0, index + (driveLinks.length > 1 ? 1 : 2)),
-                  )
-                }
-              />
-            ) : null
-          ) : path ? (
-            // At the top of a tab the tab itself says where you are; a breadcrumb
-            // of nothing but the root would be a control with nowhere to go.
-            <FileBreadcrumb
-              rootIcon={FILE_ROOT_ICON[root]}
-              rootLabel={
-                root === 'worktree'
-                  ? documentSession
-                    ? 'My edits'
-                    : 'Code'
-                  : root === 'sources'
-                    ? 'Sources'
-                    : root === 'documents'
-                      ? 'Wiki'
-                      : root === 'drafts'
-                        ? 'Session edits'
-                        : root === 'knowledge'
-                          ? 'Project'
-                          : 'Global'
-              }
-              segments={breadcrumbSegments(path).map((segment) => ({
-                key: segment.path,
-                name: segment.name,
-              }))}
-              disabled={mutating || selecting}
-              onNavigate={(index) =>
-                setPath(index < 0 ? '' : breadcrumbSegments(path)[index]!.path)
-              }
-            />
-          ) : null}
-          {!driveActive ? (
-            <WikiDetails
-              root={root}
-              documentSession={documentSession}
-              status={documentStatus}
-              error={error}
-              hasConflicts={
-                root === 'documents' && !path && entries.some((entry) => entry.name === 'Conflicts')
-              }
-              disabled={mutating}
-              navigate={navigateRoot}
-            />
-          ) : null}
-          {driveActive ? (
-            <ScrollView style={styles.filesList}>
-              {error ? <Text style={styles.sheetError}>{error}</Text> : null}
-              {driveUnconfigured && projectId ? (
-                <View style={styles.driveSetupNotice}>
-                  <Icon name="hard-drive" size={28} color={theme.colors.textFaint} />
-                  <Text style={styles.emptyTitle}>No Google Drive folder</Text>
-                  <Text style={styles.emptySubtitle}>
-                    Connect a folder in the project settings to use its documents in this project.
-                  </Text>
-                  <Pressable
-                    onPress={() => {
-                      onClose();
-                      router.push({
-                        pathname: '/project/[id]/settings/services',
-                        params: { id: projectId, section: 'drive' },
-                      });
-                    }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Open project settings to connect Google Drive"
-                    style={({ pressed }) => [
-                      styles.driveSetupButton,
-                      pressed ? styles.driveSetupButtonPressed : null,
-                    ]}
-                  >
-                    <Text style={styles.driveSetupButtonLabel}>Connect a folder</Text>
-                  </Pressable>
-                </View>
-              ) : loading ? (
-                <View style={styles.sheetLoading}>
-                  <ActivityIndicator color={theme.colors.textMuted} />
-                </View>
-              ) : driveEntries.length === 0 && !error ? (
-                <Text style={styles.sheetEmpty}>This folder is empty.</Text>
-              ) : (
-                driveEntries.map((file) => {
-                  const folder = file.mimeType === 'application/vnd.google-apps.folder';
-                  return (
-                    <FileRowActions
-                      key={file.id}
-                      label={file.name}
-                      deleteLabel="Move to trash"
-                      disabled={mutating}
-                      onDelete={
-                        driveCanWrite && driveFolderId
-                          ? () => {
-                              void trashDriveFile(file);
-                            }
-                          : undefined
-                      }
-                    >
-                      <Pressable
-                        onPress={() =>
-                          folder
-                            ? setDrivePath((current) => [
-                                ...current,
-                                { id: file.id, name: file.name },
-                              ])
-                            : openDriveFile(file)
-                        }
-                        disabled={mutating}
-                        accessibilityRole="button"
-                        accessibilityLabel={folder ? `Open folder ${file.name}` : file.name}
-                        style={({ pressed }) => [
-                          styles.fileRow,
-                          pressed ? styles.sheetRowPressed : null,
-                        ]}
-                      >
-                        <Icon
-                          name={folder ? 'folder' : 'file'}
-                          size={18}
-                          color={theme.colors.textMuted}
-                        />
-                        <View style={styles.fileMain}>
-                          <Text style={[styles.sheetRowLabel, styles.fileName]} numberOfLines={2}>
-                            {file.name}
-                          </Text>
-                        </View>
-                        <Icon
-                          name={folder ? 'chevron-right' : 'file'}
-                          size={17}
-                          color={theme.colors.textFaint}
-                        />
-                      </Pressable>
-                    </FileRowActions>
-                  );
-                })
-              )}
-            </ScrollView>
-          ) : preview ? (
-            <View style={styles.filesPreviewWrap}>
-              <FileSheetHeader
-                leading={
-                  <HeaderIconButton
-                    icon="chevron-left"
-                    accessibilityLabel="Back to file list"
-                    onPress={closePreview}
-                  />
-                }
-                title={fileNameFromPath(preview.path)}
-                subtitle={parentPath(preview.path) || null}
-                trailing={
-                  <>
-                    {preview.editable && preview.version ? (
-                      <HeaderTextButton
-                        label="Edit"
-                        disabled={mutating}
-                        onPress={() => setEditing(preview)}
-                      />
-                    ) : null}
-                    <HeaderIconButton
-                      icon="more-horizontal"
-                      disabled={mutating}
-                      accessibilityLabel={`More actions for ${fileNameFromPath(preview.path)}`}
-                      onPress={() => setMenuFor({ path: preview.path, inPreview: true })}
-                    />
-                    <HeaderIconButton icon="x" accessibilityLabel="Close files" onPress={onClose} />
-                  </>
-                }
-              />
-              <FileContentPreview
-                key={preview.path}
-                path={preview.path}
-                content={preview.content}
-                listStyle={styles.filesPreview}
-                bodyStyle={styles.filesPreviewBody}
-                textStyle={styles.filesPreviewText}
-                renderMarkdown={(item) =>
-                  item.type === 'table' ? (
-                    <MarkdownTable header={item.header} rows={item.rows} />
-                  ) : item.type === 'code' ? (
-                    <View style={styles.codeBlock}>
-                      {item.lang ? <Text style={styles.codeLang}>{item.lang}</Text> : null}
-                      <Text selectable style={styles.codeText}>
-                        {item.content}
-                      </Text>
-                    </View>
-                  ) : (
-                    <MarkdownLine
-                      line={item.content}
-                      onOpenLocalFile={null}
-                      onOpenAppLink={null}
-                      sessionFileImageSource={null}
-                      onOpenImage={() => {}}
-                    />
-                  )
-                }
-              />
-            </View>
-          ) : previewLoading ? (
-            <View style={styles.sheetLoading}>
-              <ActivityIndicator color={theme.colors.textMuted} />
-            </View>
-          ) : (
-            <>
-              {error &&
-              root !== 'documents' &&
-              root !== 'drafts' &&
-              !(documentSession && root === 'worktree') ? (
-                <Text style={styles.sheetError}>{error}</Text>
-              ) : null}
-              {truncated ? (
-                <Text style={styles.sheetLimited}>Showing first 1000 entries</Text>
-              ) : null}
-              {loading ? (
-                <View style={styles.sheetLoading}>
-                  <ActivityIndicator color={theme.colors.textMuted} />
-                </View>
-              ) : codeMissing && root === 'worktree' ? (
-                <CodeWorkspaceNotice
-                  restoring={restore.running}
-                  failure={restore.failure}
-                  onRestore={restoreCodeWorkspace}
-                  onOpenDocuments={projectId ? () => navigateRoot('documents') : undefined}
-                />
-              ) : (
-                <DropZone
-                  style={styles.filesDropZone}
-                  enabled={!uploading && root !== 'drafts'}
-                  maxFiles={MAX_DROPPED_UPLOADS}
-                  maxFileBytes={MAX_DROPPED_UPLOAD_BYTES}
-                  maxTotalBytes={MAX_DROPPED_UPLOAD_TOTAL_BYTES}
-                  onFiles={uploadDroppedFiles}
-                  onRejected={onUploadDropRejected}
-                  onActiveChange={setDropActive}
-                >
-                  {/* A touch that turned into a scroll never reaches a press, so
-                    the modifiers it reported have to be withdrawn here too. */}
-                  <ScrollView style={styles.filesList} onScrollBeginDrag={forgetModifiers}>
-                    {entries.length === 0 ? (
-                      <Text style={styles.sheetEmpty}>
-                        {error
-                          ? 'Files could not be loaded. Reopen this view to try again.'
-                          : 'No files'}
-                      </Text>
-                    ) : (
-                      entries.map((entry) => {
-                        const meta = fileEntryMeta(entry);
-                        const selectable = isSelectableFile(entry);
-                        const picked = selectable && selected.includes(entry.path);
-                        // In selection mode only files respond: a directory has
-                        // nothing to select, and navigating away would discard the
-                        // selection you are still building.
-                        const inert = selecting
-                          ? !selectable
-                          : entry.kind === 'symlink' || entry.kind === 'other';
-                        return (
-                          <DragSource
-                            key={entry.path}
-                            // Every row stays draggable while selecting: grabbing
-                            // one outside the selection drags just that file, the
-                            // same as Finder. `items` already encodes which.
-                            enabled={!isDemoMode()}
-                            items={dragItemsByPath.get(entry.path) ?? []}
-                            authorization={authorization}
-                            tlsPin={directTlsPin ?? ''}
-                            origin={baseUrl}
-                            // The selection has done its job once the files land
-                            // somewhere; leaving it up would strand the sheet in a
-                            // mode you have to dismiss by hand. A row dragged from
-                            // outside the selection did not carry it, so it leaves
-                            // the selection alone.
-                            onDelivered={selecting && picked ? endSelection : undefined}
-                            onModifiers={rememberModifiers}
-                          >
-                            <FileRowActions
-                              label={entry.name}
-                              disabled={mutating || selecting || inert}
-                              onDelete={
-                                root !== 'drafts' &&
-                                (entry.kind === 'file' || entry.kind === 'directory')
-                                  ? () => confirmDelete([entry.path], () => undefined)
-                                  : undefined
-                              }
-                              onMenu={
-                                entry.kind === 'file'
-                                  ? () => setMenuFor({ path: entry.path, inPreview: false })
-                                  : undefined
-                              }
-                            >
-                              {entry.kind === 'directory' && !selecting ? (
-                                <SessionFolderRow
-                                  name={entry.name}
-                                  onPress={() => pressFileRow(entry)}
-                                  accessibilityLabel={entry.name}
-                                />
-                              ) : (
-                                <Pressable
-                                  onPress={() => {
-                                    pressFileRow(entry);
-                                  }}
-                                  // Not on iPad, where a long press is the lift that
-                                  // starts a native drag (UIDragInteraction is off on
-                                  // iPhone by default); both firing at ~500 ms would
-                                  // race. There the row menu and ⌘-click remain.
-                                  onLongPress={
-                                    !selecting && selectable && !longPressDrags
-                                      ? () => startSelection(entry)
-                                      : undefined
-                                  }
-                                  disabled={inert}
-                                  accessibilityRole={selecting ? 'checkbox' : 'button'}
-                                  accessibilityLabel={entry.name}
-                                  accessibilityState={selecting ? { checked: picked } : undefined}
-                                  style={({ pressed }) => [
-                                    styles.fileRow,
-                                    pressed || picked ? styles.sheetRowPressed : null,
-                                    inert ? styles.sheetRowDisabled : null,
-                                  ]}
-                                >
-                                  <Icon
-                                    name={fileIcon(entry)}
-                                    size={18}
-                                    color={theme.colors.textMuted}
-                                  />
-                                  <View style={styles.fileMain}>
-                                    <Text
-                                      style={[styles.sheetRowLabel, styles.fileName]}
-                                      numberOfLines={2}
-                                      ellipsizeMode="tail"
-                                    >
-                                      {entry.name}
-                                    </Text>
-                                    {meta.length > 0 ? (
-                                      <Text style={styles.fileMeta} numberOfLines={1}>
-                                        {meta}
-                                      </Text>
-                                    ) : null}
-                                  </View>
-                                  {selecting ? (
-                                    <View style={styles.fileDownload}>
-                                      <Icon
-                                        name={picked ? 'check-circle' : 'circle'}
-                                        size={18}
-                                        color={
-                                          picked ? theme.colors.action : theme.colors.textFaint
-                                        }
-                                      />
-                                    </View>
-                                  ) : entry.kind === 'directory' ? (
-                                    <Icon
-                                      name="chevron-right"
-                                      size={17}
-                                      color={theme.colors.textFaint}
-                                    />
-                                  ) : null}
-                                </Pressable>
-                              )}
-                            </FileRowActions>
-                          </DragSource>
-                        );
-                      })
-                    )}
-                  </ScrollView>
-                  {dropActive ? (
-                    <View pointerEvents="none" style={styles.filesDropHint}>
-                      <Icon name="download" size={18} color={theme.colors.action} />
-                      <Text style={styles.filesDropHintText}>Drop to upload to /{path}</Text>
-                    </View>
-                  ) : null}
-                </DropZone>
-              )}
-              {selecting ? (
-                <View style={styles.filesSelectionBar}>
-                  {selected.length === 0 ? (
-                    <Text style={styles.filesPath}>Tap files to select them</Text>
-                  ) : (
-                    <View />
-                  )}
-                  <HeaderTextButton
-                    label="Delete…"
-                    emphasis="destructive"
-                    disabled={root === 'drafts' || mutating || selected.length === 0}
-                    accessibilityLabel="Delete selected files"
-                    onPress={deleteSelectedFiles}
-                  />
-                </View>
-              ) : null}
-            </>
-          )}
-          {confirmSheet}
-          {menuFor ? (
-            <FileActionMenu
-              title={fileNameFromPath(menuFor.path)}
-              actions={menuActions.filter((action) =>
-                root === 'drafts'
-                  ? !['edit', 'rename', 'delete'].includes(action.key)
-                  : root === 'sources'
-                    ? action.key !== 'edit'
-                    : true,
-              )}
-              onDismiss={() => setMenuFor(null)}
-            />
-          ) : null}
-          {adding ? (
-            <FileActionMenu
-              title="Add files"
-              onDismiss={() => setAdding(false)}
-              actions={[
-                ...(root === 'sources'
-                  ? []
-                  : [
-                      {
-                        key: 'create',
-                        label: 'New Markdown file…',
-                        icon: 'file-plus' as const,
-                        onPress: () => setCreating(true),
-                      },
-                    ]),
-                { key: 'upload', label: 'Upload files…', icon: 'upload', onPress: uploadFiles },
-              ]}
-            />
-          ) : null}
-          {creating ? (
-            <FileNameDialog
-              title="New Markdown file"
-              initialName="note.md"
-              allowUnchanged
-              confirmLabel="Create"
-              validate={(name) =>
-                renameProblem(
-                  name,
-                  '',
-                  entries.map((entry) => entry.name),
-                ) ?? (!/\.md$/i.test(name) ? 'Use a .md extension.' : null)
-              }
-              onCancel={() => setCreating(false)}
-              onSubmit={async (name) => {
-                setCreating(false);
-                setEditing({
-                  path: [path, name].filter(Boolean).join('/'),
-                  content: '',
-                  size: 0,
-                  editable: true,
-                });
-              }}
-            />
-          ) : null}
-          {editing ? (
-            <FileTextEditor
-              file={editing}
-              onCancel={() => setEditing(null)}
-              onRead={(filePath) => client.getSessionFileContent(sessionId, filePath, root)}
-              onHistory={() => client.listSessionFileVersions(sessionId, root, editing.path)}
-              onVersion={(version) =>
-                client.readSessionFileVersion(sessionId, root, editing.path, version)
-              }
-              onSave={(filePath, content, version) =>
-                client.saveSessionFileContent(sessionId, root, filePath, content, version)
-              }
-              onSaved={(file) => {
-                if (file.warning) Alert.alert('File saved', file.warning);
-                setEditing(null);
-                setPreview(file);
-                setPath(parentPath(file.path));
-                setReloadKey((key) => key + 1);
-              }}
-            />
-          ) : null}
-          {renaming ? (
-            <FileNameDialog
-              title="Rename file"
-              subtitle={parentPath(renaming) ? `in /${parentPath(renaming)}` : undefined}
-              initialName={fileNameFromPath(renaming)}
-              confirmLabel="Rename"
-              validate={(name) =>
-                renameProblem(
-                  name,
-                  fileNameFromPath(renaming),
-                  entries.filter((entry) => entry.path !== renaming).map((entry) => entry.name),
-                )
-              }
-              onSubmit={(name) => renameFile(renaming, name)}
-              onCancel={() => setRenaming(null)}
-            />
-          ) : null}
-        </Animated.View>
-      </GestureHandlerRootView>
-    </Modal>
-  );
-}
-
 // `bookmarkable` gates the per-message bookmark affordance: true for top-level
 // transcript rows (which live in `data`, so the header sheet can scroll back to
 // them), false for messages rendered inside a collapsed sub-agent subtree — those
@@ -8184,7 +6391,6 @@ function BookmarksSheet({
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
-  const sheet = useResizableSheet();
   const { entries } = bookmarks;
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
@@ -8194,8 +6400,7 @@ function BookmarksSheet({
         accessibilityRole="button"
         accessibilityLabel="Close bookmarks"
       />
-      <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-        <SheetResizeHandle panHandlers={sheet.panHandlers} />
+      <ResizableSheetPanel>
         <Text style={styles.sheetTitle}>Bookmarks</Text>
         <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
           {entries.length === 0 ? (
@@ -8237,7 +6442,7 @@ function BookmarksSheet({
             );
           })}
         </ScrollView>
-      </Animated.View>
+      </ResizableSheetPanel>
     </Modal>
   );
 }
@@ -8262,7 +6467,6 @@ function BranchSwitcherSheet({
 }) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
-  const sheet = useResizableSheet();
   const { current, switchable, previewable, loading, error, switchTo } = branches;
 
   // The in-flight branch name (existing or new) so we can disable the list +
@@ -8323,8 +6527,7 @@ function BranchSwitcherSheet({
         longer needs once the keyboard occupies that strip.
       */}
       <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
-        <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-          <SheetResizeHandle panHandlers={sheet.panHandlers} />
+        <ResizableSheetPanel>
           <Text style={styles.sheetTitle}>Switch branch</Text>
           <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
             <SessionRepositories client={client} sessionId={sessionId} />
@@ -8481,7 +6684,7 @@ function BranchSwitcherSheet({
               </Pressable>
             </View>
           )}
-        </Animated.View>
+        </ResizableSheetPanel>
       </KeyboardStickyView>
     </Modal>
   );
@@ -8519,7 +6722,6 @@ function EngineSwitcherSheet({
   onClose: () => void;
 }) {
   const { theme } = useUnistyles();
-  const sheet = useResizableSheet();
   const partitionedModels = useMemo(
     () => partitionModels(models, moreModels, modelOrder),
     [models, moreModels, modelOrder],
@@ -8587,8 +6789,7 @@ function EngineSwitcherSheet({
         accessibilityRole="button"
         accessibilityLabel="Close model picker"
       />
-      <Animated.View style={[styles.sheet, sheet.sheetStyle]}>
-        <SheetResizeHandle panHandlers={sheet.panHandlers} />
+      <ResizableSheetPanel>
         <Text style={styles.sheetTitle}>Switch model</Text>
         <ScrollView style={styles.sheetList} keyboardShouldPersistTaps="handled">
           {loading || error || models.length === 0 ? (
@@ -8622,7 +6823,7 @@ function EngineSwitcherSheet({
             <Text style={styles.sheetExcludedNote}>{excludedNote}</Text>
           ) : null}
         </ScrollView>
-      </Animated.View>
+      </ResizableSheetPanel>
     </Modal>
   );
 }
@@ -10418,6 +8619,15 @@ function shortLabel(model: string | undefined, sessionId: string): string {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  // Full-bleed cover over the transcript while restoring a saved scroll position from
+  // the loaded tail; matches the screen background while measurement settles.
+  restoreCover: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: theme.colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
   flex: {
     flex: 1,
     backgroundColor: theme.colors.background,
@@ -10428,15 +8638,6 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: 'center',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.lg,
-  },
-  // Full-bleed cover over the transcript while restoring a saved scroll position from
-  // the loaded tail; matches the screen background while measurement settles.
-  restoreCover: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: theme.colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
   },
   emptyTitle: {
     color: theme.colors.text,
@@ -10595,11 +8796,6 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fonts.regular,
   },
   headerIssueLink: { color: theme.colors.action },
-  headerBookmarkCount: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -10668,30 +8864,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     backgroundColor: theme.colors.scrim,
   },
-  sheet: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.radius.lg,
-    borderTopRightRadius: theme.radius.lg,
-    borderTopWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.sm,
-    maxHeight: '70%',
-  },
-  sheetHandle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.border,
-    marginBottom: theme.spacing.sm,
-  },
-  filesResizeHandle: {
-    alignItems: 'center',
-    paddingTop: theme.spacing.xs,
-    paddingBottom: theme.spacing.sm,
-    marginTop: -theme.spacing.xs,
-  },
   sheetTitle: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.footnote.fontSize,
@@ -10723,122 +8895,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.typography.bodySmall.fontSize,
     paddingVertical: theme.spacing.md,
   },
-  driveSetupNotice: {
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.xl * 2,
-  },
-  driveSetupButton: {
-    marginTop: theme.spacing.sm,
-    minHeight: 44,
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.lg,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.action,
-  },
-  driveSetupButtonPressed: {
-    opacity: 0.78,
-  },
-  driveSetupButtonLabel: {
-    color: theme.colors.onAction,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.bold,
-  },
   sheetLoading: {
     paddingVertical: theme.spacing.lg,
     alignItems: 'center',
-  },
-  filesPath: {
-    color: theme.colors.textFaint,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-  },
-  // Pinned under the list while selecting: the one action that applies to the
-  // whole selection, labelled and away from the header's Done.
-  filesSelectionBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-  },
-  // Tabs mark the active root with an underline, not a filled chip: a fill is
-  // what a button looks like, and these are places, not actions.
-  // The drop target wraps the list rather than the whole sheet: a drop onto the
-  // preview or the header would have no directory to land in.
-  filesDropZone: {
-    flex: 1,
-  },
-  filesList: {
-    flex: 1,
-  },
-  filesDropHint: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.action,
-    backgroundColor: tint(theme.colors.action, 'neutral'),
-  },
-  filesDropHintText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    fontFamily: theme.fonts.semibold,
-  },
-  fileRow: {
-    minHeight: 46,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: theme.spacing.xs,
-    borderRadius: theme.radius.md,
-  },
-  fileMain: {
-    flex: 1,
-    minWidth: 0,
-  },
-  fileName: {
-    lineHeight: 22 * theme.fontScale,
-  },
-  fileMeta: {
-    color: theme.colors.textFaint,
-    fontFamily: theme.fonts.regular,
-    fontSize: theme.typography.footnote.fontSize,
-    marginTop: 1,
-  },
-  fileDownload: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.md,
-  },
-  filesPreviewWrap: {
-    flex: 1,
-    minHeight: 280,
-  },
-  filesPreview: {
-    flex: 1,
-  },
-  filesPreviewBody: {
-    paddingVertical: theme.spacing.md,
-  },
-  filesPreviewText: {
-    color: theme.colors.text,
-    fontSize: theme.typography.bodySmall.fontSize,
-    lineHeight: 20 * theme.fontScale,
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
   },
   sheetRow: {
     flexDirection: 'row',

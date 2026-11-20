@@ -78,7 +78,7 @@ export function wikiView(scope: KnowledgeScope, folder: string): WikiView | null
 
 /** The folder on disk behind a Wiki view: the Wiki's own for its start page,
  *  its files and a topic, which a server without a catalog lists instead. */
-function wikiFolder(scope: KnowledgeScope, folder: string): string {
+export function wikiFolder(scope: KnowledgeScope, folder: string): string {
   const view = wikiView(scope, folder);
   return view && view.kind !== 'decisions' ? WIKI : folder;
 }
@@ -133,7 +133,8 @@ export function writeKnowledge(
   scope: KnowledgeScope,
   file: string,
   content: string,
-  version: string,
+  /** The version the edit started from, or null to create a new file. */
+  version: string | null,
 ): Promise<SessionFileContent> {
   return scope.kind === 'shared'
     ? client.writeSharedKnowledgeFile(file, content, version)
@@ -160,11 +161,54 @@ export function downloadKnowledge(
     : client.downloadProjectKnowledgeFile(scope.projectId, file);
 }
 
+export function deleteKnowledge(client: VerityClient, scope: KnowledgeScope, path: string) {
+  return client.deleteKnowledgeFile(scope, path);
+}
+
+export function renameKnowledge(
+  client: VerityClient,
+  scope: KnowledgeScope,
+  path: string,
+  name: string,
+) {
+  return client.renameKnowledgeFile(scope, path, name);
+}
+
+export function moveKnowledge(
+  client: VerityClient,
+  scope: KnowledgeScope,
+  path: string,
+  toPath: string,
+) {
+  return client.moveKnowledgeFile(scope, path, toPath);
+}
+
+export function uploadKnowledge(
+  client: VerityClient,
+  scope: KnowledgeScope,
+  upload: { path: string; fileName: string; data: Blob },
+) {
+  return client.uploadKnowledgeFile(scope, upload);
+}
+
+export function createKnowledgeFolder(
+  client: VerityClient,
+  scope: KnowledgeScope,
+  parent: string,
+  name: string,
+) {
+  return client.createKnowledgeFileFolder(scope, parent, name);
+}
+
+export function knowledgeBacklinks(client: VerityClient, scope: KnowledgeScope, path: string) {
+  return client.listKnowledgeBacklinks(scope, path);
+}
+
 /** The route that shows a folder or a file of `scope` as its own screen, so the
  *  header's back arrow and the swipe go up exactly one level. */
 export function pushKnowledge(
   scope: KnowledgeScope,
-  target: { folder: string } | { file: string } | { proposal: string },
+  target: { folder: string } | { file: string; edit?: '1' } | { proposal: string },
 ) {
   if (scope.kind === 'shared') {
     router.push({ pathname: '/settings/shared-knowledge', params: target });

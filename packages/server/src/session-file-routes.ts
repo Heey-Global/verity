@@ -1,11 +1,8 @@
-import { join } from 'node:path';
-import { RECENT_SHARED_LIMIT_MAX, recentSharedKnowledge } from './shared-knowledge-recent.js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
 import { SESSION_FILE_ROOTS, isKnowledgeRoot, type SessionFileRootName } from './session-files.js';
 import { sessionParams } from './session-route-schemas.js';
-import { projectWikiCatalog } from './knowledge-wiki.js';
 
 /** Which of the explorer's roots a request addresses. Omitted → the worktree, so
  *  every pre-knowledge client keeps browsing exactly what it browsed before. */
@@ -16,12 +13,12 @@ const sessionFileRoot = z
     root === 'wiki' ? 'documents' : root === 'raw-sources' ? 'sources' : root,
   );
 
-const sessionFileQuery = z.object({
+export const sessionFileQuery = z.object({
   root: sessionFileRoot,
   path: z.string().optional().default(''),
 });
 
-const fileName = z
+export const fileName = z
   .string()
   .min(1)
   .max(255)
@@ -34,13 +31,13 @@ const fileName = z
     'invalid file name',
   );
 
-const sessionFileUploadQuery = z.object({
+export const sessionFileUploadQuery = z.object({
   root: sessionFileRoot,
   path: z.string().default(''),
   fileName,
 });
 
-const sessionFileDeleteQuery = z.object({
+export const sessionFileDeleteQuery = z.object({
   root: sessionFileRoot,
   path: z.string().min(1),
 });
@@ -53,12 +50,13 @@ const sessionFileMoveBody = z.object({
   toFileName: fileName.optional(),
 });
 
-const knowledgeRenameBody = z.object({
-  path: z.string().min(1),
+const sessionFolderBody = z.object({
+  root: sessionFileRoot,
+  path: z.string().default(''),
   name: fileName,
 });
 
-const sessionFileWriteBody = z.object({
+export const sessionFileWriteBody = z.object({
   root: sessionFileRoot,
   path: z.string().min(1),
   content: z.string().max(1_000_000),
@@ -70,15 +68,22 @@ const sessionFileWriteBody = z.object({
 type SessionFileWriteBody = z.infer<typeof sessionFileWriteBody>;
 
 type SessionFileUploadQuery = z.infer<typeof sessionFileUploadQuery>;
-type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
+export type SessionFileMoveBody = z.infer<typeof sessionFileMoveBody>;
 
 /** A resolved explorer root: the directory on disk plus the name it was reached
  *  by, which decides what is hidden from a listing and what may be written. */
-interface SessionFileTarget {
+export interface SessionFileTarget {
   root: SessionFileRootName;
   dir: string;
   protectedPaths?: readonly string[];
+  /** Whether new files and folders must stay writable for the sandbox agent, as
+   *  a project's Wiki is. Unset, it follows from the root and path. */
+  agentWritable?: boolean;
 }
+
+/** Runs under the knowledge mutation lock right after an entry was renamed or
+ *  moved, with both paths relative to the target's directory. */
+export type RelocationHook = (move: { from: string; to: string }) => Promise<void>;
 
 export class SessionFileRootUnavailableError extends Error {
   constructor(
@@ -136,6 +141,14 @@ export interface SessionFileRouteDeps {
     from: SessionFileTarget,
     to: SessionFileTarget,
     body: SessionFileMoveBody,
+    afterMove?: RelocationHook,
+  ) => Promise<unknown>;
+  /** Creates an empty folder `name` inside `path`, never replacing an entry. */
+  createFolder?: (
+    reply: FastifyReply,
+    target: SessionFileTarget,
+    path: string,
+    name: string,
   ) => Promise<unknown>;
   /** Gives a file or folder a new name in its own folder, never replacing one. */
   rename?: (
@@ -143,190 +156,15 @@ export interface SessionFileRouteDeps {
     target: SessionFileTarget,
     path: string,
     name: string,
+    afterMove?: RelocationHook,
   ) => Promise<unknown>;
 }
 
-/** The Sources folders Verity's entry points write into. Renamed, the next
- *  import would recreate them empty beside the renamed one. */
-const SOURCE_ENTRY_FOLDERS = new Set(['documents', 'meetings', 'matrix']);
-
-const recentSharedQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(RECENT_SHARED_LIMIT_MAX).default(8),
-});
-
 /** Registers file browsing, upload, preview, download, delete, and move routes
- *  over the session's worktree and the project's knowledge folders. */
+ *  over the session's worktree and the project's knowledge folders. The routes
+ *  over a project's or Shared knowledge without a session live in
+ *  `knowledge-file-routes.ts`. */
 export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFileRouteDeps): void {
-  // Resolve writes relative to Wiki itself so intermediate symlinks cannot reach Sources.
-  const writeWiki = async (
-    reply: FastifyReply,
-    target: SessionFileTarget,
-    body: SessionFileWriteBody,
-  ) => {
-    const result = await deps.write(
-      reply,
-      { root: 'documents', dir: join(target.dir, 'insights') },
-      {
-        ...body,
-        root: 'documents',
-        path: body.path.slice('insights/'.length),
-      },
-    );
-    return result && typeof result === 'object' && 'path' in result
-      ? { ...result, path: body.path }
-      : result;
-  };
-  const resolveProjectRoot = deps.resolveProjectRoot;
-  if (resolveProjectRoot) {
-    const projectTarget = async (request: FastifyRequest, reply: FastifyReply) => {
-      const { id } = sessionParams.parse(request.params);
-      const dir = await resolveProjectRoot(id);
-      if (!dir) {
-        reply.code(404).send({ error: 'Project knowledge not found' });
-        return undefined;
-      }
-      return { root: 'knowledge' as const, dir };
-    };
-    const wikiPath = (path: string) =>
-      path.startsWith('insights/') && !path.replaceAll('\\', '/').split('/').includes('..');
-    app.get('/projects/:id/knowledge/files', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const target = await projectTarget(request, reply);
-      return target ? deps.list(reply, target, path) : reply;
-    });
-    app.get('/projects/:id/knowledge/files/content', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const target = await projectTarget(request, reply);
-      if (!target) return reply;
-      const content = await deps.content(reply, target, path);
-      return content && typeof content === 'object' && 'editable' in content
-        ? { ...content, editable: wikiPath(path) && content.editable }
-        : content;
-    });
-    app.get('/projects/:id/knowledge/wiki', async (request, reply) => {
-      const target = await projectTarget(request, reply);
-      return target ? projectWikiCatalog(target.dir) : reply;
-    });
-    app.get('/projects/:id/knowledge/files/download', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const target = await projectTarget(request, reply);
-      return target ? deps.download(reply, target, path) : reply;
-    });
-    app.delete('/projects/:id/knowledge/files', async (request, reply) => {
-      const { path } = sessionFileDeleteQuery.parse(request.query);
-      const parts = path.replaceAll('\\', '/').split('/');
-      const area = parts[0];
-      // Keep library roots and provenance-bearing decisions outside ordinary deletion.
-      if (
-        (area !== 'insights' && area !== 'sources') ||
-        parts.length < 2 ||
-        parts.some((part) => part === '.' || part === '..' || part === '') ||
-        (area === 'insights' && parts[1] === 'decisions')
-      )
-        return reply
-          .code(403)
-          .send({ error: 'Only ordinary Wiki and Sources entries can be deleted here.' });
-      const target = await projectTarget(request, reply);
-      return target
-        ? deps.remove(
-            reply,
-            {
-              root: area === 'insights' ? 'documents' : 'sources',
-              dir: join(target.dir, area),
-              protectedPaths: area === 'insights' ? ['decisions'] : [],
-            },
-            parts.slice(1).join('/'),
-          )
-        : reply;
-    });
-    // Only Sources: renaming a Wiki page would break every link to it.
-    const rename = deps.rename;
-    if (rename)
-      app.post('/projects/:id/knowledge/files/rename', async (request, reply) => {
-        const body = knowledgeRenameBody.parse(request.body);
-        const parts = body.path.replaceAll('\\', '/').split('/');
-        if (
-          parts[0] !== 'sources' ||
-          parts.length < 2 ||
-          parts.some((part) => part === '.' || part === '..' || part === '') ||
-          (parts.length === 2 && SOURCE_ENTRY_FOLDERS.has(parts[1] ?? ''))
-        )
-          return reply
-            .code(403)
-            .send({ error: 'Only files and your own folders in Sources can be renamed here.' });
-        const target = await projectTarget(request, reply);
-        if (!target) return reply;
-        const renamed = await rename(
-          reply,
-          { root: 'sources', dir: join(target.dir, 'sources') },
-          parts.slice(1).join('/'),
-          body.name,
-        );
-        return renamed && typeof renamed === 'object' && 'path' in renamed
-          ? { ...renamed, path: `sources/${String(renamed.path)}` }
-          : renamed;
-      });
-    app.put(
-      '/projects/:id/knowledge/files/content',
-      { bodyLimit: 6_100_000 },
-      async (request, reply) => {
-        const body = sessionFileWriteBody.parse(request.body);
-        if (!wikiPath(body.path))
-          return reply.code(403).send({ error: 'Only Wiki files can be edited here.' });
-        const target = await projectTarget(request, reply);
-        return target ? writeWiki(reply, target, body) : reply;
-      },
-    );
-  }
-  const resolveSharedRoot = deps.resolveSharedRoot;
-  if (resolveSharedRoot) {
-    const isSharedWikiPath = (path: string) =>
-      path.startsWith('insights/') && !path.replaceAll('\\', '/').split('/').includes('..');
-    const sharedTarget = async (reply: FastifyReply) => {
-      const dir = await resolveSharedRoot();
-      if (!dir) {
-        reply.code(404).send({ error: 'Shared knowledge is not configured' });
-        return undefined;
-      }
-      return { root: 'shared' as const, dir };
-    };
-    app.get('/knowledge/shared/files', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const value = await sharedTarget(reply);
-      return value ? deps.list(reply, value, path) : reply;
-    });
-    app.get('/knowledge/shared/files/content', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const value = await sharedTarget(reply);
-      if (!value) return reply;
-      const content = await deps.content(reply, value, path);
-      return content && typeof content === 'object' && 'editable' in content
-        ? { ...content, editable: isSharedWikiPath(path) && content.editable }
-        : content;
-    });
-    // The most recently changed pages, for Verity's page in the app.
-    app.get('/knowledge/shared/recent', async (request, reply) => {
-      const query = recentSharedQuery.safeParse(request.query);
-      if (!query.success) return reply.code(400).send({ error: 'Invalid limit' });
-      const value = await sharedTarget(reply);
-      if (!value) return reply;
-      reply.header('cache-control', 'no-store');
-      return recentSharedKnowledge(value.dir, query.data.limit);
-    });
-    app.get('/knowledge/shared/files/download', async (request, reply) => {
-      const { path } = sessionFileQuery.parse(request.query);
-      const value = await sharedTarget(reply);
-      return value ? deps.download(reply, value, path) : reply;
-    });
-    app.put('/knowledge/shared/files/content', { bodyLimit: 6_100_000 }, async (request, reply) => {
-      const body = sessionFileWriteBody.parse(request.body);
-      if (!isSharedWikiPath(body.path))
-        return reply.code(403).send({ error: 'Only Shared Wiki files can be edited here.' });
-      const value = await sharedTarget(reply);
-      return value ? writeWiki(reply, value, body) : reply;
-    });
-  }
-
   const target = async (
     id: string,
     root: SessionFileRootName,
@@ -419,6 +257,20 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
     if (value === undefined) return reply;
     return deps.upload(request, reply, value, query);
   });
+
+  const createFolder = deps.createFolder;
+  if (createFolder)
+    app.post('/sessions/:id/files/folders', async (request, reply): Promise<unknown> => {
+      const { id } = sessionParams.parse(request.params);
+      const body = sessionFolderBody.parse(request.body);
+      if (body.root === 'drafts')
+        return reply
+          .code(403)
+          .send({ error: 'Session drafts are read-only here; edit them in their session.' });
+      const value = await target(id, body.root, reply);
+      if (value === undefined) return reply;
+      return createFolder(reply, value, body.path, body.name);
+    });
 
   app.get('/sessions/:id/files/content', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);

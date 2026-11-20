@@ -14,11 +14,13 @@ jest.mock('../components/files/FileRowActions', () => ({
     label,
     onDelete,
     onRename,
+    onMenu,
   }: {
     children: React.ReactNode;
     label: string;
     onDelete?: () => void;
     onRename?: () => void;
+    onMenu?: () => void;
   }) => {
     const { View, Pressable, Text } = require('react-native');
     return (
@@ -27,6 +29,11 @@ jest.mock('../components/files/FileRowActions', () => ({
         {onRename ? (
           <Pressable accessibilityLabel={`Rename ${label}`} onPress={onRename}>
             <Text>Rename entry</Text>
+          </Pressable>
+        ) : null}
+        {onMenu ? (
+          <Pressable accessibilityLabel={`More ${label}`} onPress={onMenu}>
+            <Text>More</Text>
           </Pressable>
         ) : null}
         {onDelete ? (
@@ -45,6 +52,7 @@ import { Alert } from 'react-native';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { FileRootTabs } from '../components/files/FileRootTabs';
 import { EmbeddedKnowledge, KnowledgeScreen } from '../components/knowledge/KnowledgeBrowser';
 import { KnowledgeFileView } from '../components/knowledge/KnowledgeFileView';
 import { followMove, KnowledgePaneContext } from '../components/knowledge/KnowledgePane';
@@ -320,10 +328,26 @@ it('lists Decisions first inside a project Wiki and goes back up to the Wiki', a
 });
 
 it('keeps only Code and Drive in session root tabs and Shared in Settings', () => {
-  const session = readFileSync(join(__dirname, '../app/session/[id].tsx'), 'utf8');
-  expect(session).toContain('<FileRootTabs');
-  const roots = readFileSync(join(__dirname, '../components/files/FileRootTabs.tsx'), 'utf8');
-  expect([...roots.matchAll(/accessibilityLabel="([^"]+)"/g)].map((match) => match[1])).toEqual([
+  const files = readFileSync(
+    join(__dirname, '../components/files/session/SessionFilesSheet.tsx'),
+    'utf8',
+  );
+  expect(files).toContain('<FileRootTabs');
+  // Rendered rather than read from source: a Shared or Wiki tab slipped into the
+  // session's tabs through the shared FileTabs would leave any source pattern green.
+  render(
+    <FileRootTabs
+      codeIcon="folder"
+      codeActive
+      codeDisabled={false}
+      driveActive={false}
+      drive
+      disabled={false}
+      onCode={() => undefined}
+      onDrive={() => undefined}
+    />,
+  );
+  expect(screen.getAllByRole('tab').map((tab) => tab.props.accessibilityLabel as string)).toEqual([
     'Code',
     'Google Drive',
   ]);
@@ -333,22 +357,23 @@ it('keeps only Code and Drive in session root tabs and Shared in Settings', () =
 
 it('confirms Wiki folder deletion including its contents and reloads the list', async () => {
   const remove = jest.fn().mockResolvedValue(undefined);
-  const api = client({ deleteProjectKnowledgeFile: remove });
+  const api = client({ deleteKnowledgeFile: remove });
   render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
   fireEvent.press(await screen.findByLabelText('Delete uplink'));
-  expect(screen.getByText(/and everything inside it from the project Wiki/)).toBeTruthy();
+  expect(screen.getByText(/everything inside it/)).toBeTruthy();
   expect(remove).not.toHaveBeenCalled();
   fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
-  await waitFor(() => expect(remove).toHaveBeenCalledWith('p', 'insights/uplink'));
+  await waitFor(() => expect(remove).toHaveBeenCalledWith(PROJECT, 'insights/uplink'));
   await waitFor(() => expect(api.listProjectKnowledgeFiles).toHaveBeenCalledTimes(2));
 });
 
-it('keeps structured decisions outside ordinary file deletion', async () => {
+it('keeps structured decisions and the Sources import folders out of every change', async () => {
   client({
     listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
       path: 'insights',
       entries: [
         { path: 'insights/decisions', name: 'decisions', kind: 'directory' },
+        { path: 'sources/meetings', name: 'meetings', kind: 'directory' },
         { path: 'sources/original.txt', name: 'original.txt', kind: 'file' },
       ],
       truncated: false,
@@ -356,14 +381,20 @@ it('keeps structured decisions outside ordinary file deletion', async () => {
   });
   render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
   await screen.findByText('Decisions');
-  expect(screen.queryByLabelText('Delete decisions')).toBeNull();
+  expect(screen.queryByLabelText('Delete Decisions')).toBeNull();
+  expect(screen.queryByLabelText('Delete meetings')).toBeNull();
   expect(screen.getByLabelText('Delete original.txt')).toBeTruthy();
+  // Their menu still opens them, but offers nothing that changes them.
+  fireEvent.press(screen.getByLabelText('Actions for meetings'));
+  expect(screen.getByRole('menuitem', { name: 'Open' })).toBeTruthy();
+  for (const action of ['Rename…', 'Move…', 'Delete…'])
+    expect(screen.queryByRole('menuitem', { name: action })).toBeNull();
 });
 
 it('keeps the Wiki entry visible and shows deletion errors for retry', async () => {
   const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
   const remove = jest.fn().mockRejectedValue(new Error('Project management access required'));
-  client({ deleteProjectKnowledgeFile: remove });
+  client({ deleteKnowledgeFile: remove });
   render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
   fireEvent.press(await screen.findByLabelText('Delete reference.md'));
   fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
@@ -374,27 +405,7 @@ it('keeps the Wiki entry visible and shows deletion errors for retry', async () 
   expect(screen.getByText('reference.md')).toBeTruthy();
 });
 
-it('confirms Sources folder deletion and refreshes its files', async () => {
-  const remove = jest.fn().mockResolvedValue(undefined);
-  const list = jest.fn().mockResolvedValue({
-    path: 'sources/documents',
-    entries: [
-      { path: 'sources/documents/import', name: 'import', kind: 'directory' },
-      { path: 'sources/documents/original.pdf', name: 'original.pdf', kind: 'file' },
-    ],
-    truncated: false,
-  });
-  client({ deleteProjectKnowledgeFile: remove, listProjectKnowledgeFiles: list });
-  render(<KnowledgeScreen scope={PROJECT} folder="sources/documents" />);
-  fireEvent.press(await screen.findByLabelText('Delete import'));
-  expect(screen.getByText(/and everything inside it from the project Sources/)).toBeTruthy();
-  expect(remove).not.toHaveBeenCalled();
-  fireEvent.press(screen.getByRole('button', { name: 'Delete' }));
-  await waitFor(() => expect(remove).toHaveBeenCalledWith('p', 'sources/documents/import'));
-  await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-});
-
-it('renames a source, reloads the folder and keeps the open file on its new path', async () => {
+it('renames a source from its menu, reloads the folder and keeps the open file on its new path', async () => {
   const list = jest.fn().mockResolvedValue({
     path: 'sources/documents',
     entries: [
@@ -403,8 +414,15 @@ it('renames a source, reloads the folder and keeps the open file on its new path
     ],
     truncated: false,
   });
-  const rename = jest.fn().mockResolvedValue({ path: 'sources/documents/kickoff.md' });
-  const api = client({ listProjectKnowledgeFiles: list, renameProjectKnowledgeFile: rename });
+  const rename = jest
+    .fn()
+    .mockResolvedValue({ path: 'sources/documents/kickoff.md', linksUpdated: [] });
+  const backlinks = jest.fn();
+  const api = client({
+    listProjectKnowledgeFiles: list,
+    renameKnowledgeFile: rename,
+    listKnowledgeBacklinks: backlinks,
+  });
   const moved = jest.fn();
   render(
     <KnowledgePaneContext.Provider value={{ openFile: jest.fn(), moved }}>
@@ -415,17 +433,16 @@ it('renames a source, reloads the folder and keeps the open file on its new path
       />
     </KnowledgePaneContext.Provider>,
   );
-  expect(await screen.findByLabelText('Rename import')).toBeTruthy();
-  fireEvent.press(screen.getByLabelText('Rename call.md'));
-  expect(
-    screen.getByText('Wiki pages that cite this source keep pointing to the old name.'),
-  ).toBeTruthy();
+  fireEvent.press(await screen.findByLabelText('Actions for call.md'));
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Rename…' }));
   fireEvent.changeText(screen.getByLabelText('File name'), 'kickoff.md');
   fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
   await waitFor(() =>
-    expect(rename).toHaveBeenCalledWith('p', 'sources/documents/call.md', 'kickoff.md'),
+    expect(rename).toHaveBeenCalledWith(PROJECT, 'sources/documents/call.md', 'kickoff.md'),
   );
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  // Sources are not linked to by path, so nothing is asked about links.
+  expect(backlinks).not.toHaveBeenCalled();
   expect(moved).toHaveBeenCalledWith(
     PROJECT,
     'sources/documents/call.md',
@@ -458,42 +475,81 @@ it('keeps the rename dialog open with the server refusal', async () => {
       entries: [{ path: 'sources/interviews', name: 'interviews', kind: 'directory' }],
       truncated: false,
     }),
-    renameProjectKnowledgeFile: jest.fn().mockRejectedValue(new Error('"taken" already exists')),
+    renameKnowledgeFile: jest.fn().mockRejectedValue(new Error('"taken" already exists')),
   });
   render(<KnowledgeScreen scope={PROJECT} folder="sources" />);
-  fireEvent.press(await screen.findByLabelText('Rename interviews'));
-  expect(screen.getByText('Rename folder')).toBeTruthy();
+  fireEvent.press(await screen.findByLabelText('Actions for interviews'));
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Rename…' }));
   fireEvent.changeText(screen.getByLabelText('File name'), 'taken');
   fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
   expect(await screen.findByText('"taken" already exists')).toBeTruthy();
   expect(screen.getByLabelText('File name')).toBeTruthy();
 });
 
-it('offers rename only for ordinary Sources entries', async () => {
+it('asks before renaming a Wiki page that other pages link to', async () => {
+  const rename = jest.fn().mockResolvedValue({ path: 'insights/rules.md', linksUpdated: [] });
   client({
-    listProjectKnowledgeFiles: jest.fn().mockResolvedValue({
-      path: 'sources',
-      entries: [
-        { path: 'sources/documents', name: 'documents', kind: 'directory' },
-        { path: 'sources/meetings', name: 'meetings', kind: 'directory' },
-        { path: 'sources/interviews', name: 'interviews', kind: 'directory' },
-      ],
-      truncated: false,
+    renameKnowledgeFile: rename,
+    listKnowledgeBacklinks: jest.fn().mockResolvedValue({
+      pages: [{ path: 'insights/uplink/overview.md', links: 2 }],
     }),
   });
-  render(<KnowledgeScreen scope={PROJECT} folder="sources" />);
-  expect(await screen.findByLabelText('Rename interviews')).toBeTruthy();
-  // Verity's own entry folders: an import would recreate them empty.
-  expect(screen.queryByLabelText('Rename documents')).toBeNull();
-  expect(screen.queryByLabelText('Rename meetings')).toBeNull();
-  expect(screen.getByLabelText('Delete meetings')).toBeTruthy();
+  render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
+  fireEvent.press(await screen.findByLabelText('Actions for reference.md'));
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Rename…' }));
+  fireEvent.changeText(screen.getByLabelText('File name'), 'rules.md');
+  fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+  expect(await screen.findByText(/1 other page links to it/)).toBeTruthy();
+  expect(rename).not.toHaveBeenCalled();
+  fireEvent.press(screen.getByRole('button', { name: 'Rename' }));
+  await waitFor(() =>
+    expect(rename).toHaveBeenCalledWith(PROJECT, 'insights/reference.md', 'rules.md'),
+  );
 });
 
-it('does not offer rename in the Wiki, whose pages other pages link to', async () => {
-  client();
+it('moves a Wiki page through the folder picker, inside the Wiki only', async () => {
+  const listing: Record<string, unknown[]> = {
+    'insights/:files': [
+      { path: 'insights/uplink', name: 'uplink', kind: 'directory' },
+      { path: 'insights/reference.md', name: 'reference.md', kind: 'file' },
+    ],
+    insights: [
+      { path: 'insights/uplink', name: 'uplink', kind: 'directory' },
+      { path: 'insights/reference.md', name: 'reference.md', kind: 'file' },
+    ],
+    'insights/uplink': [],
+  };
+  const move = jest
+    .fn()
+    .mockResolvedValue({ path: 'insights/uplink/reference.md', linksUpdated: [] });
+  client({
+    listProjectKnowledgeFiles: jest.fn((_project: string, folder: string) =>
+      Promise.resolve({ path: folder, entries: listing[folder] ?? [], truncated: false }),
+    ),
+    moveKnowledgeFile: move,
+    listKnowledgeBacklinks: jest.fn().mockResolvedValue({ pages: [] }),
+  });
   render(<KnowledgeScreen scope={PROJECT} folder="insights/:files" />);
-  expect(await screen.findByLabelText('Delete reference.md')).toBeTruthy();
-  expect(screen.queryByLabelText('Rename reference.md')).toBeNull();
+  fireEvent.press(await screen.findByLabelText('Actions for reference.md'));
+  fireEvent.press(screen.getByRole('menuitem', { name: 'Move…' }));
+  expect(await screen.findByText('Move 1 item')).toBeTruthy();
+  // The page is where it is; Move stays off until another folder is chosen.
+  expect(screen.getByLabelText('Move to Wiki')).toBeDisabled();
+  // The list behind the picker shows uplink too; the picker's row is drawn last.
+  await waitFor(() => expect(screen.getAllByLabelText('uplink')).toHaveLength(2));
+  fireEvent.press(screen.getAllByLabelText('uplink').at(-1)!);
+  fireEvent.press(await screen.findByLabelText('Move to uplink'));
+  await waitFor(() =>
+    expect(move).toHaveBeenCalledWith(PROJECT, 'insights/reference.md', 'insights/uplink'),
+  );
+});
+
+it('opens Shared on its Wiki and Sources as tabs', async () => {
+  const api = client();
+  render(<KnowledgeScreen scope={SHARED} />);
+  await waitFor(() => expect(api.listSharedKnowledgeFiles).toHaveBeenCalledWith('insights'));
+  fireEvent.press(screen.getByRole('tab', { name: 'Sources' }));
+  await waitFor(() => expect(api.listSharedKnowledgeFiles).toHaveBeenLastCalledWith('sources'));
 });
 
 it('uses one breadcrumb for nested Sources and can return to Sources or the project', async () => {

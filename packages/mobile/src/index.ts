@@ -857,3 +857,9 @@ export {
   type ConnectionReporter,
   type ServerConnectionState,
 } from './connection.js';
+export type {
+  KnowledgeBacklinks,
+  KnowledgeFilesScope,
+  KnowledgeFileUploaded,
+  KnowledgeRelocated,
+} from './knowledge-files-api.js';

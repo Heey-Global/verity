@@ -44,6 +44,7 @@ export function KnowledgeFileView({
   chrome,
   onClose,
   onDirtyChange,
+  startEditing = false,
 }: {
   client: VerityClient;
   scope: KnowledgeScope;
@@ -52,6 +53,8 @@ export function KnowledgeFileView({
   onClose?: () => void;
   /** Whether there are unsaved edits, so a host that replaces the view can ask first. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Opens straight into the editor, as "Edit text" in a row's menu does. */
+  startEditing?: boolean;
 }) {
   const [content, setContent] = useState<SessionFileContent>();
   const [error, setError] = useState<string>();
@@ -76,7 +79,10 @@ export function KnowledgeFileView({
     setSaveError(undefined);
     readKnowledge(client, scope, file).then(
       (next) => {
-        if (active) setContent(next);
+        if (!active) return;
+        setContent(next);
+        if (startEditing && next.editable === true && next.version !== undefined)
+          setDraft(next.content);
       },
       (failure: unknown) => {
         if (active) setError(failure instanceof Error ? failure.message : 'Could not open file');

@@ -5,6 +5,7 @@ import { type FastifyInstance, type FastifyReply } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { createWriteStream, constants as fsConstants } from 'node:fs';
 import {
+  chmod,
   link,
   lstat,
   mkdir,
@@ -55,9 +56,13 @@ import {
   recoverFileHistory,
   sessionFileHistory,
 } from './session-file-history.js';
+import { registerKnowledgeFileRoutes } from './knowledge-file-routes.js';
 import {
   registerSessionFileRoutes,
   SessionFileRootUnavailableError,
+  type RelocationHook,
+  type SessionFileRouteDeps,
+  type SessionFileTarget,
 } from './session-file-routes.js';
 import { fileVersion, FileWriteError, writeSessionText } from './session-file-write.js';
 import type { SessionFileRootName } from './session-files.js';
@@ -68,6 +73,7 @@ import {
   hiddenSessionFileNames,
   isManagedKnowledgePath,
   isProbablyText,
+  type KnowledgeFileSlot,
   ManagedKnowledgePathError,
   normalizeSessionRelativePath,
   openKnowledgeFileSlot,
@@ -103,6 +109,46 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
   return { error: 'path not found' };
 }
 
+/** Whether new entries at `rel` must stay writable for the sandbox agent: the
+ *  project Wiki is edited by agents, everything else only by the server. */
+function agentWritable(
+  root: { root: SessionFileRootName; agentWritable?: boolean },
+  rel: string,
+): boolean {
+  return (
+    root.agentWritable ??
+    (root.root === 'documents' ||
+      (root.root === 'knowledge' && rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)))
+  );
+}
+
+/** Protected subtrees of `root` beyond its own: recorded decisions stay as recorded. */
+function decisionPaths(root: {
+  root: SessionFileRootName;
+  protectedPaths?: readonly string[];
+}): string[] {
+  const paths = [...(root.protectedPaths ?? [])];
+  if (root.root === 'documents') paths.push('decisions');
+  if (root.root === 'knowledge') paths.push(`${KNOWLEDGE_INSIGHTS_DIR}/decisions`);
+  return paths;
+}
+
+/**
+ * Renames a folder without replacing anything: the new name is reserved as an
+ * empty folder first, and renaming a folder onto an empty one succeeds while
+ * onto anything else it fails — so an entry that has the name, or appears
+ * meanwhile, is never replaced.
+ */
+async function renameFolder(sourcePath: string, destinationPath: string): Promise<void> {
+  await mkdir(destinationPath);
+  try {
+    await renamePath(sourcePath, destinationPath);
+  } catch (error) {
+    await rmdir(destinationPath).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function isDirectory(path: string): Promise<boolean> {
   return lstat(path).then(
     (entry) => entry.isDirectory(),
@@ -131,7 +177,7 @@ export function registerServerSessionFiles(
    * save throws {@link FileWriteError}.
    */
   const saveText = async (
-    root: { root: SessionFileRootName; dir: string },
+    root: { root: SessionFileRootName; dir: string; agentWritable?: boolean },
     path: string,
     content: string,
     expectedVersion: string | null,
@@ -154,11 +200,7 @@ export function registerServerSessionFiles(
         throw new FileWriteError(413, 'overview.md exceeds the project overview limit');
       if (root.root === 'worktree' && !isDocumentWorkspace(root.dir))
         await excludeFileHistoryFromGit(root.dir);
-      const creationMode =
-        newFileMode ??
-        (root.root === 'knowledge' && slot.rel.startsWith(`${KNOWLEDGE_INSIGHTS_DIR}/`)
-          ? 0o666
-          : 0o644);
+      const creationMode = newFileMode ?? (agentWritable(root, slot.rel) ? 0o666 : 0o644);
       const saved = await writeSessionText(slot, content, expectedVersion, creationMode);
       let warning: string | undefined;
       const updates: Array<() => Promise<unknown>> = [];
@@ -223,7 +265,45 @@ export function registerServerSessionFiles(
     });
   };
 
-  registerSessionFileRoutes(app, {
+  /**
+   * Moves a folder within one root — never between roots, never into itself —
+   * with the extracted text of everything inside. The caller holds the root's
+   * mutation lock.
+   */
+  const moveFolder = async (
+    reply: FastifyReply,
+    fromRoot: SessionFileTarget,
+    toRoot: SessionFileTarget,
+    source: KnowledgeFileSlot,
+    destination: KnowledgeFileSlot,
+    afterMove: RelocationHook | undefined,
+  ) => {
+    if (fromRoot.root !== toRoot.root || fromRoot.dir !== toRoot.dir) {
+      reply.code(400);
+      return { error: 'folders can only be moved within one place' };
+    }
+    if (destination.rel.startsWith(`${source.rel}/`)) {
+      reply.code(400);
+      return { error: 'a folder cannot be moved into itself' };
+    }
+    await renameFolder(
+      `${source.directoryPath}/${source.name}`,
+      `${destination.directoryPath}/${destination.name}`,
+    );
+    let warning: string | undefined;
+    if (fromRoot.root !== 'worktree') {
+      try {
+        await renameExtractionTree(fromRoot, source.rel, destination.rel);
+      } catch (err) {
+        app.log.warn({ err, path: destination.rel }, 'moved folder text refresh failed');
+        warning = 'Moved. Knowledge search may show the old place until its text is refreshed.';
+      }
+    }
+    await afterMove?.({ from: source.rel, to: destination.rel });
+    return { path: destination.rel, root: toRoot.root, ...(warning ? { warning } : {}) };
+  };
+
+  const fileDeps: SessionFileRouteDeps = {
     resolveProjectRoot: async (id) => {
       if (!deps.dataRoot || !(await deps.eventStore.getProject(id))) return undefined;
       return ensureProjectKnowledge(deps.dataRoot, id);
@@ -538,6 +618,9 @@ export function registerServerSessionFiles(
           reply.code(413);
           return { error: 'overview.md exceeds the project overview limit' };
         }
+        // The sandbox agent reads knowledge, and edits a project's Wiki, as another user.
+        if (root.root !== 'worktree')
+          await chmod(temporaryPath, agentWritable(root, target.rel) ? 0o666 : 0o644);
         const releaseMutation = await acquireKnowledgeMutationLock(fileStorageRoot(root));
         try {
           await link(temporaryPath, destinationPath);
@@ -757,9 +840,7 @@ export function registerServerSessionFiles(
       }
     },
     remove: async (reply, root, path) => {
-      const protectedPaths = [...(root.protectedPaths ?? [])];
-      if (root.root === 'documents') protectedPaths.push('decisions');
-      if (root.root === 'knowledge') protectedPaths.push('insights/decisions');
+      const protectedPaths = decisionPaths(root);
       // A legacy session can name canonical project knowledge as its worktree.
       // Protect its physical decision storage regardless of the requested root.
       if (root.root === 'worktree' && deps.dataRoot) {
@@ -830,7 +911,7 @@ export function registerServerSessionFiles(
         await file.close();
       }
     },
-    move: async (reply, fromRoot, toRoot, body) => {
+    move: async (reply, fromRoot, toRoot, body, afterMove) => {
       let source;
       let destination;
       try {
@@ -856,9 +937,13 @@ export function registerServerSessionFiles(
           reply.code(404);
           return { error: 'file not found' };
         }
+        if (destination.rel === source.rel && fromRoot.dir === toRoot.dir)
+          return { path: source.rel, root: toRoot.root };
+        if (stats.isDirectory())
+          return await moveFolder(reply, fromRoot, toRoot, source, destination, afterMove);
         if (!stats.isFile()) {
           reply.code(400);
-          return { error: 'only files can be moved' };
+          return { error: 'only files and folders can be moved' };
         }
         if (
           toRoot.root === 'knowledge' &&
@@ -895,13 +980,14 @@ export function registerServerSessionFiles(
           if (!movedExtraction)
             await extractKnowledgeFile(...extractionArgs(toRoot, destination.rel));
         }
+        await afterMove?.({ from: source.rel, to: destination.rel });
         return { path: destination.rel, root: toRoot.root };
       } catch (error) {
         if (
           typeof error === 'object' &&
           error !== null &&
           'code' in error &&
-          (error as { code?: unknown }).code === 'EEXIST'
+          ['EEXIST', 'ENOTEMPTY'].includes(String((error as { code?: unknown }).code))
         ) {
           reply.code(409);
           return { error: `"${destination.name}" already exists` };
@@ -913,7 +999,7 @@ export function registerServerSessionFiles(
         await destination.close();
       }
     },
-    rename: async (reply, root, path, name) => {
+    rename: async (reply, root, path, name, afterMove) => {
       let source;
       let destination;
       try {
@@ -954,17 +1040,7 @@ export function registerServerSessionFiles(
               throw error;
             }
           } else {
-            // Reserve the new name as an empty folder first: renaming a folder
-            // onto an empty one succeeds, onto anything else it fails, so an
-            // entry that already has the name — or appears meanwhile — is never
-            // replaced.
-            await mkdir(destinationPath);
-            try {
-              await renamePath(sourcePath, destinationPath);
-            } catch (error) {
-              await rmdir(destinationPath).catch(() => undefined);
-              throw error;
-            }
+            await renameFolder(sourcePath, destinationPath);
           }
         } catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
@@ -976,6 +1052,7 @@ export function registerServerSessionFiles(
         }
         // The entry has its new name now; a failure past this point must not
         // read as a failed rename, or the app would keep offering the old name.
+        let warning: string | undefined;
         try {
           if (stats.isFile()) {
             const moved = await moveKnowledgeExtraction(
@@ -988,19 +1065,58 @@ export function registerServerSessionFiles(
           }
         } catch (err) {
           app.log.warn({ err, path: destination.rel }, 'renamed source text refresh failed');
-          return {
-            path: destination.rel,
-            warning: 'Renamed. Knowledge search may show the old name until its text is refreshed.',
-          };
+          warning = 'Renamed. Knowledge search may show the old name until its text is refreshed.';
         }
-        return { path: destination.rel };
+        await afterMove?.({ from: source.rel, to: destination.rel });
+        return warning ? { path: destination.rel, warning } : { path: destination.rel };
       } finally {
         release?.();
         await source.close();
         await destination.close();
       }
     },
-  });
+    createFolder: async (reply, root, path, name) => {
+      let slot;
+      try {
+        slot = await openKnowledgeFileSlot(
+          { ...root, protectedPaths: decisionPaths(root) },
+          [path, name].filter(Boolean).join('/'),
+        );
+      } catch (error) {
+        return knowledgeSlotFailure(reply, error);
+      }
+      const release = await acquireKnowledgeMutationLock(fileStorageRoot(root));
+      try {
+        const folder = `${slot.directoryPath}/${slot.name}`;
+        try {
+          await mkdir(folder);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          reply.code(409);
+          return { error: `"${slot.name}" already exists` };
+        }
+        if (root.root !== 'worktree') {
+          // The umask narrows a mode passed to mkdir, and the sandbox agent reads
+          // knowledge — and writes a project's Wiki — as another user.
+          const handle = await open(
+            folder,
+            fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+          );
+          try {
+            await handle.chmod(agentWritable(root, slot.rel) ? 0o777 : 0o755);
+          } finally {
+            await handle.close();
+          }
+        }
+        return { path: slot.rel };
+      } finally {
+        release();
+        await slot.close();
+      }
+    },
+  };
+  registerSessionFileRoutes(app, fileDeps);
+  registerKnowledgeFileRoutes(app, fileDeps);
 
   /** The project's Wiki as the explorer writes it: `path` is relative to `insights/`. */
   const projectWiki = async (projectId: string) => {
