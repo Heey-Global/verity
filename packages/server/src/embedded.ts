@@ -382,7 +382,7 @@ export async function buildEmbeddedServer(
   );
   // Each person's own GitHub App authorization; one instance so a token renews once.
   const githubUserAuthorization = createGitHubUserAuthorization({ store: eventStore });
-  const { mcpGatewayTokens, mcpProxyTokens, mcpGateway } = createEmbeddedMcpGateway(config, {
+  const { mcpGatewayTokens, mcpProxyTokens, mcpGateway } = createEmbeddedMcpGateway(config, db, {
     secretAuditLog,
     gatewayRequestMacKeys,
     getBrokeredProjectBinding,

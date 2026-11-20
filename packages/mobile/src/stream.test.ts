@@ -405,3 +405,158 @@ it('attributes replay timing to its original switch and ignores superseded callb
   expect(returned.phases).toEqual([]);
   stream.stop();
 });
+
+describe('durable permission descriptors', () => {
+  const approval = {
+    toolUseId: 'durable-secret',
+    detached: true,
+    tool: 'verity_http_request',
+    riskClass: 'ask' as const,
+    input: { secretAlias: 'TEST_KEY', method: 'GET', url: 'https://api.example.com' },
+    grantChannel: 'acp' as const,
+  };
+  const result = {
+    t: 'result' as const,
+    stopReason: 'end_turn',
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+    permissionDenials: [],
+  };
+
+  it('restores a detached card after a completed turn without reopening work', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(1, { t: 'permission', id: approval.toolUseId, ...approval });
+    sockets[0]?.emitEvent(2, result);
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 2 }));
+    expect(stream.state.pendingPermission).toBeUndefined();
+    stream.reconcilePendingPermissions([approval.toolUseId], 2, [approval]);
+    expect(stream.state.pendingPermission).toMatchObject({
+      toolUseId: approval.toolUseId,
+      input: approval.input,
+      grantChannel: approval.grantChannel,
+    });
+    expect(stream.state.running).toBe(false);
+    stream.stop();
+  });
+
+  it('restores from the server after a restart with no retained permission event', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    stream.reconcilePendingPermissions([approval.toolUseId], 0, [approval]);
+    sockets[0]?.emitEvent(10, result);
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
+    expect(stream.state.pendingPermission).toMatchObject({
+      toolUseId: approval.toolUseId,
+      input: approval.input,
+      grantChannel: approval.grantChannel,
+    });
+    expect(stream.state.running).toBe(false);
+    stream.prependHistory([{ seq: 5, event: { t: 'text', delta: 'older history' } }]);
+    expect(stream.state.pendingPermission).toMatchObject({
+      toolUseId: approval.toolUseId,
+      input: approval.input,
+      grantChannel: approval.grantChannel,
+    });
+    stream.stop();
+  });
+
+  it('does not resurrect a decided descriptor through stale snapshots or history replay', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, result);
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
+    stream.reconcilePendingPermissions([approval.toolUseId], 10, [approval]);
+    stream.resolvePermission(approval.toolUseId);
+    stream.reconcilePendingPermissions([approval.toolUseId], 10, [approval]);
+    stream.prependHistory([{ seq: 5, event: { t: 'text', delta: 'older history' } }]);
+    expect(stream.state.pendingPermission).toBeUndefined();
+    stream.stop();
+  });
+
+  it('retires a restored card when a fresh pending list removes it', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(10, result);
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 10 }));
+    stream.reconcilePendingPermissions([approval.toolUseId], 10, [approval]);
+    stream.reconcilePendingPermissions([], 10, []);
+    expect(stream.state.pendingPermission).toBeUndefined();
+    stream.reconcilePendingPermissions([approval.toolUseId], 10, [approval]);
+    expect(stream.state.pendingPermission).toBeUndefined();
+    stream.stop();
+  });
+
+  it('does not let an older descriptor replace a newer streamed prompt', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitEvent(11, {
+      t: 'permission',
+      id: 'new',
+      tool: 'Bash',
+      input: { command: 'new' },
+      riskClass: 'ask',
+    });
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 11 }));
+    stream.reconcilePendingPermissions([approval.toolUseId], 10, [approval]);
+    expect(stream.state.pendingPermission?.toolUseId).toBe('new');
+    stream.stop();
+  });
+
+  it('does not surface a card whose exact input was omitted', () => {
+    const { connect, sockets } = recordingConnect();
+    const stream = new SessionStream({ sessionId: 's1', transport: connect });
+    stream.start();
+    sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+    stream.reconcilePendingPermissions([approval.toolUseId], 0, [
+      { ...approval, input: undefined },
+    ]);
+    expect(stream.state.pendingPermission).toBeUndefined();
+    stream.stop();
+  });
+});
+
+it('does not restore a turn-bound descriptor after a newer terminal frame', () => {
+  const { connect, sockets } = recordingConnect();
+  const stream = new SessionStream({ sessionId: 's1', transport: connect });
+  stream.start();
+  const descriptor = { toolUseId: 'runner', tool: 'Bash', input: {}, riskClass: 'ask' };
+  stream.reconcilePendingPermissions(['runner'], 0, [descriptor]);
+  sockets[0]?.emitEvent(1, {
+    t: 'result',
+    stopReason: 'end_turn',
+    permissionDenials: [],
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
+  });
+  sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 1 }));
+  expect(stream.state.pendingPermission).toBeUndefined();
+  stream.stop();
+});
+
+it('restores multiple durable cards and keeps the next one actionable after answering the oldest', () => {
+  const { connect, sockets } = recordingConnect();
+  const stream = new SessionStream({ sessionId: 's1', transport: connect });
+  stream.start();
+  sockets[0]?.emitRaw(JSON.stringify({ k: 'caught_up', seq: 0 }));
+  const requests = ['first', 'second'].map((id) => ({
+    toolUseId: id,
+    tool: 'verity_secret_run',
+    riskClass: 'ask',
+    input: { command: id },
+    detached: true,
+  }));
+  stream.reconcilePendingPermissions(['first', 'second'], 0, requests);
+  expect(stream.state.pendingPermission?.toolUseId).toBe('first');
+  stream.resolvePermission('first');
+  expect(stream.state.pendingPermission?.toolUseId).toBe('second');
+  stream.reconcilePendingPermissions(['first', 'second'], 0, requests);
+  stream.prependHistory([]);
+  expect(stream.state.pendingPermission?.toolUseId).toBe('second');
+  stream.resolvePermission('second');
+  expect(stream.state.pendingPermission).toBeUndefined();
+  stream.stop();
+});

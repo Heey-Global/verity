@@ -1,3 +1,4 @@
+import { installDetachedSecretApprovals } from './detached-secret-approvals.js';
 import { createGatewaySessionCoordination } from './session-coordination-runtime.js';
 import type { SpawnSession } from './session-create-route.js';
 import { createLinkedSessionDelivery, listLinkedSessions } from './session-linked-delivery.js';
@@ -541,7 +542,7 @@ export function registerServerMcpRoutes({
   }
 
   if (deps.mcpGateway !== undefined) {
-    const gatewayDeps = deps.mcpGateway;
+    const gatewayDeps = installDetachedSecretApprovals(app, deps, conductor, canExecuteAs);
     const { linkedSessionTarget, deliverLinkedMessage } = createLinkedSessionDelivery(
       deps.eventStore,
       conductor,
@@ -874,7 +875,6 @@ export function registerServerMcpRoutes({
       runtimeReadiness: deps.secretJobRuntimeReadiness,
       uplinkDiagnostics: deps.uplinkDiagnostics,
     });
-    // Bind the eventual card answer to the plan that existed before the card opened.
     const planningApprovalRevisions = new WeakMap<object, number>();
     const planningConsents = new WeakMap<object, import('@verity/store').PlanningConsent>();
     const vulnerabilityTool = createVulnerabilityTool({

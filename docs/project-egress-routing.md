@@ -301,8 +301,8 @@ example, not a new approval policy for all document operations.
 
 Deduplicate pending network requests by trusted project, canonical target,
 protocol/port and policy revision. Record requester contexts without broadening
-the grant. Approval starts the TTL once and pending requests expire after five
-minutes; this proposed deadline is separate from the one-hour grant lifetime.
+the grant. Unanswered requests remain pending until a decision or explicit
+removal. Approval starts the separate one-hour grant lifetime once.
 Persist a denial/suppression record for that target and policy revision until a
 manager explicitly reopens it; repeated attempts or a new session do not create
 new cards. Expiry or revocation never silently renews a rule. Reopening changes
@@ -334,7 +334,8 @@ acceptance remains required before protection is usable. See
 - An existing generation keeps the mode it started with until it is replaced.
   Cold wake replaces a generation whose mode differs from the switch.
 - Destination approvals stay per project through the project egress API. The
-  planned app interface is Project → Settings → Sandbox.
+  app shows pending requests in the session, alongside tool approvals. Project →
+  Settings → Sandbox also lists requests and rules.
 
 ## Web search under the fence
 
@@ -354,6 +355,21 @@ arbitrary destinations; they are ordinary direct targets and need a destination
 grant. A Sandbox DNS lookup of an ungranted, non-broker name records one pending
 TCP 443 destination request of the project, attributed to the Sandbox: at most
 once a minute per name and 20 new requests per project and minute.
+
+Unanswered requests have no deadline and survive closing the app or restarting
+the server. Existing pending requests with a legacy deadline are treated the same
+way. The session refreshes the project request list while open and when the app
+returns to the foreground. A running agent receives pending/decision status;
+project attribution does not identify which process made the DNS query.
+Approval grants access for one hour and never replays the blocked operation.
+Policy changes require explicit review before an old request can be approved.
+
+Primary secret HTTP/CLI approvals use a separate durable receipt bound to the exact
+request, project, session and secret-provider identity. These tools return
+`awaiting_approval` without holding an HTTP call open. The session restores unanswered
+cards on reconnect. After approval, a matching retry revalidates current authority
+and consumes the receipt once before dispatch; changing the request or provider
+requires fresh consent. Network approval does not authorize secret use.
 
 Residual risk, accepted for now and to be tightened later:
 
@@ -409,8 +425,9 @@ Paired routes under `/projects/:id/egress` provide reading, requests, decisions,
 explicit reopening, revocation and permanent settings rules. Requests need execute
 permission; decisions, reopening, revocation and permanent rules need manage.
 The routes reject missing authenticated user identity even on an unpaired server.
-A denied, expired or obsolete request does not generate another automatic card;
-a manager must reopen it with the current revision. Default grants last one hour
+A denied or obsolete request does not generate another automatic card;
+a manager must reopen it with the current revision. Unanswered requests remain
+pending until decided or explicitly removed. Default grants last one hour
 from approval; permanent rules require the separate settings endpoint.
 
 These are draft management APIs. They perform no DNS lookup, traffic admission,

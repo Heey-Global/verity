@@ -1,3 +1,4 @@
+import { brokeredToolApprovalMigration } from './brokered-tool-approval-migration.js';
 import { sql, type Kysely } from 'kysely';
 import type { Migration } from 'kysely/migration';
 
@@ -616,3 +617,5 @@ migrations['0229_session_coordination_requests'] = {
     await sql`drop table session_coordination_requests`.execute(db);
   },
 };
+
+migrations['0230_brokered_tool_approvals'] = brokeredToolApprovalMigration;

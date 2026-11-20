@@ -3,6 +3,9 @@ import { TranscriptPositionCover } from '../../components/TranscriptPositionCove
 import { SessionPeopleProvider, useMessageSender } from '../../components/SessionPeople';
 import { SessionRepositories } from '../../components/project/SessionRepositories';
 import { ProjectInquiryCards } from '../../components/project/ProjectInquiryCards';
+import { NetworkApprovalPrompt } from '../../components/NetworkApprovalPrompt';
+import { SecretApprovalHistory } from '../../components/SecretApprovalHistory';
+import { SecretApprovalWaitNote } from '../../components/SecretApprovalWaitNote';
 import { WikiDetails } from '../../components/WikiDetails';
 import { mockupBarView, mockupRoundView, qaAssignmentView } from '@verity/mobile';
 import { connectionFailureKind, projectTitle } from '@verity/mobile';
@@ -4768,10 +4771,17 @@ export const SessionChat = memo(function SessionChat({
           </Pressable>
         </Animated.View>
       ) : null}
-      {/* Live per-tool permission prompt (#149): when the mid-turn runner pauses on a
-          tool, render an approve/deny prompt above the input. Sits below the
-          transcript so it reads as "the agent is waiting on YOU", and POSTs the
-          decision back. Hidden once answered (the stream clears `pendingPermission`). */}
+      {projectId && !session.pendingPermission ? (
+        <NetworkApprovalPrompt key={projectId} client={client} projectId={projectId} />
+      ) : null}
+      {projectId ? (
+        <SecretApprovalHistory
+          key={sessionId}
+          client={client}
+          sessionId={sessionId}
+          refreshKey={session.pendingPermission?.toolUseId}
+        />
+      ) : null}
       {session.pendingPermission &&
       !(
         planning === 'active' &&
@@ -8627,18 +8637,7 @@ function EngineSwitcherSheet({
   );
 }
 
-// The LIVE per-tool permission prompt (#149): when the mid-turn runner pauses the
-// agent on a `can_use_tool`, the reducer surfaces it as `session.pendingPermission`
-// and this renders an approve/deny prompt above the input. Shows the tool name + a
-// one-line input summary (reusing `toolCallView`, the same summary the transcript
-// tool cards use) so the operator knows exactly what they're approving. Tapping
-// Allow/Deny POSTs the decision; the buttons disable + the tapped one spins while
-// it's in flight (the `deciding` flag), and a dead session (worktree gone) makes
-// the prompt inert. Once answered, the stream clears `pendingPermission` and this
-// unmounts. Both buttons are real <Pressable> buttons with explicit accessibility
-// labels so they're focus/keyboard reachable (a11y). A brokered-HTTP prompt shows
-// a readable request summary instead of raw JSON and offers scoped allows
-// for both HTTP and CLI: once, this session, or 30 days in the project.
+// Live and durable tool approvals share this prompt. The server validates scope and execution.
 function PermissionPrompt({
   sessionId,
   pending,
@@ -8864,6 +8863,7 @@ function PermissionPrompt({
           Google account: {spellOutBidiControls(googleAccountEmail)}
         </Text>
       ) : null}
+      {isBrokeredHttp || isTrustedCli ? <SecretApprovalWaitNote /> : null}
       {isPresentPlan ? (
         <View style={styles.permissionHttpSummary}>
           <Text style={styles.permissionHttpMeta}>
