@@ -33,7 +33,8 @@ export const protectedBuildAuthorityStep = z.enum([
 export type ProtectedBuildAuthorityStep = z.infer<typeof protectedBuildAuthorityStep>;
 export const protectedBuildDiagnostic = z.object({
   reason: protectedBuildReason,
-  detail: protectedBuildAuthorityStep.optional(),
+  // A class this release does not know must not discard the reason and reference.
+  detail: protectedBuildAuthorityStep.optional().catch(undefined),
   correlationId: z.uuid().optional(),
 });
 export type ProtectedBuildDiagnostic = z.infer<typeof protectedBuildDiagnostic>;
