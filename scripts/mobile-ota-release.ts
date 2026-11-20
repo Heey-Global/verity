@@ -8,7 +8,7 @@ import {
   openSync,
   closeSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { isReleaseBotLogin } from './release-bot-logins.mjs';
 
@@ -796,39 +796,96 @@ function stage(runtime: string, version: string, prepareOnly = false) {
     return;
   }
   reserve(`ota-proposal-base/${candidate.tag}/${proposalBase}`, candidate, proposalBase);
-  git(
-    'push',
-    `--force-with-lease=refs/heads/${branch}:${remote}`,
-    'origin',
-    `${proposalBase}:refs/heads/${branch}`,
+  // Resetting the live PR branch to main makes GitHub close an empty PR.
+  // Prepare the signed commit elsewhere and publish only the finished proposal.
+  const temporaryBranch = `automation/ota-proposal-tmp/${randomUUID()}`;
+  const temporaryRef = `refs/heads/${temporaryBranch}`;
+  let temporaryHead = proposalBase;
+  let proposalHead: string;
+  git('push', `--force-with-lease=${temporaryRef}:`, 'origin', `${proposalBase}:${temporaryRef}`);
+  try {
+    const contents = Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`).toString('base64');
+    const query =
+      'mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repository, branchName: $branch }, expectedHeadOid: $expected, message: { headline: $message }, fileChanges: { additions: [{path: $path, contents: $contents}] } }) { commit { oid signature { isValid } } } }';
+    const result = createPromotionCommit(
+      'graphql',
+      '-f',
+      `query=${query}`,
+      '-f',
+      `repository=${repository()}`,
+      '-f',
+      `branch=${temporaryBranch}`,
+      '-f',
+      `expected=${proposalBase}`,
+      '-f',
+      `message=chore(release): production mobile OTA ${candidate.version}`,
+      '-f',
+      `path=${manifestPath}`,
+      '-f',
+      `contents=${contents}`,
+    );
+    proposalHead = result.data.createCommitOnBranch.commit.oid;
+    if (shaPattern.test(proposalHead)) temporaryHead = proposalHead;
+    if (
+      !shaPattern.test(proposalHead) ||
+      proposalHead === proposalBase ||
+      !result.data.createCommitOnBranch.commit.signature.isValid
+    )
+      throw new Error('Promotion commit is not verified');
+    git('fetch', 'origin', temporaryBranch);
+    const parents = git('rev-list', '--parents', '-n', '1', proposalHead).split(' ');
+    if (
+      parents.length !== 2 ||
+      parents[0] !== proposalHead ||
+      parents[1] !== proposalBase ||
+      git('diff', '--name-only', proposalBase, proposalHead) !== manifestPath ||
+      JSON.stringify(
+        validateCandidate(JSON.parse(git('show', `${proposalHead}:${manifestPath}`))),
+      ) !== JSON.stringify(candidate)
+    )
+      throw new Error('Promotion commit differs from the reserved candidate');
+    git(
+      'push',
+      `--force-with-lease=refs/heads/${branch}:${remote}`,
+      'origin',
+      `${proposalHead}:refs/heads/${branch}`,
+    );
+  } finally {
+    // A lost GraphQL response may leave an unknown head. Never delete that ref
+    // without its expected OID, and never mask the original publication error.
+    try {
+      git(
+        'push',
+        `--force-with-lease=${temporaryRef}:${temporaryHead}`,
+        'origin',
+        `:${temporaryRef}`,
+      );
+    } catch {
+      console.error('Temporary OTA proposal ref could not be removed with its expected head');
+    }
+  }
+  const current = json<Pull[]>(
+    'pr',
+    'list',
+    '--state',
+    'open',
+    '--base',
+    'main',
+    '--head',
+    branch,
+    '--json',
+    'number,headRefOid,headRefName,author',
   );
-  const contents = Buffer.from(`${JSON.stringify(candidate, null, 2)}\n`).toString('base64');
-  const query =
-    'mutation($repository: String!, $branch: String!, $expected: GitObjectID!, $message: String!, $path: String!, $contents: Base64String!) { createCommitOnBranch(input: { branch: { repositoryNameWithOwner: $repository, branchName: $branch }, expectedHeadOid: $expected, message: { headline: $message }, fileChanges: { additions: [{path: $path, contents: $contents}] } }) { commit { oid signature { isValid } } } }';
-  const result = createPromotionCommit(
-    'graphql',
-    '-f',
-    `query=${query}`,
-    '-f',
-    `repository=${repository()}`,
-    '-f',
-    `branch=${branch}`,
-    '-f',
-    `expected=${proposalBase}`,
-    '-f',
-    `message=chore(release): production mobile OTA ${candidate.version}`,
-    '-f',
-    `path=${manifestPath}`,
-    '-f',
-    `contents=${contents}`,
-  );
-  if (!result.data.createCommitOnBranch.commit.signature.isValid)
-    throw new Error('Promotion commit is not verified');
+  if (
+    current.length > 1 ||
+    current.some((pr) => !isReleaseBotLogin(pr.author?.login) || pr.headRefOid !== proposalHead)
+  )
+    throw new Error('Published rolling proposal has conflicting ownership or head');
   const title = `chore(release): production mobile OTA ${candidate.version}`;
   const body = `Promotes immutable EAS update group \`${group}\` for runtime \`${runtime}\`.\n\nSource: \`${commit}\`\nPublished baseline: \`${candidate.baseline}\`\n\nChanges since the delivered release:\n${candidate.notes.map((note) => `- ${note}`).join('\n') || '- Mobile application updates.'}\n\nMerging approves this exact candidate. CI validates the current PR head; an older approval cannot select an older bundle.\n`;
   const bodyFile = `${process.env.RUNNER_TEMP}/mobile-ota-pr.md`;
   writeFileSync(bodyFile, body);
-  let number = open[0]?.number;
+  let number = current[0]?.number;
   if (number)
     gh(
       'pr',
@@ -863,7 +920,7 @@ function stage(runtime: string, version: string, prepareOnly = false) {
   // The new commit has no CI verdict yet; its pull_request run starts from the
   // app-authored commit above. Clear approvals for earlier candidates before
   // that run can finish so stale approval cannot make this candidate mergeable.
-  for (const review of staleApprovals(number, result.data.createCommitOnBranch.commit.oid)) {
+  for (const review of staleApprovals(number, proposalHead)) {
     gh(
       'api',
       '--method',
@@ -873,6 +930,27 @@ function stage(runtime: string, version: string, prepareOnly = false) {
       'message=The OTA candidate changed. Review the current immutable update before approving again.',
     );
   }
+  const confirmed = json<Pull[]>(
+    'pr',
+    'list',
+    '--state',
+    'open',
+    '--base',
+    'main',
+    '--head',
+    branch,
+    '--json',
+    'number,headRefOid,headRefName,author',
+  );
+  const confirmedPull = confirmed[0];
+  if (
+    confirmed.length !== 1 ||
+    !confirmedPull ||
+    confirmedPull.number !== number ||
+    confirmedPull.headRefOid !== proposalHead ||
+    !isReleaseBotLogin(confirmedPull.author?.login)
+  )
+    throw new Error('Production proposal is not open at the verified candidate head');
   // Retire only known workflow-authored legacy candidates after the rolling PR
   // and its verification exist; never close human-authored work by title alone.
   const others = json<Pull[]>(

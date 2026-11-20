@@ -174,9 +174,18 @@ export class SessionReducer {
   private readonly _permissionDenials: PermissionDenial[] = [];
   private _rateLimit: SessionState['rateLimit'];
   private readonly _rejectedRateLimits = new Map<string, NonNullable<SessionState['rateLimit']>>();
-  // The live per-tool permission prompt the turn is paused on (#149), or undefined.
-  // At most one pending at a time (the turn blocks on it). See SessionState.pendingPermission.
-  private _pendingPermission: PendingPermission | undefined;
+  // The live per-tool permission prompts awaiting the operator (#149), oldest first.
+  // Several can wait at once: parallel tool calls, sub-agents, and gateway prompts
+  // (a secret run) that no turn holds. Keeping only the newest hid the older ones
+  // while the server still listed them as open. See SessionState.pendingPermission.
+  private readonly _pendingPermissions = new Map<string, PendingPermission>();
+  // Prompts a turn boundary dropped. A gateway prompt outlives its turn on the
+  // server, so the live pending set can bring one back (see reconcilePendingPermissions).
+  // Keyed by id, with the seq of the boundary that dropped it.
+  private readonly _droppedPermissions = new Map<
+    string,
+    { request: PendingPermission; droppedAt: number }
+  >();
   // True while a turn is in flight (issue #79); see SessionState.running.
   private _running = false;
   // Background tasks (sub-agents / run_in_background) still open in the current
@@ -241,7 +250,7 @@ export class SessionReducer {
         this._model = event.model;
         // A fresh-session bind is the start of its first turn (#79); a new turn
         // can't carry a stale permission prompt from a prior one (#149).
-        this._pendingPermission = undefined;
+        this.dropPendingPermissions(seq);
         this._status = 'running';
         this._running = true;
         this._openTasks.clear(); // a fresh turn starts with no outstanding tasks
@@ -275,7 +284,7 @@ export class SessionReducer {
           this._running = false;
           this._openTasks.clear(); // the turn ended; its background tasks are over
           this.settleOpenSkillTools(ts);
-          this._pendingPermission = undefined;
+          this.dropPendingPermissions(seq);
         }
         break;
       case 'text':
@@ -328,7 +337,7 @@ export class SessionReducer {
         // It also supersedes any unanswered permission prompt (#149) — the turn it
         // belonged to is over once a fresh prompt is dispatched.
         this.active = null;
-        this._pendingPermission = undefined;
+        this.dropPendingPermissions(seq);
         this._status = 'running';
         this._running = true;
         // Steering belongs to the current turn and must retain its background work.
@@ -390,14 +399,15 @@ export class SessionReducer {
         // approve/deny prompt. Closes the open streaming block like any boundary
         // event. `id` is the tool_use_id (the decision POST's path key).
         this.active = null;
-        this._pendingPermission = {
+        this._droppedPermissions.delete(event.id);
+        this._pendingPermissions.set(event.id, {
           toolUseId: event.id,
           tool: event.tool,
           input: event.input,
           riskClass: event.riskClass,
           createdAt: ts,
           ...(event.grantChannel !== undefined ? { grantChannel: event.grantChannel } : {}),
-        };
+        });
         break;
       case 'result':
         this.active = null; // turn end closes the open block
@@ -413,7 +423,7 @@ export class SessionReducer {
         }
         // The turn ended — no permission can still be pending (the runner
         // fail-safe-denies any un-answered prompt before the turn settles) (#149).
-        this._pendingPermission = undefined;
+        this.dropPendingPermissions(seq);
         this.accrueResult(event.usage, event.permissionDenials);
         break;
       case 'task':
@@ -499,7 +509,7 @@ export class SessionReducer {
         // it belonged to is over (#149).
         this._running = false;
         this.settleOpenSkillTools(ts);
-        this._pendingPermission = undefined;
+        this.dropPendingPermissions(seq);
         this.emitAgentEvent(seq, ts, event);
         break;
       case 'tasks_updated':
@@ -681,7 +691,21 @@ export class SessionReducer {
    * deny short-circuiting to an error result) dismisses it, while an unrelated tool's
    * event leaves a still-pending prompt for a DIFFERENT tool untouched. */
   private clearPermissionFor(id: string): void {
-    if (this._pendingPermission?.toolUseId === id) this._pendingPermission = undefined;
+    this._pendingPermissions.delete(id);
+    this._droppedPermissions.delete(id);
+  }
+
+  /** A turn boundary ends every prompt a turn held; gateway prompts may survive it. */
+  private dropPendingPermissions(seq: number): void {
+    for (const [id, request] of this._pendingPermissions) {
+      this._droppedPermissions.set(id, { request, droppedAt: seq });
+    }
+    this._pendingPermissions.clear();
+  }
+
+  /** The prompt the operator answers next: the oldest still waiting. */
+  private get currentPermission(): PendingPermission | undefined {
+    return this._pendingPermissions.values().next().value;
   }
 
   private completeTool(ts: number, id: string, output: unknown, isError: boolean): void {
@@ -847,7 +871,12 @@ export class SessionReducer {
     return this._permissionDenials;
   }
   get pendingPermission(): PendingPermission | undefined {
-    return this._pendingPermission ? { ...this._pendingPermission } : undefined;
+    const current = this.currentPermission;
+    return current ? { ...current } : undefined;
+  }
+  /** Every prompt still waiting, oldest first. */
+  get pendingPermissionIds(): string[] {
+    return [...this._pendingPermissions.keys()];
   }
   get running(): boolean {
     return this._running;
@@ -878,9 +907,9 @@ export class SessionReducer {
    * a turn that dies between the prompt and its `tool_call`/`tool_result` never
    * emits one, leaving an "approve/deny" card the operator taps forever. */
   resolvePermission(toolUseId: string): void {
-    const wasCurrent = this._pendingPermission?.toolUseId === toolUseId;
+    const wasPending = this._pendingPermissions.has(toolUseId);
     this.clearPermissionFor(toolUseId);
-    if (wasCurrent && this._status === 'awaiting_input') {
+    if (wasPending && this._pendingPermissions.size === 0 && this._status === 'awaiting_input') {
       this._status = 'running';
       this._running = true;
     }
@@ -890,11 +919,38 @@ export class SessionReducer {
    * Permission prompts are durable transcript events, while their decisions are
    * delivered over the runner control channel. After a remount, replay can
    * therefore recreate an already-answered card unless the live pending set
-   * explicitly retires it. */
-  reconcilePendingPermissions(toolUseIds: readonly string[]): void {
-    const pending = this._pendingPermission;
-    if (pending !== undefined && !toolUseIds.includes(pending.toolUseId)) {
-      this.resolvePermission(pending.toolUseId);
+   * explicitly retires it. In the other direction, a gateway prompt outlives the
+   * turn whose end dropped it here; while the server still lists it, it is open
+   * and must stay answerable in the session, not only on Home. */
+  reconcilePendingPermissions(
+    toolUseIds: readonly string[],
+    /** The prompts to retire; by default every one the live set no longer lists. */
+    retire?: readonly string[],
+    /** The newest seq the server had seen when it took the live set. */
+    throughSeq = Number.POSITIVE_INFINITY,
+  ): void {
+    const live = new Set(toolUseIds);
+    let revived = false;
+    for (const id of retire ?? this.pendingPermissionIds.filter((id) => !live.has(id))) {
+      this.resolvePermission(id);
+    }
+    for (const [id, { request, droppedAt }] of this._droppedPermissions) {
+      // A snapshot from before the boundary still lists a prompt the turn's end
+      // denied; only a later one can say it outlived the turn.
+      if (droppedAt > throughSeq) continue;
+      this._droppedPermissions.delete(id);
+      if (!live.has(id)) continue;
+      this._pendingPermissions.set(id, request);
+      revived = true;
+    }
+    // A revived prompt is older than any raised since its turn ended; keep the
+    // oldest first so the operator answers in the order the agent asked.
+    if (revived) {
+      const ordered = [...this._pendingPermissions.values()].sort(
+        (a, b) => a.createdAt - b.createdAt,
+      );
+      this._pendingPermissions.clear();
+      for (const request of ordered) this._pendingPermissions.set(request.toolUseId, request);
     }
   }
 
@@ -908,7 +964,7 @@ export class SessionReducer {
       usage: { ...this._usage },
       permissionDenials: [...this._permissionDenials],
       rateLimit: this._rateLimit ? { ...this._rateLimit } : undefined,
-      pendingPermission: this._pendingPermission ? { ...this._pendingPermission } : undefined,
+      pendingPermission: this.pendingPermission,
       running: this._running,
     };
   }
