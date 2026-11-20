@@ -347,7 +347,10 @@ export async function reconcileRetainedSandboxes(
         continue;
       }
     }
-    // Even a stopped container at the live name belongs to normal repair.
+    // A stopped replacement may be new data or an interrupted startup. Preserve
+    // both copies until normal repair establishes whether it can run.
+    if (current !== undefined && !current.running) continue;
+    // A running replacement owns the live name.
     // A vacant name can be left by a restart in any provisioning phase.
     const vacant = current === undefined;
     // Protection may have been turned on while the Server was down; a parked

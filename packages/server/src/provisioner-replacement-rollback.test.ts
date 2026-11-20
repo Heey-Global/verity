@@ -398,7 +398,8 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
     await provisioner.reconcileRelays([(await ctx.store.getProject(id))!], {});
 
     expect(docker.containers.get('replacement')).toMatchObject({ name: CONTAINER_NAME });
-    expect(docker.containers.has('previous')).toBe(false);
+    expect(docker.containers.has('previous')).toBe(true);
+    expect(relay.discardGeneration).not.toHaveBeenCalled();
     expect(relay.reactivate).not.toHaveBeenCalled();
   });
 });
