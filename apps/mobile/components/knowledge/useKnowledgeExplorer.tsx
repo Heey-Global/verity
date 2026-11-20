@@ -119,6 +119,7 @@ export function useKnowledgeExplorer({
   const remove = useCallback(
     (paths: readonly string[]) => {
       if (busy || paths.length === 0) return;
+      const left = [...paths];
       const folderEntry =
         paths.length === 1 &&
         entries.some((entry) => entry.path === paths[0] && entry.kind === 'directory');
@@ -134,8 +135,11 @@ export function useKnowledgeExplorer({
         onConfirm: async () => {
           setBusy(true);
           try {
-            for (const path of paths) {
+            // The sheet stays open after a failure; Delete again sends only what is left.
+            while (left.length > 0) {
+              const path = left[0]!;
               await deleteKnowledge(client, scope, path);
+              left.shift();
               // A retry after a failure must not ask for what is already gone.
               setSelected((current) => current.filter((selectedPath) => selectedPath !== path));
             }
@@ -389,6 +393,7 @@ export function useKnowledgeExplorer({
               destination.split('/').slice(1).join('/') ||
               (area === 'insights' ? 'the Wiki' : 'Sources');
             const paths = moving;
+            const left = [...paths];
             await withLinkCheck(
               paths,
               'Move',
@@ -397,8 +402,11 @@ export function useKnowledgeExplorer({
               async () => {
                 const results = [];
                 try {
-                  for (const path of paths) {
+                  // A retry after a failure, from the picker or the question, moves only what is left.
+                  while (left.length > 0) {
+                    const path = left[0]!;
                     const result = await moveKnowledge(client, scope, path, destination);
+                    left.shift();
                     pane?.moved?.(scope, path, result.path);
                     results.push(result);
                     // A retry after a failure moves only what is still left.
