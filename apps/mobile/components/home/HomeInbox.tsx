@@ -11,29 +11,27 @@ import {
 } from '@verity/mobile';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
-import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
-import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { RefreshControl, ScrollView, View } from 'react-native';
+import { StyleSheet } from 'react-native-unistyles';
 
-import { Icon } from '../Icon';
-import { VerityMark } from '../VerityMark';
 import { FeedCard, useInboxFeed } from '../inbox/InboxFeed';
-import { CaptureField, Text } from '../ui';
-import { useTaskPreferences } from '../../lib/taskPreferences';
+import { Group, Row, Text } from '../ui';
 import { taskAccountScope } from '../../lib/tasksStore';
-import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { syncWatchInbox } from '../../lib/watchCapture';
 
 // The inbox mechanics live with every work list; kept importable from Home.
 export { InboxCard, RESUME_PROMPT, replyFor, useInboxFeed } from '../inbox/InboxFeed';
+
+type SectionCounts = { needs: number; active: number; results: number };
 
 /** The cached calendar list is cheap, but a watched calendar rarely changes. */
 const MEETING_REFRESH_MS = 5 * 60_000;
 /** Re-evaluates the meeting window and "in N min" without new data. */
 const CLOCK_TICK_MS = 30_000;
 /**
- * Home: Verity's line and capture on top, then the same live work sections as
- * the project view, across all projects and with their context
- * (docs/design-system.md § 5.8 "Home presence").
+ * Home: the same live work sections as the project view, across all projects
+ * and with their context, then a quiet way to Shared knowledge. Verity herself
+ * is reached through the floating V (docs/design-system.md § 5.8 "Home presence").
  *
  * {@link ProjectWork} owns session placement and rows in both views;
  * {@link useInboxFeed} answers and dismisses the explicit inbox decisions.
@@ -51,7 +49,7 @@ export function HomeInbox({
   onOpenProject,
   onRepairProject,
   onCountChange,
-  onOpenVerity,
+  onOpenSharedKnowledge,
   scrollRef,
 }: {
   client: VerityClient;
@@ -73,8 +71,8 @@ export function HomeInbox({
   onRepairProject: (projectId: string) => void;
   /** How many entries need the user, excluding running work and unread results. */
   onCountChange?: (count: number) => void;
-  /** Opens Verity's page from her header. */
-  onOpenVerity?: (() => void) | undefined;
+  /** Opens Shared knowledge, the reference pages every project reads. */
+  onOpenSharedKnowledge: () => void;
 }) {
   const meetings = useUpcomingMeetings(client);
   const now = useClock(CLOCK_TICK_MS);
@@ -102,9 +100,12 @@ export function HomeInbox({
     onOpenProject,
     onRepairProject,
   });
-  const [counts, setCounts] = useState({ needs: 0, active: 0, results: 0 });
-  const onSectionsChange = useCallback((next: typeof counts) => {
+  // `null` until the sections first report, so the quiet line cannot flash
+  // on mount before the work is placed.
+  const [counts, setCounts] = useState<SectionCounts | null>(null);
+  const onSectionsChange = useCallback((next: SectionCounts) => {
     setCounts((current) =>
+      current !== null &&
       current.needs === next.needs &&
       current.active === next.active &&
       current.results === next.results
@@ -112,7 +113,14 @@ export function HomeInbox({
         : next,
     );
   }, []);
-  useEffect(() => onCountChange?.(counts.needs), [counts.needs, onCountChange]);
+  const needs = counts?.needs ?? 0;
+  useEffect(() => onCountChange?.(needs), [needs, onCountChange]);
+  const meetingItems = feed.items.filter((item) => item.kind === 'meeting');
+  // Without a header, an empty Home would show nothing but the knowledge row.
+  const quiet =
+    counts !== null &&
+    counts.needs + counts.active + counts.results === 0 &&
+    meetingItems.length === 0;
   const changed = useCallback(
     (sessionId: string, deleted: boolean) => {
       if (onSessionChanged) onSessionChanged(sessionId, deleted);
@@ -120,15 +128,6 @@ export function HomeInbox({
     },
     [onSessionChanged, onRefresh],
   );
-  const summaryParts = [
-    counts.needs === feed.items.length
-      ? inboxSummary(feed.items)
-      : counts.needs > 0
-        ? `${String(counts.needs)} need you`
-        : inboxSummary([]),
-    ...(counts.active > 0 ? [`${String(counts.active)} in progress`] : []),
-    ...(counts.results > 0 ? [`${String(counts.results)} new results`] : []),
-  ];
   // The watch lists the same items under "Needs you" (targets/VerityWatch).
   // The account the items were read for: taken when their sources arrive, so a
   // list still from the previous account is never sent under the next one.
@@ -148,7 +147,6 @@ export function HomeInbox({
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       testID="home-inbox"
     >
-      <VerityHeader summary={summaryParts.join(' · ')} onOpen={onOpenVerity} />
       <ProjectInquiryCards client={client} />
       <ProjectWork
         client={client}
@@ -160,77 +158,31 @@ export function HomeInbox({
         selectedSessionId={selectedSessionId}
         // Meetings belong to no project; everything else is the same list a
         // project's page draws, across all projects.
-        leadingRows={feed.items
-          .filter((item) => item.kind === 'meeting')
-          .map((item) => (
-            <FeedCard key={item.key} feed={feed} item={item} selected={false} />
-          ))}
+        leadingRows={meetingItems.map((item) => (
+          <FeedCard key={item.key} feed={feed} item={item} selected={false} />
+        ))}
         onSectionsChange={onSectionsChange}
         onOpenSession={onOpenSession}
         onChanged={changed}
       />
-    </ScrollView>
-  );
-}
-
-/** Verity's identity and capture on Home; exported for the design-system catalog. */
-export function VerityHeader({
-  summary,
-  onOpen,
-}: {
-  summary: string;
-  /** Opens Verity's page (the new design); without it the identity is not a control. */
-  onOpen?: (() => void) | undefined;
-}) {
-  const { theme } = useUnistyles();
-  // The field opens quick capture, which only listens while task capture is on
-  // and an account is known; without them it would be a button that does nothing.
-  const capture = useTaskPreferences().enabled && taskAccountScope() !== null;
-  return (
-    <View style={styles.header}>
-      {onOpen ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Verity, ${summary}`}
-          accessibilityHint="Opens Verity's page with your instructions, memory and shared knowledge"
-          onPress={onOpen}
-          testID="home-verity"
-          style={({ pressed }) => [styles.identity, pressed ? styles.capturePressed : null]}
-        >
-          <VerityIdentity summary={summary} testID="home-summary" />
-          <Icon name="chevron-right" size={20} color={theme.colors.textMuted} />
-        </Pressable>
-      ) : (
-        <View style={styles.identity}>
-          <VerityIdentity summary={summary} testID="home-summary" />
-        </View>
-      )}
-      {capture ? (
-        <CaptureField
-          placeholder="Tell Verity… an idea, a mail, an appointment"
-          accessibilityLabel="Tell Verity"
-          accessibilityHint="Opens Verity to listen: ask her or tell her an idea, a mail or an appointment"
-          onOpen={() => dispatchVerityShortcut()}
-        />
+      {quiet ? (
+        <Text variant="body" tone="muted" testID="home-quiet">
+          {inboxSummary([])}
+        </Text>
       ) : null}
-    </View>
-  );
-}
-
-/** Verity's mark on its halo, her name and one line; shared by Home and her page. */
-export function VerityIdentity({ summary, testID }: { summary: string; testID?: string }) {
-  return (
-    <>
-      <VerityMark />
-      <View style={styles.flex}>
-        <Text variant="title" accessibilityRole="header">
-          Verity
-        </Text>
-        <Text variant="subtitle" testID={testID}>
-          {summary}
-        </Text>
+      {/* Last and quiet: rarely opened, but findable where the work is. */}
+      <View style={styles.sharedKnowledge} testID="home-shared-knowledge">
+        <Group>
+          <Row
+            title="Shared knowledge"
+            subtitle="Reference pages every project reads"
+            leading={{ icon: 'globe', quiet: true }}
+            navigates
+            onPress={onOpenSharedKnowledge}
+          />
+        </Group>
       </View>
-    </>
+    </ScrollView>
   );
 }
 
@@ -288,10 +240,11 @@ function useClock(intervalMs: number): number {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  flex: { flex: 1 },
-  content: { padding: theme.spacing.lg, gap: theme.spacing.sm },
-  header: { gap: theme.spacing.lg, paddingBottom: theme.spacing.lg },
-  identity: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md },
-  // Verity's identity on Home (§ 5.8): the meeting's V mark on a signature halo.
-  capturePressed: { opacity: 0.7 },
+  // The room below lets the last row scroll clear of the floating V.
+  content: {
+    padding: theme.spacing.lg,
+    paddingBottom: theme.spacing.xxxl * 2,
+    gap: theme.spacing.sm,
+  },
+  sharedKnowledge: { paddingTop: theme.spacing.xl },
 }));

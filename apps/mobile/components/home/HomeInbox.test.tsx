@@ -10,11 +10,7 @@ jest.mock('expo-crypto', () => {
   let n = 0;
   return { randomUUID: jest.fn(() => `reply-${String((n += 1))}`) };
 });
-jest.mock('../../lib/voiceShortcut', () => ({ dispatchVerityShortcut: jest.fn() }));
-const mockCapture = { enabled: true, scope: 'account' as string | null };
-jest.mock('../../lib/taskPreferences', () => ({
-  useTaskPreferences: () => ({ enabled: mockCapture.enabled }),
-}));
+const mockCapture = { scope: 'account' as string | null };
 jest.mock('../../lib/tasksStore', () => ({ taskAccountScope: () => mockCapture.scope }));
 
 import type {
@@ -30,7 +26,6 @@ import { darkTheme, lightTheme } from '../../theme/tokens';
 import { router } from 'expo-router';
 import { randomUUID } from 'expo-crypto';
 
-import { dispatchVerityShortcut } from '../../lib/voiceShortcut';
 import { HomeInbox, InboxCard, RESUME_PROMPT, replyFor } from './HomeInbox';
 import { INBOX_LINE_CLAMP, INBOX_REQUEST_MAX_HEIGHT } from '../inbox/InboxFeed';
 
@@ -88,11 +83,12 @@ function fakeClient(meetings: Promise<UpcomingMeeting[]> = Promise.resolve([])) 
 async function renderInbox(
   sessions: SessionSummary[],
   client = fakeClient(),
-  extra: { selectedSessionId?: string; onOpenVerity?: () => void; projects?: ProjectRecord[] } = {},
+  extra: { selectedSessionId?: string; projects?: ProjectRecord[] } = {},
 ) {
   const onOpenSession = jest.fn();
   const onRepairProject = jest.fn();
   const onCountChange = jest.fn();
+  const onOpenSharedKnowledge = jest.fn();
   const view = render(
     <HomeInbox
       client={client as unknown as VerityClient}
@@ -103,12 +99,13 @@ async function renderInbox(
       onOpenSession={onOpenSession}
       onRepairProject={onRepairProject}
       onCountChange={onCountChange}
+      onOpenSharedKnowledge={onOpenSharedKnowledge}
       {...extra}
     />,
   );
   // Let the calendar read settle, as a screen would before anyone taps.
   await act(async () => undefined);
-  return { ...view, client, onOpenSession, onRepairProject, onCountChange };
+  return { ...view, client, onOpenSession, onRepairProject, onCountChange, onOpenSharedKnowledge };
 }
 
 const question = session('form', {
@@ -120,13 +117,14 @@ const question = session('form', {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockCapture.enabled = true;
   mockCapture.scope = 'account';
 });
 
 it('says so when nothing needs the operator', async () => {
   const { onCountChange } = await renderInbox([session('quiet')]);
   expect(await screen.findByText('Nothing needs you right now.')).toBeTruthy();
+  // The line waits for the sections' first report; an empty list must still send one.
+  expect(screen.getByTestId('home-quiet')).toBeTruthy();
   expect(screen.queryByText('For you')).toBeNull();
   expect(onCountChange).toHaveBeenLastCalledWith(0);
 });
@@ -134,7 +132,7 @@ it('says so when nothing needs the operator', async () => {
 it('answers a question in place and hides it until the session moves on', async () => {
   const { client, onCountChange } = await renderInbox([question]);
   expect(await screen.findByText(/Which validation library\?$/)).toBeTruthy();
-  expect(screen.getByTestId('home-summary').props.children).toBe('1 question');
+  expect(onCountChange).toHaveBeenLastCalledWith(1);
   await act(async () => {
     fireEvent.press(screen.getByRole('button', { name: 'Zod' }));
   });
@@ -213,6 +211,7 @@ it('removes a long-answer sheet when another client resolves the question', asyn
   expect(screen.getByText(label)).toBeTruthy();
   rerender(
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={client as unknown as VerityClient}
       sessions={[session('form')]}
       projects={[project]}
@@ -356,6 +355,7 @@ it('opens a project and hands repair to the overview', async () => {
   const onRepairProject = jest.fn();
   render(
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={fakeClient() as unknown as VerityClient}
       sessions={[]}
       projects={[broken as ProjectRecord]}
@@ -372,12 +372,6 @@ it('opens a project and hands repair to the overview', async () => {
   expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
   fireEvent.press(screen.getByText('acme/website'));
   expect(router.push).toHaveBeenCalledWith({ pathname: '/project/[id]', params: { id: 'broken' } });
-});
-
-it('opens Verity from "Tell Verity"', async () => {
-  await renderInbox([]);
-  fireEvent.press(await screen.findByRole('button', { name: 'Tell Verity' }));
-  expect(dispatchVerityShortcut).toHaveBeenCalledWith();
 });
 
 it('maps every network answer to the push-reply route it reuses', () => {
@@ -399,12 +393,6 @@ it('maps every network answer to the push-reply route it reuses', () => {
     eventKey: 'e',
   });
   expect(replyFor({ kind: 'open_session', label: 'Open', sessionId: 's' })).toBeNull();
-});
-
-it('hides "Tell Verity" while quick capture cannot open', async () => {
-  mockCapture.enabled = false;
-  await renderInbox([]);
-  expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
 });
 
 it('keeps commands out of the overview and opens their session for review', async () => {
@@ -567,7 +555,6 @@ describe('dismissing', () => {
       true,
     );
     expect(screen.queryByText(/Which validation library\?$/)).toBeNull();
-    expect(screen.getByTestId('home-summary').props.children).toBe('Nothing needs you right now.');
     expect(onCountChange).toHaveBeenLastCalledWith(0);
     expect(screen.getByRole('button', { name: '1 hidden' })).toBeTruthy();
   });
@@ -648,16 +635,36 @@ describe('dismissing', () => {
   });
 });
 
-it('opens Verity’s page from her header only when Home is given the way there', async () => {
-  const onOpenVerity = jest.fn();
-  await renderInbox([], fakeClient(), { onOpenVerity });
-  fireEvent.press(screen.getByTestId('home-verity'));
-  expect(onOpenVerity).toHaveBeenCalled();
+it('has no way to Verity of its own; the floating V is the one way to her', async () => {
+  await renderInbox([question]);
+  await screen.findByText(/Which validation library\?$/);
+  expect(screen.queryByRole('button', { name: /^Verity/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Tell Verity' })).toBeNull();
 });
 
-it('keeps Verity’s header a plain identity without a page to open', async () => {
-  await renderInbox([]);
-  expect(screen.queryByTestId('home-verity')).toBeNull();
+it('ends with Shared knowledge, below the work, opened directly', async () => {
+  const { onOpenSharedKnowledge } = await renderInbox([question]);
+  await screen.findByText(/Which validation library\?$/);
+  // A row placed above the work would push the sessions down on every visit.
+  const order: string[] = [];
+  const walk = (node: unknown) => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) return node.forEach(walk);
+    const { props, children } = node as { props?: { testID?: string }; children?: unknown };
+    if (props?.testID) order.push(props.testID);
+    walk(children);
+  };
+  walk(screen.toJSON());
+  expect(order.indexOf('home-shared-knowledge')).toBeGreaterThan(order.indexOf('project-work'));
+  expect(order.indexOf('project-work')).toBeGreaterThan(-1);
+  fireEvent.press(screen.getByRole('button', { name: /^Shared knowledge/ }));
+  expect(onOpenSharedKnowledge).toHaveBeenCalledTimes(1);
+});
+
+it('says nothing needs the operator only while every section is empty', async () => {
+  await renderInbox([question]);
+  await screen.findByText(/Which validation library\?$/);
+  expect(screen.queryByTestId('home-quiet')).toBeNull();
 });
 
 it('shows a waiting mockup review as a normal action rather than a problem', async () => {
@@ -718,6 +725,7 @@ it('moves a Home session from work to a question and back without refreshing', a
   const { rerender, client, onOpenSession, onRepairProject } = await renderInbox([running]);
   const page = (sessions: SessionSummary[]) => (
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={client as unknown as VerityClient}
       sessions={sessions}
       projects={[project]}
@@ -780,6 +788,7 @@ it('keeps read results in place, appends new results and clears them only on exp
   const second = session('second-result', { eventCount: 6, lastSeenEventCount: 3 });
   const page = (sessions: SessionSummary[], layoutRevision = 0) => (
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={client as unknown as VerityClient}
       sessions={sessions}
       projects={[project]}
@@ -808,7 +817,6 @@ it('keeps read results in place, appends new results and clears them only on exp
     'first-result, acme/website',
     'second-result, acme/website, new answer',
   ]);
-  expect(screen.getByTestId('home-summary')).toHaveTextContent(/1 new results/);
   view.rerender(page([read, { ...second, lastSeenEventCount: 6 }]));
   expect(labels()).toEqual(['first-result, acme/website', 'second-result, acme/website']);
   view.rerender(page([read, { ...second, lastSeenEventCount: 6 }], 1));
@@ -823,6 +831,7 @@ it('appends a session to its destination category and keeps live actions current
   const worker = session('worker', { status: 'running' });
   const page = (sessions: SessionSummary[]) => (
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={client as unknown as VerityClient}
       sessions={sessions}
       projects={[project]}
@@ -873,6 +882,7 @@ it('drops retained results when they leave the project, are archived or deleted'
   const unread = session('retained', { eventCount: 5, lastSeenEventCount: 2 });
   const page = (sessions: SessionSummary[], projects = [project]) => (
     <HomeInbox
+      onOpenSharedKnowledge={jest.fn()}
       client={client as unknown as VerityClient}
       sessions={sessions}
       projects={projects}

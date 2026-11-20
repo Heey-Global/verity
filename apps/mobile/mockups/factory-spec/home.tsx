@@ -2,7 +2,7 @@ import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { InboxCard, VerityHeader } from '../../components/home/HomeInbox';
+import { InboxCard } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import {
   Button,
@@ -24,7 +24,6 @@ export default function HomeMockup() {
   return (
     <View style={styles.root}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="1 spec to approve · 1 deviation" />
         <SectionHeader title="Needs you · 2" />
         <Card stacked>
           <CardHead

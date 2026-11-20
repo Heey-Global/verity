@@ -16,23 +16,17 @@ type Shared = {
  * Capture): a `surfaceAlt` field with circular microphone and send controls
  * below the text, matching the session chat composer — `action` for everything that acts, nothing in
  * Verity's pink.
- *
- * With `onOpen` it is a doorway (Home's "Tell Verity"): the whole field opens
- * her panel. With `onChangeText` it is the panel's own composer.
+ * It is the composer of her panel behind the floating V.
  */
 export function CaptureField(
-  props: Shared &
-    (
-      | { onOpen: () => void; accessibilityLabel: string; accessibilityHint?: string }
-      | {
-          value: string;
-          onChangeText: (value: string) => void;
-          onSend: () => void;
-          sendDisabled?: boolean;
-          autoFocus?: boolean;
-          accessibilityLabel: string;
-        }
-    ),
+  props: Shared & {
+    value: string;
+    onChangeText: (value: string) => void;
+    onSend: () => void;
+    sendDisabled?: boolean;
+    autoFocus?: boolean;
+    accessibilityLabel: string;
+  },
 ) {
   const { theme } = useUnistyles();
   const mic = props.onMic ? (
@@ -55,23 +49,6 @@ export function CaptureField(
       />
     </Pressable>
   ) : null;
-  if ('onOpen' in props)
-    return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={props.accessibilityLabel}
-        {...(props.accessibilityHint ? { accessibilityHint: props.accessibilityHint } : {})}
-        onPress={props.onOpen}
-        style={({ pressed }) => [styles.field, styles.doorway, pressed ? styles.pressed : null]}
-      >
-        <Text variant="body" tone="faint" style={styles.flex}>
-          {props.placeholder}
-        </Text>
-        <View style={styles.control} accessible={false}>
-          <Icon name="mic" size={22} color={theme.colors.textMuted} />
-        </View>
-      </Pressable>
-    );
   return (
     <View style={styles.field}>
       <TextInput
@@ -121,16 +98,11 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surfaceAlt,
   },
-  doorway: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
   actions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: theme.spacing.sm,
   },
-  flex: { flex: 1, alignSelf: 'center' },
   input: {
     color: theme.colors.text,
     fontFamily: theme.fonts.regular,

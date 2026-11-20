@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { VerityHeader } from '../../components/home/HomeInbox';
 import { HomeTabBar } from '../../components/home/HomeTabBar';
 import {
   Button,
@@ -141,7 +140,6 @@ function HomeSidebar() {
   return (
     <View style={styles.sidebar}>
       <ScrollView contentContainerStyle={styles.content}>
-        <VerityHeader summary="Nothing needs you right now · 5 in progress" />
         <SectionHeader title="In progress · 5" variant="eyebrow" flush />
         <Group>
           <Row

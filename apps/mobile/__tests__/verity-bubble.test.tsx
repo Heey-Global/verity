@@ -1,9 +1,8 @@
 // The floating V (components/VerityBubble.tsx).
 //
 // What is worth guarding: it is a whole button inside the screen, a little in
-// from the edge, carrying Verity's mark rather than a cyan tint; and on a phone's
-// Home, which has her header and "Tell Verity", it steps back instead of sitting
-// on the cards.
+// from the edge, carrying Verity's mark rather than a cyan tint; and it stays on
+// Home, which no longer has a way to Verity of its own.
 const mockPathname = { value: '/session/s1' };
 jest.mock('expo-router', () => ({
   usePathname: () => mockPathname.value,
@@ -51,16 +50,14 @@ jest.mock('../hooks/useTaskCaptureGesture', () => ({
   }),
 }));
 
-import { act, render, screen } from '@testing-library/react-native';
+import { render, screen } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
 import { VerityBubble, dockedX } from '../components/VerityBubble';
-import { setHomeShowsVerity } from '../lib/homeVerity';
 import { darkTheme, lightTheme } from '../theme/tokens';
 
 afterEach(() => {
   mockPathname.value = '/session/s1';
-  act(() => setHomeShowsVerity(false));
 });
 
 it('rests as a whole circle a little in from either edge', () => {
@@ -82,14 +79,10 @@ it('shows Verity’s mark on the app surface, not a cyan tint', () => {
   expect([darkTheme.colors.surface, lightTheme.colors.surface]).toContain(backgroundColor);
 });
 
-it('steps back on a phone’s Home, where her header and field are', () => {
+it('stays on Home, the only way to Verity there', () => {
+  // Home once had her header and stepped the V back; hiding it again would
+  // leave Home with no way to Verity at all.
   mockPathname.value = '/';
-  render(<VerityBubble />);
-  expect(screen.getByTestId('verity-bubble')).toBeTruthy();
-  act(() => setHomeShowsVerity(true));
-  expect(screen.queryByTestId('verity-bubble')).toBeNull();
-  // Elsewhere it stays, also while Home reports its own way in.
-  mockPathname.value = '/project/p1';
   render(<VerityBubble />);
   expect(screen.getByTestId('verity-bubble')).toBeTruthy();
 });
