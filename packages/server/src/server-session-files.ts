@@ -19,7 +19,7 @@ import {
   statfs,
   unlink,
 } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, dirname, join, relative, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
@@ -265,6 +265,17 @@ export function registerServerSessionFiles(
     });
   };
 
+  /** Whether `dir` lies in the data root's knowledge storage, as a legacy
+   *  session's worktree can. */
+  const insideKnowledgeStorage = async (dir: string): Promise<boolean> => {
+    if (!deps.dataRoot) return false;
+    const storage = await realpath(knowledgeRootDir(deps.dataRoot)).catch(() => undefined);
+    const actual = await realpath(dir).catch(() => undefined);
+    if (!storage || !actual) return false;
+    const rel = relative(storage, actual);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  };
+
   /**
    * Runs the link keeper after a rename or move that already happened on disk.
    * Its failure must not turn that move into an error the app would retry —
@@ -303,6 +314,12 @@ export function registerServerSessionFiles(
     // A knowledge folder moves only through the knowledge routes, whose rules
     // keep Decisions and the Sources import folders in place and each area apart.
     if (fromRoot.root !== 'worktree' && fromRoot.folderMoves !== true) {
+      reply.code(403);
+      return { error: 'Move knowledge folders from the project or Shared knowledge page.' };
+    }
+    // A legacy session can name canonical project knowledge as its worktree;
+    // its folders are knowledge too, and move only through the knowledge routes.
+    if (fromRoot.root === 'worktree' && (await insideKnowledgeStorage(fromRoot.dir))) {
       reply.code(403);
       return { error: 'Move knowledge folders from the project or Shared knowledge page.' };
     }

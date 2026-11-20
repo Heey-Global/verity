@@ -413,6 +413,45 @@ describe('knowledge file routes', () => {
       expect(readFileSync(join(worktree, 'moved/keep.txt'), 'utf8')).toBe('keep');
     });
 
+    it('keeps a legacy worktree that is project knowledge from moving its folders', async () => {
+      // An old session can name the project's knowledge folder as its worktree;
+      // a Code move would carry Decisions or an import folder past the rules.
+      const knowledge = projectKnowledgeDir(dataRoot, 'p-1');
+      mkdirSync(join(knowledge, 'insights/decisions'), { recursive: true });
+      writeFileSync(join(knowledge, 'insights/decisions/record.md'), 'Decided');
+      mkdirSync(join(knowledge, 'sources'), { recursive: true });
+      const legacy = Fastify();
+      registerServerSessionFiles(
+        legacy,
+        {
+          eventStore: {
+            getProject: async (id: string) => (id === 'p-1' ? { id, kind: 'local' } : undefined),
+            getSession: async (id: string) =>
+              id === 's-legacy'
+                ? { sessionId: id, worktree: knowledge, projectId: 'p-1' }
+                : undefined,
+          } as never,
+          dataRoot,
+          projectCloneRoot: undefined,
+        },
+        {} as Conductor,
+      );
+      await legacy.ready();
+      const moved = await legacy.inject({
+        method: 'POST',
+        url: '/sessions/s-legacy/files/move',
+        payload: {
+          root: 'worktree',
+          path: 'insights/decisions',
+          toRoot: 'worktree',
+          toPath: 'sources',
+        },
+      });
+      await legacy.close();
+      expect(moved.statusCode).toBe(403);
+      expect(readFileSync(join(knowledge, 'insights/decisions/record.md'), 'utf8')).toBe('Decided');
+    });
+
     it('leaves Shared to its own routes, which are administrator-only', async () => {
       // Without this, a session's execute permission would reach Shared knowledge.
       expect((await createFolder({ root: 'shared', path: '', name: 'x' })).statusCode).toBe(403);

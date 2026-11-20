@@ -1161,7 +1161,8 @@ export function SessionFilesSheet({
                   ? addFileActions({ folder: () => setNaming(true), upload: drive.upload })
                   : addFileActions({
                       create: root === 'sources' ? undefined : () => setCreating(true),
-                      folder: () => setNaming(true),
+                      // Shared knowledge is managed from Settings, not a session.
+                      folder: root === 'shared' ? undefined : () => setNaming(true),
                       upload: uploadFiles,
                     })
               }
@@ -1299,13 +1300,16 @@ export function SessionFilesSheet({
                 // One move per entry: whatever moved before a failure is listed
                 // in its new place, and leaves the selection, before the error shows.
                 try {
-                  for (const moved of moving)
+                  for (const moved of moving) {
                     await client.moveSessionFile(sessionId, {
                       root,
                       path: moved,
                       toRoot: root,
                       toPath: destination,
                     });
+                    // A retry after a failure moves only what is still left.
+                    setMoving((current) => current?.filter((path) => path !== moved) ?? null);
+                  }
                   setMoving(null);
                   closePreview();
                 } finally {

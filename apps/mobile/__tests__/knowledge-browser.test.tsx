@@ -374,6 +374,7 @@ it('keeps structured decisions and the Sources import folders out of every chang
       entries: [
         { path: 'insights/decisions', name: 'decisions', kind: 'directory' },
         { path: 'sources/meetings', name: 'meetings', kind: 'directory' },
+        { path: 'sources/documents', name: 'documents', kind: 'directory' },
         { path: 'sources/original.txt', name: 'original.txt', kind: 'file' },
         { path: 'sources/meetings/2026', name: '2026', kind: 'directory' },
       ],
@@ -385,6 +386,7 @@ it('keeps structured decisions and the Sources import folders out of every chang
   // The row is there, with its menu: the missing Delete is the rule, not a missing row.
   expect(screen.getByLabelText('Actions for Decisions')).toBeTruthy();
   expect(screen.queryByLabelText('Delete Decisions')).toBeNull();
+  expect(screen.queryByLabelText('Delete documents')).toBeNull();
   // What an import folder holds is ordinary; only the folder itself stays.
   expect(screen.getByLabelText('Delete 2026')).toBeTruthy();
   expect(screen.queryByLabelText('Delete meetings')).toBeNull();
@@ -422,7 +424,7 @@ it('renames a source from its menu, reloads the folder and keeps the open file o
   const rename = jest
     .fn()
     .mockResolvedValue({ path: 'sources/documents/kickoff.md', linksUpdated: [] });
-  const backlinks = jest.fn();
+  const backlinks = jest.fn().mockResolvedValue({ pages: [] });
   const api = client({
     listProjectKnowledgeFiles: list,
     renameKnowledgeFile: rename,
@@ -446,8 +448,9 @@ it('renames a source from its menu, reloads the folder and keeps the open file o
     expect(rename).toHaveBeenCalledWith(PROJECT, 'sources/documents/call.md', 'kickoff.md'),
   );
   await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
-  // Sources are not linked to by path, so nothing is asked about links.
-  expect(backlinks).not.toHaveBeenCalled();
+  // Wiki pages cite Sources by path, and their links follow; none do here,
+  // so nothing was asked.
+  expect(backlinks).toHaveBeenCalledWith(PROJECT, 'sources/documents/call.md');
   expect(moved).toHaveBeenCalledWith(
     PROJECT,
     'sources/documents/call.md',
@@ -481,6 +484,7 @@ it('keeps the rename dialog open with the server refusal', async () => {
       truncated: false,
     }),
     renameKnowledgeFile: jest.fn().mockRejectedValue(new Error('"taken" already exists')),
+    listKnowledgeBacklinks: jest.fn().mockResolvedValue({ pages: [] }),
   });
   render(<KnowledgeScreen scope={PROJECT} folder="sources" />);
   fireEvent.press(await screen.findByLabelText('Actions for interviews'));

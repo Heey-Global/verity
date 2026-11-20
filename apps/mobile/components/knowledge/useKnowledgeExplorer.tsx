@@ -173,13 +173,17 @@ export function useKnowledgeExplorer({
           setBusy(false);
         }
       };
-      const pages = paths.some((path) => knowledgeArea(path) === 'insights')
+      // Wiki pages link to Sources too, and the server rewrites those links as well.
+      const pages = paths.some((path) => knowledgeArea(path) !== null)
         ? (await Promise.all(paths.map((path) => knowledgeBacklinks(client, scope, path)))).flatMap(
             (result) => result.pages,
           )
         : [];
       const linking = new Set(
-        pages.map((page) => page.path).filter((path) => !paths.includes(path)),
+        pages
+          .map((page) => page.path)
+          // Pages inside a moved folder move with it; they are not other pages.
+          .filter((page) => !paths.some((path) => page === path || page.startsWith(`${path}/`))),
       );
       if (linking.size === 0) {
         await act();

@@ -60,6 +60,7 @@ export function KnowledgeFileView({
   const [error, setError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const [draft, setDraft] = useState<string>();
+  const startedEditing = useRef(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string>();
   const [downloading, setDownloading] = useState(false);
@@ -81,8 +82,16 @@ export function KnowledgeFileView({
       (next) => {
         if (!active) return;
         setContent(next);
-        if (startEditing && next.editable === true && next.version !== undefined)
+        // Once: a reload after saving or a retry must not reopen the editor.
+        if (
+          startEditing &&
+          !startedEditing.current &&
+          next.editable === true &&
+          next.version !== undefined
+        ) {
+          startedEditing.current = true;
           setDraft(next.content);
+        }
       },
       (failure: unknown) => {
         if (active) setError(failure instanceof Error ? failure.message : 'Could not open file');
