@@ -3,7 +3,7 @@ import type { Conductor } from '@verity/session';
 import { ControlPlaneSessionAuthorityError } from './session-handoff-tool.js';
 import { sessionLinkProjectAvailable } from './session-link-routes.js';
 
-export interface LinkedMessageInput {
+interface LinkedMessageInput {
   sourceSessionId: string;
   expectedSourceProjectId?: string;
   targetSessionId: string;
