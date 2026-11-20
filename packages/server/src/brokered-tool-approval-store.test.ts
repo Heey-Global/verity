@@ -205,7 +205,8 @@ it('recovers scoped consent before continuation but exposes a failed grant save 
   const pending = await store.createOrFindPending(input);
   await store.decide(pending.id, 'session', true, 'manager', 'project');
   await store.consume(pending.id, input);
-  expect((await store.listApproved('session'))[0]?.id).toBe(pending.id);
+  expect(await store.listApproved('session')).toEqual([]);
+  expect(await store.consume(pending.id, input, 'concurrent-retry')).toBeUndefined();
   expect(await store.failScoped(pending.id, 'other-session')).toBeUndefined();
   expect(await store.failScoped(pending.id, 'session')).toMatchObject({
     status: 'denied',
@@ -217,16 +218,66 @@ it('recovers scoped consent before continuation but exposes a failed grant save 
   expect(reopened?.id).not.toBe(pending.id);
   expect(await store.failScoped(pending.id, 'session')).toBeUndefined();
   await store.decide(reopened!.id, 'session', true, 'manager', 'session');
-  await store.consume(reopened!.id, input, 'executed-invocation');
+  await store.consume(reopened!.id, input);
+  await store.markScopedSaved(reopened!.id, 'session');
   expect(await store.failScoped(reopened!.id, 'session')).toBeUndefined();
-  expect(await store.listApproved('session')).toEqual([]);
+  expect((await store.listApproved('session'))[0]?.id).toBe(reopened!.id);
 });
 
 it('bounds recovery of a saved scoped grant to the approval redemption interval', async () => {
   const pending = await store.createOrFindPending(input);
   await store.decide(pending.id, 'session', true, 'manager', 'session');
   await store.consume(pending.id, input);
+  expect(await store.listApproved('session')).toEqual([]);
+  await store.markScopedSaved(pending.id, 'session');
   expect((await store.listApproved('session'))[0]?.id).toBe(pending.id);
   now += APPROVAL_REDEMPTION_TTL_MS;
   expect(await store.listApproved('session')).toEqual([]);
+});
+
+it('blocks concurrent recovery while a reusable grant save is pending or fails', async () => {
+  const { DetachedPermissions, decideDetachedPermission } =
+    await import('../../session/src/detached-permissions.js');
+  const pending = await store.createOrFindPending(input);
+  const permissions = new DetachedPermissions();
+  let resumed = 0;
+  permissions.configure({
+    list: async () => [
+      { requestId: pending.id, toolUseId: pending.id, toolName: input.toolName, input: {} },
+    ],
+    decide: async (sessionId, id, decision, actor, scope) =>
+      !!(await store.decide(id, sessionId, decision.behavior === 'allow', actor, scope)),
+    completeScoped: async () => {
+      await store.consume(pending.id, input);
+    },
+    markScopedSaved: async () => {
+      await store.markScopedSaved(pending.id, 'session');
+    },
+    failScoped: async () => {
+      await store.failScoped(pending.id, 'session');
+    },
+    resumeApproved: async () => {
+      resumed += (await store.listApproved('session')).length;
+    },
+  });
+  await permissions.refresh('session', async () => {});
+  await decideDetachedPermission({
+    permissions,
+    sessionId: 'session',
+    toolUseId: pending.id,
+    decision: { behavior: 'allow' },
+    options: { actorId: 'manager', scope: 'project' },
+    persistScoped: async () => {
+      await permissions.resumeApproved('session');
+      const restarted = createBrokeredToolApprovalStore(ctx.db, () => now);
+      expect(await restarted.listApproved('session')).toEqual([]);
+      throw new Error('save failed');
+    },
+    notice: async () => {},
+    resume: async () => {
+      resumed++;
+    },
+  });
+  expect(resumed).toBe(0);
+  expect((await store.listReopenable('session'))[0]?.id).toBe(pending.id);
 });

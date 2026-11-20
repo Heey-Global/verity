@@ -32,6 +32,9 @@ export function configureDetachedSecretApprovals(input: {
     ),
   });
   conductor.configureDetachedPermissions({
+    markScopedSaved: async (sessionId, id) => {
+      await approvals.markScopedSaved(id, sessionId);
+    },
     failScoped: async (sessionId, id) => {
       await approvals.failScoped(id, sessionId);
     },

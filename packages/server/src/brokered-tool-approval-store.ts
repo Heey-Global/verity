@@ -125,10 +125,11 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
         .where('session_id', '=', sessionId)
         .where((eb) =>
           eb.or([
-            eb('status', '=', 'approved'),
+            eb.and([eb('status', '=', 'approved'), eb('scope', '=', 'once')]),
             eb.and([
               eb('status', '=', 'consumed'),
               eb('consumed_invocation_id', 'is', null),
+              eb('scope_saved', '=', true),
               eb('scope', 'in', ['session', 'project']),
             ]),
           ]),
@@ -203,6 +204,17 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
         return record(row);
       });
     },
+    async markScopedSaved(id: string, sessionId: string): Promise<void> {
+      await db
+        .updateTable('brokered_tool_approvals')
+        .set({ scope_saved: true })
+        .where('id', '=', id)
+        .where('session_id', '=', sessionId)
+        .where('status', '=', 'consumed')
+        .where('scope', 'in', ['session', 'project'])
+        .where('consumed_invocation_id', 'is', null)
+        .execute();
+    },
     async failScoped(
       id: string,
       sessionId: string,
@@ -215,6 +227,7 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
         .where('status', '=', 'consumed')
         .where('consumed_invocation_id', 'is', null)
         .where('scope', 'in', ['session', 'project'])
+        .where('scope_saved', '=', false)
         .returningAll()
         .executeTakeFirst();
       return row && record(row);
@@ -259,6 +272,7 @@ export function createBrokeredToolApprovalStore(db: Kysely<Database>, now = Date
           .set({ status: 'consumed', consumed_invocation_id: invocationId ?? null })
           .where('id', '=', id)
           .where('status', '=', 'approved')
+          .$if(invocationId !== undefined, (query) => query.where('scope', '=', 'once'))
           .where('decided_at', '>', new Date(now() - APPROVAL_REDEMPTION_TTL_MS))
           .where('project_id', '=', expected.projectId)
           .where('session_id', '=', expected.sessionId)

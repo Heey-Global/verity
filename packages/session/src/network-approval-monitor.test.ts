@@ -102,3 +102,36 @@ it('checks immediately after a tool finishes and unsubscribes when the turn ends
   expect(unsubscribe).toHaveBeenCalledOnce();
   expect(notify).toHaveBeenCalledTimes(1);
 });
+
+it('delivers overflow pending requests and decisions in subsequent batches', async () => {
+  vi.useFakeTimers();
+  const state = policy();
+  const template = state.requests.target!;
+  state.requests = Object.fromEntries(
+    Array.from({ length: 45 }, (_, index) => [
+      `r${index}`,
+      {
+        ...template,
+        id: `r${index}`,
+        target: { ...template.target, host: `host${index}.example` },
+      },
+    ]),
+  );
+  const notify = vi.fn<(text: string) => Promise<boolean>>().mockResolvedValue(true);
+  const stop = monitorNetworkApprovals({ read: async () => state, notify });
+  await vi.advanceTimersByTimeAsync(6000);
+  expect(notify).toHaveBeenCalledTimes(3);
+  for (const request of Object.values(state.requests)) {
+    expect(notify.mock.calls.map(([text]) => text).join('\n')).toContain(
+      `${request.target.host} TCP 443: pending`,
+    );
+    request.status = 'allowed';
+  }
+  await vi.advanceTimersByTimeAsync(9000);
+  expect(notify).toHaveBeenCalledTimes(6);
+  for (const request of Object.values(state.requests))
+    expect(notify.mock.calls.map(([text]) => text).join('\n')).toContain(
+      `${request.target.host} TCP 443: allowed`,
+    );
+  stop();
+});

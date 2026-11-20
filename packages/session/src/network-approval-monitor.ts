@@ -36,7 +36,7 @@ export function monitorNetworkApprovals(options: {
 }): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let previous = new Map<string, ApprovalStatus>();
+  const previous = new Map<string, ApprovalStatus>();
   let running = false;
   let recheck = false;
   const tick = async (): Promise<void> => {
@@ -70,13 +70,14 @@ export function monitorNetworkApprovals(options: {
       const removed = [...previous.values()].filter(
         (request) => !current.has(request.id) && request.status === 'pending',
       );
-      if (changed.length || removed.length) {
+      const batch = changed.slice(0, 20);
+      const removedBatch = removed.slice(0, 20 - batch.length);
+      if (batch.length || removedBatch.length) {
         const delivered = await options.notify(
           'Verity network approval status (project scope; the requesting process is not identified):\n' +
-            changed
-              .slice(0, 20)
+            batch
               .map((request) => `${request.target}: ${request.status}`)
-              .concat(removed.slice(0, 20).map((request) => `${request.target}: removed`))
+              .concat(removedBatch.map((request) => `${request.target}: removed`))
               .join('\n') +
             "\nA pending request is waiting for your user's decision in the session approval card. " +
             'DNS remains blocked until access is granted; do not describe pending approval as a final failure. ' +
@@ -86,7 +87,12 @@ export function monitorNetworkApprovals(options: {
         );
         if (stopped || !delivered) return;
       }
-      previous = current;
+      for (const request of batch) previous.set(request.id, request);
+      for (const request of removedBatch) previous.delete(request.id);
+      for (const request of current.values()) {
+        if (!previous.has(request.id) && !changed.includes(request))
+          previous.set(request.id, request);
+      }
     } catch {
       // Status feedback is not authority. A read/steer failure cannot broaden access.
     } finally {

@@ -2242,6 +2242,7 @@ interface QAAssignmentNotificationsTable {
 }
 
 interface BrokeredToolApprovalsTable {
+  scope_saved: Generated<boolean>;
   id: string;
   project_id: string;
   session_id: string;

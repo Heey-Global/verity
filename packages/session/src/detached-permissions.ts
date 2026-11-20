@@ -9,6 +9,7 @@ export interface DetachedPermission extends PermissionRequest {
 export interface DetachedPermissionProvider {
   list(sessionId: string): Promise<DetachedPermission[]>;
   failScoped?(sessionId: string, id: string): Promise<void>;
+  markScopedSaved?(sessionId: string, id: string): Promise<void>;
   completeScoped?(sessionId: string, id: string): Promise<void>;
   resumeApproved?(sessionId: string): Promise<void>;
   decide(
@@ -68,6 +69,10 @@ export class DetachedPermissions {
 
   async completeScoped(sessionId: string, id: string): Promise<void> {
     await this.provider?.completeScoped?.(sessionId, id);
+  }
+
+  async markScopedSaved(sessionId: string, id: string): Promise<void> {
+    await this.provider?.markScopedSaved?.(sessionId, id);
   }
 
   async resumeApproved(sessionId: string): Promise<void> {
@@ -155,6 +160,7 @@ export async function decideDetachedPermission(input: {
       // revocation cannot uncover a latent receipt for the same operation.
       await permissions.completeScoped(sessionId, toolUseId);
       await input.persistScoped(request, options.scope);
+      await permissions.markScopedSaved(sessionId, toolUseId);
       reusableScopeSaved = true;
       options.onScopeSaved?.(true);
     } catch {

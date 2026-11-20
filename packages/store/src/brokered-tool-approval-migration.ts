@@ -10,6 +10,7 @@ export const brokeredToolApprovalMigration: Migration = {
       session_id text not null references sessions(session_id) on delete cascade,
       invocation_id text not null,
       consumed_invocation_id text,
+      scope_saved boolean not null default false,
       tool_name text not null check (tool_name in ('verity_http_request', 'verity_secret_run')),
       canonical_input text not null,
       request_mac text not null,
