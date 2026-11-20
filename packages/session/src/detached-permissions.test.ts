@@ -174,3 +174,47 @@ it('reports an active saved grant if continuation bookkeeping fails without deny
   expect(resume).not.toHaveBeenCalled();
   expect(notice).toHaveBeenCalledWith(expect.stringContaining('saved and remains active'));
 });
+
+it('serializes overlapping refreshes so each card is published once', async () => {
+  const permissions = new DetachedPermissions();
+  const request = { requestId: 'r', toolUseId: 'r', toolName: 'verity_secret_run', input: {} };
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const publish = vi.fn(async () => {
+    await gate;
+  });
+  permissions.configure({ list: async () => [request], decide: async () => true });
+  const first = permissions.refresh('s', publish);
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+  const second = permissions.refresh('s', publish);
+  await Promise.resolve();
+  release();
+  await Promise.all([first, second]);
+  expect(publish).toHaveBeenCalledOnce();
+});
+
+it('does not resurrect an answered card when a delayed refresh overlaps its decision', async () => {
+  const permissions = new DetachedPermissions();
+  const request = { requestId: 'r', toolUseId: 'r', toolName: 'verity_secret_run', input: {} };
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let delay = false;
+  const list = vi.fn(async () => {
+    if (delay) await gate;
+    return [request];
+  });
+  permissions.configure({ list, decide: async () => true });
+  await permissions.refresh('s', async () => {});
+  delay = true;
+  const refresh = permissions.refresh('s', async () => {});
+  await vi.waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  const decision = permissions.decide('s', 'r', { behavior: 'allow' }, 'user', 'once');
+  await Promise.resolve();
+  release();
+  await Promise.all([refresh, decision]);
+  expect(permissions.ids('s')).toEqual([]);
+});

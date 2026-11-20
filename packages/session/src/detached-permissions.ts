@@ -27,6 +27,19 @@ export class DetachedPermissions {
   private readonly requests = new Map<string, Map<string, DetachedPermission>>();
   private readonly surfaced = new Set<string>();
 
+  private readonly operations = new Map<string, Promise<unknown>>();
+
+  private async serialize<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.operations.get(sessionId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    this.operations.set(sessionId, next);
+    try {
+      return await next;
+    } finally {
+      if (this.operations.get(sessionId) === next) this.operations.delete(sessionId);
+    }
+  }
+
   configure(provider: DetachedPermissionProvider): void {
     this.provider = provider;
   }
@@ -51,16 +64,18 @@ export class DetachedPermissions {
     sessionId: string,
     publish: (request: DetachedPermission) => Promise<void>,
   ): Promise<void> {
-    if (!this.provider) return;
-    const pending = await this.provider.list(sessionId);
-    const liveIds = new Set(pending.map((request) => request.toolUseId));
-    for (const oldId of this.ids(sessionId)) if (!liveIds.has(oldId)) this.surfaced.delete(oldId);
-    this.requests.set(sessionId, new Map(pending.map((request) => [request.toolUseId, request])));
-    for (const request of pending) {
-      if (this.surfaced.has(request.toolUseId)) continue;
-      await publish(request);
-      this.surfaced.add(request.toolUseId);
-    }
+    return this.serialize(sessionId, async () => {
+      if (!this.provider) return;
+      const pending = await this.provider.list(sessionId);
+      const liveIds = new Set(pending.map((request) => request.toolUseId));
+      for (const oldId of this.ids(sessionId)) if (!liveIds.has(oldId)) this.surfaced.delete(oldId);
+      this.requests.set(sessionId, new Map(pending.map((request) => [request.toolUseId, request])));
+      for (const request of pending) {
+        if (this.surfaced.has(request.toolUseId)) continue;
+        await publish(request);
+        this.surfaced.add(request.toolUseId);
+      }
+    });
   }
 
   async failScoped(sessionId: string, id: string): Promise<void> {
@@ -86,12 +101,14 @@ export class DetachedPermissions {
     actorId: string,
     scope: 'once' | 'session' | 'project',
   ): Promise<DetachedPermission | undefined> {
-    const request = this.requests.get(sessionId)?.get(id);
-    if (!request || !this.provider) return undefined;
-    if (!(await this.provider.decide(sessionId, id, decision, actorId, scope))) return undefined;
-    this.requests.get(sessionId)?.delete(id);
-    this.surfaced.delete(id);
-    return request;
+    return this.serialize(sessionId, async () => {
+      const request = this.requests.get(sessionId)?.get(id);
+      if (!request || !this.provider) return undefined;
+      if (!(await this.provider.decide(sessionId, id, decision, actorId, scope))) return undefined;
+      this.requests.get(sessionId)?.delete(id);
+      this.surfaced.delete(id);
+      return request;
+    });
   }
 }
 
