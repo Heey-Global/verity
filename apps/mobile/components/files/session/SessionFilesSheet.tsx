@@ -717,7 +717,10 @@ export function SessionFilesSheet({
         !menuFor.inPreview
           ? () => void editFile(menuFor.path)
           : undefined,
-      rename: changes ? () => setRenaming(menuFor.path) : undefined,
+      // A Wiki page is renamed from the Knowledge page, which keeps the links
+      // other pages hold to it; this route would leave them pointing nowhere.
+      rename:
+        changes && !wikiRoot(root, menuFor.path) ? () => setRenaming(menuFor.path) : undefined,
       // Knowledge moves from its library page, whose rules keep Decisions and
       // the Sources import folders in place; here only Code moves.
       move: changes && root === 'worktree' ? () => setMoving([menuFor.path]) : undefined,
@@ -1375,4 +1378,9 @@ function driveEntryMeta(file: DriveFile): string | undefined {
 function writableRoot(root: SessionFileRoot): Exclude<SessionFileRoot, 'drafts'> {
   if (root === 'drafts') throw new Error('Session edits are read-only here.');
   return root;
+}
+
+/** Whether `path` of `root` lies in a project Wiki, whose links follow a rename. */
+function wikiRoot(root: SessionFileRoot, path: string): boolean {
+  return root === 'documents' || (root === 'knowledge' && path.startsWith('insights/'));
 }
