@@ -1,3 +1,4 @@
+import { mcpAppsClient } from './mcp-apps-client.js';
 import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
 import {
   agentLoginResponseSchema,
@@ -2763,26 +2764,10 @@ export class VerityClient {
   readonly createProjectGoogleDriveFolder = this.driveFiles.createProjectGoogleDriveFolder;
   readonly updateProjectGoogleDriveFile = this.driveFiles.updateProjectGoogleDriveFile;
 
-  async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
-      { method: 'GET', ...(signal ? { signal } : {}) },
-    );
-    return z.object({ document: z.string() }).parse(await response.json()).document;
-  }
-
-  async callMcpAppTool(
-    sessionId: string,
-    appId: string,
-    call: { name: string; arguments?: Record<string, unknown> },
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> {
-    const response = await this.request(
-      `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}/call`,
-      { method: 'POST', body: JSON.stringify(call), ...(signal ? { signal } : {}) },
-    );
-    return z.record(z.string(), z.unknown()).parse(await response.json());
-  }
+  private readonly mcpApps = mcpAppsClient(this.request.bind(this), () => this.baseUrl);
+  readonly getMcpAppDocument = this.mcpApps.getMcpAppDocument;
+  readonly createMcpAppDocumentUrl = this.mcpApps.createMcpAppDocumentUrl;
+  readonly callMcpAppTool = this.mcpApps.callMcpAppTool;
 
   async getAttendeeSettings(): Promise<{ configured: boolean }> {
     return z

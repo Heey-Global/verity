@@ -14,7 +14,7 @@ import { appFallback, type McpAppCardEvent } from './McpAppCard.shared';
 
 export function McpAppCard({ event }: { event: McpAppCardEvent }) {
   const client = useMemo(() => createVerityClient(), []);
-  const [document, setDocument] = useState<string>();
+  const [documentUrl, setDocumentUrl] = useState<string>();
   const [error, setError] = useState<string>();
   const failed = useCallback(
     () => setError('Interactive app unavailable. The last result is shown below.'),
@@ -22,16 +22,16 @@ export function McpAppCard({ event }: { event: McpAppCardEvent }) {
   );
   useEffect(() => {
     const controller = new AbortController();
-    setDocument(undefined);
+    setDocumentUrl(undefined);
     setError(undefined);
     if (!client) {
       failed();
       return;
     }
     void client
-      .getMcpAppDocument(event.sessionId, event.appId, controller.signal)
-      .then((html) => {
-        if (!controller.signal.aborted) setDocument(html);
+      .createMcpAppDocumentUrl(event.sessionId, event.appId, controller.signal)
+      .then((url) => {
+        if (!controller.signal.aborted) setDocumentUrl(url);
       })
       .catch(() => {
         if (!controller.signal.aborted) failed();
@@ -41,9 +41,9 @@ export function McpAppCard({ event }: { event: McpAppCardEvent }) {
   return (
     <Card stacked>
       <Text variant="row">{actionTitle(event.toolName, event.title, event.source)}</Text>
-      {!document && !error ? <Text tone="muted">Loading interactive app…</Text> : null}
-      {document && client && !error ? (
-        <McpAppFrame document={document} event={event} client={client} failed={failed} />
+      {!documentUrl && !error ? <Text tone="muted">Loading interactive app…</Text> : null}
+      {documentUrl && client && !error ? (
+        <McpAppFrame documentUrl={documentUrl} event={event} client={client} failed={failed} />
       ) : null}
       {error ? <Text tone="muted">{error}</Text> : null}
       {error && appFallback(event) ? <Text>{appFallback(event)}</Text> : null}
@@ -52,12 +52,12 @@ export function McpAppCard({ event }: { event: McpAppCardEvent }) {
 }
 
 function McpAppFrame({
-  document,
+  documentUrl,
   event,
   client,
   failed,
 }: {
-  document: string;
+  documentUrl: string;
   event: McpAppCardEvent;
   client: NonNullable<ReturnType<typeof createVerityClient>>;
   failed: () => void;
@@ -151,7 +151,7 @@ function McpAppFrame({
       .then(() => {
         if (!controller.signal.aborted) {
           iframe.addEventListener('load', onLoad);
-          iframe.srcdoc = document;
+          iframe.src = documentUrl;
         }
       })
       .catch(failed);
@@ -167,7 +167,7 @@ function McpAppFrame({
         .catch(() => undefined)
         .finally(() => bridge.close());
     };
-  }, [document, client, failed]);
+  }, [documentUrl, client, failed]);
   useEffect(() => {
     hostContext.current = { ...hostContext.current, theme: dark ? 'dark' : 'light' };
     bridgeRef.current?.setHostContext(hostContext.current);

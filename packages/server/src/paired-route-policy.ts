@@ -542,6 +542,10 @@ const resourceRules: ReadonlyMap<string, ResourceRule> = new Map<string, Resourc
     { kind: 'project', parameter: 'id', permission: 'manage' },
   ],
   [
+    routeScopeKey('POST', '/sessions/:id/mcp-apps/:appId/document'),
+    { kind: 'session', parameter: 'id', permission: 'read' },
+  ],
+  [
     routeScopeKey('GET', '/sessions/:id/mcp-apps/:appId'),
     { kind: 'session', parameter: 'id', permission: 'read' },
   ],

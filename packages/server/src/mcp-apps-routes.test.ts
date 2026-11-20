@@ -40,6 +40,7 @@ function setup(userId?: string) {
   }
   registerMcpAppsRoutes(app, {
     authorizeRequest,
+    captureDocumentAccess: () => () => authorizeRequest(),
     resolveConnection,
     getProjectId: async (sessionId) => (sessionId === 's' ? 'p' : undefined),
     getApp: async (_sessionId, appId) => events.findLast((candidate) => candidate.appId === appId),
@@ -212,4 +213,79 @@ describe('MCP Apps document sandbox policy', () => {
     ])
       expect(() => appDocument('', { ui: { csp: { resourceDomains: [origin] } } })).toThrow();
   });
+});
+
+it('serves a sandboxed HTML document once without replaying tools', async () => {
+  const f = setup('viewer');
+  const minted = await f.app.inject({ method: 'POST', url: `${f.url}/document` });
+  expect(minted.statusCode).toBe(200);
+  expect(minted.headers['cache-control']).toBe('no-store');
+  const path = minted.json<{ path: string }>().path;
+  expect(path).toMatch(/^\/mcp-app-document\?ticket=[A-Za-z0-9_-]{43}$/);
+  const page = await f.app.inject(path);
+  expect(page.statusCode).toBe(200);
+  expect(page.headers['content-type']).toContain('text/html');
+  expect(page.headers['content-security-policy']).toContain('sandbox allow-scripts;');
+  expect(page.headers['content-security-policy']).not.toContain('allow-same-origin');
+  expect(page.headers['content-security-policy']).toContain("script-src 'unsafe-inline'");
+  expect(page.headers['cache-control']).toBe('no-store');
+  expect(page.headers['referrer-policy']).toBe('no-referrer');
+  expect(page.headers['x-content-type-options']).toBe('nosniff');
+  expect(page.body).toContain('ui/initialize');
+  expect((await f.app.inject(path)).statusCode).toBe(404);
+  expect(f.fixture.calls.some((call) => call.method === 'tools/call')).toBe(false);
+  expect(f.resolveConnection).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      principal: { userId: 'viewer' },
+    }),
+  );
+});
+
+it('rejects missing, malformed and expired document tickets', async () => {
+  const f = setup();
+  for (const path of [
+    '/mcp-app-document',
+    '/mcp-app-document?ticket=no',
+    `/mcp-app-document?ticket=${'x'.repeat(43)}`,
+  ]) {
+    expect((await f.app.inject(path)).statusCode).toBe(404);
+  }
+  const minted = await f.app.inject({ method: 'POST', url: `${f.url}/document` });
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_001);
+  try {
+    expect((await f.app.inject(minted.json<{ path: string }>().path)).statusCode).toBe(404);
+  } finally {
+    clock.mockRestore();
+  }
+  expect(f.fixture.calls).toHaveLength(0);
+});
+
+it('rejects foreign sessions and rechecks access and connection revocation at redemption', async () => {
+  const f = setup();
+  expect(
+    (
+      await f.app.inject({
+        method: 'POST',
+        url: f.url.replace('/sessions/s/', '/sessions/foreign/') + '/document',
+      })
+    ).statusCode,
+  ).toBe(404);
+  const mint = async () =>
+    (await f.app.inject({ method: 'POST', url: `${f.url}/document` })).json().path as string;
+  const denied = await mint();
+  f.authorizeRequest.mockResolvedValue(false);
+  expect((await f.app.inject(denied)).statusCode).toBe(404);
+  expect((await f.app.inject({ method: 'POST', url: `${f.url}/document` })).statusCode).toBe(403);
+  f.authorizeRequest.mockResolvedValue(true);
+  const revoked = await mint();
+  f.resolveConnection.mockResolvedValue(undefined);
+  expect((await f.app.inject(revoked)).statusCode).toBe(404);
+  expect(f.fixture.calls).toHaveLength(0);
+});
+
+it('rechecks access after reading HTML before releasing it', async () => {
+  const f = setup();
+  const minted = await f.app.inject({ method: 'POST', url: `${f.url}/document` });
+  f.authorizeRequest.mockResolvedValueOnce(true).mockResolvedValue(false);
+  expect((await f.app.inject(minted.json<{ path: string }>().path)).statusCode).toBe(404);
 });
