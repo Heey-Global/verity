@@ -160,7 +160,6 @@ export async function decideDetachedPermission(input: {
       // revocation cannot uncover a latent receipt for the same operation.
       await permissions.completeScoped(sessionId, toolUseId);
       await input.persistScoped(request, options.scope);
-      await permissions.markScopedSaved(sessionId, toolUseId);
       reusableScopeSaved = true;
       options.onScopeSaved?.(true);
     } catch {
@@ -169,8 +168,17 @@ export async function decideDetachedPermission(input: {
       options.onScopeSaved?.(false);
     }
   }
+  if (reusableScopeSaved) {
+    try {
+      await permissions.markScopedSaved(sessionId, toolUseId);
+    } catch {
+      continuationAllowed = false;
+    }
+  }
   const text = !continuationAllowed
-    ? 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. Review and request the operation again if it is still needed.'
+    ? reusableScopeSaved
+      ? 'The reusable secret approval was saved and remains active, but automatic continuation could not be recorded. Answering the card did not execute the action. If still needed, retry only the exact original authorized request once.'
+      : 'The requested reusable secret approval could not be saved. Nothing ran and this approval will not resume the action. Review and request the operation again if it is still needed.'
     : `Secret tool approval ${toolUseId} was ${decision.behavior === 'allow' ? 'approved' : 'denied'}. Nothing was executed by answering the card. ${
         decision.behavior === 'allow'
           ? reusableScopeSaved

@@ -137,3 +137,40 @@ it('closes exact consent before saving reusable scope and never resumes a failed
   expect(notice).toHaveBeenCalledWith(expect.stringContaining('Nothing ran'));
   expect(resume).not.toHaveBeenCalled();
 });
+
+it('reports an active saved grant if continuation bookkeeping fails without denying consent', async () => {
+  const { decideDetachedPermission } = await import('./detached-permissions.js');
+  const permissions = new DetachedPermissions();
+  const failScoped = vi.fn(async () => {});
+  permissions.configure({
+    list: async () => [
+      { requestId: 'r', toolUseId: 'r', toolName: 'verity_secret_run', input: {} },
+    ],
+    decide: async () => true,
+    completeScoped: async () => {},
+    markScopedSaved: async () => {
+      throw new Error('database unavailable');
+    },
+    failScoped,
+  });
+  await permissions.refresh('s', async () => {});
+  const persistScoped = vi.fn(async () => {});
+  const notice = vi.fn(async () => {});
+  const resume = vi.fn(async () => {});
+  const onScopeSaved = vi.fn();
+  await decideDetachedPermission({
+    permissions,
+    sessionId: 's',
+    toolUseId: 'r',
+    decision: { behavior: 'allow' },
+    options: { actorId: 'user', scope: 'project', onScopeSaved },
+    persistScoped,
+    notice,
+    resume,
+  });
+  expect(persistScoped).toHaveBeenCalledOnce();
+  expect(onScopeSaved).toHaveBeenCalledWith(true);
+  expect(failScoped).not.toHaveBeenCalled();
+  expect(resume).not.toHaveBeenCalled();
+  expect(notice).toHaveBeenCalledWith(expect.stringContaining('saved and remains active'));
+});
