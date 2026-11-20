@@ -38,9 +38,11 @@ describe('sandbox resource defaults', () => {
     expect(readFileSync(new URL('packages/server/src/server-main.ts', repoRoot), 'utf8')).toContain(
       `process.env.${name}`,
     );
-    expect(readFileSync(new URL('packages/server/src/embedded.ts', repoRoot), 'utf8')).toContain(
-      `${field}: config.${field}`,
-    );
+    const embedded = readFileSync(new URL('packages/server/src/embedded.ts', repoRoot), 'utf8');
+    expect(embedded).toMatch(/createEmbeddedProvisioning\(\{\s*config,/);
+    expect(
+      readFileSync(new URL('packages/server/src/embedded-provisioning.ts', repoRoot), 'utf8'),
+    ).toContain(`${field}: config.${field}`);
   });
   // Compose sets these variables on every Compose Server; an embedded Server, or a
   // managed host whose sealed sources predate a variable, falls through to the

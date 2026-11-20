@@ -2,7 +2,7 @@
   "id": "verity-sandbox-toolkit",
   "version": "0.0.0-managed",
   "name": "Verity Sandbox Toolkit",
-  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + osv-scanner + claude-code + codex + opencode CLIs, npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
+  "description": "Shared Verity agent-container tooling: gh + doppler + gitleaks + osv-scanner + claude-code + codex + opencode CLIs, corepack (pnpm + yarn), npm supply-chain hardening, git SSH-signing config, the pre-commit/pre-push secret + code review gates, tmux, and the worktree helper. Single source of truth baked into verity-sandbox and injectable into any user devcontainer via --additional-features.",
   "documentationURL": "https://github.com/Heey-Global/verity/tree/main/features/verity-sandbox-toolkit",
   "installsAfter": ["ghcr.io/devcontainers/features/node"],
   "customizations": {
@@ -23,12 +23,12 @@
     },
     "claudeCodeVersion": {
       "type": "string",
-      "default": "2.1.319",
+      "default": "2.1.325",
       "description": "Exact @anthropic-ai/claude-code npm version to pin."
     },
     "claudeAcpVersion": {
       "type": "string",
-      "default": "0.101.0",
+      "default": "0.107.0",
       "description": "Exact @agentclientprotocol/claude-agent-acp npm version to pin."
     },
     "installCodex": {
@@ -38,12 +38,12 @@
     },
     "codexVersion": {
       "type": "string",
-      "default": "0.167.0",
+      "default": "0.169.0",
       "description": "Exact @openai/codex npm version to pin."
     },
     "codexAcpVersion": {
       "type": "string",
-      "default": "2.5.0",
+      "default": "2.6.0",
       "description": "Exact @agentclientprotocol/codex-acp npm version to pin."
     },
     "installOpencode": {
@@ -53,7 +53,7 @@
     },
     "opencodeVersion": {
       "type": "string",
-      "default": "2.2.5",
+      "default": "2.3.0",
       "description": "Exact @opencode/cli npm version to pin."
     },
     "installRunnerSupervisor": {

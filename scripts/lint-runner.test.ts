@@ -2,7 +2,20 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { heapLimitMiB, runLint } from './lint-runner.mjs';
+import {
+  CI_GROUP_BYTES,
+  CI_GROUP_FILES,
+  CI_GROUP_MIN_HEAP_MIB,
+  CI_HEAP_CAP_MIB,
+  LOCAL_GROUP_BYTES,
+  LOCAL_GROUP_FILES,
+  LOCAL_HEAP_CAP_MIB,
+  heapLimitMiB,
+  lintGroupLimits,
+  lintWorkerArguments,
+  runLint,
+  workerHeapLimit,
+} from './lint-runner.mjs';
 
 const temporary: string[] = [];
 afterEach(() => {
@@ -16,6 +29,10 @@ const outOfMemory = {
 function options() {
   return {
     heapMiB: 96,
+    // The suite itself runs on CI runners; pin the sandbox groups the other
+    // assertions are written for, so they do not pass locally and fail in CI.
+    groupFiles: LOCAL_GROUP_FILES,
+    groupBytes: LOCAL_GROUP_BYTES,
     output: vi.fn<(text: string) => void>(),
     error: vi.fn<(text: string) => void>(),
   };
@@ -79,6 +96,54 @@ it('bounds initial groups and preserves complete coverage for a large scoped inv
   expect(execute.mock.calls.flatMap(([batch]) => batch)).toEqual(files);
 });
 
+it('groups CI runs in larger workers and keeps sandboxes at the small groups', () => {
+  // Small groups rebuild the server's type graph about 200 times in CI; large
+  // groups in a sandbox would hold that graph in memory other sessions share.
+  expect(lintGroupLimits(true)).toEqual({ files: CI_GROUP_FILES, bytes: CI_GROUP_BYTES });
+  expect(lintGroupLimits(false)).toEqual({ files: LOCAL_GROUP_FILES, bytes: LOCAL_GROUP_BYTES });
+  expect(CI_GROUP_FILES).toBeGreaterThan(LOCAL_GROUP_FILES);
+  // A CI runner with less memory keeps small groups instead of failing large ones first.
+  expect(lintGroupLimits(true, CI_GROUP_MIN_HEAP_MIB - 1)).toEqual({
+    files: LOCAL_GROUP_FILES,
+    bytes: LOCAL_GROUP_BYTES,
+  });
+  expect(lintGroupLimits(true, CI_GROUP_MIN_HEAP_MIB).files).toBe(CI_GROUP_FILES);
+  const files = Array.from({ length: CI_GROUP_FILES + 5 }, (_, index) => `${index}.ts`);
+  const previous = { ci: process.env.CI, actions: process.env.GITHUB_ACTIONS };
+  const run = () => {
+    const execute = vi.fn<(batch: string[]) => { status: number }>(() => ({ status: 0 }));
+    // Leave the group limits to the environment for this run.
+    const io: Partial<ReturnType<typeof options>> = { ...options(), heapMiB: CI_HEAP_CAP_MIB };
+    delete io.groupFiles;
+    delete io.groupBytes;
+    expect(runLint(files, { ...io, execute })).toBe(0);
+    expect(execute.mock.calls.flatMap(([batch]) => batch)).toEqual(files);
+    return Math.max(...execute.mock.calls.map(([batch]) => batch.length));
+  };
+  try {
+    process.env.GITHUB_ACTIONS = 'true';
+    expect(run()).toBe(CI_GROUP_FILES);
+    // CI=1 alone, as tools set it in sandboxes, keeps the small groups.
+    delete process.env.GITHUB_ACTIONS;
+    process.env.CI = '1';
+    expect(run()).toBe(LOCAL_GROUP_FILES);
+  } finally {
+    if (previous.ci === undefined) delete process.env.CI;
+    else process.env.CI = previous.ci;
+    if (previous.actions === undefined) delete process.env.GITHUB_ACTIONS;
+    else process.env.GITHUB_ACTIONS = previous.actions;
+  }
+});
+
+it('sizes the type program to the whole worker group', () => {
+  // A second program for the same project in one worker cannot be collected in
+  // time; the worker must size its program to the whole group it was given.
+  const files = Array.from({ length: 40 }, (_, index) => `${index}.ts`);
+  const args = lintWorkerArguments(files, 512, false, true);
+  expect(args).toContain(`--type-batch=${files.length}`);
+  expect(args.slice(args.indexOf('--') + 1)).toEqual(files);
+});
+
 it('separates large sources before starting workers and still checks oversized files', () => {
   mkdirSync('.cache', { recursive: true });
   const root = mkdtempSync(resolve('.cache/lint-runner-'));
@@ -109,6 +174,60 @@ it('keeps heap limits below the ceiling and available room', () => {
     expect(heapLimitMiB(missing)).toBeGreaterThan(0);
     expect(heapLimitMiB(missing)).toBeLessThanOrEqual(512);
   }
+});
+
+it('gives CI runners without a cgroup limit the CI budget instead of the sandbox fallback', () => {
+  // Hosted runners expose no container limit. Treating that as "unknown" kept CI at
+  // the sandbox budget, where the server's type graph fails by a few MiB; the run
+  // only goes red once the graph grows, with nothing pointing at this fallback.
+  const GiB = 1024 ** 3;
+  expect(
+    workerHeapLimit({ ci: true, limits: [], current: 0, total: 16 * GiB, free: 14 * GiB }),
+  ).toBe(CI_HEAP_CAP_MIB);
+  // Memory the runner already uses is not offered to the worker.
+  expect(
+    workerHeapLimit({ ci: true, limits: [], current: 0, total: 16 * GiB, free: 2 * GiB }),
+  ).toBeLessThan(CI_HEAP_CAP_MIB);
+  expect(CI_HEAP_CAP_MIB).toBeGreaterThan(LOCAL_HEAP_CAP_MIB);
+  // A small runner stays within a quarter of its memory and keeps room in reserve.
+  const small = workerHeapLimit({
+    ci: true,
+    limits: [],
+    current: 0,
+    total: 4 * GiB,
+    free: 4 * GiB,
+  });
+  expect(small).toBeGreaterThan(LOCAL_HEAP_CAP_MIB);
+  expect(small * 1024 ** 2).toBeLessThanOrEqual((4 * GiB) / 4);
+});
+
+it('does not treat a CI=1 sandbox as a CI runner', () => {
+  // Tools export CI=1 to suppress prompts in sandboxes too. Keying the CI budget on
+  // it would size sandbox workers from memory other sessions share.
+  const previous = { ci: process.env.CI, actions: process.env.GITHUB_ACTIONS };
+  process.env.CI = '1';
+  delete process.env.GITHUB_ACTIONS;
+  try {
+    expect(workerHeapLimit({ limits: [], current: 0, total: 64 * 1024 ** 3 })).toBe(
+      LOCAL_HEAP_CAP_MIB,
+    );
+  } finally {
+    if (previous.ci === undefined) delete process.env.CI;
+    else process.env.CI = previous.ci;
+    if (previous.actions !== undefined) process.env.GITHUB_ACTIONS = previous.actions;
+  }
+});
+
+it('keeps sandboxes at the local budget even when their machine is large', () => {
+  // Sandbox machine memory is shared with other sessions; only a detected container
+  // limit may size a worker there, and the local cap still bounds it.
+  const GiB = 1024 ** 3;
+  expect(workerHeapLimit({ ci: false, limits: [], current: 0, total: 64 * GiB })).toBe(
+    LOCAL_HEAP_CAP_MIB,
+  );
+  expect(workerHeapLimit({ ci: false, limits: [32 * GiB], current: 0 })).toBe(LOCAL_HEAP_CAP_MIB);
+  // A detected container limit keeps bounding CI as well.
+  expect(workerHeapLimit({ ci: true, limits: [2 * GiB], current: GiB })).toBeLessThanOrEqual(512);
 });
 
 it('reports a real lint finding through the bounded worker CLI', () => {

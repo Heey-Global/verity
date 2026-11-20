@@ -73,6 +73,63 @@ header such as `X-Verity-Preview-Code`, stateless and with the verified result c
 cover scripts and service-to-service calls. It is noted as a separate improvement to the Uplink
 path. Expo Go through a public share remains unsupported.
 
+#### Application cookies in public shares
+
+Public shares carry application cookies, so an application can keep its own login session behind
+the PIN. Every public share is a sibling host under one parent domain, and SameSite does not
+separate siblings: script on one share can write a cookie for the parent domain that the browser
+then sends to every other share. Browsers never store a `__Host-` cookie that names a domain,
+whoever sets it. The edge therefore stores each application cookie in its own namespace:
+
+- A `Set-Cookie` from the application is rewritten to `__Host-app-<name>`. `Domain` is removed,
+  and `Path=/` and `Secure` are always set. `Max-Age`, `Expires`, `HttpOnly`, `SameSite`,
+  `Partitioned` and `Priority` are kept after validation; `Expires` must be an RFC 1123 or
+  RFC 850 date. Other attributes are dropped. A
+  deletion (`Max-Age=0` or a past `Expires`) still clears the cookie that was set.
+- On requests, the edge forwards only cookies whose name starts with exactly `__Host-app-`, with
+  that prefix removed and in the order the browser sent them. Everything else stays at the
+  edge, including the edge's own `__Host-verity-preview` session and cookies a sibling share
+  planted. Every rewritten name starts with the prefix, so the application can't overwrite the
+  PIN session either.
+- `Set-Cookie` headers with invalid names or values are dropped. A cookie whose name and value, including the
+  11-byte prefix, exceed 4096 bytes is dropped, because a browser would discard it anyway. The
+  connector relays at most 40 cookies or 16 KiB per response and skips any single line the tunnel
+  would refuse, and it leaves room for the application's other response headers, so a
+  response with too many cookies loses the rest rather than failing.
+- A response that sets an application cookie is always sent with `Cache-Control: no-store` and
+  without `CDN-Cache-Control` or `Surrogate-Control`, so a shared cache never replays one
+  visitor's session cookie to another. Other responses keep the application's cache headers, so
+  an application must not mark pages that depend on its cookies as publicly cacheable.
+- Because the path is always `/`, same-named cookies that an application scopes to different
+  paths become one cookie, and every request carries all application cookies.
+- WebSocket handshakes receive the same cookies. Cookies set on a WebSocket upgrade response are
+  not relayed.
+- Only cookies set through `Set-Cookie` response headers work. Script in the page sees cookies under
+  their `__Host-app-` names, and cookies it writes through `document.cookie` without that prefix
+  never reach the application. Patterns where script reads a cookie by its original name, such as
+  double-submit CSRF tokens, need the application to send the token another way. The connector
+  also withholds an application cookie that reuses Verity's own session cookie name
+  `__Host-verity_session`.
+- Because all public shares are same-site with each other, `SameSite` does not stop a page on
+  another share from sending requests with the application's cookies. The edge rejects requests
+  other than `GET`, `HEAD` and `OPTIONS` whose `Origin` is not the share's own origin, or whose
+  `Sec-Fetch-Site` is `same-site` or `cross-site`, before they reach the application. WebSocket
+  upgrades get the same check whatever their method. Applications should still keep `GET`
+  requests free of side effects.
+
+The edge applies these rules. The connector, which runs inside the sandbox, only transports the
+cookies. An edge and a connector from before this behavior keep dropping application cookies,
+whichever of the two is updated first. Open local shares (2.1) keep application cookie names
+unchanged, because they share the host with Verity and serve plain HTTP.
+
+Older browsers that predate the `__Host-` protection for nameless cookies still let a sibling
+share write a parent-domain cookie whose serialized form starts with `__Host-app-`. Registering
+the public preview parent domain on the Public Suffix List stops browsers from accepting any
+parent-domain cookie and closes that gap. It also stops a sibling share from flooding the
+parent domain with cookies, which can evict a share's own cookies under browser per-site limits or
+grow its `Cookie` header until requests fail. Isolation of cookie contents does not depend on it
+in current browsers.
+
 ### 2.3 Raw TCP is not provided
 
 Databases, Redis, SSH, and native gRPC are not forwarded, locally or publicly. The scanner cannot

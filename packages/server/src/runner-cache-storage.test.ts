@@ -490,7 +490,8 @@ describe('runner cache maintenance retry backoff', () => {
     // left out of STATE_REFUSAL_CODES would silently defer recovery for an hour.
     const supervisor = await readFile(
       new URL(
-        '../../../features/verity-sandbox-toolkit/bin/verity-runner-supervisor.mjs',
+        // The source module: the shipped bundle rewrites string quotes.
+        '../../../features/verity-sandbox-toolkit/src/runner-supervisor/requests.mjs',
         import.meta.url,
       ),
       'utf8',

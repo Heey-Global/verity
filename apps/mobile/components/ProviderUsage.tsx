@@ -48,8 +48,8 @@ interface ProviderUsage {
 
 // Settings pages that show one provider's usage in full.
 const PROVIDER_SETTINGS: Record<string, Href> = {
-  Claude: '/settings/services/claude',
-  Codex: '/settings/services/codex',
+  Claude: '/settings/ai-accounts/claude',
+  Codex: '/settings/ai-accounts/codex',
 };
 const PROVIDER_ICONS: Record<string, 'claude' | 'codex' | 'opencode'> = {
   Claude: 'claude',

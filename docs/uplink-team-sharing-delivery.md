@@ -2,6 +2,8 @@
 
 **Status:** Proposed plan, not an implementation or release claim.
 
+**Reconciled:** [team contract v1](protocols/uplink-team-contract-v1.md) records the current decisions and implementation status — personal Remote Control admission and tunnelling are implemented in Core, so statements here that they are missing are historical; it takes precedence where the two differ.
+
 Contracts: [Core ADR 0023](adr/0023-multi-user-projects-and-turn-identity.md),
 [team protocol draft](protocols/uplink-team-sharing-v1.md), and
 [base channel protocol](UPLINK_CHANNEL_PROTOCOL.md).

@@ -85,7 +85,6 @@ it('keeps private, reserved, host and other project traffic blocked including re
   const rules = protectedBuildRules(
     binding,
     ['8.8.8.8/32', '2606:4700::/48'],
-    false,
     projectDeadlineLease(binding, 0, null, clock),
     undefined,
     ['eth0'],
@@ -106,7 +105,7 @@ it('keeps private, reserved, host and other project traffic blocked including re
   expect(rules).toContain('ct direction reply ct label ==');
   expect(rules).toContain('meta ibrname "veb123456789abc" drop');
   expect(rules).not.toContain('ct state established accept');
-  expect(() => protectedBuildRules({ ...binding, bridge: 'vep123456789abc' }, [], false)).toThrow(
+  expect(() => protectedBuildRules({ ...binding, bridge: 'vep123456789abc' }, [])).toThrow(
     'Build-only',
   );
 });

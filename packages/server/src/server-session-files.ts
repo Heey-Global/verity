@@ -1,4 +1,4 @@
-import { hasCodeContent, legacySessionCodePath } from './project-code.js';
+import { hasCodeContent, hasSavedCodeWorkspace, legacySessionCodePath } from './project-code.js';
 import type { Conductor } from '@verity/session';
 import { PROJECT_MEMORY_MAX_CHARS } from '@verity/store';
 import { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -102,9 +102,16 @@ function knowledgeSlotFailure(reply: FastifyReply, error: unknown): { error: str
   reply.code(404);
   return { error: 'path not found' };
 }
+
+async function isDirectory(path: string): Promise<boolean> {
+  return lstat(path).then(
+    (entry) => entry.isDirectory(),
+    () => false,
+  );
+}
 export function registerServerSessionFiles(
   app: FastifyInstance,
-  deps: Pick<ServerDeps, 'eventStore' | 'dataRoot' | 'projectCloneRoot'>,
+  deps: Pick<ServerDeps, 'eventStore' | 'dataRoot' | 'projectCloneRoot' | 'sessionStorage'>,
   conductor: Conductor,
 ) {
   const fileStorageRoot = (root: { root: SessionFileRootName; dir: string }) =>
@@ -250,19 +257,18 @@ export function registerServerSessionFiles(
         ? await deps.eventStore.getProject(session.projectId)
         : undefined;
       if (project?.kind === 'control_plane') return false;
+      const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+      const code = legacy ?? session.worktree;
+      if (await deps.sessionStorage?.hasPendingWorkspaceRecovery({ ...session, worktree: code }))
+        return false;
       if (project?.kind !== 'local') {
-        const legacy = legacySessionCodePath(session.worktree, session.sessionId);
-        return legacy
-          ? lstat(legacy).then(
-              (entry) => entry.isDirectory(),
-              () => false,
-            )
-          : true;
+        if (legacy && !deps.projectCloneRoot) return false;
+        return isDirectory(code);
       }
-      const code = legacySessionCodePath(session.worktree, session.sessionId) ?? session.worktree;
       if (await hasCodeContent(code)) return true;
       return deps.projectCloneRoot
-        ? hasCodeContent(projectClonePath(deps.projectCloneRoot, project))
+        ? (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) &&
+            (await isDirectory(code))
         : false;
     },
     workspaceKind: async (id) => {
@@ -273,15 +279,20 @@ export function registerServerSessionFiles(
       const legacy = session
         ? legacySessionCodePath(session.worktree, session.sessionId)
         : undefined;
-      if (legacy)
-        return project?.kind !== 'control_plane' &&
-          (await lstat(legacy).then(
-            (entry) => entry.isDirectory(),
-            () => false,
-          ))
-          ? 'code'
-          : 'documents';
-      return 'code';
+      if (!legacy || !session) return 'code';
+      if (project?.kind === 'control_plane' || !deps.projectCloneRoot) return 'documents';
+      // In a repository project the session is a code session even while its checkout is missing.
+      if (project && project.kind !== 'local') return 'code';
+      return (await isDirectory(legacy)) ||
+        (project &&
+          ((await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
+            (await hasSavedCodeWorkspace(
+              projectClonePath(deps.projectCloneRoot, project),
+              session.sessionId,
+              legacy,
+            ))))
+        ? 'code'
+        : 'documents';
     },
     // A knowledge root is created on first browse rather than only at
     // provisioning: the folder is the source of truth (ADR 0022 D1), so an
@@ -298,6 +309,16 @@ export function registerServerSessionFiles(
           ? await deps.eventStore.getProject(session.projectId)
           : undefined;
         const legacy = legacySessionCodePath(session.worktree, session.sessionId);
+        if (
+          await deps.sessionStorage?.hasPendingWorkspaceRecovery({
+            ...session,
+            worktree: legacy ?? session.worktree,
+          })
+        )
+          throw new SessionFileRootUnavailableError(
+            "This session's code workspace recovery is incomplete. Restore it to continue.",
+            409,
+          );
         if (legacy && project?.kind !== 'control_plane') {
           const entry = await lstat(legacy).catch((error: unknown) => {
             if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
@@ -309,6 +330,24 @@ export function registerServerSessionFiles(
             );
           if (entry?.isDirectory()) return legacy;
         }
+        // A Documents view is no stand-in for a repository project's missing checkout.
+        if (
+          project &&
+          project.kind !== 'control_plane' &&
+          deps.projectCloneRoot &&
+          (project.kind !== 'local' ||
+            (await hasCodeContent(projectClonePath(deps.projectCloneRoot, project))) ||
+            (await hasSavedCodeWorkspace(
+              projectClonePath(deps.projectCloneRoot, project),
+              session.sessionId,
+              legacy ?? session.worktree,
+            ))) &&
+          (legacy || !(await isDirectory(session.worktree)))
+        )
+          throw new SessionFileRootUnavailableError(
+            "This session's code workspace is unavailable. Restore it to continue.",
+            409,
+          );
         return session.worktree;
       }
       if (deps.dataRoot === undefined)

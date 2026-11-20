@@ -16,6 +16,8 @@ import {
   RELAY_MEMORY_BYTES,
 } from './project-relay-docker.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 /** One `GET /containers/json` entry, narrowed to what the relay sweep reads. */
 function summary(id: string, labels: Record<string, string>): DockerContainerSummary {
   return { id, imageId: 'sha256:img', names: [id], labels, created: 0 };
@@ -64,7 +66,7 @@ function harness(
     codexSocketRoot: '/srv/verity/codex',
     socketOwnerUid: 1000,
     relayGid: options.relayGid ?? 65_532,
-    projectNetwork: (projectId) => `verity-proj-${projectId}`,
+    sandboxNetwork: ({ projectId }) => `verity-proj-${projectId}`,
     validateSocketTree: () => true,
   });
   return {
@@ -78,7 +80,12 @@ function harness(
   };
 }
 
-const identity = { projectId: 'p1', containerGeneration: 'generation-1' };
+const identity = {
+  projectId: 'p1',
+  userId: SANDBOX_USER,
+  projectDefault: true,
+  containerGeneration: 'generation-1',
+};
 const context = {
   identity,
   brokerSocketPath: `/srv/verity/broker/${projectSocketBindingName(identity)}/broker.sock`,
@@ -447,7 +454,7 @@ describe('Docker project relay adapter', () => {
       claudeSocketRoot: '/srv/verity/claude',
       socketOwnerUid: 1000,
       relayGid: 65_532,
-      projectNetwork: () => 'network',
+      sandboxNetwork: () => 'network',
       validateSocketTree: () => true,
     });
     await expect(
@@ -467,7 +474,7 @@ describe('Docker project relay adapter', () => {
       claudeSocketRoot: '/srv/verity/claude',
       socketOwnerUid: 1000,
       relayGid: 65_532,
-      projectNetwork: () => 'network',
+      sandboxNetwork: () => 'network',
       validateSocketTree: () => true,
     });
     await expect(tagged(context)).rejects.toThrow('image must be digest-pinned');
@@ -481,7 +488,7 @@ describe('Docker project relay adapter', () => {
       claudeSocketRoot: '/srv/verity/claude',
       socketOwnerUid: 1000,
       relayGid: 65_532,
-      projectNetwork: () => 'network',
+      sandboxNetwork: () => 'network',
       validateSocketTree: () => false,
     });
     await expect(untrusted(context)).rejects.toThrow('directory is not trusted');

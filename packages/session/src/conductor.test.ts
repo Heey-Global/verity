@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 import {
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   AUTONOMY_SYSTEM_PROMPT,
@@ -18,6 +19,7 @@ import {
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
   PULL_REQUEST_SYSTEM_PROMPT,
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
   REPO_CONVENTIONS_SYSTEM_PROMPT,
   SANDBOX_NOT_READY_ERROR_KIND,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
@@ -102,6 +104,7 @@ const RESUME_SET = [
   AUTONOMY_RESUME_SYSTEM_PROMPT,
   PLANNING_SYSTEM_PROMPT,
   TASKS_RESUME_SYSTEM_PROMPT,
+  PROJECT_REPOSITORIES_SYSTEM_PROMPT,
   VISIBLE_MEDIA_SYSTEM_PROMPT,
   SANDBOX_RESOURCES_SYSTEM_PROMPT,
   AUTOMATION_SYSTEM_PROMPT,
@@ -119,14 +122,11 @@ const RESUME_SET = [
  * whichever fragment last grew. Kept above the sandbox fragment's own ceiling
  * (3100, in sandbox-resources.test.ts) so that growth *that* ceiling still
  * permits cannot fail here instead, where the message would name the wrong
- * thing. That ordering is conditional, not structural: it holds while the other
- * members sum to under 8000 - 3100 = 4900 characters. If they grow past that,
- * this budget fires first on sandbox-fragment growth — annoying, not wrong, and
- * the fix is to raise this one after reading what actually grew, not to derive
- * either number from the other. Includes the communication guidance refreshed
- * on resumed turns; the assembled payload is currently 7769 characters.
+ * thing. The repository-discovery directive adds 1466 characters so existing
+ * sessions learn the managed module workflow too. The assembled payload is now
+ * about 9300 characters; keep a small explicit allowance for separators and wording.
  */
-const RESUME_SET_BUDGET = 8000;
+const RESUME_SET_BUDGET = 9500;
 
 /**
  * Asserts that `appended` is exactly {@link RESUME_SET} — every member present
@@ -2659,6 +2659,60 @@ describe('Conductor durable queue: persist, retract, recover (#80)', () => {
     });
   });
 
+  it('resolves each turn for the person who sent it, also behind another turn', async () => {
+    // Credentials are selected from the backend resolution's initiator. If a
+    // queued turn inherited the running turn's identity, Bob's turn would run on
+    // Alice's AI, GitHub and Google accounts.
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { backend } = gatedBackend(gate);
+    const prepared: (string | undefined)[] = [];
+    const contexts: (string | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy?.userId);
+        return selected;
+      },
+      agentContext: async (_session, initiatedBy) => {
+        contexts.push(initiatedBy?.userId);
+        return { fingerprint: initiatedBy?.userId ?? 'none', prompt: '' };
+      },
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'first', undefined, { initiatedBy: { userId: 'alice' } });
+    await conductor.dispatchTurn('s1', 'second', undefined, {
+      queueBehindActiveTurn: true,
+      initiatedBy: { userId: 'bob' },
+    });
+    await vi.waitFor(() => expect(prepared).toEqual(['alice']));
+    release();
+    await vi.waitFor(() => expect(prepared).toEqual(['alice', 'bob']));
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+    expect(contexts).toEqual(['alice', 'bob']);
+  });
+
+  it('resolves a turn without an initiator for nobody rather than for a previous sender', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const prepared: ({ userId: string } | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: gatedBackend(Promise.resolve()).backend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy);
+        return selected;
+      },
+      worktreeExists: async () => true,
+    });
+    await conductor.sendTurn('s1', 'one', {}, 'one', { initiatedBy: { userId: 'alice' } });
+    await conductor.sendTurn('s1', 'two');
+    expect(prepared).toEqual([{ userId: 'alice' }, undefined]);
+  });
+
   it('dequeue returns undefined for an unknown/stale id', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
@@ -3721,6 +3775,51 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
   });
 
+  it('reattaches a recovered turn under the identity its prompt was sent with', async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const { seq } = await ctx.store.appendEvent('s1', {
+      t: 'prompt',
+      text: 'go',
+      initiatedBy: { userId: 'alice' },
+    });
+    await ctx.store.markTurnRunning({ sessionId: 's1', promptSeq: seq });
+    await ctx.store.bindTurnIdentity('s1', {
+      turnId: 'turn-alice',
+      startCommandId: 'turn-alice-start',
+    });
+    let settle!: (result: RunResult) => void;
+    const runner = fakeAttachRunner(
+      new Promise<RunResult>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const { recovery } = fakeRecovery({
+      status: 'live',
+      target: {
+        turnId: 'turn-alice',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      },
+    });
+    const prepared: ({ userId: string } | undefined)[] = [];
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      sessionBackend: async (_session, selected, preparation) => {
+        prepared.push(preparation.initiatedBy);
+        return selected;
+      },
+      worktreeExists: async () => true,
+      runner: runner.factory,
+      runnerRecovery: recovery,
+    });
+    await conductor.recover();
+    expect(prepared).toEqual([{ userId: 'alice' }]);
+    settle({ sessionId: 's1', exitCode: 0, stderr: '', aborted: false });
+    await vi.waitFor(() => expect(conductor.isBusy('s1')).toBe(false));
+  });
+
   it('keeps the marker and does NOT interrupt on an UNCERTAIN discovery (bounded discovery)', async () => {
     await seedMarker('turn-2');
     const attachmentId = await ctx.store.putAttachment('image/png', 'cXVldWVkIGltYWdl');
@@ -4031,6 +4130,90 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     }
   });
 
+  // A turn held for a background command or monitor is silent for as long as that
+  // work takes. Releasing it after half an hour would kill the work the agent is
+  // waiting for; only a hold that outlives its own limit is a stall.
+  it('waits out a silent turn held for open background tasks up to the hold limit', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-held');
+      await ctx.store.appendEvent('s1', {
+        t: 'task',
+        id: BACKGROUND_HOLD_TASK_ID,
+        phase: 'started',
+      });
+      const target = {
+        turnId: 'turn-held',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined), true);
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => ({ status: 'live', target }) },
+      });
+
+      await conductor.recover();
+      // An hour of silence: twice the ordinary bound, still inside the hold.
+      for (let i = 0; i < 120; i += 1) await vi.advanceTimersByTimeAsync(30_000);
+      expect(conductor.isBusy('s1')).toBe(true);
+      expect(await ctx.store.listRunningTurns()).toHaveLength(1);
+
+      // Past the hold limit plus its grace, the same silence is a stall.
+      for (let i = 0; i < 400 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const events = await ctx.store.getEvents('s1');
+      expect(events).toContainEqual(expect.objectContaining({ t: 'interrupted' }));
+      const notices = events.flatMap((event) => (event.t === 'notice' ? [event.text] : []));
+      expect(notices).toEqual([
+        expect.stringMatching(/beyond the hold limit[\s\S]*Background work/),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Agent task edges are also emitted by backends that never hold, and an `ended`
+  // edge can be lost; neither may buy a stalled turn two more hours.
+  it('keeps the ordinary stall bound for a turn with open agent tasks but no hold', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-task-no-hold');
+      await ctx.store.appendEvent('s1', { t: 'task', id: 'lost-end', phase: 'started' });
+      const target = {
+        turnId: 'turn-task-no-hold',
+        sessionId: 's1',
+        eventFilePath: '/rt/events.jsonl',
+        controlSocketPath: '/rt/control.sock',
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined), true);
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => ({ status: 'live', target }) },
+      });
+      await conductor.recover();
+      for (let i = 0; i < 80 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const notices = (await ctx.store.getEvents('s1')).flatMap((event) =>
+        event.t === 'notice' ? [event.text] : [],
+      );
+      expect(notices).toEqual([expect.stringContaining('half an hour')]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never settles a silent turn when the Runner seam stays unreachable', async () => {
     vi.useFakeTimers();
     try {
@@ -4161,6 +4344,69 @@ describe('Conductor recover(): reattach-before-settle (ADR 0006 Stage 4c / D7)',
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Without the note the operator reads "send the message again" and keeps waiting
+  // for the review or monitor result the agent announced — which died with it.
+  it('says that background work was lost when a held turn’s Runner dies', async () => {
+    vi.useFakeTimers();
+    try {
+      await seedMarker('turn-held-dies');
+      await ctx.store.appendEvent('s1', {
+        t: 'task',
+        id: BACKGROUND_HOLD_TASK_ID,
+        phase: 'started',
+      });
+      let outcome: RunnerRecoveryOutcome = {
+        status: 'live',
+        target: {
+          turnId: 'turn-held-dies',
+          sessionId: 's1',
+          eventFilePath: '/rt/events.jsonl',
+          controlSocketPath: '/rt/control.sock',
+        },
+      };
+      const runner = fakeAttachRunner(new Promise<RunResult>(() => undefined));
+      const conductor = new Conductor({
+        store: ctx.store,
+        backend: inertBackend,
+        worktreeExists: async () => true,
+        runner: runner.factory,
+        runnerRecovery: { discover: async () => outcome },
+      });
+
+      await conductor.recover();
+      outcome = { status: 'dead' };
+      for (let i = 0; i < 12 && conductor.isBusy('s1'); i += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+      }
+      expect(conductor.isBusy('s1')).toBe(false);
+      const notices = (await ctx.store.getEvents('s1')).flatMap((event) =>
+        event.t === 'notice' ? [event.text] : [],
+      );
+      expect(notices).toEqual([
+        expect.stringMatching(/Runner executing this turn is gone[\s\S]*Background work/),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says that background work was lost when a restart finds the held turn’s Runner dead', async () => {
+    await seedMarker('turn-held-restart');
+    await ctx.store.appendEvent('s1', { t: 'task', id: BACKGROUND_HOLD_TASK_ID, phase: 'started' });
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: inertBackend,
+      worktreeExists: async () => true,
+      runnerRecovery: { discover: async () => ({ status: 'dead' }) },
+    });
+    await conductor.recover();
+    const events = await ctx.store.getEvents('s1');
+    expect(events.slice(-2)).toEqual([
+      expect.objectContaining({ t: 'notice', text: expect.stringContaining('Background work') }),
+      { t: 'interrupted' },
+    ]);
   });
 
   it('settles a dead Runner even while its permission card is still open', async () => {
@@ -7467,6 +7713,28 @@ describe('Conductor mid-turn steering (#101)', () => {
     }
   });
 
+  // A running turn runs on its person's account and in their sandbox. Another
+  // person's message must not join it; it waits for a turn of its own.
+  it("queues another person's message instead of steering it into the running turn", async () => {
+    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
+    const fake = steerableBackend();
+    const conductor = new Conductor({
+      store: ctx.store,
+      backend: fake.backend,
+      worktreeExists: async () => true,
+    });
+    await conductor.dispatchTurn('s1', 'Admin work', {}, { initiatedBy: { userId: 'admin' } });
+    await waitFor(fake.ready);
+    await expect(
+      conductor.dispatchTurn('s1', 'Lena asks', {}, { initiatedBy: { userId: 'lena' } }),
+    ).resolves.toEqual({ queued: true });
+    expect(fake.steered).toHaveLength(0);
+    await expect(
+      conductor.dispatchTurn('s1', 'Admin adds', {}, { initiatedBy: { userId: 'admin' } }),
+    ).resolves.toEqual({ queued: false });
+    expect(fake.steered).toHaveLength(1);
+  });
+
   it('keeps chat consent revoked after delivered steering fails persistence', async () => {
     await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
     await ctx.store.startSessionPlanning('s1');
@@ -7477,7 +7745,9 @@ describe('Conductor mid-turn steering (#101)', () => {
       backend: fake.backend,
       worktreeExists: async () => true,
     });
-    await conductor.dispatchTurn('s1', 'Implement plan');
+    // Every message is the same person's, so each one steers the running turn.
+    const u1 = { initiatedBy: { userId: 'u1' } };
+    await conductor.dispatchTurn('s1', 'Implement plan', {}, u1);
     await waitFor(fake.ready);
     const running = (await ctx.store.listRunningTurns())[0]!;
     const consent = {
@@ -7491,7 +7761,7 @@ describe('Conductor mid-turn steering (#101)', () => {
       return append(...args);
     });
     try {
-      await conductor.dispatchTurn('s1', 'Wait, do not implement');
+      await conductor.dispatchTurn('s1', 'Wait, do not implement', {}, u1);
       expect(fake.steered).toHaveLength(1);
       // Dispatch has finished, so no pending counter protects the old approval.
       expect(
@@ -10473,7 +10743,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
             url: 'https://updated.example:8443/v2/projects',
           },
         },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(persist).not.toHaveBeenCalled();
@@ -10527,7 +10797,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-failed',
         'toolu_failed',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10558,6 +10828,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-g',
       sessionId: 'sg3',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -10623,7 +10894,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-acp-persist',
         'toolu_acp_persist',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(true);
@@ -10677,7 +10948,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg-cli-forever',
         'toolu_cli_forever',
         { behavior: 'allow' },
-        { scope: 'forever', onScopeSaved },
+        { scope: 'forever', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10707,10 +10978,12 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
       'sg-cli-project',
       'toolu_cli_project',
       { behavior: 'allow' },
-      { scope: 'project', onScopeSaved },
+      { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
     );
     expect(onScopeSaved).toHaveBeenCalledWith(true);
-    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
+    );
     await vi.waitFor(() => expect(conductor.isBusy('sg-cli-project')).toBe(false));
   });
 
@@ -10818,7 +11091,7 @@ describe('Conductor — scoped brokered-HTTP grants (ADR 0011 D2)', () => {
         'sg5',
         'toolu_failed_scope',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     expect(onScopeSaved).toHaveBeenCalledWith(false);
@@ -10862,6 +11135,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     signal?: AbortSignal,
   ): Promise<{ decision: { behavior: string }; decidedBy: string }> {
     return conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId,
       toolUseId,
       toolName: 'verity_http_request',
@@ -10991,11 +11265,55 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x4',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
       channel: 'acp',
     });
+  });
+
+  // ADR 0023 §3: a standing grant is one person's advance consent. A gateway prompt
+  // is answered only by the calling turn's person's grants, a prompt naming no one
+  // by none, and a scope is saved only for the person who answered the card.
+  it("consults only the calling person's grants and saves a scope only for the decider", async () => {
+    await createProjectSession('grant-person');
+    const check = vi.fn(async (input: { userId: string | null }) => input.userId === 'lena');
+    const persist = vi.fn(async () => {});
+    const conductor = new Conductor({
+      store: ctx.store,
+      worktreeExists: async () => true,
+      checkBrokeredHttpGrant: check,
+      persistBrokeredHttpGrant: persist,
+    });
+    const prompt = (toolUseId: string, grantUserId?: string | null) =>
+      conductor.requestExternalPermission({
+        sessionId: 'grant-person',
+        toolUseId,
+        toolName: 'verity_http_request',
+        input: gatewayInput,
+        channel: 'acp',
+        ...(grantUserId !== undefined ? { grantUserId } : {}),
+      });
+    await expect(prompt('lena-call', 'lena')).resolves.toMatchObject({ decidedBy: 'grant' });
+    expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ userId: 'lena' }));
+
+    check.mockClear();
+    const unnamed = prompt('unnamed-call');
+    await vi.waitFor(() =>
+      expect(conductor.pendingPermissions('grant-person')).toEqual(['unnamed-call']),
+    );
+    expect(check).not.toHaveBeenCalled();
+    const onScopeSaved = vi.fn();
+    await conductor.decidePermission(
+      'grant-person',
+      'unnamed-call',
+      { behavior: 'allow' },
+      { scope: 'project', onScopeSaved },
+    );
+    await expect(unnamed).resolves.toMatchObject({ decidedBy: 'card' });
+    expect(onScopeSaved).toHaveBeenCalledWith(false);
+    expect(persist).not.toHaveBeenCalled();
   });
 
   it('keeps the server-resolved binding for grant lookup and persistence across approval waits', async () => {
@@ -11021,6 +11339,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       input: { ...gatewayInput, bindingId: 'untrusted-tool-binding' },
       channel: 'acp' as const,
       brokeredGrantBindingId: 'original-provider-binding',
+      grantUserId: null,
     };
     const answered = conductor.requestExternalPermission(params);
     // A provider update while the card waits must not retarget the saved consent.
@@ -11029,6 +11348,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(check).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'binding-frozen',
+      userId: null,
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -11044,13 +11364,14 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'binding-frozen',
       'binding-request',
       { behavior: 'allow' },
-      { scope: 'session', onScopeSaved },
+      { scope: 'session', onScopeSaved, decidedByUser: 'operator-1' },
     );
     await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
     expect(conductor.pendingPermissions('binding-frozen')).toEqual([]);
     expect(persist).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'binding-frozen',
+      userId: 'operator-1',
       secretAlias: 'REVENUECAT_ADMIN_KEY',
       toolName: 'verity_http_request',
       target: 'api.revenuecat.com',
@@ -11077,6 +11398,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     });
     const request = (sessionId: string, toolUseId: string) =>
       conductor.requestExternalPermission({
+        grantUserId: null,
         sessionId,
         toolUseId,
         toolName: 'verity_secret_run',
@@ -11093,7 +11415,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'cwd-first',
       'first',
       { behavior: 'allow' },
-      { scope: 'project' },
+      { scope: 'project', decidedByUser: 'operator-1' },
     );
     await first;
     await expect(request('cwd-first', 'reuse')).resolves.toMatchObject({ decidedBy: 'grant' });
@@ -11122,6 +11444,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       persistBrokeredHttpGrant: persist,
     });
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x4-cli',
       toolUseId: 'toolu_cli',
       toolName: 'verity_secret_run',
@@ -11141,12 +11464,14 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x4-cli',
         'toolu_cli',
         { behavior: 'allow' },
-        { scope: 'project', onScopeSaved },
+        { scope: 'project', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
     expect(onScopeSaved).toHaveBeenCalledWith(true);
-    expect(persist).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project' }));
+    expect(persist).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'project', userId: 'operator-1' }),
+    );
   });
 
   it('never consults a grant for a tool that resolves no secret, flag or no flag', async () => {
@@ -11163,6 +11488,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // any tool outside the brokered pair, so the gateway route may set it from the tool name
     // without changing what the control-plane tools do. A grant is neither read nor written.
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x4-handoff',
       toolUseId: 'toolu_handoff',
       toolName: 'verity_session_handoff',
@@ -11185,7 +11511,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x4-handoff',
         'toolu_handoff',
         { behavior: 'allow' },
-        { scope: 'forever', onScopeSaved },
+        { scope: 'forever', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
@@ -11216,6 +11542,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     // on its own — `brokeredGrantToolName` has no name for these, so `maybeAutoApprove` returns
     // before it can look a grant up. Both would have to be undone to auto-answer them.
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId,
       toolUseId: 'toolu_cp',
       toolName,
@@ -11252,7 +11579,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
         'x5',
         'toolu_scope',
         { behavior: 'allow' },
-        { scope: 'session', onScopeSaved },
+        { scope: 'session', onScopeSaved, decidedByUser: 'operator-1' },
       ),
     ).resolves.toBe(true);
     await expect(answered).resolves.toEqual({ decision: { behavior: 'allow' }, decidedBy: 'card' });
@@ -11260,6 +11587,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
     expect(persist).toHaveBeenCalledWith({
       projectId: 'project-x',
       sessionId: 'x5',
+      userId: 'operator-1',
       scope: 'session',
       channel: 'acp',
       secretAlias: 'REVENUECAT_ADMIN_KEY',
@@ -11290,6 +11618,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       persistBrokeredHttpGrant: persist,
     });
     const answered = conductor.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x5-multi',
       toolUseId: 'toolu_multi',
       toolName: 'verity_secret_run',
@@ -11304,7 +11633,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       'x5-multi',
       'toolu_multi',
       { behavior: 'allow' },
-      { scope: 'session' },
+      { scope: 'session', decidedByUser: 'operator-1' },
     );
     await expect(answered).resolves.toMatchObject({ decidedBy: 'card' });
     expect(persist).toHaveBeenNthCalledWith(1, expect.objectContaining({ secretAlias: 'KEY_ID' }));
@@ -11320,6 +11649,7 @@ describe('Conductor — out-of-band permission prompts (ADR 0014 D2)', () => {
       checkBrokeredHttpGrant: check,
     });
     const pending = checking.requestExternalPermission({
+      grantUserId: null,
       sessionId: 'x5-multi-check',
       toolUseId: 'toolu_multi_check',
       toolName: 'verity_secret_run',
@@ -11465,232 +11795,6 @@ it('cancels only the live turn matching an assignment receipt', async () => {
   expect(await conductor.cancelAssignmentTurn('assignment-target', 'current')).toBe(true);
   await vi.waitFor(() => expect(conductor.isBusy('assignment-target')).toBe(false));
   receipt.mockRestore();
-});
-
-describe('Conductor session deletion admission', () => {
-  it('invalidates earlier terminal evidence before a retry launches an uncertain worker', async () => {
-    await ctx.store.createSession({
-      sessionId: 'retry-proof',
-      worktree: '/wt/retry-proof',
-      model: 'm',
-    });
-    await ctx.store.upsertSessionBackendState({
-      sessionId: 'retry-proof',
-      backend: 'claude',
-      backendSessionId: 'old-thread',
-      contextSeq: 0,
-    });
-    let attempts = 0;
-    const startTurn = vi.fn(() => ({
-      result:
-        ++attempts === 1
-          ? Promise.resolve({
-              sessionId: undefined,
-              exitCode: 1,
-              stderr: '',
-              staleResume: true as const,
-              aborted: false,
-            })
-          : Promise.reject(new Error('transport dropped')),
-      steer: async () => false,
-      answerPermission: async () => false,
-      cancel: async () => false,
-    }));
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend: { run: () => Promise.reject(new Error('unexpected loopback')) },
-      runner: () => ({ startTurn }),
-      worktreeExists: async () => true,
-    });
-    await expect(conductor.sendTurn('retry-proof', 'work')).rejects.toThrow('transport dropped');
-    expect(startTurn).toHaveBeenCalledTimes(2);
-    expect(await conductor.stopForDeletion('retry-proof', 20)).toBe(false);
-    const restarted = new Conductor({ store: ctx.store, worktreeExists: async () => true });
-    expect(await restarted.stopForDeletion('retry-proof', 20)).toBe(false);
-  });
-
-  it.each(['send', 'dispatch'] as const)(
-    'preserves terminal evidence after %s host publication fails',
-    async (mode) => {
-      await ctx.store.createSession({
-        sessionId: 'postprocess',
-        worktree: '/wt/postprocess',
-        model: 'm',
-      });
-      const fake = scriptedBackend({ sessionId: 'postprocess', text: 'done' });
-      const settleWorkspace = vi.fn(async () => {
-        throw new Error('publication failed');
-      });
-      const conductor = new Conductor({
-        store: ctx.store,
-        backend: fake.backend,
-        worktreeExists: async () => true,
-        settleWorkspace,
-      });
-      if (mode === 'send')
-        await expect(conductor.sendTurn('postprocess', 'work')).rejects.toThrow(
-          'publication failed',
-        );
-      else {
-        await conductor.dispatchTurn('postprocess', 'work');
-        await vi.waitFor(() => expect(conductor.isBusy('postprocess')).toBe(false));
-      }
-      expect(settleWorkspace).toHaveBeenCalledOnce();
-      expect(await conductor.stopForDeletion('postprocess', 20)).toBe(true);
-    },
-  );
-
-  it.each([false, true])(
-    'does not retain phantom termination uncertainty after prelaunch failure (retry=%s)',
-    async (retry) => {
-      await ctx.store.createSession({
-        sessionId: 'prelaunch',
-        worktree: '/wt/prelaunch',
-        model: 'm',
-      });
-      const fake = scriptedBackend({ sessionId: 'prelaunch', model: 'm', text: 'done' });
-      const sessionBackend = vi
-        .fn(async () => fake.backend)
-        .mockRejectedValueOnce(new Error('preparation failed'));
-      const conductor = new Conductor({
-        store: ctx.store,
-        backend: fake.backend,
-        worktreeExists: async () => true,
-        sessionBackend,
-      });
-      await expect(conductor.sendTurn('prelaunch', 'first')).rejects.toThrow('preparation failed');
-      if (retry) await conductor.sendTurn('prelaunch', 'retry');
-      expect(await conductor.stopForDeletion('prelaunch', 20)).toBe(true);
-    },
-  );
-
-  it('bounds deletion behind stalled maintenance and refuses queued handoffs permanently', async () => {
-    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
-    const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
-    let release!: () => void;
-    let entered = false;
-    const first = conductor.runBackendHandoff('s-delete', async () => {
-      entered = true;
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    });
-    await waitFor(() => entered);
-    const replacement = vi.fn(async () => undefined);
-    const queued = conductor.runBackendHandoff('s-delete', replacement);
-    const refused = expect(queued).rejects.toBeInstanceOf(SessionBusyError);
-
-    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
-    expect(conductor.isBusy('s-delete')).toBe(true);
-    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(true);
-    await expect(conductor.dispatchTurn('s-delete', 'late prompt')).rejects.toBeInstanceOf(
-      SessionBusyError,
-    );
-    release();
-    await first;
-    await refused;
-    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(false);
-    expect(replacement).not.toHaveBeenCalled();
-    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(true);
-    expect(conductor.isSessionDeleting('s-delete')).toBe(true);
-    await expect(conductor.dispatchTurn('s-delete', 'after cleanup')).rejects.toBeInstanceOf(
-      SessionBusyError,
-    );
-  });
-
-  it('does not treat an abandoned durable marker or failed inspection as proof of termination', async () => {
-    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
-    const { seq } = await ctx.store.appendEvent('s-delete', {
-      t: 'prompt',
-      text: 'running elsewhere',
-    });
-    await ctx.store.markTurnRunning({ sessionId: 's-delete', promptSeq: seq });
-    const conductor = new Conductor({ store: ctx.store, worktreeExists: async () => true });
-    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
-    expect(await ctx.store.listRunningTurns()).toHaveLength(1);
-    const inspect = vi
-      .spyOn(ctx.store, 'listRunningTurns')
-      .mockRejectedValueOnce(new Error('unavailable'));
-    expect(await conductor.stopForDeletion('s-delete', 20)).toBe(false);
-    inspect.mockRestore();
-  });
-
-  it('rejects a turn whose workspace preparation finishes after deletion begins', async () => {
-    await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
-    let release!: () => void;
-    let entered = false;
-    const backend = { run: vi.fn(() => Promise.reject(new Error('must not run'))) };
-    const conductor = new Conductor({
-      store: ctx.store,
-      backend,
-      worktreeExists: async () => true,
-      ensureWorkspace: async () => {
-        entered = true;
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      },
-    });
-    const dispatch = conductor.dispatchTurn('s-delete', 'old prompt');
-    const refused = expect(dispatch).rejects.toBeInstanceOf(SessionBusyError);
-    await waitFor(() => entered);
-    conductor.beginSessionDeletion('s-delete');
-    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(true);
-    release();
-    await refused;
-    expect(conductor.isDeletionWorktreeBusy('s-delete')).toBe(false);
-    expect(backend.run).not.toHaveBeenCalled();
-    expect(conductor.isBusy('s-delete')).toBe(false);
-  });
-
-  it('bounds an unacknowledged worker stop and suppresses a late backend binding', async () => {
-    vi.useFakeTimers();
-    try {
-      await ctx.store.createSession({ sessionId: 's-delete', worktree: '/wt/delete', model: 'm' });
-      let settle!: (result: RunResult) => void;
-      let bind: ((id: string) => void | Promise<void>) | undefined;
-      const runner: RunnerClient = {
-        startTurn: (_opts, hooks) => {
-          bind = hooks.onSession;
-          return {
-            result: new Promise<RunResult>((resolve) => {
-              settle = resolve;
-            }),
-            steer: () => Promise.resolve(false),
-            answerPermission: () => Promise.resolve(false),
-            cancel: () => new Promise<boolean>(() => undefined),
-            forceCancel: () => new Promise<boolean>(() => undefined),
-          };
-        },
-      };
-      const conductor = new Conductor({
-        store: ctx.store,
-        backend: { run: () => Promise.reject(new Error('unexpected loopback')) },
-        worktreeExists: async () => true,
-        runner: () => runner,
-      });
-      await conductor.dispatchTurn('s-delete', 'go');
-      await vi.waitFor(() => expect(bind).toBeDefined());
-      const persist = vi.spyOn(ctx.store, 'upsertSessionBackendState');
-      const stopping = conductor.stopForDeletion('s-delete', 50);
-      await vi.advanceTimersByTimeAsync(50);
-      expect(await stopping).toBe(false);
-      expect(conductor.isBusy('s-delete')).toBe(true);
-      expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(false);
-      await ctx.store.deleteSession('s-delete');
-      await bind!('late-backend-id');
-      expect(persist).not.toHaveBeenCalled();
-      settle({ sessionId: 's-delete', exitCode: 143, stderr: '', aborted: true });
-      await vi.waitFor(() => expect(conductor.isBusy('s-delete')).toBe(false));
-      await vi.waitFor(() =>
-        expect(conductor.isDeletionTerminationConfirmed('s-delete')).toBe(true),
-      );
-      await vi.advanceTimersByTimeAsync(2_000);
-      persist.mockRestore();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });
 
 it('Conductor session deletion admission refuses a fresh start after asynchronous preparation', async () => {

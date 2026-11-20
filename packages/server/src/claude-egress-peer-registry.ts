@@ -3,7 +3,9 @@ import type { Socket } from 'node:net';
 import {
   authenticateClaudeEgressPeer,
   buildClaudeEgressPeerBindings,
+  identifyClaudeEgressPeer,
   type ClaudeEgressPeerBinding,
+  type ClaudeEgressPeerIdentity,
 } from './claude-egress-mtls.js';
 
 /**
@@ -21,6 +23,8 @@ export interface ClaudeEgressPeerRegistry {
    *  property-typed function (not a method) so it can be passed detached as the
    *  gateway's `authenticatePeer`; it closes over the map, so `this` is unused. */
   authenticatePeer: (socket: Socket) => string | undefined;
+  /** Resolve a TLS peer to its sandbox: project and person (ADR 0023 §4). */
+  identifyPeer: (socket: Socket) => ClaudeEgressPeerIdentity | undefined;
   /** Atomically swap in a new binding set. Rejects a binding with an empty
    *  project or a fingerprint bound more than once (the whole update is discarded
    *  on error, so the previous snapshot stays intact). An empty set is valid — it
@@ -40,10 +44,14 @@ export interface ClaudeEgressPeerRegistry {
 export function createClaudeEgressPeerRegistry(
   initial: readonly ClaudeEgressPeerBinding[] = [],
 ): ClaudeEgressPeerRegistry {
-  let projectsByFingerprint: ReadonlyMap<string, string> = buildClaudeEgressPeerBindings(initial);
+  let projectsByFingerprint: ReadonlyMap<string, ClaudeEgressPeerIdentity> =
+    buildClaudeEgressPeerBindings(initial);
   return {
     authenticatePeer(socket): string | undefined {
       return authenticateClaudeEgressPeer(socket, projectsByFingerprint);
+    },
+    identifyPeer(socket): ClaudeEgressPeerIdentity | undefined {
+      return identifyClaudeEgressPeer(socket, projectsByFingerprint);
     },
     replace(bindings): void {
       // Build (and validate) fully before swapping — a throw leaves the prior map.

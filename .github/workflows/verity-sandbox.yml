@@ -62,6 +62,9 @@ on:
       - 'scripts/test-runner-claude-live-container.sh'
       - 'scripts/test-runner-claude-live-recreate.sh'
       - 'scripts/build-runner-worker.mjs'
+      # Builds the spawn broker and Runner supervisor bundles from
+      # features/verity-sandbox-toolkit/src/, which the Feature path above covers.
+      - 'scripts/build-toolkit-bundles.mjs'
       # esbuild substitutes this for `@verity/store`, so its source is INSIDE the
       # worker bundle even though the package it replaces is not. Without it here,
       # a shim change drifts the committed bundle with nothing to notice — and the
@@ -119,7 +122,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
       - id: classify
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -219,7 +222,7 @@ jobs:
       # renovate: datasource=github-actions depName=actions/setup-node
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.13.0'
+          node-version: '26.13.1'
           # Deliberately no `cache: npm`; preserve the Actions cache budget for
           # BuildKit layers used by this much larger image build.
 
@@ -250,6 +253,13 @@ jobs:
             echo "::error::the committed runner worker bundle differs from the one built from packages/session — run 'npm run build:runner-worker' and commit the result"
             exit 1
           fi
+
+      # The spawn broker and the Runner supervisor are boundary binaries the Server
+      # hashes as shipped, built from the modules under features/verity-sandbox-toolkit/src/.
+      # The same reasoning as above: the committed files must be exactly what those
+      # sources build, and `verity-code-review` excludes them on that basis.
+      - name: Committed toolkit bundles match their sources
+        run: npm run check:toolkit-bundles
 
       - name: Build ${{ matrix.architecture }} and load Docker image
         # renovate: datasource=github-actions depName=docker/build-push-action
@@ -299,6 +309,14 @@ jobs:
             tmux -V
             jq --version
             openssl version
+            corepack --version
+            # The install-policy shims hand pnpm/yarn to these commands. Node 26
+            # bundles neither, so they must resolve to the pinned Corepack, and
+            # pnpm must actually start (Corepack fetches it on first use).
+            for PACKAGE_MANAGER in pnpm yarn; do
+              realpath "$(command -v "$PACKAGE_MANAGER")" | grep -q "/.verity-cli/corepack/"
+            done
+            (cd "$(mktemp -d)" && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 pnpm --version)
             echo "::endgroup::"
 
             echo "::group::Agent CLIs — launch --version under a pseudo-terminal"

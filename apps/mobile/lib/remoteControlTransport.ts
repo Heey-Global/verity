@@ -904,21 +904,7 @@ async function directRouteReachable(
     return known.reachable;
   }
   const generation = routeGeneration;
-  let currentProbe = directProbe?.key === key ? directProbe : null;
-  if (currentProbe === null) {
-    const outcome = probeDirect(coreUrl, key).finally(() => {
-      if (directProbe === currentProbe) directProbe = null;
-    });
-    currentProbe = {
-      key,
-      promise: outcome.then((result) => result.reachable),
-      verdict: outcome.then(
-        (result) => result.verdict,
-        (): DirectVerdict => 'unknown',
-      ),
-    };
-    directProbe = currentProbe;
-  }
+  const currentProbe = sharedDirectProbe(coreUrl, key);
   // While a live tunnel carries traffic, look for the direct route without
   // stalling requests on it; the next request after it answers switches back.
   if (known?.reachable === false && active?.key === key) return false;
@@ -929,6 +915,39 @@ async function directRouteReachable(
   if (routeGeneration !== generation)
     return directRouteReachable(coreUrl, key, diagnosticRequestId);
   return directRoute?.key === key ? directRoute.reachable : reachable;
+}
+
+/** Joins the probe in flight for this route, or starts one. */
+function sharedDirectProbe(coreUrl: string, key: string): NonNullable<typeof directProbe> {
+  if (directProbe?.key === key) return directProbe;
+  const outcome = probeDirect(coreUrl, key).finally(() => {
+    if (directProbe === started) directProbe = null;
+  });
+  const started = {
+    key,
+    promise: outcome.then((result) => result.reachable),
+    verdict: outcome.then(
+      (result) => result.verdict,
+      (): DirectVerdict => 'unknown',
+    ),
+  };
+  directProbe = started;
+  return started;
+}
+
+/**
+ * A direct read sent on a remembered route has gone unanswered. The route is
+ * remembered for 30 s after any direct success, so a VPN that went away
+ * within that time leaves reads on an address that no longer answers, with
+ * neither the cold-start verdict nor an Uplink recovery behind them. Probing
+ * again gives the read the same verdict a cold read gets; a reachable answer
+ * leaves a merely slow read alone.
+ */
+export function recheckDirectRoute(url: string): Promise<DirectVerdict> | null {
+  const target = new URL(url);
+  if (target.protocol === 'wss:') target.protocol = 'https:';
+  const key = keyFor(target.origin);
+  return key === null ? null : sharedDirectProbe(target.origin, key).verdict;
 }
 
 async function probeDirect(

@@ -1406,6 +1406,47 @@ describe('direct routing across background and diagnostics', () => {
     expect(mockAdmission).not.toHaveBeenCalled();
   });
 
+  it('reprobes a remembered direct route on recheck and moves later reads to Uplink', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    transport.reportDirectRouteSuccess(coreUrl);
+    mockRequest.mockImplementation(async (...args: unknown[]) => {
+      if (args[6] === 0)
+        throw new Error('Pinned TLS transport failed [NSURLErrorDomain:-1004:NO_AUTH_CHALLENGE]');
+      return { status: 200 };
+    });
+    // The remembered success would otherwise answer from the cache for 30 s.
+    const first = transport.recheckDirectRoute(coreUrl);
+    const joined = transport.recheckDirectRoute(coreUrl);
+    expect(await first).toBe('dead');
+    expect(await joined).toBe('dead');
+    expect(mockRequest.mock.calls.filter((call) => call[6] === 0)).toHaveLength(1);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(4321);
+  });
+
+  it('keeps a remembered direct route that a newer success confirms during the recheck', async () => {
+    const transport =
+      require('./remoteControlTransport') as typeof import('./remoteControlTransport');
+    transport.reportDirectRouteSuccess(coreUrl);
+    let rejectProbe!: (reason: Error) => void;
+    mockRequest.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectProbe = reject;
+        }),
+    );
+    const verdict = transport.recheckDirectRoute(coreUrl);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    transport.reportDirectRouteSuccess(coreUrl);
+    rejectProbe(
+      new Error('Pinned TLS transport failed [NSURLErrorDomain:-1001:NO_AUTH_CHALLENGE]'),
+    );
+    expect(await verdict).toBe('unknown');
+    expect(transport.directRouteKnownReachable(coreUrl)).toBe(true);
+    expect(await transport.remoteControlPortForUrl(coreUrl)).toBe(0);
+    expect(mockAdmission).not.toHaveBeenCalled();
+  });
+
   it('keeps direct recovery when an older direct probe later fails', async () => {
     const transport =
       require('./remoteControlTransport') as typeof import('./remoteControlTransport');

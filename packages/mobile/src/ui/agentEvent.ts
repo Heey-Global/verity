@@ -22,12 +22,15 @@ export interface AgentEventDescriptor {
   /** Optional recovery action rendered by the native transcript row. */
   /** `resend` repeats the operator's last message: the turn never reached the
    *  agent, so asking it to "try again" would lose the request itself. */
-  action?: 'claude-login' | 'tasks' | 'retry' | 'resend';
+  action?: 'claude-login' | 'connect-account' | 'tasks' | 'retry' | 'resend';
   /** Raw failure text for a collapsed "Details" section. Never the headline:
    *  it carries stderr tails, request ids and loader logs. */
   technical?: string;
 }
 
+/** The server's refusal of a turn whose sender has no account of their own for
+ *  the model's provider (ADR 0023 §3). */
+const OWN_ACCOUNT_MISSING = /\bConnect your (Claude|Codex|OpenCode) account in Verity\b/u;
 const CLAUDE_OAUTH_FAILURE = /failed to authenticate:.*oauth.*(?:expired|refresh)/i;
 const LIMIT_REACHED =
   /\b(?:rate limit|too many requests|quota exceeded|(?:limit|quota)\b.{0,40}\b(?:reached|exceeded)|you(?:['’]ve| have) (?:hit your (?:session|usage|weekly)|reached your [\w -]{1,40}) limit)\b/i;
@@ -98,6 +101,18 @@ export function agentEventDescriptor(event: AgentEvent): AgentEventDescriptor {
           detail: 'Try again later or select a different model.',
           tone: 'warning',
         };
+      }
+      {
+        const missing = OWN_ACCOUNT_MISSING.exec(event.message);
+        if (missing) {
+          return {
+            kind: 'account-required',
+            label: `Connect your ${missing[1]!} account`,
+            detail: 'Your messages run on your own account for this model.',
+            tone: 'warning',
+            action: 'connect-account',
+          };
+        }
       }
       if (CLAUDE_OAUTH_FAILURE.test(event.message)) {
         return {

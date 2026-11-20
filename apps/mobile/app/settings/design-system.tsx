@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { InboxCard, VerityHeader } from '../../components/home/HomeInbox';
+import { InboxCard } from '../../components/home/HomeInbox';
 import { SettingsScaffold } from '../../components/settings/SettingsChrome';
 import {
   Button,
@@ -196,11 +196,6 @@ export default function DesignSystemCatalog() {
       <View style={styles.section}>
         <SectionHeader title="Fields" />
         <CaptureField
-          placeholder="Tell Verity… an idea, a mail, an appointment"
-          accessibilityLabel="Tell Verity"
-          onOpen={() => undefined}
-        />
-        <CaptureField
           value={capture}
           onChangeText={setCapture}
           placeholder="Ask or tell Verity anything"
@@ -238,8 +233,7 @@ export default function DesignSystemCatalog() {
       </View>
 
       <View style={styles.section}>
-        <SectionHeader title="Verity on Home" />
-        <VerityHeader summary="1 permission · 1 question · 1 pull request ready" />
+        <SectionHeader title="Inbox on Home" />
         <InboxCard
           item={{
             key: 'catalog-question',

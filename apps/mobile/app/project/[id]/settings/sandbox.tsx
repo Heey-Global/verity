@@ -7,7 +7,7 @@ import {
   PROJECT_IMAGE_REBUILDING_WARNING,
   projectBadge,
   REBUILDING_PROJECT_BADGE,
-  isSecuritySandboxUpdate,
+  sandboxUpdateLastFailure,
   sandboxUpdateSummary,
   usesDevcontainerImage,
   type ProjectRecord,
@@ -149,13 +149,17 @@ function SandboxSection({
   // `false` costs a hidden button rather than a rebuild that silently did
   // nothing (see `healthSchema.imageRebuildSupported`).
   const [rebuildSupported, setRebuildSupported] = useState(false);
+  const [interruptionSupported, setInterruptionSupported] = useState(false);
 
   useEffect(() => {
     let active = true;
     void client
       .getHealth()
       .then((health) => {
-        if (active) setRebuildSupported(health.imageRebuildSupported === true);
+        if (active) {
+          setRebuildSupported(health.imageRebuildSupported === true);
+          setInterruptionSupported(health.sandboxServiceInterruptionSupported === true);
+        }
       })
       .catch(() => {
         if (active) setRebuildSupported(false);
@@ -193,6 +197,7 @@ function SandboxSection({
   // well as labelling it — one source of truth instead of a boolean that has to
   // stay in agreement with the summary next to it.
   const updateSummary = sandboxUpdateSummary(update);
+  const updateFailure = sandboxUpdateLastFailure(update);
   const driftNotice = toolkitDriftNotice(project);
 
   // Same descriptor the overview dot uses, so both surfaces name the container
@@ -263,13 +268,23 @@ function SandboxSection({
   // a `--no-cache` build is minutes long and the more likely of the two to
   // outlive the request that started it.
   const recreate = useCallback(
-    (forceRebuild: boolean, failureMessage: string) => {
+    (
+      forceRebuild: boolean,
+      failureMessage: string,
+      interruptServices = false,
+      cancelTurns = false,
+    ) => {
       const generation = ++recoveryGeneration.current;
       let keepWorkingAfterRecovery = false;
       setWorking(forceRebuild ? 'rebuild' : 'update');
       setError(undefined);
       void client
-        .recreateProjectContainer(project.id, { confirmWarnings: true, forceRebuild })
+        .recreateProjectContainer(project.id, {
+          confirmWarnings: true,
+          forceRebuild,
+          interruptServices,
+          cancelTurns,
+        })
         .then(() => {
           if (recoveryGeneration.current === generation) onReload();
         })
@@ -347,28 +362,26 @@ function SandboxSection({
 
   const runUpdate = useCallback(() => {
     if (!updateSummary || working !== undefined) return;
-    const blocked = update?.turnBlocked === true;
-    // No Update button while a turn holds the update off, and not out of
-    // caution: the Server refuses this recreate for as long as the turn runs
-    // (SBX-1), so the button could only ever produce the 409 the message just
-    // explained. An action that cannot be taken is worse than none — it invites
-    // the operator to read the refusal as a fault.
-    if (blocked) {
+
+    if (update?.turnBlocked && !interruptionSupported) {
       Alert.alert(
-        'Update waiting for a turn',
-        'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.',
+        'Update waiting',
+        'This server does not support updating during activity. Wait for activity to end or update your server.',
       );
       return;
     }
+    const cancelTurns = update?.blockedBy.includes('turn') === true;
     confirm({
-      title: 'Update project?',
-      message: isSecuritySandboxUpdate(update)
-        ? 'This recreates the project sandbox and applies the pending security update.'
-        : 'This recreates the project sandbox and applies the pending update.',
-      confirmLabel: 'Update',
-      onConfirm: () => void recreate(false, 'Could not update project'),
+      title: cancelTurns ? 'Cancel turn and update?' : 'Update sandbox now?',
+      message: cancelTurns
+        ? 'This cancels the running turns in this project. Their current responses may be incomplete. Dev servers and previews will also be briefly interrupted. Dev servers restart automatically; share URLs and PINs stay the same. Verity checks recovery after the update.'
+        : 'Dev servers and previews will be briefly interrupted. Dev servers restart automatically; share URLs and PINs stay the same. Verity checks that services recover after the update.',
+      confirmLabel: cancelTurns ? 'Cancel turn and update' : 'Update now',
+      destructive: cancelTurns,
+      onConfirm: () =>
+        void recreate(false, 'Could not update project', interruptionSupported, cancelTurns),
     });
-  }, [confirm, recreate, update, updateSummary, working]);
+  }, [confirm, interruptionSupported, recreate, update, updateSummary, working]);
 
   // Rebuild image: the escape hatch for a devcontainer change the image cache
   // cannot see. Verity caches the built image under a content hash over the
@@ -473,17 +486,24 @@ function SandboxSection({
                   'available'}
               </Text>
             </View>
-            <View style={styles.selfStart}>
-              <Button
-                label="Update"
-                accessibilityLabel="Update project sandbox"
-                variant="secondary"
-                size="compact"
-                loading={working === 'update'}
-                disabled={working !== undefined}
-                onPress={runUpdate}
-              />
-            </View>
+            {updateFailure ? <Text style={styles.footnote}>{updateFailure}</Text> : null}
+            {update?.state === 'available' || update?.selfRepair === 'stalled' ? (
+              <View style={styles.selfStart}>
+                <Button
+                  label={
+                    interruptionSupported && update?.blockedBy.includes('turn')
+                      ? 'Cancel turn and update'
+                      : 'Update now'
+                  }
+                  accessibilityLabel="Update project sandbox"
+                  variant="secondary"
+                  size="compact"
+                  loading={working === 'update'}
+                  disabled={working !== undefined}
+                  onPress={runUpdate}
+                />
+              </View>
+            ) : null}
           </SettingsPanel>
         </SettingsGroup>
       ) : null}

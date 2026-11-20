@@ -40,7 +40,9 @@ the Uplink review and proposes concrete
 admission messages, paired-ticket lifecycle, bounded byte transport and joint
 acceptance vectors for administrator setup, paired administrator/member access,
 team enrollment and Uplink upgrades of existing pairings. It is not yet a frozen
-contract or an implemented feature.
+contract. Core implements its personal Remote Control part; team enrollment is
+not implemented. See the [team contract v1](protocols/uplink-team-contract-v1.md)
+for current status.
 
 ## Proposed team extension
 

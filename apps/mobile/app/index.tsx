@@ -14,7 +14,9 @@ import { cancelSessionSwitch, markSessionSwitch, sessionSwitchTiming } from '@ve
 import { projectTitle } from '@verity/mobile';
 import { isLinkableSession } from '../lib/sessionLinks';
 import { moveProjectIdToIndex } from '../lib/projectReorder';
+import { createProjectOrderSaver } from '../lib/projectOrderSaver';
 import { SessionDragSlot } from '../components/SessionDragSlot';
+import { ProjectListFooter } from '../components/home/ProjectListFooter';
 import { SessionIssueRef } from '../components/SessionIssueRef';
 import { SwipeableSessionRow } from '../components/SessionRowActions';
 import {
@@ -43,6 +45,7 @@ import {
   sandboxUpdateAlertMessage,
   sandboxUpdateIndicator,
   sandboxUpdateNeedsAttention,
+  sandboxUpdateWaitingLabel,
   sessionBadge,
   attentionNotice,
   attentionNoticeText,
@@ -104,6 +107,7 @@ import {
 } from '../components/useProjectReorder';
 import { ProjectStatusDot } from '../components/ProjectStatusDot';
 import { ServerAttentionBanner, StaleBanner } from '../components/ServerAttentionBanner';
+import { useConnectionRecovered, useHidesConnectionError } from '../hooks/useServerConnection';
 import { UnreadDot } from '../components/UnreadDot';
 import { WorkingDot } from '../components/WorkingDot';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -140,10 +144,9 @@ import {
   KnowledgePaneContext,
   type KnowledgePane,
 } from '../components/knowledge/KnowledgePane';
-import type { KnowledgeScope } from '../components/knowledge/knowledgeScope';
-import { setHomeShowsVerity } from '../lib/homeVerity';
+import { KnowledgeColumn } from '../components/knowledge/KnowledgeBrowser';
+import { SHARED, type KnowledgeScope } from '../components/knowledge/knowledgeScope';
 import { ProjectCard } from '../components/project/ProjectCard';
-import { VerityPage } from '../components/verity/VerityPage';
 import { toneColor } from '../theme/tokens';
 import { useConfirm } from '../components/ui';
 import { tint } from '../components/ui/tint';
@@ -392,7 +395,8 @@ function SessionList({ client }: { client: VerityClient }) {
     projectListState,
     sessions,
   ]);
-  // The order a drop chose, applied until a poll confirms the server has it.
+  const newDesign = useNewDesign();
+  // Retain a dropped order until a poll confirms the server has it.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const orderedGroups = useMemo(() => applyProjectOrder(groups, dragOrder), [groups, dragOrder]);
   const liveActiveGroups = useMemo(
@@ -411,33 +415,29 @@ function SessionList({ client }: { client: VerityClient }) {
     () => liveActiveGroups.flatMap((group) => (isReorderableGroup(group) ? [group.id] : [])),
     [liveActiveGroups],
   );
-  // Saves run one after another: a second drag may start while the first is
-  // still saving, and two requests in flight could land in either order.
-  const reorderSave = useRef(Promise.resolve());
-  const onDropProject = useCallback(
-    (order: readonly string[]) => {
-      // The drag saw the rows as they were at pickup; a poll since then may have
-      // added or removed a project. Save the live set, in the dropped order, with
-      // anything the drag never saw appended where a new project lands anyway.
-      const dropped = new Set(order);
-      const ids = [
-        ...order.filter((id) => sortableGroupIds.includes(id)),
-        ...sortableGroupIds.filter((id) => !dropped.has(id)),
-      ];
-      if (ids.every((id, i) => id === sortableGroupIds[i])) return;
-      setDragOrder(ids);
-      reorderSave.current = reorderSave.current
-        .then(() => client.reorderProjects(ids))
-        .then(() => refreshProjects())
-        .catch((caught) => {
+  const liveSortableIds = useRef(sortableGroupIds);
+  liveSortableIds.current = sortableGroupIds;
+  const saveProjectOrder = useMemo(
+    () =>
+      createProjectOrderSaver({
+        getOrder: () => liveSortableIds.current,
+        save: (ids) => client.reorderProjects(ids),
+        refresh: refreshProjects,
+        onChange: setDragOrder,
+        onError: (caught) => {
           Alert.alert(
             'Reorder failed',
             caught instanceof VerityApiError ? caught.message : 'Could not save project order.',
           );
-          setDragOrder((current) => (current === ids ? null : current));
-        });
+        },
+      }),
+    [client, refreshProjects],
+  );
+  const onDropProject = useCallback(
+    (order: readonly string[]) => {
+      void saveProjectOrder(order);
     },
-    [client, refreshProjects, sortableGroupIds],
+    [saveProjectOrder],
   );
   const sessionOrders = useMemo(
     () =>
@@ -462,7 +462,13 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [orderedGroups, reorderSessions],
   );
+  // A wide project page hides the list; on a phone it opens its own route.
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  const [homeTab, setHomeTab] = useState<HomeTab>('home');
+  const projectListVisible =
+    !newDesign || (homeTab === 'projects' && (!wide || openProjectId === null));
   const reorder = useProjectReorder({
+    enabled: projectListVisible,
     order: liveActiveGroupIds,
     sortable: sortableGroupIds,
     onDrop: onDropProject,
@@ -698,19 +704,9 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [client, refresh, refreshProjects],
   );
-  // The new design preview (Settings › This app): Home beside the project list.
-  // Off, the overview below renders exactly as it always has.
-  const newDesign = useNewDesign();
-  // The project page shown in the wide layout's left column (new design only).
-  // On a phone the page is its own route.
-  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
-  const [homeTab, setHomeTab] = useState<HomeTab>('home');
-  // On a phone, Home's own header and "Tell Verity" are the way to Verity there.
-  const homeShowsVerity = newDesign && !wide && homeTab === 'home';
   useEffect(() => {
-    setHomeShowsVerity(homeShowsVerity);
-    return () => setHomeShowsVerity(false);
-  }, [homeShowsVerity]);
+    if (!projectListVisible) reorder.cancel();
+  }, [projectListVisible, reorder.cancel]);
   const openProject = useCallback(
     (projectId: string) => {
       if (!wide) {
@@ -723,28 +719,17 @@ function SessionList({ client }: { client: VerityClient }) {
     [wide],
   );
   // `/project/[id]` hands a wide screen over to this column with a `project` param.
-  const { project: projectParam, verity: verityParam } = useLocalSearchParams<{
-    project?: string;
-    verity?: string;
-  }>();
-  // Verity's page in the wide layout's left column, in place of Home. On a phone
-  // it is its own route.
-  const [verityOpen, setVerityOpen] = useState(false);
-  const openVerity = useCallback(() => {
+  const { project: projectParam } = useLocalSearchParams<{ project?: string }>();
+  // Shared knowledge from Home's last row: in the wide layout's left column, in
+  // place of Home, so a page opens beside it; on a phone its own route.
+  const [sharedOpen, setSharedOpen] = useState(false);
+  const openSharedKnowledge = useCallback(() => {
     if (!wide) {
-      router.push('/verity');
+      router.push('/settings/shared-knowledge');
       return;
     }
-    setVerityOpen(true);
-    setHomeTab('home');
+    setSharedOpen(true);
   }, [wide]);
-  // `/verity` hands a wide screen over to this column with a `verity` param.
-  useEffect(() => {
-    if (!verityParam || !newDesign) return;
-    setVerityOpen(true);
-    setHomeTab('home');
-    router.setParams({ verity: undefined });
-  }, [verityParam, newDesign]);
   useEffect(() => {
     if (!projectParam || !newDesign) return;
     setOpenProjectId(projectParam);
@@ -758,9 +743,9 @@ function SessionList({ client }: { client: VerityClient }) {
       tab: homeTab,
       setTab: setHomeTab,
       projectOpen: wide && openProjectId !== null,
-      verityOpen: wide && verityOpen,
+      sharedKnowledgeOpen: wide && sharedOpen,
       closeProject: () => setOpenProjectId(null),
-      closeVerity: () => setVerityOpen(false),
+      closeSharedKnowledge: () => setSharedOpen(false),
       scrollProjects: () =>
         (reorder.listRef.current as FlatList | null)?.scrollToOffset({ offset: 0, animated: true }),
       scrollHome: () => homeScrollRef.current?.scrollTo({ y: 0, animated: true }),
@@ -801,7 +786,7 @@ function SessionList({ client }: { client: VerityClient }) {
       Alert.alert(
         // "Retry" is a claim about history and only one of these two has any:
         // a blocked update has never been attempted, it has been held back.
-        update.turnBlocked ? 'Update waiting for a turn' : 'Retry sandbox update?',
+        update.turnBlocked ? sandboxUpdateWaitingLabel(update) : 'Retry sandbox update?',
         sandboxUpdateAlertMessage(project, update),
         // Dismiss-only while the turn holds it off. `updateProjectSandbox` posts
         // the same recreate the Server refuses for as long as a turn is running
@@ -877,9 +862,12 @@ function SessionList({ client }: { client: VerityClient }) {
             reorder={reorder}
             renderedOrder={activeGroupIds}
             sortable={isReorderableGroup(item)}
+            sortableIds={sortableGroupIds}
+            onMove={onDropProject}
             floating={floating}
             reordering={draggingAnything}
-            expanded={draggingProjectId === null && !collapsed}
+            movingProjects={draggingProjectId !== null}
+            expanded={!collapsed}
             onOpen={pageId !== undefined ? () => openProject(pageId) : undefined}
             onToggle={() => toggleProjectGroup(item, collapsed)}
             onOpenSession={openSessionFromHome}
@@ -925,6 +913,8 @@ function SessionList({ client }: { client: VerityClient }) {
     },
     [
       activeGroupIds,
+      sortableGroupIds,
+      onDropProject,
       overviewLayoutRevision,
       collapsedOverride,
       toggleProjectGroup,
@@ -984,6 +974,13 @@ function SessionList({ client }: { client: VerityClient }) {
       setRefreshingOverview(false);
     }
   }, [refresh, refreshProjects]);
+  // The header's connection bar owns a server update or outage: the lists say
+  // nothing of their own about it and reload as soon as the server is back.
+  useConnectionRecovered(() => {
+    void Promise.allSettled([refresh({ silent: true }), refreshProjects()]);
+  });
+  const hidesSessionsError = useHidesConnectionError(error);
+  const hidesProjectsError = useHidesConnectionError(projectsError);
 
   // Delete is destructive + irreversible (drops history, removes the worktree),
   // so confirm with a native alert before firing. The optimistic removal + any
@@ -1048,119 +1045,109 @@ function SessionList({ client }: { client: VerityClient }) {
       {/* Above the stale banner on purpose: a poll that failed is a symptom, and
           this is the Server telling us the cause. */}
       {serverAttention ? <ServerAttentionBanner notice={serverAttention} /> : null}
-      {error && sessions.length > 0 ? <StaleBanner message={error} onRetry={refresh} /> : null}
-      {projectsError ? (
+      {error && sessions.length > 0 && !hidesSessionsError ? (
+        <StaleBanner message={error} onRetry={refresh} />
+      ) : null}
+      {projectsError && !hidesProjectsError ? (
         <StaleBanner message={`Projects: ${projectsError}`} onRetry={refreshProjects} />
       ) : null}
-      <GestureDetector gesture={reorder.gesture}>
-        <Reanimated.View
-          ref={reorder.hostRef}
-          collapsable={false}
-          style={styles.flex}
-          onLayout={(event) => reorder.onViewportLayout(event.nativeEvent.layout.height)}
-        >
-          <ProjectOverviewList
-            listRef={reorder.listRef}
-            onContentSizeChange={reorder.onContentSizeChange}
-            onScroll={reorder.onScroll}
-            scrollEventThrottle={16}
-            draggingProjectId={draggingProjectId ?? draggingSessionId}
-            refreshing={refreshingOverview}
-            onRefresh={onRefreshOverview}
-            data={activeGroups}
-            extraData={collapsedOverride}
-            keyExtractor={(g) => g.id}
-            renderItem={renderItem}
-            contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
-            ItemSeparatorComponent={GroupSeparator}
-            ListEmptyComponent={
-              pausedGroups.length === 0 ? (
-                <View style={styles.emptyOverview}>
-                  {projectsLoading ? <ActivityIndicator /> : null}
-                  <Text style={styles.emptyTitle}>
-                    {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
-                  </Text>
-                  <Text style={styles.emptySubtitle}>
-                    Add a repository from GitHub or Forgejo, or create a local project to get
-                    started.
-                  </Text>
-                  {!projectsLoading ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Add your first project"
-                      onPress={() => router.push('/new-project')}
-                      style={({ pressed }) => [
-                        styles.emptyAction,
-                        pressed ? styles.rowPressed : null,
-                      ]}
-                    >
-                      <Text style={styles.emptyActionLabel}>Add your first project</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-              ) : null
-            }
-            ListFooterComponent={
-              <>
-                {pausedGroups.length > 0 ? (
-                  <View style={styles.pausedSection}>
-                    <View style={styles.sectionHeaderRow}>
-                      <Text style={styles.sectionHeader}>Paused</Text>
-                      <Text style={styles.pausedCount}>{pausedGroups.length}</Text>
-                    </View>
-                    <View style={styles.pausedList}>
-                      {pausedGroups.map((group) => (
-                        <Fragment key={group.id}>{renderGroup(group)}</Fragment>
-                      ))}
-                    </View>
-                  </View>
+      <Reanimated.View
+        ref={reorder.hostRef}
+        collapsable={false}
+        style={styles.flex}
+        onLayout={(event) => reorder.onViewportLayout(event.nativeEvent.layout.height)}
+      >
+        <ProjectOverviewList
+          settleAfterDrag={!newDesign}
+          listRef={reorder.listRef}
+          onContentSizeChange={reorder.onContentSizeChange}
+          onScroll={reorder.onScroll}
+          scrollEventThrottle={16}
+          draggingProjectId={draggingProjectId ?? draggingSessionId}
+          refreshing={refreshingOverview}
+          onRefresh={onRefreshOverview}
+          data={activeGroups}
+          extraData={collapsedOverride}
+          keyExtractor={(g) => g.id}
+          renderItem={renderItem}
+          contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 16 }]}
+          ItemSeparatorComponent={GroupSeparator}
+          ListEmptyComponent={
+            pausedGroups.length === 0 ? (
+              <View style={styles.emptyOverview}>
+                {projectsLoading ? <ActivityIndicator /> : null}
+                <Text style={styles.emptyTitle}>
+                  {projectsLoading ? 'Loading projects' : 'Welcome to Verity'}
+                </Text>
+                <Text style={styles.emptySubtitle}>
+                  Add a repository from GitHub or Forgejo, or create a local project to get started.
+                </Text>
+                {!projectsLoading ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Add your first project"
+                    onPress={() => router.push('/new-project')}
+                    style={({ pressed }) => [
+                      styles.emptyAction,
+                      pressed ? styles.rowPressed : null,
+                    ]}
+                  >
+                    <Text style={styles.emptyActionLabel}>Add your first project</Text>
+                  </Pressable>
                 ) : null}
-              </>
-            }
-          />
-          {floatingSession && reorder.sessionDragToken !== null ? (
-            <Reanimated.View
-              pointerEvents="none"
-              accessibilityElementsHidden
-              importantForAccessibility="no-hide-descendants"
-              key={reorder.sessionDragToken}
-              onLayout={() => {
-                if (reorder.sessionDragToken !== null)
-                  reorder.confirmSessionOverlay(reorder.sessionDragToken);
-              }}
-              style={[reorder.overlayStyle, styles.sessionDragOverlay]}
-            >
-              <SessionRow
-                session={floatingSession}
-                onRename={() => {}}
-                onToggleFavorite={() => {}}
-                onDelete={() => {}}
-                unread={unread.has(floatingSession.sessionId)}
-                previewActive={previewUrls.has(floatingSession.sessionId)}
-                previewPublic={publicPreviews.has(floatingSession.sessionId)}
-                previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
-                repo={floatingSessionGroup?.repo}
-                selected={selectedId === floatingSession.sessionId}
-                floating
-              />
-            </Reanimated.View>
-          ) : null}
-          {draggingProjectId !== null ? (
-            <Reanimated.View
-              pointerEvents="none"
-              accessibilityElementsHidden
-              importantForAccessibility="no-hide-descendants"
-              style={reorder.overlayStyle}
-            >
-              {activeGroups
-                .filter((group) => group.id === draggingProjectId)
-                .map((group) => (
-                  <Fragment key={group.id}>{renderGroup(group, true)}</Fragment>
-                ))}
-            </Reanimated.View>
-          ) : null}
-        </Reanimated.View>
-      </GestureDetector>
+              </View>
+            ) : null
+          }
+          ListFooterComponent={
+            <ProjectListFooter
+              pausedGroups={pausedGroups}
+              renderGroup={renderGroup}
+              styles={styles}
+            />
+          }
+        />
+        {floatingSession && reorder.sessionDragToken !== null ? (
+          <Reanimated.View
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            key={reorder.sessionDragToken}
+            onLayout={() => {
+              if (reorder.sessionDragToken !== null)
+                reorder.confirmSessionOverlay(reorder.sessionDragToken);
+            }}
+            style={[reorder.overlayStyle, styles.sessionDragOverlay]}
+          >
+            <SessionRow
+              session={floatingSession}
+              onRename={() => {}}
+              onToggleFavorite={() => {}}
+              onDelete={() => {}}
+              unread={unread.has(floatingSession.sessionId)}
+              previewActive={previewUrls.has(floatingSession.sessionId)}
+              previewPublic={publicPreviews.has(floatingSession.sessionId)}
+              previewUrl={previewUrls.get(floatingSession.sessionId) ?? null}
+              repo={floatingSessionGroup?.repo}
+              selected={selectedId === floatingSession.sessionId}
+              floating
+            />
+          </Reanimated.View>
+        ) : null}
+        {draggingProjectId !== null ? (
+          <Reanimated.View
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={reorder.overlayStyle}
+          >
+            {activeGroups
+              .filter((group) => group.id === draggingProjectId)
+              .map((group) => (
+                <Fragment key={group.id}>{renderGroup(group, true)}</Fragment>
+              ))}
+          </Reanimated.View>
+        ) : null}
+      </Reanimated.View>
       {renaming && client && (
         <SessionSettingsDialog
           key={renaming.sessionId}
@@ -1237,14 +1224,18 @@ function SessionList({ client }: { client: VerityClient }) {
     <View style={styles.flex}>
       {/* Both stay mounted so switching keeps scroll positions and Home's count
           stays current while the project list is open. */}
-      {/* Home stays mounted under Verity's page, so its count keeps up. */}
-      {wide && verityOpen && homeTab === 'home' ? (
-        <VerityPage client={client} onBack={() => setVerityOpen(false)} />
+      {/* Home stays mounted under Shared knowledge, so its count keeps up. */}
+      {wide && sharedOpen && homeTab === 'home' ? (
+        <KnowledgeColumn
+          client={client}
+          scope={SHARED}
+          exit={{ label: 'Home', onPress: () => setSharedOpen(false) }}
+        />
       ) : null}
       <View
         style={[
           styles.flex,
-          homeTab === 'home' && !(wide && verityOpen) ? null : styles.hiddenPane,
+          homeTab === 'home' && !(wide && sharedOpen) ? null : styles.hiddenPane,
         ]}
       >
         <HomeInbox
@@ -1254,12 +1245,17 @@ function SessionList({ client }: { client: VerityClient }) {
           projects={projects}
           selectedSessionId={wide ? selectedId : null}
           refreshing={refreshingOverview}
+          layoutRevision={overviewLayoutRevision}
           onRefresh={() => void onRefreshOverview()}
+          onSessionChanged={(sessionId, deleted) => {
+            if (deleted && selectedId === sessionId) setSelectedId(null);
+            void refresh({ silent: true });
+          }}
           onOpenSession={openSessionFromHome}
           onOpenProject={wide ? openProject : undefined}
           onRepairProject={repairFromHome}
           onCountChange={setHomeCount}
-          onOpenVerity={openVerity}
+          onOpenSharedKnowledge={openSharedKnowledge}
         />
       </View>
       <View style={[styles.flex, homeTab === 'projects' ? null : styles.hiddenPane]}>
@@ -1279,6 +1275,16 @@ function SessionList({ client }: { client: VerityClient }) {
     master
   );
 
+  // iOS cannot bind a recognizer to a display:none native subtree. Keep its
+  // host mounted outside the tab/page panes, even while Projects is hidden.
+  const gestureSidebar = (
+    <GestureDetector gesture={reorder.gesture}>
+      <View collapsable={false} style={styles.flex}>
+        {sidebar}
+      </View>
+    </GestureDetector>
+  );
+
   finishHomeWork();
   if (!wide)
     return (
@@ -1289,7 +1295,7 @@ function SessionList({ client }: { client: VerityClient }) {
             phone, so they never show it. */}
         <View style={styles.flex}>
           <ProviderUsageStrip rows={providerLimitRows} />
-          {sidebar}
+          {gestureSidebar}
           {confirmSheet}
         </View>
       </SchedulingDiagnostics>
@@ -1299,7 +1305,7 @@ function SessionList({ client }: { client: VerityClient }) {
     <KnowledgePaneContext.Provider value={knowledgePane}>
       <View style={styles.splitRow}>
         <View style={[styles.leftPane, { width: sidebarWidth }]}>
-          <SchedulingDiagnostics stage="sidebar">{sidebar}</SchedulingDiagnostics>
+          <SchedulingDiagnostics stage="sidebar">{gestureSidebar}</SchedulingDiagnostics>
           {confirmSheet}
         </View>
         <View style={styles.rightPane}>

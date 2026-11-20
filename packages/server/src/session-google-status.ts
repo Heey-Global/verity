@@ -9,14 +9,16 @@ import {
 export async function sessionGoogleStatus(
   store: Pick<EventStore, 'googleAccounts' | 'getSessionWorkspaceFile'>,
   sessionId: string,
+  /** The viewing person: "connected" and the effective account are theirs only. */
+  userId: string | undefined,
 ) {
   if (!store.googleAccounts) return undefined;
-  const accounts = await store.googleAccounts.list();
+  const accounts = userId === undefined ? [] : await store.googleAccounts.list(userId);
   const connection = async (
     service: 'gmail' | 'calendar' | 'contacts',
     eligible: (scopes: string[]) => boolean,
   ) => {
-    const effective = await store.googleAccounts.effectiveAccess(sessionId, service);
+    const effective = await store.googleAccounts.effectiveAccess(sessionId, service, userId);
     const access = await store.googleAccounts.sessionAccess(sessionId, service);
     return {
       enabled: effective !== undefined && eligible(effective.account.scopes),

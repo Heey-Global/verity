@@ -187,6 +187,36 @@ describe('locked CLI installation', () => {
     ).toBe('1.0.0');
   });
 
+  it('fills only missing corepack commands and keeps ones the image already provides', () => {
+    const item = fixture();
+    const bundle = path.join(path.dirname(source), 'corepack');
+    rmSync(bundle, { recursive: true, force: true });
+    cpSync(source, bundle, { recursive: true });
+    const command = path.join(item.prefix, 'bin/verity-test-cli');
+    // A base image's own package manager must survive: replacing it would quietly
+    // switch every project in the image to a different Yarn or pnpm.
+    const existing = path.join(item.prefix, 'shim/verity-test-cli');
+    writeFileSync(existing, '#!/bin/sh\necho image\n');
+    chmodSync(existing, 0o755);
+    const kept = item.run(undefined, 'corepack');
+    expect(kept.status, kept.stderr).toBe(0);
+    expect(kept.stdout).toContain('Keeping the existing verity-test-cli command');
+    expect(existsSync(command)).toBe(false);
+    const reused = item.run(undefined, 'corepack');
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(reused.stdout).toContain('Reusing verified CLI');
+    // Without an existing command the bundle supplies it, and a repeat run must
+    // not mistake its own link for one the image provides.
+    rmSync(existing);
+    const filled = item.run(undefined, 'corepack');
+    expect(filled.status, filled.stderr).toBe(0);
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('1.0.0');
+    const repeat = item.run(undefined, 'corepack');
+    expect(repeat.status, repeat.stderr).toBe(0);
+    expect(repeat.stdout).toContain('Reusing verified CLI');
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('1.0.0');
+  });
+
   it('rejects modified tarballs before exposing a CLI', () => {
     const item = fixture();
     copyFileSync(tarballs['2.0.0']!, item.tarball);

@@ -1,4 +1,6 @@
 import { QA_ANALYSIS_SYSTEM_PROMPT } from '@verity/events';
+import type { ConductorDeps } from './conductor-deps.js';
+export type { ConductorDeps } from './conductor-deps.js';
 import {
   ASSISTANT_SYSTEM_PROMPT,
   KNOWLEDGE_CONTEXT_INSTRUCTIONS,
@@ -39,15 +41,13 @@ const WIKI_MAINTENANCE_DISALLOWED_TOOLS = [
   'EnterPlanMode',
 ] as const;
 import type {
-  EventStore,
   PlanningConsent,
   QueuedTurnOpts,
   RunningTurnRecord,
   SessionRecord,
-  TranscriptStore,
 } from '@verity/store';
-import type { EventBus } from './bus.js';
 import { AcpClaudeBackend } from './acp-claude-backend.js';
+import { BACKGROUND_HOLD_MAX_MS, BACKGROUND_HOLD_TASK_ID } from './background-work.js';
 import { brokeredGrantChannel, type Backend, type BrokeredGrantChannel } from './backend.js';
 import { isCodexModel } from './codex-model.js';
 import { cleanupTurnImageAttachments, materializeFileAttachments } from './file-attachments.js';
@@ -61,11 +61,7 @@ import {
   sanitizeTitle,
 } from './session-title.js';
 import { buildVisibleMediaRepairEvent } from './visible-media-repair.js';
-import {
-  brokeredGrantTarget,
-  brokeredGrantToolName,
-  type BrokeredGrantToolName,
-} from './brokered-grants.js';
+import { brokeredGrantTarget, brokeredGrantToolName } from './brokered-grants.js';
 export {
   brokeredGrantTarget,
   brokeredGrantToolName,
@@ -76,14 +72,12 @@ import {
   isUsageLimitError,
   type RunResult,
   type RunTurnOptions,
-  type Spawner,
   type SteerMessage,
 } from './backend-contract.js';
 import {
   LoopbackRunnerClient,
   type RunnerAttachTarget,
   type RunnerClientFactory,
-  type RunnerRecovery,
   type RunnerRecoveryOutcome,
   type RunnerTurn,
 } from './runner-contract.js';
@@ -131,10 +125,30 @@ const TURN_LIVENESS_IDLE_SWEEPS = 10;
  * bound also covers a worker that is alive but no longer scheduling its turn.
  * 6 × 5 minutes = 30 minutes. An uncertain probe never contributes. */
 const TURN_LIVENESS_STALLED_WINDOWS = 6;
+/** The same bound for a turn its backend holds open for background work (the
+ * hold marker in `background-work.ts`). Such a turn is legitimately silent while
+ * a background command or monitor runs, up to the hold limit; two more windows
+ * let the backend's own limit fire first, so this only catches a backend that
+ * failed to end its hold. */
+const TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS =
+  Math.ceil(BACKGROUND_HOLD_MAX_MS / (TURN_LIVENESS_SWEEP_MS * TURN_LIVENESS_IDLE_SWEEPS)) + 2;
 /** Transcript wording when the probe confirms an in-flight turn's Runner is gone. */
 const DEAD_RUNNER_NOTICE =
   'The Runner executing this turn is gone — Verity stopped waiting and released the ' +
   'session. Any work it had already reported is above; send the message again to continue.';
+/** Added when the lost turn still had background tasks open: the commands or
+ * monitors the agent was waiting for ended with its Runner, so their results and
+ * the follow-up the agent announced will not arrive. */
+const BACKGROUND_WORK_LOST_NOTICE =
+  'Background work this turn was still running (commands or monitors the agent was ' +
+  'waiting for) ended with it; its results and any follow-up the agent announced will ' +
+  'not arrive.';
+/** The stall release for a turn its backend held for background work: it already
+ * outlived the hold limit, so "half an hour" would misstate what happened. */
+const STALLED_HELD_RUNNER_NOTICE =
+  'The Runner executing this turn kept it open for background work beyond the hold ' +
+  'limit and then stopped responding — Verity stopped waiting and released the session. ' +
+  BACKGROUND_WORK_LOST_NOTICE;
 const STALLED_RUNNER_NOTICE =
   'The Runner executing this turn is still alive but has produced nothing for half ' +
   'an hour — Verity stopped waiting and released the session. Send the message ' +
@@ -287,6 +301,11 @@ class SessionTurnHandle implements RunnerTurn {
    * backend has been resolved, which is fail-closed at both readers: no
    * auto-approval, and no grant persisted. */
   grantChannel: BrokeredGrantChannel | undefined;
+  /** The local user this turn runs for (ADR 0023 §2), fixed when the turn is
+   * accepted and never changed by a later prompt, steer or queue drain. Every
+   * credential the turn uses is selected for this user; undefined means the turn
+   * has no personal identity and must not receive personal credentials. */
+  initiatedBy: { readonly userId: string } | undefined;
   /** Which settle path owns this turn's terminal writes + release: the turn's own
    * run loop (`'run'`) or the stop watchdog's force-settle (`'force'`). Claimed
    * SYNCHRONOUSLY before any terminal side effect, so exactly one owner ever
@@ -471,249 +490,17 @@ export interface TurnPreparationContext {
    * and otherwise fail as fast as it always did.
    */
   readonly canWait: boolean;
+  /** The local user the turn runs for, from the durable prompt provenance. A
+   * resolver selects personal credentials (AI provider, MCP, Google, GitHub)
+   * for this user only; when it is undefined it selects none of them rather
+   * than falling back to anyone else's. */
+  readonly initiatedBy: { readonly userId: string } | undefined;
   /** Report — once per resolution; later calls are ignored — that the turn is
    *  blocked on a dependency being made ready. Writes the message to the transcript
    *  and parks the session on `awaiting_dependency` until preparation settles.
    *  Fire-and-forget: the conductor owns ordering, so the caller awaits nothing.
    *  A no-op when {@link canWait} is false. */
   waitingOn(message: string): void;
-}
-
-export interface ConductorDeps {
-  /** Project migrations run before claiming a turn, so no live backend sees a replaced path. */
-  prepareSession?: ((sessionId: string) => Promise<void>) | undefined;
-  /** Filesystem preparation and publication, awaited while the turn owns its session. */
-  ensureWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
-  prepareWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
-  settleWorkspace?: ((session: SessionRecord) => Promise<void>) | undefined;
-  store: EventStore;
-  /** A session changed in a way no event records: it started or stopped
-   * working, or received an automatic name. Lets live overviews refresh the row.
-   * Must not throw; called synchronously. */
-  onSessionChanged?: ((sessionId: string, change: 'activity' | 'name') => void) | undefined;
-  /** Server-resolved scoped Instructions/Memory; never selected by request options. */
-  agentContext?:
-    | ((
-        session: SessionRecord,
-        initiatedBy?: { userId: string },
-      ) => Promise<{ fingerprint: string; prompt: string; compact?: boolean }>)
-    | undefined;
-  /** Project overview.md contents for a fresh backend context. */
-  projectOverview?: ((projectId: string) => Promise<string | undefined>) | undefined;
-  /** Bounded decision references refreshed on every turn, including resumed contexts. */
-  projectDecisionDirectory?: ((projectId: string) => Promise<string>) | undefined;
-  /** Durable Verity-owned system context selected from the persisted session.
-   * Evaluated whenever a fresh backend context starts, so an empty session can
-   * receive hidden capabilities on its first real turn without a synthetic turn. */
-  sessionSystemPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
-  /** The "Assigned tasks" section for a session (docs/TASKS_AND_QUICK_CAPTURE_CONCEPT.md
-   * §6.2). Rebuilt on EVERY turn, resumed contexts included, so compaction or a
-   * backend switch cannot lose the list; empty when nothing is assigned. */
-  assignedTasksPrompt?: ((session: SessionRecord) => string | Promise<string>) | undefined;
-  /** Secret alias NAMES eligible for `verity_http_request` / `verity_secret_run` in a
-   * project (ADR 0011 D3); best-effort — failures or absence simply omit the list from
-   * the turn context. Backend-independent: the names reach every ACP backend that can
-   * call those tools over the MCP gateway. */
-  brokeredSecretAliases?: ((projectId: string) => Promise<readonly string[]>) | undefined;
-  /** ADR 0011 D2: does a persisted grant cover this (project, session, alias, tool, target)?
-   * True auto-approves the brokered-secret prompt without operator interaction.
-   * `channel` is the transport this prompt arrived on (ADR 0014 D3); the store applies
-   * the ACP ceiling to it. */
-  checkBrokeredHttpGrant?:
-    | ((input: {
-        projectId: string;
-        sessionId: string;
-        secretAlias: string;
-        toolName: BrokeredGrantToolName;
-        target: string;
-        channel: BrokeredGrantChannel;
-        bindingId?: string;
-      }) => Promise<boolean>)
-    | undefined;
-  /** ADR 0011 D2: persist a scoped brokered-secret grant after an operator allow.
-   * `channel` records which transport the operator answered on, so a decision made on
-   * one never auto-approves the other (ADR 0014 D3). */
-  persistBrokeredHttpGrant?:
-    | ((input: {
-        projectId: string;
-        sessionId: string;
-        secretAlias: string;
-        toolName: BrokeredGrantToolName;
-        target: string;
-        scope: 'session' | 'project' | 'forever';
-        channel: BrokeredGrantChannel;
-        bindingId?: string;
-      }) => Promise<void>)
-    | undefined;
-  /** Fan-out bus threaded into each turn's runner (M3-2). */
-  bus?: EventBus | undefined;
-  /** Verbatim transcript store; restored before resume, tailed during the turn. */
-  transcript?: TranscriptStore | undefined;
-  /**
-   * Stage 5b Slice 2: when true, the SERVER owns verbatim transcript persistence
-   * over the runner-runtime path (restore-before-resume + tail-into-DB), so the
-   * per-turn `opts.transcript` is OMITTED from the runner — the in-sandbox worker
-   * needs no database and the supervisor guard stays fail-closed. Default/false
-   * keeps passing `opts.transcript` exactly as today (in-process persistence).
-   */
-  serverManagedTranscript?: boolean | undefined;
-  /**
-   * Remove the transcript files of a backend this session has just switched AWAY from.
-   *
-   * Binding a session to a new backend drops the previous backend's
-   * `session_backend_state` row, and that row was the only thing naming its files on
-   * the runner runtime — so without this hook they outlive every future delete of the
-   * session. Losing them costs nothing: the conversation is in `events`, and the files
-   * are materialized back out of it on resume.
-   *
-   * Awaited by the bind that displaced the rows, so the purge cannot outlive the turn
-   * that caused it — but never allowed to fail it, and never for longer than
-   * {@link BACKEND_ARTIFACT_PURGE_TIMEOUT_MS}. It runs only when a bind actually
-   * displaced another backend, which is an operator switching model, so the directory
-   * walk behind it (`codexRolloutFiles` over the runtime's rollout archive) is paid at
-   * human frequency and not on the hot path of a turn.
-   *
-   * Two neighbouring paths that also drop a binding row do NOT call this, on purpose:
-   *
-   *  - A re-bind under the SAME backend (a codex thread that comes back with a new id)
-   *    displaces nothing, so the hook is never invoked and the previous id's rollouts
-   *    are left. They are collected by the startup sweep once that id stops being live.
-   *  - {@link clearBackendSessionState} drops the row on a stale resume — the backend
-   *    has just answered that the conversation or rollout does not exist, so there is
-   *    nothing on disk for a purge to find, and the retry immediately re-binds the same
-   *    backend. For claude the discarded id's files, if any survived, sit in the
-   *    session's own `projects/<encoded-cwd>` directory, which the sweep keeps whole
-   *    while the session lives and collects whole once it is deleted.
-   *
-   * Omit on deployments with no runner runtime, where there are no such files.
-   */
-  purgeBackendArtifacts?:
-    | ((
-        sessionId: string,
-        bindings: readonly { backend: string; backendSessionId: string }[],
-      ) => Promise<void>)
-    | undefined;
-  /** Claude home for transcript-path resolution; defaults to the runner's `~/.claude`. */
-  claudeHome?: string | undefined;
-  /** Spawn seam; tests inject a fake. Defaults to the runner's real spawner. */
-  spawner?: Spawner | undefined;
-  /** Default backend each turn runs through (ADR 0001 / #143). Defaults to
-   * {@link AcpClaudeBackend} (Claude over ACP, ADR 0012); inject to route turns
-   * elsewhere. */
-  backend?: Backend | undefined;
-  /** Optional second backend for provider-qualified models (`providerID/modelID`,
-   * e.g. `deepinfra/…`) — the OpenCode backend (#143). When set, such turns route
-   * here; Claude and any non-qualified model stays on {@link ConductorDeps.backend}. */
-  openCodeBackend?: Backend | undefined;
-  /** Optional Codex CLI backend. Models with the explicit `codex/` prefix route here. */
-  codexBackend?: Backend | undefined;
-  /** Optional per-session backend wrapper. Used by the multi-repo fleet path:
-   * sessions bound to a project run in that project's container, while the
-   * model string still chooses the inner Claude/OpenCode backend first. */
-  sessionBackend?:
-    | ((
-        session: SessionRecord,
-        selected: Backend,
-        preparation: TurnPreparationContext,
-      ) => Promise<Backend | undefined>)
-    | undefined;
-  /** Optional wrapper for stateless queries, which have no session record and
-   * therefore cannot use {@link sessionBackend}. */
-  queryBackend?:
-    ((selected: Backend, model: string | undefined) => Promise<Backend | undefined>) | undefined;
-  /**
-   * Factory for the {@link RunnerClient} a turn runs through (ADR 0006 Stage 1,
-   * D5). Called with the model-/session-selected {@link Backend} and returns the
-   * Runner that owns that turn's lifecycle behind the boundary-ready contract.
-   * Defaults to {@link LoopbackRunnerClient} — the in-process Runner — so behavior
-   * is byte-for-byte identical to calling `backend.run` directly. Inject to route
-   * turns through a remote Runner (Stage 2) without touching the call sites.
-   */
-  runner?: RunnerClientFactory | undefined;
-  /**
-   * ADR 0006 Stage 4c (D7): the seam startup recovery uses to decide reattach-vs-
-   * settle for a turn left in flight by a crash — it discovers whether the marker's
-   * Runner is still live on its Sandbox. Absent (the default) ⇒ every abandoned turn
-   * is settled (`interrupted`) exactly as before, so behavior is byte-for-byte
-   * unchanged until turns route through the supervisor (Stage 5) and this is wired.
-   */
-  runnerRecovery?: RunnerRecovery | undefined;
-  /** Per-marker upper bound on {@link runnerRecovery} discovery during recovery (ms).
-   * Defaults to {@link RUNNER_RECOVERY_DISCOVER_TIMEOUT_MS}; a slow/hanging seam past
-   * it degrades that marker to `uncertain` so it cannot wedge startup. */
-  runnerRecoveryDiscoverTimeoutMs?: number | undefined;
-  /** Binary to spawn; defaults to the runner's `claude`. */
-  command?: string | undefined;
-  /** Default permission mode for turns (§5b); defaults to the runner's `auto`. */
-  permissionMode?: string | undefined;
-  /**
-   * Enable the mid-turn permission approve/deny control loop on every turn (#27):
-   * tools that need approval are surfaced to the operator (a `permission` event +
-   * a parked decision) instead of following the CLI's own posture. The operator
-   * answers via {@link Conductor.decidePermission}. Defaults to OFF — opt in once
-   * the app's approve/deny UI ships, so the rollout is decoupled from this slice.
-   */
-  permissionControl?: boolean | undefined;
-  /** Default wall-clock ceiling per turn; omit for no timeout. */
-  timeoutMs?: number | undefined;
-  /** Child env; defaults to the runner's `process.env`. */
-  env?: NodeJS.ProcessEnv | undefined;
-  /**
-   * Seam to probe whether a session's worktree still exists before resuming a turn
-   * in it (a missing dir would fail the spawn with `cwd` ENOENT). Defaults to a
-   * real `fs.stat` directory check; tests inject a fake to avoid the filesystem.
-   */
-  worktreeExists?: ((worktree: string) => Promise<boolean>) | undefined;
-  /**
-   * Logging seam for a turn dispatched via {@link Conductor.dispatchTurn} that
-   * fails in the background (after the caller already got its acceptance). The
-   * HTTP caller has its 202 by then, so a background failure has nowhere else to
-   * surface — without this hook it would be silent.
-   */
-  onTurnError?: ((sessionId: string, error: Error) => void) | undefined;
-  /** Max turns that may be queued behind an in-flight one per session before a
-   * further enqueue throws {@link QueueFullError}. Defaults to 10. */
-  maxQueuedTurns?: number | undefined;
-  /**
-   * How often a backend-confirmed pre-execution failure is replayed on its own.
-   * This deliberately excludes mid-turn crashes and every failure whose execution
-   * phase is unknown: re-submitting a prompt after it may have caused an external
-   * side effect is unsafe. Defaults to 1; 0 disables.
-   */
-  autoResumeAttempts?: number | undefined;
-  /** Pause before an auto-resume replay (ms). The failures worth replaying are
-   * transient, so replaying instantly tends to reproduce them. Defaults to
-   * {@link AUTO_RESUME_DELAY_MS}. */
-  autoResumeDelayMs?: number | undefined;
-  /**
-   * Optional auto-naming config. When set, once a session has `afterTurns` operator
-   * prompts on record the conductor derives a short display name from the opening
-   * conversation for any session the operator hasn't already named. The title is
-   * produced by the SAME backend/model the session runs its turns on (routed via
-   * {@link Backend.query}), so it always uses the operator's selected LLM — not a
-   * hard-coded default. Off unless set, so turn-only tests never trigger it.
-   * Best-effort: a failure or empty title never affects the turn, and the operator
-   * can always rename manually. See {@link Conductor.maybeAutoTitle}.
-   *
-   * The attempt fires as soon as the operator's prompt that reaches `afterTurns` is
-   * persisted — at turn START, concurrently with the turn — so the name is derived
-   * from the prompt (plus any reply text already on record) WITHOUT waiting for the
-   * reply to stream or the turn to settle. A settle-time attempt stays as a fallback
-   * for the case the turn-start one was skipped. See {@link Conductor.maybeAutoTitle}.
-   */
-  autoTitle?:
-    | {
-        /** Number of operator prompts on record before titling is attempted (e.g. 1). */
-        afterTurns: number;
-        /** Wall-clock ceiling on the one-shot titling call. Defaults to 45s. */
-        timeoutMs?: number | undefined;
-        /**
-         * Best-effort hook for the English git branch name derived at the same time
-         * as the display title. The conductor never lets hook failures affect turns.
-         */
-        onBranchName?: ((session: SessionRecord, branchName: string) => Promise<void>) | undefined;
-      }
-    | undefined;
 }
 
 export interface TurnOptions {
@@ -1302,6 +1089,17 @@ export class Conductor {
     return 'claude';
   }
 
+  /** The backend-state key of a turn: its backend, scoped to the turn's person. */
+  private async stateKey(
+    session: SessionRecord,
+    model: string | undefined,
+    initiatedBy: { userId: string } | undefined,
+  ): Promise<string> {
+    const backend = this.backendKey(model);
+    const scope = await this.deps.backendStateScope?.(session, initiatedBy);
+    return scope === undefined ? backend : `${backend}#${scope}`;
+  }
+
   private modelBackend(model: string | undefined): Backend {
     if (isCodexModel(model)) return this.codexBackend ?? this.backend;
     if (this.openCodeBackend !== undefined && model !== undefined && model.includes('/')) {
@@ -1330,6 +1128,7 @@ export class Conductor {
     /** Session to report a preparation wait against — set only on the operator-turn
      *  path. Absent makes the resolution a non-waiting background one. */
     reportTo?: string,
+    initiatedBy?: { readonly userId: string },
   ): Promise<Backend> {
     const selected = this.modelBackend(model);
     if (this.deps.sessionBackend === undefined) return selected;
@@ -1340,6 +1139,7 @@ export class Conductor {
     const preparation: TurnPreparationContext = {
       sessionId: session.sessionId,
       canWait: sessionId !== undefined,
+      initiatedBy,
       waitingOn: (message: string) => {
         if (sessionId === undefined || parked !== undefined) return;
         parked = this.parkOnDependency(sessionId, message);
@@ -1349,7 +1149,14 @@ export class Conductor {
       return (
         (await this.withWorkspaceOperation(
           session.sessionId,
-          () => this.deps.sessionBackend!(session, selected, preparation),
+          // The turn's own model: a person's turn may run on another provider than
+          // the session's, and the preparation checks that provider's account.
+          () =>
+            this.deps.sessionBackend!(
+              model === undefined ? session : { ...session, model },
+              selected,
+              preparation,
+            ),
           session.worktree,
         )) ?? selected
       );
@@ -1570,8 +1377,14 @@ export class Conductor {
     const handle = this.turns.get(sessionId) ?? new SessionTurnHandle();
     this.turns.set(sessionId, handle);
     const selectedModel = opts.model ?? session.model;
-    const backendKey = this.backendKey(selectedModel);
-    const backend = await this.backendForSession(session, selectedModel, sessionId);
+    const backendKind = this.backendKey(selectedModel);
+    const backendKey = await this.stateKey(session, selectedModel, handle.initiatedBy);
+    const backend = await this.backendForSession(
+      session,
+      selectedModel,
+      sessionId,
+      handle.initiatedBy,
+    );
     // Bind the brokered-grant channel before the run can surface a permission prompt
     // (ADR 0014 D3). A codex resume-retry re-enters here with the same handle and
     // rewrites it, which is correct: the retry may have fallen back to another
@@ -1629,7 +1442,7 @@ export class Conductor {
       // start a fresh reviewer on the same backend/model family as this turn.
       env: {
         ...(builtRunOpts.env ?? this.deps.env ?? process.env),
-        VERITY_SESSION_BACKEND: backendKey,
+        VERITY_SESSION_BACKEND: backendKind,
         ...(selectedModel !== undefined ? { VERITY_SESSION_MODEL: selectedModel } : {}),
       },
       signal: handle.controller.signal,
@@ -1652,7 +1465,7 @@ export class Conductor {
     runOpts.appendSystemPrompt = withBackendSystemPrompt(
       runOpts.appendSystemPrompt,
       backend,
-      await this.brokeredAliasesFor(session.projectId, backend),
+      await this.brokeredAliasesFor(session.projectId, backend, handle.initiatedBy),
     );
     // ADR 0006 Stage 4: allocate this attempt's durable turn identity and bind it
     // onto the in-flight marker BEFORE the Runner launches (D2), so a crash-then-
@@ -1703,6 +1516,7 @@ export class Conductor {
           sessionId: session.sessionId,
           projectId: session.projectId,
           worktree: session.worktree,
+          initiatedBy: handle.initiatedBy,
         }),
       session.worktree,
     );
@@ -1812,7 +1626,12 @@ export class Conductor {
     session: SessionRecord,
     opts: TurnOptions,
   ): Promise<RunResult> {
-    const backendKey = this.backendKey(opts.model ?? session.model);
+    const backendKind = this.backendKey(opts.model ?? session.model);
+    const backendKey = await this.stateKey(
+      session,
+      opts.model ?? session.model,
+      this.turns.get(sessionId)?.initiatedBy,
+    );
     // Fold any server-authored pending notes (e.g. the post-merge worktree reset)
     // into THIS turn's model prompt as provenance-labelled data and consume them. They ride the model input
     // only — the visible `prompt` event was already emitted by the caller with the
@@ -1830,6 +1649,8 @@ export class Conductor {
     }
     prompt = await withMeetingContext(session.worktree, prompt);
     const backendState = await this.deps.store.getSessionBackendState(sessionId, backendKey);
+    // Only the unscoped key names the canonical thread, which lives in the
+    // original sandbox; a person's own thread is never that one.
     const canResumeCanonicalClaudeSession =
       backendKey === 'claude' &&
       !session.worktree.split('/').includes('.verity-document-sessions') &&
@@ -1839,7 +1660,10 @@ export class Conductor {
       // current. Resuming it without a cursor silently loses the work done away.
       (await this.deps.store.getSessionBackendStates(sessionId)).length === 0 &&
       (await this.isClaudeOriginSession(session));
-    const agentContext = await this.deps.agentContext?.(session);
+    const agentContext = await this.deps.agentContext?.(
+      session,
+      this.turns.get(sessionId)?.initiatedBy,
+    );
     if (agentContext) this.agentContexts.set(sessionId, agentContext);
     const contextChanged =
       agentContext !== undefined && backendState?.contextFingerprint !== agentContext.fingerprint;
@@ -1896,7 +1720,7 @@ export class Conductor {
       // retrying THAT would repeat its side effects. With the reason confirmed, the
       // backend provably never opened the conversation, so nothing can be repeated.
       if (
-        backendKey !== 'claude' ||
+        backendKind !== 'claude' ||
         resumeSessionId === undefined ||
         !this.isDeadClaudeResumeError(error, resumeSessionId)
       ) {
@@ -1915,7 +1739,7 @@ export class Conductor {
       return retry.result;
     }
     if (
-      backendKey === 'claude' &&
+      backendKind === 'claude' &&
       resumeSessionId !== undefined &&
       this.isStaleClaudeResume(first.result, resumeSessionId)
     ) {
@@ -1939,7 +1763,7 @@ export class Conductor {
     // happens not to match the phrasebook would otherwise skip straight to a cold
     // start and lose a conversation the second rung can still find.
     const codexStale =
-      backendKey === 'codex' &&
+      backendKind === 'codex' &&
       resumeSessionId !== undefined &&
       this.isStaleCodexResume(first.result, resumeSessionId);
 
@@ -2014,9 +1838,9 @@ export class Conductor {
     return first.result;
   }
 
-  /** True while a turn for `sessionId` is in flight. */
-  isBusy(sessionId: string): boolean {
-    return this.inFlight.has(sessionId);
+  /** True while a turn or maintenance holds the lock; `turnOnly` asks only for a turn. */
+  isBusy(sessionId: string, { turnOnly = false }: { turnOnly?: boolean } = {}): boolean {
+    return this.inFlight.has(sessionId) && !(turnOnly && this.maintenanceLocks.has(sessionId));
   }
 
   /** Available before backend initialization requests its first MCP catalog. */
@@ -3131,6 +2955,9 @@ export class Conductor {
        *  (ADR 0014 D3), which must not claim an operator saw a card that never
        *  reached them. */
       decidedBy?: PermissionDecisionSource;
+      /** The person answering; a standing scope becomes their grant (ADR 0023 §3).
+       *  Without one, the answer stands but no scope is saved. */
+      decidedByUser?: string;
     },
   ): Promise<boolean> {
     const pending = this.pendingPermissionRequests.get(sessionId);
@@ -3190,10 +3017,13 @@ export class Conductor {
           return true;
         }
         try {
+          if (options.decidedByUser === undefined)
+            throw new Error('a standing grant needs the person granting it');
           await this.persistBrokeredGrant(
             sessionId,
             request,
             options.scope,
+            options.decidedByUser,
             external?.channel,
             external?.brokeredGrantBindingId,
           );
@@ -3252,12 +3082,23 @@ export class Conductor {
     request: PermissionRequest,
     statedChannel?: BrokeredGrantChannel,
     bindingId?: string,
+    /** The person stated by the caller, for a prompt that no turn carries. */
+    statedUserId?: string | null,
   ): Promise<boolean> {
     const toolName = brokeredGrantToolName(request.toolName);
     const check = this.deps.checkBrokeredHttpGrant;
     if (toolName === undefined || check === undefined) return false;
-    const channel = statedChannel ?? this.turns.get(sessionId)?.grantChannel;
+    const turn = this.turns.get(sessionId);
+    const channel = statedChannel ?? turn?.grantChannel;
     if (channel === undefined) return false;
+    // Only the person the requesting turn acts for can have consented in advance.
+    const userId =
+      statedUserId !== undefined
+        ? statedUserId
+        : turn === undefined
+          ? undefined
+          : (turn.initiatedBy?.userId ?? null);
+    if (userId === undefined) return false;
     try {
       const session = await this.deps.store.getSession(sessionId);
       const projectId = session?.projectId;
@@ -3274,6 +3115,7 @@ export class Conductor {
           check({
             projectId,
             sessionId,
+            userId,
             channel,
             secretAlias,
             toolName: target.toolName,
@@ -3292,6 +3134,7 @@ export class Conductor {
     sessionId: string,
     request: PermissionRequest,
     scope: 'session' | 'project' | 'forever',
+    userId: string,
     /** Channel stated by the caller, for a prompt that no turn carries. */
     statedChannel?: BrokeredGrantChannel,
     bindingId?: string,
@@ -3323,6 +3166,7 @@ export class Conductor {
       await persist({
         projectId,
         sessionId,
+        userId,
         scope,
         channel,
         secretAlias,
@@ -3382,6 +3226,11 @@ export class Conductor {
     brokeredGrantBindingId?: string;
     /** Explicitly false for tools that require a fresh decision. */
     allowStandingGrant?: boolean | undefined;
+    /**
+     * The person the requesting turn acts for (null for a turn without one). Only
+     * their own standing grants can answer the prompt (ADR 0023 §3); absent, none do.
+     */
+    grantUserId?: string | null | undefined;
     signal?: AbortSignal | undefined;
   }): Promise<ExternalPermissionAnswer> {
     const { sessionId, toolUseId, channel, signal, brokeredGrantBindingId } = params;
@@ -3434,7 +3283,14 @@ export class Conductor {
       if (
         params.allowStandingGrant !== false &&
         (await Promise.race([
-          this.isCoveredByBrokeredGrant(sessionId, request, channel, brokeredGrantBindingId),
+          params.grantUserId !== undefined &&
+            this.isCoveredByBrokeredGrant(
+              sessionId,
+              request,
+              channel,
+              brokeredGrantBindingId,
+              params.grantUserId,
+            ),
           answered.then(() => false),
         ]))
       ) {
@@ -3496,6 +3352,7 @@ export class Conductor {
     // Register the in-flight handle synchronously (before the async run) so a cancel
     // racing the spawn lands (#79).
     const sendHandle = new SessionTurnHandle();
+    sendHandle.initiatedBy = origin.initiatedBy;
     this.turns.set(sessionId, sendHandle);
     // The marker's prompt_seq anchor, captured for the `finally`'s scoped clear.
     let markerSeq: number | undefined;
@@ -3667,13 +3524,18 @@ export class Conductor {
       // A mode change needs a fresh turn; steering retains the live permissions.
       const runningPlanning = this.runningPlanning.get(sessionId);
       const postureChanged = runningPlanning === undefined || planning !== runningPlanning;
+      // Steering joins the running turn, which runs on its person's account and in
+      // their sandbox. Another person's message waits for a turn of its own.
+      const running = this.turns.get(sessionId);
+      const otherPerson = running?.initiatedBy?.userId !== dispatchOpts.initiatedBy?.userId;
       const turn =
         hasFileAttachment ||
         postureChanged ||
+        otherPerson ||
         dispatchOpts.queueBehindActiveTurn === true ||
         dispatchOpts.planningRevision !== undefined
           ? undefined
-          : this.turns.get(sessionId);
+          : running;
       if (
         turn &&
         (await turn.steer({
@@ -3862,6 +3724,7 @@ export class Conductor {
     // from now, even before the async run spawns (#79/#101). Held so an auto-resume
     // can tell a cancel that lands while it waits from a turn that simply died.
     const handle = new SessionTurnHandle();
+    handle.initiatedBy = launchOpts.initiatedBy;
     this.turns.set(sessionId, handle);
     // Fire-and-forget: persist the operator's prompt event FIRST (so it precedes
     // claude's output in the transcript), then run; release the lock when the run
@@ -4278,6 +4141,13 @@ export class Conductor {
         // Step 6: confirmed dead — settle (`interrupted`) and drop the marker.
         await this.settleDocumentsById(marker.sessionId);
         await this.cleanupRecoveredImageAttachments(marker);
+        if (await this.turnHeldForBackgroundWork(marker)) {
+          await this.emitEvent(marker.sessionId, {
+            t: 'notice',
+            role: 'agent',
+            text: BACKGROUND_WORK_LOST_NOTICE,
+          });
+        }
         await this.emitInterrupted(marker.sessionId);
         await this.deps.store.clearRunningTurn(marker.sessionId, marker.promptSeq, marker.markerId);
         if (this.leaveUncertainRecovery(marker.sessionId)) {
@@ -4416,6 +4286,24 @@ export class Conductor {
     }
   }
 
+  /** Whether the turn's backend is holding it open for background work: its hold
+   * marker started and not ended. Only the backend's own marker counts — agent
+   * task edges are also emitted by backends that never hold, and their ends can
+   * be lost. Read only when a silent or dead turn is about to be settled, so a
+   * long log is read at most once per idle window. */
+  private async turnHeldForBackgroundWork(marker: RunningTurnRecord): Promise<boolean> {
+    let held = false;
+    for (const { event } of await this.deps.store.getEventsAfter(
+      marker.sessionId,
+      marker.promptSeq,
+    )) {
+      if (event.t === 'task' && event.id === BACKGROUND_HOLD_TASK_ID) {
+        held = event.phase !== 'ended';
+      }
+    }
+    return held;
+  }
+
   /**
    * Advance one marker's idle window, and probe its Runner once the window is full.
    * The event log is the activity signal rather than an in-memory frame counter: it
@@ -4462,7 +4350,16 @@ export class Conductor {
       outcome.status === 'live' && !awaitingOperator && !lifecycleChange
         ? (seen?.liveProbes ?? 0) + 1
         : 0;
-    const stalled = outcome.status === 'live' && liveProbes >= TURN_LIVENESS_STALLED_WINDOWS;
+    // Read once, and only when the ordinary bound is reached: a held turn is
+    // legitimately silent until its backend's hold limit.
+    const held =
+      outcome.status === 'live' &&
+      liveProbes >= TURN_LIVENESS_STALLED_WINDOWS &&
+      (await this.turnHeldForBackgroundWork(marker));
+    const stalled =
+      outcome.status === 'live' &&
+      liveProbes >=
+        (held ? TURN_LIVENESS_BACKGROUND_STALLED_WINDOWS : TURN_LIVENESS_STALLED_WINDOWS);
     if (outcome.status !== 'dead' && !stalled) {
       this.livenessSeen.set(marker.sessionId, { seq: newest, idleSweeps: 0, liveProbes });
       return;
@@ -4484,7 +4381,7 @@ export class Conductor {
       const stalledNotice: AgentEvent = {
         t: 'notice',
         role: 'agent',
-        text: STALLED_RUNNER_NOTICE,
+        text: held ? STALLED_HELD_RUNNER_NOTICE : STALLED_RUNNER_NOTICE,
       };
       // Atomically claim the still-silent transcript and close its frame stream,
       // but do not publish yet: every abort path removes exactly this fence+notice.
@@ -4555,7 +4452,9 @@ export class Conductor {
       {
         t: 'notice',
         role: 'agent',
-        text: DEAD_RUNNER_NOTICE,
+        text: (await this.turnHeldForBackgroundWork(marker))
+          ? `${DEAD_RUNNER_NOTICE} ${BACKGROUND_WORK_LOST_NOTICE}`
+          : DEAD_RUNNER_NOTICE,
       },
     );
     if (noticeSeq === null) return;
@@ -4941,10 +4840,17 @@ export class Conductor {
       handle = new SessionTurnHandle();
       handle.workerMayExist = true;
       handle.markerSeq = marker.promptSeq;
+      // Resume under the identity the turn started with: the marker anchors the
+      // durable prompt event, whose provenance no later prompt can rewrite.
+      handle.initiatedBy = await this.deps.store.promptInitiatorAt(
+        marker.sessionId,
+        marker.promptSeq,
+      );
       this.turns.set(marker.sessionId, handle);
       // `attach` never runs the backend, but the factory needs one; the session's
       // backend composes the same Docker/model wrapper the original turn used.
-      const backend = await this.backendForSession(session, session.model);
+      const initiatedBy = handle.initiatedBy;
+      const backend = await this.backendForSession(session, session.model, undefined, initiatedBy);
       // A reattached turn re-surfaces its still-open prompts, so it needs the same
       // channel binding a fresh turn gets (ADR 0014 D3).
       handle.grantChannel = brokeredGrantChannel(backend);
@@ -4955,6 +4861,7 @@ export class Conductor {
             sessionId: session.sessionId,
             projectId: session.projectId,
             worktree: session.worktree,
+            initiatedBy,
           }),
         session.worktree,
       );
@@ -5123,6 +5030,9 @@ export class Conductor {
             ),
             displayPrompt: prompt.text,
             promptAlreadyPersisted: true,
+            // The persisted prompt names who sent it; the recovered turn runs for
+            // that person, never for whoever happens to be active after a restart.
+            ...(prompt.initiatedBy !== undefined ? { initiatedBy: prompt.initiatedBy } : {}),
           });
         }
         this.queues.set(session.sessionId, queue);
@@ -5299,6 +5209,7 @@ export class Conductor {
     // the start opts; it's REGISTERED under the session id the moment the id binds
     // (below), matching the old aborter/injector registration timing.
     const handle = new SessionTurnHandle();
+    handle.initiatedBy = opts.initiatedBy;
     // A spawn under a preallocated id runs against a session row the caller has
     // already written (with its project), so the same lookup the turn path uses
     // classifies this fresh context too. A spawn whose id the backend still has
@@ -5371,13 +5282,17 @@ export class Conductor {
                 handle.markerTurnId = turnId;
                 await this.bindTurnIdentity(publicSessionId, turnId, startCommandId);
               })
-              .then(() =>
-                this.persistBackendSessionState(
+              .then(async () => {
+                // Scoped to the person whose account and sandbox minted the thread.
+                const bound = await this.deps.store.getSession(publicSessionId);
+                return this.persistBackendSessionState(
                   publicSessionId,
-                  this.backendKey(opts.model),
+                  bound === undefined
+                    ? this.backendKey(opts.model)
+                    : await this.stateKey(bound, opts.model, handle.initiatedBy),
                   sessionId,
-                ),
-              )
+                );
+              })
               // Name from the prompt now — concurrently with the still-running spawn —
               // once it's on record, rather than waiting for the reply or the settle.
               .then(() => this.maybeAutoTitle(publicSessionId))
@@ -5437,7 +5352,7 @@ export class Conductor {
         runOpts.appendSystemPrompt = withBackendSystemPrompt(
           runOpts.appendSystemPrompt,
           backend,
-          await this.brokeredAliasesFor(contextProjectId, backend),
+          await this.brokeredAliasesFor(contextProjectId, backend, opts.initiatedBy),
         );
         const workspaceSession =
           opts.sessionId === undefined
@@ -5461,6 +5376,7 @@ export class Conductor {
               sessionId: opts.sessionId ?? null,
               projectId: contextProjectId,
               worktree: opts.worktree,
+              initiatedBy: handle.initiatedBy,
             }),
           opts.worktree,
         );
@@ -6118,7 +6034,14 @@ export class Conductor {
         // model (Claude / Codex / OpenCode, plus any per-session Docker wrapper), so
         // the title is generated by the operator's selected LLM. A backend without a
         // one-shot `query` simply yields no title (we still settle below).
-        const backend = await this.backendForSession(session, session.model);
+        // Generated with the credentials of whoever sent the latest prompt — the
+        // turn that triggered the title — never with another member's.
+        const backend = await this.backendForSession(
+          session,
+          session.model,
+          undefined,
+          await this.deps.store.latestPromptInitiator(sessionId),
+        );
         const digest = buildConversationDigest(events, autoTitle.afterTurns);
         const prompt = buildTitlePrompt(digest);
         // Settle regardless of outcome: an empty/failed generation must not re-run on
@@ -6219,11 +6142,12 @@ export class Conductor {
   private async brokeredAliasesFor(
     projectId: string | null | undefined,
     backend: Backend,
+    initiatedBy: { readonly userId: string } | undefined,
   ): Promise<readonly string[] | undefined> {
     if (!carriesBrokeredSecretTools(backend)) return undefined;
     if (projectId == null || this.deps.brokeredSecretAliases === undefined) return undefined;
     try {
-      return await this.deps.brokeredSecretAliases(projectId);
+      return await this.deps.brokeredSecretAliases(projectId, initiatedBy);
     } catch {
       return undefined;
     }

@@ -30,11 +30,14 @@ import {
 import {
   clearFollowedRemoteMeeting,
   followRemoteMeeting,
+  readMeetingControl,
+  stopMeetingElsewhere,
   subscribeFollowedRemoteMeeting,
   syncMeetingSession,
 } from '../lib/liveMeetingSync';
 import { subscribeMeetingPrompt } from '../lib/meetingPrompts';
 import { AssignMeetingSheet, type AssignableMeeting } from './meeting/AssignMeetingSheet';
+import { canEndWithoutRecorder, confirmEndWithoutRecorder } from './meeting/MeetingRecoveryCard';
 import { CalendarMeetingPrompt } from './meeting/CalendarMeetingPrompt';
 import { Button, Text, useConfirm } from './ui';
 import { Dot } from './ui/Status';
@@ -58,6 +61,8 @@ export function ActiveMeetingOverlay() {
   const [recorderOnline, setRecorderOnline] = useState(true);
   const remoteStopRequested = useRef(false);
   const [busy, setBusy] = useState(false);
+  // The online meeting whose End was accepted: Stop stays down until the bot has left.
+  const [onlineStopping, setOnlineStopping] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [voiceSending, setVoiceSending] = useState(false);
   const [voiceRequestSent, setVoiceRequestSent] = useState(false);
@@ -76,6 +81,8 @@ export function ActiveMeetingOverlay() {
   // following it again would bounce between follow and clear.
   const settled = useRef(new Set<string>());
   const discoverRef = useRef<() => Promise<void>>(async () => undefined);
+  // Reloads the followed meeting, e.g. once the server has ended it.
+  const pollFollowedRef = useRef<() => void>(() => undefined);
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -230,10 +237,15 @@ export function ActiveMeetingOverlay() {
     if (!followed || pathname.startsWith('/meeting/')) return;
     let mounted = true;
     let polling = false;
+    let pollAgain = false;
     const client = createVerityClient();
     const poll = async () => {
-      if (polling) return;
+      if (polling) {
+        pollAgain = true;
+        return;
+      }
       polling = true;
+      pollAgain = false;
       try {
         if (getActiveMeetingServerId() !== followed.serverId) {
           clearFollowedRemoteMeeting();
@@ -273,11 +285,11 @@ export function ActiveMeetingOverlay() {
         }
         // Online meetings run on the server; there is no recorder to command.
         if (saved?.engine === 'attendee') return;
-        const control = await client?.getLiveMeetingCommands(
-          followed.sessionId,
-          followed.meetingId,
-        );
+        const control =
+          client && (await readMeetingControl(client, followed.sessionId, followed.meetingId));
         if (!mounted || !control || getActiveMeetingServerId() !== followed.serverId) return;
+        // A stop sent from here that the recorder could not finish was ended on the server.
+        if (control.serverEnded) pollAgain = true;
         setRecorderOnline(control.recorderOnline);
         const latest = control.commands[0];
         setPendingCommand(latest?.state === 'pending' ? latest.action : null);
@@ -289,8 +301,10 @@ export function ActiveMeetingOverlay() {
         if (mounted) setError('Waiting for the recording device…');
       } finally {
         polling = false;
+        if (pollAgain && mounted) void poll();
       }
     };
+    pollFollowedRef.current = () => void poll();
     void poll();
     const detach = client
       ? subscribeLiveRefresh(
@@ -302,6 +316,7 @@ export function ActiveMeetingOverlay() {
       : () => undefined;
     return () => {
       mounted = false;
+      pollFollowedRef.current = () => undefined;
       detach();
     };
   }, [followed?.serverId, followed?.sessionId, followed?.meetingId, pathname, pendingCommand]);
@@ -312,6 +327,13 @@ export function ActiveMeetingOverlay() {
     discovered?.unassigned[0] ??
     null;
   const showMeeting = alive(meeting);
+  const joinStatus = online
+    ? discovered?.running.find((item) => item.id === meeting?.id)?.joinStatus
+    : undefined;
+  const stoppingOnline = online && meeting !== null && onlineStopping === meeting.id;
+  useEffect(() => {
+    if (!showMeeting) setOnlineStopping(null);
+  }, [showMeeting]);
   useEffect(() => {
     if (!showMeeting && !unassigned) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -468,22 +490,22 @@ export function ActiveMeetingOverlay() {
     }
   };
   const stop = async () => {
-    if (busy || activePendingCommand === 'stop') return;
+    if (busy || activePendingCommand === 'stop' || stoppingOnline) return;
     setBusy(true);
     try {
       if (remote && (!meeting.serverId || meeting.serverId !== getActiveMeetingServerId()))
         throw new Error('This meeting belongs to another server.');
-      if (remote && online) {
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this meeting.');
-        await client.stopOnlineMeeting(meeting.sessionId, meeting.id);
+      if (remote) {
+        const outcome = await stopMeetingElsewhere(meeting);
+        if (outcome === 'online') setOnlineStopping(meeting.id);
+        else {
+          // Opens the meeting once it has ended, whether on the recorder or on the server.
+          remoteStopRequested.current = true;
+          setPendingCommand(outcome === 'requested' ? 'stop' : null);
+          setError(null);
+          pollFollowedRef.current();
+        }
         void discoverRef.current();
-      } else if (remote) {
-        const client = createVerityClient();
-        if (!client) throw new Error('Connect to the server to stop this recording.');
-        await client.requestLiveMeetingCommand(meeting.sessionId, meeting.id, 'stop');
-        remoteStopRequested.current = true;
-        setPendingCommand('stop');
       } else await endMeeting();
     } catch (reason) {
       setError(String(reason));
@@ -492,6 +514,29 @@ export function ActiveMeetingOverlay() {
       if (!remote) openMeeting();
     }
   };
+
+  // A stop only its recorder can confirm: without it, offer to end the meeting on the server.
+  const endWithoutRecorder = canEndWithoutRecorder(meeting, !remote, recorderUnreachable)
+    ? () => {
+        const target = { id: meeting.id, sessionId: meeting.sessionId };
+        confirmEndWithoutRecorder(confirm, target, {
+          onEnded: async () => {
+            // Ended on the server: stop following it now rather than on the next refresh.
+            settled.current.add(target.id);
+            remoteStopRequested.current = false;
+            clearFollowedRemoteMeeting();
+            setRemoteMeeting(null);
+            setPendingCommand(null);
+            setError(null);
+            await Promise.all([
+              syncMeetingSession(target.sessionId).catch(() => undefined),
+              discoverRef.current(),
+            ]);
+          },
+          onError: setError,
+        });
+      }
+    : null;
 
   return (
     <View
@@ -516,9 +561,15 @@ export function ActiveMeetingOverlay() {
                 ? 'Meeting'
                 : meeting.captureStatus === 'paused'
                   ? 'Paused'
-                  : online
-                    ? 'Online'
-                    : 'Live meeting'}{' '}
+                  : stoppingOnline
+                    ? 'Ending'
+                    : joinStatus === 'joining'
+                      ? 'Joining'
+                      : joinStatus === 'waiting'
+                        ? 'Waiting'
+                        : online
+                          ? 'Online'
+                          : 'Live meeting'}{' '}
               · {Math.floor((now - meeting.startedAt) / 60000)} min
             </Text>
           </View>
@@ -536,11 +587,13 @@ export function ActiveMeetingOverlay() {
             </Text>
           ) : null}
           <Text variant="footnote">
-            {activePendingCommand
-              ? recorderOnline
-                ? `Waiting to ${activePendingCommand} · keep recorder app open`
-                : 'Recorder unreachable · open Verity there'
-              : 'Drag to move · Open meeting'}
+            {joinStatus === 'waiting' && !stoppingOnline
+              ? 'Ask the host to let Verity in'
+              : activePendingCommand
+                ? recorderOnline
+                  ? `Waiting to ${activePendingCommand} · keep recorder app open`
+                  : 'Recorder unreachable · open Verity there'
+                : 'Drag to move · Open meeting'}
           </Text>
         </Pressable>
         {error ? (
@@ -587,10 +640,20 @@ export function ActiveMeetingOverlay() {
             icon="square"
             variant="destructive"
             size="compact"
-            disabled={busy || activePendingCommand === 'stop'}
+            disabled={busy || activePendingCommand === 'stop' || stoppingOnline}
             onPress={stop}
           />
         </View>
+        {endWithoutRecorder ? (
+          <Button
+            label="End without recorder"
+            accessibilityLabel="End meeting without recording device"
+            variant="secondary"
+            size="compact"
+            onPress={endWithoutRecorder}
+            fullWidth
+          />
+        ) : null}
       </Animated.View>
       {sheets}
     </View>

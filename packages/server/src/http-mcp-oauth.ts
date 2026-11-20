@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { EventStore, HttpMcpConnectionRecord } from '@verity/store';
 
 import { parseHttpMcpUpstream } from './http-mcp-proxy.js';
-import { oauthHttpRequest } from './http-mcp-oauth-discovery.js';
+import { mcpServerIsInternal, oauthHttpRequest } from './http-mcp-oauth-discovery.js';
 import { McpOAuthAuthorizationRequired } from './http-mcp-oauth-errors.js';
 
 const tokenResponseSchema = z.object({
@@ -44,18 +44,27 @@ function endpoint(value: string | null | undefined): string {
   return parseHttpMcpUpstream(value).toString();
 }
 
+/** `mcpUrl` is the connection's MCP server; a public one keeps its token endpoint public. */
 type TokenRequest = (
   url: string,
   body: URLSearchParams,
-  authorization?: string,
+  authorization: string | undefined,
+  mcpUrl: string,
 ) => Promise<z.infer<typeof tokenResponseSchema>>;
 
-async function tokenRequest(url: string, body: URLSearchParams, authorization?: string) {
+async function tokenRequest(
+  url: string,
+  body: URLSearchParams,
+  authorization: string | undefined,
+  mcpUrl: string,
+) {
   const response = await oauthHttpRequest(
     endpoint(url),
     body.toString(),
     'application/x-www-form-urlencoded',
     authorization,
+    false,
+    await mcpServerIsInternal(mcpUrl),
   );
   if (response.status === 401 || response.status === 403) throw new McpOAuthAuthorizationRequired();
   if (response.status >= 300) {
@@ -120,7 +129,12 @@ export async function completeHttpMcpOAuth(
       resource: connection.url,
     });
     const authorization = clientAuthorization(connection, body);
-    const token = await requestToken(endpoint(connection.oauthTokenEndpoint), body, authorization);
+    const token = await requestToken(
+      endpoint(connection.oauthTokenEndpoint),
+      body,
+      authorization,
+      connection.url,
+    );
     if (
       !(await store.updateHttpMcpOAuthTokens(connection.id, {
         accessToken: token.access_token,
@@ -166,7 +180,12 @@ export async function httpMcpAuthorization(
       resource: current.url,
     });
     const authorization = clientAuthorization(current, body);
-    const token = await requestToken(endpoint(current.oauthTokenEndpoint), body, authorization);
+    const token = await requestToken(
+      endpoint(current.oauthTokenEndpoint),
+      body,
+      authorization,
+      current.url,
+    );
     if (
       !(await store.updateHttpMcpOAuthTokens(current.id, {
         accessToken: token.access_token,

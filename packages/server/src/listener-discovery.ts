@@ -5,7 +5,7 @@ import type { EventStore, ProjectRecord } from '@verity/store';
 import { containerPathFor, dockerHostFor } from './project-backend.js';
 import { projectClonePath } from './provisioner.js';
 import {
-  sessionDevServers,
+  webSessionDevServers,
   type ListeningProcess,
   type SessionDevServer,
 } from './listening-ports.js';
@@ -30,7 +30,12 @@ export class ListenerDiscovery {
   >();
   private readonly scans = new Map<
     string,
-    { containerName: string; promise: Promise<ListeningProcess[]>; invalidated: boolean }
+    {
+      containerName: string;
+      promise: Promise<ListeningProcess[]>;
+      invalidated: boolean;
+      fresh: boolean;
+    }
   >();
   private readonly snapshots = new Map<string, string>();
   private readonly dirty = new Map<string, ProjectRecord>();
@@ -46,7 +51,7 @@ export class ListenerDiscovery {
       hostCloneRoot: string;
       dockerBaseUrl?: string;
       resolveUser?: (project: ProjectRecord) => Promise<string | undefined>;
-      scan: (project: ProjectRecord) => Promise<ListeningProcess[]>;
+      scan: (project: ProjectRecord, options: { fresh: boolean }) => Promise<ListeningProcess[]>;
       /** Sees every successful scan, e.g. to stop orphaned managed servers. */
       onScan?: (project: ProjectRecord, processes: ListeningProcess[]) => void;
     },
@@ -60,7 +65,10 @@ export class ListenerDiscovery {
     this.timer.unref();
   }
 
-  async listSessionDevServers(sessionId: string): Promise<SessionDevServer[]> {
+  async listSessionDevServers(
+    sessionId: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<SessionDevServer[]> {
     const session = await this.options.eventStore.getSession(sessionId);
     if (!session?.projectId) throw new PreviewShareNotFoundError('project session not found');
     const project = await this.options.eventStore.getProject(session.projectId);
@@ -69,8 +77,9 @@ export class ListenerDiscovery {
     await this.watch(project);
     let processes: ListeningProcess[];
     try {
-      processes = await this.scan(project);
-    } catch {
+      processes = await this.scan(project, options.fresh);
+    } catch (error) {
+      if (options.fresh) throw error;
       const healthy = this.healthy.get(project.id);
       processes = healthy?.containerName === project.containerName ? healthy.processes : [];
     }
@@ -115,6 +124,7 @@ export class ListenerDiscovery {
     if (pending?.containerName === project.containerName) {
       // Port allocation and publication need a result started after the change,
       // rather than the obsolete read a watcher has already invalidated.
+      if (fresh && !pending.fresh) pending.invalidated = true;
       return fresh ? freshResult(pending) : pending.promise;
     }
     const cached = this.scanResults.get(project.id);
@@ -135,7 +145,8 @@ export class ListenerDiscovery {
     const entry = {
       containerName: project.containerName,
       invalidated: false,
-      promise: Promise.resolve().then(() => this.options.scan(project)),
+      fresh,
+      promise: Promise.resolve().then(() => this.options.scan(project, { fresh })),
     };
     entry.promise = entry.promise
       .then((processes) => {
@@ -202,7 +213,7 @@ export class ListenerDiscovery {
     });
     return attributed.flatMap(({ process, owner }) => {
       if (owner && owner.id !== sessionId) return [];
-      const server = sessionDevServers(
+      const server = webSessionDevServers(
         [{ ...process, sessionId }],
         owner?.path ?? process.cwd,
         sessionId,
@@ -346,7 +357,7 @@ export class ListenerDiscovery {
     const finish = () => {
       if (this.watchers.get(project.id)?.child === child) {
         this.watchers.delete(project.id);
-        this.clearScans(project.id, false);
+        this.clearScans(project.id);
       }
     };
     child.once('exit', finish);
@@ -382,7 +393,12 @@ export class ListenerDiscovery {
           if (project) await this.refresh(project);
         }
       }
-      for (const project of projects) if (this.active(project)) await this.watch(project);
+      for (const project of projects) {
+        if (!this.active(project)) continue;
+        await this.watch(project);
+        // A bound socket can become HTTP-ready without changing its inode.
+        await this.refresh(project, false);
+      }
     } catch {
       /* Retry discovery after the store or Docker recovers. */
     }

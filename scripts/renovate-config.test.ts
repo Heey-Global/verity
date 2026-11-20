@@ -324,10 +324,16 @@ describe('Renovate global CLI pins', () => {
     expect(config.enabledManagers?.includes('npm') ?? true).toBe(true);
     expect(config.ignorePaths).toBeUndefined();
     const dockerfile = readFileSync('deploy/Dockerfile', 'utf8');
-    const ids = [...dockerfile.matchAll(/^RUN node \S*\/verity-cli-install\.mjs ([a-z-]+)$/gm)].map(
-      (match) => match[1],
-    );
-    expect(ids.length).toBeGreaterThan(0);
+    const feature = readFileSync('features/verity-sandbox-toolkit/install.sh', 'utf8');
+    const ids = new Set([
+      ...[...dockerfile.matchAll(/^RUN node \S*\/verity-cli-install\.mjs ([a-z-]+)$/gm)].map(
+        (match) => match[1],
+      ),
+      // Bundles only the Sandbox installs (corepack) would otherwise escape the lock check.
+      ...[...feature.matchAll(/verity-cli-install\.mjs" ([a-z-]+)/g)].map((match) => match[1]),
+    ]);
+    expect(ids).toContain('codex');
+    expect(ids).toContain('corepack');
     for (const id of ids) {
       const directory = `features/verity-sandbox-toolkit/npm/${id}`;
       const manifest = JSON.parse(readFileSync(`${directory}/package.json`, 'utf8')) as {

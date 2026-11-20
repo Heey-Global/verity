@@ -122,15 +122,11 @@ export async function setAuthToken(
   baseUrl: string | null,
   token: string,
   tokenId?: string,
+  loadIntoMemory = true,
 ): Promise<boolean> {
   const key = await tokenKey(baseUrl);
   if (key === null) return false;
-  currentTokenBaseUrl = baseUrl;
-  currentToken = token;
-  notifyAuthTokenChanged();
-  // Reset (not preserve) when absent, so a base-URL switch can't leave the prior
-  // URL's id readable under the new URL's now-passing base-URL guard.
-  currentTokenId = tokenId ?? null;
+  if (loadIntoMemory) adoptStoredAuthToken(baseUrl, token, tokenId);
   try {
     await SecureStore.setItemAsync(key, JSON.stringify({ origin: baseUrl, secret: token }), {
       keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
@@ -153,6 +149,20 @@ export async function setAuthToken(
     // The scoped credential is durable; stale legacy cleanup must not invalidate it.
   }
   return true;
+}
+
+/** Load a credential only after its keychain write and profile activation succeeded. */
+export function adoptStoredAuthToken(
+  baseUrl: string | null,
+  token: string,
+  tokenId?: string,
+): void {
+  currentTokenBaseUrl = baseUrl;
+  currentToken = token;
+  notifyAuthTokenChanged();
+  // Reset (not preserve) when absent, so a base-URL switch can't leave the prior
+  // URL's id readable under the new URL's now-passing base-URL guard.
+  currentTokenId = tokenId ?? null;
 }
 
 /** Copy the currently unlocked device credential to another verified endpoint of

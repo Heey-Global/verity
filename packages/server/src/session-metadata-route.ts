@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { sessionParams } from './session-route-schemas.js';
+import { viewerId } from './view-state-routes.js';
 
 const patchSessionBody = z.object({
   name: z
@@ -36,6 +37,23 @@ export interface SessionMetadataRouteDeps {
   projectModelError: string;
   /** The project's agent rule; answers the reason when it rejects `model`. */
   projectAgentRejection?: (model: string, projectId: string) => Promise<string | undefined>;
+  /**
+   * Records `model` as `viewer`'s own choice in a shared session and answers
+   * true; their turns then run on it without a session-wide handoff. False keeps
+   * the session-wide switch.
+   */
+  choosePersonModel?: (
+    session: { sessionId: string; projectId: string | null },
+    viewer: string,
+    model: string,
+  ) => Promise<boolean>;
+  /** Why `viewer` may not choose `model` as their own; checked before anything is
+   *  recorded, so a choice their accounts cannot serve is never stored. */
+  personModelRefusal?: (
+    session: { projectId: string | null },
+    viewer: string,
+    model: string,
+  ) => Promise<string | undefined>;
 }
 
 /** Registers atomic session rename, favorite and backend/model handoff updates. */
@@ -80,6 +98,14 @@ export function registerSessionMetadataRoute(
       }
     }
 
+    if (model !== undefined && current !== undefined && deps.personModelRefusal !== undefined) {
+      const refusal = await deps.personModelRefusal(current, viewerId(request), model);
+      if (refusal !== undefined) {
+        reply.code(400);
+        return { error: refusal };
+      }
+    }
+
     // A rename is independent metadata and must land before a handoff that may
     // answer 409/503. Those responses explicitly tell the client it was applied.
     if (name !== undefined) {
@@ -98,7 +124,13 @@ export function registerSessionMetadataRoute(
       }
     }
 
-    if (model !== undefined && !modelUnchanged) {
+    const personal =
+      model !== undefined &&
+      current !== undefined &&
+      deps.choosePersonModel !== undefined &&
+      (await deps.choosePersonModel(current, viewerId(request), model));
+
+    if (model !== undefined && !modelUnchanged && !personal) {
       let switched: boolean;
       try {
         switched = await deps.runBackendHandoff(id, async () => {

@@ -138,6 +138,16 @@ describe('SessionReducer', () => {
     expect(r.messages[1]).not.toHaveProperty('peer');
   });
 
+  // In a session several people write in, the app names each message's sender
+  // from the prompt's durable initiator.
+  it('carries the sender of a prompt onto the user-text message', () => {
+    const r = new SessionReducer();
+    r.apply(1, { t: 'prompt', text: 'hi', initiatedBy: { userId: 'lena' } });
+    expect(r.messages[0]).toMatchObject({ initiatedBy: { userId: 'lena' } });
+    r.apply(2, { t: 'prompt', text: 'automation' });
+    expect(r.messages[1]).not.toHaveProperty('initiatedBy');
+  });
+
   it('carries image attachments from a prompt event onto the user-text message', () => {
     const r = new SessionReducer();
     const attachments = [{ kind: 'image' as const, mediaType: 'image/png' as const, data: 'aGk=' }];

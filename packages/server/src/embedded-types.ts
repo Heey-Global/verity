@@ -1,7 +1,8 @@
 import { type Database } from '@verity/store';
 import type { FastifyInstance } from 'fastify';
 import { type Kysely } from 'kysely';
-import type { ServerDeps, ServerUpdateController } from './server.js';
+import type { ServerDeps } from './server-deps.js';
+import type { ServerUpdateController } from './server-update-routes.js';
 import { type DockerGcPolicy } from './docker-gc.js';
 import { type RemoteConnectorPoolOptions } from './remote-control-connector.js';
 import { type BrokeredSecretJobExecutor } from './brokered-secret-job-executor.js';
@@ -37,6 +38,8 @@ export interface EmbeddedServerConfig {
   /** Where the release notifier remembers what it last announced. Absent = no
    *  notification; see the same field on `ServerDeps` for why that is the default. */
   serverUpdateNotifierStatePath?: string | undefined;
+  /** Where turn badges' digests survive a Server restart. */
+  turnCredentialStatePath?: string | undefined;
   /** A real Postgres connection string. Postgres is the only runtime database,
    * so the production entrypoint (main.ts) always sets this and
    * {@link buildEmbeddedServer} refuses to start without it — unless the caller
@@ -315,6 +318,9 @@ export interface EmbeddedServerConfig {
   controlPlaneRunner?: boolean | undefined;
   /** Internal test seam for startup transcript cleanup; production always uses `on`. */
   transcriptSweep?: 'on' | 'dry' | 'off' | undefined;
+  /** Internal test seam: how long a pending session-home deletion waits for the
+   * Runner supervisor. Production always uses `SESSION_HOME_DELETE_TIMEOUT_MS`. */
+  sessionHomeDeleteTimeoutMs?: number | undefined;
   /** Server-side mount of the private identity volume shared only with the
    * dedicated control-plane runner. */
   controlPlaneRunnerIdentityDir?: string | undefined;

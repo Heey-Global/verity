@@ -351,6 +351,7 @@ export class SessionReducer {
           ...(event.attachments && event.attachments.length > 0
             ? { attachments: event.attachments }
             : {}),
+          ...(event.initiatedBy ? { initiatedBy: { userId: event.initiatedBy.userId } } : {}),
         };
         this.appendMessage(msg);
         break;

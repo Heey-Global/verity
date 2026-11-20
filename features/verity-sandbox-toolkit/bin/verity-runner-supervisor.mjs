@@ -1,1094 +1,66 @@
 #!/usr/bin/env node
 
-import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import {
-  accessSync,
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readSync,
-  statSync,
-} from 'node:fs';
-import { createConnection, createServer } from 'node:net';
-import { constants as osConstants } from 'node:os';
-import {
-  access,
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  opendir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-} from 'node:fs/promises';
-import { delimiter, dirname, join, resolve } from 'node:path';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
-import { fileURLToPath, URL } from 'node:url';
-import { TextDecoder } from 'node:util';
-import { setImmediate } from 'node:timers';
+// features/verity-sandbox-toolkit/src/runner-supervisor/main.mjs
+import { resolve as resolve2 } from "node:path";
+import { fileURLToPath } from "node:url";
 
-/** Partial or stale toolkit installations must retain the legacy runtime prompt. */
-export async function installedSkillsManifestHash(seedRoot = '/opt/agent-seed') {
-  try {
-    if (!(await lstat(join(seedRoot, 'bin/verity'))).isFile()) return undefined;
-    const bytes = await readFile(join(seedRoot, 'skills-manifest.json'));
-    const manifest = JSON.parse(bytes.toString('utf8'));
-    if (
-      createHash('sha256')
-        .update(await readFile(join(seedRoot, 'bin/verity')))
-        .digest('hex') !== manifest.dispatcher
-    )
-      return undefined;
-    if (manifest.version !== 1 || !manifest.files || typeof manifest.files !== 'object')
-      return undefined;
-    const files = Object.entries(manifest.files);
-    if (!files.length) return undefined;
-    for (const [path, digest] of files) {
-      if (!/^[a-z]+(?:-[a-z]+)*\/SKILL\.md$/.test(path) || typeof digest !== 'string')
-        return undefined;
-      const target = join(seedRoot, 'skills', path);
-      if (!(await lstat(dirname(target))).isDirectory() || !(await lstat(target)).isFile())
-        return undefined;
-      if (
-        createHash('sha256')
-          .update(await readFile(target))
-          .digest('hex') !== digest
-      )
-        return undefined;
-    }
-    return createHash('sha256').update(bytes).digest('hex');
-  } catch {
-    return undefined;
-  }
-}
+// features/verity-sandbox-toolkit/src/runner-supervisor/protocol.mjs
+import { createHash as createHash2 } from "node:crypto";
+import { spawn as spawn2 } from "node:child_process";
+import { accessSync, constants as constants2, statSync } from "node:fs";
+import { createConnection } from "node:net";
+import { constants as osConstants } from "node:os";
+import { lstat as lstat2, open as open2, readFile as readFile2, rm as rm2 } from "node:fs/promises";
+import { dirname as dirname2, join as join2 } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { TextDecoder } from "node:util";
 
-export async function installedSkillsVersion(seedRoot = '/opt/agent-seed') {
-  return (await installedSkillsManifestHash(seedRoot)) ? 1 : 0;
-}
-
-export const SUPERVISOR_PROTOCOL_VERSION = 1;
-/**
- * The oldest Server dialect this supervisor still answers — ADR 0006 D9.
- *
- * The Server writes its requests at ITS floor, because every supervisor already
- * deployed compares the version for equality and a request in a newer dialect
- * would simply be refused. A supervisor must therefore read the range in return,
- * or the first genuine bump breaks the pair from whichever side moved first.
- *
- * Equal to {@link SUPERVISOR_PROTOCOL_VERSION} today, so nothing changes yet.
- */
-export const MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION = 1;
-
-/** Whether a request written by a Server this supervisor did not ship with is one
- *  it still understands. */
-function supportedRequestVersion(value) {
-  return (
-    Number.isInteger(value) &&
-    value >= MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION &&
-    value <= SUPERVISOR_PROTOCOL_VERSION
-  );
-}
-export const DEFAULT_RUNTIME_DIR = '/run/verity-runner';
-export const DEFAULT_SCRIPT_SANDBOX_PATH = '/usr/local/bin/verity-script-sandbox';
-export const SCRIPT_ISOLATION_UNAVAILABLE_ERROR = 'worktree script isolation is unavailable';
-const SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 10_000;
-
-/**
- * Whether the kernel under this container enforces the script sandbox's
- * filesystem policy. Kept in step with `probeScriptSandbox` in verity-agent-spawn-broker.mjs;
- * the two are separate installed executables and cannot share a module.
- *
- * The supervisor asks for itself rather than trusting a file the launcher left
- * behind, and only to refuse early and to report the capability in `status`: the
- * broker re-checks, and the helper refuses to launch anything it cannot confine.
- */
-export async function probeScriptSandbox(
-  helperPath = DEFAULT_SCRIPT_SANDBOX_PATH,
-  timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS,
-) {
-  return await new Promise((resolveProbe) => {
-    let child;
-    try {
-      child = spawn(helperPath, ['--probe'], {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout: timeoutMs,
-      });
-    } catch {
-      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' });
-      return;
-    }
-    let stderr = '';
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => {
-      if (stderr.length < 512) stderr += chunk;
-    });
-    child.once('error', () =>
-      resolveProbe({ available: false, reason: 'script sandbox helper could not be started' }),
-    );
-    child.once('close', (code, signal) => {
-      if (code === 0) {
-        resolveProbe({ available: true });
-        return;
-      }
-      const line = stderr.split('\n', 1)[0].trim().slice(0, 256);
-      resolveProbe({
-        available: false,
-        reason:
-          line !== ''
-            ? line
-            : `script sandbox probe exited with ${signal === null ? `code ${String(code)}` : signal}`,
-      });
-    });
-  });
-}
-// Bounds the ENTIRE start-turn request (inline image base64 included) and, via
-// MAX_CONTROL_LINE_BYTES, the per-connection frame-reader buffer — so it is also the
-// supervisor's memory/DoS bound, not only an attachment limit. KNOWN DIVERGENCE: the
-// Server accepts larger single images than this (MAX_ATTACHMENT_BASE64_LEN ≈ 7 MB ×
-// up to 8, packages/server/src/server.ts), and the in-process runner streams them
-// uncapped. A large screenshot that works in-process is therefore rejected — cleanly,
-// never truncated — on the supervisor path. Raising this is a deliberate follow-up
-// (it widens the shared frame-reader/DoS bound), tracked for the Stage-5c cutover.
-// Until then the Server refuses an over-cap frame BEFORE writing it, against its own
-// 1:1 copy of this number (MAX_SUPERVISOR_REQUEST_BYTES in
-// packages/session/src/runner-supervisor-client.ts) — keep the two in step.
-export const MAX_START_REQUEST_BYTES = 4 * 1024 * 1024;
-const MAX_CONTROL_LINE_BYTES = MAX_START_REQUEST_BYTES + 1;
-// How long a refused peer may keep streaming the payload we already rejected before
-// the connection is dropped anyway. Long enough for a multi-megabyte write to drain
-// over a Unix socket, short enough that a stalled peer cannot hold the slot.
-const OVERSIZE_DRAIN_GRACE_MS = 2_000;
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1_000;
-// What the start-turn request validator will parse at all — the outermost gate, wider
-// than what any given supervisor was launched for (`workerBackends`). It currently
-// holds the same three names as ACP_WORKER_BACKENDS below. That is a
-// coincidence of the current fleet, not an identity: the two answer different questions
-// ("is this a backend name" vs. "may it spend the operator's secrets"), and they are
-// kept as separate literals for the same reason the next set is — see below.
-const WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
-// The transports that reach the brokered Verity tools over the loopback MCP gateway
-// (ADR 0014 D1). Only these may
-// carry a gateway bearer on start-turn.
-//
-// `opencode-acp` joined them with ADR 0014 Amendment 4: which agents may spend the
-// operator's secrets is a decision, and that decision has now been taken for
-// OpenCode. It is still NOT the same question as "is this ACP" — a fourth adapter
-// has to be admitted here deliberately, not by speaking the protocol. The gates
-// stay separate literals so none can drift into the others by accident: this set,
-// `carriesBrokeredSecretTools` (packages/session/src/turn-system-prompt.ts), the
-// `acpBackend` flag that decides whether a bearer is minted at all
-// (packages/session/src/runner-supervisor-client.ts), and the two independent
-// re-checks in packages/session/src/runner-worker-entry.ts. They must agree; a
-// member added to one alone refuses the turn it was meant to admit.
-const ACP_WORKER_BACKENDS = new Set(['claude-acp', 'codex-acp', 'opencode-acp']);
-// The subset of WORKER_BACKENDS that the PRODUCTION supervisor actually launches.
-// A start-turn for any backend outside this set is rejected at runtime (see the
-// workerBackends gate below), so it is the real capability boundary — distinct
-// from WORKER_BACKENDS, which only bounds what the request validator will parse.
-// All three ACP transports cross the process boundary as a setpriv'd CLI child
-// spawned through the root broker
-// (packages/session/src/runner-worker-entry.ts).
-// Every parseable backend is launchable today, so this set and WORKER_BACKENDS coincide
-// as well. A backend with no worker adapter — no argv, no child to spawn, the position
-// OpenCode held as a long-lived HTTP server client before `opencode acp` (ADR 0012
-// Amendment 4) — stays on the loopback path and MUST NOT be listed here, or its turns
-// would fail at start-turn. There is no such backend at the moment; this boundary
-// remains explicit for future adapters.
-export const SUPERVISED_WORKER_BACKENDS = Object.freeze([
-  'claude-acp',
-  'codex-acp',
-  'opencode-acp',
-]);
-/**
- * What each supervised backend needs the IMAGE to carry — the same absolute paths
- * the spawn broker execs (`agentLaunchSpec` in verity-agent-spawn-broker.mjs), and
- * they have to stay in step with it: a path that is right here and wrong there
- * refuses a turn the image could have run.
- */
-const WORKER_BACKEND_EXECUTABLES = Object.freeze({
-  'claude-acp': '/usr/local/bin/claude-agent-acp',
-  'codex-acp': '/usr/local/bin/codex-acp',
-  'opencode-acp': '/usr/local/bin/opencode-acp',
-});
-/**
- * {@link SUPERVISED_WORKER_BACKENDS} narrowed to what this image actually installed.
- * The constant above is a property of the Feature's SOURCE, while the agent CLIs are
- * opt-in at build time (`INSTALL_OPENCODE` and friends in install.sh), so the two
- * disagree on any image built without one of them. Advertising a backend the image
- * cannot start turns a clear refusal into `setpriv: failed to execute …` after the
- * turn has already been claimed — the same symptom for "never installed" as for a
- * genuinely broken image, and neither readable from the chat.
- *
- * Identity is the broker's question, but the supervisor must at least prove the
- * path is an executable regular file before advertising it.
- */
-export function installedWorkerBackends(
-  executable = (path) => {
-    try {
-      if (!statSync(path).isFile()) return false;
-      accessSync(path, constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  },
-) {
-  return SUPERVISED_WORKER_BACKENDS.filter((backend) =>
-    executable(WORKER_BACKEND_EXECUTABLES[backend]),
-  );
-}
-// The env the PRODUCTION supervisor hands its workers. A worker is spawned with an
-// explicit env — `process.env` is deliberately NOT spread across that boundary — so
-// every variable the worker reads has to be named here or it simply is not there.
-// `VERITY_MCP_GATEWAY_URL` was not, and the worker drops the MCP gateway when it has
-// no URL to offer (packages/session/src/runner-worker-entry.ts): an ACP turn that had
-// been issued a gateway bearer still started its agent with an EMPTY mcpServers list,
-// so the brokered Verity tools were absent from the session altogether. The supervisor
-// inherits the container env the provisioner sets, which is the only place this URL
-// exists. Empty is treated as absent — a blank URL would be offered to the agent as a
-// server it can never reach.
-export function supervisorWorkerEnv(environment) {
-  const brokerSocket = environment.VERITY_AGENT_SPAWN_BROKER_SOCKET;
-  const mcpGatewayUrl = environment.VERITY_MCP_GATEWAY_URL;
-  const controlMemoryUrl = environment.VERITY_CONTROL_MEMORY_URL;
-  return {
-    ...(controlMemoryUrl === undefined || controlMemoryUrl === ''
-      ? {}
-      : { VERITY_CONTROL_MEMORY_URL: controlMemoryUrl }),
-    ...(brokerSocket === undefined || brokerSocket === ''
-      ? {}
-      : { VERITY_AGENT_SPAWN_BROKER_SOCKET: brokerSocket }),
-    ...(mcpGatewayUrl === undefined || mcpGatewayUrl === ''
-      ? {}
-      : { VERITY_MCP_GATEWAY_URL: mcpGatewayUrl }),
-  };
-}
-// Image attachments are the only upload kind that survives to the runner: file
-// uploads are materialized to disk + reduced to a prompt suffix server-side before
-// launch (packages/session/src/file-attachments.ts), so only staged image references
-// cross the start-turn protocol. Kept 1:1 with @verity/events imageMediaTypeSchema.
-const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
-// Matches the Server's per-turn upload cap (packages/server/src/server.ts). The total
-// image bytes are bounded independently from the remaining request text.
-const MAX_START_ATTACHMENTS = 8;
-const MAX_WORKER_ERROR_BYTES = 16 * 1024;
-const WORKER_ERROR_DRAIN_TIMEOUT_MS = 100;
-// How long a rejected start waits for its SIGKILLed worker to actually go, before it
-// releases the worker lock. SIGKILL is not refusable, so this is a scheduling margin
-// rather than a grace period — but it is bounded, because a turn that cannot be ended
-// still has to be reported rather than held.
-const REJECTED_WORKER_EXIT_WAIT_MS = 2_000;
-const MAX_TRUSTED_CLI_OUTPUT_BYTES = 24 * 1024;
-// Mirrors MAX_TRUSTED_CLI_SECRETS in packages/secret-contracts/src/tool.ts. The
-// contract already bounded the request; this is the in-container half of the
-// same bound, because the supervisor validates what reaches it rather than
-// trusting the sender.
-const MAX_TRUSTED_CLI_SECRETS = 8;
-const TRUSTED_CLI_TIMEOUT_MS = 30 * 60 * 1_000;
-const TRUSTED_CLI_KILL_GRACE_MS = 5_000;
-const SUPERVISOR_REQUEST_GRACE_MS = 10_000;
-
-/**
- * How many turn starts may be spawning at once.
- *
- * A start is not cheap: it fsyncs the claim, writes `request.json`, spawns a
- * `flock` child for the worker lock, then spawns the worker itself. Letting an
- * unbounded burst of them run concurrently is how a host under CPU pressure turns
- * every start slow at once — each one waiting on the others' fsyncs and forks.
- * Bounding concurrency makes the wait a QUEUE, which is measurable and bounded,
- * instead of contention, which is neither.
- */
-const MAX_CONCURRENT_STARTS = 4;
-/**
- * How many starts may be waiting for one of those slots. Beyond this the
- * supervisor refuses explicitly rather than accepting work it cannot get to —
- * a refusal the Server can show, instead of a timeout it has to guess about.
- *
- * Deep against four slots on purpose, and still well inside the Server's start
- * budget: what occupies a slot is the SPAWN, not the turn. `startImpl` returns once
- * the worker is up — tens of milliseconds of fsync and fork, not the minutes the
- * agent then runs for — so a full queue drains in `64 / 4` spawns, not in 64 turns.
- * A cap tuned to the budget instead would have to assume a spawn latency, and would
- * refuse healthy bursts on a host that is merely briefly slow.
- */
-const MAX_QUEUED_STARTS = 64;
-/** The `frameSeq` a synthesized terminal frame claims. Only ever written to an
- *  EMPTY stream, so 1 is both correct and the only contiguous choice (ADR 0006 D3). */
-const SYNTHETIC_TERMINAL_FRAME_SEQ = 1;
-/** Kept 1:1 with RUNNER_FRAME_PROTOCOL_VERSION in @verity/store. */
-const RUNNER_FRAME_PROTOCOL_VERSION = 1;
-
-function isObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * Redact every secret the run carried, longest value first.
- *
- * Order is load-bearing once there is more than one: a short secret that also
- * occurs inside a longer one would replace the prefix and leave the remainder of
- * the longer secret in the output. Sorting across ALL variants of ALL secrets —
- * not per secret — is what keeps that property.
- */
-export function redactTrustedCliText(bytes, secrets) {
-  let text;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return '[output withheld: undecodable]';
-  }
-  const variants = (Array.isArray(secrets) ? secrets : [secrets])
-    .flatMap((secret) => [
-      secret,
-      Buffer.from(secret, 'utf8').toString('base64'),
-      encodeURIComponent(secret),
-    ])
-    .filter((value) => typeof value === 'string' && value.length > 0)
-    .sort((left, right) => right.length - left.length);
-  for (const value of new Set(variants)) {
-    text = text.split(value).join('[REDACTED]');
-  }
-  return text;
-}
-
-function isValidTrustedCliSecret(secret) {
-  return (
-    isObject(secret) &&
-    typeof secret.secretAlias === 'string' &&
-    /^[A-Z][A-Z0-9_]*$/u.test(secret.secretAlias) &&
-    typeof secret.env === 'string' &&
-    /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) &&
-    typeof secret.secret === 'string' &&
-    secret.secret.length > 0 &&
-    !secret.secret.includes('\0') &&
-    Buffer.byteLength(secret.secret) <= 1024 * 1024 &&
-    (secret.injection === undefined || secret.injection === 'env' || secret.injection === 'file') &&
-    (secret.encoding === undefined || (secret.injection === 'file' && secret.encoding === 'base64'))
-  );
-}
-
-/**
- * Accept the flat single-secret shape a pre-`secrets` server still sends.
- *
- * The request crosses from the server into the sandbox, and the two deploy
- * separately, so every rollout has a window where the versions differ. Without
- * this the window is not merely awkward but unserviceable in both directions: a
- * new image rejects every call from an older server, and an older image rejects
- * every call from a new one. Tolerating the old shape here makes "ship the image
- * first" (ADR 0011) an ordering that actually works.
- *
- * Delete once no deployed server sends the flat shape.
- */
-function normalizeTrustedCliRequest(request) {
-  if (!isObject(request) || Array.isArray(request.secrets) || typeof request.secret !== 'string') {
-    return request;
-  }
-  const { secret, secretAlias, env, injection, ...rest } = request;
-  // The value now lives only in the entry below, which finish() zeroes.
-  request.secret = '';
-  return {
-    ...rest,
-    secrets: [{ secretAlias, env, ...(injection === undefined ? {} : { injection }), secret }],
-  };
-}
-
-export async function runTrustedCliViaBroker(rawRequest, options = {}) {
-  const request = normalizeTrustedCliRequest(rawRequest);
-  if (
-    !isObject(request) ||
-    !SAFE_ID.test(request.turnId ?? '') ||
-    (request.correlationId !== undefined && !SAFE_ID.test(request.correlationId)) ||
-    !Array.isArray(request.secrets) ||
-    request.secrets.length === 0 ||
-    request.secrets.length > MAX_TRUSTED_CLI_SECRETS ||
-    !request.secrets.every(isValidTrustedCliSecret) ||
-    // Duplicates would collide on one environment variable, and under file
-    // injection on one path in the secret directory.
-    new Set(request.secrets.map((secret) => secret.env)).size !== request.secrets.length ||
-    !Array.isArray(request.command) ||
-    request.command.length === 0 ||
-    request.command.length > 256 ||
-    request.command.some((part) => typeof part !== 'string' || Buffer.byteLength(part) > 16_384) ||
-    !request.command[0].startsWith('/') ||
-    (request.entryScript !== undefined &&
-      (!isObject(request.entryScript) ||
-        typeof request.entryScript.path !== 'string' ||
-        !request.entryScript.path.startsWith('/') ||
-        typeof request.entryScript.projectPath !== 'string' ||
-        request.entryScript.projectPath.startsWith('/') ||
-        request.entryScript.projectPath
-          .split('/')
-          .some((component) => component === '' || component === '.' || component === '..') ||
-        typeof request.entryScript.sha256 !== 'string' ||
-        !/^[a-f0-9]{64}$/u.test(request.entryScript.sha256) ||
-        (request.entryScript.loading !== 'isolated' && request.entryScript.loading !== 'dynamic')))
-  ) {
-    throw new Error('invalid trusted CLI request');
-  }
-  const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
-  const persistedState = await readTurnState(runtimeDir, request.turnId);
-  // Standalone smoke tests and the exported broker helper predate durable turn
-  // state and still supply a request file directly. Real supervisor turns always
-  // have state; prefer it because the production worker consumes request.json.
-  const startRequest =
-    persistedState ??
-    JSON.parse(await readFile(join(runtimeDir, 'turns', request.turnId, 'request.json'), 'utf8'));
-  if (
-    !isObject(startRequest) ||
-    startRequest.turnId !== request.turnId ||
-    startRequest.trustedCliExecution !== true ||
-    typeof startRequest.cwd !== 'string'
-  ) {
-    throw new Error('trusted CLI is unavailable for this turn');
-  }
-  const socketPath =
-    options.brokerSocket ??
-    process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ??
-    '/run/verity-runner-broker/agent-spawn-broker.sock';
-  // Refuse obviously retired turns without touching the privileged broker. This is
-  // only a fast preflight; the same predicate runs again after the async connect.
-  if (options.authorize !== undefined && (await options.authorize(request)) !== true) {
-    throw new Error('trusted CLI turn capability is no longer active');
-  }
-  return await new Promise((resolveResult, rejectResult) => {
-    const socket = createConnection(socketPath);
-    let buffered = Buffer.alloc(0);
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
-    let spawned = false;
-    let settled = false;
-    let truncated = false;
-    let timedOut = false;
-    // Raw blocks cross only the existing privileged Server socket, whose caller already
-    // owns the injected secrets. That caller redacts into bounded buffers before ACK;
-    // raw blocks must never become an agent-facing tool result or an on-disk artifact.
-    const streaming = request.streamOutput === true && typeof options.onOutput === 'function';
-    const counts = { stdout: 0, stderr: 0 };
-    let terminationReason = 'process_exit';
-    let terminationRequested = false;
-    let processing = false;
-    let ended = false;
-    let killTimer;
-    const finish = (error, result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearTimeout(killTimer);
-      options.signal?.removeEventListener('abort', abort);
-      socket.destroy();
-      // Take the values off the request before anything can resolve, so the only
-      // remaining reference is the local one the redactor needs.
-      // File injection materializes decoded bytes, so a CLI can echo either the
-      // wire value or the original credential. Both must be masked.
-      const secrets = request.secrets.flatMap((entry) =>
-        entry.encoding === 'base64'
-          ? [entry.secret, Buffer.from(entry.secret, 'base64').toString('utf8')]
-          : [entry.secret],
-      );
-      for (const entry of request.secrets) entry.secret = '';
-      if (error !== undefined) rejectResult(error);
-      else if (streaming) {
-        resolveResult({
-          exitCode: result.exitCode,
-          stdout: '',
-          stderr: '',
-          outputMode: 'stream-v1',
-          ...(result.exitCodeKnown === false ? { exitCodeKnown: false } : {}),
-          terminationReason,
-          stdoutBytes: counts.stdout,
-          stderrBytes: counts.stderr,
-          ...(terminationRequested ? { terminationRequested: true } : {}),
-          ...(timedOut ? { timedOut: true } : {}),
-          ...(truncated ? { truncated: true } : {}),
-        });
-      } else if (truncated) {
-        resolveResult({
-          exitCode: result.exitCode,
-          stdout: '[output withheld: truncated]',
-          stderr: '[output withheld: truncated]',
-          truncated: true,
-          ...(timedOut ? { timedOut: true } : {}),
-        });
-      } else {
-        const redacted = {
-          exitCode: result.exitCode,
-          stdout: redactTrustedCliText(Buffer.concat(stdout), secrets),
-          stderr: redactTrustedCliText(Buffer.concat(stderr), secrets),
-          ...(timedOut ? { timedOut: true } : {}),
-        };
-        if (Buffer.byteLength(JSON.stringify(redacted), 'utf8') > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
-          resolveResult({
-            exitCode: result.exitCode,
-            stdout: '[output withheld: truncated]',
-            stderr: '[output withheld: truncated]',
-            truncated: true,
-            ...(timedOut ? { timedOut: true } : {}),
-          });
-        } else {
-          resolveResult(redacted);
-        }
-      }
-    };
-    const signal = () => {
-      if (spawned && !socket.destroyed) {
-        terminationRequested = true;
-        socket.write(
-          `${JSON.stringify({ protocolVersion: 1, kind: 'signal', signal: 'SIGKILL' })}\n`,
-        );
-      }
-    };
-    const terminate = () => {
-      signal();
-      if (killTimer !== undefined) return;
-      killTimer = setTimeout(
-        () => finish(new Error('trusted CLI broker did not settle after SIGKILL')),
-        options.killGraceMs ?? TRUSTED_CLI_KILL_GRACE_MS,
-      );
-    };
-    const abort = () => {
-      terminationReason = 'transport_failure';
-      terminate();
-    };
-    options.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(() => {
-      terminationReason = 'timeout';
-      timedOut = true;
-      terminate();
-    }, options.timeoutMs ?? TRUSTED_CLI_TIMEOUT_MS);
-    socket.once('error', (error) => finish(error));
-    socket.once('connect', async () => {
-      if (options.signal?.aborted) {
-        finish(new Error('trusted CLI output connection closed'));
-        return;
-      }
-      // Authorize only after the asynchronous connect, immediately before secrets cross
-      // the socket. A worker may settle or cancellation may begin while connect is pending.
-      try {
-        if (options.authorize !== undefined && (await options.authorize(request)) !== true) {
-          finish(new Error('trusted CLI turn capability is no longer active'));
-          return;
-        }
-      } catch (error) {
-        finish(error);
-        return;
-      }
-      socket.write(
-        `${JSON.stringify({
-          protocolVersion: 1,
-          kind: 'spawn-trusted-cli',
-          ...(request.correlationId === undefined ? {} : { correlationId: request.correlationId }),
-          command: request.command[0],
-          args: request.command.slice(1),
-          ...(request.entryScript === undefined ? {} : { entryScript: request.entryScript }),
-          cwd: startRequest.cwd,
-          secrets: request.secrets.map((entry) => ({
-            name: entry.env,
-            value: entry.secret,
-            ...(entry.injection === undefined ? {} : { injection: entry.injection }),
-            ...(entry.encoding === undefined ? {} : { encoding: entry.encoding }),
-          })),
-        })}\n`,
-      );
-    });
-    socket.on('data', (chunk) => {
-      socket.pause();
-      processing = true;
-      void (async () => {
-        if (buffered.length + chunk.length > 256 * 1024) {
-          terminationReason = 'transport_failure';
-          terminate();
-          finish(new Error('trusted CLI broker frame too large'));
-          return;
-        }
-        buffered = Buffer.concat([buffered, chunk]);
-        for (;;) {
-          const newline = buffered.indexOf(0x0a);
-          if (newline < 0) break;
-          const line = buffered.subarray(0, newline).toString('utf8');
-          buffered = buffered.subarray(newline + 1);
-          let frame;
-          try {
-            frame = JSON.parse(line);
-          } catch {
-            finish(new Error('trusted CLI broker returned malformed JSON'));
-            return;
-          }
-          if (frame.ok !== true) {
-            // The broker answers a refusal with `{ ok: false, error }` (see
-            // verity-agent-spawn-broker.mjs). Dropping that message here is what
-            // turns a precise refusal into an unexplained failed run by the time
-            // it reaches the operator — the reason exists at every hop and was
-            // discarded at this one.
-            const reason =
-              typeof frame.error === 'string' && frame.error !== '' ? frame.error : undefined;
-            const failure = new Error(
-              reason === undefined
-                ? 'trusted CLI broker rejected execution'
-                : `trusted CLI broker rejected execution: ${reason}`,
-            );
-            if (
-              isObject(frame.trustedCliFailure) &&
-              ['validation', 'materialization', 'launch-spec', 'spawn'].includes(
-                frame.trustedCliFailure.phase,
-              ) &&
-              typeof frame.trustedCliFailure.cause === 'string'
-            ) {
-              failure.trustedCliFailure = frame.trustedCliFailure;
-            }
-            finish(failure);
-            return;
-          }
-          if (frame.kind === 'spawned') {
-            if (!spawned) {
-              spawned = true;
-              try {
-                options.onSpawned?.();
-              } catch (error) {
-                finish(error);
-                return;
-              }
-            }
-            if (timedOut || truncated || terminationReason !== 'process_exit') signal();
-            continue;
-          }
-          if (frame.kind === 'stdout' || frame.kind === 'stderr') {
-            const bytes = Buffer.from(frame.data ?? '', 'base64');
-            if (streaming) {
-              counts[frame.kind] += bytes.length;
-              if (terminationReason !== 'process_exit') {
-                bytes.fill(0);
-                continue;
-              }
-              if (counts.stdout + counts.stderr > 10 * 1024 * 1024) {
-                terminationReason = 'output_limit';
-                truncated = true;
-                bytes.fill(0);
-                terminate();
-                continue;
-              }
-              try {
-                for (let offset = 0; offset < bytes.length; offset += 16384) {
-                  await options.onOutput(frame.kind, bytes.subarray(offset, offset + 16384));
-                  if (settled || terminationReason !== 'process_exit') break;
-                }
-              } catch (error) {
-                if (terminationReason === 'process_exit') {
-                  terminationReason = ['redaction_failure', 'output_limit'].includes(
-                    error?.outputFailure,
-                  )
-                    ? error.outputFailure
-                    : 'storage_failure';
-                }
-                truncated = true;
-                terminate();
-              } finally {
-                bytes.fill(0);
-              }
-              continue;
-            }
-            if (outputBytes + bytes.length > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
-              truncated = true;
-              terminate();
-              continue;
-            }
-            outputBytes += bytes.length;
-            (frame.kind === 'stdout' ? stdout : stderr).push(bytes);
-            continue;
-          }
-          if (frame.kind === 'exit') {
-            const exitCode =
-              Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255 ? frame.code : 1;
-            finish(undefined, {
-              exitCode,
-              exitCodeKnown: Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255,
-            });
-          }
-        }
-      })()
-        .catch(() => {
-          terminate();
-          finish(new Error('trusted CLI output processing failed'));
-        })
-        .finally(() => {
-          processing = false;
-          if (ended && !settled) finish(new Error('trusted CLI broker closed before exit'));
-          if (!settled) socket.resume();
-        });
-    });
-    socket.once('end', () => {
-      ended = true;
-      if (!processing && !settled) finish(new Error('trusted CLI broker closed before exit'));
-    });
-  });
-}
-
-/**
- * Structured supervisor telemetry, one JSON object per line on stderr.
- *
- * The Sandbox has no metrics sink, and the supervisor's stderr is the one stream
- * that is already collected. A line per notable start is cheap and is what turns
- * "turns were slow that evening" into a queue depth and a latency.
- */
-function logTelemetry(record) {
-  try {
-    process.stderr.write(`${JSON.stringify({ verity: 'runner-supervisor', ...record })}\n`);
-  } catch {
-    // Never let observability break a turn.
-  }
-}
-
-let eventLoopHistogram;
-/** Mean/max libuv delay since the previous read, so each record describes its own
- *  interval. This is the number that distinguishes a slow supervisor from a
- *  starved one — the distinction the incident could not make. */
-function sampleEventLoopDelay() {
-  try {
-    if (eventLoopHistogram === undefined) {
-      eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
-      eventLoopHistogram.enable();
-      return undefined;
-    }
-    const mean = eventLoopHistogram.mean / 1e6;
-    const max = eventLoopHistogram.max / 1e6;
-    eventLoopHistogram.reset();
-    if (!Number.isFinite(mean) || !Number.isFinite(max)) return undefined;
-    return { mean: Math.round(mean * 100) / 100, max: Math.round(max * 100) / 100 };
-  } catch {
-    return undefined;
-  }
-}
-
-/** POSIX's `128 + signum`, which is what the Server's exit-code checks already
- *  read (`isExternalInterruptionExitCode`). The numbers come from `os.constants`
- *  rather than a hand-kept table, so a signal nobody anticipated still encodes as
- *  itself. An unmapped name falls back to 1 — a plain failure — and deliberately
- *  NOT to SIGTERM's 143, which the Server reads as "the operator interrupted this"
- *  and would turn an unrecognized crash into a cancellation the session never made. */
-function signalExitCode(signal) {
-  const number = osConstants.signals[signal];
-  return typeof number === 'number' ? 128 + number : 1;
-}
-
-/**
- * Give a worker that died before saying anything a terminal frame of its own.
- *
- * Without this, an early crash leaves an EMPTY event stream and a settled state:
- * the Server has a turn that ended and no terminal event to end it with, which is
- * exactly the `agent exited with code 1 without a terminal event` the operator saw.
- * The supervisor is the only party that holds the worker's exit code, signal and
- * captured stderr, so it is the only one that can write a frame that says why.
- *
- * Written ONLY to an empty or absent stream. A worker that produced frames bound
- * `turnId` to ITS `runnerInstanceId` and owns the sequence (D3); appending under a
- * second instance id would corrupt exactly the invariant that makes replay
- * idempotent. In that case the Server's own tail already has frames to settle from.
- */
-export async function writeSyntheticTerminalFrame(turnDir, detail) {
-  const eventPath = join(turnDir, 'events.jsonl');
-  // `lstat`, not `stat`: the turn directory is WORKER-writable, so a worker that
-  // replaced its own event file with a symlink would otherwise have the supervisor
-  // — which runs outside the worker's confinement — follow it and write this frame
-  // wherever the link points. A link is not the empty stream this may write to, so
-  // it is refused outright rather than resolved. `O_NOFOLLOW` below closes the
-  // remaining gap between the check and the open.
-  //
-  // `nlink` closes the same hole in its hardlink form, which neither `isFile()` nor
-  // `O_NOFOLLOW` sees: a hardlink to some other empty file the worker may link to
-  // IS a regular file, of size zero, opened without complaint — and appending to it
-  // writes this frame into that file. The supervisor writes this path itself and
-  // nothing else links it, so more than one link means someone else made one.
-  const existing = await lstat(eventPath).catch((error) => {
-    if (error?.code === 'ENOENT') return undefined;
-    throw error;
-  });
-  if (existing !== undefined && (!existing.isFile() || existing.size > 0 || existing.nlink > 1)) {
-    return false;
-  }
-  const stderr = typeof detail.workerError === 'string' ? detail.workerError : '';
-  const body = {
-    kind: 'result',
-    result: {
-      // No `sessionId`. That field is the AGENT's conversation id, which only the
-      // worker learns and only once the backend has opened the thread — a worker
-      // that died before its first frame never had one. The Server persists a
-      // failed turn's `result.sessionId` as the session's resume pointer
-      // (`conductor.ts`), so putting the store's session id here would pin every
-      // later turn to a thread the agent never issued. Absent means unknown, which
-      // is the truth.
-      // A clean exit with an EMPTY stream is still a failed turn: the worker did
-      // none of the work and said nothing, so reporting the process's own `0` would
-      // hand the Server a success it must then badge as running forever. The real
-      // exit code stays in the turn state; this is the turn's verdict, not the
-      // process's.
-      exitCode:
-        typeof detail.workerExitCode === 'number' && detail.workerExitCode !== 0
-          ? detail.workerExitCode
-          : detail.workerSignal != null
-            ? signalExitCode(detail.workerSignal)
-            : 1,
-      stderr:
-        stderr.length > 0
-          ? stderr
-          : detail.workerSignal != null
-            ? `runner worker terminated by signal ${detail.workerSignal} before producing any event`
-            : detail.workerExitCode === 0
-              ? 'runner worker exited successfully before producing any event'
-              : 'runner worker exited before producing any event',
-      // A turn the operator cancelled is not a crash. Without this the SIGKILL that
-      // ends the grace window reads as exit 137 and the session shows a failure for
-      // something it was asked to do.
-      aborted: detail.aborted === true,
-    },
-  };
-  const frame = {
-    protocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
-    runnerInstanceId: detail.runnerInstanceId,
-    turnId: detail.turnId,
-    frameSeq: SYNTHETIC_TERMINAL_FRAME_SEQ,
-    payloadHash: createHash('sha256').update(JSON.stringify(body)).digest('hex'),
-    ...body,
-  };
-  // Every caller reaches here only after the worker's `exit` event (or a failed
-  // spawn), so the worker can no longer race this decision. O_APPEND is still
-  // defense in depth: even if an inherited descriptor unexpectedly writes late,
-  // the supervisor can never overwrite bytes already owned by the worker.
-  const flags =
-    constants.O_RDWR |
-    constants.O_APPEND |
-    constants.O_NOFOLLOW |
-    (existing === undefined ? constants.O_CREAT | constants.O_EXCL : 0);
-  // 0o640, matching the mode the worker opens its own event stream with: the Server
-  // reads both as the same uid, and a supervisor-written frame should not be the one
-  // file in the turn that a group member could modify.
-  const handle = await open(eventPath, flags, 0o640).catch((error) => {
-    // EEXIST: the worker created the stream between the check and the open, and owns
-    // it. ELOOP: it put a symlink there instead — `O_NOFOLLOW` refused to follow it,
-    // and the answer is the same, namely that this is not ours to write. ENOENT can
-    // only reach here on the branch that passes no `O_CREAT`, i.e. the file was seen
-    // by `lstat` and unlinked before the open: again someone else's doing, and again
-    // not a reason for the exported contract to change from `false` to a throw.
-    if (error?.code === 'EEXIST' || error?.code === 'ELOOP' || error?.code === 'ENOENT') {
-      return undefined;
-    }
-    throw error;
-  });
-  if (handle === undefined) return false;
-  // Set once the frame is on disk. Until then a failure must take the file with it:
-  // `O_CREAT|O_EXCL` has already created an EMPTY stream, and every caller swallows
-  // this function's errors, so leaving that file behind converts "the stream is
-  // missing" — which recovery reads as a dead Runner it can settle — into "the stream
-  // exists and has no terminal frame", which is the `no-terminal-event` symptom this
-  // whole path exists to remove. Absent is the better diagnosis, so restore it.
-  let wrote = false;
-  // Set once the checks below have proved the file is OURS and empty. The rollback in
-  // the `finally` is gated on it and must be: the early return above leaves a file
-  // somebody else owns and may have written, and truncating that would destroy the
-  // worker's own events to tidy up a frame that was never written.
-  let owned = false;
-  try {
-    // On the descriptor now open, so it closes the window the pre-open `lstat` cannot:
-    // a link made between the two checks is a different file from the one that was
-    // inspected, and `nlink` is what says so. `O_NOFOLLOW` covers the symlink form of
-    // that race; this covers the hardlink form, at the cost of a stat already paid for.
-    const fresh = await handle.stat();
-    if (fresh.size > 0 || fresh.nlink > 1) return false;
-    owned = true;
-    // Byte-counted rather than fire-and-forget, because `write(2)` is permitted to
-    // stop short and Node does not loop for us. This frame carries up to
-    // `MAX_WORKER_ERROR_BYTES` of captured stderr, so it is nowhere near the small
-    // write a filesystem completes atomically, and the case that truncates it —
-    // ENOSPC — is exactly the one a host under pressure produces. Half a JSON line at
-    // the head of the stream is worse than no stream at all: the tail cannot parse it,
-    // so recovery sees a CORRUPT turn where it would otherwise see the missing one it
-    // knows how to settle. A short write therefore fails the same way a rejected one
-    // does, and the `finally` puts the file back the way it was found.
-    const bytes = Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8');
-    const { bytesWritten } = await handle.write(bytes, 0, bytes.length);
-    if (bytesWritten !== bytes.length) return false;
-    wrote = true;
-    await handle.sync().catch(() => undefined);
-    // The bytes are durable, but when this open CREATED the file its directory entry
-    // need not be — and `updateTurnState`, which fsyncs its own directory, is about to
-    // record the turn as settled. A crash in between would leave a settled turn whose
-    // stream does not exist: precisely the empty-stream symptom this frame is here to
-    // prevent, reintroduced by the ordering that was meant to prevent it.
-    if (existing === undefined) await syncDirectory(turnDir).catch(() => undefined);
-    return true;
-  } finally {
-    // Before the close, and before the size check below reads it: a partial or
-    // rejected write leaves bytes on a file the cleanup would then decline to remove
-    // for being non-empty — stranding the truncated line it was meant to erase.
-    if (owned && !wrote) await handle.truncate(0).catch(() => undefined);
-    await handle.close().catch(() => undefined);
-    // Only a file this call created, and only while it is still the empty one it
-    // created: `O_EXCL` proves nobody else owned that name at open time, and a size of
-    // zero proves nobody has written to it since.
-    if (!wrote && existing === undefined) {
-      await lstat(eventPath)
-        .then(async (leftover) => {
-          if (leftover.isFile() && leftover.size === 0) await rm(eventPath, { force: true });
-        })
-        .catch(() => undefined);
-    }
-  }
-}
-
-const MISSING_WORKER_ERROR = 'worker missing during supervisor recovery';
-/** The same settlement, for a turn the operator had already cancelled. Its worker is
- * equally gone; calling that a crash would blame the system for the operator's own
- * decision. */
-const CANCELLED_MISSING_WORKER_ERROR =
-  'runner turn was cancelled; its worker did not survive the supervisor restart';
-
-function cancelPath(runtimeDir, turnId) {
-  return join(runtimeDir, 'cancellations', `${turnId}.json`);
-}
-/**
- * Total by construction, and deliberately TRI-state.
- *
- * The tombstone's presence proves a cancellation and ENOENT proves its absence,
- * but every other failure (EISDIR over a path something else created, EACCES,
- * EIO) proves neither. Letting such a read throw was worse than either answer: it
- * aborted the caller mid-way and left the turn `claimed` with no worker and no
- * terminal frame — a session that never finishes, the exact failure this file is
- * being changed to remove. So `unknown` is an answer, and each caller resolves it
- * in the direction where being wrong is survivable. `cancelledBeforeStart` covers
- * cancels this supervisor instance handled itself; the tombstone is what survives
- * a restart, so it cannot simply be ignored.
- *
- * Before spawning, anything but a proven absence stops the worker: refusing to start
- * is recoverable — the turn settles with a terminal frame and the operator can ask
- * again — whereas running a turn that was cancelled puts an agent to work on the
- * worktree nobody asked for, after the operator has already been told it stopped.
- */
-async function readCancelTombstone(runtimeDir, turnId) {
-  try {
-    await readFile(cancelPath(runtimeDir, turnId));
-    return 'cancelled';
-  } catch (error) {
-    return error?.code === 'ENOENT' ? 'absent' : 'unknown';
-  }
-}
-/**
- * While settling: only a proven cancellation is reported as one.
- *
- * Here the turn is ending either way and the only question is which label it
- * carries. Guessing `aborted` for a turn that really crashed would hide a genuine
- * failure behind "you cancelled it", so an unreadable tombstone reports the crash.
- */
-async function cancelExplainsSettlement(runtimeDir, turnId) {
-  return (await readCancelTombstone(runtimeDir, turnId)) === 'cancelled';
-}
-
-/**
- * Settle a turn whose worker is gone — and say WHY in the stream, not only in the
- * state.
- *
- * Recovery after a supervisor restart is the one remaining way to reach a settled
- * turn with an empty event stream, which the Server reads as `agent exited without
- * a terminal event`: the same symptom, arriving by the one door the start path no
- * longer leaves open. The frame is written first so no window exists in which the
- * state says `settled` and the stream still says nothing, and it is written
- * best-effort because a turn that cannot be explained must still be ended.
- *
- * The frame is stamped with the state's OWN `runnerInstanceId` — the instance that
- * ran the worker — not this one: `turnId` binds to exactly one instance for the
- * life of the turn (ADR 0006 D3), and this supervisor is only its undertaker. A
- * state old enough to lack that field is settled without a frame rather than with
- * an unattributable one.
- *
- * A turn with NO state at all is left alone. Writing one here would invent a settled
- * turn out of a state that says nothing — no `startCommandId`, no instance, no
- * diagnosis — and the Server reads exactly that shape as "nothing ever claimed this",
- * the one answer that lets it safely start the turn again. Better a turn it may retry
- * than a failure it cannot explain.
- *
- * That rule is the adopter's own, unchanged; sharing this function extends it to the
- * start path's liveness check, which used to write `settled` for a turn it could not
- * read. The difference is theoretical: `adopt()` only ever adopts a turn whose state
- * parsed as `claimed`/`running` with `workerLock`, and nothing here ever removes a
- * `state.json`, so the absent-state branch is not reachable from an adopted turn. It
- * is written for the one that is: a `state.json` that is present but CORRUPT throws
- * out of `readTurnState`, which the adopter retries as `uncertain` and the start path
- * refuses — neither of them settling a turn on a file they could not read.
- */
+// features/verity-sandbox-toolkit/src/runner-supervisor/turn-state.mjs
+import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { access, chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { URL } from "node:url";
 async function settleMissingWorkerTurn(runtimeDir, turnId) {
   const state = await readTurnState(runtimeDir, turnId);
-  if (state === undefined || state.status === 'settled') return;
-  // A turn cancelled just before the supervisor died is settled here rather than on
-  // the exit path, and it must carry the same label it would have carried there: the
-  // operator asked for it to stop, and it stopped. Only a PROVEN cancellation counts
-  // — an unreadable tombstone reports the crash, exactly as on every other exit.
+  if (state === void 0 || state.status === "settled") return;
   const aborted = await cancelExplainsSettlement(runtimeDir, turnId);
   const workerError = aborted ? CANCELLED_MISSING_WORKER_ERROR : MISSING_WORKER_ERROR;
-  if (typeof state.runnerInstanceId === 'string') {
-    await writeSyntheticTerminalFrame(join(runtimeDir, 'turns', turnId), {
+  if (typeof state.runnerInstanceId === "string") {
+    await writeSyntheticTerminalFrame(join(runtimeDir, "turns", turnId), {
       turnId,
       runnerInstanceId: state.runnerInstanceId,
       // SIGTERM only for the cancelled half: it derives exit 143, which the Server
       // reads as "the operator interrupted this" — true here, and a false accusation
       // for a worker that simply vanished.
-      ...(aborted ? { workerSignal: 'SIGTERM' } : {}),
+      ...aborted ? { workerSignal: "SIGTERM" } : {},
       workerError,
-      aborted,
-    }).catch(() => undefined);
+      aborted
+    }).catch(() => void 0);
   }
   await updateTurnState(runtimeDir, turnId, {
-    status: 'settled',
-    ...(aborted ? { workerSignal: 'SIGTERM' } : {}),
-    workerError,
+    status: "settled",
+    ...aborted ? { workerSignal: "SIGTERM" } : {},
+    workerError
   });
 }
-
-/**
- * How long one request may occupy a connection before the supervisor gives up on it.
- *
- * Note what expiry does: it DESTROYS the socket, it does not answer. So this is not a
- * refusal the Server can act on — it reaches the client as a lost answer, which is
- * what sends it to reconciliation and the cancel fence rather than down the decided
- * path. That is the safe direction, and it is why nothing here needs to be shorter
- * than the client's budgets.
- *
- * For `start-turn` that is `DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS` (15 min) plus the
- * grace — three orders of magnitude above the queue's own drain time, so a start
- * cannot lose its connection while it is merely waiting for a slot. The grace is
- * ADDED to the budget, never a cap on it: it exists so the supervisor outlives the
- * peer's deadline and the peer's error, not the supervisor's silence, is what the
- * operator reads.
- */
-export function supervisorRequestTimeoutMs(request) {
-  return (
-    (isObject(request) && request.kind === 'run-trusted-cli'
-      ? TRUSTED_CLI_TIMEOUT_MS + TRUSTED_CLI_KILL_GRACE_MS
-      : DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS) + SUPERVISOR_REQUEST_GRACE_MS
-  );
+function supervisorRequestTimeoutMs(request) {
+  return (isObject(request) && request.kind === "run-trusted-cli" ? TRUSTED_CLI_TIMEOUT_MS + TRUSTED_CLI_KILL_GRACE_MS : DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS) + SUPERVISOR_REQUEST_GRACE_MS;
 }
-
 async function processStartTime(pid) {
-  const stat = await readFile(`/proc/${String(pid)}/stat`, 'utf8').catch(() => undefined);
-  if (stat === undefined) return undefined;
-  // `/proc/<pid>/stat` field 2 is parenthesized and may contain spaces. Everything
-  // after the final `)` starts at field 3; starttime is field 22 (index 19 here).
-  const afterCommand = stat
-    .slice(stat.lastIndexOf(')') + 2)
-    .trim()
-    .split(/\s+/u);
+  const stat = await readFile(`/proc/${String(pid)}/stat`, "utf8").catch(() => void 0);
+  if (stat === void 0) return void 0;
+  const afterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/u);
   return afterCommand[19];
 }
-
-async function writeJsonAtomic(path, value, mode = 0o660) {
+async function writeJsonAtomic(path, value, mode = 432) {
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    const handle = await open(temporary, 'wx', mode);
+    const handle = await open(temporary, "wx", mode);
     try {
-      await handle.writeFile(`${JSON.stringify(value)}\n`);
+      await handle.writeFile(`${JSON.stringify(value)}
+`);
       await handle.sync();
     } finally {
       await handle.close();
@@ -1101,21 +73,19 @@ async function writeJsonAtomic(path, value, mode = 0o660) {
     throw error;
   }
 }
-
 async function syncDirectory(path) {
-  const handle = await open(path, 'r');
+  const handle = await open(path, "r");
   try {
     await handle.sync();
   } finally {
     await handle.close();
   }
 }
-
 async function acquireFileLock(path) {
   const handle = await open(
     path,
     constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
-    0o660,
+    432
   );
   let stats;
   try {
@@ -1126,18 +96,18 @@ async function acquireFileLock(path) {
   }
   if (!stats.isFile()) {
     await handle.close();
-    throw new Error('runner lock is not a regular file');
+    throw new Error("runner lock is not a regular file");
   }
   const result = await new Promise((resolveResult, rejectResult) => {
-    const child = spawn('flock', ['--exclusive', '--nonblock', '--conflict-exit-code', '75', '3'], {
-      stdio: ['ignore', 'ignore', 'pipe', handle.fd],
+    const child = spawn("flock", ["--exclusive", "--nonblock", "--conflict-exit-code", "75", "3"], {
+      stdio: ["ignore", "ignore", "pipe", handle.fd]
     });
-    let stderr = '';
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk.toString('utf8');
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
     });
-    child.once('error', rejectResult);
-    child.once('close', (code, signal) => resolveResult({ code, signal, stderr }));
+    child.once("error", rejectResult);
+    child.once("close", (code, signal) => resolveResult({ code, signal, stderr }));
   }).catch(async (error) => {
     await handle.close();
     throw error;
@@ -1146,160 +116,118 @@ async function acquireFileLock(path) {
     await handle.close();
     const busy = result.code === 75 && result.signal === null;
     const error = new Error(
-      busy
-        ? 'runner supervisor is already claimed'
-        : result.stderr.trim().length > 0
-          ? `runner supervisor lock failed: ${result.stderr.trim()}`
-          : `runner supervisor lock failed with ${result.signal ?? `code ${String(result.code)}`}`,
+      busy ? "runner supervisor is already claimed" : result.stderr.trim().length > 0 ? `runner supervisor lock failed: ${result.stderr.trim()}` : `runner supervisor lock failed with ${result.signal ?? `code ${String(result.code)}`}`
     );
-    if (busy) error.code = 'ELOCKED';
+    if (busy) error.code = "ELOCKED";
     throw error;
   }
   return handle;
 }
-
 function isLockBusy(error) {
-  return error?.code === 'ELOCKED';
+  return error?.code === "ELOCKED";
 }
-
 function stdioWithWorkerLock(lockFd) {
-  return ['pipe', 'pipe', 'pipe', lockFd];
+  return ["pipe", "pipe", "pipe", lockFd];
 }
-
 function boundedWorkerError(value) {
   const redacted = redactWorkerError(String(value)).trim();
-  if (redacted.length === 0) return '';
+  if (redacted.length === 0) return "";
   const allowlistedDiagnostics = [
-    { pattern: /\bnot logged in\b/i, message: 'worker stderr reported: not logged in' },
+    { pattern: /\bnot logged in\b/i, message: "worker stderr reported: not logged in" },
     {
       pattern: /\b(?:authentication failed|unauthorized|invalid credentials?)\b/i,
-      message: 'worker stderr reported an authentication failure',
+      message: "worker stderr reported an authentication failure"
     },
-    { pattern: /\bforbidden\b/i, message: 'worker stderr reported: forbidden' },
+    { pattern: /\bforbidden\b/i, message: "worker stderr reported: forbidden" },
     {
       pattern: /\bpermission denied\b/i,
-      message: 'worker stderr reported: permission denied',
+      message: "worker stderr reported: permission denied"
     },
     {
       pattern: /\b(?:could not resolve host|name or service not known)\b/i,
-      message: 'worker stderr reported a DNS resolution failure',
+      message: "worker stderr reported a DNS resolution failure"
     },
     {
       pattern: /\bconnection (?:refused|reset)\b/i,
-      message: 'worker stderr reported a connection failure',
+      message: "worker stderr reported a connection failure"
     },
     {
       pattern: /\b(?:timed out|timeout)\b/i,
-      message: 'worker stderr reported a timeout',
+      message: "worker stderr reported a timeout"
     },
     {
       pattern: /\b(?:no such file or directory|command not found|module not found)\b/i,
-      message: 'worker stderr reported a missing executable or module',
-    },
+      message: "worker stderr reported a missing executable or module"
+    }
   ];
   const diagnostic = allowlistedDiagnostics.find(({ pattern }) => pattern.test(redacted));
-  if (diagnostic !== undefined) return diagnostic.message;
+  if (diagnostic !== void 0) return diagnostic.message;
   const errorCode = redacted.match(/\b(?:E[A-Z]{2,20}|HTTP [45]\d\d)\b/)?.[0];
-  return errorCode === undefined
-    ? 'worker stderr reported an unrecognized failure'
-    : `worker stderr reported error code ${errorCode}`;
+  return errorCode === void 0 ? "worker stderr reported an unrecognized failure" : `worker stderr reported error code ${errorCode}`;
 }
-
 function boundedSpawnError(value) {
   const message = String(value);
-  if (
-    /^runner worker (?:is not installed|has no private (?:attestation|attestation acknowledgement|error) pipe)$/.test(
-      message,
-    )
-  ) {
+  if (/^runner worker (?:is not installed|has no private (?:attestation|attestation acknowledgement|error) pipe)$/.test(
+    message
+  )) {
     return message;
   }
   const errorCode = message.match(/\bE[A-Z]{2,20}\b/)?.[0];
-  return errorCode === undefined
-    ? 'runner worker spawn failed'
-    : `runner worker spawn failed with error code ${errorCode}`;
+  return errorCode === void 0 ? "runner worker spawn failed" : `runner worker spawn failed with error code ${errorCode}`;
 }
-
-/**
- * Name the refused stage and path in the error the Server reports. Without it an
- * operator sees only "error code EACCES" and cannot tell a worktree the Runner uid
- * may not traverse from a worker binary it may not execute — the diagnostic above
- * existed only in this container's state and log. Both parts are values this file
- * derived itself (a fixed stage name and the requested cwd or worker path), never
- * exception text, so the credential guarantee of {@link boundedSpawnError} holds.
- */
 function describeSpawnFailure(message, diagnostic) {
-  if (diagnostic.stage === 'spawn' && diagnostic.path === undefined) return message;
-  if (diagnostic.path === undefined) return `${message} (${diagnostic.stage})`;
-  // The path is request data: keep it one line and well inside the state's error budget.
-  // eslint-disable-next-line no-control-regex -- stripping control characters is the point.
-  const path = diagnostic.path.replace(/[\u0000-\u001f\u007f]/g, '?');
-  const shown =
-    path.length > MAX_SPAWN_FAILURE_PATH ? `${path.slice(0, MAX_SPAWN_FAILURE_PATH)}…` : path;
+  if (diagnostic.stage === "spawn" && diagnostic.path === void 0) return message;
+  if (diagnostic.path === void 0) return `${message} (${diagnostic.stage})`;
+  const path = diagnostic.path.replace(/[\u0000-\u001f\u007f]/g, "?");
+  const shown = path.length > MAX_SPAWN_FAILURE_PATH ? `${path.slice(0, MAX_SPAWN_FAILURE_PATH)}\u2026` : path;
   return `${message} (${diagnostic.stage}: ${shown})`;
 }
-
-const MAX_SPAWN_FAILURE_PATH = 512;
-
+var MAX_SPAWN_FAILURE_PATH = 512;
 function spawnFailureDiagnostic(error, request, workerCommand) {
-  const code =
-    typeof error?.code === 'string' && /^E[A-Z]{2,20}$/.test(error.code) ? error.code : undefined;
+  const code = typeof error?.code === "string" && /^E[A-Z]{2,20}$/.test(error.code) ? error.code : void 0;
   const declared = error?.veritySpawnDiagnostic;
-  if (
-    isObject(declared) &&
-    ['cwd-traverse', 'worker-executable', 'spawn'].includes(declared.stage) &&
-    ['cwd', 'worker-executable', 'unknown'].includes(declared.target)
-  ) {
+  if (isObject(declared) && ["cwd-traverse", "worker-executable", "spawn"].includes(declared.stage) && ["cwd", "worker-executable", "unknown"].includes(declared.target)) {
     return {
       stage: declared.stage,
       target: declared.target,
-      ...(declared.target === 'cwd' ? { path: request.cwd } : {}),
-      ...(declared.target === 'worker-executable'
-        ? { path: declared.path ?? resolve(request.cwd, workerCommand) }
-        : {}),
-      ...(code !== undefined ? { code } : {}),
+      ...declared.target === "cwd" ? { path: request.cwd } : {},
+      ...declared.target === "worker-executable" ? { path: declared.path ?? resolve(request.cwd, workerCommand) } : {},
+      ...code !== void 0 ? { code } : {}
     };
   }
-  const target = error?.path === workerCommand ? 'worker-executable' : 'unknown';
+  const target = error?.path === workerCommand ? "worker-executable" : "unknown";
   return {
-    stage: 'spawn',
+    stage: "spawn",
     target,
-    ...(target === 'worker-executable' ? { path: resolve(request.cwd, workerCommand) } : {}),
-    ...(code !== undefined ? { code } : {}),
+    ...target === "worker-executable" ? { path: resolve(request.cwd, workerCommand) } : {},
+    ...code !== void 0 ? { code } : {}
   };
 }
-
 async function assertSpawnBoundary(request, workerCommand, workerPath) {
   try {
     await access(request.cwd, constants.X_OK);
-  } catch (error) {
-    error.veritySpawnDiagnostic = { stage: 'cwd-traverse', target: 'cwd' };
-    throw error;
+  } catch (error2) {
+    error2.veritySpawnDiagnostic = { stage: "cwd-traverse", target: "cwd" };
+    throw error2;
   }
-  const candidates = workerCommand.includes('/')
-    ? [resolve(request.cwd, workerCommand)]
-    : (workerPath ?? '')
-        .split(delimiter)
-        .map((entry) => resolve(request.cwd, entry, workerCommand));
+  const candidates = workerCommand.includes("/") ? [resolve(request.cwd, workerCommand)] : (workerPath ?? "").split(delimiter).map((entry) => resolve(request.cwd, entry, workerCommand));
   let lastError;
   for (const candidate of candidates) {
     try {
       await access(candidate, constants.X_OK);
       return;
-    } catch (error) {
-      lastError = error;
+    } catch (error2) {
+      lastError = error2;
     }
   }
-  const error =
-    lastError ?? Object.assign(new Error('worker executable is not on PATH'), { code: 'ENOENT' });
+  const error = lastError ?? Object.assign(new Error("worker executable is not on PATH"), { code: "ENOENT" });
   error.veritySpawnDiagnostic = {
-    stage: 'worker-executable',
-    target: 'worker-executable',
-    path: candidates[0] ?? resolve(request.cwd, workerCommand),
+    stage: "worker-executable",
+    target: "worker-executable",
+    path: candidates[0] ?? resolve(request.cwd, workerCommand)
   };
   throw error;
 }
-
 function redactWorkerError(value) {
   const credentialPatterns = [
     /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
@@ -1309,39 +237,37 @@ function redactWorkerError(value) {
     /dp\.(?:st|sa|ct|scim|audit)\.[A-Za-z0-9._-]{16,}/g,
     /xox[baprs]-[A-Za-z0-9-]{10,}/g,
     /AKIA[0-9A-Z]{16}/g,
-    /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g,
+    /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g
   ];
-  // eslint-disable-next-line no-control-regex -- stderr is untrusted bytes normalized to safe text.
-  let redacted = value.replace(/[^\x09\x0a\x0d\x20-\x7e]/g, '\uFFFD');
-  for (const pattern of credentialPatterns) redacted = redacted.replace(pattern, '[REDACTED]');
+  let redacted = value.replace(/[^\x09\x0a\x0d\x20-\x7e]/g, "\uFFFD");
+  for (const pattern of credentialPatterns) redacted = redacted.replace(pattern, "[REDACTED]");
   redacted = redacted.replace(
     /\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?[^\s,;]+/gi,
-    '$1: [REDACTED]',
+    "$1: [REDACTED]"
   );
   redacted = redacted.replace(
     /(["']?(?:authorization|proxy-authorization|cookie|set-cookie|password|token|secret|api[_-]?key)["']?\s*:\s*["'])[^"']+(["'])/gi,
-    '$1[REDACTED]$2',
+    "$1[REDACTED]$2"
   );
-  redacted = redacted.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+@/gi, '$1[REDACTED]@');
+  redacted = redacted.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+@/gi, "$1[REDACTED]@");
   redacted = redacted.replace(
     /([?&](?:access_token|api_key|token|signature|x-amz-signature)=)[^&\s]+/gi,
-    '$1[REDACTED]',
+    "$1[REDACTED]"
   );
   redacted = redacted.replace(
     /\b((?:database_url|redis_url|mongodb_uri)|[a-z0-9_]*(?:token|secret|password|api[_-]?key|cookie))\s*=\s*[^\s]+/gi,
-    '$1=[REDACTED]',
+    "$1=[REDACTED]"
   );
   redacted = redacted.replace(
     /(\s--(?:access-token|token|secret|password|api-key|cookie)(?:=|\s+))[^\s]+/gi,
-    '$1[REDACTED]',
+    "$1[REDACTED]"
   );
   return redacted;
 }
-
 function createWorkerErrorCapture() {
-  const privateKeyMarkers = ['', 'OPENSSH ', 'RSA ', 'EC '].flatMap((kind) => [
-    { bytes: Buffer.from(['-----BEGIN ', `${kind}PRIVATE KEY-----`].join('')), begins: true },
-    { bytes: Buffer.from(['-----END ', `${kind}PRIVATE KEY-----`].join('')), begins: false },
+  const privateKeyMarkers = ["", "OPENSSH ", "RSA ", "EC "].flatMap((kind) => [
+    { bytes: Buffer.from(["-----BEGIN ", `${kind}PRIVATE KEY-----`].join("")), begins: true },
+    { bytes: Buffer.from(["-----END ", `${kind}PRIVATE KEY-----`].join("")), begins: false }
   ]);
   const markerOverlapBytes = Math.max(...privateKeyMarkers.map(({ bytes }) => bytes.length)) - 1;
   let output = Buffer.alloc(0);
@@ -1349,7 +275,6 @@ function createWorkerErrorCapture() {
   let oversizedLine = false;
   let privateKeyBlock = false;
   let markerTail = Buffer.alloc(0);
-
   const appendOutput = (value) => {
     output = Buffer.concat([output, Buffer.from(value)]).subarray(-MAX_WORKER_ERROR_BYTES);
   };
@@ -1383,13 +308,13 @@ function createWorkerErrorCapture() {
     output = outputBudget === 0 ? Buffer.alloc(0) : output.subarray(-outputBudget);
   };
   const finishLine = (terminated) => {
-    const text = line.toString('utf8');
+    const text = line.toString("utf8");
     const beginsPrivateKey = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/.test(text);
     const endsPrivateKey = /-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/.test(text);
     if (oversizedLine || privateKeyBlock || beginsPrivateKey) {
-      appendOutput(`[REDACTED]${terminated ? '\n' : ''}`);
+      appendOutput(`[REDACTED]${terminated ? "\n" : ""}`);
     } else {
-      appendOutput(`${redactWorkerError(text)}${terminated ? '\n' : ''}`);
+      appendOutput(`${redactWorkerError(text)}${terminated ? "\n" : ""}`);
     }
     if (beginsPrivateKey) privateKeyBlock = true;
     if (endsPrivateKey) privateKeyBlock = false;
@@ -1397,13 +322,12 @@ function createWorkerErrorCapture() {
     oversizedLine = false;
     markerTail = Buffer.alloc(0);
   };
-
   return {
     push(chunk) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       let offset = 0;
-      for (;;) {
-        const newline = bytes.indexOf(0x0a, offset);
+      for (; ; ) {
+        const newline = bytes.indexOf(10, offset);
         if (newline === -1) {
           appendLineBytes(bytes.subarray(offset));
           return;
@@ -1416,73 +340,62 @@ function createWorkerErrorCapture() {
     finish() {
       if (line.length > 0 || oversizedLine) finishLine(false);
       return boundedWorkerError(output);
-    },
+    }
   };
 }
-
-export function validateRuntimeStats(stats, expected = {}) {
+function validateRuntimeStats(stats, expected = {}) {
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error('runner runtime is not a real directory');
+    throw new Error("runner runtime is not a real directory");
   }
   const uid = expected.uid ?? process.getuid?.();
   const gid = expected.gid ?? process.getgid?.();
-  if (gid !== undefined && stats.gid !== gid) {
+  if (gid !== void 0 && stats.gid !== gid) {
     throw new Error(`runner runtime gid mismatch: expected ${gid}, got ${stats.gid}`);
   }
-  const mode = stats.mode & 0o777;
-  if (uid !== undefined) {
+  const mode = stats.mode & 511;
+  if (uid !== void 0) {
     const runnerOwned = stats.uid === uid;
-    // Server-owned runtimes must keep owner read AND write clear so a same-uid
-    // sandbox agent cannot read or write the Runner's control files here, but a
-    // bare owner traverse bit (0170, --x) is allowed: the provisioner grants it so
-    // the agent — which shares uid 1000 with the Server — can descend to its
-    // Server-created transcript directory under claude/ (stage-5b capture).
-    const serverOwned = !runnerOwned && (mode & 0o600) === 0;
+    const serverOwned = !runnerOwned && (mode & 384) === 0;
     if (!runnerOwned && !serverOwned) {
       throw new Error(
-        `runner runtime uid mismatch: expected ${uid} or server-owned group-only, got ${stats.uid}`,
+        `runner runtime uid mismatch: expected ${uid} or server-owned group-only, got ${stats.uid}`
       );
     }
-    if (runnerOwned && (mode & 0o700) !== 0o700) {
+    if (runnerOwned && (mode & 448) !== 448) {
       throw new Error(
-        `runner-owned runtime must be owner/group-only and writable (0770): ${mode.toString(8)}`,
+        `runner-owned runtime must be owner/group-only and writable (0770): ${mode.toString(8)}`
       );
     }
   }
-  if ((mode & 0o007) !== 0 || (mode & 0o070) !== 0o070) {
+  if ((mode & 7) !== 0 || (mode & 56) !== 56) {
     throw new Error(
-      `runner runtime must be group-only and writable by the runtime group: ${mode.toString(8)}`,
+      `runner runtime must be group-only and writable by the runtime group: ${mode.toString(8)}`
     );
   }
 }
-
-export async function validateRuntimeDirectory(runtimeDir, expected = {}) {
+async function validateRuntimeDirectory(runtimeDir, expected = {}) {
   const stats = await lstat(runtimeDir);
   try {
     validateRuntimeStats(stats, expected);
   } catch (error) {
-    if (error instanceof Error && error.message === 'runner runtime is not a real directory') {
+    if (error instanceof Error && error.message === "runner runtime is not a real directory") {
       throw new Error(`runner runtime is not a real directory: ${runtimeDir}`, { cause: error });
     }
     throw error;
   }
 }
-
-export async function acquireSingleton(runtimeDir, instanceId = randomUUID()) {
-  const lockPath = join(runtimeDir, 'supervisor.lock');
-  const ownerPath = join(runtimeDir, 'supervisor.lock.json');
-  // The helper applies flock(2) to fd 3, which is a duplicate of this process's
-  // open file description. Keeping the FileHandle open retains a kernel lock on
-  // the SHARED volume across container/network namespaces; process death drops it.
+async function acquireSingleton(runtimeDir, instanceId = randomUUID()) {
+  const lockPath = join(runtimeDir, "supervisor.lock");
+  const ownerPath = join(runtimeDir, "supervisor.lock.json");
   const lockHandle = await acquireFileLock(lockPath);
   const owner = {
     pid: process.pid,
     processStartTime: await processStartTime(process.pid),
-    instanceId,
+    instanceId
   };
   try {
     await writeJsonAtomic(ownerPath, owner);
-    await chmod(lockPath, 0o660);
+    await chmod(lockPath, 432);
   } catch (error) {
     await lockHandle.close();
     throw error;
@@ -1493,13 +406,12 @@ export async function acquireSingleton(runtimeDir, instanceId = randomUUID()) {
     async release() {
       if (released) return;
       released = true;
-      const currentOwner = await readFile(ownerPath, 'utf8').catch(() => undefined);
+      const currentOwner = await readFile(ownerPath, "utf8").catch(() => void 0);
       let currentInstanceId;
       try {
-        currentInstanceId =
-          currentOwner === undefined ? undefined : JSON.parse(currentOwner).instanceId;
+        currentInstanceId = currentOwner === void 0 ? void 0 : JSON.parse(currentOwner).instanceId;
       } catch {
-        currentInstanceId = undefined;
+        currentInstanceId = void 0;
       }
       try {
         if (currentInstanceId === instanceId) {
@@ -1508,72 +420,35 @@ export async function acquireSingleton(runtimeDir, instanceId = randomUUID()) {
       } finally {
         await lockHandle.close();
       }
-    },
+    }
   };
 }
-
-export async function readTurnState(runtimeDir, turnId) {
-  if (!SAFE_ID.test(turnId)) throw new Error('invalid turnId');
-  const path = join(runtimeDir, 'turns', turnId, 'state.json');
+async function readTurnState(runtimeDir, turnId) {
+  if (!SAFE_ID.test(turnId)) throw new Error("invalid turnId");
+  const path = join(runtimeDir, "turns", turnId, "state.json");
   const stats = await lstat(path).catch((error) => {
-    if (error?.code === 'ENOENT') return undefined;
+    if (error?.code === "ENOENT") return void 0;
     throw error;
   });
-  if (stats === undefined) return undefined;
+  if (stats === void 0) return void 0;
   if (!stats.isFile() || stats.isSymbolicLink() || stats.size > 64 * 1024)
     throw new Error(`invalid state file for ${turnId}`);
-  const raw = await readFile(path, 'utf8').catch((error) => {
-    if (error?.code === 'ENOENT') return undefined;
+  const raw = await readFile(path, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return void 0;
     throw error;
   });
-  if (raw === undefined) return undefined;
+  if (raw === void 0) return void 0;
   const parsed = JSON.parse(raw);
-  if (
-    !isObject(parsed) ||
-    parsed.protocolVersion !== SUPERVISOR_PROTOCOL_VERSION ||
-    parsed.turnId !== turnId ||
-    typeof parsed.startCommandId !== 'string' ||
-    !SAFE_ID.test(parsed.startCommandId) ||
-    typeof parsed.runnerInstanceId !== 'string' ||
-    !SAFE_ID.test(parsed.runnerInstanceId) ||
-    (parsed.sessionId !== undefined &&
-      (typeof parsed.sessionId !== 'string' || !SAFE_ID.test(parsed.sessionId))) ||
-    !['claimed', 'running', 'settled'].includes(parsed.status) ||
-    typeof parsed.createdAt !== 'number' ||
-    !Number.isFinite(parsed.createdAt) ||
-    typeof parsed.updatedAt !== 'number' ||
-    !Number.isFinite(parsed.updatedAt) ||
-    (parsed.workerLock !== undefined && parsed.workerLock !== true) ||
-    (parsed.trustedCliExecution !== undefined && parsed.trustedCliExecution !== true) ||
-    (parsed.cwd !== undefined && (typeof parsed.cwd !== 'string' || !parsed.cwd.startsWith('/'))) ||
-    (parsed.workerExitCode !== undefined &&
-      parsed.workerExitCode !== null &&
-      !Number.isInteger(parsed.workerExitCode)) ||
-    (parsed.workerError !== undefined &&
-      (typeof parsed.workerError !== 'string' ||
-        Buffer.byteLength(parsed.workerError) > MAX_WORKER_ERROR_BYTES)) ||
-    (parsed.workerSpawnFailure !== undefined &&
-      (!isObject(parsed.workerSpawnFailure) ||
-        !['cwd-traverse', 'worker-executable', 'spawn'].includes(parsed.workerSpawnFailure.stage) ||
-        !['cwd', 'worker-executable', 'unknown'].includes(parsed.workerSpawnFailure.target) ||
-        (parsed.workerSpawnFailure.path !== undefined &&
-          (typeof parsed.workerSpawnFailure.path !== 'string' ||
-            !parsed.workerSpawnFailure.path.startsWith('/'))) ||
-        (parsed.workerSpawnFailure.code !== undefined &&
-          (typeof parsed.workerSpawnFailure.code !== 'string' ||
-            !/^E[A-Z]{2,20}$/.test(parsed.workerSpawnFailure.code)))))
-  ) {
+  if (!isObject(parsed) || parsed.protocolVersion !== SUPERVISOR_PROTOCOL_VERSION || parsed.turnId !== turnId || typeof parsed.startCommandId !== "string" || !SAFE_ID.test(parsed.startCommandId) || typeof parsed.runnerInstanceId !== "string" || !SAFE_ID.test(parsed.runnerInstanceId) || parsed.sessionId !== void 0 && (typeof parsed.sessionId !== "string" || !SAFE_ID.test(parsed.sessionId)) || !["claimed", "running", "settled"].includes(parsed.status) || typeof parsed.createdAt !== "number" || !Number.isFinite(parsed.createdAt) || typeof parsed.updatedAt !== "number" || !Number.isFinite(parsed.updatedAt) || parsed.workerLock !== void 0 && parsed.workerLock !== true || parsed.trustedCliExecution !== void 0 && parsed.trustedCliExecution !== true || parsed.cwd !== void 0 && (typeof parsed.cwd !== "string" || !parsed.cwd.startsWith("/")) || parsed.workerExitCode !== void 0 && parsed.workerExitCode !== null && !Number.isInteger(parsed.workerExitCode) || parsed.workerError !== void 0 && (typeof parsed.workerError !== "string" || Buffer.byteLength(parsed.workerError) > MAX_WORKER_ERROR_BYTES) || parsed.workerSpawnFailure !== void 0 && (!isObject(parsed.workerSpawnFailure) || !["cwd-traverse", "worker-executable", "spawn"].includes(parsed.workerSpawnFailure.stage) || !["cwd", "worker-executable", "unknown"].includes(parsed.workerSpawnFailure.target) || parsed.workerSpawnFailure.path !== void 0 && (typeof parsed.workerSpawnFailure.path !== "string" || !parsed.workerSpawnFailure.path.startsWith("/")) || parsed.workerSpawnFailure.code !== void 0 && (typeof parsed.workerSpawnFailure.code !== "string" || !/^E[A-Z]{2,20}$/.test(parsed.workerSpawnFailure.code)))) {
     throw new Error(`invalid state for ${turnId}`);
   }
   return parsed;
 }
-
-const cacheClaimEpochs = new Map();
-const cacheScans = new Map();
-const activeCacheClaims = new Map();
-const cacheFinalAdmissions = new Map();
-
-export async function claimTurn(runtimeDir, request, runnerInstanceId) {
+var cacheClaimEpochs = /* @__PURE__ */ new Map();
+var cacheScans = /* @__PURE__ */ new Map();
+var activeCacheClaims = /* @__PURE__ */ new Map();
+var cacheFinalAdmissions = /* @__PURE__ */ new Map();
+async function claimTurn(runtimeDir, request, runnerInstanceId) {
   while (cacheFinalAdmissions.has(runtimeDir)) await cacheFinalAdmissions.get(runtimeDir);
   activeCacheClaims.set(runtimeDir, (activeCacheClaims.get(runtimeDir) ?? 0) + 1);
   cacheClaimEpochs.set(runtimeDir, (cacheClaimEpochs.get(runtimeDir) ?? 0) + 1);
@@ -1586,126 +461,106 @@ export async function claimTurn(runtimeDir, request, runnerInstanceId) {
     else activeCacheClaims.set(runtimeDir, active);
   }
 }
-
 async function claimTurnImpl(runtimeDir, request, runnerInstanceId) {
   const { turnId, startCommandId, sessionId } = request;
-  if (typeof turnId !== 'string' || !SAFE_ID.test(turnId)) throw new Error('invalid turnId');
-  if (typeof startCommandId !== 'string' || !SAFE_ID.test(startCommandId)) {
-    throw new Error('invalid startCommandId');
+  if (typeof turnId !== "string" || !SAFE_ID.test(turnId)) throw new Error("invalid turnId");
+  if (typeof startCommandId !== "string" || !SAFE_ID.test(startCommandId)) {
+    throw new Error("invalid startCommandId");
   }
-  if (sessionId !== undefined && (typeof sessionId !== 'string' || !SAFE_ID.test(sessionId)))
-    throw new Error('invalid sessionId');
-  const turnsDir = join(runtimeDir, 'turns');
+  if (sessionId !== void 0 && (typeof sessionId !== "string" || !SAFE_ID.test(sessionId)))
+    throw new Error("invalid sessionId");
+  const turnsDir = join(runtimeDir, "turns");
   const turnDir = join(turnsDir, turnId);
-  const createdTurnsPath = await mkdir(turnsDir, { recursive: true, mode: 0o770 });
-  await chmod(turnsDir, 0o770);
-  if (createdTurnsPath !== undefined) await syncDirectory(runtimeDir);
+  const createdTurnsPath = await mkdir(turnsDir, { recursive: true, mode: 504 });
+  await chmod(turnsDir, 504);
+  if (createdTurnsPath !== void 0) await syncDirectory(runtimeDir);
   let created = false;
   try {
-    await mkdir(turnDir, { mode: 0o770 });
-    await chmod(turnDir, 0o770);
+    await mkdir(turnDir, { mode: 504 });
+    await chmod(turnDir, 504);
     created = true;
   } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
+    if (error?.code !== "EEXIST") throw error;
   }
   if (created) {
     const now = Date.now();
-    const state = {
+    const state2 = {
       protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
       turnId,
       startCommandId,
       runnerInstanceId,
-      ...(sessionId === undefined ? {} : { sessionId }),
-      status: 'claimed',
+      ...sessionId === void 0 ? {} : { sessionId },
+      status: "claimed",
       createdAt: now,
-      updatedAt: now,
+      updatedAt: now
     };
-    await writeJsonAtomic(join(turnDir, 'state.json'), state);
-    // Persist the new turn directory entry before acknowledging the claim. The
-    // state file itself and turnDir were synced by writeJsonAtomic above.
+    await writeJsonAtomic(join(turnDir, "state.json"), state2);
     await syncDirectory(turnsDir);
-    return { outcome: 'created', state };
+    return { outcome: "created", state: state2 };
   }
   const turnStats = await lstat(turnDir);
   if (!turnStats.isDirectory() || turnStats.isSymbolicLink()) {
-    return { outcome: 'ambiguous', reason: 'invalid-turn-directory' };
+    return { outcome: "ambiguous", reason: "invalid-turn-directory" };
   }
   const state = await readTurnState(runtimeDir, turnId);
-  if (state === undefined) {
-    return { outcome: 'ambiguous', reason: 'turn-directory-without-state' };
+  if (state === void 0) {
+    return { outcome: "ambiguous", reason: "turn-directory-without-state" };
   }
-  if (state.sessionId !== undefined && state.sessionId !== sessionId) {
-    return { outcome: 'conflict', reason: 'session-identity-mismatch', state };
+  if (state.sessionId !== void 0 && state.sessionId !== sessionId) {
+    return { outcome: "conflict", reason: "session-identity-mismatch", state };
   }
   if (state.startCommandId !== startCommandId) {
-    return { outcome: 'conflict', reason: 'start-command-mismatch', state };
+    return { outcome: "conflict", reason: "start-command-mismatch", state };
   }
-  if (state.status !== 'settled' && state.runnerInstanceId !== runnerInstanceId) {
-    return { outcome: 'ambiguous', reason: 'runner-instance-mismatch', state };
+  if (state.status !== "settled" && state.runnerInstanceId !== runnerInstanceId) {
+    return { outcome: "ambiguous", reason: "runner-instance-mismatch", state };
   }
   return {
-    outcome: state.status === 'settled' ? 'terminal' : 'already-running',
-    state,
+    outcome: state.status === "settled" ? "terminal" : "already-running",
+    state
   };
 }
-
-/** Verify turn-owned image bytes before the worker can consume the reference. */
-export function validateImageReferences(value, cwd, turnId) {
-  if (value === undefined) return undefined;
+function validateImageReferences(value, cwd, turnId) {
+  if (value === void 0) return void 0;
   if (!Array.isArray(value) || value.length > MAX_START_ATTACHMENTS) {
-    throw new Error('invalid attachments');
+    throw new Error("invalid attachments");
   }
   return value.map((item) => {
-    if (
-      !isObject(item) ||
-      item.kind !== 'image' ||
-      !IMAGE_MEDIA_TYPES.has(item.mediaType) ||
-      typeof item.filePath !== 'string' ||
-      !Number.isSafeInteger(item.byteSize) ||
-      item.byteSize < 1 ||
-      item.byteSize > 7_500_000 ||
-      typeof item.sha256 !== 'string' ||
-      !/^[a-f0-9]{64}$/u.test(item.sha256)
-    )
-      throw new Error('invalid attachment');
-    const root = join(cwd, '.verity-sessions', 'attachments', `turn-${turnId}`);
+    if (!isObject(item) || item.kind !== "image" || !IMAGE_MEDIA_TYPES.has(item.mediaType) || typeof item.filePath !== "string" || !Number.isSafeInteger(item.byteSize) || item.byteSize < 1 || item.byteSize > 75e5 || typeof item.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(item.sha256))
+      throw new Error("invalid attachment");
+    const root = join(cwd, ".verity-sessions", "attachments", `turn-${turnId}`);
     const name = item.filePath.slice(root.length + 1);
-    if (
-      !item.filePath.startsWith(`${root}/`) ||
-      !/^[\w.-]+$/u.test(name) ||
-      name === '.' ||
-      name === '..'
-    ) {
-      throw new Error('invalid attachment path');
+    if (!item.filePath.startsWith(`${root}/`) || !/^[\w.-]+$/u.test(name) || name === "." || name === "..") {
+      throw new Error("invalid attachment path");
     }
     const handles = [];
     try {
-      if (lstatSync(cwd).isSymbolicLink()) throw new Error('invalid attachment directory');
+      if (lstatSync(cwd).isSymbolicLink()) throw new Error("invalid attachment directory");
       let directory = openSync(
         cwd,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
       );
       handles.push(directory);
-      for (const part of ['.verity-sessions', 'attachments', `turn-${turnId}`]) {
+      for (const part of [".verity-sessions", "attachments", `turn-${turnId}`]) {
         if (lstatSync(join(`/proc/self/fd/${directory}`, part)).isSymbolicLink())
-          throw new Error('invalid attachment directory');
+          throw new Error("invalid attachment directory");
         directory = openSync(
           join(`/proc/self/fd/${directory}`, part),
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
         );
         handles.push(directory);
       }
       if (lstatSync(join(`/proc/self/fd/${directory}`, name)).isSymbolicLink())
-        throw new Error('invalid attachment file');
+        throw new Error("invalid attachment file");
       const file = openSync(
         join(`/proc/self/fd/${directory}`, name),
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
       );
       handles.push(file);
       const stats = fstatSync(file);
       if (!stats.isFile() || stats.size !== item.byteSize)
-        throw new Error('invalid attachment size');
-      const hash = createHash('sha256');
+        throw new Error("invalid attachment size");
+      const hash = createHash("sha256");
       const buffer = Buffer.alloc(Math.min(item.byteSize, 64 * 1024));
       let offset = 0;
       while (offset < item.byteSize) {
@@ -1714,72 +569,62 @@ export function validateImageReferences(value, cwd, turnId) {
           buffer,
           0,
           Math.min(buffer.length, item.byteSize - offset),
-          offset,
+          offset
         );
-        if (count === 0) throw new Error('invalid attachment size');
+        if (count === 0) throw new Error("invalid attachment size");
         hash.update(buffer.subarray(0, count));
         offset += count;
       }
-      if (fstatSync(file).size !== item.byteSize || hash.digest('hex') !== item.sha256) {
-        throw new Error('invalid attachment checksum');
+      if (fstatSync(file).size !== item.byteSize || hash.digest("hex") !== item.sha256) {
+        throw new Error("invalid attachment checksum");
       }
     } catch (error) {
-      throw new Error('invalid attachment reference', { cause: error });
+      throw new Error("invalid attachment reference", { cause: error });
     } finally {
       for (const handle of handles.reverse()) closeSync(handle);
     }
     return {
-      kind: 'image',
+      kind: "image",
       mediaType: item.mediaType,
       filePath: item.filePath,
       byteSize: item.byteSize,
-      sha256: item.sha256,
+      sha256: item.sha256
     };
   });
 }
-
-export function validateStartTurnRequest(request) {
-  if (!isObject(request) || request.kind !== 'start-turn') throw new Error('invalid start request');
-  // The remaining serialized request is bounded independently of staged image bytes. This runs
-  // before per-field checks so a huge payload never reaches the shape validation.
+function validateStartTurnRequest(request) {
+  if (!isObject(request) || request.kind !== "start-turn") throw new Error("invalid start request");
   if (Buffer.byteLength(JSON.stringify(request)) > MAX_START_REQUEST_BYTES) {
-    throw new Error('start request exceeds supervisor limit');
+    throw new Error("start request exceeds supervisor limit");
   }
-  if (!SAFE_ID.test(request.turnId ?? '')) throw new Error('invalid turnId');
-  if (!SAFE_ID.test(request.startCommandId ?? '')) throw new Error('invalid startCommandId');
-  if (!SAFE_ID.test(request.sessionId ?? '')) throw new Error('invalid sessionId');
-  if (!WORKER_BACKENDS.has(request.backend)) throw new Error('invalid worker backend');
-  if (typeof request.worktree !== 'string' || !request.worktree.startsWith('/')) {
-    throw new Error('invalid worktree');
+  if (!SAFE_ID.test(request.turnId ?? "")) throw new Error("invalid turnId");
+  if (!SAFE_ID.test(request.startCommandId ?? "")) throw new Error("invalid startCommandId");
+  if (!SAFE_ID.test(request.sessionId ?? "")) throw new Error("invalid sessionId");
+  if (!WORKER_BACKENDS.has(request.backend)) throw new Error("invalid worker backend");
+  if (typeof request.worktree !== "string" || !request.worktree.startsWith("/")) {
+    throw new Error("invalid worktree");
   }
-  if (typeof request.cwd !== 'string' || !request.cwd.startsWith('/'))
-    throw new Error('invalid cwd');
+  if (typeof request.cwd !== "string" || !request.cwd.startsWith("/"))
+    throw new Error("invalid cwd");
   const worktree = resolve(request.worktree);
   const cwd = resolve(request.cwd);
-  if (cwd !== worktree && !cwd.startsWith(`${worktree}/`)) throw new Error('cwd outside worktree');
-  if (typeof request.prompt !== 'string' || Buffer.byteLength(request.prompt) > 1024 * 1024) {
-    throw new Error('invalid prompt');
+  if (cwd !== worktree && !cwd.startsWith(`${worktree}/`)) throw new Error("cwd outside worktree");
+  if (typeof request.prompt !== "string" || Buffer.byteLength(request.prompt) > 1024 * 1024) {
+    throw new Error("invalid prompt");
   }
-  if (
-    request.model !== undefined &&
-    (typeof request.model !== 'string' || request.model.length > 256)
-  ) {
-    throw new Error('invalid model');
+  if (request.model !== void 0 && (typeof request.model !== "string" || request.model.length > 256)) {
+    throw new Error("invalid model");
   }
   const optionalString = (value, name, maxBytes) => {
-    if (value === undefined) return undefined;
-    if (typeof value !== 'string' || Buffer.byteLength(value) > maxBytes) {
+    if (value === void 0) return void 0;
+    if (typeof value !== "string" || Buffer.byteLength(value) > maxBytes) {
       throw new Error(`invalid ${name}`);
     }
     return value;
   };
   const stringList = (value, name) => {
-    if (value === undefined) return undefined;
-    if (
-      !Array.isArray(value) ||
-      value.length > 256 ||
-      value.some((item) => typeof item !== 'string' || Buffer.byteLength(item) > 4_096)
-    ) {
+    if (value === void 0) return void 0;
+    if (!Array.isArray(value) || value.length > 256 || value.some((item) => typeof item !== "string" || Buffer.byteLength(item) > 4096)) {
       throw new Error(`invalid ${name}`);
     }
     return value;
@@ -1787,106 +632,90 @@ export function validateStartTurnRequest(request) {
   const attachments = validateImageReferences(request.attachments, cwd, request.turnId);
   const appendSystemPrompt = optionalString(
     request.appendSystemPrompt,
-    'appendSystemPrompt',
-    1_048_576,
+    "appendSystemPrompt",
+    1048576
   );
-  const resumeSessionId = optionalString(request.resumeSessionId, 'resumeSessionId', 256);
-  // Per-turn bearer for the loopback MCP gateway (ADR 0014 D1). The supervisor only
-  // bounds its shape; the Server minted it and is the only party that can resolve it.
-  const mcpGatewayToken = optionalString(request.mcpGatewayToken, 'mcpGatewayToken', 512);
-  if (
-    mcpGatewayToken !== undefined &&
-    (mcpGatewayToken === '' || !ACP_WORKER_BACKENDS.has(request.backend))
-  ) {
-    throw new Error('invalid mcpGatewayToken');
+  const resumeSessionId = optionalString(request.resumeSessionId, "resumeSessionId", 256);
+  const mcpGatewayToken = optionalString(request.mcpGatewayToken, "mcpGatewayToken", 512);
+  if (mcpGatewayToken !== void 0 && (mcpGatewayToken === "" || !ACP_WORKER_BACKENDS.has(request.backend))) {
+    throw new Error("invalid mcpGatewayToken");
   }
-  const mcpProxyToken = optionalString(request.mcpProxyToken, 'mcpProxyToken', 512);
-  if (mcpProxyToken === '') throw new Error('invalid mcpProxyToken');
+  const mcpProxyToken = optionalString(request.mcpProxyToken, "mcpProxyToken", 512);
+  if (mcpProxyToken === "") throw new Error("invalid mcpProxyToken");
+  const turnCapability = optionalString(request.turnCapability, "turnCapability", 43);
+  if (turnCapability !== void 0 && !TURN_CAPABILITY_PATTERN.test(turnCapability)) {
+    throw new Error("invalid turnCapability");
+  }
+  if (request.gitAuthor !== void 0 && !isGitAuthor(request.gitAuthor)) {
+    throw new Error("invalid gitAuthor");
+  }
+  if (request.signCommits !== void 0 && request.signCommits !== false) {
+    throw new Error("invalid signCommits");
+  }
+  const gitAuthor = request.gitAuthor === void 0 ? void 0 : { name: request.gitAuthor.name, email: request.gitAuthor.email };
   let mcpServers;
-  if (request.mcpServers !== undefined) {
+  if (request.mcpServers !== void 0) {
     if (!Array.isArray(request.mcpServers) || request.mcpServers.length > 16) {
-      throw new Error('invalid mcpServers');
+      throw new Error("invalid mcpServers");
     }
     mcpServers = request.mcpServers.map((server) => {
-      if (!isObject(server)) throw new Error('invalid mcpServers');
-      const name = optionalString(server.name, 'mcpServers.name', 128);
-      const url = optionalString(server.url, 'mcpServers.url', 4096);
-      if (name === undefined || name === '' || url === undefined || url === '') {
-        throw new Error('invalid mcpServers');
+      if (!isObject(server)) throw new Error("invalid mcpServers");
+      const name = optionalString(server.name, "mcpServers.name", 128);
+      const url = optionalString(server.url, "mcpServers.url", 4096);
+      if (name === void 0 || name === "" || url === void 0 || url === "") {
+        throw new Error("invalid mcpServers");
       }
-      if (url !== 'verity-internal://mcp-proxy') {
+      if (url !== "verity-internal://mcp-proxy") {
         try {
-          if (!['http:', 'https:'].includes(new URL(url).protocol)) {
-            throw new Error('invalid scheme');
+          if (!["http:", "https:"].includes(new URL(url).protocol)) {
+            throw new Error("invalid scheme");
           }
         } catch {
-          throw new Error('invalid mcpServers');
+          throw new Error("invalid mcpServers");
         }
       }
       if (!Array.isArray(server.headers) || server.headers.length > 32) {
-        throw new Error('invalid mcpServers');
+        throw new Error("invalid mcpServers");
       }
       const headers = server.headers.map((header) => {
-        if (!isObject(header)) throw new Error('invalid mcpServers');
-        const headerName = optionalString(header.name, 'mcpServers.headers.name', 256);
-        const value = optionalString(header.value, 'mcpServers.headers.value', 4096);
-        if (headerName === undefined || headerName === '' || value === undefined) {
-          throw new Error('invalid mcpServers');
+        if (!isObject(header)) throw new Error("invalid mcpServers");
+        const headerName = optionalString(header.name, "mcpServers.headers.name", 256);
+        const value = optionalString(header.value, "mcpServers.headers.value", 4096);
+        if (headerName === void 0 || headerName === "" || value === void 0) {
+          throw new Error("invalid mcpServers");
         }
         return { name: headerName, value };
       });
       return { name, url, headers };
     });
   }
-  if (request.knowledgeIsolation !== undefined && typeof request.knowledgeIsolation !== 'boolean')
-    throw new Error('invalid knowledgeIsolation');
-  if (
-    request.knowledgeIsolation &&
-    (request.resumeSessionId ||
-      request.trustedCliExecution ||
-      request.mcpProxyToken ||
-      request.mcpServers?.length)
-  )
-    throw new Error('Isolated Wiki jobs cannot inherit context or external tools');
+  if (request.knowledgeIsolation !== void 0 && typeof request.knowledgeIsolation !== "boolean")
+    throw new Error("invalid knowledgeIsolation");
+  if (request.knowledgeIsolation && (request.resumeSessionId || request.trustedCliExecution || request.mcpProxyToken || request.mcpServers?.length))
+    throw new Error("Isolated Wiki jobs cannot inherit context or external tools");
   if (request.trustedCliExecution === true && !ACP_WORKER_BACKENDS.has(request.backend)) {
-    throw new Error('invalid trustedCliExecution');
+    throw new Error("invalid trustedCliExecution");
   }
-  // Deliberately not narrowed to a fixed vocabulary here: ACP permission modes are
-  // per-agent, and this one field carries every backend's. `Conductor.query` also
-  // pins `dontAsk` for its unattended meta turns, which reach the supervisor by this
-  // same path. The posture is bounded where it is actually agent-specific — the
-  // profile's `permissionModes` in `acp-backend.ts`, checked at the spawn seam.
-  const permissionMode = optionalString(request.permissionMode, 'permissionMode', 128);
-  const allowedTools = stringList(request.allowedTools, 'allowedTools');
-  const disallowedTools = stringList(request.disallowedTools, 'disallowedTools');
+  const permissionMode = optionalString(request.permissionMode, "permissionMode", 128);
+  const allowedTools = stringList(request.allowedTools, "allowedTools");
+  const disallowedTools = stringList(request.disallowedTools, "disallowedTools");
   let sessionEnv;
-  if (request.sessionEnv !== undefined) {
-    if (!isObject(request.sessionEnv)) throw new Error('invalid sessionEnv');
+  if (request.sessionEnv !== void 0) {
+    if (!isObject(request.sessionEnv)) throw new Error("invalid sessionEnv");
     const entries = Object.entries(request.sessionEnv);
-    if (
-      entries.length > 8 ||
-      entries.some(
-        ([key, value]) =>
-          !['VERITY_SESSION_BACKEND', 'VERITY_SESSION_MODEL', 'VERITY_SESSION_ID'].includes(key) ||
-          typeof value !== 'string' ||
-          value.length > 256,
-      )
-    ) {
-      throw new Error('invalid sessionEnv');
+    if (entries.length > 8 || entries.some(
+      ([key, value]) => !["VERITY_SESSION_BACKEND", "VERITY_SESSION_MODEL", "VERITY_SESSION_ID"].includes(key) || typeof value !== "string" || value.length > 256
+    )) {
+      throw new Error("invalid sessionEnv");
     }
     sessionEnv = Object.fromEntries(entries);
   }
-  if (
-    request.timeoutMs !== undefined &&
-    (!Number.isSafeInteger(request.timeoutMs) ||
-      request.timeoutMs < 1 ||
-      request.timeoutMs > 86_400_000)
-  ) {
-    throw new Error('invalid timeoutMs');
+  if (request.timeoutMs !== void 0 && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > 864e5)) {
+    throw new Error("invalid timeoutMs");
   }
   return {
     protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
-    kind: 'start-turn',
+    kind: "start-turn",
     turnId: request.turnId,
     startCommandId: request.startCommandId,
     sessionId: request.sessionId,
@@ -1894,55 +723,1122 @@ export function validateStartTurnRequest(request) {
     worktree,
     cwd,
     prompt: request.prompt,
-    ...(attachments !== undefined ? { attachments } : {}),
-    ...(request.model !== undefined ? { model: request.model } : {}),
+    ...attachments !== void 0 ? { attachments } : {},
+    ...request.model !== void 0 ? { model: request.model } : {},
     steerable: request.steerable === true,
     permissionControl: request.permissionControl === true,
     trustedCliExecution: request.trustedCliExecution === true,
-    ...(request.knowledgeIsolation ? { knowledgeIsolation: true } : {}),
-    ...(appendSystemPrompt !== undefined ? { appendSystemPrompt } : {}),
-    ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
-    ...(mcpGatewayToken !== undefined ? { mcpGatewayToken } : {}),
-    ...(mcpProxyToken !== undefined ? { mcpProxyToken } : {}),
-    ...(mcpServers !== undefined ? { mcpServers } : {}),
-    ...(permissionMode !== undefined ? { permissionMode } : {}),
-    ...(allowedTools !== undefined ? { allowedTools } : {}),
-    ...(disallowedTools !== undefined ? { disallowedTools } : {}),
-    ...(request.timeoutMs !== undefined ? { timeoutMs: request.timeoutMs } : {}),
-    ...(sessionEnv !== undefined ? { sessionEnv } : {}),
+    ...request.knowledgeIsolation ? { knowledgeIsolation: true } : {},
+    ...appendSystemPrompt !== void 0 ? { appendSystemPrompt } : {},
+    ...resumeSessionId !== void 0 ? { resumeSessionId } : {},
+    ...mcpGatewayToken !== void 0 ? { mcpGatewayToken } : {},
+    ...mcpProxyToken !== void 0 ? { mcpProxyToken } : {},
+    ...turnCapability !== void 0 ? { turnCapability } : {},
+    ...gitAuthor !== void 0 ? { gitAuthor } : {},
+    ...request.signCommits === false ? { signCommits: false } : {},
+    ...mcpServers !== void 0 ? { mcpServers } : {},
+    ...permissionMode !== void 0 ? { permissionMode } : {},
+    ...allowedTools !== void 0 ? { allowedTools } : {},
+    ...disallowedTools !== void 0 ? { disallowedTools } : {},
+    ...request.timeoutMs !== void 0 ? { timeoutMs: request.timeoutMs } : {},
+    ...sessionEnv !== void 0 ? { sessionEnv } : {}
   };
 }
-
 async function updateTurnState(runtimeDir, turnId, patch) {
   const current = await readTurnState(runtimeDir, turnId);
-  if (current === undefined) throw new Error(`missing state for ${turnId}`);
+  if (current === void 0) throw new Error(`missing state for ${turnId}`);
   const next = { ...current, ...patch, updatedAt: Date.now() };
-  await writeJsonAtomic(join(runtimeDir, 'turns', turnId, 'state.json'), next);
+  await writeJsonAtomic(join(runtimeDir, "turns", turnId, "state.json"), next);
   return next;
 }
 
-export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
-  const children = new Map();
-  const settlements = new Set();
-  const settlementsByTurn = new Map();
-  const starts = new Set();
-  const startsByTurn = new Map();
-  const cancelledBeforeStart = new Set();
+// features/verity-sandbox-toolkit/src/runner-supervisor/protocol.mjs
+async function installedSkillsManifestHash(seedRoot = "/opt/agent-seed") {
+  try {
+    if (!(await lstat2(join2(seedRoot, "bin/verity"))).isFile()) return void 0;
+    const bytes = await readFile2(join2(seedRoot, "skills-manifest.json"));
+    const manifest = JSON.parse(bytes.toString("utf8"));
+    if (createHash2("sha256").update(await readFile2(join2(seedRoot, "bin/verity"))).digest("hex") !== manifest.dispatcher)
+      return void 0;
+    if (manifest.version !== 1 || !manifest.files || typeof manifest.files !== "object")
+      return void 0;
+    const files = Object.entries(manifest.files);
+    if (!files.length) return void 0;
+    for (const [path, digest] of files) {
+      if (!/^[a-z]+(?:-[a-z]+)*\/SKILL\.md$/.test(path) || typeof digest !== "string")
+        return void 0;
+      const target = join2(seedRoot, "skills", path);
+      if (!(await lstat2(dirname2(target))).isDirectory() || !(await lstat2(target)).isFile())
+        return void 0;
+      if (createHash2("sha256").update(await readFile2(target)).digest("hex") !== digest)
+        return void 0;
+    }
+    return createHash2("sha256").update(bytes).digest("hex");
+  } catch {
+    return void 0;
+  }
+}
+async function installedSkillsVersion(seedRoot = "/opt/agent-seed") {
+  return await installedSkillsManifestHash(seedRoot) ? 1 : 0;
+}
+var SUPERVISOR_PROTOCOL_VERSION = 1;
+var MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION = 1;
+function supportedRequestVersion(value) {
+  return Number.isInteger(value) && value >= MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION && value <= SUPERVISOR_PROTOCOL_VERSION;
+}
+var DEFAULT_RUNTIME_DIR = "/run/verity-runner";
+var DEFAULT_SCRIPT_SANDBOX_PATH = "/usr/local/bin/verity-script-sandbox";
+var SCRIPT_ISOLATION_UNAVAILABLE_ERROR = "worktree script isolation is unavailable";
+var SCRIPT_SANDBOX_PROBE_TIMEOUT_MS = 1e4;
+async function probeScriptSandbox(helperPath = DEFAULT_SCRIPT_SANDBOX_PATH, timeoutMs = SCRIPT_SANDBOX_PROBE_TIMEOUT_MS) {
+  return await new Promise((resolveProbe) => {
+    let child;
+    try {
+      child = spawn2(helperPath, ["--probe"], {
+        stdio: ["ignore", "ignore", "pipe"],
+        timeout: timeoutMs
+      });
+    } catch {
+      resolveProbe({ available: false, reason: "script sandbox helper could not be started" });
+      return;
+    }
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length < 512) stderr += chunk;
+    });
+    child.once(
+      "error",
+      () => resolveProbe({ available: false, reason: "script sandbox helper could not be started" })
+    );
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        resolveProbe({ available: true });
+        return;
+      }
+      const line = stderr.split("\n", 1)[0].trim().slice(0, 256);
+      resolveProbe({
+        available: false,
+        reason: line !== "" ? line : `script sandbox probe exited with ${signal === null ? `code ${String(code)}` : signal}`
+      });
+    });
+  });
+}
+var MAX_START_REQUEST_BYTES = 4 * 1024 * 1024;
+var MAX_CONTROL_LINE_BYTES = MAX_START_REQUEST_BYTES + 1;
+var OVERSIZE_DRAIN_GRACE_MS = 2e3;
+var TURN_CAPABILITY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+function isGitAuthor(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const { name, email } = value;
+  return Object.keys(value).length === 2 && typeof name === "string" && typeof email === "string" && name.trim().length > 0 && Buffer.byteLength(name) <= 200 && // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+  /^[^\u0000-\u001f\u007f<>]+$/u.test(name) && Buffer.byteLength(email) <= 320 && // eslint-disable-next-line no-control-regex -- control characters are what it refuses
+  /^[^\s\u0000-\u001f\u007f<>@]+@[^\s\u0000-\u001f\u007f<>@]+$/u.test(email);
+}
+var SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+var DEFAULT_SUPERVISOR_REQUEST_TIMEOUT_MS = 15 * 60 * 1e3;
+var WORKER_BACKENDS = /* @__PURE__ */ new Set(["claude-acp", "codex-acp", "opencode-acp"]);
+var ACP_WORKER_BACKENDS = /* @__PURE__ */ new Set(["claude-acp", "codex-acp", "opencode-acp"]);
+var SUPERVISED_WORKER_BACKENDS = Object.freeze([
+  "claude-acp",
+  "codex-acp",
+  "opencode-acp"
+]);
+var WORKER_BACKEND_EXECUTABLES = Object.freeze({
+  "claude-acp": "/usr/local/bin/claude-agent-acp",
+  "codex-acp": "/usr/local/bin/codex-acp",
+  "opencode-acp": "/usr/local/bin/opencode-acp"
+});
+function installedWorkerBackends(executable = (path) => {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants2.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}) {
+  return SUPERVISED_WORKER_BACKENDS.filter(
+    (backend) => executable(WORKER_BACKEND_EXECUTABLES[backend])
+  );
+}
+function supervisorWorkerEnv(environment) {
+  const brokerSocket = environment.VERITY_AGENT_SPAWN_BROKER_SOCKET;
+  const mcpGatewayUrl = environment.VERITY_MCP_GATEWAY_URL;
+  const controlMemoryUrl = environment.VERITY_CONTROL_MEMORY_URL;
+  return {
+    ...controlMemoryUrl === void 0 || controlMemoryUrl === "" ? {} : { VERITY_CONTROL_MEMORY_URL: controlMemoryUrl },
+    ...brokerSocket === void 0 || brokerSocket === "" ? {} : { VERITY_AGENT_SPAWN_BROKER_SOCKET: brokerSocket },
+    ...mcpGatewayUrl === void 0 || mcpGatewayUrl === "" ? {} : { VERITY_MCP_GATEWAY_URL: mcpGatewayUrl }
+  };
+}
+var IMAGE_MEDIA_TYPES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+var MAX_START_ATTACHMENTS = 8;
+var MAX_WORKER_ERROR_BYTES = 16 * 1024;
+var WORKER_ERROR_DRAIN_TIMEOUT_MS = 100;
+var REJECTED_WORKER_EXIT_WAIT_MS = 2e3;
+var MAX_TRUSTED_CLI_OUTPUT_BYTES = 24 * 1024;
+var MAX_TRUSTED_CLI_SECRETS = 8;
+var TRUSTED_CLI_TIMEOUT_MS = 30 * 60 * 1e3;
+var TRUSTED_CLI_KILL_GRACE_MS = 5e3;
+var SUPERVISOR_REQUEST_GRACE_MS = 1e4;
+var MAX_CONCURRENT_STARTS = 4;
+var MAX_QUEUED_STARTS = 64;
+var SYNTHETIC_TERMINAL_FRAME_SEQ = 1;
+var RUNNER_FRAME_PROTOCOL_VERSION = 1;
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function redactTrustedCliText(bytes, secrets) {
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return "[output withheld: undecodable]";
+  }
+  const variants = (Array.isArray(secrets) ? secrets : [secrets]).flatMap((secret) => [
+    secret,
+    Buffer.from(secret, "utf8").toString("base64"),
+    encodeURIComponent(secret)
+  ]).filter((value) => typeof value === "string" && value.length > 0).sort((left, right) => right.length - left.length);
+  for (const value of new Set(variants)) {
+    text = text.split(value).join("[REDACTED]");
+  }
+  return text;
+}
+function isValidTrustedCliSecret(secret) {
+  return isObject(secret) && typeof secret.secretAlias === "string" && /^[A-Z][A-Z0-9_]*$/u.test(secret.secretAlias) && typeof secret.env === "string" && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(secret.env) && typeof secret.secret === "string" && secret.secret.length > 0 && !secret.secret.includes("\0") && Buffer.byteLength(secret.secret) <= 1024 * 1024 && (secret.injection === void 0 || secret.injection === "env" || secret.injection === "file") && (secret.encoding === void 0 || secret.injection === "file" && secret.encoding === "base64");
+}
+function normalizeTrustedCliRequest(request) {
+  if (!isObject(request) || Array.isArray(request.secrets) || typeof request.secret !== "string") {
+    return request;
+  }
+  const { secret, secretAlias, env, injection, ...rest } = request;
+  request.secret = "";
+  return {
+    ...rest,
+    secrets: [{ secretAlias, env, ...injection === void 0 ? {} : { injection }, secret }]
+  };
+}
+async function runTrustedCliViaBroker(rawRequest, options = {}) {
+  const request = normalizeTrustedCliRequest(rawRequest);
+  if (!isObject(request) || !SAFE_ID.test(request.turnId ?? "") || request.correlationId !== void 0 && !SAFE_ID.test(request.correlationId) || !Array.isArray(request.secrets) || request.secrets.length === 0 || request.secrets.length > MAX_TRUSTED_CLI_SECRETS || !request.secrets.every(isValidTrustedCliSecret) || // Duplicates would collide on one environment variable, and under file
+  // injection on one path in the secret directory.
+  new Set(request.secrets.map((secret) => secret.env)).size !== request.secrets.length || !Array.isArray(request.command) || request.command.length === 0 || request.command.length > 256 || request.command.some((part) => typeof part !== "string" || Buffer.byteLength(part) > 16384) || !request.command[0].startsWith("/") || request.entryScript !== void 0 && (!isObject(request.entryScript) || typeof request.entryScript.path !== "string" || !request.entryScript.path.startsWith("/") || typeof request.entryScript.projectPath !== "string" || request.entryScript.projectPath.startsWith("/") || request.entryScript.projectPath.split("/").some((component) => component === "" || component === "." || component === "..") || typeof request.entryScript.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(request.entryScript.sha256) || request.entryScript.loading !== "isolated" && request.entryScript.loading !== "dynamic")) {
+    throw new Error("invalid trusted CLI request");
+  }
+  const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
+  const persistedState = await readTurnState(runtimeDir, request.turnId);
+  const startRequest = persistedState ?? JSON.parse(await readFile2(join2(runtimeDir, "turns", request.turnId, "request.json"), "utf8"));
+  if (!isObject(startRequest) || startRequest.turnId !== request.turnId || startRequest.trustedCliExecution !== true || typeof startRequest.cwd !== "string") {
+    throw new Error("trusted CLI is unavailable for this turn");
+  }
+  const socketPath = options.brokerSocket ?? process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ?? "/run/verity-runner-broker/agent-spawn-broker.sock";
+  if (options.authorize !== void 0 && await options.authorize(request) !== true) {
+    throw new Error("trusted CLI turn capability is no longer active");
+  }
+  return await new Promise((resolveResult, rejectResult) => {
+    const socket = createConnection(socketPath);
+    let buffered = Buffer.alloc(0);
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let spawned = false;
+    let settled = false;
+    let truncated = false;
+    let timedOut = false;
+    const streaming = request.streamOutput === true && typeof options.onOutput === "function";
+    const counts = { stdout: 0, stderr: 0 };
+    let terminationReason = "process_exit";
+    let terminationRequested = false;
+    let processing = false;
+    let ended = false;
+    let killTimer;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", abort);
+      socket.destroy();
+      const secrets = request.secrets.flatMap(
+        (entry) => entry.encoding === "base64" ? [entry.secret, Buffer.from(entry.secret, "base64").toString("utf8")] : [entry.secret]
+      );
+      for (const entry of request.secrets) entry.secret = "";
+      if (error !== void 0) rejectResult(error);
+      else if (streaming) {
+        resolveResult({
+          exitCode: result.exitCode,
+          stdout: "",
+          stderr: "",
+          outputMode: "stream-v1",
+          ...result.exitCodeKnown === false ? { exitCodeKnown: false } : {},
+          terminationReason,
+          stdoutBytes: counts.stdout,
+          stderrBytes: counts.stderr,
+          ...terminationRequested ? { terminationRequested: true } : {},
+          ...timedOut ? { timedOut: true } : {},
+          ...truncated ? { truncated: true } : {}
+        });
+      } else if (truncated) {
+        resolveResult({
+          exitCode: result.exitCode,
+          stdout: "[output withheld: truncated]",
+          stderr: "[output withheld: truncated]",
+          truncated: true,
+          ...timedOut ? { timedOut: true } : {}
+        });
+      } else {
+        const redacted = {
+          exitCode: result.exitCode,
+          stdout: redactTrustedCliText(Buffer.concat(stdout), secrets),
+          stderr: redactTrustedCliText(Buffer.concat(stderr), secrets),
+          ...timedOut ? { timedOut: true } : {}
+        };
+        if (Buffer.byteLength(JSON.stringify(redacted), "utf8") > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
+          resolveResult({
+            exitCode: result.exitCode,
+            stdout: "[output withheld: truncated]",
+            stderr: "[output withheld: truncated]",
+            truncated: true,
+            ...timedOut ? { timedOut: true } : {}
+          });
+        } else {
+          resolveResult(redacted);
+        }
+      }
+    };
+    const signal = () => {
+      if (spawned && !socket.destroyed) {
+        terminationRequested = true;
+        socket.write(
+          `${JSON.stringify({ protocolVersion: 1, kind: "signal", signal: "SIGKILL" })}
+`
+        );
+      }
+    };
+    const terminate = () => {
+      signal();
+      if (killTimer !== void 0) return;
+      killTimer = setTimeout(
+        () => finish(new Error("trusted CLI broker did not settle after SIGKILL")),
+        options.killGraceMs ?? TRUSTED_CLI_KILL_GRACE_MS
+      );
+    };
+    const abort = () => {
+      terminationReason = "transport_failure";
+      terminate();
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => {
+      terminationReason = "timeout";
+      timedOut = true;
+      terminate();
+    }, options.timeoutMs ?? TRUSTED_CLI_TIMEOUT_MS);
+    socket.once("error", (error) => finish(error));
+    socket.once("connect", async () => {
+      if (options.signal?.aborted) {
+        finish(new Error("trusted CLI output connection closed"));
+        return;
+      }
+      try {
+        if (options.authorize !== void 0 && await options.authorize(request) !== true) {
+          finish(new Error("trusted CLI turn capability is no longer active"));
+          return;
+        }
+      } catch (error) {
+        finish(error);
+        return;
+      }
+      socket.write(
+        `${JSON.stringify({
+          protocolVersion: 1,
+          kind: "spawn-trusted-cli",
+          ...request.correlationId === void 0 ? {} : { correlationId: request.correlationId },
+          command: request.command[0],
+          args: request.command.slice(1),
+          ...request.entryScript === void 0 ? {} : { entryScript: request.entryScript },
+          cwd: startRequest.cwd,
+          secrets: request.secrets.map((entry) => ({
+            name: entry.env,
+            value: entry.secret,
+            ...entry.injection === void 0 ? {} : { injection: entry.injection },
+            ...entry.encoding === void 0 ? {} : { encoding: entry.encoding }
+          }))
+        })}
+`
+      );
+    });
+    socket.on("data", (chunk) => {
+      socket.pause();
+      processing = true;
+      void (async () => {
+        if (buffered.length + chunk.length > 256 * 1024) {
+          terminationReason = "transport_failure";
+          terminate();
+          finish(new Error("trusted CLI broker frame too large"));
+          return;
+        }
+        buffered = Buffer.concat([buffered, chunk]);
+        for (; ; ) {
+          const newline = buffered.indexOf(10);
+          if (newline < 0) break;
+          const line = buffered.subarray(0, newline).toString("utf8");
+          buffered = buffered.subarray(newline + 1);
+          let frame;
+          try {
+            frame = JSON.parse(line);
+          } catch {
+            finish(new Error("trusted CLI broker returned malformed JSON"));
+            return;
+          }
+          if (frame.ok !== true) {
+            const reason = typeof frame.error === "string" && frame.error !== "" ? frame.error : void 0;
+            const failure = new Error(
+              reason === void 0 ? "trusted CLI broker rejected execution" : `trusted CLI broker rejected execution: ${reason}`
+            );
+            if (isObject(frame.trustedCliFailure) && ["validation", "materialization", "launch-spec", "spawn"].includes(
+              frame.trustedCliFailure.phase
+            ) && typeof frame.trustedCliFailure.cause === "string") {
+              failure.trustedCliFailure = frame.trustedCliFailure;
+            }
+            finish(failure);
+            return;
+          }
+          if (frame.kind === "spawned") {
+            if (!spawned) {
+              spawned = true;
+              try {
+                options.onSpawned?.();
+              } catch (error) {
+                finish(error);
+                return;
+              }
+            }
+            if (timedOut || truncated || terminationReason !== "process_exit") signal();
+            continue;
+          }
+          if (frame.kind === "stdout" || frame.kind === "stderr") {
+            const bytes = Buffer.from(frame.data ?? "", "base64");
+            if (streaming) {
+              counts[frame.kind] += bytes.length;
+              if (terminationReason !== "process_exit") {
+                bytes.fill(0);
+                continue;
+              }
+              if (counts.stdout + counts.stderr > 10 * 1024 * 1024) {
+                terminationReason = "output_limit";
+                truncated = true;
+                bytes.fill(0);
+                terminate();
+                continue;
+              }
+              try {
+                for (let offset = 0; offset < bytes.length; offset += 16384) {
+                  await options.onOutput(frame.kind, bytes.subarray(offset, offset + 16384));
+                  if (settled || terminationReason !== "process_exit") break;
+                }
+              } catch (error) {
+                if (terminationReason === "process_exit") {
+                  terminationReason = ["redaction_failure", "output_limit"].includes(
+                    error?.outputFailure
+                  ) ? error.outputFailure : "storage_failure";
+                }
+                truncated = true;
+                terminate();
+              } finally {
+                bytes.fill(0);
+              }
+              continue;
+            }
+            if (outputBytes + bytes.length > MAX_TRUSTED_CLI_OUTPUT_BYTES) {
+              truncated = true;
+              terminate();
+              continue;
+            }
+            outputBytes += bytes.length;
+            (frame.kind === "stdout" ? stdout : stderr).push(bytes);
+            continue;
+          }
+          if (frame.kind === "exit") {
+            const exitCode = Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255 ? frame.code : 1;
+            finish(void 0, {
+              exitCode,
+              exitCodeKnown: Number.isInteger(frame.code) && frame.code >= 0 && frame.code <= 255
+            });
+          }
+        }
+      })().catch(() => {
+        terminate();
+        finish(new Error("trusted CLI output processing failed"));
+      }).finally(() => {
+        processing = false;
+        if (ended && !settled) finish(new Error("trusted CLI broker closed before exit"));
+        if (!settled) socket.resume();
+      });
+    });
+    socket.once("end", () => {
+      ended = true;
+      if (!processing && !settled) finish(new Error("trusted CLI broker closed before exit"));
+    });
+  });
+}
+function logTelemetry(record) {
+  try {
+    process.stderr.write(`${JSON.stringify({ verity: "runner-supervisor", ...record })}
+`);
+  } catch {
+  }
+}
+var eventLoopHistogram;
+function sampleEventLoopDelay() {
+  try {
+    if (eventLoopHistogram === void 0) {
+      eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
+      eventLoopHistogram.enable();
+      return void 0;
+    }
+    const mean = eventLoopHistogram.mean / 1e6;
+    const max = eventLoopHistogram.max / 1e6;
+    eventLoopHistogram.reset();
+    if (!Number.isFinite(mean) || !Number.isFinite(max)) return void 0;
+    return { mean: Math.round(mean * 100) / 100, max: Math.round(max * 100) / 100 };
+  } catch {
+    return void 0;
+  }
+}
+function signalExitCode(signal) {
+  const number = osConstants.signals[signal];
+  return typeof number === "number" ? 128 + number : 1;
+}
+async function writeSyntheticTerminalFrame(turnDir, detail) {
+  const eventPath = join2(turnDir, "events.jsonl");
+  const existing = await lstat2(eventPath).catch((error) => {
+    if (error?.code === "ENOENT") return void 0;
+    throw error;
+  });
+  if (existing !== void 0 && (!existing.isFile() || existing.size > 0 || existing.nlink > 1)) {
+    return false;
+  }
+  const stderr = typeof detail.workerError === "string" ? detail.workerError : "";
+  const body = {
+    kind: "result",
+    result: {
+      // No `sessionId`. That field is the AGENT's conversation id, which only the
+      // worker learns and only once the backend has opened the thread — a worker
+      // that died before its first frame never had one. The Server persists a
+      // failed turn's `result.sessionId` as the session's resume pointer
+      // (`conductor.ts`), so putting the store's session id here would pin every
+      // later turn to a thread the agent never issued. Absent means unknown, which
+      // is the truth.
+      // A clean exit with an EMPTY stream is still a failed turn: the worker did
+      // none of the work and said nothing, so reporting the process's own `0` would
+      // hand the Server a success it must then badge as running forever. The real
+      // exit code stays in the turn state; this is the turn's verdict, not the
+      // process's.
+      exitCode: typeof detail.workerExitCode === "number" && detail.workerExitCode !== 0 ? detail.workerExitCode : detail.workerSignal != null ? signalExitCode(detail.workerSignal) : 1,
+      stderr: stderr.length > 0 ? stderr : detail.workerSignal != null ? `runner worker terminated by signal ${detail.workerSignal} before producing any event` : detail.workerExitCode === 0 ? "runner worker exited successfully before producing any event" : "runner worker exited before producing any event",
+      // A turn the operator cancelled is not a crash. Without this the SIGKILL that
+      // ends the grace window reads as exit 137 and the session shows a failure for
+      // something it was asked to do.
+      aborted: detail.aborted === true
+    }
+  };
+  const frame = {
+    protocolVersion: RUNNER_FRAME_PROTOCOL_VERSION,
+    runnerInstanceId: detail.runnerInstanceId,
+    turnId: detail.turnId,
+    frameSeq: SYNTHETIC_TERMINAL_FRAME_SEQ,
+    payloadHash: createHash2("sha256").update(JSON.stringify(body)).digest("hex"),
+    ...body
+  };
+  const flags = constants2.O_RDWR | constants2.O_APPEND | constants2.O_NOFOLLOW | (existing === void 0 ? constants2.O_CREAT | constants2.O_EXCL : 0);
+  const handle = await open2(eventPath, flags, 416).catch((error) => {
+    if (error?.code === "EEXIST" || error?.code === "ELOOP" || error?.code === "ENOENT") {
+      return void 0;
+    }
+    throw error;
+  });
+  if (handle === void 0) return false;
+  let wrote = false;
+  let owned = false;
+  try {
+    const fresh = await handle.stat();
+    if (fresh.size > 0 || fresh.nlink > 1) return false;
+    owned = true;
+    const bytes = Buffer.from(`${JSON.stringify(frame)}
+`, "utf8");
+    const { bytesWritten } = await handle.write(bytes, 0, bytes.length);
+    if (bytesWritten !== bytes.length) return false;
+    wrote = true;
+    await handle.sync().catch(() => void 0);
+    if (existing === void 0) await syncDirectory(turnDir).catch(() => void 0);
+    return true;
+  } finally {
+    if (owned && !wrote) await handle.truncate(0).catch(() => void 0);
+    await handle.close().catch(() => void 0);
+    if (!wrote && existing === void 0) {
+      await lstat2(eventPath).then(async (leftover) => {
+        if (leftover.isFile() && leftover.size === 0) await rm2(eventPath, { force: true });
+      }).catch(() => void 0);
+    }
+  }
+}
+var MISSING_WORKER_ERROR = "worker missing during supervisor recovery";
+var CANCELLED_MISSING_WORKER_ERROR = "runner turn was cancelled; its worker did not survive the supervisor restart";
+function cancelPath(runtimeDir, turnId) {
+  return join2(runtimeDir, "cancellations", `${turnId}.json`);
+}
+async function readCancelTombstone(runtimeDir, turnId) {
+  try {
+    await readFile2(cancelPath(runtimeDir, turnId));
+    return "cancelled";
+  } catch (error) {
+    return error?.code === "ENOENT" ? "absent" : "unknown";
+  }
+}
+async function cancelExplainsSettlement(runtimeDir, turnId) {
+  return await readCancelTombstone(runtimeDir, turnId) === "cancelled";
+}
+
+// features/verity-sandbox-toolkit/src/runner-supervisor/turns.mjs
+import { spawn as spawn3 } from "node:child_process";
+import { createConnection as createConnection3 } from "node:net";
+import { lstat as lstat3, mkdir as mkdir2, readdir } from "node:fs/promises";
+import { join as join4 } from "node:path";
+
+// features/verity-sandbox-toolkit/src/runner-supervisor/requests.mjs
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { createConnection as createConnection2, createServer } from "node:net";
+import { chmod as chmod2, opendir, rm as rm3 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+import { setImmediate } from "node:timers";
+async function reclaimPackageCachesPage(runtimeDir, request) {
+  const fingerprint = JSON.stringify([request.sessionIds, request.maxBytes]);
+  let scan = cacheScans.get(runtimeDir);
+  if (request.scanId === void 0) {
+    if (scan) await closeCacheScan(runtimeDir, scan);
+    const directory = await opendir(join3(runtimeDir, "turns")).catch((error) => {
+      if (error.code === "ENOENT") return void 0;
+      throw cacheMaintenanceFailure("turn-inventory-unavailable");
+    });
+    scan = {
+      id: randomUUID2(),
+      fingerprint,
+      directory,
+      cursor: 0,
+      epoch: cacheClaimEpochs.get(runtimeDir) ?? 0,
+      busy: /* @__PURE__ */ new Set(),
+      pending: [],
+      counts: { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 }
+    };
+    scan.timer = setTimeout(() => {
+      void closeCacheScan(runtimeDir, scan);
+    }, CACHE_SCAN_TTL_MS);
+    scan.timer.unref?.();
+    cacheScans.set(runtimeDir, scan);
+  } else if (!scan || scan.id !== request.scanId || scan.fingerprint !== fingerprint) {
+    throw cacheMaintenanceFailure("turn-inventory-unavailable");
+  }
+  try {
+    scan.timer.refresh();
+    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
+      throw cacheMaintenanceFailure("turn-inventory-unavailable");
+    if (request.scanId !== void 0) {
+      if (!Array.isArray(request.turnOwners) || request.turnOwners.length > CACHE_SCAN_PAGE)
+        throw new Error("invalid turn ownership response");
+      const pending = new Map(scan.pending.map((turn) => [turn.turnId, turn]));
+      const owners = /* @__PURE__ */ new Map();
+      for (const owner of request.turnOwners) {
+        if (!isObject(owner) || !pending.has(owner.turnId) || owners.has(owner.turnId) || typeof owner.conflict !== "boolean" || owner.sessionId !== void 0 && (typeof owner.sessionId !== "string" || !SAFE_ID.test(owner.sessionId)))
+          throw new Error("invalid turn ownership response");
+        owners.set(owner.turnId, owner);
+      }
+      for (const prior of scan.pending) {
+        const current = await cacheTurnSummary(runtimeDir, prior.turnId);
+        if (current.startCommandId !== prior.startCommandId || current.runnerInstanceId !== prior.runnerInstanceId)
+          throw cacheMaintenanceFailure("turn-inventory-unavailable");
+        if (current.status === "settled") continue;
+        const owner = owners.get(prior.turnId);
+        const sessionId = owner?.conflict ? void 0 : owner?.sessionId;
+        if (sessionId !== void 0 && (current.sessionId === void 0 || current.sessionId === sessionId)) {
+          if (request.sessionIds.includes(sessionId)) scan.busy.add(sessionId);
+        } else {
+          const key = current.reason === "missing-state" ? "missingState" : current.reason === "invalid-state" ? "invalidState" : "unsettledWithoutSession";
+          scan.counts[key] = Math.min(1e6, scan.counts[key] + 1);
+        }
+      }
+      scan.pending = [];
+    }
+    let done = scan.directory === void 0;
+    for (let inspected = 0; !done && inspected < CACHE_SCAN_PAGE && scan.pending.length < 64; inspected++) {
+      const entry = await scan.directory.read();
+      if (entry === null) {
+        done = true;
+        break;
+      }
+      scan.cursor++;
+      if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
+      const turn = await cacheTurnSummary(runtimeDir, entry.name);
+      if (turn.status === "settled") continue;
+      if (turn.sessionId !== void 0) {
+        if (request.sessionIds.includes(turn.sessionId)) scan.busy.add(turn.sessionId);
+      } else scan.pending.push(turn);
+    }
+    if (!done || scan.pending.length > 0) {
+      return {
+        ok: true,
+        maintenancePending: true,
+        scanId: scan.id,
+        cursor: String(scan.cursor),
+        turnsNeedingOwnership: scan.pending
+      };
+    }
+    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
+      throw cacheMaintenanceFailure("turn-inventory-unavailable");
+    const unknown = Object.values(scan.counts).some((count) => count > 0);
+    let response;
+    try {
+      response = await withFinalCacheAdmission(runtimeDir, scan, async () => {
+        const capabilities = await brokerStorageRequest({ protocolVersion: 1, kind: "status" });
+        if (capabilities.cacheMaintenanceVersion !== 2 || capabilities.runtimeAdmissionFenceVersion !== 1)
+          throw cacheMaintenanceFailure("unsupported");
+        return await brokerStorageRequest({
+          protocolVersion: 1,
+          kind: "reclaim-package-caches",
+          sessionIds: unknown ? [] : request.sessionIds.filter((id) => !scan.busy.has(id)),
+          maxBytes: request.maxBytes
+        });
+      });
+    } catch (error) {
+      if (error?.runnerCacheFailure) throw error;
+      const code = ["EACCES", "EPERM"].includes(error?.code) ? "broker-access-denied" : ["ENOENT", "ECONNREFUSED"].includes(error?.code) ? "broker-unavailable" : error?.message === "runner storage request timed out" ? "broker-timeout" : error instanceof SyntaxError || error?.code === "ERR_INVALID_RUNNER_STORAGE_RESPONSE" ? "broker-invalid-response" : "broker-rejected";
+      throw cacheMaintenanceFailure(code);
+    }
+    if (response.report && (unknown || scan.busy.size > 0)) {
+      response.report.usageComplete = false;
+      response.report.legacyBytes = null;
+      response.report.turnOwnershipCounts = scan.counts;
+      response.report.blockers = [
+        ...(response.report.blockers ?? []).slice(0, 99),
+        unknown ? "Runner turn ownership is unknown; legacy package caches were retained" : "Runner sessions have unsettled turns; their legacy package caches were retained"
+      ];
+    }
+    await closeCacheScan(runtimeDir, scan);
+    return response;
+  } catch (error) {
+    await closeCacheScan(runtimeDir, scan);
+    throw error;
+  }
+}
+async function handleSupervisorRequest(runtimeDir, runnerInstanceId, request, turnStarter, onTrustedCliStarted, onStartAccepted, capabilities = { scriptIsolation: true }, outputOptions = {}) {
+  if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
+    throw new Error("unsupported supervisor protocol");
+  }
+  const skillsManifestHash = request.kind === "status" ? await installedSkillsManifestHash() : void 0;
+  switch (request.kind) {
+    case "stack-health":
+      return await brokerStorageRequest({ protocolVersion: 1, kind: "stack-health" });
+    case "egress-readiness":
+      return await brokerStorageRequest({ protocolVersion: 1, kind: "egress-readiness" });
+    case "status":
+      return {
+        ok: true,
+        protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+        runnerInstanceId,
+        // Both ride on the same helper. The Server reads `scriptIsolation` before it
+        // raises an approval card for an entry script this Sandbox could not confine.
+        managedAgentConfig: true,
+        builtInSkillsVersion: skillsManifestHash ? 1 : 0,
+        ...skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {},
+        persistentSessionHomes: true,
+        cacheMaintenanceVersion: 2,
+        turnOwnershipVersion: 1,
+        planningIsolation: capabilities.scriptIsolation,
+        knowledgeIsolation: capabilities.scriptIsolation,
+        scriptIsolation: capabilities.scriptIsolation
+      };
+    case "prepare-session-home":
+      return await sessionHomeRequest("prepare-session-home", request.sessionId, request);
+    case "delete-session-home": {
+      if (!SAFE_ID.test(request.sessionId ?? "")) throw new Error("invalid sessionId");
+      const turns = await listTurns(runtimeDir);
+      for (const turn of turns) {
+        if (turn.sessionId === request.sessionId && turn.status !== "settled" && turnStarter !== void 0)
+          await turnStarter.cancel(turn.turnId);
+      }
+      return await sessionHomeRequest("delete-session-home", request.sessionId);
+    }
+    case "reclaim-package-caches": {
+      if (!Array.isArray(request.sessionIds) || request.sessionIds.length > 512 || request.sessionIds.some((id) => typeof id !== "string" || !SAFE_ID.test(id)) || !Number.isSafeInteger(request.maxBytes) || request.maxBytes <= 0)
+        throw new Error("invalid package cache request");
+      if (request.maintenanceVersion === 2)
+        return await reclaimPackageCachesPaged(runtimeDir, request);
+      if (request.maintenanceVersion !== void 0) throw cacheMaintenanceFailure("unsupported");
+      const fail = (code, counts2) => Object.assign(
+        new Error(
+          code === "turn-ownership-unknown" ? "Runner turn ownership is unknown; package caches retained" : "Runner cache maintenance blocked; caches retained"
+        ),
+        {
+          runnerCacheFailure: { code, ...counts2 ? { counts: counts2 } : {} }
+        }
+      );
+      let turns;
+      try {
+        turns = await listTurns(runtimeDir);
+      } catch {
+        throw fail("turn-inventory-unavailable");
+      }
+      const counts = { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 };
+      for (const turn of turns) {
+        if (turn.status === "settled" || typeof turn.sessionId === "string") continue;
+        const key = turn.reason === "missing-state" ? "missingState" : turn.reason === "invalid-state" ? "invalidState" : "unsettledWithoutSession";
+        counts[key] = Math.min(1e6, counts[key] + 1);
+      }
+      if (Object.values(counts).some((count) => count > 0))
+        throw fail("turn-ownership-unknown", counts);
+      const busy = new Set(
+        turns.filter((turn) => turn.status !== "settled").map((turn) => turn.sessionId)
+      );
+      let response;
+      try {
+        response = await brokerStorageRequest({
+          protocolVersion: 1,
+          kind: "reclaim-package-caches",
+          sessionIds: request.sessionIds.filter((id) => !busy.has(id)),
+          maxBytes: request.maxBytes
+        });
+      } catch (error) {
+        const code = ["EACCES", "EPERM"].includes(error?.code) ? "broker-access-denied" : ["ENOENT", "ECONNREFUSED"].includes(error?.code) ? "broker-unavailable" : error?.message === "runner storage request timed out" ? "broker-timeout" : error instanceof SyntaxError || error?.code === "ERR_INVALID_RUNNER_STORAGE_RESPONSE" ? "broker-invalid-response" : "broker-rejected";
+        throw fail(code);
+      }
+      if (busy.size > 0 && response.report) {
+        response.report.usageComplete = false;
+        response.report.legacyBytes = null;
+        response.report.blockers = [
+          ...(response.report.blockers ?? []).slice(0, 99),
+          "Runner sessions have unsettled turns; their legacy package caches were retained"
+        ];
+      }
+      return response;
+    }
+    case "list-turns":
+      return { ok: true, turns: await listTurns(runtimeDir) };
+    case "get-turn": {
+      if (typeof request.turnId !== "string") throw new Error("invalid turnId");
+      const state = await readTurnState(runtimeDir, request.turnId);
+      return {
+        ok: true,
+        state,
+        ...state?.status === "running" && typeof turnStarter?.workerStatus === "function" ? { workerStatus: turnStarter.workerStatus(request.turnId) } : {}
+      };
+    }
+    case "claim-turn":
+      return { ok: true, ...await claimTurn(runtimeDir, request, runnerInstanceId) };
+    case "start-turn": {
+      if (turnStarter === void 0) throw new Error("runner worker is not installed");
+      if ((request.knowledgeIsolation === true || request.planning === true) && !capabilities.scriptIsolation) {
+        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
+      }
+      const { pending } = turnStarter.start(request);
+      onStartAccepted?.();
+      return { ok: true, ...await pending };
+    }
+    case "cancel-turn":
+      if (turnStarter === void 0) throw new Error("runner worker is not installed");
+      return { ok: true, ...await turnStarter.cancel(request.turnId) };
+    case "run-trusted-cli":
+      if (typeof turnStarter?.runTrustedCli !== "function") {
+        throw new Error("runner worker is not installed");
+      }
+      if (request.entryScript !== void 0 && !capabilities.scriptIsolation) {
+        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
+      }
+      return {
+        ok: true,
+        ...await turnStarter.runTrustedCli(request, onTrustedCliStarted, outputOptions)
+      };
+    default:
+      throw new Error("unknown supervisor request");
+  }
+}
+async function runSupervisor(options = {}) {
+  const runtimeDir = options.runtimeDir ?? process.env.VERITY_RUNNER_RUNTIME ?? DEFAULT_RUNTIME_DIR;
+  const expectedUid = Number(
+    options.uid ?? process.env.VERITY_RUNNER_RUNTIME_UID ?? process.getuid?.()
+  );
+  const expectedGid = Number(
+    options.gid ?? process.env.VERITY_RUNNER_RUNTIME_GID ?? process.getgid?.()
+  );
+  await validateRuntimeDirectory(runtimeDir, { uid: expectedUid, gid: expectedGid });
+  sampleEventLoopDelay();
+  const scriptIsolation = options.scriptIsolation ?? await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH);
+  if (!scriptIsolation.available) {
+    process.stderr.write(
+      `verity-runner-supervisor: worktree entry scripts are disabled: ${scriptIsolation.reason ?? "script sandbox unavailable"}
+`
+    );
+  }
+  const capabilities = { scriptIsolation: scriptIsolation.available };
+  const singleton = await acquireSingleton(runtimeDir);
+  const adoptedTurns = /* @__PURE__ */ new Set();
+  const turnOptions = { ...options, adoptedTurns };
+  const turnStarter = createTurnStarter(runtimeDir, singleton.instanceId, turnOptions);
+  const turnAdopter = createTurnAdopter(runtimeDir, turnOptions);
+  try {
+    await turnAdopter.adopt();
+  } catch (error) {
+    await turnAdopter.close();
+    await turnStarter.close();
+    await singleton.release();
+    throw error;
+  }
+  const socketPath = join3(runtimeDir, "supervisor.sock");
+  try {
+    await rm3(socketPath, { force: true });
+  } catch (error) {
+    await turnAdopter.close();
+    await turnStarter.close();
+    await singleton.release();
+    throw error;
+  }
+  const readyPath = join3(runtimeDir, "supervisor.json");
+  const connections = /* @__PURE__ */ new Set();
+  const server = createServer((socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+    socket.on("error", () => void 0);
+    let buffered = Buffer.alloc(0);
+    let handled = false;
+    let processingStarted = false;
+    let pipelinedAfterNewline = false;
+    const outputAbort = new globalThis.AbortController();
+    let outputAck;
+    let ackBuffer = "";
+    let outputSequence = 0;
+    socket.once("close", () => {
+      outputAbort.abort();
+      outputAck?.reject(new Error("trusted CLI output connection closed"));
+    });
+    const onOutput = (stream, bytes) => new Promise((resolve3, reject) => {
+      if (socket.destroyed) {
+        reject(new Error("trusted CLI output connection closed"));
+        return;
+      }
+      const sequence = outputSequence++;
+      const timer = setTimeout(() => {
+        outputAck = void 0;
+        reject(new Error("trusted CLI output receipt timed out"));
+      }, 3e4);
+      outputAck = {
+        sequence,
+        resolve: () => {
+          clearTimeout(timer);
+          resolve3();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
+      };
+      socket.write(
+        `${JSON.stringify({ ok: true, kind: "trusted-cli-output", sequence, stream, data: bytes.toString("base64") })}
+`
+      );
+    });
+    let timeout = setTimeout(() => socket.destroy(), 5e3);
+    const setRequestTimeout = (milliseconds) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => socket.destroy(), milliseconds);
+    };
+    const respond = (response) => {
+      clearTimeout(timeout);
+      socket.end(`${JSON.stringify(response)}
+`, () => socket.destroy());
+    };
+    const respondDraining = (response) => {
+      clearTimeout(timeout);
+      socket.end(`${JSON.stringify(response)}
+`);
+      const grace = setTimeout(() => socket.destroy(), OVERSIZE_DRAIN_GRACE_MS);
+      socket.once("close", () => clearTimeout(grace));
+    };
+    socket.on("data", (chunk) => {
+      if (handled) {
+        if (outputAck !== void 0) {
+          ackBuffer += chunk.toString("utf8");
+          if (ackBuffer.length > 512) {
+            socket.destroy();
+            return;
+          }
+          if (!ackBuffer.endsWith("\n")) return;
+          try {
+            const ack = JSON.parse(ackBuffer);
+            ackBuffer = "";
+            if (ack.kind !== "output-ack" || ack.sequence !== outputAck.sequence || ack.failure !== void 0 && !["redaction_failure", "storage_failure", "output_limit"].includes(ack.failure)) {
+              socket.destroy();
+              return;
+            }
+            const pending = outputAck;
+            outputAck = void 0;
+            if (ack.failure === void 0) pending.resolve();
+            else
+              pending.reject(
+                Object.assign(new Error("trusted CLI output rejected"), {
+                  outputFailure: ack.failure
+                })
+              );
+          } catch {
+            socket.destroy();
+          }
+          return;
+        }
+        if (!processingStarted && chunk.length > 0) pipelinedAfterNewline = true;
+        return;
+      }
+      if (buffered.length + chunk.length > MAX_CONTROL_LINE_BYTES) {
+        handled = true;
+        buffered = Buffer.alloc(0);
+        respondDraining(responseForError(new Error("supervisor frame too large")));
+        return;
+      }
+      buffered = Buffer.concat([buffered, chunk]);
+      const newline = buffered.indexOf(10);
+      if (newline < 0) return;
+      handled = true;
+      const line = buffered.subarray(0, newline).toString("utf8");
+      const remainder = buffered.subarray(newline + 1);
+      buffered = Buffer.alloc(0);
+      if (remainder.length > 0) {
+        respond(responseForError(new Error("supervisor accepts exactly one request")));
+        return;
+      }
+      void new Promise((resolve3) => setImmediate(resolve3)).then(() => {
+        processingStarted = true;
+        if (pipelinedAfterNewline) {
+          throw new Error("supervisor accepts exactly one request");
+        }
+      }).then(() => JSON.parse(line)).then((request) => {
+        setRequestTimeout(supervisorRequestTimeoutMs(request));
+        return handleSupervisorRequest(
+          runtimeDir,
+          singleton.instanceId,
+          request,
+          turnStarter,
+          request?.kind === "run-trusted-cli" ? () => socket.write(`${JSON.stringify({ ok: true, kind: "trusted-cli-started" })}
+`) : void 0,
+          // Only when the Server asked for it. A Server that predates the two-phase
+          // reply reads exactly one frame per request and would refuse a second as
+          // an invalid frame count — the D9 half of this change that keeps a new
+          // Sandbox image usable by an older Server.
+          request?.kind === "start-turn" && request.startAck === true ? () => socket.write(
+            `${JSON.stringify({
+              ok: true,
+              kind: "start-accepted",
+              // The raw request's ids, which the client compares strictly
+              // against the ones it sent. Sound because `validateStartTurnRequest`
+              // only TESTS these two against `SAFE_ID` and never rewrites them;
+              // a validator that ever normalized an id would have to echo the
+              // normalized value here instead.
+              turnId: request.turnId,
+              startCommandId: request.startCommandId
+            })}
+`
+          ) : void 0,
+          capabilities,
+          request?.kind === "run-trusted-cli" && request.streamOutput === true ? { onOutput, signal: outputAbort.signal } : {}
+        );
+      }).catch(responseForError).then(respond);
+    });
+  });
+  try {
+    await new Promise((resolve3, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve3);
+    });
+    await chmod2(socketPath, 432);
+    await writeJsonAtomic(readyPath, {
+      protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+      runnerInstanceId: singleton.instanceId,
+      pid: process.pid,
+      socketPath,
+      readyAt: Date.now()
+    });
+  } catch (error) {
+    server.close();
+    await turnAdopter.close();
+    await turnStarter.close();
+    await rm3(socketPath, { force: true });
+    await singleton.release();
+    throw error;
+  }
+  const close = async () => {
+    await turnAdopter.close();
+    await turnStarter.close();
+    for (const socket of connections) socket.destroy();
+    await new Promise((resolve3) => server.close(resolve3));
+    await rm3(socketPath, { force: true });
+    await rm3(readyPath, { force: true });
+    await singleton.release();
+  };
+  return { runtimeDir, socketPath, instanceId: singleton.instanceId, close };
+}
+async function probeSupervisor(runtimeDir = DEFAULT_RUNTIME_DIR, timeoutMs = 1e3) {
+  const socketPath = join3(runtimeDir, "supervisor.sock");
+  return await new Promise((resolve3) => {
+    const socket = createConnection2(socketPath);
+    let response = "";
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      resolve3(false);
+    }, timeoutMs);
+    const finish = (live) => {
+      clearTimeout(timeout);
+      socket.destroy();
+      resolve3(live);
+    };
+    socket.once("error", () => finish(false));
+    socket.on("data", (chunk) => {
+      response += chunk.toString("utf8");
+    });
+    socket.once("end", () => {
+      try {
+        const parsed = JSON.parse(response);
+        finish(parsed?.ok === true && parsed.protocolVersion === SUPERVISOR_PROTOCOL_VERSION);
+      } catch {
+        finish(false);
+      }
+    });
+    socket.once("connect", () => {
+      socket.write(
+        `${JSON.stringify({ protocolVersion: SUPERVISOR_PROTOCOL_VERSION, kind: "status" })}
+`
+      );
+    });
+  });
+}
+
+// features/verity-sandbox-toolkit/src/runner-supervisor/turns.mjs
+function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
+  const children = /* @__PURE__ */ new Map();
+  const settlements = /* @__PURE__ */ new Set();
+  const settlementsByTurn = /* @__PURE__ */ new Map();
+  const starts = /* @__PURE__ */ new Set();
+  const startsByTurn = /* @__PURE__ */ new Map();
+  const cancelledBeforeStart = /* @__PURE__ */ new Set();
   const maxConcurrentStarts = options.maxConcurrentStarts ?? MAX_CONCURRENT_STARTS;
   const maxQueuedStarts = options.maxQueuedStarts ?? MAX_QUEUED_STARTS;
-  /** Slot waiters, FIFO. */
   const queue = [];
   let running = 0;
   let closing = false;
-  const spawnWorker =
-    options.spawnWorker ?? ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+  const spawnWorker = options.spawnWorker ?? ((command, args, spawnOptions) => spawn3(command, args, spawnOptions));
   const workerCommand = options.workerCommand;
   const workerBackends = new Set(options.workerBackends ?? WORKER_BACKENDS);
   const adoptedTurnIsLive = async (turnId) => {
     if (options.adoptedTurns?.has(turnId) !== true) return false;
     let lock;
     try {
-      lock = await acquireFileLock(join(runtimeDir, 'turns', turnId, 'worker.lock'));
+      lock = await acquireFileLock(join4(runtimeDir, "turns", turnId, "worker.lock"));
       options.adoptedTurns.delete(turnId);
       await settleMissingWorkerTurn(runtimeDir, turnId);
       return false;
@@ -1953,60 +1849,31 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       await lock?.close();
     }
   };
-
   const terminate = async (child) => {
     if (child.exitCode !== null || child.signalCode !== null) return;
-    const exited = new Promise((resolveExit) => child.once('exit', resolveExit));
-    child.kill('SIGTERM');
-    const escalation = setTimeout(() => child.kill('SIGKILL'), options.shutdownGraceMs ?? 5_000);
+    const exited = new Promise((resolveExit) => child.once("exit", resolveExit));
+    child.kill("SIGTERM");
+    const escalation = setTimeout(() => child.kill("SIGKILL"), options.shutdownGraceMs ?? 5e3);
     await exited;
     clearTimeout(escalation);
   };
-
   const startImpl = async (request) => {
-    // Re-checked AFTER admission, not only at `start()`. Queueing put time between
-    // the two: a start accepted while the supervisor was healthy can reach its slot
-    // after `close()` has begun, and spawning a worker into a shutdown leaves one
-    // behind that no supervisor owns.
-    if (closing) throw new Error('runner supervisor is shutting down');
-    if (typeof workerCommand !== 'string' || workerCommand.length === 0) {
-      throw new Error('runner worker is not installed');
+    if (closing) throw new Error("runner supervisor is shutting down");
+    if (typeof workerCommand !== "string" || workerCommand.length === 0) {
+      throw new Error("runner worker is not installed");
     }
     if (!workerBackends.has(request.backend)) {
-      // Name the likely cause, not just the fact. The Server and this toolkit ship
-      // and roll out separately, so the realistic way to reach this line is the
-      // ordering constraint in ADR 0012 Amendment 4: a Server that already offers a
-      // backend talking to a Sandbox whose image predates it, or was built without
-      // that agent. The backend is real; this container does not have the adapter.
-      // Listing what it does have turns an opaque refusal into "rebuild the image",
-      // which is the actual fix and is not something the chat can otherwise deduce.
-      // The list is `installedWorkerBackends()` in production, so it is what the
-      // image carries rather than what this file was written knowing about.
       throw new Error(
-        `worker does not support backend: ${request.backend} ` +
-          `(this sandbox image provides ${[...workerBackends].sort().join(', ') || 'no agent adapter at all'}; ` +
-          `a backend the server offers but this image lacks means the container predates it or was built without that agent, and needs rebuilding)`,
+        `worker does not support backend: ${request.backend} (this sandbox image provides ${[...workerBackends].sort().join(", ") || "no agent adapter at all"}; a backend the server offers but this image lacks means the container predates it or was built without that agent, and needs rebuilding)`
       );
     }
     const claim = await claimTurn(runtimeDir, request, runnerInstanceId);
-    if (claim.outcome !== 'created') return claim;
-    const turnDir = join(runtimeDir, 'turns', request.turnId);
+    if (claim.outcome !== "created") return claim;
+    const turnDir = join4(runtimeDir, "turns", request.turnId);
     const cancelledInMemory = cancelledBeforeStart.delete(request.turnId);
-    const tombstone = cancelledInMemory
-      ? 'cancelled'
-      : await readCancelTombstone(runtimeDir, request.turnId);
-    if (tombstone !== 'absent') {
-      // Settled without a worker ever existing — and still owed a terminal frame, or
-      // the Server reads an empty stream behind a settled turn as a crash and badges
-      // the operator's own cancel as a failure.
-      //
-      // Two different turns end here and they must not be given the same label. A
-      // proven cancellation is the operator's own doing and is reported as `aborted`.
-      // A tombstone that could not be READ stops the start for safety — running a turn
-      // that was cancelled cannot be taken back — but it is a filesystem fault, and
-      // telling the operator they cancelled a turn they did not is the same class of
-      // lie `cancelExplainsSettlement` refuses to tell on the way out.
-      const cancelled = tombstone === 'cancelled';
+    const tombstone = cancelledInMemory ? "cancelled" : await readCancelTombstone(runtimeDir, request.turnId);
+    if (tombstone !== "absent") {
+      const cancelled = tombstone === "cancelled";
       await writeSyntheticTerminalFrame(turnDir, {
         turnId: request.turnId,
         runnerInstanceId,
@@ -2020,74 +1887,61 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         // (see `signalExitCode`) — true for a cancel, and the same false accusation as
         // `aborted` for a turn an unreadable tombstone stopped. That half reports an
         // ordinary failed start instead.
-        ...(cancelled ? { workerSignal: 'SIGTERM' } : { workerExitCode: 1, workerSignal: null }),
-        workerError: cancelled
-          ? 'runner turn was cancelled before its worker started'
-          : 'runner turn could not start: its cancellation record was unreadable',
-        aborted: cancelled,
-      }).catch(() => undefined);
-      const state = await updateTurnState(runtimeDir, request.turnId, {
-        status: 'settled',
-        ...(cancelled
-          ? { workerSignal: 'SIGTERM' }
-          : {
-              workerExitCode: 1,
-              workerError: 'runner turn could not start: its cancellation record was unreadable',
-            }),
+        ...cancelled ? { workerSignal: "SIGTERM" } : { workerExitCode: 1, workerSignal: null },
+        workerError: cancelled ? "runner turn was cancelled before its worker started" : "runner turn could not start: its cancellation record was unreadable",
+        aborted: cancelled
+      }).catch(() => void 0);
+      const state2 = await updateTurnState(runtimeDir, request.turnId, {
+        status: "settled",
+        ...cancelled ? { workerSignal: "SIGTERM" } : {
+          workerExitCode: 1,
+          workerError: "runner turn could not start: its cancellation record was unreadable"
+        }
       });
-      return { outcome: 'terminal', state };
+      return { outcome: "terminal", state: state2 };
     }
-    const requestPath = join(turnDir, 'request.json');
-    const workerLockPath = join(turnDir, 'worker.lock');
+    const requestPath = join4(turnDir, "request.json");
+    const workerLockPath = join4(turnDir, "worker.lock");
     let child;
     let workerLock;
     let attestationTail = Promise.resolve();
-    let workerErrorDone = Promise.resolve('');
+    let workerErrorDone = Promise.resolve("");
     let exited = false;
     let resolveExit;
-    const exitInfo = new Promise((resolve) => {
-      resolveExit = resolve;
+    const exitInfo = new Promise((resolve3) => {
+      resolveExit = resolve3;
     });
     try {
-      // The request is a one-worker capability channel. It must not be writable by
-      // the shared runtime group after validation: the worker opens this inode once,
-      // verifies its ownership/mode, and unlinks it before parsing.
-      await writeJsonAtomic(requestPath, request, 0o600);
-      // The worker securely consumes and unlinks request.json before parsing it. Keep
-      // only the non-secret trusted-CLI capability beside the durable turn state so a
-      // later tool call (and a replacement supervisor adopting this worker) never
-      // depends on that one-use request pathname still existing.
+      await writeJsonAtomic(requestPath, request, 384);
       await updateTurnState(runtimeDir, request.turnId, {
         workerLock: true,
-        ...(request.trustedCliExecution === true
-          ? { trustedCliExecution: true, cwd: request.cwd }
-          : {}),
+        ...request.trustedCliExecution === true ? { trustedCliExecution: true, cwd: request.cwd } : {}
       });
       workerLock = await acquireFileLock(workerLockPath);
       await assertSpawnBoundary(
         request,
         workerCommand,
-        options.workerEnv?.PATH ?? process.env.PATH,
+        options.workerEnv?.PATH ?? process.env.PATH
       );
-      child = spawnWorker(workerCommand, [...(options.workerArgs ?? []), requestPath], {
+      child = spawnWorker(workerCommand, [...options.workerArgs ?? [], requestPath], {
         cwd: request.cwd,
         stdio: stdioWithWorkerLock(workerLock.fd),
         env: {
           PATH: process.env.PATH,
-          ...(options.workerEnv ?? {}),
+          ...options.workerEnv ?? {},
           VERITY_RUNNER_TURN_DIR: turnDir,
-          VERITY_RUNNER_EVENT_FILE: join(turnDir, 'events.jsonl'),
-          VERITY_RUNNER_CONTROL_SOCKET: join(turnDir, 'control.sock'),
-        },
+          VERITY_RUNNER_EVENT_FILE: join4(turnDir, "events.jsonl"),
+          VERITY_RUNNER_CONTROL_SOCKET: join4(turnDir, "control.sock")
+        }
       });
-      if (child.stdout === null || child.stdout === undefined) {
-        throw new Error('runner worker has no private attestation pipe');
+      if (child.stdout === null || child.stdout === void 0) {
+        throw new Error("runner worker has no private attestation pipe");
       }
-      if (child.stdin === null || child.stdin === undefined) {
-        throw new Error('runner worker has no private attestation acknowledgement pipe');
+      if (child.stdin === null || child.stdin === void 0) {
+        throw new Error("runner worker has no private attestation acknowledgement pipe");
       }
-      if (child.stderr === null || child.stderr === undefined) {
-        throw new Error('runner worker has no private error pipe');
+      if (child.stderr === null || child.stderr === void 0) {
+        throw new Error("runner worker has no private error pipe");
       }
       const workerErrorCapture = createWorkerErrorCapture();
       let resolveWorkerError;
@@ -2097,84 +1951,45 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         workerErrorSettled = true;
         resolveWorkerError(workerErrorCapture.finish());
       };
-      child.stderr.on('data', (chunk) => workerErrorCapture.push(chunk));
+      child.stderr.on("data", (chunk) => workerErrorCapture.push(chunk));
       workerErrorDone = new Promise((resolveError) => {
         resolveWorkerError = resolveError;
-        child.stderr.once('end', settleWorkerError);
+        child.stderr.once("end", settleWorkerError);
       });
-      child.once('exit', (code, signal) => {
+      child.once("exit", (code, signal) => {
         exited = true;
         children.delete(request.turnId);
         setTimeout(settleWorkerError, WORKER_ERROR_DRAIN_TIMEOUT_MS);
         resolveExit({ code, signal });
       });
       await new Promise((resolveSpawn, rejectSpawn) => {
-        child.once('spawn', resolveSpawn);
-        child.once('error', rejectSpawn);
+        child.once("spawn", resolveSpawn);
+        child.once("error", rejectSpawn);
       });
     } catch (error) {
       const workerSpawnFailure = spawnFailureDiagnostic(error, request, workerCommand);
       const workerError = describeSpawnFailure(
         boundedSpawnError(error instanceof Error ? error.message : String(error)),
-        workerSpawnFailure,
+        workerSpawnFailure
       );
       logTelemetry({
-        event: 'worker-spawn-failed',
+        event: "worker-spawn-failed",
         turnId: request.turnId,
         sessionId: request.sessionId,
-        ...workerSpawnFailure,
+        ...workerSpawnFailure
       });
-      // The frame below declares this turn dead, so nothing may still be alive under
-      // it. Reaching here with a live child is not the ordinary `spawn`-failed case
-      // — that child has no pid at all — but the guards above can also reject a
-      // process that DID start, and a synthetic terminal frame over a running agent
-      // is worse than the failure it reports. The signal goes to the pid alone, which
-      // is all `terminate()` does too — the worker is spawned attached, in this
-      // supervisor's own process group, so there is no group to signal and no
-      // detached descendant this could miss that `terminate()` would catch.
-      // `terminate()` itself is deliberately not used: it awaits an `exit` that never
-      // arrives for a child which failed to spawn.
-      //
-      // Before the lock is dropped, not after, and not merely signalled before it: the
-      // worker lock IS the liveness signal recovery reads (`adoptedTurnIsLive`), so a
-      // lock released while a rejected child is still dying lets a concurrent probe
-      // find it free, call the worker missing and settle a turn that is very much
-      // alive. SIGKILL cannot be refused, so the wait is short and bounded — and
-      // bounded rather than open-ended because a turn that cannot be ended must still
-      // be reported.
-      // A child that never got a pid cannot write anything, so there is nothing to
-      // outlive the frame below. Any other case has to be PROVED dead.
-      let reaped = child?.pid === undefined;
+      let reaped = child?.pid === void 0;
       if (!reaped) {
-        child.kill('SIGKILL');
+        child.kill("SIGKILL");
         if (!exited) {
           await Promise.race([
             exitInfo,
-            new Promise((resolve) => setTimeout(resolve, REJECTED_WORKER_EXIT_WAIT_MS).unref?.()),
+            new Promise((resolve3) => setTimeout(resolve3, REJECTED_WORKER_EXIT_WAIT_MS).unref?.())
           ]);
         }
-        // Set synchronously by the `exit` handler, so it distinguishes which side of
-        // the race won: `exitInfo` means reaped, the timer means still there.
         reaped = exited;
       }
-      await workerLock?.close().catch(() => undefined);
-      // Same reasoning as the exit path: a turn that settles must leave the Server a
-      // terminal frame to settle FROM, or the session badges `running` forever. And
-      // the same reasoning for `aborted`: a cancel that lands while the spawn is
-      // failing is still a cancel, so read the durable tombstone rather than let the
-      // race decide whether the operator sees a crash. That read cannot throw here —
-      // see {@link readCancelTombstone} — because everything below it is what settles
-      // the turn.
-      //
-      // Only over a child PROVED dead, though. SIGKILL cannot be refused but it can
-      // be outwaited — a process wedged in uninterruptible sleep is exactly the case
-      // the bound above accepts — and a worker that comes back after this frame owns
-      // `frameSeq` 1 too. Its first frame would then collide with a fabricated
-      // terminal one carrying a different payload hash, and a stream the Store
-      // refuses to ingest is worse than the missing frame this writes: the state
-      // below still carries the exit reason, so the Server reports
-      // `worker-exited-early` with the captured stderr rather than the bare "exited
-      // with code 1" this path exists to replace.
+      await workerLock?.close().catch(() => void 0);
       if (reaped) {
         await writeSyntheticTerminalFrame(turnDir, {
           turnId: request.turnId,
@@ -2182,64 +1997,49 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
           workerExitCode: 1,
           workerSignal: null,
           workerError,
-          aborted: await cancelExplainsSettlement(runtimeDir, request.turnId),
-        }).catch(() => undefined);
+          aborted: await cancelExplainsSettlement(runtimeDir, request.turnId)
+        }).catch(() => void 0);
       }
       await updateTurnState(runtimeDir, request.turnId, {
-        status: 'settled',
-        ...(workerError.length > 0 ? { workerError } : {}),
-        workerSpawnFailure,
+        status: "settled",
+        ...workerError.length > 0 ? { workerError } : {},
+        workerSpawnFailure
       });
-      // eslint-disable-next-line preserve-caught-error -- raw spawn exceptions may contain credentials.
       throw new Error(workerError);
     }
-    // INVARIANT from here down: no throw may escape this function while the child is
-    // alive. The Server treats a refusal it HEARS as decided — no reconciliation, no
-    // cancel fence — so a spoken failure over a running worker is precisely the orphan
-    // this file exists to prevent. Everything between here and the guarded block below
-    // is therefore synchronous and non-throwing; the one thing that can fail, the
-    // `running` state write, is awaited inside it and answered by `terminate(child)`.
     if (!exited) children.set(request.turnId, child);
     const runningState = updateTurnState(runtimeDir, request.turnId, {
-      status: 'running',
-      workerPid: child.pid,
+      status: "running",
+      workerPid: child.pid
     });
-    const settlement = exitInfo
-      .then(async ({ code, signal }) => {
-        await runningState.catch(() => undefined);
-        await attestationTail;
-        const workerError = await workerErrorDone;
-        // Before the state says "settled", make sure the STREAM says why. A worker
-        // that exited without writing a single frame leaves the Server a turn that
-        // ended and nothing to end it with; this is the only place that still holds
-        // the exit code, the signal and the captured stderr.
-        // The same predicate the other two callers use — one question, one spelling,
-        // so a tombstone that stops counting as one cannot start counting here.
-        const aborted = await cancelExplainsSettlement(runtimeDir, request.turnId);
-        const wrote = await writeSyntheticTerminalFrame(turnDir, {
+    const settlement = exitInfo.then(async ({ code, signal }) => {
+      await runningState.catch(() => void 0);
+      await attestationTail;
+      const workerError = await workerErrorDone;
+      const aborted = await cancelExplainsSettlement(runtimeDir, request.turnId);
+      const wrote = await writeSyntheticTerminalFrame(turnDir, {
+        turnId: request.turnId,
+        runnerInstanceId,
+        workerExitCode: code,
+        workerSignal: signal,
+        workerError,
+        aborted
+      }).catch(() => false);
+      if (wrote) {
+        logTelemetry({
+          event: "worker-exited-without-events",
           turnId: request.turnId,
-          runnerInstanceId,
-          workerExitCode: code,
-          workerSignal: signal,
-          workerError,
-          aborted,
-        }).catch(() => false);
-        if (wrote) {
-          logTelemetry({
-            event: 'worker-exited-without-events',
-            turnId: request.turnId,
-            exitCode: code,
-            signal,
-          });
-        }
-        return await updateTurnState(runtimeDir, request.turnId, {
-          status: 'settled',
-          workerExitCode: code,
-          workerSignal: signal,
-          ...(code !== 0 || signal !== null ? (workerError.length > 0 ? { workerError } : {}) : {}),
+          exitCode: code,
+          signal
         });
-      })
-      .catch(() => undefined);
+      }
+      return await updateTurnState(runtimeDir, request.turnId, {
+        status: "settled",
+        workerExitCode: code,
+        workerSignal: signal,
+        ...code !== 0 || signal !== null ? workerError.length > 0 ? { workerError } : {} : {}
+      });
+    }).catch(() => void 0);
     settlements.add(settlement);
     settlementsByTurn.set(request.turnId, settlement);
     void settlement.finally(() => {
@@ -2254,33 +2054,20 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       await workerLock.close();
     } catch (error) {
       await terminate(child);
-      await workerLock.close().catch(() => undefined);
+      await workerLock.close().catch(() => void 0);
       await settlement;
       throw error;
     }
-    return { outcome: 'created', state };
+    return { outcome: "created", state };
   };
-
-  /**
-   * Admit one start into the bounded worker-spawn pool.
-   *
-   * Everything a start does is expensive and contended — fsyncs, a `flock` fork,
-   * the worker fork — so an unbounded burst does not go faster, it goes slower for
-   * everyone and makes each individual start look wedged. Queueing makes the wait a
-   * number (`queueMs`) rather than a mystery, and the cap makes overload a refusal
-   * the Server can show rather than a timeout it has to interpret.
-   */
   const admit = (run) => {
     let slot;
     if (running >= maxConcurrentStarts) {
       if (queue.length >= maxQueuedStarts) {
-        throw new Error('runner supervisor start queue is full');
+        throw new Error("runner supervisor start queue is full");
       }
       slot = new Promise((resolveSlot) => queue.push(resolveSlot));
     } else {
-      // Reserve synchronously. `start()` acknowledges immediately after `admit`
-      // returns, so deferring this increment to a promise microtask would let a
-      // same-tick burst observe stale capacity and over-admit every request.
       running += 1;
       slot = Promise.resolve();
     }
@@ -2289,77 +2076,40 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
         return await run();
       } finally {
         const next = queue.shift();
-        if (next === undefined) running -= 1;
-        else next(); // Transfer this reserved slot directly to the oldest waiter.
+        if (next === void 0) running -= 1;
+        else next();
       }
     });
   };
-
-  /**
-   * Accept a start-turn.
-   *
-   * Returns `{ accepted, pending }`: `accepted` is settled the moment the request is
-   * VALID and queued, which is what the Server acknowledges on, while `pending`
-   * carries the real outcome. Splitting the two is what lets a start take as long as
-   * it honestly takes without the Server having to choose between a short budget
-   * that abandons live turns and a long one that hides a wedged supervisor.
-   *
-   * A start for a turn that already has one in flight returns THAT promise rather
-   * than chaining a second `startImpl`. The chained version was idempotent only by
-   * grace of `claimTurn` refusing the duplicate afterwards; collapsing here means a
-   * retried start does no work at all, and — with `cancel` still awaiting the single
-   * per-turn promise — a retry storm can neither queue behind itself nor outrun the
-   * cancel that is waiting for it.
-   */
   const start = (rawRequest) => {
-    if (closing) throw new Error('runner supervisor is shutting down');
+    if (closing) throw new Error("runner supervisor is shutting down");
     const request = validateStartTurnRequest(rawRequest);
     const previous = startsByTurn.get(request.turnId);
-    // Only a retry of the SAME start command is the same work. A different command
-    // for an in-flight turn is rejected synchronously: queueing conflicts would let
-    // an unbounded flood bypass the global queue cap by chaining on one turn.
-    if (previous !== undefined && previous.startCommandId === request.startCommandId) {
-      // Once per turn, not once per retry: a Server that re-sends in a loop would
-      // otherwise write the supervisor's own stderr full of the fact that it is
-      // being retried, which is the least useful line to lose the real ones behind.
+    if (previous !== void 0 && previous.startCommandId === request.startCommandId) {
       if (!previous.loggedDeduplication) {
         previous.loggedDeduplication = true;
-        logTelemetry({ event: 'start-deduplicated', turnId: request.turnId });
+        logTelemetry({ event: "start-deduplicated", turnId: request.turnId });
       }
       return { accepted: true, pending: previous.promise };
     }
-    if (previous !== undefined) {
+    if (previous !== void 0) {
       throw new Error(`turn ${request.turnId} is already starting under another command`);
     }
     const queuedAt = Date.now();
-    // `admit` reserves capacity or throws BEFORE this function returns. Therefore a
-    // start acknowledgement means exactly what it says: the request owns a running
-    // slot or a bounded queue slot, never a promise that may later reject as full.
-    // Note the order with the dedup above: a retry of a start that is still queued
-    // is answered from `startsByTurn` and never reaches `admit`, so a Server that
-    // re-sends a lost start can never be told the queue is full while its original
-    // is sitting in that very queue.
-    const entry = { promise: undefined, startCommandId: request.startCommandId };
+    const entry = { promise: void 0, startCommandId: request.startCommandId };
     const promise = admit(async () => {
       const startedAt = Date.now();
       entry.admitted = true;
       try {
         return await startImpl(request);
       } finally {
-        // A `finally` around a value the caller is about to receive: anything thrown
-        // here would REPLACE a successful start with a spoken failure, over a worker
-        // that is already running — the same orphan `startImpl`'s post-spawn invariant
-        // rules out. Both calls below swallow their own errors for that reason, and
-        // any line added here must too.
         logTelemetry({
-          event: 'start',
+          event: "start",
           turnId: request.turnId,
           backend: request.backend,
           sessionId: request.sessionId,
-          gatewayTokenPresent: request.mcpGatewayToken !== undefined,
-          gatewayUrlPresent:
-            typeof options.workerEnv?.VERITY_MCP_GATEWAY_URL === 'string' &&
-            options.workerEnv.VERITY_MCP_GATEWAY_URL !== '',
+          gatewayTokenPresent: request.mcpGatewayToken !== void 0,
+          gatewayUrlPresent: typeof options.workerEnv?.VERITY_MCP_GATEWAY_URL === "string" && options.workerEnv.VERITY_MCP_GATEWAY_URL !== "",
           configuredMcpServers: request.mcpServers?.length ?? 0,
           queueMs: startedAt - queuedAt,
           startMs: Date.now() - startedAt,
@@ -2371,88 +2121,65 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
           queuedStarts: queue.length,
           activeStarts: running,
           activeWorkers: children.size,
-          eventLoopDelayMs: sampleEventLoopDelay(),
+          eventLoopDelayMs: sampleEventLoopDelay()
         });
       }
     });
     entry.promise = promise;
     starts.add(promise);
     startsByTurn.set(request.turnId, entry);
-    void promise
-      .finally(() => {
-        starts.delete(promise);
-        if (startsByTurn.get(request.turnId) === entry) startsByTurn.delete(request.turnId);
-      })
-      .catch(() => undefined);
+    void promise.finally(() => {
+      starts.delete(promise);
+      if (startsByTurn.get(request.turnId) === entry) startsByTurn.delete(request.turnId);
+    }).catch(() => void 0);
     return { accepted: true, pending: promise };
   };
-
   const cancel = async (turnId) => {
-    if (typeof turnId !== 'string' || !SAFE_ID.test(turnId)) throw new Error('invalid turnId');
-    // Register before the first await. A concurrent start either observes this
-    // after its claim or is included in `startsByTurn` and awaited below.
+    if (typeof turnId !== "string" || !SAFE_ID.test(turnId)) throw new Error("invalid turnId");
     cancelledBeforeStart.add(turnId);
-    await mkdir(join(runtimeDir, 'cancellations'), { recursive: true, mode: 0o770 });
+    await mkdir2(join4(runtimeDir, "cancellations"), { recursive: true, mode: 504 });
     await writeJsonAtomic(cancelPath(runtimeDir, turnId), {
       protocolVersion: 1,
       turnId,
-      cancelledAt: Date.now(),
+      cancelledAt: Date.now()
     });
-    // A cancel can arrive after the durable claim but before the worker is entered
-    // in `children`. Wait only for this turn's in-flight start to cross that seam —
-    // and only if it is ADMITTED. A start still waiting for a slot has written
-    // nothing and settles itself against the tombstone above the moment it is
-    // admitted, so waiting for it would put the operator's cancel behind the whole
-    // queue of unrelated spawns and blow the Server's control-request budget.
     const inFlight = startsByTurn.get(turnId);
-    if (inFlight?.admitted === true) await inFlight.promise.catch(() => undefined);
+    if (inFlight?.admitted === true) await inFlight.promise.catch(() => void 0);
     const currentState = await readTurnState(runtimeDir, turnId);
-    if (currentState === undefined) {
-      // A start request on another socket may not have reached `claimTurn` yet.
-      // Persist the intent in memory so that this supervisor settles the turn
-      // immediately if that start arrives after the cancel request.
-      return { outcome: 'cancelled' };
+    if (currentState === void 0) {
+      return { outcome: "cancelled" };
     }
-    if (currentState.status === 'settled') {
+    if (currentState.status === "settled") {
       cancelledBeforeStart.delete(turnId);
-      return { outcome: 'terminal', state: currentState };
+      return { outcome: "terminal", state: currentState };
     }
     const child = children.get(turnId);
-    if (child === undefined) {
-      // A worker owned by a previous supervisor instance cannot be addressed by
-      // this process without risking PID reuse. Recovery will settle it once its
-      // durable worker lock disappears.
-      throw new Error('runner worker is not owned by this supervisor');
+    if (child === void 0) {
+      throw new Error("runner worker is not owned by this supervisor");
     }
     try {
       await terminate(child);
       await settlementsByTurn.get(turnId);
-      return { outcome: 'cancelled', state: await readTurnState(runtimeDir, turnId) };
+      return { outcome: "cancelled", state: await readTurnState(runtimeDir, turnId) };
     } finally {
-      // Keep the capability revoked throughout the SIGTERM/SIGKILL grace window.
       cancelledBeforeStart.delete(turnId);
     }
   };
-
   return {
     start,
     cancel,
     // A persisted running flag and a stale socket inode are not proof of life.
     // Only this supervisor's child or a worker adopted under its liveness lock is.
     workerStatus(turnId) {
-      return children.has(turnId) || options.adoptedTurns?.has(turnId) === true
-        ? 'live'
-        : 'uncertain';
+      return children.has(turnId) || options.adoptedTurns?.has(turnId) === true ? "live" : "uncertain";
     },
     runTrustedCli(request, onSpawned, outputOptions = {}) {
       return runTrustedCliViaBroker(request, {
         runtimeDir,
         ...outputOptions,
-        ...(options.brokerSocket === undefined ? {} : { brokerSocket: options.brokerSocket }),
-        ...(onSpawned === undefined ? {} : { onSpawned }),
-        authorize: async ({ turnId }) =>
-          !cancelledBeforeStart.has(turnId) &&
-          (children.has(turnId) || (await adoptedTurnIsLive(turnId))),
+        ...options.brokerSocket === void 0 ? {} : { brokerSocket: options.brokerSocket },
+        ...onSpawned === void 0 ? {} : { onSpawned },
+        authorize: async ({ turnId }) => !cancelledBeforeStart.has(turnId) && (children.has(turnId) || await adoptedTurnIsLive(turnId))
       });
     },
     async close() {
@@ -2460,138 +2187,106 @@ export function createTurnStarter(runtimeDir, runnerInstanceId, options = {}) {
       await Promise.allSettled([...starts]);
       await Promise.all([...children.values()].map(terminate));
       await Promise.all([...settlements]);
-    },
+    }
   };
 }
-
-export function createTurnAdopter(runtimeDir, options = {}) {
+function createTurnAdopter(runtimeDir, options = {}) {
   const pollMs = options.adoptionPollMs ?? 250;
-  const adopted = options.adoptedTurns ?? new Set();
+  const adopted = options.adoptedTurns ?? /* @__PURE__ */ new Set();
   let timer;
   let closed = false;
   let polling = false;
-
-  // `claim` pins a retried probe to the claim it was undecided about. Nothing removes
-  // turn directories today, but if one were removed and the id claimed afresh, that
-  // new claim would be this supervisor's own, and settling or adopting it here would
-  // end a turn whose worker has simply not taken its lock yet. Rechecked once the lock
-  // is held (or found busy) to narrow that window, not to close it: a recreated
-  // directory has a different lock file than the one held here.
   const probe = async (turnId, initial, claim) => {
-    const lockPath = join(runtimeDir, 'turns', turnId, 'worker.lock');
+    const lockPath = join4(runtimeDir, "turns", turnId, "worker.lock");
     const isOtherClaim = async () => {
-      if (claim === undefined) return false;
+      if (claim === void 0) return false;
       const state = await readTurnState(runtimeDir, turnId);
-      return state !== undefined && !sameClaim(state, claim);
+      return state !== void 0 && !sameClaim(state, claim);
     };
     let lock;
     try {
       lock = await acquireFileLock(lockPath);
     } catch (error) {
-      if (!isLockBusy(error)) return 'uncertain';
-      if (await isOtherClaim()) return 'gone';
+      if (!isLockBusy(error)) return "uncertain";
+      if (await isOtherClaim()) return "gone";
       if (initial) {
         const state = await readTurnState(runtimeDir, turnId);
-        if (state?.status === 'claimed') {
+        if (state?.status === "claimed") {
           await updateTurnState(runtimeDir, turnId, {
-            status: 'running',
-            adoptedAt: Date.now(),
-          }).catch(() => undefined);
+            status: "running",
+            adoptedAt: Date.now()
+          }).catch(() => void 0);
         }
       }
-      return 'live';
+      return "live";
     }
     try {
-      if (await isOtherClaim()) return 'gone';
+      if (await isOtherClaim()) return "gone";
       try {
         await settleMissingWorkerTurn(runtimeDir, turnId);
       } catch {
-        return 'uncertain';
+        return "uncertain";
       }
-      return 'dead';
+      return "dead";
     } finally {
       await lock.close();
     }
   };
-
-  // Turns whose boot-time probe could not decide. Kept apart from `adopted`, which
-  // authorizes control over a LIVE worker: an undecided turn must not gain that, but it
-  // must not be dropped either. Dropping it left its state `running` with a stale
-  // `control.sock` beside it after a whole-Sandbox kill — which the Server reads as a
-  // live Runner, so the turn badged `running` with nothing left to ever settle it.
-  // Retried on a slower cadence than the adopted poll: each probe forks a `flock`, and
-  // what keeps a turn undecided (a corrupt state file) can persist indefinitely.
-  const unresolved = new Map();
-  const unresolvedRetryMs = options.unresolvedRetryMs ?? 5000;
+  const unresolved = /* @__PURE__ */ new Map();
+  const unresolvedRetryMs = options.unresolvedRetryMs ?? 5e3;
   let nextUnresolvedAt = 0;
-  const exists = (turnId) =>
-    lstat(join(runtimeDir, 'turns', turnId)).then(
-      () => true,
-      (error) => error?.code !== 'ENOENT',
-    );
-
+  const exists = (turnId) => lstat3(join4(runtimeDir, "turns", turnId)).then(
+    () => true,
+    (error) => error?.code !== "ENOENT"
+  );
   const schedule = () => {
-    if (closed || (adopted.size === 0 && unresolved.size === 0) || timer !== undefined) return;
+    if (closed || adopted.size === 0 && unresolved.size === 0 || timer !== void 0) return;
     timer = setTimeout(() => {
-      timer = undefined;
+      timer = void 0;
       void poll();
     }, pollMs);
     timer.unref?.();
   };
-
   const poll = async () => {
     if (closed || polling) return;
     polling = true;
     try {
       for (const turnId of [...adopted]) {
-        const disposition = await probe(turnId, false).catch(() => 'uncertain');
-        if (disposition === 'dead') adopted.delete(turnId);
+        const disposition = await probe(turnId, false).catch(() => "uncertain");
+        if (disposition === "dead") adopted.delete(turnId);
       }
       const retryUnresolved = Date.now() >= nextUnresolvedAt;
       if (retryUnresolved) nextUnresolvedAt = Date.now() + unresolvedRetryMs;
-      // Boot-mode probes stay safe after boot: every unresolved turn was claimed under
-      // an earlier supervisor's `runnerInstanceId`, so `claimTurn` answers a retried
-      // start for it as a runner-instance mismatch — this supervisor never launches a
-      // worker for it, and no fresh claim can be caught before its worker lock.
       for (const turnId of retryUnresolved ? [...unresolved.keys()] : []) {
         if (closed) break;
-        // Something else may have finished the turn meanwhile, or its directory may be
-        // gone. A missing lock never opens again, so probing alone would keep the
-        // turn here for the life of this supervisor.
         const claim = unresolved.get(turnId);
         const current = await readTurnState(runtimeDir, turnId).catch(() => null);
-        const finished =
-          current === undefined
-            ? !(await exists(turnId))
-            : current !== null && (current.status === 'settled' || !sameClaim(current, claim));
+        const finished = current === void 0 ? !await exists(turnId) : current !== null && (current.status === "settled" || !sameClaim(current, claim));
         if (finished) {
           unresolved.delete(turnId);
           continue;
         }
-        const disposition = await probe(turnId, true, claim).catch(() => 'uncertain');
-        if (disposition === 'uncertain') continue;
+        const disposition = await probe(turnId, true, claim).catch(() => "uncertain");
+        if (disposition === "uncertain") continue;
         unresolved.delete(turnId);
-        if (disposition === 'live') adopted.add(turnId);
+        if (disposition === "live") adopted.add(turnId);
       }
     } finally {
       polling = false;
       schedule();
     }
   };
-
   return {
     async adopt() {
       for (const state of await listTurns(runtimeDir)) {
-        if (state.status !== 'claimed' && state.status !== 'running') continue;
-        // Turns created before worker-lock adoption shipped have no authoritative
-        // liveness lock. Never infer death from its absence during a rolling deploy.
+        if (state.status !== "claimed" && state.status !== "running") continue;
         if (state.workerLock !== true) continue;
-        const disposition = await probe(state.turnId, true).catch(() => 'uncertain');
-        if (disposition === 'live') adopted.add(state.turnId);
-        else if (disposition === 'uncertain') {
+        const disposition = await probe(state.turnId, true).catch(() => "uncertain");
+        if (disposition === "live") adopted.add(state.turnId);
+        else if (disposition === "uncertain") {
           unresolved.set(state.turnId, {
             runnerInstanceId: state.runnerInstanceId,
-            startCommandId: state.startCommandId,
+            startCommandId: state.startCommandId
           });
         }
       }
@@ -2599,164 +2294,145 @@ export function createTurnAdopter(runtimeDir, options = {}) {
     },
     async close() {
       closed = true;
-      if (timer !== undefined) clearTimeout(timer);
-      timer = undefined;
+      if (timer !== void 0) clearTimeout(timer);
+      timer = void 0;
       while (polling) await new Promise((resolvePoll) => setTimeout(resolvePoll, 1));
       adopted.clear();
       unresolved.clear();
-    },
+    }
   };
 }
-
 function sameClaim(state, claim) {
-  return (
-    state != null &&
-    state.runnerInstanceId === claim.runnerInstanceId &&
-    state.startCommandId === claim.startCommandId
-  );
+  return state != null && state.runnerInstanceId === claim.runnerInstanceId && state.startCommandId === claim.startCommandId;
 }
-
-export async function listTurns(runtimeDir) {
-  const turnsDir = join(runtimeDir, 'turns');
+var TURN_SCAN_CONCURRENCY = 16;
+async function listTurns(runtimeDir) {
+  const turnsDir = join4(runtimeDir, "turns");
   const entries = await readdir(turnsDir, { withFileTypes: true }).catch((error) => {
-    if (error?.code === 'ENOENT') return [];
+    if (error?.code === "ENOENT") return [];
     throw error;
   });
-  const states = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
-    try {
-      const state = await readTurnState(runtimeDir, entry.name);
-      states.push(state ?? { turnId: entry.name, status: 'ambiguous', reason: 'missing-state' });
-    } catch {
-      // Discovery fails closed per D3: a corrupt directory remains visible and
-      // can never be mistaken for an absent turn that is safe to launch again.
-      states.push({ turnId: entry.name, status: 'ambiguous', reason: 'invalid-state' });
+  const names = entries.filter((entry) => entry.isDirectory() && SAFE_ID.test(entry.name)).map((entry) => entry.name);
+  const states = new Array(names.length);
+  let next = 0;
+  const readNext = async () => {
+    for (let index = next++; index < names.length; index = next++) {
+      const turnId = names[index];
+      try {
+        const state = await readTurnState(runtimeDir, turnId);
+        states[index] = state ?? { turnId, status: "ambiguous", reason: "missing-state" };
+      } catch {
+        states[index] = { turnId, status: "ambiguous", reason: "invalid-state" };
+      }
     }
-  }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(TURN_SCAN_CONCURRENCY, names.length) }, readNext)
+  );
   return states.sort((a, b) => String(a.turnId).localeCompare(String(b.turnId)));
 }
-
 function responseForError(error) {
   return {
     ok: false,
     error: error instanceof Error ? error.message : String(error),
-    ...(isObject(error?.runnerCacheFailure)
-      ? { runnerCacheFailure: error.runnerCacheFailure }
-      : {}),
-    ...(isObject(error?.trustedCliFailure) ? { trustedCliFailure: error.trustedCliFailure } : {}),
+    ...isObject(error?.runnerCacheFailure) ? { runnerCacheFailure: error.runnerCacheFailure } : {},
+    ...isObject(error?.trustedCliFailure) ? { trustedCliFailure: error.trustedCliFailure } : {}
   };
 }
-
 async function sessionHomeRequest(kind, sessionId, migration = {}) {
-  if (!SAFE_ID.test(sessionId ?? '')) throw new Error('invalid sessionId');
+  if (!SAFE_ID.test(sessionId ?? "")) throw new Error("invalid sessionId");
   return await brokerStorageRequest({
     protocolVersion: 1,
     kind,
     sessionId,
     legacyBackend: migration.legacyBackend,
-    legacySessionId: migration.legacySessionId,
+    legacySessionId: migration.legacySessionId
   });
 }
-
 async function brokerStorageRequest(request) {
-  return await new Promise((resolve, reject) => {
-    const socket = createConnection(
-      process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ??
-        '/run/verity-runner-broker/agent-spawn-broker.sock',
+  return await new Promise((resolve3, reject) => {
+    const socket = createConnection3(
+      process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET ?? "/run/verity-runner-broker/agent-spawn-broker.sock"
     );
-    let buffered = '';
+    let buffered = "";
     let settled = false;
     const finish = (error, response) => {
       if (settled) return;
       settled = true;
       socket.destroy();
       if (error) reject(error);
-      else resolve(response ?? { ok: true });
+      else resolve3(response ?? { ok: true });
     };
-    socket.setTimeout(30000, () => finish(new Error('runner storage request timed out')));
-    socket.once('error', finish);
-    socket.once('connect', () => socket.write(JSON.stringify(request) + '\n'));
-    socket.on('data', (chunk) => {
+    socket.setTimeout(3e4, () => finish(new Error("runner storage request timed out")));
+    socket.once("error", finish);
+    socket.once("connect", () => socket.write(JSON.stringify(request) + "\n"));
+    socket.on("data", (chunk) => {
       buffered += chunk.toString();
-      if (Buffer.byteLength(buffered, 'utf8') > 65536)
+      if (Buffer.byteLength(buffered, "utf8") > 65536)
         return finish(
-          Object.assign(new Error('runner storage response too large'), {
-            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
-          }),
+          Object.assign(new Error("runner storage response too large"), {
+            code: "ERR_INVALID_RUNNER_STORAGE_RESPONSE"
+          })
         );
-      if (!buffered.includes('\n')) return;
+      if (!buffered.includes("\n")) return;
       try {
-        const response = JSON.parse(buffered.split('\n')[0]);
-        if (!isObject(response) || typeof response.ok !== 'boolean')
-          throw Object.assign(new Error('invalid runner storage response'), {
-            code: 'ERR_INVALID_RUNNER_STORAGE_RESPONSE',
+        const response = JSON.parse(buffered.split("\n")[0]);
+        if (!isObject(response) || typeof response.ok !== "boolean")
+          throw Object.assign(new Error("invalid runner storage response"), {
+            code: "ERR_INVALID_RUNNER_STORAGE_RESPONSE"
           });
         finish(
-          response.ok === true
-            ? undefined
-            : new Error(response.error ?? 'session home request failed'),
-          response,
+          response.ok === true ? void 0 : new Error(response.error ?? "session home request failed"),
+          response
         );
       } catch (error) {
         finish(error);
       }
     });
-    socket.once('close', () => finish(new Error('session home broker closed before response')));
+    socket.once("close", () => finish(new Error("session home broker closed before response")));
   });
 }
-
-const CACHE_SCAN_PAGE = 256;
-const CACHE_SCAN_TTL_MS = 5 * 60_000;
-const cacheMaintenanceFlights = new Map();
-
+var CACHE_SCAN_PAGE = 256;
+var CACHE_SCAN_TTL_MS = 5 * 6e4;
+var cacheMaintenanceFlights = /* @__PURE__ */ new Map();
 function cacheMaintenanceFailure(code) {
-  return Object.assign(new Error('Runner cache maintenance inventory is unavailable'), {
-    runnerCacheFailure: { code },
+  return Object.assign(new Error("Runner cache maintenance inventory is unavailable"), {
+    runnerCacheFailure: { code }
   });
 }
-
 async function closeCacheScan(runtimeDir, scan) {
   if (cacheScans.get(runtimeDir) === scan) cacheScans.delete(runtimeDir);
   clearTimeout(scan.timer);
-  await scan.directory?.close().catch(() => undefined);
+  await scan.directory?.close().catch(() => void 0);
 }
-
 async function cacheTurnSummary(runtimeDir, turnId) {
   try {
     const state = await readTurnState(runtimeDir, turnId);
-    if (state === undefined) return { turnId, status: 'ambiguous', reason: 'missing-state' };
+    if (state === void 0) return { turnId, status: "ambiguous", reason: "missing-state" };
     return {
       turnId,
       status: state.status,
       startCommandId: state.startCommandId,
       runnerInstanceId: state.runnerInstanceId,
-      ...(state.sessionId === undefined ? {} : { sessionId: state.sessionId }),
+      ...state.sessionId === void 0 ? {} : { sessionId: state.sessionId }
     };
   } catch {
-    return { turnId, status: 'ambiguous', reason: 'invalid-state' };
+    return { turnId, status: "ambiguous", reason: "invalid-state" };
   }
 }
-
-/** Scanning never grants deletion until every page has been classified. */
 function reclaimPackageCachesPaged(runtimeDir, request) {
   const previous = cacheMaintenanceFlights.get(runtimeDir) ?? Promise.resolve();
-  const current = previous
-    .catch(() => undefined)
-    .then(() => reclaimPackageCachesPage(runtimeDir, request));
+  const current = previous.catch(() => void 0).then(() => reclaimPackageCachesPage(runtimeDir, request));
   cacheMaintenanceFlights.set(runtimeDir, current);
-  void current
-    .finally(() => {
-      if (cacheMaintenanceFlights.get(runtimeDir) === current)
-        cacheMaintenanceFlights.delete(runtimeDir);
-    })
-    .catch(() => undefined);
+  void current.finally(() => {
+    if (cacheMaintenanceFlights.get(runtimeDir) === current)
+      cacheMaintenanceFlights.delete(runtimeDir);
+  }).catch(() => void 0);
   return current;
 }
-
 async function withFinalCacheAdmission(runtimeDir, scan, run) {
   if (activeCacheClaims.has(runtimeDir) || scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
-    throw cacheMaintenanceFailure('turn-inventory-unavailable');
+    throw cacheMaintenanceFailure("turn-inventory-unavailable");
   let release;
   const barrier = new Promise((resolveBarrier) => {
     release = resolveBarrier;
@@ -2770,663 +2446,64 @@ async function withFinalCacheAdmission(runtimeDir, scan, run) {
   }
 }
 
-async function reclaimPackageCachesPage(runtimeDir, request) {
-  const fingerprint = JSON.stringify([request.sessionIds, request.maxBytes]);
-  let scan = cacheScans.get(runtimeDir);
-  if (request.scanId === undefined) {
-    if (scan) await closeCacheScan(runtimeDir, scan);
-    const directory = await opendir(join(runtimeDir, 'turns')).catch((error) => {
-      if (error.code === 'ENOENT') return undefined;
-      throw cacheMaintenanceFailure('turn-inventory-unavailable');
-    });
-    scan = {
-      id: randomUUID(),
-      fingerprint,
-      directory,
-      cursor: 0,
-      epoch: cacheClaimEpochs.get(runtimeDir) ?? 0,
-      busy: new Set(),
-      pending: [],
-      counts: { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 },
-    };
-    scan.timer = setTimeout(() => {
-      void closeCacheScan(runtimeDir, scan);
-    }, CACHE_SCAN_TTL_MS);
-    scan.timer.unref?.();
-    cacheScans.set(runtimeDir, scan);
-  } else if (!scan || scan.id !== request.scanId || scan.fingerprint !== fingerprint) {
-    throw cacheMaintenanceFailure('turn-inventory-unavailable');
-  }
-  try {
-    scan.timer.refresh(); // Expire abandoned scans, not an inventory making bounded progress.
-    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
-      throw cacheMaintenanceFailure('turn-inventory-unavailable');
-    if (request.scanId !== undefined) {
-      if (!Array.isArray(request.turnOwners) || request.turnOwners.length > CACHE_SCAN_PAGE)
-        throw new Error('invalid turn ownership response');
-      const pending = new Map(scan.pending.map((turn) => [turn.turnId, turn]));
-      const owners = new Map();
-      for (const owner of request.turnOwners) {
-        if (
-          !isObject(owner) ||
-          !pending.has(owner.turnId) ||
-          owners.has(owner.turnId) ||
-          typeof owner.conflict !== 'boolean' ||
-          (owner.sessionId !== undefined &&
-            (typeof owner.sessionId !== 'string' || !SAFE_ID.test(owner.sessionId)))
-        )
-          throw new Error('invalid turn ownership response');
-        owners.set(owner.turnId, owner);
-      }
-      for (const prior of scan.pending) {
-        const current = await cacheTurnSummary(runtimeDir, prior.turnId);
-        // An identity changed while the Server resolved a page: start a fresh scan.
-        if (
-          current.startCommandId !== prior.startCommandId ||
-          current.runnerInstanceId !== prior.runnerInstanceId
-        )
-          throw cacheMaintenanceFailure('turn-inventory-unavailable');
-        if (current.status === 'settled') continue;
-        const owner = owners.get(prior.turnId);
-        const sessionId = owner?.conflict ? undefined : owner?.sessionId;
-        if (
-          sessionId !== undefined &&
-          (current.sessionId === undefined || current.sessionId === sessionId)
-        ) {
-          if (request.sessionIds.includes(sessionId)) scan.busy.add(sessionId);
-        } else {
-          const key =
-            current.reason === 'missing-state'
-              ? 'missingState'
-              : current.reason === 'invalid-state'
-                ? 'invalidState'
-                : 'unsettledWithoutSession';
-          scan.counts[key] = Math.min(1_000_000, scan.counts[key] + 1);
-        }
-      }
-      scan.pending = [];
-    }
-    let done = scan.directory === undefined;
-    for (
-      let inspected = 0;
-      !done && inspected < CACHE_SCAN_PAGE && scan.pending.length < 64;
-      inspected++
-    ) {
-      const entry = await scan.directory.read();
-      if (entry === null) {
-        done = true;
-        break;
-      }
-      scan.cursor++;
-      if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
-      const turn = await cacheTurnSummary(runtimeDir, entry.name);
-      if (turn.status === 'settled') continue;
-      if (turn.sessionId !== undefined) {
-        if (request.sessionIds.includes(turn.sessionId)) scan.busy.add(turn.sessionId);
-      } else scan.pending.push(turn);
-    }
-    if (!done || scan.pending.length > 0) {
-      return {
-        ok: true,
-        maintenancePending: true,
-        scanId: scan.id,
-        cursor: String(scan.cursor),
-        turnsNeedingOwnership: scan.pending,
-      };
-    }
-    if (scan.epoch !== (cacheClaimEpochs.get(runtimeDir) ?? 0))
-      throw cacheMaintenanceFailure('turn-inventory-unavailable');
-    const unknown = Object.values(scan.counts).some((count) => count > 0);
-    let response;
-    try {
-      response = await withFinalCacheAdmission(runtimeDir, scan, async () => {
-        const capabilities = await brokerStorageRequest({ protocolVersion: 1, kind: 'status' });
-        if (
-          capabilities.cacheMaintenanceVersion !== 2 ||
-          capabilities.runtimeAdmissionFenceVersion !== 1
-        )
-          throw cacheMaintenanceFailure('unsupported');
-        return await brokerStorageRequest({
-          protocolVersion: 1,
-          kind: 'reclaim-package-caches',
-          sessionIds: unknown ? [] : request.sessionIds.filter((id) => !scan.busy.has(id)),
-          maxBytes: request.maxBytes,
-        });
-      });
-    } catch (error) {
-      if (error?.runnerCacheFailure) throw error;
-      const code = ['EACCES', 'EPERM'].includes(error?.code)
-        ? 'broker-access-denied'
-        : ['ENOENT', 'ECONNREFUSED'].includes(error?.code)
-          ? 'broker-unavailable'
-          : error?.message === 'runner storage request timed out'
-            ? 'broker-timeout'
-            : error instanceof SyntaxError || error?.code === 'ERR_INVALID_RUNNER_STORAGE_RESPONSE'
-              ? 'broker-invalid-response'
-              : 'broker-rejected';
-      throw cacheMaintenanceFailure(code);
-    }
-    if (response.report && (unknown || scan.busy.size > 0)) {
-      response.report.usageComplete = false;
-      response.report.legacyBytes = null;
-      response.report.turnOwnershipCounts = scan.counts;
-      response.report.blockers = [
-        ...(response.report.blockers ?? []).slice(0, 99),
-        unknown
-          ? 'Runner turn ownership is unknown; legacy package caches were retained'
-          : 'Runner sessions have unsettled turns; their legacy package caches were retained',
-      ];
-    }
-    await closeCacheScan(runtimeDir, scan);
-    return response;
-  } catch (error) {
-    await closeCacheScan(runtimeDir, scan);
-    throw error;
-  }
-}
-
-export async function handleSupervisorRequest(
-  runtimeDir,
-  runnerInstanceId,
-  request,
-  turnStarter,
-  onTrustedCliStarted,
-  onStartAccepted,
-  capabilities = { scriptIsolation: true },
-  outputOptions = {},
-) {
-  if (!isObject(request) || !supportedRequestVersion(request.protocolVersion)) {
-    throw new Error('unsupported supervisor protocol');
-  }
-  const skillsManifestHash =
-    request.kind === 'status' ? await installedSkillsManifestHash() : undefined;
-  switch (request.kind) {
-    case 'stack-health':
-      return await brokerStorageRequest({ protocolVersion: 1, kind: 'stack-health' });
-    case 'egress-readiness':
-      return await brokerStorageRequest({ protocolVersion: 1, kind: 'egress-readiness' });
-    case 'status':
-      return {
-        ok: true,
-        protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
-        runnerInstanceId,
-        // Both ride on the same helper. The Server reads `scriptIsolation` before it
-        // raises an approval card for an entry script this Sandbox could not confine.
-        managedAgentConfig: true,
-        builtInSkillsVersion: skillsManifestHash ? 1 : 0,
-        ...(skillsManifestHash ? { builtInSkillsManifestHash: skillsManifestHash } : {}),
-        persistentSessionHomes: true,
-        cacheMaintenanceVersion: 2,
-        turnOwnershipVersion: 1,
-        planningIsolation: capabilities.scriptIsolation,
-        knowledgeIsolation: capabilities.scriptIsolation,
-        scriptIsolation: capabilities.scriptIsolation,
-      };
-    case 'prepare-session-home':
-      return await sessionHomeRequest('prepare-session-home', request.sessionId, request);
-    case 'delete-session-home': {
-      if (!SAFE_ID.test(request.sessionId ?? '')) throw new Error('invalid sessionId');
-      const turns = await listTurns(runtimeDir);
-      for (const turn of turns) {
-        if (turn.sessionId === request.sessionId && turnStarter !== undefined)
-          await turnStarter.cancel(turn.turnId);
-      }
-      return await sessionHomeRequest('delete-session-home', request.sessionId);
-    }
-    case 'reclaim-package-caches': {
-      if (
-        !Array.isArray(request.sessionIds) ||
-        request.sessionIds.length > 512 ||
-        request.sessionIds.some((id) => typeof id !== 'string' || !SAFE_ID.test(id)) ||
-        !Number.isSafeInteger(request.maxBytes) ||
-        request.maxBytes <= 0
-      )
-        throw new Error('invalid package cache request');
-      if (request.maintenanceVersion === 2)
-        return await reclaimPackageCachesPaged(runtimeDir, request);
-      if (request.maintenanceVersion !== undefined) throw cacheMaintenanceFailure('unsupported');
-      const fail = (code, counts) =>
-        Object.assign(
-          new Error(
-            code === 'turn-ownership-unknown'
-              ? 'Runner turn ownership is unknown; package caches retained'
-              : 'Runner cache maintenance blocked; caches retained',
-          ),
-          {
-            runnerCacheFailure: { code, ...(counts ? { counts } : {}) },
-          },
-        );
-      let turns;
-      try {
-        turns = await listTurns(runtimeDir);
-      } catch {
-        throw fail('turn-inventory-unavailable');
-      }
-      // A missing/corrupt state or an unassigned claim cannot establish which
-      // home is idle. Counts explain the refusal without exposing turn content.
-      const counts = { missingState: 0, invalidState: 0, unsettledWithoutSession: 0 };
-      for (const turn of turns) {
-        if (turn.status === 'settled' || typeof turn.sessionId === 'string') continue;
-        const key =
-          turn.reason === 'missing-state'
-            ? 'missingState'
-            : turn.reason === 'invalid-state'
-              ? 'invalidState'
-              : 'unsettledWithoutSession';
-        counts[key] = Math.min(1_000_000, counts[key] + 1);
-      }
-      if (Object.values(counts).some((count) => count > 0))
-        throw fail('turn-ownership-unknown', counts);
-      const busy = new Set(
-        turns.filter((turn) => turn.status !== 'settled').map((turn) => turn.sessionId),
-      );
-      let response;
-      try {
-        response = await brokerStorageRequest({
-          protocolVersion: 1,
-          kind: 'reclaim-package-caches',
-          sessionIds: request.sessionIds.filter((id) => !busy.has(id)),
-          maxBytes: request.maxBytes,
-        });
-      } catch (error) {
-        const code = ['EACCES', 'EPERM'].includes(error?.code)
-          ? 'broker-access-denied'
-          : ['ENOENT', 'ECONNREFUSED'].includes(error?.code)
-            ? 'broker-unavailable'
-            : error?.message === 'runner storage request timed out'
-              ? 'broker-timeout'
-              : error instanceof SyntaxError ||
-                  error?.code === 'ERR_INVALID_RUNNER_STORAGE_RESPONSE'
-                ? 'broker-invalid-response'
-                : 'broker-rejected';
-        throw fail(code);
-      }
-      if (busy.size > 0 && response.report) {
-        response.report.usageComplete = false;
-        response.report.legacyBytes = null;
-        response.report.blockers = [
-          ...(response.report.blockers ?? []).slice(0, 99),
-          'Runner sessions have unsettled turns; their legacy package caches were retained',
-        ];
-      }
-      return response;
-    }
-    case 'list-turns':
-      return { ok: true, turns: await listTurns(runtimeDir) };
-    case 'get-turn': {
-      if (typeof request.turnId !== 'string') throw new Error('invalid turnId');
-      const state = await readTurnState(runtimeDir, request.turnId);
-      return {
-        ok: true,
-        state,
-        ...(state?.status === 'running' && typeof turnStarter?.workerStatus === 'function'
-          ? { workerStatus: turnStarter.workerStatus(request.turnId) }
-          : {}),
-      };
-    }
-    case 'claim-turn':
-      return { ok: true, ...(await claimTurn(runtimeDir, request, runnerInstanceId)) };
-    case 'start-turn': {
-      if (turnStarter === undefined) throw new Error('runner worker is not installed');
-      if (
-        (request.knowledgeIsolation === true || request.planning === true) &&
-        !capabilities.scriptIsolation
-      ) {
-        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
-      }
-      // `start` throws on an invalid or refused request, so the acknowledgement can
-      // only ever follow an acceptance the supervisor actually made. Everything the
-      // Server needs to stop guessing — that the frame was understood and the turn
-      // is claimed or about to be — is true by the time this line runs.
-      const { pending } = turnStarter.start(request);
-      onStartAccepted?.();
-      return { ok: true, ...(await pending) };
-    }
-    case 'cancel-turn':
-      if (turnStarter === undefined) throw new Error('runner worker is not installed');
-      return { ok: true, ...(await turnStarter.cancel(request.turnId)) };
-    case 'run-trusted-cli':
-      if (typeof turnStarter?.runTrustedCli !== 'function') {
-        throw new Error('runner worker is not installed');
-      }
-      // Refused before the request, and the secrets it carries, reach the broker.
-      if (request.entryScript !== undefined && !capabilities.scriptIsolation) {
-        throw new Error(SCRIPT_ISOLATION_UNAVAILABLE_ERROR);
-      }
-      return {
-        ok: true,
-        ...(await turnStarter.runTrustedCli(request, onTrustedCliStarted, outputOptions)),
-      };
-    default:
-      throw new Error('unknown supervisor request');
-  }
-}
-
-export async function runSupervisor(options = {}) {
-  const runtimeDir = options.runtimeDir ?? process.env.VERITY_RUNNER_RUNTIME ?? DEFAULT_RUNTIME_DIR;
-  const expectedUid = Number(
-    options.uid ?? process.env.VERITY_RUNNER_RUNTIME_UID ?? process.getuid?.(),
-  );
-  const expectedGid = Number(
-    options.gid ?? process.env.VERITY_RUNNER_RUNTIME_GID ?? process.getgid?.(),
-  );
-  await validateRuntimeDirectory(runtimeDir, { uid: expectedUid, gid: expectedGid });
-  // Arm the histogram here rather than on the first start, which would otherwise be
-  // the one record with no delay figure attached — and the first start after boot is
-  // exactly when the supervisor is busiest and the figure most worth having.
-  //
-  // Unconditional here, unlike the Server-side sampler, which arms only for a client
-  // that was given an `onTelemetry` sink. The asymmetry is deliberate: this process
-  // exists to run turns and always writes the record, whereas `@verity/session` is
-  // imported by CLIs that never read one — there, arming is a cost with no reader.
-  sampleEventLoopDelay();
-  const scriptIsolation =
-    options.scriptIsolation ??
-    (await probeScriptSandbox(options.scriptSandboxPath ?? DEFAULT_SCRIPT_SANDBOX_PATH));
-  if (!scriptIsolation.available) {
-    // The Runner still starts: agent turns, brokered HTTP and plain trusted CLI
-    // commands do not depend on filesystem isolation. Only the entry-script paths are refused.
-    process.stderr.write(
-      `verity-runner-supervisor: worktree entry scripts are disabled: ${scriptIsolation.reason ?? 'script sandbox unavailable'}\n`,
-    );
-  }
-  const capabilities = { scriptIsolation: scriptIsolation.available };
-  const singleton = await acquireSingleton(runtimeDir);
-  const adoptedTurns = new Set();
-  const turnOptions = { ...options, adoptedTurns };
-  const turnStarter = createTurnStarter(runtimeDir, singleton.instanceId, turnOptions);
-  const turnAdopter = createTurnAdopter(runtimeDir, turnOptions);
-  try {
-    await turnAdopter.adopt();
-  } catch (error) {
-    await turnAdopter.close();
-    await turnStarter.close();
-    await singleton.release();
-    throw error;
-  }
-  const socketPath = join(runtimeDir, 'supervisor.sock');
-  try {
-    await rm(socketPath, { force: true });
-  } catch (error) {
-    await turnAdopter.close();
-    await turnStarter.close();
-    await singleton.release();
-    throw error;
-  }
-  const readyPath = join(runtimeDir, 'supervisor.json');
-  const connections = new Set();
-  const server = createServer((socket) => {
-    connections.add(socket);
-    socket.once('close', () => connections.delete(socket));
-    // Peer resets are protocol failures, not supervisor process failures.
-    socket.on('error', () => undefined);
-    let buffered = Buffer.alloc(0);
-    let handled = false;
-    let processingStarted = false;
-    let pipelinedAfterNewline = false;
-    const outputAbort = new globalThis.AbortController();
-    let outputAck;
-    let ackBuffer = '';
-    let outputSequence = 0;
-    socket.once('close', () => {
-      outputAbort.abort();
-      outputAck?.reject(new Error('trusted CLI output connection closed'));
-    });
-    const onOutput = (stream, bytes) =>
-      new Promise((resolve, reject) => {
-        if (socket.destroyed) {
-          reject(new Error('trusted CLI output connection closed'));
-          return;
-        }
-        const sequence = outputSequence++;
-        const timer = setTimeout(() => {
-          outputAck = undefined;
-          reject(new Error('trusted CLI output receipt timed out'));
-        }, 30000);
-        outputAck = {
-          sequence,
-          resolve: () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            reject(error);
-          },
-        };
-        socket.write(
-          `${JSON.stringify({ ok: true, kind: 'trusted-cli-output', sequence, stream, data: bytes.toString('base64') })}\n`,
-        );
-      });
-    let timeout = setTimeout(() => socket.destroy(), 5_000);
-    const setRequestTimeout = (milliseconds) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => socket.destroy(), milliseconds);
-    };
-    const respond = (response) => {
-      clearTimeout(timeout);
-      socket.end(`${JSON.stringify(response)}\n`, () => socket.destroy());
-    };
-    // Refusing a peer that is STILL WRITING is the one case where destroying the
-    // socket destroys the answer with it: the RST can drop the refusal out of the
-    // peer's receive buffer, and its own pending write then fails with EPIPE —
-    // which is how an oversize attachment reaches the operator as a bare `write
-    // EPIPE` naming neither size nor attachments. So send the refusal and keep
-    // reading and DISCARDING until the peer finishes and closes. Nothing is
-    // buffered, so the memory bound this cap exists to enforce still holds, and
-    // the grace timer keeps a stalled peer from pinning the connection open.
-    const respondDraining = (response) => {
-      clearTimeout(timeout);
-      socket.end(`${JSON.stringify(response)}\n`);
-      const grace = setTimeout(() => socket.destroy(), OVERSIZE_DRAIN_GRACE_MS);
-      socket.once('close', () => clearTimeout(grace));
-    };
-    socket.on('data', (chunk) => {
-      if (handled) {
-        if (outputAck !== undefined) {
-          ackBuffer += chunk.toString('utf8');
-          if (ackBuffer.length > 512) {
-            socket.destroy();
-            return;
-          }
-          if (!ackBuffer.endsWith('\n')) return;
-          try {
-            const ack = JSON.parse(ackBuffer);
-            ackBuffer = '';
-            if (
-              ack.kind !== 'output-ack' ||
-              ack.sequence !== outputAck.sequence ||
-              (ack.failure !== undefined &&
-                !['redaction_failure', 'storage_failure', 'output_limit'].includes(ack.failure))
-            ) {
-              socket.destroy();
-              return;
-            }
-            const pending = outputAck;
-            outputAck = undefined;
-            if (ack.failure === undefined) pending.resolve();
-            else
-              pending.reject(
-                Object.assign(new Error('trusted CLI output rejected'), {
-                  outputFailure: ack.failure,
-                }),
-              );
-          } catch {
-            socket.destroy();
-          }
-          return;
-        }
-        // A second request may arrive in a later Unix-socket chunk. Give framing
-        // one event-loop turn before applying the first request so TCP/Unix chunk
-        // boundaries cannot turn the same pipelined bytes into different behavior.
-        if (!processingStarted && chunk.length > 0) pipelinedAfterNewline = true;
-        return;
-      }
-      if (buffered.length + chunk.length > MAX_CONTROL_LINE_BYTES) {
-        handled = true;
-        buffered = Buffer.alloc(0);
-        respondDraining(responseForError(new Error('supervisor frame too large')));
-        return;
-      }
-      buffered = Buffer.concat([buffered, chunk]);
-      const newline = buffered.indexOf(0x0a);
-      if (newline < 0) return;
-      handled = true;
-      const line = buffered.subarray(0, newline).toString('utf8');
-      const remainder = buffered.subarray(newline + 1);
-      buffered = Buffer.alloc(0);
-      if (remainder.length > 0) {
-        respond(responseForError(new Error('supervisor accepts exactly one request')));
-        return;
-      }
-      void new Promise((resolve) => setImmediate(resolve))
-        .then(() => {
-          processingStarted = true;
-          if (pipelinedAfterNewline) {
-            throw new Error('supervisor accepts exactly one request');
-          }
-        })
-        .then(() => JSON.parse(line))
-        .then((request) => {
-          setRequestTimeout(supervisorRequestTimeoutMs(request));
-          return handleSupervisorRequest(
-            runtimeDir,
-            singleton.instanceId,
-            request,
-            turnStarter,
-            request?.kind === 'run-trusted-cli'
-              ? () => socket.write(`${JSON.stringify({ ok: true, kind: 'trusted-cli-started' })}\n`)
-              : undefined,
-            // Only when the Server asked for it. A Server that predates the two-phase
-            // reply reads exactly one frame per request and would refuse a second as
-            // an invalid frame count — the D9 half of this change that keeps a new
-            // Sandbox image usable by an older Server.
-            request?.kind === 'start-turn' && request.startAck === true
-              ? () =>
-                  socket.write(
-                    `${JSON.stringify({
-                      ok: true,
-                      kind: 'start-accepted',
-                      // The raw request's ids, which the client compares strictly
-                      // against the ones it sent. Sound because `validateStartTurnRequest`
-                      // only TESTS these two against `SAFE_ID` and never rewrites them;
-                      // a validator that ever normalized an id would have to echo the
-                      // normalized value here instead.
-                      turnId: request.turnId,
-                      startCommandId: request.startCommandId,
-                    })}\n`,
-                  )
-              : undefined,
-            capabilities,
-            request?.kind === 'run-trusted-cli' && request.streamOutput === true
-              ? { onOutput, signal: outputAbort.signal }
-              : {},
-          );
-        })
-        .catch(responseForError)
-        .then(respond);
-    });
-  });
-  try {
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(socketPath, resolve);
-    });
-    await chmod(socketPath, 0o660);
-    await writeJsonAtomic(readyPath, {
-      protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
-      runnerInstanceId: singleton.instanceId,
-      pid: process.pid,
-      socketPath,
-      readyAt: Date.now(),
-    });
-  } catch (error) {
-    server.close();
-    await turnAdopter.close();
-    await turnStarter.close();
-    await rm(socketPath, { force: true });
-    await singleton.release();
-    throw error;
-  }
-  const close = async () => {
-    await turnAdopter.close();
-    await turnStarter.close();
-    for (const socket of connections) socket.destroy();
-    await new Promise((resolve) => server.close(resolve));
-    await rm(socketPath, { force: true });
-    await rm(readyPath, { force: true });
-    await singleton.release();
-  };
-  return { runtimeDir, socketPath, instanceId: singleton.instanceId, close };
-}
-
-export async function probeSupervisor(runtimeDir = DEFAULT_RUNTIME_DIR, timeoutMs = 1_000) {
-  const socketPath = join(runtimeDir, 'supervisor.sock');
-  return await new Promise((resolve) => {
-    const socket = createConnection(socketPath);
-    let response = '';
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      resolve(false);
-    }, timeoutMs);
-    const finish = (live) => {
-      clearTimeout(timeout);
-      socket.destroy();
-      resolve(live);
-    };
-    socket.once('error', () => finish(false));
-    socket.on('data', (chunk) => {
-      response += chunk.toString('utf8');
-    });
-    socket.once('end', () => {
-      try {
-        const parsed = JSON.parse(response);
-        finish(parsed?.ok === true && parsed.protocolVersion === SUPERVISOR_PROTOCOL_VERSION);
-      } catch {
-        finish(false);
-      }
-    });
-    socket.once('connect', () => {
-      socket.write(
-        `${JSON.stringify({ protocolVersion: SUPERVISOR_PROTOCOL_VERSION, kind: 'status' })}\n`,
-      );
-    });
-  });
-}
-
-const invokedPath = process.argv[1] === undefined ? undefined : resolve(process.argv[1]);
+// features/verity-sandbox-toolkit/src/runner-supervisor/main.mjs
+var invokedPath = process.argv[1] === void 0 ? void 0 : resolve2(process.argv[1]);
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const runtimeDir = process.env.VERITY_RUNNER_RUNTIME ?? DEFAULT_RUNTIME_DIR;
   const command = process.argv[2];
   const brokerSocket = process.env.VERITY_AGENT_SPAWN_BROKER_SOCKET;
-  const launch =
-    command === '--probe'
-      ? probeSupervisor(runtimeDir)
-      : runSupervisor(
-          brokerSocket === undefined
-            ? undefined
-            : {
-                runtimeDir,
-                workerCommand:
-                  process.env.VERITY_RUNNER_WORKER ?? '/usr/local/bin/verity-runner-worker',
-                workerBackends: installedWorkerBackends(),
-                workerEnv: supervisorWorkerEnv(process.env),
-              },
-        );
-  launch
-    .then((supervisor) => {
-      if (typeof supervisor === 'boolean') {
-        process.exitCode = supervisor ? 0 : 1;
-        return;
-      }
-      const shutdown = () => {
-        void supervisor.close().finally(() => process.exit(0));
-      };
-      process.once('SIGTERM', shutdown);
-      process.once('SIGINT', shutdown);
-    })
-    .catch((error) => {
-      process.stderr.write(`verity-runner-supervisor: ${responseForError(error).error}\n`);
-      process.exitCode = 1;
-    });
+  const launch = command === "--probe" ? probeSupervisor(runtimeDir) : runSupervisor(
+    brokerSocket === void 0 ? void 0 : {
+      runtimeDir,
+      workerCommand: process.env.VERITY_RUNNER_WORKER ?? "/usr/local/bin/verity-runner-worker",
+      workerBackends: installedWorkerBackends(),
+      workerEnv: supervisorWorkerEnv(process.env)
+    }
+  );
+  launch.then((supervisor) => {
+    if (typeof supervisor === "boolean") {
+      process.exitCode = supervisor ? 0 : 1;
+      return;
+    }
+    const shutdown = () => {
+      void supervisor.close().finally(() => process.exit(0));
+    };
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  }).catch((error) => {
+    process.stderr.write(`verity-runner-supervisor: ${responseForError(error).error}
+`);
+    process.exitCode = 1;
+  });
 }
+export {
+  DEFAULT_RUNTIME_DIR,
+  DEFAULT_SCRIPT_SANDBOX_PATH,
+  MAX_START_REQUEST_BYTES,
+  MIN_SUPPORTED_SUPERVISOR_PROTOCOL_VERSION,
+  SCRIPT_ISOLATION_UNAVAILABLE_ERROR,
+  SUPERVISED_WORKER_BACKENDS,
+  SUPERVISOR_PROTOCOL_VERSION,
+  acquireSingleton,
+  claimTurn,
+  createTurnAdopter,
+  createTurnStarter,
+  handleSupervisorRequest,
+  installedSkillsManifestHash,
+  installedSkillsVersion,
+  installedWorkerBackends,
+  listTurns,
+  probeScriptSandbox,
+  probeSupervisor,
+  readTurnState,
+  redactTrustedCliText,
+  runSupervisor,
+  runTrustedCliViaBroker,
+  supervisorRequestTimeoutMs,
+  supervisorWorkerEnv,
+  validateImageReferences,
+  validateRuntimeDirectory,
+  validateRuntimeStats,
+  validateStartTurnRequest,
+  writeSyntheticTerminalFrame
+};

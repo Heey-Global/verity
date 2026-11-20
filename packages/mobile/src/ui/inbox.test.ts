@@ -176,7 +176,37 @@ describe('inboxItems', () => {
     expect(kinds(items)).not.toContain('question');
   });
 
-  it('words a secret run the way the session card does, keeping the full input', () => {
+  it.each([{ activeOnly: false }, { project: 'pulse', activeOnly: false }])(
+    'shows session listings like the session card, without raw JSON: %j',
+    (input) => {
+      const items = inboxItems({
+        sessions: [
+          session('listing', {
+            status: 'awaiting_input',
+            permissionAwaitingInput: true,
+            pendingPermissions: ['list'],
+            pendingPermissionRequests: [
+              {
+                toolUseId: 'list',
+                tool: 'verity_list_sessions',
+                riskClass: 'ask',
+                input,
+              },
+            ],
+          }),
+        ],
+        projects: [project()],
+        now: NOW,
+      });
+      const item = items.find((entry) => entry.kind === 'permission');
+      expect(item?.lines).toEqual(permissionSummary('verity_list_sessions', input).lines);
+      expect(item?.request).toBeUndefined();
+      expect(item?.requestOpen).toBeUndefined();
+      expect(item?.actions.map((action) => action.kind)).toEqual(['allow', 'deny', 'open_session']);
+    },
+  );
+
+  it('keeps secret-run approvals compact and routes review to the session', () => {
     const input = {
       command: ['/usr/local/bin/cluster-inspect', 'job', 'e2e'],
       secrets: [
@@ -201,21 +231,13 @@ describe('inboxItems', () => {
     // Home showed the tool's name and a JSON dump; the session asked a question.
     expect(item?.title).toBe(permissionSummary('verity_secret_run', input).title);
     expect(item?.title).toBe('Run trusted command with 2 secrets?');
-    expect(item?.lines).toEqual([
-      { kind: 'code', text: '"/usr/local/bin/cluster-inspect" "job" "e2e"' },
-      {
-        kind: 'text',
-        text: expect.stringContaining(
-          'Verity injects TAILSCALE_AUTH_KEY as a file at TS_AUTHKEY_FILE, KUBECONFIG as a file at KUBECONFIG_B64_FILE.',
-        ) as string,
-      },
-    ]);
+    expect(item?.lines).toBeUndefined();
     expect(item?.message).toBeUndefined();
-    // The summary is what to read first; the complete input still travels with Allow.
-    expect(item?.request).toBe(JSON.stringify(input, null, 2));
+    expect(item?.request).toBeUndefined();
+    expect(item?.actions).toEqual([{ kind: 'open_session', label: 'Review', sessionId: 'k8s' }]);
   });
 
-  it('keeps an unknown tool readable from its raw input alone', () => {
+  it('words an unknown tool by the field it is about and keeps its raw input', () => {
     const [item] = inboxItems({
       sessions: [
         session('egress', {
@@ -235,7 +257,9 @@ describe('inboxItems', () => {
       projects: [project()],
       now: NOW,
     });
-    expect(item?.lines).toBeUndefined();
+    // Home opened on the JSON; the address is what the operator decides on.
+    expect(item?.lines).toEqual([{ kind: 'code', text: 'https://api.exa.ai' }]);
+    expect(item?.message).toBeUndefined();
     expect(item?.request).toBe(JSON.stringify({ url: 'https://api.exa.ai' }, null, 2));
   });
 

@@ -57,6 +57,8 @@ export interface ManagedDevServerRecord {
   workdir: string;
   /** True when the operator approved exactly this command and subdirectory. */
   approved: boolean;
+  /** Who approved it; null for an approval made before projects had people. */
+  approvedBy: string | null;
   secretBindings: ManagedDevServerSecretBinding[];
   createdAt: Date;
   updatedAt: Date;
@@ -79,6 +81,8 @@ export interface ManagedDevServerInstanceRecord {
   lastRunCommand: string | null;
   lastRunWorkdir: string | null;
   lastRunSecretBindings: ManagedDevServerSecretBinding[];
+  /** The person whose Doppler connection resolves this instance's secrets. */
+  lastRunUserId: string | null;
   startedAt: Date | null;
   accessStartedAt: Date | null;
   lastRanAt: Date | null;
@@ -174,6 +178,7 @@ function serverRecord(row: Selectable<ManagedDevServersTable>): ManagedDevServer
       row.approved_command === row.command &&
       row.approved_workdir === row.workdir &&
       managedDevServerBindingsEqual(row.approved_secret_bindings ?? [], row.secret_bindings),
+    approvedBy: row.approved_by_user_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -195,6 +200,7 @@ function instanceRecord(
     lastRunCommand: row.last_run_command,
     lastRunWorkdir: row.last_run_workdir,
     lastRunSecretBindings: row.last_run_secret_bindings,
+    lastRunUserId: row.last_run_user_id,
     startedAt: row.started_at,
     accessStartedAt: row.access_started_at,
     lastRanAt: row.last_ran_at,
@@ -209,6 +215,7 @@ export interface ManagedDevServerInstancePatch {
   lastRunCommand?: string | null;
   lastRunWorkdir?: string | null;
   lastRunSecretBindings?: ManagedDevServerSecretBinding[];
+  lastRunUserId?: string | null;
   startedAt?: Date | null;
   accessStartedAt?: Date | null;
   lastRanAt?: Date | null;
@@ -353,12 +360,15 @@ export class ManagedDevServerStore {
       command: string;
       workdir: string;
       secretBindings?: ManagedDevServerSecretBinding[] | undefined;
+      /** The person approving; their approval admits their own secret-bearing starts. */
+      approvedBy?: string | null | undefined;
     },
   ): Promise<ManagedDevServerRecord | undefined> {
     const row = await this.db
       .updateTable('managed_dev_servers')
       .set({
         approved_provider_authority: seen.providerAuthority ?? null,
+        approved_by_user_id: seen.approvedBy ?? null,
         approved_command: seen.command,
         approved_workdir: seen.workdir,
         approved_secret_bindings: JSON.stringify(
@@ -554,6 +564,7 @@ export class ManagedDevServerStore {
               ),
             }
           : {}),
+        ...(patch.lastRunUserId !== undefined ? { last_run_user_id: patch.lastRunUserId } : {}),
         ...(patch.startedAt !== undefined
           ? { started_at: patch.startedAt?.toISOString() ?? null }
           : {}),

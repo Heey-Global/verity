@@ -33,6 +33,7 @@ import type { SandboxUpdate } from '../api.js';
 export function sandboxUpdateNeedsAttention(
   update: SandboxUpdate | undefined,
 ): update is SandboxUpdate {
+  if (update?.recovery?.state === 'failed') return true;
   if (update === undefined || update.state === 'current') return false;
   // Narrows away `undefined` only. It used to also promise `selfRepair: 'stalled'`,
   // which callers do read — and which is now one of two reasons to draw attention,
@@ -54,6 +55,73 @@ export function isSecuritySandboxUpdate(update: SandboxUpdate | undefined): bool
 }
 
 /**
+ * What holds a blocked update off. `activity` is the honest answer when the
+ * Server did not say — an older Server, or a probe that only answered "busy" —
+ * and it names no remedy rather than guessing one. A turn wins over the others
+ * because it is the one a recreate would kill outright.
+ */
+export type SandboxUpdateBlocker = 'turn' | 'dev_server' | 'preview' | 'activity';
+
+export function sandboxUpdateBlocker(update: SandboxUpdate): SandboxUpdateBlocker {
+  const by = update.blockedBy;
+  if (by.includes('turn')) return 'turn';
+  if (by.includes('dev_server')) return 'dev_server';
+  if (by.includes('preview')) return 'preview';
+  return 'activity';
+}
+
+const WAITING_FOR: Record<SandboxUpdateBlocker, string> = {
+  turn: ' for a turn',
+  dev_server: ' for a dev server',
+  preview: ' for a preview',
+  activity: '',
+};
+
+/** The short name of a blocked update: the overview glyph's label and the
+ *  title of the dialogs it opens. */
+export function sandboxUpdateWaitingLabel(update: SandboxUpdate): string {
+  const subject = isSecuritySandboxUpdate(update) ? 'Security update' : 'Update';
+  return `${subject} waiting${WAITING_FOR[sandboxUpdateBlocker(update)]}`;
+}
+
+/** Why a blocked update cannot be applied now, and what would let it — for the
+ *  dialog behind the project's Update button. */
+export function sandboxUpdateBlockedDetail(update: SandboxUpdate): string {
+  if (update.overdue)
+    return `${sandboxUpdateSummary(update) ?? 'The sandbox update missed its nightly window'}. Open Sandbox settings to review the blocker or choose Update now.`;
+  if (update.scheduledTonight)
+    return 'Verity will update between 03:00 and 05:00, server time. To update sooner, open Sandbox settings and choose Update now. Dev servers restart automatically; share URLs and PINs stay the same.';
+  switch (sandboxUpdateBlocker(update)) {
+    case 'turn':
+      return 'A turn is running in this project. Recreating the sandbox now would end it — cancel the turn first, then update.';
+    case 'dev_server':
+      return 'A dev server is running in this project. Recreating the sandbox now would stop it — stop the dev server first, then update.';
+    case 'preview':
+      return 'This project is shared as a preview. Recreating the sandbox now would interrupt it — stop sharing first, then update.';
+    case 'activity':
+      return 'This project is in use. Verity updates the sandbox once the activity ends.';
+  }
+}
+
+/** One line for the inbox item of a blocked update. */
+export function sandboxUpdateBlockedInboxMessage(update: SandboxUpdate): string {
+  if (update.overdue)
+    return sandboxUpdateSummary(update) ?? 'The sandbox update missed its nightly window';
+  if (update.scheduledTonight)
+    return 'A sandbox update is scheduled for tonight; dev servers and previews restart with their existing URLs.';
+  switch (sandboxUpdateBlocker(update)) {
+    case 'turn':
+      return 'A sandbox update waits for the running turn to finish.';
+    case 'dev_server':
+      return 'A sandbox update waits for a running dev server to stop.';
+    case 'preview':
+      return 'A sandbox update waits for a shared preview to stop.';
+    case 'activity':
+      return 'A sandbox update waits for project activity to finish.';
+  }
+}
+
+/**
  * What a project's sandbox update state means for the operator, as words.
  *
  * Four cases, because the honest answer differs by more than wording:
@@ -66,17 +134,45 @@ export function isSecuritySandboxUpdate(update: SandboxUpdate | undefined): bool
  * - `stalled`     — behind, and Verity has given up retrying.
  */
 export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string | null {
+  if (update?.recovery?.state === 'failed')
+    return `Update recovery failed — ${update.recovery.detail}`;
   if (update?.selfRepair === 'stalled' && update.state === 'unknown') {
     return 'Sandbox repair stuck — the sandbox could not be rebuilt';
   }
+  if (update?.recovery) {
+    if (update.recovery.state === 'checking') return 'Updated — checking dev servers and previews';
+    if (update.recovery.state === 'ready')
+      return 'Updated — dev servers and previews are back online';
+  }
   if (update === undefined || update.state !== 'available') return null;
+  if (update.overdue) {
+    const blocker = sandboxUpdateBlocker(update);
+    const waiting =
+      blocker === 'turn'
+        ? 'a running turn'
+        : blocker === 'dev_server'
+          ? 'a running dev server'
+          : blocker === 'preview'
+            ? 'a shared preview'
+            : 'activity verification';
+    return `Update missed its nightly window — still waiting for ${waiting}`;
+  }
+  if (update.scheduledTonight) return 'Scheduled for tonight · 03:00–05:00 server time';
   const security = isSecuritySandboxUpdate(update);
   // Ahead of `stalled`: the Server raises both flags for a blocked update, and of
   // the two sentences only this one says what would actually move it.
   if (update.turnBlocked) {
-    return security
-      ? 'Security update waiting for a turn to finish — cancel it to update now'
-      : 'Update waiting for a turn to finish — cancel it to update now';
+    const subject = security ? 'Security update' : 'Update';
+    switch (sandboxUpdateBlocker(update)) {
+      case 'turn':
+        return `${subject} waiting for a turn to finish — cancel it to update now`;
+      case 'dev_server':
+        return `${subject} waiting for a running dev server — stop it to update now`;
+      case 'preview':
+        return `${subject} waiting for a shared preview — stop sharing to update now`;
+      case 'activity':
+        return `${subject} waiting for project activity to finish`;
+    }
   }
   return update.selfRepair === 'stalled'
     ? security
@@ -85,6 +181,34 @@ export function sandboxUpdateSummary(update: SandboxUpdate | undefined): string 
     : security
       ? 'Security update pending — Verity is rebuilding this sandbox'
       : 'Update pending — Verity is rebuilding this sandbox';
+}
+
+/**
+ * The most recent failed automatic rebuild, as a dated sentence. A rebuild can
+ * be an image update or a relay repair, so it is not called an update.
+ *
+ * Dated because the failure outlives the attempt that produced it: a retry can
+ * wait for the Server's single build slot while the earlier refusal is still the
+ * last thing recorded. While the sandbox is `converging` the sentence says the
+ * failure was the previous attempt's; once the Server reports `stalled` it is the
+ * latest. `timeZone` is for tests; the device zone is used otherwise.
+ */
+export function sandboxUpdateLastFailure(
+  update: SandboxUpdate | undefined,
+  timeZone?: string,
+): string | null {
+  const failure = update?.lastRepairFailure;
+  if (!failure || update.state === 'current') return null;
+  const at = new Date(failure.at);
+  if (Number.isNaN(at.getTime())) return null;
+  const when = new Intl.DateTimeFormat('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    ...(timeZone === undefined ? {} : { timeZone }),
+  }).format(at);
+  return update.selfRepair === 'stalled'
+    ? `Last automatic rebuild failed ${when}: ${failure.message}`
+    : `Retrying — the previous automatic rebuild failed ${when}: ${failure.message}`;
 }
 
 /**
@@ -102,6 +226,8 @@ export function sandboxUpdateAlertMessage(
   project: { owner: string; repo: string },
   update: SandboxUpdate,
 ): string {
+  if (update.recovery?.state === 'failed') return sandboxUpdateSummary(update)!;
+  if (update.overdue || update.scheduledTonight) return sandboxUpdateBlockedDetail(update);
   const security = isSecuritySandboxUpdate(update);
   const image = `it is still running the old image${security ? ', which is missing a security fix' : ''}`;
   // A blocked update is not a failure and must not be described as one: Verity is
@@ -110,10 +236,29 @@ export function sandboxUpdateAlertMessage(
   // Server refuses this request while the turn runs, so an operator told "retry"
   // would just collect a 409 without learning why.
   if (update.turnBlocked) {
-    return (
-      `${project.owner}/${project.repo} has a turn in flight, so Verity is not replacing its ` +
-      `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
-    );
+    const name = `${project.owner}/${project.repo}`;
+    switch (sandboxUpdateBlocker(update)) {
+      case 'turn':
+        return (
+          `${name} has a turn in flight, so Verity is not replacing its ` +
+          `sandbox — ${image}. Cancel the turn first; recreating the container now would end it.`
+        );
+      case 'dev_server':
+        return (
+          `${name} has a running dev server, so Verity is not replacing its sandbox — ${image}. ` +
+          'Stop the dev server first; recreating the container now would end it.'
+        );
+      case 'preview':
+        return (
+          `${name} is shared as a preview, so Verity is not replacing its sandbox — ${image}. ` +
+          'Stop sharing it first; recreating the container now would interrupt it.'
+        );
+      case 'activity':
+        return (
+          `${name} is in use, so Verity is not replacing its sandbox — ${image}. ` +
+          'It updates once the activity ends.'
+        );
+    }
   }
   return (
     `Verity could not update ${project.owner}/${project.repo}'s sandbox on its own — ` +
@@ -150,11 +295,14 @@ export function sandboxUpdateIndicator(
   update: SandboxUpdate | undefined,
 ): SandboxUpdateIndicator | undefined {
   if (!sandboxUpdateNeedsAttention(update)) return undefined;
+  if (update.recovery?.state === 'failed')
+    return { label: 'Update recovery failed', icon: 'alert-triangle', tone: 'attention' };
   const security = isSecuritySandboxUpdate(update);
   if (update.turnBlocked) {
+    const label = sandboxUpdateWaitingLabel(update);
     return security
-      ? { label: 'Security update waiting for a turn', icon: 'shield', tone: 'danger' }
-      : { label: 'Update waiting for a turn', icon: 'clock', tone: 'attention' };
+      ? { label, icon: 'shield', tone: 'danger' }
+      : { label, icon: 'clock', tone: 'attention' };
   }
   return security
     ? { label: 'Security update stuck', icon: 'shield', tone: 'danger' }

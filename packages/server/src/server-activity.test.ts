@@ -33,7 +33,6 @@ import {
   ZERO_USAGE,
 } from './server-fixture.test-helper.js';
 import { buildServer, redactScrollDiagnosticData, redactScrollDiagnosticEvent } from './server.js';
-import { sessionGoogleStatus } from './session-google-status.js';
 
 describe('GET /sessions/:id/activity', () => {
   it('keeps background work visible while the main agent awaits input and settles on termination', async () => {
@@ -917,6 +916,43 @@ describe('GET /sessions', () => {
       expect(list.json()[0].resumable).toBe(true);
       const detail = await server.inject({ method: 'GET', url: '/sessions/retired' });
       expect(detail.json().resumable).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // Session servers hold their worktree; unknown project evidence holds orphan collection.
+  it('holds storage collection for the session that serves, not its whole project', async () => {
+    let blocked: ((projectId: string, sessionId: string | null) => boolean) | undefined;
+    const server = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      sessionStorage: {
+        bind: (_claim: unknown, predicate: typeof blocked) => {
+          blocked = predicate;
+        },
+      } as unknown as import('./session-storage.js').SessionStorage,
+      managedDevServerManager: {
+        hasRunningServers: (projectId: string) => projectId === 'p1',
+        hasUnverifiedServers: (projectId: string) => projectId === 'p4',
+        hasRunningSessionServers: (sessionId: string) => sessionId === 'serving',
+      } as unknown as import('./managed-dev-server-manager.js').ManagedDevServerManager,
+      localPreviewManager: {
+        list: (sessionId: string) => (sessionId === 'previewing' ? [{}] : []),
+        listProject: (projectId: string) => (projectId === 'p2' ? [{}] : []),
+      } as unknown as import('./local-preview-manager.js').LocalPreviewManager,
+    });
+    try {
+      expect(blocked!('p1', 'serving')).toBe(true);
+      expect(blocked!('p1', 'idle')).toBe(false);
+      expect(blocked!('p2', 'previewing')).toBe(true);
+      expect(blocked!('p2', 'idle')).toBe(false);
+      // Orphaned registrations belong to no session; any server still defers them.
+      expect(blocked!('p1', null)).toBe(true);
+      expect(blocked!('p2', null)).toBe(true);
+      expect(blocked!('p3', null)).toBe(false);
+      expect(blocked!('p4', null)).toBe(true);
     } finally {
       await server.close();
     }
@@ -1811,6 +1847,40 @@ describe('GET /provider-limits', () => {
       expect(getLimits).toHaveBeenCalledOnce();
     } finally {
       await withProviderLimits.close();
+    }
+  });
+
+  // The instance accounts were the administrator's: a member's meter must show
+  // their own accounts' quota, never the administrator's.
+  it("shows a member their own accounts' quota, not the instance's", async () => {
+    const instanceLimits = vi.fn(async () => [
+      {
+        status: 'allowed' as const,
+        resetsAt: 1_700_000_100,
+        window: 'five_hour' as const,
+        usedPercent: 90,
+        providerLabel: 'Claude',
+      },
+    ]);
+    const personalClaudeAccessToken = vi.fn(async () => undefined);
+    const asLena = buildServer({
+      eventStore: ctx.store,
+      bus,
+      conductor,
+      claudeUsage: { getLimits: instanceLimits },
+      personalClaudeAccessToken,
+    });
+    asLena.addHook('onRequest', async (request) => {
+      request.localUserId = 'lena';
+    });
+    try {
+      const res = await asLena.inject({ method: 'GET', url: '/provider-limits' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([]);
+      expect(instanceLimits).not.toHaveBeenCalled();
+      expect(personalClaudeAccessToken).toHaveBeenCalledWith('lena');
+    } finally {
+      await asLena.close();
     }
   });
 
@@ -2903,105 +2973,6 @@ describe('vulnerability scan session integration', () => {
     } finally {
       await server.close();
     }
-  });
-});
-
-describe('GET /sessions/:id', () => {
-  it('returns session detail with status and event count', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
-    await ctx.store.appendEvent('s1', { t: 'status', state: 'running' });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({
-      googleStatus: await sessionGoogleStatus(ctx.store, 's1'),
-      sessionId: 's1',
-      worktree: '/wt/s1',
-      model: 'm',
-      name: null,
-      planningPlan: null,
-      planningRevision: 0,
-      projectId: null,
-      status: 'running',
-      pendingPermissions: [],
-      usage: ZERO_USAGE,
-      resumable: false,
-      eventCount: 0,
-      agentTextCounterVersion: 'agent-text-v2',
-      lastActivityAt: expect.any(Number),
-      lastSeenEventCount: null,
-      inboxDismissed: [],
-      busy: false,
-      queued: [],
-    });
-  });
-
-  it('includes cumulative token usage in the detail', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', { t: 'session', id: 's1', model: 'm', worktree: '/wt/s1' });
-    await ctx.store.appendEvent('s1', {
-      t: 'result',
-      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheCreationTokens: 3 },
-      stopReason: 'end_turn',
-    });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      eventCount: 0,
-      usage: {
-        inputTokens: 100,
-        outputTokens: 20,
-        cacheReadTokens: 5,
-        cacheCreationTokens: 3,
-        turns: 1,
-      },
-    });
-  });
-
-  it('includes the latest rate-limit state in the detail', async () => {
-    await ctx.store.createSession({ sessionId: 's1', worktree: '/wt/s1', model: 'm' });
-    await ctx.store.appendEvent('s1', {
-      t: 'rate_limit',
-      status: 'rejected',
-      resetsAt: 1_700_000_000,
-      window: 'five_hour',
-      providerLabel: 'Codex',
-    });
-
-    const res = await app.inject({ method: 'GET', url: '/sessions/s1' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
-      rateLimit: {
-        status: 'rejected',
-        resetsAt: 1_700_000_000,
-        window: 'five_hour',
-        providerLabel: 'Codex',
-        observedAt: expect.any(Number),
-      },
-      rateLimits: [
-        {
-          status: 'rejected',
-          resetsAt: 1_700_000_000,
-          window: 'five_hour',
-          providerLabel: 'Codex',
-          observedAt: expect.any(Number),
-        },
-      ],
-    });
-  });
-
-  it('returns 404 for an unknown session', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/missing' });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('missing') });
-  });
-
-  it('returns 400 for an invalid session id (not the raw zod error)', async () => {
-    const res = await app.inject({ method: 'GET', url: '/sessions/bad%20id' });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual({ error: 'invalid request' });
   });
 });
 

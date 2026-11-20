@@ -1,3 +1,22 @@
+import { SERVER_MAINTENANCE_MESSAGE, isAbortError, type ConnectionReporter } from './connection.js';
+import {
+  agentLoginResponseSchema,
+  peopleClient,
+  type AgentLogin,
+  type AgentLoginProvider,
+} from './people-api.js';
+export * from './people-api.js';
+export * from './session-workspace-api.js';
+import { sessionWorkspaceClient } from './session-workspace-api.js';
+export * from './backup-api.js';
+import {
+  backupProbeJobSchema,
+  backupStatusSchema,
+  backupKeyOfferSchema,
+  type BackupKeyOffer,
+  type BackupProbeJob,
+  type BackupStatus,
+} from './backup-api.js';
 import {
   projectRepositorySchema,
   projectInquirySchema,
@@ -503,6 +522,11 @@ export const sessionDetailSchema = sessionSummarySchema.safeExtend({
   busy: z.boolean().optional(),
   /** Turns queued behind the in-flight one (#90/#80), FIFO. Absent → none. */
   queued: z.array(queuedItemSchema).optional(),
+  /** In a session several people write in: each person's name by user id, so
+   *  messages can say who sent them. Absent when one person works alone. */
+  people: z.record(z.string(), z.string()).optional(),
+  /** The signed-in person, beside `people`. */
+  viewerUserId: z.string().optional(),
 });
 export type SessionDetail = z.infer<typeof sessionDetailSchema>;
 
@@ -585,13 +609,25 @@ const sandboxUpdateSchema = z.object({
   // send the field, and reading that as "converging" is exactly right (it is a
   // Server that still reconciles, it just cannot report the verdict).
   selfRepair: z.enum(['converging', 'stalled']).default('converging'),
-  // Whether the update is waiting on a turn rather than on Verity. The reconciler
   // never interrupts a live turn to swap a usable sandbox's image, so a project
   // that never goes idle waits forever — and the server sets this once that wait
   // is long enough to be worth naming, alongside the `stalled` above.
   // Defaulted for the same reason as `selfRepair`: a Server one release behind
   // this app does not send it, and `false` is exactly what that Server means.
   turnBlocked: z.boolean().default(false),
+  // What holds a `turnBlocked` update off — `turn`, `dev_server` or `preview` —
+  // so the app names the right remedy. Read as plain strings: members a newer
+  // Server adds are ignored by the helpers rather than failing the project list.
+  blockedBy: z.array(z.string()).default([]),
+  scheduledTonight: z.boolean().optional(),
+  overdue: z.boolean().optional(),
+  recovery: z
+    .object({ state: z.enum(['checking', 'ready', 'failed']), at: z.number(), detail: z.string() })
+    .optional(),
+  // The most recent failed automatic recreate, with its time, so an earlier
+  // failure cannot read as the outcome of the attempt running now. Defaulted for
+  // the same reason as the fields above.
+  lastRepairFailure: z.object({ at: z.string(), message: z.string() }).nullable().default(null),
 });
 export type SandboxUpdate = z.infer<typeof sandboxUpdateSchema>;
 
@@ -1059,6 +1095,18 @@ export const veritySettingsSchema = z.object({
 });
 export type VeritySettings = z.infer<typeof veritySettingsSchema>;
 
+// `.catch` keeps a newer server's additional status readable as still joining.
+const onlineJoinStatusSchema = z
+  .enum(['joining', 'waiting', 'joined', 'failed', 'ended'])
+  .catch('joining');
+const onlineMeetingStatusSchema = z.object({
+  status: onlineJoinStatusSchema,
+  /** Provider reason code of a failed join, for example `login_required`. */
+  reason: z.string().nullable().catch(null),
+  platform: z.enum(['google_meet', 'teams', 'zoom']).nullable().catch(null),
+});
+export type OnlineMeetingStatus = z.infer<typeof onlineMeetingStatusSchema>;
+
 const activeLiveMeetingsSchema = z.object({
   running: z.array(
     z.object({
@@ -1069,6 +1117,8 @@ const activeLiveMeetingsSchema = z.object({
       startedAt: z.number(),
       state: z.enum(['active', 'interrupted']),
       captureStatus: z.string(),
+      /** Online meetings: how far Verity got into the call (newer servers only). */
+      joinStatus: onlineJoinStatusSchema.optional(),
       recorderLastSeenAt: z.number().nullable().optional(),
       sessionName: z.string().nullable(),
       projectId: z.string().nullable(),
@@ -1374,21 +1424,6 @@ export type VeritySettingsPatch = {
   opencodeDisabledModels?: string | null | undefined;
 };
 
-export const agentLoginProviderSchema = z.enum(['claude', 'codex']);
-export type AgentLoginProvider = z.infer<typeof agentLoginProviderSchema>;
-export const agentLoginSchema = z.object({
-  sessionId: z.string().min(1),
-  provider: agentLoginProviderSchema,
-  status: z.enum(['starting', 'ready', 'waiting', 'complete', 'failed']),
-  verificationUri: z.string().nullable(),
-  userCode: z.string().nullable(),
-  needsCode: z.boolean(),
-  configured: z.boolean(),
-  message: z.string().nullable(),
-});
-export type AgentLogin = z.infer<typeof agentLoginSchema>;
-const agentLoginResponseSchema = z.object({ login: agentLoginSchema });
-
 /** State of the at-rest secret store (master-password unlock). `uninitialized`
  *  = no password set yet (first-run onboarding); `sealed` = set but locked
  *  (needs /secret/unlock after a restart); `unlocked` = key loaded; `unmanaged`
@@ -1397,47 +1432,6 @@ export const secretStatusSchema = z.object({
   status: z.enum(['unlocked', 'sealed', 'uninitialized', 'unmanaged']),
 });
 export type SecretStatus = z.infer<typeof secretStatusSchema>['status'];
-
-/** A restore probe as the server reports it. The server keeps no key in it.
- *  `status` and `phase` stay plain strings so a newer server's values do not
- *  make the whole backup status unreadable. */
-export const backupProbeJobSchema = z.object({
-  id: z.string().uuid(),
-  status: z.string(),
-  phase: z.string(),
-  startedAt: z.number(),
-  finishedAt: z.number().nullable(),
-  snapshot: z.unknown(),
-  error: z.string().nullable(),
-});
-export type BackupProbeJob = z.infer<typeof backupProbeJobSchema>;
-
-/** `GET /api/backups/status` (docs/BACKUP_API.md). `reason` stays a plain string:
- *  older servers report reasons this app does not know. */
-export const backupStatusSchema = z.discriminatedUnion('available', [
-  z.object({ available: z.literal(false), reason: z.string() }),
-  z.object({
-    available: z.literal(true),
-    configured: z.boolean(),
-    paused: z.boolean().optional(),
-    intervalMs: z.number().optional(),
-    lastSuccess: z.number().nullable().optional(),
-    capturing: z.boolean().optional(),
-    keyGeneration: z.number().optional(),
-    lastProbe: z.object({ finishedAt: z.number(), sequence: z.number() }).nullable().optional(),
-    probe: backupProbeJobSchema.nullable().optional(),
-    alerts: z.array(z.string()),
-  }),
-]);
-export type BackupStatus = z.infer<typeof backupStatusSchema>;
-
-/** A newly generated recovery key, shown once. It becomes active on confirmation. */
-const backupKeyOfferSchema = z.object({
-  id: z.string().uuid(),
-  recoveryKey: z.string().min(1),
-  expiresAt: z.number(),
-});
-export type BackupKeyOffer = z.infer<typeof backupKeyOfferSchema>;
 
 /** The server's `GET /healthz` — a pre-auth liveness probe that also carries the
  *  server's own release version (baked into the deploy image, `-dev` on
@@ -1457,6 +1451,7 @@ export const healthSchema = z.object({
    *  recreates from the cached image, so the operator waits out a "rebuild"
    *  that rebuilt nothing. Absent → treat as unsupported and hide the action. */
   imageRebuildSupported: z.boolean().optional(),
+  sandboxServiceInterruptionSupported: z.boolean().optional(),
 });
 export type Health = z.infer<typeof healthSchema>;
 
@@ -2129,6 +2124,8 @@ export const sessionDirectorySchema = z.object({
     })
     .optional(),
   codeAvailable: z.boolean().optional(),
+  /** The session's checkout is missing; the client offers to restore it. */
+  codeWorkspaceUnavailable: z.boolean().optional(),
   workspaceKind: z.enum(['documents', 'code']).optional(),
   root: z.enum(['worktree', 'knowledge', 'shared', 'sources', 'documents', 'drafts']).optional(),
   path: z.string(),
@@ -2163,19 +2160,6 @@ export interface BranchSwitchRequest {
   preview?: string;
   onDirty?: 'block' | 'stash' | 'commit';
 }
-
-const sessionMovedSchema = z.object({
-  projectId: z.string(),
-  worktree: z.string(),
-  branch: z.string(),
-  contextMode: z.literal('history-handoff'),
-  transferred: z.array(z.string()),
-  alreadyPresent: z.array(z.string()),
-  skipped: z.array(z.string()),
-  retainedWorktree: z.string(),
-  retainedBranch: z.string(),
-});
-export type SessionMoved = z.infer<typeof sessionMovedSchema>;
 
 const sessionRenamedSchema = z.object({
   sessionId: z.string().min(1),
@@ -2334,11 +2318,10 @@ export interface ProjectProvisionOptions {
 }
 
 export interface RecreateProjectContainerOptions extends ProjectProvisionOptions {
-  /** Rebuild the project's derived devcontainer image rather than reusing the
-   *  cached tag. Only the explicit "Rebuild image" action sets this: the
-   *  ordinary update recreates the container on the image it already has, which
-   *  is what keeps it fast. */
+  /** Rebuild the derived devcontainer image instead of reusing its cached tag. */
   forceRebuild?: boolean;
+  interruptServices?: boolean;
+  cancelTurns?: boolean;
 }
 
 /** A non-2xx response from the server. `status` lets the UI map 404→not-found,
@@ -2413,6 +2396,9 @@ export interface VerityClientOptions {
    *  screen. NOT fired for the `/secret/*` on-ramp, whose 401 is a wrong-password
    *  signal the unlock UI handles inline. */
   onUnauthorized?: () => void;
+  /** Receives every request's outcome, so the app can show one connection state
+   *  instead of each screen rendering the same transport failure. */
+  connection?: ConnectionReporter;
 }
 
 function uploadBodyWithMimeType(data: Blob): Blob {
@@ -2764,6 +2750,26 @@ const schedulingRequestsSchema = z.object({ requests: z.array(schedulingRequestV
 export type SchedulingRequestView = z.infer<typeof schedulingRequestViewSchema>;
 
 export class VerityClient {
+  // Team and personal connection calls (people-api.ts); set before the fields below.
+  readonly people = peopleClient((path, init) => this.request(path, init));
+  readonly getProjectTeam = this.people.getProjectTeam;
+  readonly createProjectInvitation = this.people.createProjectInvitation;
+  readonly getProjectInvitation = this.people.getProjectInvitation;
+  readonly revokeProjectInvitation = this.people.revokeProjectInvitation;
+  readonly setProjectMemberRights = this.people.setProjectMemberRights;
+  readonly removeProjectMember = this.people.removeProjectMember;
+  readonly listProviderConnections = this.people.listProviderConnections;
+  readonly startProviderConnectionLogin = this.people.startProviderConnectionLogin;
+  readonly getProviderConnectionLogin = this.people.getProviderConnectionLogin;
+  readonly submitProviderConnectionLoginCode = this.people.submitProviderConnectionLoginCode;
+  readonly setOpenCodeConnection = this.people.setOpenCodeConnection;
+  readonly disconnectProviderConnection = this.people.disconnectProviderConnection;
+  readonly setOwnProjectDefaultModel = this.people.setOwnProjectDefaultModel;
+  readonly joinTeam = this.people.joinTeam;
+  private readonly workspaces = sessionWorkspaceClient((path, init) => this.request(path, init));
+  readonly moveSession = this.workspaces.moveSession;
+  readonly restoreSessionCodeWorkspace = this.workspaces.restoreSessionCodeWorkspace;
+
   async getMcpAppDocument(sessionId: string, appId: string, signal?: AbortSignal): Promise<string> {
     const response = await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/mcp-apps/${encodeURIComponent(appId)}`,
@@ -2822,6 +2828,17 @@ export class VerityClient {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/stop`,
       { method: 'POST' },
+    );
+  }
+  /** How far Verity's bot got into an online meeting of the session. */
+  async getOnlineMeetingStatus(sessionId: string, meetingId: string): Promise<OnlineMeetingStatus> {
+    return onlineMeetingStatusSchema.parse(
+      await (
+        await this.request(
+          `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/online/status`,
+          { method: 'GET' },
+        )
+      ).json(),
     );
   }
   /** Running meetings of readable sessions and, for administrators, unassigned ones. */
@@ -3067,6 +3084,14 @@ export class VerityClient {
     );
   }
 
+  /** End server discovery, retaining received content; does not stop a remote microphone. */
+  async finalizeLiveMeeting(sessionId: string, meetingId: string): Promise<void> {
+    await this.request(
+      `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(meetingId)}/finalize`,
+      { method: 'POST' },
+    );
+  }
+
   async putLiveMeetingNote(sessionId: string, note: LiveMeetingNote): Promise<void> {
     await this.request(
       `/sessions/${encodeURIComponent(sessionId)}/live-meetings/${encodeURIComponent(note.meetingId)}/notes/${encodeURIComponent(note.id)}`,
@@ -3217,6 +3242,7 @@ export class VerityClient {
   private readonly allowBackgroundUpload: boolean;
   private readonly getToken: () => string | null | undefined;
   private readonly onUnauthorized: (() => void) | undefined;
+  private readonly connection: ConnectionReporter | undefined;
 
   constructor(opts: VerityClientOptions) {
     this.recordingDigest = opts.recordingDigest ?? recordingDigest;
@@ -3230,6 +3256,7 @@ export class VerityClient {
     this.allowBackgroundUpload = opts.allowBackgroundUpload ?? true;
     this.getToken = opts.getToken ?? ((): undefined => undefined);
     this.onUnauthorized = opts.onUnauthorized;
+    this.connection = opts.connection;
   }
 
   private async knowledgeRequest(path: string, method = 'GET', body?: unknown): Promise<unknown> {
@@ -5831,16 +5858,11 @@ export class VerityClient {
     id: string,
     opts: RecreateProjectContainerOptions = {},
   ): Promise<ProjectRecord> {
-    // Send only the flags that are set, and no body at all when neither is, so
-    // the no-flag request stays byte-identical to what it sent before
-    // `forceRebuild` existed. Note this is NOT a compatibility guard for the
-    // flag itself: the server's body schema is non-strict, so an older server
-    // strips an unknown `forceRebuild` and recreates from the cached image
-    // without complaining. `healthSchema.imageRebuildSupported` is what gates
-    // the action — see there.
-    const body: { confirmWarnings?: boolean; forceRebuild?: boolean } = {};
+    const body: RecreateProjectContainerOptions = {};
     if (opts.confirmWarnings === true) body.confirmWarnings = true;
     if (opts.forceRebuild === true) body.forceRebuild = true;
+    if (opts.interruptServices === true) body.interruptServices = true;
+    if (opts.cancelTurns === true) body.cancelTurns = true;
     const res = await this.request(
       `/verity-control/projects/${encodeURIComponent(id)}/recreate-container`,
       {
@@ -6237,20 +6259,6 @@ export class VerityClient {
       });
     }
     return parsed.data;
-  }
-
-  /** Rename a session (set its display name), or clear it by passing `null`.
-   * Returns the session id + the stored (trimmed) name the server echoes back. */
-  async moveSession(
-    id: string,
-    body: { project: string; operationId: string; onCommits?: 'block' | 'leave' },
-  ): Promise<SessionMoved> {
-    const response = await this.request(`/sessions/${encodeURIComponent(id)}/project`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    return sessionMovedSchema.parse(await response.json());
   }
 
   /** End planning mode: `implement` starts the implementation of the latest plan as
@@ -7251,6 +7259,13 @@ export class VerityClient {
     } catch (error) {
       finishRuntimeRequest(true);
       markSwitchTransportRequest(diagnosticRequestId, 'fetch-error');
+      // Only a transport failure reaches here; one the caller cancelled says
+      // nothing about the server and is not reported.
+      if (this.connection !== undefined && !isAbortError(error))
+        this.connection.reportFailure(
+          'unreachable',
+          error instanceof Error ? error.message : String(error),
+        );
       throw error;
     }
     markSessionSwitch(timing, `${timingKind}-fetch-return`, res.status);
@@ -7264,12 +7279,20 @@ export class VerityClient {
       // on-ramp is always exempt (its 401 is a wrong-password shown inline).
       if (res.status === 401 && sentToken && !path.startsWith('/secret/')) this.onUnauthorized?.();
       const payload = await errorPayload(res);
+      // The Gateway answers every request with this while the server updates;
+      // any other answer, error or not, proves the server is there.
+      if (res.status === 503 && payload.message === SERVER_MAINTENANCE_MESSAGE)
+        this.connection?.reportFailure('maintenance', payload.message);
+      // 502/504 may be the server about an upstream service or a relay in front
+      // of a server that is away: neither proof of the server nor of an outage.
+      else if (res.status !== 502 && res.status !== 504) this.connection?.reportSuccess();
       throw new VerityApiError(res.status, payload.message, {
         requiresConfirmation: payload.requiresConfirmation,
         warnings: payload.warnings,
         code: payload.code,
       });
     }
+    this.connection?.reportSuccess();
     return res;
   }
 }

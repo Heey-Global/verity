@@ -274,18 +274,22 @@ title; a log list keeps them dense and scannable.
   the Repositories row) is drawn neutral; its spoken label keeps the intent.
 - **Dot and word** — rows in pure status lists: an 8 px dot in its tone (`textFaint` when
   neutral) followed by a muted word. Example: `● Connected`.
-- **Count** (`CountBadge`) — how many items wait for the person: the number in `Label` on
-  a 14 % `attention` tint, the same drawing as the Home tab's count. Its spoken label names
-  what is counted.
+- **Home tab count** — how many items wait for the person: the number in `Label` on
+  a 14 % `attention` tint. Its spoken label names what is counted.
 - Bordered pills are retired. A state is never shown by color alone — a word is always
   present.
-- **Project cards** reuse the session rows' marks (§ 5.2): the initial's top corner
-  carries a pulsing `signature` mark while any session works, else an `action` mark when
-  an idle session has something unread; a project waiting for the person shows its count
-  before the chevron instead of that `action` mark. A project's own work in progress
-  (updating, rebuilding) is the pulsing `signature` dot and its word rather than the
-  `transient` spinner, so all work in progress reads the same. The subtitle repeats every
-  signal in words.
+- **Project cards** follow the session rows (§ 5.2): the initial's tile is the project
+  itself and its top corner is the agents. The tile has three states only — `action`
+  tint while the project runs, the neutral tile with a `textFaint` initial while it does
+  not (paused, asleep, starting) and `attention` tint on an error. Work Verity does on a
+  running sandbox in the background (an update, a rebuild) leaves the tile alone. The
+  corner carries the most urgent mark of the project's sessions with the rows' priority
+  and drawing: `attention` "?" while something waits for the person, the pulsing
+  `signature` mark while a session works, `action` when an idle session has something
+  unread. Everything else is said in the subtitle: "N waiting for you" first in
+  `attention`, then what runs and what is new, then a short state note ("Starting…",
+  "asleep", "Runs as root", "Needs repair · Container stopped"; `attention` when there
+  is something to do). Nothing sits before the chevron — no count, no tag.
 - Mapping from the status intents in [§ 8](#8-status-intents):
 
   | Intent       | Tag                                                      | Dot and word         |
@@ -384,26 +388,25 @@ Meeting and Premium; it does not introduce a separate palette or set of effects.
 
 #### Home presence
 
-- **Identity:** reuse the Verity V mark and `signature` treatment from Meeting, with
-  the Display headline and restrained content-screen eyebrows used by Premium.
-  A compact header is sufficient; a halo is optional, dark-theme only.
+- **Entry:** Home has no Verity header and no field of its own. The floating V is the
+  one way to Verity on every layout, so Home starts with the work sections. A quiet
+  "Shared knowledge" row ends the list: the reference pages every project reads,
+  opened directly. Personal Instructions and Memory are settings and stay there.
 - **Briefing pane:** when a briefing needs its own panel, reuse the meeting pane's
   `surface`, 2 px `signature`-to-`action` edge and `signature` glow. At most one such
   surface appears on Home. A compact header does not require a surrounding pane.
   In light theme use a plain border and no glow or gradient.
-- **Capture:** one component, `CaptureField`, for Home's "Tell Verity" (which opens her
-  panel) and the panel's composer. Match the session chat composer: full-width text
+- **Capture:** one component, `CaptureField`, the composer of her panel. Match the session chat composer: full-width text
   above a row of circular microphone and send controls. Idle controls use `surface`
   with a border and muted icons; enabled send uses `action` with an `onAction` arrow.
   While dictating, the microphone uses `action` with an `onAction` check to finish
-  dictation and keep the text. The Home doorway retains its inline layout with the
-  same circular microphone. Signature identifies Verity. Listening is said once,
+  dictation and keep the text. Signature identifies Verity. Listening is said once,
   in the field. The meeting's model selector is not part of this Home pattern.
-- **Mark:** `VerityMark` is her V on its `signature` halo — with glow for her identity on
-  Home and her page, flat on the floating V, in her panel's header and before her
+- **Mark:** `VerityMark` is her V on its `signature` halo — with glow where she appears
+  as herself, flat on the floating V, in her panel's header and before her
   answers there.
 - **Floating V:** a whole circle on `surface`, a little in from the screen edge, never
-  half outside it. On a phone's Home it steps back, since Home has her header and field.
+  half outside it. It stays on Home too, where it is the only way to her.
 - **Hand-over:** her flat V in the square icon button (40, `control` corners, the default
   border) at the end of a task or issue row hands the item to her; a tap starts the work
   at once, with no confirmation. This and the floating V are the only places her
@@ -443,6 +446,29 @@ row never styles its own.
 - **Message status:** a message's own `Sending…` or `Not sent` uses the same
   indicator and `Subtitle` word under the bubble.
 - No bubble, card or `signature`: a system notice is not Verity speaking.
+
+### 5.10 Connection status
+
+Whether the server can be reached is said once for the whole app, by
+`ConnectionStatusBar` (`components/ConnectionStatusBar.tsx`) under the header of
+every screen. Screens do not repeat a server update or a lost route as their own
+error; they hide such errors while the bar shows them and reload by themselves
+when the server answers again.
+
+- **Frame:** the session bar (`SessionBar`): `surfaceAlt` with the default
+  border, inset from the screen edge. No tinted band and no colored border; color
+  is only on the status mark.
+- **Server is updating** (`transient`): a muted spinner in place of the dot,
+  `Reconnecting automatically · 1:24`. Nothing to tap but the bar itself.
+- **Can't reach your server** (`needsSetup`): the attention dot, `Retrying in
+  8 s`, and a compact secondary `Try now` (`rotate-cw`).
+- **Connected** (`ready`): the success dot for a moment after either state ends,
+  then the bar disappears.
+- **Details:** tapping the bar while the server is away opens a sheet named
+  `Connection`: the server and when it was last reached, each failed route in
+  words with a status dot, the next attempt, and the raw output last inside a
+  `Disclosure` (`Technical details`) with `Copy`. The sheet's single primary
+  button is `Try now`. Raw transport output never appears outside it.
 
 ## 6. Patterns
 

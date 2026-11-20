@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Only the disposable KVM guest receives experimental units or runtime configuration.
-set -euo pipefail
+set -euxo pipefail
 [[ ${PROJECT_EGRESS_DISPOSABLE:-} == yes && $(id -u) == 0 ]]
 [[ $(cat /var/lib/cloud/data/instance-id) == verity-boot-probe ]]
 [[ $(cat /proc/1/comm) == systemd ]]

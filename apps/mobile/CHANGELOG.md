@@ -1,5 +1,75 @@
 # Changelog
 
+## [1.94.0](https://github.com/Heey-Global/verity/compare/mobile-v1.93.0...mobile-v1.94.0) (2026-11-16)
+
+
+### Bug Fixes
+
+* **mobile:** load a speech model with fewer compute units after it crashed the app ([#2597](https://github.com/Heey-Global/verity/issues/2597)) ([1078afd](https://github.com/Heey-Global/verity/commit/1078afd137955733f6409f16231161107d2844ed))
+* **sandbox:** recover services across nightly and manual updates ([#2623](https://github.com/Heey-Global/verity/issues/2623)) ([1638a2e](https://github.com/Heey-Global/verity/commit/1638a2e2a41b86ee49d753af98bd9d5daff43e8a))
+* **server:** restore missing code workspaces before session turns ([#2619](https://github.com/Heey-Global/verity/issues/2619)) ([8f7d296](https://github.com/Heey-Global/verity/commit/8f7d29614f18918304550becbaecd89904ec55b2))
+* **team:** persist app access before completing project joins ([#2629](https://github.com/Heey-Global/verity/issues/2629)) ([5f85785](https://github.com/Heey-Global/verity/commit/5f8578554f28cc1d04442189c7e07b9b4a4487b1))
+
+## [1.93.0](https://github.com/Heey-Global/verity/compare/mobile-v1.92.0...mobile-v1.93.0) (2026-11-15)
+
+
+### Features
+
+* **mobile:** show server updates and outages once, in a central connection bar ([#2562](https://github.com/Heey-Global/verity/issues/2562)) ([7c1dc2b](https://github.com/Heey-Global/verity/commit/7c1dc2bf60b0d7bba178a50a023481182c017473))
+* project team invitations and per-person execution ([#2579](https://github.com/Heey-Global/verity/issues/2579)) ([ef49ce4](https://github.com/Heey-Global/verity/commit/ef49ce466a6caeb2309b81cc6f6e03ac1a9c539f))
+
+
+### Bug Fixes
+
+* **mobile:** end a live meeting on the server when its recorder cannot stop it ([#2596](https://github.com/Heey-Global/verity/issues/2596)) ([785ce7d](https://github.com/Heey-Global/verity/commit/785ce7ddc89d24734714f6a11a6925b9f2da1cdd))
+* **mobile:** end live meetings whose recording device is gone ([#2592](https://github.com/Heey-Global/verity/issues/2592)) ([daf328f](https://github.com/Heey-Global/verity/commit/daf328f541c0436707593c20fddb482a70263356))
+
+## [1.92.0](https://github.com/Heey-Global/verity/compare/mobile-v1.91.0...mobile-v1.92.0) (2026-11-13)
+
+
+### Features
+
+* **meetings:** show online join progress and fix stale meeting state ([#2554](https://github.com/Heey-Global/verity/issues/2554)) ([539d90d](https://github.com/Heey-Global/verity/commit/539d90d2112effb8f8aa5e43e06509230ca48f1a))
+
+
+### Bug Fixes
+
+* **mobile:** draw Home and project work lists with one set of mechanics ([#2553](https://github.com/Heey-Global/verity/issues/2553)) ([c756445](https://github.com/Heey-Global/verity/commit/c7564450d414438e599f4bec52ad6ae1c00e4439))
+* **mobile:** keep project reorder attached across tab switches ([#2540](https://github.com/Heey-Global/verity/issues/2540)) ([7f11985](https://github.com/Heey-Global/verity/commit/7f119853e500302bb2b3bed8c6a640426d0b61b6))
+* **mobile:** steady attach menu Google section and fully selected Needs you entries ([#2551](https://github.com/Heey-Global/verity/issues/2551)) ([dce1fc4](https://github.com/Heey-Global/verity/commit/dce1fc44e8694b2f601c9f1ff0d648f20182ea0d))
+
+## [1.91.0](https://github.com/Heey-Global/verity/compare/mobile-v1.90.0...mobile-v1.91.0) (2026-11-12)
+
+
+### Features
+
+* **mobile:** unify project card states and agent marks ([#2534](https://github.com/Heey-Global/verity/issues/2534)) ([1e9ee51](https://github.com/Heey-Global/verity/commit/1e9ee51c65d48ea344b5d351bd98e112e77cfebf))
+
+
+### Bug Fixes
+
+* **meetings:** recover stalled finalization and serialize model loading ([#2535](https://github.com/Heey-Global/verity/issues/2535)) ([e657b61](https://github.com/Heey-Global/verity/commit/e657b61a4ec4c4a53df84673c86b06604e43460a))
+* **mobile:** reorder project cards with a long press ([#2531](https://github.com/Heey-Global/verity/issues/2531)) ([f9977c9](https://github.com/Heey-Global/verity/commit/f9977c903fdab07f975d0082fd6395ff93d18a7a))
+* **sandbox:** resume automatic repairs without interrupting active work ([#2536](https://github.com/Heey-Global/verity/issues/2536)) ([1711810](https://github.com/Heey-Global/verity/commit/171181013a97c4b3d410906e698bc33f5fa6c90e))
+
+## [1.90.0](https://github.com/Heey-Global/verity/compare/mobile-v1.89.0...mobile-v1.90.0) (2026-11-11)
+
+
+### Features
+
+* **claude:** replace Fable 5.1 with Fable 5.2 ([#2514](https://github.com/Heey-Global/verity/issues/2514)) ([3a38c5c](https://github.com/Heey-Global/verity/commit/3a38c5c0b6b9287221095c50d2bf2de916c4a0eb))
+* **projects:** add independent names and inline profile editing ([#2462](https://github.com/Heey-Global/verity/issues/2462)) ([7b495e9](https://github.com/Heey-Global/verity/commit/7b495e944a8dbaf6c46b6db89a3623debc7e7b73))
+
+
+### Bug Fixes
+
+* **mobile:** detect one-way upstream stalls and recheck remembered direct routes ([#2521](https://github.com/Heey-Global/verity/issues/2521)) ([1485808](https://github.com/Heey-Global/verity/commit/1485808dcfea58e87570363b915d5636e97d56dc))
+* **mobile:** keep session categories stable across Home and projects ([#2487](https://github.com/Heey-Global/verity/issues/2487)) ([792fbe3](https://github.com/Heey-Global/verity/commit/792fbe3ca0d6c9325e575d2d3c591f3b79992733))
+* **mobile:** prioritize working status over unread indicators ([#2486](https://github.com/Heey-Global/verity/issues/2486)) ([e112f8b](https://github.com/Heey-Global/verity/commit/e112f8b63b40da69140877a0d4a26c3f050b99a9))
+* **mobile:** restore explicit project sorting mode ([#2518](https://github.com/Heey-Global/verity/issues/2518)) ([150f154](https://github.com/Heey-Global/verity/commit/150f15470a831c70a7883079846c61b9bda3a134))
+* **mobile:** retain selected recording across reconnects ([#2474](https://github.com/Heey-Global/verity/issues/2474)) ([6962259](https://github.com/Heey-Global/verity/commit/6962259e7932c616dc98baf19d373d84a066e772))
+* **server:** report sandbox update attempts truthfully and back off failed recreates ([#2498](https://github.com/Heey-Global/verity/issues/2498)) ([c4c2f9c](https://github.com/Heey-Global/verity/commit/c4c2f9cd95cf45a5a903661ae576eb6fb0b9e4b0))
+
 ## [1.89.0](https://github.com/Heey-Global/verity/compare/mobile-v1.88.0...mobile-v1.89.0) (2026-11-09)
 
 

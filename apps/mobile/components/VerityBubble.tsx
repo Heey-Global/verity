@@ -31,7 +31,6 @@ import { startWatchInbox } from '../lib/watchCapture';
 import { TasksPanel } from './TasksPanel';
 import { tint } from './ui/tint';
 import { VerityMark } from './VerityMark';
-import { useHomeShowsVerity } from '../lib/homeVerity';
 import { useTaskCaptureGesture } from '../hooks/useTaskCaptureGesture';
 
 /** Bubble diameter: a whole circle, a full touch target on its own. */
@@ -64,7 +63,6 @@ export function VerityBubble() {
   const pathname = usePathname();
   const params = useGlobalSearchParams<{ id?: string; selected?: string }>();
   const preferences = useTaskPreferences();
-  const homeShowsVerity = useHomeShowsVerity();
   const { tasks } = useTasks();
   const { projects, sessions, projectsScope } = useTaskContext();
   const [keyboard, setKeyboard] = useState(Keyboard.isVisible());
@@ -248,9 +246,7 @@ export function VerityBubble() {
     !tasksOpen &&
     !pathname.startsWith('/onboarding') &&
     !pathname.startsWith('/search') &&
-    !pathname.includes('unlock-device') &&
-    // Home has her header and "Tell Verity"; a second V would sit on its cards.
-    !(homeShowsVerity && pathname === '/');
+    !pathname.includes('unlock-device');
   return (
     <>
       {visible ? (

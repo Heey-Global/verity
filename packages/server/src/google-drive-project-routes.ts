@@ -1,3 +1,5 @@
+import './fastify-augmentation.js';
+import { viewerId } from './view-state-routes.js';
 import { googleDriveRequestSchema } from './google-drive-request.js';
 import { chmod } from 'node:fs/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -56,9 +58,11 @@ interface ProjectGoogleDriveFolder {
 }
 
 export interface ProjectGoogleDriveRouteDeps {
+  /** A folder linked with an account of `userId`; another person's link is absent. */
   getLinkedFolder(
     projectId: string,
     folderId: string,
+    userId: string | undefined,
   ): Promise<ProjectGoogleDriveFolder | undefined>;
   googleAccessToken(accountId?: string): Promise<string | undefined>;
   googleAccountIdentity?(accountId?: string): Promise<string | undefined>;
@@ -131,18 +135,21 @@ export function registerProjectGoogleDriveRoutes(
     return reply.send(error);
   });
 
-  const context = async (projectId: string, folderId: string) => {
-    const folder = await deps.getLinkedFolder(projectId, folderId);
+  // Browsing a project folder uses the requesting person's own link and account,
+  // never the credentials of whoever else linked the same folder.
+  const context = async (projectId: string, folderId: string, userId: string | undefined) => {
+    const folder = await deps.getLinkedFolder(projectId, folderId, userId);
     if (!folder) return undefined;
     const account = await deps.googleAccountIdentity?.(folder.accountId);
     const accessToken = await deps.googleAccessToken(folder.accountId);
-    return accessToken ? { folder, accessToken, account } : undefined;
+    return accessToken ? { folder, accessToken, account, userId } : undefined;
   };
 
   const recheckWrite = async (value: NonNullable<Awaited<ReturnType<typeof context>>>) => {
     const current = await context(
       value.folder.projectId,
       value.folder.linkId ?? value.folder.folderId,
+      value.userId,
     );
     if (
       !current ||
@@ -160,7 +167,7 @@ export function registerProjectGoogleDriveRoutes(
   app.get('/projects/:id/google-drive/folders/:folderId/files', async (request, reply) => {
     const { id, folderId } = params.parse(request.params);
     const query = listQuery.parse(request.query);
-    const value = await context(id, folderId);
+    const value = await context(id, folderId, viewerId(request));
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     const parentId = query.parentId ?? value.folder.folderId;
     try {
@@ -179,7 +186,7 @@ export function registerProjectGoogleDriveRoutes(
 
   app.get('/projects/:id/google-drive/folders/:folderId/files/:fileId', async (request, reply) => {
     const { id, folderId, fileId } = fileParams.parse(request.params);
-    const value = await context(id, folderId);
+    const value = await context(id, folderId, viewerId(request));
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     return {
       file: await assertDriveFileInLinkedFolder(
@@ -195,7 +202,7 @@ export function registerProjectGoogleDriveRoutes(
   app.post('/projects/:id/google-drive/folders/:folderId/files/create', async (request, reply) => {
     const { id, folderId } = params.parse(request.params);
     const body = createBody.parse(request.body);
-    const value = await context(id, folderId);
+    const value = await context(id, folderId, viewerId(request));
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     if (value.folder.accessMode === 'read-only')
       return reply.code(403).send({ error: 'Google Drive folder is read-only' });
@@ -214,7 +221,7 @@ export function registerProjectGoogleDriveRoutes(
   app.post('/projects/:id/google-drive/folders/:folderId/files/upload', async (request, reply) => {
     const { id, folderId } = params.parse(request.params);
     const query = uploadQuery.parse(request.query);
-    const value = await context(id, folderId);
+    const value = await context(id, folderId, viewerId(request));
     if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
     if (value.folder.accessMode === 'read-only')
       return reply.code(403).send({ error: 'Google Drive folder is read-only' });
@@ -241,7 +248,7 @@ export function registerProjectGoogleDriveRoutes(
     async (request, reply) => {
       const { id, folderId, fileId } = fileParams.parse(request.params);
       const body = updateBody.parse(request.body);
-      const value = await context(id, folderId);
+      const value = await context(id, folderId, viewerId(request));
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       if (value.folder.accessMode === 'read-only')
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
@@ -299,7 +306,7 @@ export function registerProjectGoogleDriveRoutes(
           confirmed: z.literal(true),
         })
         .parse(request.body);
-      const value = await context(id, folderId);
+      const value = await context(id, folderId, viewerId(request));
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       if (value.folder.accessMode === 'read-only')
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
@@ -341,7 +348,7 @@ export function registerProjectGoogleDriveRoutes(
     '/projects/:id/google-drive/folders/:folderId/files/:fileId',
     async (request, reply) => {
       const { id, folderId, fileId } = fileParams.parse(request.params);
-      const value = await context(id, folderId);
+      const value = await context(id, folderId, viewerId(request));
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       if (value.folder.accessMode === 'read-only')
         return reply.code(403).send({ error: 'Google Drive folder is read-only' });
@@ -368,7 +375,7 @@ export function registerProjectGoogleDriveRoutes(
     '/projects/:id/google-drive/folders/:folderId/files/:fileId/download',
     async (request, reply) => {
       const { id, folderId, fileId } = fileParams.parse(request.params);
-      const value = await context(id, folderId);
+      const value = await context(id, folderId, viewerId(request));
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       const file = await assertDriveFileInLinkedFolder(
         value.accessToken,
@@ -391,7 +398,7 @@ export function registerProjectGoogleDriveRoutes(
       const { id, folderId, fileId } = fileParams.parse(request.params);
       if (!deps.dataRoot)
         return reply.code(503).send({ error: 'Knowledge storage is unavailable' });
-      const value = await context(id, folderId);
+      const value = await context(id, folderId, viewerId(request));
       if (!value) return reply.code(404).send({ error: 'linked Google Drive folder not found' });
       const file = await assertDriveFileInLinkedFolder(
         value.accessToken,

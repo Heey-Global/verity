@@ -39,8 +39,20 @@ const INTERNAL_GENERATION_SIGNAL = Symbol('verityInternalGenerationSignal');
 
 export interface InternalConnectionIdentity {
   readonly projectId: string;
+  /** The person whose sandbox the socket belongs to (ADR 0023 §4). Every route
+   *  acting for a person takes it from here, never from the request. */
+  readonly userId: string;
+  /** The project's original sandbox, which also serves work without a person. */
+  readonly projectDefault: boolean;
   readonly containerGeneration: string;
 }
+
+/** A container generation of one sandbox. Generations are fresh per container, so
+ *  this names a sandbox's relay, sockets and egress without naming its person. */
+export type SandboxGenerationRef = Pick<
+  InternalConnectionIdentity,
+  'projectId' | 'containerGeneration'
+>;
 
 type InternalSocketTag = true | InternalConnectionIdentity;
 type Taggable = Record<symbol, InternalSocketTag>;

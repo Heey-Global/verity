@@ -90,6 +90,8 @@ export function schedulingHasStandingAuthorization(request: unknown): boolean {
 interface Input {
   projectId: string;
   sessionId: string;
+  /** The calling turn; its initiator's Google accounts are the only ones used. */
+  turnId?: string | undefined;
   request: unknown;
 }
 
@@ -99,9 +101,17 @@ interface InvokeInput extends Input {
 }
 
 export function createSchedulingTool(deps: {
-  store: Pick<EventStore, 'getSession' | 'getGoogleServiceCredentials' | 'scheduling'>;
+  store: Pick<
+    EventStore,
+    'getSession' | 'getGoogleServiceCredentials' | 'runningTurnInitiator' | 'scheduling'
+  >;
   service: () => SchedulingService;
 }) {
+  const turnUser = async (input: Input): Promise<string | undefined> =>
+    input.turnId === undefined
+      ? undefined
+      : (await deps.store.runningTurnInitiator(input.sessionId, input.turnId))?.userId;
+
   const authorize = async (input: Input) => {
     const request = schedulingRequestSchema.parse(input.request);
     const session = await deps.store.getSession(input.sessionId);
@@ -109,9 +119,15 @@ export function createSchedulingTool(deps: {
       throw new ControlPlaneSessionAuthorityError(
         'Scheduling is restricted to the calling session',
       );
-    const calendar = await resolveGoogleServiceCredential(deps.store, input.sessionId, 'calendar');
+    const userId = await turnUser(input);
+    const calendar = await resolveGoogleServiceCredential(
+      deps.store,
+      input.sessionId,
+      'calendar',
+      userId,
+    );
     if (request.action === 'prepare' || request.action === 'send')
-      await resolveGoogleServiceCredential(deps.store, input.sessionId, 'gmail');
+      await resolveGoogleServiceCredential(deps.store, input.sessionId, 'gmail', userId);
     // Refuse before any card: a card for a request that does not exist here could only show
     // the agent's own arguments.
     if (request.action === 'send' || request.action === 'revoke') {
@@ -157,6 +173,7 @@ export function createSchedulingTool(deps: {
       case 'prepare': {
         const prepared = await service.prepare({
           sessionId: input.sessionId,
+          userId: await turnUser(input),
           projectId: input.projectId,
           title: request.title,
           durationMinutes: request.durationMinutes,

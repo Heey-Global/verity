@@ -6,6 +6,7 @@ import { createPostgresDb, migrateToLatest } from './db.js';
 import { GoogleAccountStore } from './google-accounts.js';
 import { EventStore } from './store.js';
 
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 const connectionString = process.env.VERITY_TEST_POSTGRES_URL;
 
 describe.skipIf(connectionString === undefined)('Google image cleanup account removal race', () => {
@@ -31,6 +32,7 @@ describe.skipIf(connectionString === undefined)('Google image cleanup account re
 
   it('retains credentials when cleanup insertion races account removal', async () => {
     const account = await accounts.save({
+      ownerUserId: ADMIN,
       email: `${sessionId}@example.test`,
       clientId: 'client',
       refreshToken: 'cleanup-secret',

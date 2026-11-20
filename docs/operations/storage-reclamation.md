@@ -2,10 +2,17 @@
 
 Verity runs its existing Docker collector at startup, daily, and under disk
 pressure. Before image collection it now reconciles session storage and retired
-containers. Capacity admission requests one coalesced reclamation pass before
+containers. Capacity admission requests one coalesced build-capacity pass before
 retrying once; maintenance and unresolved build reservations still fail closed.
-An admission-triggered pass has a two-minute wait bound; timing out does not
-cancel a deletion already in progress or admit the waiting build.
+That pass runs only the steps that free build capacity, image removal and build
+cache pruning, and does not wait for a running maintenance pass: the
+maintenance steps talk to Sandboxes and helper containers and can take longer
+than a waiting build may wait. An admission-triggered pass has a two-minute
+wait bound; timing out does not cancel a deletion already in progress or admit
+the waiting build. A build still refused after the pass reports what it
+removed and how many bytes of images stopped containers keep, because a retry
+alone cannot free those. Each completed pass logs its scope, duration and
+per-phase durations (`docker gc pass complete`).
 
 ## Dependencies
 
@@ -27,7 +34,128 @@ protected. A modified or unknown package protects the entire private installatio
 preserving dependency resolution through locally patched transitive packages.
 Matching relative links to different source trees also protect an installation;
 matching link text alone is insufficient evidence. Nested private installations remain protected because their base-checkout
-copies are outside Node's ancestor lookup. No package-manager migration or writable hardlink sharing is required.
+copies are outside Node's ancestor lookup. No package-manager migration is required, and writable files are never shared.
+
+Activation shares the central inventory's files instead of copying them. Each
+package file in the session's `node_modules`, and in workspace `node_modules`
+trees, is a hard link to the inventory's file, which is made read-only first.
+Directories, symbolic links and npm's top-level receipts such as
+`.package-lock.json` stay the session's own, so tools can still create caches
+inside `node_modules`, and module resolution is unchanged. A session therefore
+adds its directories, not another copy of every package, and keeps working when
+the inventory is later retired. Writing a shared file fails with a permission
+error instead of changing every session at once; run
+`verity dependencies install --private` to give the session its own writable
+copies, for example before patching a package. If a shared file was already
+made writable, the next `install` in any session that shares it withdraws the
+inventory and fails once; running it again prepares a fresh inventory.
+Executable files stay private copies, because npm resets the mode of command
+targets whenever it links commands, and so do files in dot-directories directly
+under `node_modules`, such as `.prisma`, which generators rewrite in place. Where the filesystem refuses a
+link, activation copies that file and reports how many it copied. `install`
+checks for shared files that were made writable again (`status` does not, to
+stay fast): it withdraws the affected inventory so the next install prepares it
+afresh. The edit stays in the session that made it, or, when other sessions still
+share the file, in a preserved copy once that session installs again; another
+session that shared the edited file keeps it until its own next `install` finds
+it and activates the fresh inventory. An inventory that is already edited is never linked into
+another session. The protection rests on permission bits: a process running as
+root copies files instead of sharing them, and a file deliberately made writable,
+edited and made read-only again is not detected.
+
+Sessions activated before sharing hold private copies. While such a session is
+in use, collection replaces each file that is byte-identical, with the same
+execute bits, to the sealed inventory named by the session's receipt by a link
+to it, and reports the bytes as `sharedDependencyBytes`. Edited, unknown and
+already shared files, executable files, dot-directories and npm's receipts are
+left as they are, as are sessions whose `node_modules` belongs to root. The conversion never runs with more rights
+than the session has: a Server running as root performs it in a worker process
+under the owner of the session's `node_modules`, and skips it when it can do
+neither. A file that changes before its replacement is kept. A tree converted
+this way, or activated before this release, is no longer recorded as unchanged,
+so the next dependency change keeps it once as a preserved copy, which
+collection then removes like any other.
+
+Activating a new dependency version moves the session's previous installation
+to `verity-dependencies-preserved/<id>` in the worktree's Git directory, as
+recovery for local package edits. Collection removes such a copy only when its
+installation receipt names a central installation that is still present and
+every file is byte-identical to it. Links in the copy count as matching wherever
+the central installation has a link, because activation rewrites workspace
+links and a removed link deletes nothing it points to. Copies without a
+receipt, with any differing file, or whose central installation is gone are
+reported as blockers and kept for three days after collection first sees them,
+recorded in `verity-dependencies-preserved.observed.json` beside them. After
+that they are removed even while the session is still in use: the central store
+keeps only a few identities, so such a copy can never be compared again, and a
+session that is never idle for three days would otherwise keep every copy it
+ever made. Recover a local package edit from a copy within that window. A
+corrupt, symlinked or future-dated record restarts the window; it never
+shortens it. Dry runs neither remove copies nor write the record, so they
+never report a copy as expired.
+
+A session without a turn for three days gives up its private top-level
+`node_modules` and every preserved copy, whatever their contents: both are
+regenerated from the session's own lockfile with `verity-dependencies install`,
+and edits made directly inside them are not kept. Tracked files under
+`node_modules` still keep it. Workspace links are restored afterwards, so
+workspace imports keep resolving to the session's sources until it installs
+again. Source files stay; retiring a whole worktree still needs a week of
+idleness and a closed or merged pull request.
+
+Each session pass logs `session storage pass complete` with its duration,
+whether it reached every project, what it removed, its most frequent blocker
+reasons and its session coverage: how many sessions existed, how many it
+reached, and how many of those it skipped because a dev server, preview, spawn
+or teardown held them, because they have no recorded activity, or because a
+turn or move was running. A pass stopped by its one-minute budget continues
+after the session it was working on, and starts again on its own 15 minutes
+later, until one pass reaches every project; it no longer waits for the next
+daily or low-disk maintenance pass. A failure on one preserved copy no longer
+keeps the other copies or an idle session's private installation in place. A dev
+server or preview holds back only its own session's pass; a project-level
+public share and the orphan pass still hold the project.
+
+## Data volume breakdown
+
+The maintenance pass also measures where the Server's data volume goes. It never
+deletes anything. Each run walks the volume with `lstat` for at most 20 seconds
+and 250,000 entries, then resumes where it stopped: in the same maintenance pass
+the next time, or on its own 15 minutes later while the round is unfinished. A
+breakdown is published only when a whole round has finished; until then the
+previous one stays in place with its own timestamp, and an unfinished round is
+never reported as zero. Runs are sequential and stop at shutdown.
+
+Entries are grouped by their path on the volume:
+
+- **Regenerable:** `node_modules` in project and session checkouts (including
+  nested ones), preserved dependency copies, the central dependency store,
+  runner package caches and `cache/` in session homes.
+- **Protected:** session and project sources, Git data, session homes outside
+  `cache/`, turn data, other runner state, knowledge, document archives, backup
+  state and build staging.
+- **Unattributed:** any other top-level entry, listed by name with its size
+  (the ten largest).
+
+The walk counts allocated blocks, counts a file with several hard links once
+and reports the further names as `sharedBytes`, mostly what sessions sharing
+their dependency files would otherwise hold as copies. It never follows symbolic
+links and does not enter another filesystem mounted inside the volume. A root that disappears or is replaced during a round starts
+the round over. An entry or directory the Server cannot read, such as a
+sandbox-private home, is counted as unreadable and its contents are left out;
+the breakdown and the capacity sentence state how many. After 500,000 files with
+several hard links the walk stops remembering them and marks the breakdown
+approximate. The totals are estimates of a tree that changes while it is
+measured. They cover only the data volume: Docker images, containerd, native
+BuildKit and host paths such as Egress staging or host CI runners are not part
+of it. Runtime diagnostics expose the latest breakdown and the progress of the
+current round as `storageReclamation.dataVolume`.
+
+A refused build and the low-disk warning add one sentence with the regenerable,
+protected and unattributed bytes and the time of the breakdown. When the
+regenerable bytes are smaller than what the build is missing, the refusal says
+that reclaiming them cannot cover the shortfall and names the largest category
+that is not regenerable. Without a finished breakdown it says so instead.
 
 ## Runner package caches and retained execution data
 
@@ -90,7 +218,8 @@ collection. Removal never forces a running container to stop.
 
 The helper imports and calls the broker's offline operation in one Node process;
 it does not keep a second Node runtime alive just to launch maintenance. Its
-256 MiB memory/swap ceiling and external 25-second timeout remain unchanged.
+512 MiB memory/swap ceiling and 128-pid limit bound resource use; the external
+25-second timeout remains unchanged.
 Failures back off independently per project, from five minutes up to one hour;
 success resets that delay. Pre-helper runtime-state refusals remain immediately
 retryable. Retry state is in memory and resets when the Server restarts.
@@ -139,6 +268,35 @@ reclaimable or reclaimed bytes. Startup ENOMEM still requires evidence from the
 same runtime and configured container/host limits; neither that message nor code
 publication establishes a fix or host OOM. Live pulls, restarts, reconciliation
 and cleanup require separate authorization.
+
+### Helper resource budget
+
+Maintenance helpers run under the project runtime (gVisor). Docker counts that
+runtime's own host threads against the container's pids limit and charges its
+memory to the container's cgroup. Helpers limited to 32 pids and 256 MiB failed
+before Node started, with `[FATAL tini (2)] exec timeout failed: Cannot allocate
+memory` (classified as `resource-unavailable`), and reclaimed nothing. Helpers
+now run with 128 pids and 512 MiB, which matches other long-lived helper
+containers and stays well below a project sandbox. Failure reports include the
+bounds in force. If `resource-unavailable` recurs under these bounds, gather
+evidence from the same runtime and host before raising them again.
+
+### Build storage estimates
+
+Build admission reserves an estimate per attempt: by default 24 GiB, or a value
+derived from the base image size. A free-space reserve is kept on top, so the
+estimate covers the build's working space, not what is on disk now. An attempt
+whose end is unconfirmed keeps its estimate reserved until the host confirms the
+end. Diagnostics list `reservedBytes` separately from measured allocation and
+from estimated reclaimable bytes. Never add these figures together, and never
+read a reservation as allocated bytes.
+
+The Server does not yet record peak usage per build. To check an estimate,
+sample the filesystem's used bytes and the BuildKit and Docker allocation before
+a representative protected build, every few seconds during it, and after it.
+Compare the peak increase with the reserved estimate. Change the estimate only
+from repeated measurements like this, not to make admission pass, and keep the
+free-space reserve.
 
 ### Offline cache policy and reporting
 
@@ -245,7 +403,12 @@ their normal approvals.
 ## Worktree lifecycle and recovery
 
 Collection claims the session turn lock and project mutation barrier, excludes
-meeting jobs, moves, managed dev servers and previews, and rechecks activity.
+meeting jobs, moves, and sessions running a managed dev server or preview, and
+rechecks activity. A server or preview holds only its own session's worktree;
+other idle sessions of the same project are still collected. A project
+deletion or a session being created holds the whole project, and the pass over
+orphaned worktree registrations waits while any server or preview runs in the
+project.
 Source and Git metadata stay intact while regenerable dependencies are slimmed.
 Storage collection waits for an existing project mutation within its one-minute
 pass budget, then rechecks active work. Timeout retains the existing owner and

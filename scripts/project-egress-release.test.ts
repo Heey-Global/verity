@@ -85,7 +85,7 @@ it('assembles every host asset with verified contents and an executable pinned N
       await readFile(join(root, 'release/protected-build-toolchain.json'), 'utf8'),
     );
     expect(policy.additionalFeatures).toEqual([feature]);
-    expect(policy.nodeOptions).toEqual({ version: '26.13.0' });
+    expect(policy.nodeOptions).toEqual({ version: '26.13.1' });
     const manifest = JSON.parse(
       await readFile(join(root, 'release/manifest.json'), 'utf8'),
     ) as Record<string, string>;

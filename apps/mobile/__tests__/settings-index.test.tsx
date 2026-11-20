@@ -73,7 +73,7 @@ describe('settings index — destinations', () => {
       'This app',
     ]);
     const expectedRows = [
-      ['Instructions', 'Memory'],
+      ['Instructions', 'Memory', 'AI Account'],
       ['Shared knowledge'],
       [
         'Assistant',
@@ -90,6 +90,7 @@ describe('settings index — destinations', () => {
         'Network protection',
         'Backup',
         'Server address',
+        'Servers',
         'Devices & Web Browsers',
         'Logs',
       ],

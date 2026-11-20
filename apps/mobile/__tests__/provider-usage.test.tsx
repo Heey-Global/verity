@@ -167,7 +167,7 @@ describe('ProviderUsageGroup', () => {
     expect(screen.getByText('Agent usage')).toBeOnTheScreen();
     expect(screen.getByText('5-hour window · 72% used')).toBeOnTheScreen();
     fireEvent.press(screen.getByRole('link', { name: 'Codex settings' }));
-    expect(mockPush).toHaveBeenCalledWith('/settings/services/codex');
+    expect(mockPush).toHaveBeenCalledWith('/settings/ai-accounts/codex');
   });
 });
 
@@ -228,9 +228,9 @@ describe('overview placement', () => {
     ) as ts.IfStatement | undefined;
     expect(phoneReturn).toBeDefined();
     expect(jsxNamed(phoneReturn!.thenStatement, 'ProviderUsageStrip')).toHaveLength(1);
-    // `sidebar` holds Home and Projects; the strip must sit beside it, not in one tab.
+    // The gesture sidebar holds Home and Projects; the strip stays outside both the tabs and drag.
     expect(phoneReturn!.thenStatement.getText()).toMatch(
-      /<ProviderUsageStrip[^>]*\/>\s*\{sidebar\}/,
+      /<ProviderUsageStrip[^>]*\/>\s*\{gestureSidebar\}/,
     );
     expect(jsxNamed(source, 'ProviderUsageStrip')).toHaveLength(1);
   });

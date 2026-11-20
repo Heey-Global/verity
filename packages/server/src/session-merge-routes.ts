@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { appendExternalPromptData } from '@verity/events';
 import type { Conductor } from '@verity/session';
 import type { ProjectRecord, SessionRecord } from '@verity/store';
-import type { ServerDeps } from './server.js';
+import type { ServerDeps } from './server-deps.js';
 import type { PullRequestStatus } from './forge-provider.js';
 import {
   BaseCheckoutStrandedError,

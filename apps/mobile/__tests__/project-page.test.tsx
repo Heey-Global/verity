@@ -295,7 +295,7 @@ describe('project page', () => {
     expect(screen.getByRole('tab', { name: 'Now · 1' })).toBeTruthy();
   });
 
-  it('removes a read answer from Now on opening and on live reload', async () => {
+  it('keeps a read answer in Now until explicit refresh', async () => {
     const unread = session('read-me', { eventCount: 5, lastSeenEventCount: 3 });
     const client = clientWith([unread]);
     const onOpenSession = jest.fn();
@@ -311,7 +311,8 @@ describe('project page', () => {
     await screen.findByTestId('project-line');
     await act(async () => undefined);
     fireEvent.press(screen.getByLabelText('read-me, new answer'));
-    expect(screen.queryByText('read-me')).toBeNull();
+    expect(screen.getByText('read-me')).toBeTruthy();
+    expect(screen.queryByLabelText('Unread messages')).toBeNull();
     const detail = await (client.getProject as jest.Mock).mock.results[0]!.value;
     (client.getProject as jest.Mock).mockResolvedValue({
       ...detail,
@@ -319,7 +320,7 @@ describe('project page', () => {
     });
     view.rerender(page(2));
     await act(async () => undefined);
-    expect(screen.queryByText('read-me')).toBeNull();
+    expect(screen.getByText('read-me')).toBeTruthy();
     const scroll = view
       .UNSAFE_getAllByType(ScrollView)
       .find((node) => node.props.refreshControl !== undefined)!;
@@ -657,6 +658,55 @@ describe('project page', () => {
     expect(screen.queryByRole('button', { name: 'Zod' })).toBeNull();
   });
 
+  it('reviews a command in its session and restores a dismissed item the way Home does', async () => {
+    // The project page drew a permission as a bare row and kept no fold of
+    // dismissed items; Home drew a card and offered Restore.
+    const asking = session('shell', {
+      status: 'awaiting_input',
+      permissionAwaitingInput: true,
+      pendingPermissions: ['t1'],
+      pendingPermissionRequests: [
+        { toolUseId: 't1', tool: 'Bash', riskClass: 'ask', input: { command: 'npm test' } },
+      ],
+    });
+    const dismissible = { ...question, inboxDismissed: [] as string[] };
+    const { client, onOpenSession } = await renderPage([asking, dismissible]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getByTestId('inbox-item-permission')).toBeTruthy();
+    expect(needs.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    expect(needs.queryByTestId('inbox-line-code')).toBeNull();
+    fireEvent.press(needs.getByRole('button', { name: 'Review' }));
+    expect(onOpenSession).toHaveBeenCalledWith('shell');
+    fireEvent.press(needs.getAllByLabelText('Dismiss').at(-1)!);
+    await act(async () => undefined);
+    expect(client.setSessionInboxDismissed).toHaveBeenCalled();
+    fireEvent.press(await screen.findByRole('button', { name: '1 hidden' }));
+    expect(screen.getByTestId('inbox-hidden-question')).toBeTruthy();
+  });
+
+  it('draws a session with a question and a ready pull request as one row', async () => {
+    // Each further item became a second row under the session's own.
+    const both = session('both', {
+      status: 'awaiting_input',
+      openChoices: { question: 'Ship it?', options: [{ label: 'Yes' }] },
+      pr: { phase: 'open', pipeline: 'success', mergeable: true },
+      pullRequest: {
+        ...openPullRequest.pullRequest!,
+        number: 551,
+        title: 'Ready change',
+        pipeline: 'success',
+        mergeable: true,
+        viewerCanMerge: true,
+      } as SessionSummary['pullRequest'],
+    });
+    await renderPage([both]);
+    const needs = within(screen.getByTestId('work-needs-you'));
+    expect(needs.getByText('Needs you · 1')).toBeTruthy();
+    expect(needs.queryByRole('button', { name: 'Merge' })).toBeNull();
+    expect(needs.getByText(/Ship it\? · Also waiting: Merge ready/)).toBeTruthy();
+    expect(needs.getByRole('button', { name: 'Yes' })).toBeTruthy();
+  });
+
   it('locks only the answered row while its answer is on the way', async () => {
     // A merge can wait on the code host for a while; one lock for the whole
     // list left every other row unanswerable until it came back.
@@ -856,15 +906,43 @@ describe('project page', () => {
     expect(onOpenSession).toHaveBeenCalledWith('answered');
     expect(client.setSessionSeen).toHaveBeenCalledWith('answered', 7, 'agent-text-v2');
     expect(screen.queryByLabelText('Unread messages')).toBeNull();
-    expect(screen.queryByTestId('work-results')).toBeNull();
-    expect(screen.queryByText('answered')).toBeNull();
+    expect(within(screen.getByTestId('work-results')).getByText('answered')).toBeTruthy();
     fireEvent.press(screen.getByRole('tab', { name: 'All' }));
     fireEvent.press(screen.getByRole('tab', { name: /^Now/ }));
     expect(screen.queryByText('answered')).toBeNull();
     await act(async () => undefined);
   });
 
-  it('keeps unread visible on a dismissible question while background work continues', async () => {
+  it.each([{ status: 'running' as const }, { status: 'idle' as const, backgroundWorking: true }])(
+    'shows work before unread and reveals unread after work stops: %j',
+    async (activity) => {
+      const pending = session('active-answer', {
+        ...activity,
+        eventCount: 9,
+        lastSeenEventCount: 2,
+      });
+      const props = { client: clientWith([]), onOpenSession: jest.fn(), onChanged: jest.fn() };
+      const view = render(<ProjectWork {...props} sessions={[pending]} />);
+      await act(async () => undefined);
+      expect(screen.getByLabelText('Agent is working')).toBeTruthy();
+      expect(screen.queryByLabelText('Unread messages')).toBeNull();
+      expect(screen.queryByText(/Unread/)).toBeNull();
+      expect(screen.getByLabelText('active-answer, working')).toBeTruthy();
+
+      view.rerender(
+        <ProjectWork
+          {...props}
+          sessions={[{ ...pending, status: 'idle', backgroundWorking: false }]}
+        />,
+      );
+      await act(async () => undefined);
+      expect(screen.queryByLabelText('Agent is working')).toBeNull();
+      expect(screen.getByLabelText('Unread messages')).toBeTruthy();
+      expect(screen.getByLabelText('active-answer, new answer')).toBeTruthy();
+    },
+  );
+
+  it('keeps a dismissible question without unread while background work continues', async () => {
     const pending = {
       ...question,
       backgroundWorking: true,
@@ -874,7 +952,7 @@ describe('project page', () => {
     };
     const { client } = await renderPage([pending]);
     const needs = within(screen.getByTestId('work-needs-you'));
-    expect(needs.getByLabelText('Unread messages')).toBeTruthy();
+    expect(needs.queryByLabelText('Unread messages')).toBeNull();
     expect(needs.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
     fireEvent.press(needs.getByRole('button', { name: /form, Which validation library/ }));
     expect(client.setSessionSeen).toHaveBeenCalledWith('form', 9, undefined);

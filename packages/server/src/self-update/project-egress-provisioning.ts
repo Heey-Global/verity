@@ -88,8 +88,43 @@ export async function projectEgressProvisionSupported(
   return true;
 }
 
-/** Independent admission uses the installed image before target code gains host writes. */
-export async function provisionProjectEgressHost(options: {
+export interface ProjectEgressProvisionRequest {
+  readonly deploymentId: string;
+  readonly operationId: string;
+  readonly installedDigest: string;
+  readonly targetDigest: string;
+}
+
+/** The host path of the installer state, which only a bootstrap-sealed bind can name. */
+function installerStatePath(spec: ServerDeploymentSpec): string {
+  const state = spec.mounts.find((mount) => mount.target === '/run/verity-pairing');
+  if (state?.source.kind !== 'bind' || !safeHostPath(state.source.path))
+    throw new Error('Project egress provisioning requires installer state authority');
+  return state.source.path;
+}
+
+/**
+ * Every check that decides whether this update may provision the host, without
+ * running anything: `false` when the images defer provisioning, a request when it
+ * is admitted, and an error when the deployment cannot be provisioned safely.
+ */
+export async function admitProjectEgressProvision(
+  docker: Pick<ProvisionDocker, 'inspectImageLabels'>,
+  journal: UpdateJournal,
+  spec: ServerDeploymentSpec,
+  onSkip?: (reason: 'target_contract_missing' | 'installed_contract_missing') => void,
+): Promise<ProjectEgressProvisionRequest | false> {
+  if (!(await projectEgressProvisionSupported(docker, journal, spec, onSkip))) return false;
+  installerStatePath(spec);
+  return {
+    deploymentId: journal.deploymentId,
+    operationId: journal.updateId,
+    installedDigest: journal.previousDigest,
+    targetDigest: journal.targetDigest,
+  };
+}
+
+export interface ProvisionProjectEgressHostOptions {
   docker: ProvisionDocker;
   journal: UpdateJournal;
   spec: ServerDeploymentSpec;
@@ -97,26 +132,19 @@ export async function provisionProjectEgressHost(options: {
   readFile?: (path: string) => Promise<string>;
   managedRoot?: string;
   onSkip?: (reason: 'target_contract_missing' | 'installed_contract_missing') => void;
-}): Promise<boolean> {
-  const { docker, journal, spec } = options;
-  if (!(await projectEgressProvisionSupported(docker, journal, spec, options.onSkip))) return false;
-  return runProjectEgressProvision({
-    ...options,
-    request: {
-      deploymentId: journal.deploymentId,
-      operationId: journal.updateId,
-      installedDigest: journal.previousDigest,
-      targetDigest: journal.targetDigest,
-    },
-  });
 }
 
-interface ProvisionRequest {
-  readonly deploymentId: string;
-  readonly operationId: string;
-  readonly installedDigest: string;
-  readonly targetDigest: string;
+/** Independent admission uses the installed image before target code gains host writes. */
+export async function provisionProjectEgressHost(
+  options: ProvisionProjectEgressHostOptions,
+): Promise<boolean> {
+  const { docker, journal, spec } = options;
+  const request = await admitProjectEgressProvision(docker, journal, spec, options.onSkip);
+  if (request === false) return false;
+  return runProjectEgressProvision({ ...options, request });
 }
+
+type ProvisionRequest = ProjectEgressProvisionRequest;
 
 interface ProvisionOptions {
   docker: ProvisionDocker;
@@ -165,9 +193,7 @@ async function assessmentGrant(options: ProvisionOptions, operation: string) {
 
 async function runProjectEgressProvision(options: ProvisionOptions): Promise<boolean> {
   const { docker, request, spec } = options;
-  const state = spec.mounts.find((mount) => mount.target === '/run/verity-pairing');
-  if (state?.source.kind !== 'bind' || !safeHostPath(state.source.path))
-    throw new Error('Project egress provisioning requires installer state authority');
+  const statePath = installerStatePath(spec);
   const key = createHash('sha256')
     .update(`${request.deploymentId}\0${request.operationId}\0${request.targetDigest}`)
     .digest('hex')
@@ -252,7 +278,7 @@ async function runProjectEgressProvision(options: ProvisionOptions): Promise<boo
     capAdd: ['CHOWN', 'FOWNER', 'DAC_OVERRIDE'],
     binds: [
       ...PROJECT_EGRESS_PROVISION_BINDS,
-      `${state.source.path}/.verity-install.lock:/run/verity-install.lock`,
+      `${statePath}/.verity-install.lock:/run/verity-install.lock`,
     ],
     entrypoint: ['timeout', '--kill-after=5s', '750s', 'bash'],
     command: ['/opt/verity-install/deploy/host/verity-egress-provision'],

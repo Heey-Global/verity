@@ -3,6 +3,7 @@ import { sql, type Kysely, type Transaction } from 'kysely';
 import { ensureProjectKnowledgeSpace } from './knowledge-spaces.js';
 import type { Migration, MigrationProvider } from 'kysely/migration';
 import type { Database } from './schema.js';
+import { laterMigrations } from './migrations-later.js';
 import {
   backfillInlineAttachments,
   backfillToolResultImages,
@@ -5581,3 +5582,5 @@ migrations['0204_project_name'] = {
     await sql`alter table projects drop column name`.execute(db);
   },
 };
+
+Object.assign(migrations, laterMigrations);

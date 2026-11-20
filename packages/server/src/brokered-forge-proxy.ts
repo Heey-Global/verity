@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { turnFitsSandbox } from './turn-credentials.js';
 import type { Duplex } from 'node:stream';
 import { TLSSocket, createSecureContext } from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import type { PemCertificate } from './claude-egress-ca.js';
+import type { TurnCredentials } from './turn-credentials.js';
 import type { GhTokenCapabilityRegistry } from './github-token-broker.js';
 import type { InternalConnectionIdentity } from './internal-listener.js';
 import {
@@ -85,7 +87,18 @@ type FailurePhase =
   | 'request-timeout'
   | 'generation-abort'
   | 'authorization';
+/** Why a live stream lost its authorization. Logged in place of an error code,
+ *  so a slow store is distinguishable from an actual revocation. */
+type AuthorizationFailure =
+  'revocation-timeout' | 'resolver-error' | 'binding-mismatch' | 'disabled';
 const FORGE_PLACEHOLDER_PREFIX = 'verity-broker-';
+/** How often a live stream re-checks its capability and repository binding. */
+const AUTHORIZATION_RECHECK_INTERVAL_MS = 500;
+/** How long a live stream may run without a confirming re-check, not counting
+ *  event-loop stalls. A slow or failing check is inconclusive, not a revocation:
+ *  a stall or a slow store must not cut an initial clone, but a wedged store
+ *  still closes the stream — at most twice this long, stalls included. */
+const AUTHORIZATION_UNCONFIRMED_LIMIT_MS = 15_000;
 
 function capability(request: IncomingMessage): string | undefined {
   const value = request.headers.authorization;
@@ -121,7 +134,10 @@ async function bufferedBody(request: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>;
+type RepositoryBinding = NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>> & {
+  /** The person the forge access is for; absent for the project default. */
+  actingUserId?: string | null;
+};
 
 /** Extend the HTTP secret broker with a repository-bound streaming transport.
  * Only this server owns TLS keys and provider credentials. The project listener
@@ -131,6 +147,12 @@ export function createBrokeredForgeProxy(options: {
   certificateFor?(hostname: string): Promise<PemCertificate>;
   allowsHost?(authority: string): Promise<boolean>;
   capabilities: GhTokenCapabilityRegistry;
+  /** A turn's own badge, accepted alongside the container capability; it proves
+   *  the project and names the turn's person for personal forge access later. */
+  turnCredentials?: Pick<TurnCredentials, 'resolve'> | undefined;
+  /** Whether a turn without a person may use the project default here
+   *  (`personlessWorkAllowed`); without it such a badge is refused. */
+  personlessAllowed?: ((projectId: string) => Promise<boolean>) | undefined;
   resolveRepository?: (
     binding: NonNullable<Awaited<ReturnType<GhTokenCapabilityRegistry['resolve']>>>,
     hostname: string,
@@ -140,7 +162,13 @@ export function createBrokeredForgeProxy(options: {
   enabled(projectId: string): boolean;
   actions?(projectId: string): ReadonlySet<ForgeAction>;
   transport?: BrokeredHttpStreamTransport;
+  /** Test seam for the live-stream re-check timing. */
+  authorizationRecheck?: { intervalMs?: number; unconfirmedLimitMs?: number };
 }): BrokeredForgeProxy {
+  const recheckInterval =
+    options.authorizationRecheck?.intervalMs ?? AUTHORIZATION_RECHECK_INTERVAL_MS;
+  const unconfirmedLimit =
+    options.authorizationRecheck?.unconfirmedLimitMs ?? AUTHORIZATION_UNCONFIRMED_LIMIT_MS;
   const context = createSecureContext({
     key: options.certificate.keyPem,
     cert: options.certificate.certPem,
@@ -157,7 +185,11 @@ export function createBrokeredForgeProxy(options: {
       let phase: FailurePhase = 'request';
       let reported = false;
       let completed = false;
-      const report = (failurePhase: FailurePhase, error?: unknown) => {
+      const report = (
+        failurePhase: FailurePhase,
+        error?: unknown,
+        reason?: AuthorizationFailure,
+      ) => {
         if (reported || completed) return;
         reported = true;
         const now = Date.now();
@@ -172,6 +204,7 @@ export function createBrokeredForgeProxy(options: {
           connectionId,
           phase: failurePhase,
           code: typeof code === 'string' && SAFE_TRANSPORT_CODES.has(code) ? code : 'UNKNOWN',
+          ...(reason === undefined ? {} : { reason }),
         });
       };
       void (async () => {
@@ -278,16 +311,54 @@ export function createBrokeredForgeProxy(options: {
             let chosen: RepositoryBinding | undefined;
             let candidates: RepositoryBinding[] = [];
             const resolveBinding = async () => {
-              const current = presented ? await options.capabilities.resolve(presented) : undefined;
+              const badge =
+                presented === undefined
+                  ? undefined
+                  : options.turnCredentials?.resolve({
+                      projectId: identity.projectId,
+                      token: presented,
+                    });
+              // A badge carried out of the sandbox it was issued into proves nothing.
+              // So does one without a person in a project shared with others.
+              const foreignBadge =
+                badge !== undefined &&
+                (!turnFitsSandbox(badge, identity) ||
+                  (badge.userId === null &&
+                    (await options.personlessAllowed?.(identity.projectId)) !== true));
+              const turn = foreignBadge ? undefined : badge;
+              // A badge proves the sandbox itself; the repository and generation are
+              // the sandbox's current container binding, exactly as its capability
+              // would have named them.
+              const current =
+                !presented || foreignBadge
+                  ? undefined
+                  : turn !== undefined
+                    ? await options.capabilities.bindingForSandbox?.(
+                        identity.projectId,
+                        identity.userId,
+                      )
+                    : await options.capabilities.resolve(presented);
               const resolved =
                 current && options.resolveRepository
                   ? await options.resolveRepository(current, hostname, path)
                   : current;
-              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : []).filter(
-                (candidate) =>
-                  candidate.projectId === identity.projectId &&
-                  candidate.containerGeneration === identity.containerGeneration,
-              );
+              candidates = (Array.isArray(resolved) ? resolved : resolved ? [resolved] : [])
+                .filter(
+                  (candidate) =>
+                    candidate.projectId === identity.projectId &&
+                    candidate.userId === identity.userId &&
+                    candidate.containerGeneration === identity.containerGeneration,
+                )
+                // The adapter acts with the person's own forge access: the badge's
+                // person, else the sandbox's. The project's original sandbox keeps the
+                // project default without a badge.
+                .map((candidate) =>
+                  turn !== undefined
+                    ? { ...candidate, actingUserId: turn.userId }
+                    : identity.projectDefault
+                      ? candidate
+                      : { ...candidate, actingUserId: identity.userId },
+                );
               const selected = chosen;
               return selected
                 ? candidates.find(
@@ -380,35 +451,69 @@ export function createBrokeredForgeProxy(options: {
               fail(response, 401);
               return;
             }
+            const revoke = (reason: AuthorizationFailure, error?: unknown) => {
+              report('authorization', error, reason);
+              abort.abort();
+            };
+            // An affirmative mismatch or a disabled project closes the stream at
+            // once. A slow or failing check only leaves it unconfirmed; a wedged
+            // store still closes it once nothing has confirmed it for too long,
+            // rather than suspending revocation while credentials keep flowing.
             let checking = false;
+            // Monotonic: a wall-clock step must neither extend nor forgive a bound.
+            let confirmedAt = performance.now();
+            let lastTick = confirmedAt;
+            let stallCredit = 0;
+            let lastFailure: { error: unknown } | undefined;
             authorizationPoll = setInterval(() => {
-              if (checking || abort.signal.aborted) return;
+              if (abort.signal.aborted) return;
+              // The bounds count time the server could run, not an event-loop
+              // stall: no check can answer while the loop is blocked, so a stall
+              // alone must never exhaust them. The credit is capped until the next
+              // confirmation, so sustained lag cannot postpone a wedged store
+              // beyond twice the bound.
+              const now = performance.now();
+              const stalled = Math.min(
+                Math.max(0, now - lastTick - recheckInterval),
+                unconfirmedLimit - stallCredit,
+              );
+              lastTick = now;
+              stallCredit += stalled;
+              confirmedAt += stalled;
+              // A healthy stream is reconfirmed every tick; past the bound only an
+              // attempted check — still pending, or failed — can be outstanding.
+              if (now - confirmedAt > unconfirmedLimit) {
+                if (lastFailure !== undefined) {
+                  revoke('resolver-error', lastFailure.error);
+                  return;
+                }
+                if (checking) {
+                  revoke('revocation-timeout');
+                  return;
+                }
+              }
+              if (checking) return;
               checking = true;
-              // A wedged capability store must close the stream, not suspend
-              // revocation checks indefinitely while credentials keep flowing.
-              const deadline = setTimeout(() => {
-                report('authorization');
-                abort.abort();
-              }, 1000);
-              deadline.unref();
+              const started = now;
               void resolveBinding()
                 .then(
                   (current) => {
-                    if (!matches(current) || !options.enabled(identity.projectId)) {
-                      report('authorization');
-                      abort.abort();
+                    if (!matches(current)) revoke('binding-mismatch');
+                    else if (!options.enabled(identity.projectId)) revoke('disabled');
+                    else {
+                      confirmedAt = Math.max(confirmedAt, started);
+                      stallCredit = 0;
+                      lastFailure = undefined;
                     }
                   },
                   (error: unknown) => {
-                    report('authorization', error);
-                    abort.abort();
+                    lastFailure = { error };
                   },
                 )
                 .finally(() => {
-                  clearTimeout(deadline);
                   checking = false;
                 });
-            }, 500);
+            }, recheckInterval);
             authorizationPoll.unref();
             if (auth.registryTokenResponse) {
               response.writeHead(200, { 'content-type': 'application/json' });

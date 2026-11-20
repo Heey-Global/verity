@@ -300,7 +300,10 @@ def main():
         start_ns = time.time_ns()
         vm.start()
         vm.upload(sys.argv[2])
-        vm.ssh('sudo env PROJECT_EGRESS_DISPOSABLE=yes bash /opt/verity-fixture/probe/boot-native-install.sh', timeout=600)
+        vm.configure_apt()
+        # A cold guest downloads package indexes and the LLVM toolchain over QEMU usernet.
+        # Keep provisioning separate from the much shorter runtime-operation deadlines.
+        vm.ssh('sudo env PROJECT_EGRESS_DISPOSABLE=yes bash /opt/verity-fixture/probe/boot-native-install.sh', timeout=1200)
         staging = json.loads(vm.ssh('sudo cat /var/lib/verity-egress-fixture/managed-staging.json'))
         verify_managed_staging(staging)
         (evidence / 'managed-staging.json').write_text(json.dumps(staging, indent=2))

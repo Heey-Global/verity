@@ -3,8 +3,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { createGhTokenCapabilityRegistry } from './github-token-broker.js';
 
-const bindingA = { projectId: 'p1', owner: 'Heey-Global', repo: 'Verity' };
-const bindingB = { projectId: 'p2', owner: 'acme', repo: 'widgets' };
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
+const bindingA = { projectId: 'p1', userId: SANDBOX_USER, owner: 'Heey-Global', repo: 'Verity' };
+const bindingB = { projectId: 'p2', userId: SANDBOX_USER, owner: 'acme', repo: 'widgets' };
 
 let ctx: TestDb;
 

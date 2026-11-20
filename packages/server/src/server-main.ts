@@ -25,7 +25,7 @@ import {
   toolkitFeatureRefIsConfigured,
   type EmbeddedServer,
 } from './embedded.js';
-import { SERVER_VERSION } from './server.js';
+import { SERVER_VERSION } from './server-support.js';
 import { resolveGoogleOAuthClientId } from './google-drive.js';
 import { parseSandboxDnsServers } from './gvisor-project-network.js';
 import { readAgentSeedStamp, sandboxAgentSeedHostPath } from './self-update/agent-seed-stamp.js';
@@ -1034,6 +1034,7 @@ async function main(): Promise<void> {
       ),
       // Announcing a release is what makes anyone look; D11 keeps the decision.
       serverUpdateNotifierStatePath: serverUpdateNotifierStatePath(verityRoot),
+      turnCredentialStatePath: join(verityRoot, '.turn-credentials.json'),
       // The action side of the same feature: present when the sealed spec gave
       // this Server the Updater's control mount (ADR 0008 D2). Whether the
       // Updater is listening on it right now is answered per request, not here.

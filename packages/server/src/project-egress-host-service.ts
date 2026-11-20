@@ -12,7 +12,7 @@ export function verifyProjectEgressDockerHost(value: unknown): void {
     OSType: z.literal('linux'),
     // Native startup preflight separately requires production acceptance or an
     // updater-authorized Staging descriptor binding this exact host version.
-    ServerVersion: z.enum(['29.8.0', '29.9.2']),
+    ServerVersion: z.enum(['29.8.0', '29.9.2', '29.9.3']),
     LiveRestoreEnabled: z.literal(false),
     SecurityOptions: z
       .array(z.string())

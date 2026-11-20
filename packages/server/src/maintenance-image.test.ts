@@ -130,7 +130,8 @@ describe('maintenance image preparation', () => {
     const first = h.maintenance.withImage(ref, async (image) => image.id);
     const second = h.maintenance.withImage(ref, async (image) => image.id);
     await vi.waitFor(() => expect(h.pullImage).toHaveBeenCalledTimes(1));
-    expect(h.held.size).toBe(2);
+    // Two callers and the download's own reservation.
+    expect(h.held.size).toBe(3);
     download.resolve();
     await expect(Promise.all([first, second])).resolves.toEqual([identity().id, identity().id]);
     expect(h.pullImage).toHaveBeenCalledTimes(1);
@@ -147,7 +148,7 @@ describe('maintenance image preparation', () => {
     const first = h.maintenance.withImage(ref, async () => undefined);
     await vi.waitFor(() => expect(h.pullImage).toHaveBeenCalledTimes(1));
     const second = h.maintenance.withImage(otherRef, async () => undefined);
-    await vi.waitFor(() => expect(h.held.size).toBe(2));
+    await vi.waitFor(() => expect(h.held.size).toBe(3));
     expect(h.pullImage).toHaveBeenCalledTimes(1);
     download.resolve();
     await Promise.all([first, second]);
@@ -165,66 +166,59 @@ describe('maintenance image preparation', () => {
     const first = h.maintenance.withImage(ref, async () => undefined, controller.signal);
     const rejected = expect(first).rejects.toMatchObject({ code: 'image-preparation-cancelled' });
     const second = h.maintenance.withImage(ref, async (image) => image.id);
-    await vi.waitFor(() => expect(h.held.size).toBe(2));
+    await vi.waitFor(() => expect(h.held.size).toBe(3));
     await vi.waitFor(() => expect(h.pullImage).toHaveBeenCalledTimes(1));
     controller.abort();
     await rejected;
     expect(h.pullImage.mock.calls[0]![1]!.signal!.aborted).toBe(false);
-    expect(h.held.size).toBe(1);
+    expect(h.held.size).toBe(2);
     download.resolve();
     await expect(second).resolves.toBe(identity().id);
     expect(h.held.size).toBe(0);
   });
 
-  it('keeps the final lease until a cancelled pull actually settles', async () => {
-    const h = fixture();
-    const download = deferred();
-    h.pullImage.mockImplementationOnce(async () => {
-      await download.promise;
-    });
-    const controller = new AbortController();
-    const operation = vi.fn();
-    const preparation = h.maintenance.withImage(ref, operation, controller.signal);
-    const rejected = expect(preparation).rejects.toMatchObject({
-      code: 'image-preparation-cancelled',
-    });
-    await vi.waitFor(() => expect(h.pullImage).toHaveBeenCalledTimes(1));
-    controller.abort();
-    await vi.waitFor(() => expect(h.pullImage.mock.calls[0]![1]!.signal!.aborted).toBe(true));
-    expect(h.releaseProject).not.toHaveBeenCalled();
-    expect(h.held.size).toBe(1);
-    download.resolve();
-    await rejected;
-    expect(h.held.size).toBe(0);
-    expect(operation).not.toHaveBeenCalled();
-    await expect(h.maintenance.withImage(ref, async (image) => image.id)).resolves.toBe(
-      identity().id,
-    );
-  });
-
-  it('reports timeout separately and retains its lease until the pull settles', async () => {
-    const h = fixture();
-    const timeout = new AbortController();
-    const timer = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal);
-    const download = deferred();
-    h.pullImage.mockImplementationOnce(async () => {
-      await download.promise;
-    });
-    try {
-      const result = h.maintenance.withImage(ref, async () => undefined);
-      const rejected = expect(result).rejects.toMatchObject({ code: 'image-preparation-timeout' });
+  // Observed: every maintenance attempt started a download of a multi-gigabyte
+  // sandbox image with a 30 s wait and cancelled it when the wait ran out, so
+  // no attempt ever completed and each cancelled download left partial layers
+  // leased on a nearly full disk. A caller that gives up must leave the download
+  // running, still protected from collection, so the next attempt finds it.
+  it.each([
+    ['cancelled', () => new AbortController(), (c: AbortController) => c.abort()],
+    [
+      'timeout',
+      () => new AbortController(),
+      (c: AbortController) => c.abort(new DOMException('Timed out', 'TimeoutError')),
+    ],
+  ] as const)(
+    'finishes a download its last caller gave up on (%s) and reuses it',
+    async (code, create, giveUp) => {
+      const h = fixture();
+      const download = deferred();
+      h.pullImage.mockImplementation(async (digest) => {
+        await download.promise;
+        h.images.set(digest, identity(digest));
+      });
+      const controller = create();
+      const operation = vi.fn();
+      const first = h.maintenance.withImage(ref, operation, controller.signal);
+      const rejected = expect(first).rejects.toMatchObject({
+        code: `image-preparation-${code}`,
+      });
       await vi.waitFor(() => expect(h.pullImage).toHaveBeenCalledTimes(1));
-      timeout.abort(new DOMException('Timed out', 'TimeoutError'));
-      await vi.waitFor(() => expect(h.pullImage.mock.calls[0]![1]!.signal!.aborted).toBe(true));
+      giveUp(controller);
+      await rejected;
+      expect(h.pullImage.mock.calls[0]![1]!.signal!.aborted).toBe(false);
+      // Only the download's own reservation is left while it runs.
       expect(h.held.size).toBe(1);
       download.resolve();
-      await rejected;
-      expect(h.held.size).toBe(0);
-    } finally {
-      download.resolve();
-      timer.mockRestore();
-    }
-  });
+      await vi.waitFor(() => expect(h.held.size).toBe(0));
+      await expect(h.maintenance.withImage(ref, async (image) => image.id)).resolves.toBe(
+        identity().id,
+      );
+      expect(h.pullImage).toHaveBeenCalledTimes(1);
+      expect(operation).not.toHaveBeenCalled();
+    },
+  );
 
   it('cancels active and queued preparation on shutdown without admitting helpers', async () => {
     const h = fixture();
@@ -242,10 +236,11 @@ describe('maintenance image preparation', () => {
     const secondRejected = expect(second).rejects.toMatchObject({
       code: 'image-preparation-cancelled',
     });
-    await vi.waitFor(() => expect(h.held.size).toBe(2));
+    await vi.waitFor(() => expect(h.held.size).toBe(3));
     h.maintenance.abort();
     await vi.waitFor(() => expect(h.pullImage.mock.calls[0]![1]!.signal!.aborted).toBe(true));
-    expect(h.held.size).toBe(2);
+    // The download keeps its reservation until the Engine has let go of it.
+    await vi.waitFor(() => expect(h.held.size).toBe(1));
     download.resolve();
     await Promise.all([firstRejected, secondRejected]);
     expect(h.pullImage).toHaveBeenCalledTimes(1);

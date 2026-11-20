@@ -2,6 +2,8 @@
 
 **Status:** Proposed; T0 is not frozen and T1 is not authorized by this review.
 
+**Reconciled:** [team contract v1](uplink-team-contract-v1.md) records the current decisions and implementation status — personal Remote Control admission and tunnelling are implemented in Core, so statements here that they are missing are historical; it takes precedence where the two differ.
+
 Inputs: Uplink handback at service base
 `2a925eb47e73b2138d451ad954fca20f2fcf8d0e`, associated with private
 [Uplink PR #26](https://github.com/Heey-Global/verity-uplink/pull/26), and the

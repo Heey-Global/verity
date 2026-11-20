@@ -118,7 +118,48 @@ export function npmProjectRoot(executable, directory, env, args) {
   ).trim();
   if (!output || !isAbsolute(output))
     throw new Error('Cannot determine the npm project root; installation remains blocked.');
-  return realpathSync(output);
+  return realpathSync(unmaskNpmPath(output, directory));
+}
+
+/** npm masks anything shaped like a secret in its output, UUIDs included, as
+ *  `***`. Session worktrees named after a session id therefore come back from
+ *  `npm prefix` as `…/code-***`, a path that does not exist. The local prefix
+ *  is always the install directory or one of its ancestors, so map the masked
+ *  path back to the single ancestor it can stand for. No mask matches a `/`.
+ *  Only a command-line `--prefix` moves npm's local prefix elsewhere, and
+ *  `npmProjectRoot` never passes one; `npm_config_prefix`, which `npm run`
+ *  exports, sets the global prefix and must not block this. */
+function unmaskNpmPath(reported, directory) {
+  if (!reported.includes('***')) return reported;
+  const pattern = new RegExp(
+    '^' +
+      reported
+        .split('***')
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+        .join('[^/]+') +
+      '$',
+    'u',
+  );
+  const matches = new Set();
+  for (const start of new Set([resolve(directory), realpathSync(directory)])) {
+    for (let candidate = start; ; candidate = dirname(candidate)) {
+      // npm roots a local prefix where package.json or node_modules exists, and
+      // falls back to the install directory itself when no ancestor has either.
+      if (
+        pattern.test(candidate) &&
+        (candidate === start ||
+          existsSync(join(candidate, 'package.json')) ||
+          existsSync(join(candidate, 'node_modules')))
+      )
+        matches.add(realpathSync(candidate));
+      if (dirname(candidate) === candidate) break;
+    }
+  }
+  if (matches.size !== 1)
+    throw new Error(
+      `npm reported a masked project root (${reported}) that matches no single enclosing directory; installation remains blocked.`,
+    );
+  return [...matches][0];
 }
 
 export function npmStateDirectory(root) {

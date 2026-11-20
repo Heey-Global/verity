@@ -16,6 +16,8 @@ import { createMcpGatewayTokens } from './mcp-gateway-tokens.js';
 import { buildServer } from './server.js';
 import { createTrustedCliTool } from './trusted-cli-tool.js';
 
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
+
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -120,7 +122,12 @@ async function exercise(toolName: Tool, drift: Drift, snapshotAvailable = true) 
   await app.ready();
   const listener = await startProjectInternalUnixListener(app, {
     socketRoot: dir,
-    identity: { projectId: 'p1', containerGeneration: 'generation-1' },
+    identity: {
+      projectId: 'p1',
+      userId: SANDBOX_USER,
+      projectDefault: true,
+      containerGeneration: 'generation-1',
+    },
     ownerUid: process.getuid?.() ?? 1000,
     relayGid: process.getgid?.() ?? 1000,
   });

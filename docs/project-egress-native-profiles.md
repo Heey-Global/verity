@@ -106,8 +106,8 @@ canonical egress mounts remain explicitly pending. No fabricated update journal,
 manual target-helper invocation or signature substitution authorizes this path.
 
 The first assessment supports native systemd on little-endian x86_64 Ubuntu 24.04
-or 26.04 with rootful Docker 29.8.0 or 29.9.2 and live restore disabled. These are
-assessment candidates, not accepted production profiles; the descriptor binds the
+or 26.04 with rootful Docker 29.8.0, 29.9.2 or 29.9.3 and live restore disabled.
+These are assessment candidates, not accepted production profiles; the descriptor binds the
 exact observed Docker version and rejects version drift. Provisioning does not
 upgrade or restart Docker. It verifies the
 release-owned Node/controller/BPF artifacts and runtime pins, the complete gVisor

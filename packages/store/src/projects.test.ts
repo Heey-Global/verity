@@ -1476,7 +1476,12 @@ describe('EventStore — projects', () => {
         containerName: 'verity-google-placeholder',
         state: 'absent',
       });
-      await ctx.store.enableProjectGoogleConnection(configured, 'gmail', 'me@example.test');
+      await ctx.store.enableProjectGoogleConnection(
+        configured,
+        'gmail',
+        'me@example.test',
+        '00000000-0000-4000-8000-000000000001',
+      );
 
       // Adoption would cascade the placeholder away with its access configuration.
       await linkAsSecondProject(configured, 'heey-global', 'google-placeholder');
@@ -1578,50 +1583,6 @@ describe('disconnectProjectFromGitHub', () => {
     });
     expect(await ctx.store.disconnectProjectFromGitHub(id)).toBeUndefined();
     expect(await ctx.store.disconnectProjectFromGitHub(randomUUID())).toBeUndefined();
-  });
-});
-
-it('allocates distinct local names for concurrent disconnects and skips occupied fallback names', async () => {
-  const first = randomUUID();
-  const second = randomUUID();
-  for (const repo of ['code', `code-${first}`]) {
-    await ctx.store.createProject({
-      id: randomUUID(),
-      owner: '__local__',
-      repo,
-      kind: 'local',
-      containerName: `local-${randomUUID()}`,
-      state: 'absent',
-    });
-  }
-  for (const [id, owner] of [
-    [first, 'org-a'],
-    [second, 'org-b'],
-  ] as const) {
-    await ctx.store.upsertProject({
-      id,
-      owner,
-      repo: 'code',
-      kind: 'github',
-      containerName: `remote-${id}`,
-      state: 'active',
-    });
-  }
-  const results = await Promise.all([
-    ctx.store.disconnectProjectFromGitHub(first),
-    ctx.store.disconnectProjectFromGitHub(second),
-  ]);
-  expect(results[0]).toMatchObject({
-    id: first,
-    kind: 'local',
-    repo: `code-${first}-2`,
-    cloneDir: 'org-a-code',
-  });
-  expect(results[1]).toMatchObject({
-    id: second,
-    kind: 'local',
-    repo: `code-${second}`,
-    cloneDir: 'org-b-code',
   });
 });
 

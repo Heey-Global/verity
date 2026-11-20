@@ -6,9 +6,11 @@ import {
   planBuilderVolumeSweep,
   planRelaySweep,
   runDockerGc,
+  describeBuildCapacityReclamation,
   startDockerGcScheduler,
   type DockerGcDeps,
 } from './docker-gc.js';
+import type { DockerGcReport } from './docker-gc.js';
 import { devcontainerImageTag, DEVCONTAINER_IMAGE_PREFIX } from './provisioner.js';
 import { DockerError } from './docker.js';
 import type {
@@ -905,6 +907,34 @@ describe('startDockerGcScheduler', () => {
     }
   });
 
+  // A low-disk warning that named only free space could not say whether any
+  // pass would ever relieve the disk.
+  it('names what the data volume holds in the low-disk warning', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    try {
+      const warn = vi.fn();
+      const scheduler = startDockerGcScheduler(
+        deps(fakeDocker({}), {
+          log: { ...silentLog, warn } as unknown as DockerGcDeps['log'],
+          now: () => Date.now(),
+          freeBytes: () => Promise.resolve(5 * 1024 ** 3),
+          policy: { lowDiskFreeBytes: 40 * 1024 ** 3 },
+          describeCapacity: () => ' Data volume as of then: 1.0 GiB regenerable.',
+        }),
+      );
+      // Boot pass at 5 minutes; the probe may run again 30 minutes after it.
+      await vi.advanceTimersByTimeAsync(45 * 60_000);
+      scheduler.stop();
+      expect(warn).toHaveBeenCalledWith(
+        { freeBytes: 5 * 1024 ** 3, capacity: 'Data volume as of then: 1.0 GiB regenerable.' },
+        'docker gc running early: free disk space is low',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('exposes runOnce as a timer-free seam', async () => {
     vi.useFakeTimers();
     try {
@@ -956,6 +986,59 @@ it('coalesces admission and scheduled reclamation entrypoints', async () => {
   }
 });
 
+// Observed: a build waiting for storage ran the full maintenance pass, whose
+// runner-cache and session-worktree steps alone outlasted the build's deadline,
+// so the steps that free build capacity never ran in time and every retry
+// started the same slow pass again.
+it('frees build capacity without waiting for a stalled maintenance pass', async () => {
+  const beforeSweep = vi.fn(() => new Promise<void>(() => {}));
+  const retireContainers = vi.fn(async () => ({ removed: [], errors: [] }));
+  const docker = fakeDocker({
+    images: [
+      image({ id: 'sha256:new', repoTags: ['verity-devc-acme-web:a'], created: 300, size: 5 }),
+      image({ id: 'sha256:old', repoTags: ['verity-devc-acme-web:b'], created: 100, size: 7 }),
+    ],
+    containers: [],
+    volumes: [volume({ name: anonName('a'), createdAt: '2026-01-01T00:00:00Z' })],
+    pruneBuildCache: () => Promise.resolve(1234),
+  });
+  const scheduler = startDockerGcScheduler(
+    deps(docker, { beforeSweep, retireContainers, policy: { keepImagesPerRepo: 1 } }),
+  );
+  try {
+    void scheduler.runOnce();
+    const first = scheduler.reclaimBuildCapacity();
+    const joined = scheduler.reclaimBuildCapacity();
+    expect(joined).toBe(first);
+    const report = await first;
+    expect(docker.removedImages).toEqual(['verity-devc-acme-web:b']);
+    expect(report.buildCacheBytes).toBe(1234);
+    // Full retirement, worktree, relay and volume maintenance remain outside capacity passes.
+    expect(beforeSweep).toHaveBeenCalledOnce();
+    expect(retireContainers).not.toHaveBeenCalled();
+    expect(docker.removedVolumes).toEqual([]);
+    // A build that asks again after the pass ended gets a fresh pass, not a stale one.
+    const again = scheduler.reclaimBuildCapacity();
+    expect(again).not.toBe(first);
+    await again;
+  } finally {
+    scheduler.stop();
+  }
+});
+
+it('describes what a build-capacity pass freed and what stopped containers keep', () => {
+  const report = {
+    imagesRemoved: ['a'],
+    estimatedImageBytes: 9 * 1024 ** 3,
+    buildCacheBytes: 0,
+    stoppedContainerPins: { images: 6, containers: 29, estimatedBytes: 35 * 1024 ** 3 },
+  } as DockerGcReport;
+  expect(describeBuildCapacityReclamation(report)).toBe(
+    'Reclamation removed 0 container(s) and 1 image(s) (9.0 GiB apparent upper bound; exclusive layer bytes unavailable), ' +
+      'plus 0.0 GiB of build cache. Protected: 35.0 GiB apparent image bytes pinned by 29 stopped container(s).',
+  );
+});
+
 it('reports unique managed image pins from stopped containers without counting foreign images', async () => {
   const docker = fakeDocker({
     images: [
@@ -971,4 +1054,125 @@ it('reports unique managed image pins from stopped containers without counting f
   const report = await runDockerGc(deps(docker));
   expect(report.stoppedContainerPins).toEqual({ images: 1, containers: 2, estimatedBytes: 123 });
   expect(report.keptImageReasons[0]?.containers).toEqual(['one', 'two']);
+});
+
+it('retires cache helpers before capacity image inventory without full maintenance', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:a'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:b'], created: 100 }),
+    ],
+    containers: [{ id: 'helper', imageId: 'old', state: 'exited', labels: {} }],
+  };
+  const docker = fakeDocker(state);
+  const retireCacheHelpers = vi.fn(async () => {
+    state.containers = [];
+    return { removed: ['helper'], errors: [] };
+  });
+  const beforeSweep = vi.fn(async () => {});
+  const retireContainers = vi.fn(async () => ({ removed: [], errors: [] }));
+  const scheduler = startDockerGcScheduler(
+    deps(docker, {
+      retireCacheHelpers,
+      beforeSweep,
+      retireContainers,
+      policy: { keepImagesPerRepo: 1 },
+    }),
+  );
+  try {
+    const report = await scheduler.reclaimBuildCapacity();
+    expect(retireCacheHelpers).toHaveBeenCalledOnce();
+    expect(docker.removedImages).toEqual(['verity-devc-example:b']);
+    expect(report.containersRemoved).toEqual(['helper']);
+    expect(beforeSweep).not.toHaveBeenCalled();
+    expect(retireContainers).not.toHaveBeenCalled();
+  } finally {
+    scheduler.stop();
+  }
+});
+
+it('retires policy-approved stopped containers before planning capacity images', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:old'], created: 100, size: 100 }),
+    ],
+    containers: [{ id: 'stopped', imageId: 'old', state: 'exited' }],
+  };
+  const docker = fakeDocker(state);
+  docker.removeImage = async () => {
+    state.images = state.images.filter((image) => image.id !== 'old');
+  };
+  docker.imageDiskUsage = async () =>
+    new Map([
+      ['new', 20],
+      ['old', 30],
+    ]);
+  const retirement = vi.fn(async () => {
+    state.containers = [];
+    return {
+      removed: ['stopped'],
+      errors: [],
+      retained: [{ name: 'protected', reason: 'Grace period' }],
+    };
+  });
+  const report = await runDockerGc(
+    deps(docker, { retireCapacityContainers: retirement, policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(retirement).toHaveBeenCalledOnce();
+  expect(report.containersRemoved).toEqual(['stopped']);
+  expect(report.imagesRemoved).toEqual(['verity-devc-example:old']);
+  expect(report.exclusiveImageLayerBytes).toBe(30);
+  expect(report.estimatedImageBytes).toBe(100);
+  expect(report.measuredFreeBytesDelta).toBe(0);
+  expect(describeBuildCapacityReclamation(report)).toContain('Retained: Grace period');
+});
+
+it('does not count image layers when removing a reference only untags it', async () => {
+  const state = {
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({
+        id: 'old',
+        repoTags: ['verity-devc-example:old', 'retained:stable'],
+        created: 100,
+        size: 100,
+      }),
+    ],
+  };
+  const docker = fakeDocker(state);
+  docker.imageDiskUsage = async () => new Map([['old', 30]]);
+  const report = await runDockerGc(
+    deps(docker, { policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(report.imagesRemoved).toContain('verity-devc-example:old');
+  expect(report.exclusiveImageLayerBytes).toBe(0);
+});
+
+it('keeps removal notifications when post-removal measurement is unavailable', async () => {
+  const docker = fakeDocker({
+    images: [
+      image({ id: 'new', repoTags: ['verity-devc-example:new'], created: 200 }),
+      image({ id: 'old', repoTags: ['verity-devc-example:old'], created: 100 }),
+    ],
+  });
+  docker.imageDiskUsage = async () => new Map([['old', 30]]);
+  const list = docker.listImages!.bind(docker);
+  let reads = 0;
+  docker.listImages = async () => {
+    if (reads++ > 0) throw new Error('measurement unavailable');
+    return list();
+  };
+  const onProjectImageRemoved = vi.fn(async () => {});
+  const report = await runDockerGc(
+    deps(docker, { onProjectImageRemoved, policy: { keepImagesPerRepo: 1 } }),
+    'build-capacity',
+  );
+  expect(report.exclusiveImageLayerBytes).toBeUndefined();
+  expect(onProjectImageRemoved).toHaveBeenCalledWith({
+    ref: 'verity-devc-example:old',
+    imageId: 'old',
+  });
 });

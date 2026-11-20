@@ -64,9 +64,11 @@ export function registerAttendeeRoutes(
         listenForVerity: z.boolean().default(false),
       })
       .parse(request.body);
-    const url = new URL(body.meetingUrl);
-    if (!isSupportedMeetingUrl(url))
-      throw new Error('Enter a Google Meet, Teams or Zoom HTTPS meeting link.');
+    if (!isSupportedMeetingUrl(new URL(body.meetingUrl)))
+      return reply.code(400).send({
+        error: 'Enter a Google Meet, Teams or Zoom HTTPS meeting link.',
+        code: 'unsupported_meeting_url',
+      });
     try {
       return await service.start(id, body.meetingUrl, body.listenForVerity, body.title, {
         requestId: request.id,
@@ -84,6 +86,12 @@ export function registerAttendeeRoutes(
   app.post('/sessions/:id/live-meetings/:meetingId/online/stop', async (request) => {
     const { id, meetingId } = params.parse(request.params);
     return service.stop(id, meetingId);
+  });
+  app.get('/sessions/:id/live-meetings/:meetingId/online/status', async (request, reply) => {
+    const { id, meetingId } = params.parse(request.params);
+    const status = await service.status(id, meetingId);
+    if (!status) return reply.code(404).send({ error: 'Online meeting not found.' });
+    return status;
   });
   app.patch('/sessions/:id/live-meetings/:meetingId/online/speakers', async (request) => {
     const { id, meetingId } = params.parse(request.params);

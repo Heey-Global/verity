@@ -1,6 +1,7 @@
+import type { PeopleDatabase } from './schema-people.js';
+import type { SandboxDatabase } from './schema-sandbox.js';
 import type { AgentEvent, Attachment } from '@verity/events';
 import type { ColumnType, Generated } from 'kysely';
-
 export interface ProjectInquiryGrantsTable {
   source_project_id: string;
   target_project_id: string;
@@ -31,6 +32,21 @@ export interface WikiMaintenanceTable {
   project_id: string;
   session_id: string | null;
   last_run_at: Date | null;
+}
+
+/** An automatic Sandbox repair still owed to a project after a failed recreate. */
+export interface SandboxRepairIntentsTable {
+  project_id: string;
+  version: number;
+  attempt_id: string;
+  status: string;
+  source_generation: string | null;
+  target_image_ref: string | null;
+  failures: number;
+  retry_at: Date;
+  storage_refused: boolean;
+  last_failure_at: Date;
+  last_failure_message: string;
 }
 
 export interface ProjectInquiriesTable {
@@ -192,6 +208,8 @@ interface SessionSlideDecksTable {
 
 export interface GoogleAccountsTable {
   id: string;
+  /** The person who connected the account; only their turns and routes use it. */
+  owner_user_id: ColumnType<string, string, string>;
   email: string;
   subject: string | null;
   display_name: string | null;
@@ -262,6 +280,8 @@ interface ProjectGoogleConnectionsTable {
   account_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
   service: 'gmail' | 'calendar' | 'contacts';
+  /** The member this choice belongs to; each member picks their own account. */
+  user_id: ColumnType<string, string, string>;
   account_email: string;
   enabled_at: ColumnType<Date, string | undefined, never>;
 }
@@ -669,6 +689,8 @@ export interface VeritySettingsTable {
   github_app_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_installation_id: ColumnType<string | null, string | null | undefined, string | null>;
   github_app_private_key: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_id: ColumnType<string | null, string | null | undefined, string | null>;
+  github_app_client_secret: ColumnType<string | null, string | null | undefined, string | null>;
   /** Account-level Doppler Service Account token (#320). A secret, encrypted at
    *  rest via the store's SecretCipher. Stored globally (like the GitHub App key);
    *  later used to auto-mint scoped per-project tokens. The pre-existing
@@ -788,23 +810,6 @@ export interface AuthTokenTable {
   label: string | null;
   created_at: ColumnType<Date, string | undefined, never>;
   last_seen_at: ColumnType<Date | null, string | undefined, string | undefined>;
-}
-
-/** Local identity is separate from a paired device and from project access. */
-interface UsersTable {
-  id: string;
-  role: 'administrator' | 'member';
-  status: 'active' | 'disabled';
-  created_at: ColumnType<Date, string | undefined, never>;
-}
-
-interface ProjectMembershipsTable {
-  project_id: string;
-  user_id: string;
-  can_read: boolean;
-  can_execute: boolean;
-  can_manage: boolean;
-  created_at: ColumnType<Date, string | undefined, never>;
 }
 
 /** The current Expo push-token binding for one paired device. The auth-token id
@@ -1075,6 +1080,8 @@ interface PrReadyDeliveryTable {
 interface GhTokenCapabilitiesTable {
   forge_connection_id: ColumnType<string | null, string | null | undefined, string | null>;
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   owner: string;
   repo: string;
@@ -1085,6 +1092,8 @@ interface GhTokenCapabilitiesTable {
  * the opaque capability is persisted; one row per project provides rotation. */
 interface SigningCapabilitiesTable {
   project_id: string;
+  /** The person whose sandbox holds the capability (ADR 0023 §4). */
+  user_id: string;
   cap_hash: string;
   container_generation: string;
 }
@@ -1285,6 +1294,8 @@ export interface ManagedDevServersTable {
     string
   >;
   approved_provider_authority: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Who approved the current command; null for approvals before people (ADR 0023). */
+  approved_by_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   approved_secret_bindings: ColumnType<
     import('./managed-dev-servers.js').ManagedDevServerSecretBinding[] | null,
     string | null | undefined,
@@ -1363,6 +1374,8 @@ export interface ManagedDevServerInstancesTable {
   detail: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_command: ColumnType<string | null, string | null | undefined, string | null>;
   last_run_workdir: ColumnType<string | null, string | null | undefined, string | null>;
+  /** Whose Doppler connection resolved the last run's secrets; null without a person. */
+  last_run_user_id: ColumnType<string | null, string | null | undefined, string | null>;
   started_at: ColumnType<Date | null, string | null | undefined, string | null>;
   last_ran_at: ColumnType<Date | null, string | null | undefined, string | null>;
   /** Explicit access lifecycle start; automatic process recovery preserves it. */
@@ -1504,6 +1517,8 @@ interface ClaudeEgressCaTable {
  * fingerprint→project peer bindings. */
 interface ClaudeEgressClientCertTable {
   project_id: string;
+  /** The person whose sandbox presents the certificate (ADR 0023 §4). */
+  user_id: string;
   cert_pem: ColumnType<string, string, string>;
   key_pem: ColumnType<string, string, string>;
   fingerprint256: ColumnType<string, string, string>;
@@ -1576,6 +1591,8 @@ interface SecretProviderPermissionsTable {
   expires_at: ColumnType<Date | null, string | null | undefined, string | null>;
   remaining_uses: number | null;
   granted_by: string;
+  /** Whose consent this is (ADR 0023 §3); a prompt grant applies only in their turns. */
+  user_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** Which subsystem issued this row. The table has two independent writers, and a
    *  `tool_id` prefix does not tell them apart (a catalog profile id may contain `:`),
    *  so the brokered-prompt grant store keys its list/revoke/auto-approve on this.
@@ -1777,12 +1794,13 @@ interface VulnerabilityFixesTable {
   failed: Generated<boolean>;
 }
 
-export interface Database {
+export interface Database extends PeopleDatabase, SandboxDatabase {
   project_inquiry_grants: ProjectInquiryGrantsTable;
   project_inquiry_sessions: ProjectInquirySessionsTable;
   project_inquiries: ProjectInquiriesTable;
   wiki_occasions: WikiOccasionsTable;
   wiki_maintenance: WikiMaintenanceTable;
+  sandbox_repair_intents: SandboxRepairIntentsTable;
   vulnerability_fixes: VulnerabilityFixesTable;
   session_deletions: SessionDeletionsTable;
   user_context: UserContextTable;
@@ -1868,8 +1886,6 @@ export interface Database {
   projects: ProjectsTable;
   project_repositories: ProjectRepositoriesTable;
   session_repository_workspaces: SessionRepositoryWorkspacesTable;
-  users: UsersTable;
-  project_memberships: ProjectMembershipsTable;
   project_identity_claims: ProjectIdentityClaimsTable;
   project_settings: ProjectSettingsTable;
   project_package_protection: ProjectPackageProtectionTable;

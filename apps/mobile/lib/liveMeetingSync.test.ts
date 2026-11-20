@@ -2,7 +2,7 @@ jest.mock('./liveConnection', () => ({ subscribeLiveRefresh: () => () => {} }));
 import { createVerityClient, getActiveMeetingServerId } from './client';
 import { waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
-import { currentMeeting, endMeeting } from './liveMeetingSession';
+import { currentMeeting, endMeeting, releaseMeeting } from './liveMeetingSession';
 import {
   acknowledgeMeeting,
   acknowledgeNote,
@@ -12,12 +12,20 @@ import {
   importChanges,
   pendingMeetings,
   pendingNotes,
+  meetingUploadFailure,
+  saveMeetingUploadFailure,
+  clearMeetingUploadFailure,
 } from './liveMeetingStore';
 import { VerityApiError } from '@verity/mobile';
 import {
   discardFinishedMeeting,
   startLiveMeetingSync,
   syncMeetingSession,
+  getMeetingSyncFailure,
+  retryMeetingSync,
+  finalizeMeetingOnServer,
+  readMeetingControl,
+  stopMeetingElsewhere,
 } from './liveMeetingSync';
 
 jest.mock('./client', () => ({
@@ -31,6 +39,7 @@ jest.mock('./liveMeetingSession', () => ({
   subscribeMeeting: () => () => {},
   endMeeting: jest.fn().mockResolvedValue(undefined),
   pauseMeeting: jest.fn().mockResolvedValue(undefined),
+  releaseMeeting: jest.fn().mockReturnValue(true),
   resumeMeeting: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('./liveMeetingStore', () => ({
@@ -42,6 +51,9 @@ jest.mock('./liveMeetingStore', () => ({
   importChanges: jest.fn().mockResolvedValue(undefined),
   pendingMeetings: jest.fn().mockResolvedValue([]),
   pendingNotes: jest.fn().mockResolvedValue([]),
+  meetingUploadFailure: jest.fn().mockResolvedValue(null),
+  saveMeetingUploadFailure: jest.fn().mockResolvedValue(undefined),
+  clearMeetingUploadFailure: jest.fn().mockResolvedValue(undefined),
 }));
 
 const client = {
@@ -53,6 +65,7 @@ const client = {
   discardSessionMeeting: jest.fn().mockResolvedValue(undefined),
   getLiveMeetingCommands: jest.fn().mockResolvedValue({ commands: [], recorderOnline: true }),
   acknowledgeLiveMeetingCommand: jest.fn().mockResolvedValue(undefined),
+  finalizeLiveMeeting: jest.fn().mockResolvedValue(undefined),
 };
 const meeting = {
   id: 'meeting-1',
@@ -80,6 +93,140 @@ beforeEach(() => {
   client.putLiveMeetingNote.mockResolvedValue(undefined);
   jest.mocked(currentMeeting).mockReturnValue(null);
   jest.mocked(getActiveMeetingServerId).mockReturnValue('server-1');
+  jest.mocked(meetingUploadFailure).mockResolvedValue(null);
+  jest.mocked(saveMeetingUploadFailure).mockResolvedValue(undefined);
+  client.finalizeLiveMeeting.mockResolvedValue(undefined);
+  client.getLiveMeetingCommands.mockResolvedValue({ commands: [], recorderOnline: true });
+});
+
+it('keeps a rejected revision locally and suppresses its retry after restoring persisted failure state', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([meeting]);
+  client.putLiveMeeting.mockRejectedValueOnce(new VerityApiError(400, 'invalid update'));
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
+  expect(saveMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id, {
+    revision: 4,
+    status: 400,
+    serverFinalized: false,
+  });
+  jest
+    .mocked(meetingUploadFailure)
+    .mockResolvedValue({ revision: 4, status: 400, serverFinalized: false });
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
+  expect(client.putLiveMeeting).toHaveBeenCalledTimes(1);
+  expect(acknowledgeMeeting).not.toHaveBeenCalled();
+  expect(getMeetingSyncFailure('server-1', meeting.id)?.status).toBe(400);
+  expect(deleteMeeting).not.toHaveBeenCalled();
+});
+
+// A 401 means this device lost its credential, not that the meeting is bad. Blocking it
+// left the recorder's final state unsent after re-authentication, so the server kept the
+// meeting running on every device with nothing able to end it.
+it('retries a meeting upload refused for authentication once the device is authorized again', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, state: 'interrupted' as const }]);
+  client.putLiveMeeting.mockRejectedValueOnce(new VerityApiError(401, 'unauthorized'));
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: true });
+  expect(saveMeetingUploadFailure).not.toHaveBeenCalled();
+  expect(await syncMeetingSession('session-1')).toEqual({ pending: false });
+  expect(client.putLiveMeeting).toHaveBeenCalledTimes(2);
+  expect(acknowledgeMeeting).toHaveBeenCalledWith('server-1', meeting.id, meeting.revision);
+});
+
+it('lifts a stored authentication block from an earlier version and sends the meeting', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, revision: 5 }]);
+  jest
+    .mocked(meetingUploadFailure)
+    .mockResolvedValue({ revision: 4, status: 401, serverFinalized: true });
+  await syncMeetingSession('session-1');
+  expect(saveMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id, {
+    revision: -1,
+    status: 401,
+    serverFinalized: true,
+  });
+  expect(client.putLiveMeeting).toHaveBeenCalledTimes(1);
+  expect(clearMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id);
+});
+
+it('keeps new revisions pending until explicit retry after a permanent validation failure', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([{ ...meeting, revision: 5 }]);
+  jest
+    .mocked(meetingUploadFailure)
+    .mockResolvedValue({ revision: 4, status: 400, serverFinalized: false });
+  await syncMeetingSession('session-1');
+  expect(client.putLiveMeeting).not.toHaveBeenCalled();
+  expect(acknowledgeMeeting).not.toHaveBeenCalled();
+  expect(clearMeetingUploadFailure).not.toHaveBeenCalled();
+});
+
+it('finalizes server state without discarding or acknowledging the unsent transcript', async () => {
+  jest
+    .mocked(meetingUploadFailure)
+    .mockResolvedValue({ revision: 4, status: 400, serverFinalized: false });
+  await finalizeMeetingOnServer('session-1', meeting.id);
+  expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', meeting.id);
+  expect(saveMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id, {
+    revision: 4,
+    status: 400,
+    serverFinalized: true,
+  });
+  expect(acknowledgeMeeting).not.toHaveBeenCalled();
+  expect(deleteMeeting).not.toHaveBeenCalled();
+});
+
+it('allows an explicit retry while preserving confirmed server finalization', async () => {
+  jest.mocked(pendingMeetings).mockResolvedValue([meeting]);
+  let stored = { revision: 4, status: 400, serverFinalized: true };
+  jest.mocked(meetingUploadFailure).mockImplementation(async () => stored);
+  jest.mocked(saveMeetingUploadFailure).mockImplementation(async (_server, _id, failure) => {
+    stored = failure;
+  });
+  await retryMeetingSync('session-1', meeting.id);
+  expect(saveMeetingUploadFailure).toHaveBeenCalledWith('server-1', meeting.id, {
+    revision: -1,
+    status: 400,
+    serverFinalized: true,
+  });
+  expect(client.putLiveMeeting).toHaveBeenCalled();
+  expect(deleteMeeting).not.toHaveBeenCalled();
+});
+
+it('acknowledges a remote stop using server finalization when the final transcript is rejected', async () => {
+  const stopped = { ...meeting, state: 'ended' as const, endedAt: 2 };
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, error: null });
+  jest.mocked(pendingMeetings).mockResolvedValue([stopped]);
+  client.putLiveMeeting.mockRejectedValue(new VerityApiError(400, 'invalid update'));
+  client.getLiveMeetingCommands.mockResolvedValueOnce({
+    commands: [
+      {
+        id: 'stop-1',
+        action: 'stop',
+        state: 'pending',
+      },
+    ],
+    recorderOnline: true,
+  });
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const subscription = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockReturnValue({ remove: jest.fn() });
+  const stop = startLiveMeetingSync();
+  try {
+    await waitFor(() =>
+      expect(client.acknowledgeLiveMeetingCommand).toHaveBeenCalledWith(
+        'session-1',
+        meeting.id,
+        'stop-1',
+        meeting.ownerToken,
+        'completed',
+        null,
+      ),
+    );
+    expect(endMeeting).toHaveBeenCalled();
+    expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', meeting.id);
+    expect(acknowledgeMeeting).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    subscription.mockRestore();
+  }
 });
 
 it('does not apply a fetched command after the recording has changed', async () => {
@@ -233,6 +380,39 @@ it('passes meetings discarded on another device to the local store', async () =>
   });
   await syncMeetingSession('session-1');
   expect(importChanges).toHaveBeenCalledWith('server-1', 'session-1', 9, [], [], ['meeting-1']);
+  expect(releaseMeeting).not.toHaveBeenCalled();
+});
+
+it('lets go of a finished meeting discarded on another device', async () => {
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, state: 'ended', error: null });
+  client.getLiveMeetingChanges.mockResolvedValueOnce({
+    cursor: 9,
+    meetings: [],
+    notes: [],
+    deletedMeetingIds: ['meeting-1'],
+  });
+  await syncMeetingSession('session-1');
+  expect(releaseMeeting).toHaveBeenCalledWith('meeting-1');
+});
+
+// A finished recording answered 404 on /commands after it was discarded, every few seconds.
+it('polls recorder commands only until the recording has ended', async () => {
+  jest.mocked(currentMeeting).mockReturnValue({ ...meeting, state: 'ended', error: null });
+  Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  const subscription = jest
+    .spyOn(AppState, 'addEventListener')
+    .mockReturnValue({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
+  const stop = startLiveMeetingSync();
+  try {
+    const { recoverNativeMeetings } = jest.requireMock('./liveMeetingSession');
+    // The sync loop has ticked: native recovery runs first and resolves into the tick.
+    await waitFor(() => expect(recoverNativeMeetings).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.getLiveMeetingCommands).not.toHaveBeenCalled();
+  } finally {
+    stop();
+    subscription.mockRestore();
+  }
 });
 
 // Without this, a recorder holding an unsent revision would retry the refused upload on
@@ -261,6 +441,8 @@ describe('discardFinishedMeeting', () => {
     await discardFinishedMeeting('session-1', ended, client as never);
     expect(client.discardSessionMeeting).toHaveBeenCalledWith('session-1', meeting.id);
     expect(deleteMeeting).toHaveBeenCalledWith(meeting.id, 'server-1');
+    // The app kept polling a discarded meeting for 15 minutes and more: it stayed current.
+    expect(releaseMeeting).toHaveBeenCalledWith(meeting.id);
     expect(client.discardSessionMeeting.mock.invocationCallOrder[0]).toBeLessThan(
       jest.mocked(deleteMeeting).mock.invocationCallOrder[0]!,
     );
@@ -272,6 +454,7 @@ describe('discardFinishedMeeting', () => {
       'unavailable',
     );
     expect(deleteMeeting).not.toHaveBeenCalled();
+    expect(releaseMeeting).not.toHaveBeenCalled();
   });
 
   it('deletes locally when the server no longer has the meeting', async () => {
@@ -313,5 +496,127 @@ describe('discardFinishedMeeting', () => {
     ).rejects.toThrow('End the meeting');
     expect(client.discardSessionMeeting).not.toHaveBeenCalled();
     expect(deleteMeeting).not.toHaveBeenCalled();
+  });
+});
+
+describe('stopping a meeting recorded on another device', () => {
+  const remote = { id: 'remote-1', sessionId: 'session-1', engine: 'fluid-nemotron' as const };
+  const stop = (state: 'pending' | 'failed' | 'completed') => ({
+    id: `stop-${state}`,
+    meetingId: remote.id,
+    action: 'stop' as const,
+    state,
+    error: state === 'failed' ? 'Recording changed before the remote command was applied.' : null,
+    requestedAt: 1,
+    acknowledgedAt: null,
+  });
+  const extra = {
+    requestLiveMeetingCommand: jest.fn().mockResolvedValue({ commandId: 'stop-1' }),
+    stopOnlineMeeting: jest.fn().mockResolvedValue(undefined),
+  };
+  beforeEach(() => {
+    Object.assign(client, extra);
+    extra.requestLiveMeetingCommand.mockClear();
+    extra.stopOnlineMeeting.mockClear();
+  });
+
+  it('asks a reachable recorder to stop, so it keeps its last audio', async () => {
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    expect(extra.requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, 'stop');
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+  });
+
+  it('ends the meeting on the server when no recorder can run the stop', async () => {
+    // The recording device crashed or lost its connection: a command would wait forever.
+    client.getLiveMeetingCommands.mockResolvedValue({ commands: [], recorderOnline: false });
+    expect(await stopMeetingElsewhere(remote)).toBe('ended');
+    expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
+    expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
+    // The ended state is imported at once, so every view stops showing it as running.
+    expect(client.getLiveMeetingChanges).toHaveBeenCalled();
+  });
+
+  it('asks a reachable recorder again after an earlier stop failed', async () => {
+    // The refusal may be stale or from another device; the recorder still keeps its audio.
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('failed')],
+      recorderOnline: true,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    expect(extra.requestLiveMeetingCommand).toHaveBeenCalledWith('session-1', remote.id, 'stop');
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+  });
+
+  it('ends it on the server when tapped again while the recorder stays unreachable', async () => {
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('pending')],
+      recorderOnline: false,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('ended');
+    expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
+    expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps a pending stop for a reachable recorder when tapped again', async () => {
+    // Ending on the server here would cut off the last audio the recorder is about to save.
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('pending')],
+      recorderOnline: true,
+    });
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+    expect(extra.requestLiveMeetingCommand).not.toHaveBeenCalled();
+  });
+
+  it('leaves an online meeting through its bot, never through the server end', async () => {
+    expect(await stopMeetingElsewhere({ ...remote, engine: 'attendee' })).toBe('online');
+    expect(extra.stopOnlineMeeting).toHaveBeenCalledWith('session-1', remote.id);
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['refused', { commands: [stop('failed')], recorderOnline: true }],
+    ['stranded with a silent recorder', { commands: [stop('pending')], recorderOnline: false }],
+  ])('ends on the server a stop sent from here that the recorder %s', async (_, stranded) => {
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    client.getLiveMeetingCommands.mockResolvedValue(stranded);
+    const control = await readMeetingControl(
+      client as unknown as Parameters<typeof readMeetingControl>[0],
+      'session-1',
+      remote.id,
+    );
+    expect(control).toMatchObject({ commands: [], serverEnded: true });
+    expect(client.finalizeLiveMeeting).toHaveBeenCalledWith('session-1', remote.id);
+  });
+
+  it('keeps waiting while a reachable recorder has the stop pending', async () => {
+    expect(await stopMeetingElsewhere(remote)).toBe('requested');
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('pending')],
+      recorderOnline: true,
+    });
+    const control = await readMeetingControl(
+      client as unknown as Parameters<typeof readMeetingControl>[0],
+      'session-1',
+      remote.id,
+    );
+    expect(control.serverEnded).toBe(false);
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
+  });
+
+  it('never ends a meeting for a stop another device sent', async () => {
+    // Only the device whose user tapped Stop may turn it into a server end; a viewer
+    // merely watching must not end a meeting the recorder may still be recovering.
+    client.getLiveMeetingCommands.mockResolvedValue({
+      commands: [stop('failed')],
+      recorderOnline: false,
+    });
+    const control = await readMeetingControl(
+      client as unknown as Parameters<typeof readMeetingControl>[0],
+      'session-1',
+      'meeting-elsewhere',
+    );
+    expect(control.serverEnded).toBe(false);
+    expect(client.finalizeLiveMeeting).not.toHaveBeenCalled();
   });
 });

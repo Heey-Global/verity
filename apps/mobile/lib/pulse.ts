@@ -6,6 +6,7 @@ import { Animated } from 'react-native';
 // native-driver loop, started on first use and left running for the app's lifetime
 // (cheap, off the JS thread); every consumer binds its `opacity` to the same value,
 // so they can never drift out of phase.
+// Keep the working mark vivid even at the dimmest point of its pulse.
 const syncedPulse = new Animated.Value(1);
 
 let started = false;
@@ -17,7 +18,7 @@ export function useSyncedPulse(): Animated.Value {
     started = true;
     Animated.loop(
       Animated.sequence([
-        Animated.timing(syncedPulse, { toValue: 0.35, duration: 750, useNativeDriver: true }),
+        Animated.timing(syncedPulse, { toValue: 0.85, duration: 750, useNativeDriver: true }),
         Animated.timing(syncedPulse, { toValue: 1, duration: 750, useNativeDriver: true }),
       ]),
     ).start();

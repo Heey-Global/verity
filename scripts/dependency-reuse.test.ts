@@ -1,8 +1,7 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -17,127 +16,11 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-const helper = resolve('agent-seed/bin/verity-dependencies');
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
-const env = {
-  ...process.env,
-  VERITY_SESSION_ID: '',
-  // npm test exports its own configuration paths; the fake npm must use the
-  // fixture's global configuration so drift assertions exercise that file.
-  NPM_CONFIG_GLOBALCONFIG: undefined,
-  npm_config_globalconfig: undefined,
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_SYSTEM: '/dev/null',
-};
-function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'verity-deps-'));
-  roots.push(root);
-  const git = (...args: string[]) =>
-    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args], {
-      env,
-      stdio: 'ignore',
-    });
-  git('init', '-q', root);
-  git('-C', root, 'config', 'user.name', 'Test');
-  git('-C', root, 'config', 'user.email', 'test@example.invalid');
-  writeFileSync(join(root, 'package.json'), '{"name":"test","version":"1.0.0"}');
-  writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}');
-  writeFileSync(join(root, '.gitignore'), 'node_modules/\n.verity-sessions/\nbin/\n');
-  git('-C', root, 'add', '.');
-  git('-C', root, 'commit', '-qm', 'initial');
-  const worktree = join(root, '.verity-sessions', 'test');
-  git('-C', root, 'worktree', 'add', '-qb', 'test', worktree);
-  mkdirSync(join(root, 'node_modules'), { recursive: true });
-  const bin = join(root, 'bin');
-  mkdirSync(bin);
-  const called = join(bin, 'called');
-  writeFileSync(
-    join(bin, 'npm'),
-    `#!${process.execPath}
-const fs = require('node:fs');
-const path = require('node:path');
-if (process.argv[2] === 'prefix') { console.log(fs.existsSync(${JSON.stringify(join(bin, '.npm-prefix-redirect'))}) ? ${JSON.stringify(root)} : process.cwd()); process.exit(0); }
-if (process.argv[2] === 'config' && process.argv[4] === 'cafile') { const config = fs.existsSync('.npmrc') ? fs.readFileSync('.npmrc','utf8') : ''; const value = /^cafile=(.+)$/m.exec(config)?.[1]; console.log(value ? path.resolve(value) : 'null'); process.exit(0); }
-if (process.argv[2] === '--version') { console.log('12.2.2'); process.exit(0); }
-if (process.argv[2] === 'config' && process.argv[3] === 'get' && ['globalconfig','userconfig'].includes(process.argv[4])) { const key=process.argv[4]; console.log(process.env['NPM_CONFIG_'+key.toUpperCase()] ?? process.env['npm_config_'+key] ?? path.join(${JSON.stringify(bin)},key+'.npmrc')); process.exit(0); }
+import { env, fixture, helper } from './dependency-fixture.js';
 
-fs.appendFileSync(${JSON.stringify(called)}, process.cwd() + '\\n' + process.argv.slice(2).join('\\n') + '\\n');
-const complete = () => {
-  if (process.env.TEST_EXPECTED_CAFILE && (process.env.npm_config_cafile !== process.env.TEST_EXPECTED_CAFILE || fs.readFileSync(process.env.npm_config_cafile, 'utf8') !== 'certificate')) process.exit(50);
-  const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'));
-  fs.mkdirSync('node_modules', {recursive:true});
-  if (process.env.NPM_CONFIG_USERCONFIG && !path.isAbsolute(process.env.NPM_CONFIG_USERCONFIG)) process.exit(48);
-  if (process.env.TEST_EXPECTED_USERCONFIG_CONTENT && fs.readFileSync(process.env.NPM_CONFIG_USERCONFIG, 'utf8') !== process.env.TEST_EXPECTED_USERCONFIG_CONTENT) process.exit(49);
-  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-fail'))})) process.exit(42);
-  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-required-source'))})) {
-    const expected = JSON.parse(fs.readFileSync(${JSON.stringify(join(bin, '.npm-required-source'))}, 'utf8'));
-    for (const [file, contents] of Object.entries(expected)) {
-      if (fs.readFileSync(file, 'utf8') !== contents) process.exit(43);
-    }
-  }
-  const packages = {...(lock.packages ?? {})};
-  const collect = (dependencies,prefix='') => { for (const [name,value] of Object.entries(dependencies ?? {})) { const entry=prefix+'node_modules/'+name; packages[entry]=value; collect(value.dependencies,entry+'/'); } };
-  if (!lock.packages) collect(lock.dependencies);
-  for (const [file, value] of Object.entries(packages)) {
-    if (!file.startsWith('node_modules/')) continue;
-    if (value.link) {
-      fs.mkdirSync(path.dirname(file), {recursive:true});
-      fs.symlinkSync(path.relative(path.dirname(file), value.resolved), file);
-    } else {
-      fs.mkdirSync(file, {recursive:true});
-      fs.writeFileSync(path.join(file, 'package.json'), JSON.stringify({version:value.version}));
-      if (file === 'node_modules/private') {
-        fs.writeFileSync(path.join(file,'cli.js'),'// private cli');
-        fs.mkdirSync('node_modules/.bin',{recursive:true});
-        fs.symlinkSync('../private/cli.js','node_modules/.bin/private');
-      }
-    }
-  }
-  fs.writeFileSync('node_modules/.package-lock.json', JSON.stringify({lockfileVersion:3,packages}));
-  if (fs.existsSync(${JSON.stringify(join(bin, '.npm-change-config'))})) fs.appendFileSync('.npmrc','engine-strict=false\\n');
-};
-setTimeout(complete, fs.existsSync(${JSON.stringify(join(bin, '.npm-delay'))}) ? Number(fs.readFileSync(${JSON.stringify(join(bin, '.npm-delay'))}, 'utf8')) : 0);
-`,
-    { mode: 0o755 },
-  );
-  const run = (action: string, extraEnv: NodeJS.ProcessEnv = {}) =>
-    spawnSync(process.execPath, [helper, action], {
-      cwd: worktree,
-      env: { ...env, PATH: `${bin}:${process.env.PATH}`, ...extraEnv },
-      encoding: 'utf8',
-    });
-  const start = (cwd = worktree) =>
-    spawn(process.execPath, [helper, 'install'], {
-      cwd,
-      env: { ...env, PATH: `${bin}:${process.env.PATH}` },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  const sibling = () => {
-    const directory = join(root, '.verity-sessions', 'sibling');
-    git('-C', root, 'worktree', 'add', '-qb', 'sibling', directory);
-    return directory;
-  };
-  // Model provisioning with a genuine helper receipt, rather than forging an
-  // identity that could let a weaker compatibility check pass unnoticed.
-  const prepared = run('install');
-  if (prepared.status !== 0)
-    throw new Error(`Fixture dependency preparation failed: ${prepared.stderr}`);
-  cpSync(join(worktree, 'node_modules'), join(root, 'node_modules'), {
-    recursive: true,
-    verbatimSymlinks: true,
-  });
-  rmSync(join(worktree, 'node_modules'), { recursive: true });
-  rmSync(join(root, '.git', 'verity-dependencies'), { recursive: true, force: true });
-  rmSync(called, { force: true });
-  return { root, worktree, called, run, start, sibling };
-}
 describe('shared dependency reuse', () => {
   it('reuses compatible ancestor dependencies without installing private copies', () => {
     const f = fixture();
@@ -311,6 +194,30 @@ describe('shared dependency reuse', () => {
     expect(existsSync(f.called)).toBe(false);
     expect(f.run('status').status).toBe(1);
   });
+  it.each([false, true])('recognizes pnpm 12 project locks (boot document: %s)', (boot) => {
+    const f = fixture();
+    writeFileSync(join(f.worktree, 'package.json'), '{"packageManager":"pnpm@12.3.4"}');
+    const project =
+      "lockfileVersion: '9.0'\n\nimporters:\n  .:\n    dependencies:\n      dep:\n        specifier: ^1.0.0\n        version: 1.0.0\n";
+    const prefix = boot
+      ? "---\nlockfileVersion: '9.0'\nimporters:\n  .:\n    packageManagerDependencies:\n      pnpm:\n        specifier: 12.3.4\n        version: 12.3.4\n---\n"
+      : '';
+    writeFileSync(join(f.worktree, 'pnpm-lock.yaml'), prefix + project);
+    const store = join(f.worktree, 'node_modules', '.pnpm');
+    mkdirSync(store, { recursive: true });
+    writeFileSync(join(f.worktree, 'node_modules', '.modules.yaml'), 'layoutVersion: 5');
+    const current = join(store, 'lock.yaml');
+    writeFileSync(current, project);
+    expect(f.run('status').status).toBe(0);
+    expect(f.run('install').status).toBe(0);
+    expect(existsSync(f.called)).toBe(false);
+    writeFileSync(current, project.replace('version: 1.0.0', 'version: 0.9.0'));
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(1);
+    rmSync(current);
+    expect(f.run('status').status).toBe(1);
+    expect(existsSync(f.called)).toBe(false);
+  });
   it.each(['yarn', 'pnpm'])(
     'recognizes an existing %s install without switching package managers',
     (manager) => {
@@ -417,10 +324,42 @@ describe('shared dependency reuse', () => {
     expect(realpathSync(join(sibling, 'node_modules', '.bin', 'private'))).toBe(
       join(sibling, 'node_modules', 'private', 'cli.js'),
     );
-    writeFileSync(join(sibling, 'node_modules', 'private', 'package.json'), '{"patched":true}');
+    // Shared read-only: one session's write must never reach another session.
+    const write = () =>
+      writeFileSync(join(sibling, 'node_modules', 'private', 'package.json'), '{"patched":true}');
+    // Root gets private copies instead: its write must stay in its own session.
+    if (process.getuid?.() !== 0) expect(write).toThrow(/EACCES/u);
+    else write();
     expect(
       readFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), 'utf8'),
     ).toContain('2.0.0');
+  });
+  it('reuses a central inventory across sessions with private npm log directories', () => {
+    // Each session sets its own npm_config_logs_dir. If that path entered the
+    // identity, every session would prepare its own inventory: reuse would stop
+    // without any check failing, only npm ci would quietly run once per session.
+    const f = fixture();
+    const sibling = f.sibling();
+    const lock = JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/private': { version: '2.0.0' } },
+    });
+    writeFileSync(join(f.worktree, 'package-lock.json'), lock);
+    writeFileSync(join(sibling, 'package-lock.json'), lock);
+    expect(
+      f.run('install', { npm_config_logs_dir: join(f.root, 'home-a', 'cache', '_logs') }).status,
+    ).toBe(0);
+    const child = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        npm_config_logs_dir: join(f.root, 'home-b', 'cache', '_logs'),
+      },
+      encoding: 'utf8',
+    });
+    expect(child.status, child.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
   it('rewires cached workspace links to the receiving session', () => {
     const f = fixture();
@@ -449,6 +388,138 @@ describe('shared dependency reuse', () => {
     );
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('prepares and independently activates workspace-nested packages across sessions', () => {
+    const f = fixture();
+    const sibling = f.sibling();
+    const nested = 'packages/source/node_modules/private/package.json';
+    for (const directory of [f.worktree, sibling]) {
+      mkdirSync(join(directory, 'packages/source'), { recursive: true });
+      writeFileSync(join(directory, 'packages/source/package.json'), '{"name":"source"}');
+      mkdirSync(join(directory, 'packages/other'), { recursive: true });
+      writeFileSync(
+        join(directory, 'packages/other/package.json'),
+        JSON.stringify({ name: 'other', bin: { 'other-cli': 'cli.js' } }),
+      );
+      writeFileSync(
+        join(directory, 'packages/other/cli.js'),
+        '#!/usr/bin/env node\nconsole.log("other-cli");\n',
+      );
+      writeFileSync(
+        join(directory, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            'node_modules/hoisted': { version: '2.0.0' },
+            'packages/source': {},
+            'packages/other': {},
+            'packages/source/node_modules/private/node_modules/other': {
+              link: true,
+              resolved: 'packages/other',
+            },
+            'node_modules/source': { link: true, resolved: 'packages/source' },
+            'packages/source/node_modules/private': { version: '2.0.0' },
+            'packages/source/node_modules/private/node_modules/kept': { version: '3.0.0' },
+          },
+        }),
+      );
+    }
+    const first = f.run('install');
+    expect(first.status, first.stderr).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    for (const path of ['hoisted', 'private/node_modules/hoisted', '@scope/hoisted']) {
+      const shadow = join(f.worktree, 'packages/source/node_modules', path);
+      mkdirSync(shadow, { recursive: true });
+      writeFileSync(join(shadow, 'package.json'), '{"version":"1.0.0"}');
+      expect(f.run('status').status, path).toBe(1);
+      expect(f.run('install').status).toBe(0);
+      expect(existsSync(shadow)).toBe(false);
+      expect(f.run('status').status).toBe(0);
+    }
+    const second = spawnSync(process.execPath, [helper, 'install'], {
+      cwd: sibling,
+      env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+      encoding: 'utf8',
+    });
+    expect(second.status, second.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(
+      realpathSync(join(sibling, 'packages/source/node_modules/private/node_modules/other')),
+    ).toBe(join(sibling, 'packages/other'));
+    const command = join(
+      sibling,
+      'packages/source/node_modules/private/node_modules/.bin/other-cli',
+    );
+    expect(realpathSync(command)).toBe(join(sibling, 'packages/other/cli.js'));
+    expect(spawnSync(command, [], { encoding: 'utf8' }).stdout.trim()).toBe('other-cli');
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    const write = () => writeFileSync(join(f.worktree, nested), '{"version":"patched"}');
+    if (process.getuid?.() !== 0) expect(write).toThrow(/EACCES/u);
+    else write();
+    expect(JSON.parse(readFileSync(join(sibling, nested), 'utf8')).version).toBe('2.0.0');
+    const patch = join(f.worktree, 'packages/source/node_modules/local-patch.txt');
+    writeFileSync(patch, 'keep local patch');
+    rmSync(join(f.worktree, nested));
+    expect(f.run('status').status).toBe(1);
+    expect(f.run('install').status).toBe(0);
+    expect(f.run('status').status).toBe(0);
+    const preserved = join(f.root, '.git/worktrees/test/verity-dependencies-preserved');
+    expect(
+      readdirSync(preserved).some(
+        (entry) =>
+          existsSync(join(preserved, entry, 'local-patch.txt')) &&
+          readFileSync(join(preserved, entry, 'local-patch.txt'), 'utf8') === 'keep local patch',
+      ),
+    ).toBe(true);
+  }, 60_000);
+  it('discards an activated tree unchanged since activation and keeps an edited one', () => {
+    // Each identity change used to keep another full copy, and the copy could no
+    // longer be compared once its central identity was retired.
+    const f = fixture();
+    const preserved = join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-preserved');
+    const copies = () => (existsSync(preserved) ? readdirSync(preserved) : []);
+    const lock = (version: string) =>
+      writeFileSync(
+        join(f.worktree, 'package-lock.json'),
+        JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/private': { version } } }),
+      );
+    for (const version of ['1.0.0', '2.0.0', '3.0.0']) {
+      lock(version);
+      const result = f.run('install');
+      expect(result.status, result.stderr).toBe(0);
+      // A run that changes nothing must not count as a local edit.
+      if (version === '1.0.0') expect(f.run('install').status).toBe(0);
+    }
+    expect(copies()).toEqual([]);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(3);
+    const manifest = join(f.worktree, 'node_modules', 'private', 'package.json');
+    const original = readFileSync(manifest, 'utf8');
+    // Shared files are read-only; an edit has to make the file writable first.
+    chmodSync(manifest, 0o644);
+    writeFileSync(manifest, original.replace('3.0.0', '3.0.9'));
+    lock('4.0.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(1);
+    expect(
+      readFileSync(join(preserved, copies()[0]!, 'private', 'package.json'), 'utf8'),
+    ).toContain('3.0.9');
+    writeFileSync(join(f.worktree, 'node_modules', 'private', 'patch.txt'), 'local edit');
+    // A later status change of the record must not move its cutoff past the edit.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30);
+    chmodSync(
+      join(f.root, '.git', 'worktrees', 'test', 'verity-dependencies-activation.json'),
+      0o600,
+    );
+    lock('4.1.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(2);
+    // A tree that is not the recorded one is never claimed unmodified.
+    rmSync(join(f.worktree, 'node_modules'), { recursive: true });
+    mkdirSync(join(f.worktree, 'node_modules', 'private'), { recursive: true });
+    writeFileSync(join(f.worktree, 'node_modules', 'private', 'package.json'), '{}');
+    lock('5.0.0');
+    expect(f.run('install').status).toBe(0);
+    expect(copies()).toHaveLength(3);
+  }, 120_000);
   it('preserves stale workspace dependency trees before activating hoisted packages', () => {
     const f = fixture();
     const workspace = join(f.worktree, 'packages', 'source');
@@ -1016,6 +1087,58 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(readFileSync(join(f.worktree, 'policy-prepared'), 'utf8')).toBe('prepare\n');
     expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
   });
+  it('prepares centrally when invoked from a git hook that exports GIT_DIR', () => {
+    // pre-push runs the helper with GIT_DIR set. The shipped runtime resolves the
+    // staging state through `git -C <stage>`; an inherited GIT_DIR made that answer
+    // the session gitdir, so every hook-driven preparation was refused as if the
+    // sandbox tooling were outdated.
+    const f = fixture();
+    const trusted = join(f.root, 'bin', 'hook-policy');
+    mkdirSync(trusted);
+    cpSync(
+      'features/verity-sandbox-toolkit/bin/verity-npm-preflight.mjs',
+      join(trusted, 'verity-npm-preflight.mjs'),
+    );
+    writeFileSync(
+      join(trusted, 'verity-package-install.mjs'),
+      `import fs from 'node:fs';
+if (process.argv.slice(2).join(' ') === 'npm --verity-prepare-only') fs.writeFileSync('.npmrc','min-release-age=3\\n');
+else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') process.exit(2);
+`,
+    );
+    const instrumented = join(f.root, 'bin', 'hook-helper.mjs');
+    writeFileSync(
+      instrumented,
+      readFileSync(helper, 'utf8').replace(
+        "const directory = '/usr/local/lib/verity';",
+        `const directory = ${JSON.stringify(trusted)};`,
+      ),
+    );
+    writeFileSync(
+      join(f.worktree, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { 'node_modules/private': { version: '1.0.0' } },
+      }),
+    );
+    const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
+      cwd: f.worktree,
+      env,
+      encoding: 'utf8',
+    }).trim();
+    const installed = spawnSync(process.execPath, [instrumented, 'install'], {
+      cwd: f.worktree,
+      env: {
+        ...env,
+        PATH: `${join(f.root, 'bin')}:${process.env.PATH}`,
+        VERITY_SESSION_ID: 'fixture-session',
+        GIT_DIR: gitDir,
+      },
+      encoding: 'utf8',
+    });
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+  });
   it.each(['missing', 'legacy'])(
     'blocks central preparation with a %s staging-aware runtime verifier',
     (variant) => {
@@ -1106,6 +1229,71 @@ else if (process.argv.slice(2).join(' ') !== 'npm ci --verity-verify-only') proc
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Dependency inputs changed during installation');
     expect(existsSync(join(f.worktree, 'node_modules', '.verity-install.json'))).toBe(false);
+  });
+  it('prepares a repository opened into a session through the project inventory', () => {
+    // An opened repository is a standalone clone: its root is its own common
+    // directory, like the project clone. Treated as that shared clone, every
+    // pre-push dependency preparation in it was refused, so no push could leave.
+    const f = fixture();
+    writeFileSync(
+      join(f.root, '.gitignore'),
+      'node_modules/\n.verity-sessions/\nbin/\n.verity-repositories/\n',
+    );
+    const gitIn = (cwd: string, ...args: string[]) =>
+      execFileSync(
+        'git',
+        ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', ...args],
+        {
+          cwd,
+          env,
+          stdio: 'ignore',
+        },
+      );
+    const module = (session: string, marked = true) => {
+      const checkout = join(f.root, '.verity-repositories', session.repeat(20), 'b'.repeat(20));
+      gitIn(f.root, 'clone', '-q', f.worktree, checkout);
+      writeFileSync(
+        join(checkout, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: { 'node_modules/private': { version: '3.0.0' } },
+        }),
+      );
+      if (marked) gitIn(checkout, 'config', 'verity.repositoryId', 'module-repository');
+      return checkout;
+    };
+    const install = (cwd: string) =>
+      spawnSync(process.execPath, [helper, 'install'], {
+        cwd,
+        env: { ...env, PATH: `${join(f.root, 'bin')}:${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+
+    // Without the server's marker a standalone clone keeps the shared-clone refusal.
+    const unmarked = install(module('c', false));
+    expect(unmarked.status).toBe(1);
+    expect(unmarked.stderr).toContain('requires a session worktree');
+    expect(existsSync(f.called)).toBe(false);
+
+    const projectModules = readdirSync(join(f.root, 'node_modules')).sort();
+    const first = module('d');
+    const prepared = install(first);
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(readFileSync(join(first, 'node_modules', 'private', 'package.json'), 'utf8')).toContain(
+      '3.0.0',
+    );
+    // Published in the project's inventory, where other sessions find it.
+    expect(readdirSync(join(f.root, '.git', 'verity-dependencies')).length).toBeGreaterThan(0);
+    expect(existsSync(join(first, '.git', 'verity-dependencies'))).toBe(false);
+
+    const second = module('e');
+    const reused = install(second);
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(readFileSync(f.called, 'utf8').match(/\nci\n/g)).toHaveLength(1);
+    expect(existsSync(join(second, 'node_modules', 'private', 'package.json'))).toBe(true);
+    // The project clone's own installation is what the shared-clone refusal protects.
+    expect(readdirSync(join(f.root, 'node_modules')).sort()).toEqual(projectModules);
+    expect(existsSync(join(f.root, 'node_modules', 'private'))).toBe(false);
   });
   it('ships identical executable helpers in both seed trees', () => {
     expect(readFileSync(helper, 'utf8')).toBe(

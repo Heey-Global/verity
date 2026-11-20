@@ -629,6 +629,39 @@ it.each(['build-export', 'protected-build'] as const)(
   },
 );
 
+// A build waiting for the single build slot is otherwise indistinguishable from a
+// hung one; the holder and its start make the difference visible.
+it('reports which build holds the build slot, and omits an idle queue', async () => {
+  const held = createRuntimeDiagnostics({
+    now: () => now,
+    buildQueue: () => ({
+      holder: { label: 'heey-global/verity', since: now - 60_000 },
+      waiting: 1,
+    }),
+  });
+  expect((await held({})).buildQueue).toEqual({
+    holder: { build: 'heey-global/verity', since: new Date(now - 60_000).toISOString() },
+    waiting: 1,
+  });
+  const idle = createRuntimeDiagnostics({ now: () => now, buildQueue: () => ({ waiting: 0 }) });
+  expect((await idle({})).buildQueue).toBeUndefined();
+});
+
+// A read scoped to one project must not reveal another project's repository.
+it('names the holding build only to an unscoped read or a read for the same project', async () => {
+  const read = createRuntimeDiagnostics({
+    now: () => now,
+    buildQueue: () => ({
+      holder: { label: 'heey-global/verity', projectId: 'p-verity', since: now },
+      waiting: 1,
+    }),
+  });
+  expect((await read({ projectId: 'p-verity' })).buildQueue?.holder?.build).toBe(
+    'heey-global/verity',
+  );
+  expect((await read({ projectId: 'p-k8s' })).buildQueue?.holder?.build).toBe('another project');
+});
+
 it('retains storage pinning reasons through the diagnostics schema', async () => {
   const storage = {
     accounting: 'Estimates overlap; unknown measurements are null.',

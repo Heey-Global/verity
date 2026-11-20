@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 describe('meeting transcription deployment', () => {
@@ -40,8 +40,15 @@ describe('meeting transcription deployment', () => {
   it('takes provider configuration only from encrypted Settings', async () => {
     const compose = await readFile('deploy/docker-compose.yml', 'utf8');
     expect(compose).not.toContain('VERITY_TRANSCRIBE_BASE_URL');
-    const server = await readFile('packages/server/src/server.ts', 'utf8');
-    expect(server).not.toContain('process.env.VERITY_TRANSCRIBE_BASE_URL');
-    expect(server).not.toContain('process.env.VERITY_MEETING_TRANSCRIBE_COMMAND');
+    // buildServer and the server-*.ts modules it installs.
+    const files = (await readdir('packages/server/src')).filter(
+      (file) => /^server(-[a-z-]+)?\.ts$/u.test(file) && !file.includes('.test.'),
+    );
+    expect(files).toContain('server-meetings.ts');
+    for (const file of files) {
+      const server = await readFile(`packages/server/src/${file}`, 'utf8');
+      expect(server).not.toContain('process.env.VERITY_TRANSCRIBE_BASE_URL');
+      expect(server).not.toContain('process.env.VERITY_MEETING_TRANSCRIBE_COMMAND');
+    }
   });
 });

@@ -14,12 +14,21 @@ import { isIP } from 'node:net';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import WebSocket, { WebSocketServer } from 'ws';
+import {
+  ConnectorWrites,
+  connectorWrites,
+  type ConnectorWriteSnapshot,
+} from './connector-diagnostics.js';
 import { connectorBackpressure } from './connector-backpressure.js';
+import { appRequestCookies, boundedSetCookies, namespaceSetCookie } from './app-cookies.js';
 
 import {
   encodedPayloadLimit,
   FORBIDDEN_REQUEST_HEADERS,
   HOP_BY_HOP,
+  MAX_HEADER_COUNT,
+  MAX_TUNNEL_HEADER_BYTES,
+  headerBytes,
   isHttpRequestMeta,
   isHttpResponseMeta,
   isSubprotocolToken,
@@ -162,6 +171,11 @@ export type PreviewEdgeDiagnostic =
     };
 
 export type PreviewConnectorDiagnostic =
+  | ({
+      event: 'transport.snapshot';
+      phase: 'ping.enqueue' | 'ping.write' | 'pong' | 'timeout.write' | 'timeout.pong';
+      elapsedMs: number;
+    } & ConnectorWriteSnapshot)
   | { event: 'connect.started' }
   | { event: 'connect.established'; elapsedMs: number }
   | { event: 'connect.failed'; cause: string; elapsedMs: number; statusCode?: number }
@@ -562,7 +576,7 @@ export class PreviewEdge {
       return;
     }
     const headers = websocketRequestHeaders(request.headers);
-    localRequestCookies(headers, request, this.options.accessMode);
+    relayRequestCookies(headers, request, this.options.accessMode);
     if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
       socket.write('HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n');
       socket.destroy();
@@ -1163,7 +1177,7 @@ export class PreviewEdge {
         return;
       }
       const headers = filteredHeaders(request.headers);
-      localRequestCookies(headers, request, this.options.accessMode);
+      relayRequestCookies(headers, request, this.options.accessMode);
       if (!validHeaders(headers, FORBIDDEN_REQUEST_HEADERS)) {
         response.writeHead(431, { 'content-type': 'text/plain; charset=utf-8' });
         response.end('Preview request headers are too large or invalid.');
@@ -1713,12 +1727,19 @@ export class PreviewConnector {
       this.stopHeartbeat();
       const startedAt = Date.now();
       this.options.onDiagnostic({ event: 'connect.started' });
+      const writes = new ConnectorWrites(this.connectionGeneration + 1);
       const socket = new WebSocket(this.options.edgeUrl, {
+        // Observe the public upgrade request rather than ws private socket fields.
+        finishRequest: (request) => {
+          request.once('socket', (transport) => writes.attach(transport));
+          request.end();
+        },
         headers: { authorization: `Bearer ${this.options.connectorToken}` },
         // A stalled upgrade happens before the heartbeat can supervise the socket.
         handshakeTimeout: this.options.connectTimeoutMs,
         maxPayload: encodedPayloadLimit(this.options.maxBodyBytes),
       });
+      connectorWrites.set(socket, writes);
       this.socket = socket;
       let opened = false;
       this.disconnected = new Promise((disconnected) => socket.once('close', () => disconnected()));
@@ -1776,6 +1797,23 @@ export class PreviewConnector {
   private startHeartbeat(socket: WebSocket): void {
     let pending: Buffer | undefined;
     let missedPongs = 0;
+    let probeStarted = 0;
+    const snapshot = (
+      phase: 'ping.enqueue' | 'ping.write' | 'pong' | 'timeout.write' | 'timeout.pong',
+    ): void => {
+      const writes = connectorWrites.get(socket);
+      if (!writes) return;
+      try {
+        this.options.onDiagnostic({
+          event: 'transport.snapshot',
+          phase,
+          elapsedMs: Math.max(0, Math.floor(performance.now() - probeStarted)),
+          ...writes.sample(socket),
+        });
+      } catch {
+        // Observers must not interrupt heartbeat supervision.
+      }
+    };
     const active = (): boolean =>
       this.socket === socket &&
       this.heartbeat !== undefined &&
@@ -1798,6 +1836,7 @@ export class PreviewConnector {
         );
         setImmediate(() => {
           if (!active() || !pending || this.heartbeatDeadline !== timer) return;
+          snapshot(phase === 'pong' ? 'timeout.pong' : 'timeout.write');
           if (phase === 'pong') missedPongs += 1;
           this.options.onDiagnostic({ event: 'heartbeat.timeout', phase, lateMs, missedPongs });
           if (phase === 'write' || missedPongs >= 2) socket.terminate();
@@ -1813,6 +1852,7 @@ export class PreviewConnector {
     };
     socket.on('pong', (payload: Buffer) => {
       if (!active() || !pending || !payload.equals(pending)) return;
+      snapshot('pong');
       pending = undefined;
       missedPongs = 0;
       clearDeadline();
@@ -1821,12 +1861,15 @@ export class PreviewConnector {
       if (socket.readyState !== WebSocket.OPEN || pending) return;
       const probe = randomBytes(8);
       pending = probe;
+      probeStarted = performance.now();
+      snapshot('ping.enqueue');
       // Socket writes can queue behind application frames. Bound that wait,
       // then give the peer a separate reply window once the write completes.
       deadline('write');
       try {
         socket.ping(probe, undefined, (error?: Error) => {
           if (!active() || pending !== probe) return;
+          snapshot('ping.write');
           clearDeadline();
           if (error) {
             socket.terminate();
@@ -2056,9 +2099,7 @@ export class PreviewConnector {
       return this.faultStream(socket, streamId, 'protocol_error');
     }
     target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:';
-    const { protocols, headers } = websocketDialHeaders(
-      targetRequestHeaders(meta.headers, this.options.accessMode),
-    );
+    const { protocols, headers } = websocketDialHeaders(targetRequestHeaders(meta.headers));
     let upstream: WebSocket;
     try {
       upstream = new WebSocket(target, protocols, {
@@ -2221,7 +2262,7 @@ export class PreviewConnector {
       }, this.options.requestTimeoutMs);
       const init: RequestInit = {
         method: context.meta.method,
-        headers: targetRequestHeaders(context.meta.headers, this.options.accessMode),
+        headers: targetRequestHeaders(context.meta.headers),
         redirect: 'manual',
         signal: AbortSignal.any([expired.signal, context.cancelled.signal, disconnected.signal]),
       };
@@ -2246,7 +2287,7 @@ export class PreviewConnector {
         meta: {
           status: upstream.status,
           upstreamElapsedMs: Math.max(0, Math.floor(performance.now() - upstreamStarted)),
-          headers: filteredResponseHeaders(upstream.headers, target, this.options.accessMode),
+          headers: filteredResponseHeaders(upstream.headers, target),
         },
       });
       await this.relayBody(socket, streamId, context, upstream);
@@ -2296,6 +2337,7 @@ export class PreviewConnector {
       while (reader) {
         const { done, value } = await reader.read();
         if (done) break;
+        connectorWrites.get(socket)?.body(value.byteLength);
         if (socket.readyState !== WebSocket.OPEN) {
           failed = true;
           break;
@@ -2412,12 +2454,19 @@ function rawDataText(data: WebSocket.RawData): string {
 
 function sendStreamFrame(socket: WebSocket, frame: StreamFrame, onFlush?: () => void): void {
   if (socket.readyState !== WebSocket.OPEN) return;
+  const writes = connectorWrites.get(socket);
+  let flushed: (() => void) | undefined;
   try {
-    socket.send(JSON.stringify(frame), () => {
-      // Disconnects are handled by the connector reconnect loop.
+    const encoded = JSON.stringify(frame);
+    flushed = writes?.enqueue(Buffer.byteLength(encoded));
+    socket.send(encoded, () => {
+      flushed?.();
+      // A write callback is not an acknowledgement from the peer.
       onFlush?.();
     });
+    writes?.observe(socket);
   } catch {
+    flushed?.();
     // The socket can close between the ready-state check and send.
   }
 }
@@ -2569,11 +2618,12 @@ function filteredHeaders(headers: IncomingMessage['headers']): Record<string, st
   return result;
 }
 
-function filteredResponseHeaders(
-  headers: Headers,
-  requestUrl: URL,
-  mode: 'pin' | 'local-open' = 'pin',
-): Record<string, string> {
+/**
+ * The connector relays the target's cookies in every mode and leaves the
+ * policy to the edge, which owns the browser-facing cookie namespace. Older
+ * edges discard relayed cookies outside open local mode.
+ */
+function filteredResponseHeaders(headers: Headers, requestUrl: URL): Record<string, string> {
   const result: Record<string, string> = {};
   headers.forEach((value, name) => {
     if (
@@ -2586,13 +2636,6 @@ function filteredResponseHeaders(
   });
   for (const name of Object.keys(result))
     if (name.startsWith('x-verity-local-set-cookie-')) delete result[name];
-  if (mode === 'local-open')
-    headers
-      .getSetCookie()
-      .filter((cookie) => !isCoreSessionCookie(cookie))
-      .forEach((cookie, index) => {
-        result[`x-verity-local-set-cookie-${index}`] = cookie;
-      });
   const location = result.location;
   if (location) {
     try {
@@ -2606,6 +2649,17 @@ function filteredResponseHeaders(
       delete result.location;
     }
   }
+  // Leave room for the target's own headers: a head over the tunnel limits
+  // would fault the stream instead of only losing cookies.
+  boundedSetCookies(
+    headers.getSetCookie().filter((cookie) => !isCoreSessionCookie(cookie)),
+    {
+      headers: MAX_HEADER_COUNT - Object.keys(result).length,
+      bytes: MAX_TUNNEL_HEADER_BYTES - headerBytes(result),
+    },
+  ).forEach((cookie, index) => {
+    result[`x-verity-local-set-cookie-${index}`] = cookie;
+  });
   return result;
 }
 
@@ -2619,18 +2673,42 @@ function sanitizeResponseHeaders(
     if (!HOP_BY_HOP.has(name) && name !== 'set-cookie' && name !== 'content-length')
       result[name] = value;
   }
-  const cookies: string[] = [];
+  const relayed: Array<[number, string]> = [];
   for (const name of Object.keys(result)) {
     if (name.startsWith('x-verity-local-set-cookie-')) {
-      if (mode === 'local-open' && !isCoreSessionCookie(result[name]!)) cookies.push(result[name]!);
+      const suffix = name.slice('x-verity-local-set-cookie-'.length);
+      const index = Number(suffix);
+      if (/^\d+$/.test(suffix) && Number.isSafeInteger(index)) relayed.push([index, result[name]!]);
       delete result[name];
     }
   }
+  // Open local mode shares its host with Core and keeps application cookie
+  // names; online shares store them under the `__Host-app-` namespace.
+  const cookies = relayed
+    .sort((a, b) => a[0] - b[0])
+    .flatMap(([, cookie]) => {
+      if (mode === 'local-open') return isCoreSessionCookie(cookie) ? [] : [cookie];
+      const namespaced = namespaceSetCookie(cookie);
+      return namespaced === undefined ? [] : [namespaced];
+    });
   const output: Record<string, string | string[]> = result;
-  if (cookies.length) output['set-cookie'] = cookies;
+  if (cookies.length) {
+    output['set-cookie'] = cookies;
+    // A shared cache in front of an online share must never replay one
+    // visitor's session cookie to another. Even `private` can be qualified to
+    // let a shared cache store the response, and CDNs prefer their own cache
+    // headers over `Cache-Control`, so all of them are replaced.
+    if (mode !== 'local-open') {
+      for (const name of SHARED_CACHE_HEADERS) delete output[name];
+      output['cache-control'] = 'no-store';
+    }
+  }
   output['cache-control'] ??= 'no-store';
   return output;
 }
+
+/** Cache headers that CDNs honor ahead of `Cache-Control`. */
+const SHARED_CACHE_HEADERS = ['cdn-cache-control', 'surrogate-control'];
 
 function parseCookies(value: string | undefined): Record<string, string> {
   const result: Record<string, string> = {};
@@ -2727,15 +2805,41 @@ function previewRequestCookies(cookie: string): string {
     .trim();
 }
 
-function localRequestCookies(
+/** Chunk name (`x-verity-local-request-cookie-NN`) plus per-header framing. */
+const REQUEST_COOKIE_CHUNK_OVERHEAD_BYTES = 40;
+
+/**
+ * The cookie bytes that fit beside the request's other headers inside the
+ * tunnel limits. Each chunk carries up to 4096 characters, which can be up to
+ * twice as many UTF-8 bytes, so the budget assumes the worst case.
+ */
+function requestCookieRoom(headers: Record<string, string>): number {
+  const chunks = MAX_HEADER_COUNT - Object.keys(headers).length;
+  const bytes = MAX_TUNNEL_HEADER_BYTES - headerBytes(headers);
+  return Math.max(
+    0,
+    Math.min(chunks * 4096, bytes - Math.ceil(bytes / 4096) * REQUEST_COOKIE_CHUNK_OVERHEAD_BYTES),
+  );
+}
+
+/**
+ * Carries the browser cookies the application may see to the connector.
+ * Online shares forward only `__Host-app-` cookies under their original
+ * names, so the edge's own session and cookies planted by sibling shares
+ * never reach the target.
+ */
+function relayRequestCookies(
   headers: Record<string, string>,
   request: IncomingMessage,
   mode: 'pin' | 'local-open',
 ): void {
   for (const name of Object.keys(headers))
     if (name.startsWith('x-verity-local-request-cookie-')) delete headers[name];
-  if (mode === 'local-open' && request.headers.cookie) {
-    const value = previewRequestCookies(request.headers.cookie);
+  if (request.headers.cookie) {
+    const value =
+      mode === 'local-open'
+        ? previewRequestCookies(request.headers.cookie)
+        : appRequestCookies(request.headers.cookie, requestCookieRoom(headers));
     for (let offset = 0; offset < value.length; offset += 4096)
       headers[`x-verity-local-request-cookie-${offset / 4096}`] = value.slice(
         offset,
@@ -2744,10 +2848,9 @@ function localRequestCookies(
   }
 }
 
-function targetRequestHeaders(
-  headers: Record<string, string>,
-  mode: 'pin' | 'local-open',
-): Record<string, string> {
+/** The edge decides which cookies the target sees; older edges send none
+ * outside open local mode. */
+function targetRequestHeaders(headers: Record<string, string>): Record<string, string> {
   const result = { ...headers };
   const chunks: Array<[number, string]> = [];
   for (const name of Object.keys(result)) {
@@ -2757,7 +2860,7 @@ function targetRequestHeaders(
       delete result[name];
     }
   }
-  if (mode === 'local-open' && chunks.length) {
+  if (chunks.length) {
     const cookie = previewRequestCookies(
       chunks
         .sort((a, b) => a[0] - b[0])

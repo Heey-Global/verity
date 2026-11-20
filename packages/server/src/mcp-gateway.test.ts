@@ -7,6 +7,10 @@ import { TrustedCliDispatchError, type ExternalPermissionAnswer } from '@verity/
 import { describe, expect, it, vi } from 'vitest';
 
 import { DopplerSecretResolutionError } from './doppler-secret-resolver.js';
+import {
+  DOPPLER_CONNECTION_REQUIRED_MESSAGE,
+  dopplerConnectionRequired,
+} from './doppler-credential.js';
 
 import {
   createMcpGateway,
@@ -15,6 +19,8 @@ import {
   type McpGatewayAuditRecord,
   type McpGatewayDeps,
 } from './mcp-gateway.js';
+
+const SANDBOX_USER = '00000000-0000-4000-8000-000000000001';
 
 const HTTP_ARGUMENTS = {
   method: 'GET',
@@ -422,6 +428,57 @@ describe('MCP gateway — every call is recorded (ADR 0014 D3)', () => {
     );
   });
 
+  it.each([
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "print('probe')"],
+      secrets: [],
+      expected: 'secrets must contain at least one entry',
+    },
+    {
+      command: ['/usr/bin/python3', '-I', '-c', "import os\nprint('private-marker')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+      expected: 'command tokens must not contain control characters, including newlines and tabs',
+    },
+  ])(
+    'explains trusted CLI validation without exposing arguments ($expected)',
+    async ({ expected, ...args }) => {
+      const { gateway, requestApproval, invokeTool, records } = harness();
+      const response = await gateway.handle({
+        projectId: 'p1',
+        token: 'session-token',
+        body: call({ ...args, 'private-marker': 'private-value' }, 'verity_secret_run'),
+      });
+      expect(response.body).toMatchObject({
+        error: { code: -32602, message: expect.stringContaining(expected) },
+      });
+      expect(JSON.stringify(response.body)).not.toMatch(/private-marker|private-value|EXPO_TOKEN/);
+      expect(requestApproval).not.toHaveBeenCalled();
+      expect(invokeTool).not.toHaveBeenCalled();
+      expect(records.at(-1)).toMatchObject({
+        kind: 'gateway_call_rejected',
+        rejection: 'malformed_request',
+      });
+    },
+  );
+
+  it('passes single-line inline code with a secret through validation and approval', async () => {
+    const { gateway, requestApproval, invokeTool } = harness();
+    const args = {
+      command: ['/usr/bin/python3', '-c', "print('probe')"],
+      secrets: [{ secretAlias: 'EXPO_TOKEN', env: 'TOKEN' }],
+    };
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(args, 'verity_secret_run'),
+    });
+    expect(resultOf(response.body).isError).toBeUndefined();
+    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ request: args, approvedByCard: true }),
+    );
+  });
+
   it('hands the complete approved trusted CLI request to the turn-bound executor', async () => {
     const cli = {
       command: ['/usr/bin/kubectl', 'get', 'pods'],
@@ -815,6 +872,22 @@ describe('MCP gateway — refusals (ADR 0014 D2)', () => {
       kind: 'gateway_call_rejected',
       rejection: 'unavailable',
     });
+  });
+
+  // ADR 0023 §3: a person without their own Doppler connection is told how to
+  // connect, in a fixed text, rather than given a generic failure.
+  it('tells an ACP caller to connect their own Doppler token', async () => {
+    const { gateway } = harness({
+      invokeTool: vi.fn(async () => {
+        throw dopplerConnectionRequired();
+      }),
+    });
+    const response = await gateway.handle({
+      projectId: 'p1',
+      token: 'session-token',
+      body: call(),
+    });
+    expect(resultOf(response.body).content[0]?.text).toBe(DOPPLER_CONNECTION_REQUIRED_MESSAGE);
   });
 
   it('does not trust free text on a malformed Doppler resolution error', async () => {
@@ -1319,13 +1392,17 @@ it('uses availability for listing, calls and revocation during approval', async 
 it('advertises and approves account-only Drive URL reads without linked folders', async () => {
   const store = {
     googleAccounts: {
-      list: async () => [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }],
+      list: async (userId: string) =>
+        userId === 'turn-user'
+          ? [{ id: 'a', scopes: ['https://www.googleapis.com/auth/drive'] }]
+          : [],
       folders: async () => [],
     },
   } as unknown as EventStore;
   const { gateway, invokeTool, requestApproval } = harness({
     servedTools: ['verity_google_drive'],
-    toolAvailable: (input) => connectorToolAvailable(store, input),
+    // The composition passes the running turn's initiator; this stands in for it.
+    toolAvailable: (input) => connectorToolAvailable(store, { ...input, userId: 'turn-user' }),
   });
   const listed = await gateway.handle({
     projectId: 'p1',
@@ -1372,7 +1449,12 @@ it('binds provider requests to the listener generation and blocks work after ret
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: generation.signal,
     },
   });
@@ -1397,7 +1479,12 @@ it('revalidates the initiating user after asynchronous tool credential work', as
     token: 'session-token',
     body: call(),
     transport: {
-      identity: { projectId: 'p1', containerGeneration: 'g1' },
+      identity: {
+        projectId: 'p1',
+        userId: SANDBOX_USER,
+        projectDefault: true,
+        containerGeneration: 'g1',
+      },
       signal: new AbortController().signal,
     },
   });

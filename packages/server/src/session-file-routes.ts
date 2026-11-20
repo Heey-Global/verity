@@ -83,7 +83,7 @@ interface SessionFileTarget {
 export class SessionFileRootUnavailableError extends Error {
   constructor(
     message: string,
-    readonly status: 404 | 503,
+    readonly status: 404 | 409 | 503,
   ) {
     super(message);
   }
@@ -366,6 +366,30 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
   app.get('/sessions/:id/files', async (request, reply): Promise<unknown> => {
     const { id } = sessionParams.parse(request.params);
     const { root, path } = sessionFileQuery.parse(request.query);
+    // Every listing reports a missing checkout, so a sheet opened on Documents still
+    // offers the Code tab and its Restore instead of disabling it.
+    const codeWorkspaceUnavailable =
+      deps.workspaceKind !== undefined &&
+      (await deps.resolveRoot(id, 'worktree').then(
+        () => false,
+        (error: unknown) =>
+          error instanceof SessionFileRootUnavailableError && error.status === 409,
+      ));
+    if (root === 'worktree' && deps.workspaceKind) {
+      // A missing checkout lists as empty and unavailable, so the client can offer to
+      // restore it instead of showing an error or quietly switching to Documents.
+      if (codeWorkspaceUnavailable)
+        return {
+          root,
+          path: '',
+          entries: [],
+          truncated: false,
+          workspaceKind: await deps.workspaceKind(id),
+          codeAvailable: false,
+          codeWorkspaceUnavailable: true,
+          documentStatus: await deps.documentStatus?.(id),
+        };
+    }
     const value = await target(id, root, reply);
     if (value === undefined) return reply;
     const listed = await deps.list(reply, value, path);
@@ -378,6 +402,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, deps: SessionFil
           ...listed,
           workspaceKind: await deps.workspaceKind(id),
           codeAvailable: await deps.codeAvailable?.(id),
+          ...(codeWorkspaceUnavailable ? { codeWorkspaceUnavailable } : {}),
           documentStatus: await deps.documentStatus?.(id),
         }
       : listed;

@@ -1,6 +1,9 @@
 import { createTestDb, type TestDb } from '@verity/store/testing';
 import { beforeAll, afterAll, expect, it, vi } from 'vitest';
 import { createGmailTool } from './gmail-tool.js';
+
+/** Legacy project grants are recorded for the person who enabled them. */
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 let ctx: TestDb;
 beforeAll(async () => {
   ctx = await createTestDb();
@@ -61,19 +64,21 @@ function setup(beforeSend: () => Promise<void>) {
   return { tool, sendDraft };
 }
 it('accepts an explicit project grant without a legacy session grant', async () => {
-  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test');
+  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test', ADMIN);
   const { tool, sendDraft } = setup(async () => {});
   await expect(tool.invoke(input)).resolves.toEqual({ messageId: 'sent' });
   expect(sendDraft).toHaveBeenCalled();
 });
 it('blocks an approved action if project access is revoked before execution', async () => {
-  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test');
-  const { tool, sendDraft } = setup(() => ctx.store.disableProjectGoogleConnection('p1', 'gmail'));
+  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test', ADMIN);
+  const { tool, sendDraft } = setup(() =>
+    ctx.store.disableProjectGoogleConnection('p1', 'gmail', ADMIN),
+  );
   await expect(tool.invoke(input)).rejects.toThrow('not enabled');
   expect(sendDraft).not.toHaveBeenCalled();
 });
 it('blocks an approved action if the connected account changes before execution', async () => {
-  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test');
+  await ctx.store.enableProjectGoogleConnection('p1', 'gmail', 'me@example.test', ADMIN);
   const { tool, sendDraft } = setup(async () => {
     await ctx.store.updateVeritySettings({ googleDriveAccountEmail: 'other@example.test' });
   });

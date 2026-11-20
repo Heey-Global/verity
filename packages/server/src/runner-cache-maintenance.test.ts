@@ -5,7 +5,11 @@ import type {
   DockerClient,
   DockerContainerSummary,
 } from './docker.js';
-import { RunnerCacheMaintenance, reclaimSleepingRunnerCaches } from './runner-cache-maintenance.js';
+import {
+  CACHE_HELPER_RESOURCES,
+  RunnerCacheMaintenance,
+  reclaimSleepingRunnerCaches,
+} from './runner-cache-maintenance.js';
 import { cacheHelperCommand } from './runner-cache-helper.js';
 
 const report = {
@@ -257,11 +261,18 @@ describe('sleeping runner cache helpers', () => {
     expect(h.assertIdle).toHaveBeenCalledTimes(2);
     expect(h.docker.startContainer).toHaveBeenCalledExactlyOnceWith('helper');
     expect(h.spec?.command).toEqual(['-e', cacheHelperCommand]);
+    // Helpers bounded to 32 pids and 256 MiB under gVisor failed before Node
+    // started (tini: exec timeout failed: Cannot allocate memory), so no cache
+    // was ever reclaimed. The runtime's own threads count against these limits.
+    expect(h.spec!.pidsLimit).toBeGreaterThanOrEqual(128);
+    expect(h.spec!.memoryBytes).toBeGreaterThanOrEqual(512 * 1024 ** 2);
     expect(h.spec).toMatchObject({
       network: 'none',
       entrypoint: ['timeout', '--kill-after=5s', '25s', 'node'],
-      memoryBytes: 256 * 1024 ** 2,
-      memorySwapBytes: 256 * 1024 ** 2,
+      // No swap beyond the memory bound; the pids bound covers gVisor host threads.
+      memoryBytes: CACHE_HELPER_RESOURCES.memoryBytes,
+      memorySwapBytes: CACHE_HELPER_RESOURCES.memoryBytes,
+      pidsLimit: CACHE_HELPER_RESOURCES.pidsLimit,
       readOnlyRootfs: true,
       capDrop: ['ALL'],
       runtime: 'runsc',

@@ -16,8 +16,17 @@ function tool(stored: Partial<SchedulingRequest> | undefined) {
   const created = createSchedulingTool({
     store: {
       getSession: async () => ({ projectId: 'p' }) as never,
-      getGoogleServiceCredentials: async () =>
-        ({ accountId: 'a', accountEmail: 'me@example.test', scopes: SCOPES }) as never,
+      // Turn 't1' runs for 'me'; the account belongs to 'me' alone.
+      runningTurnInitiator: async (_sessionId: string, turnId: string) =>
+        turnId === 't1'
+          ? { userId: 'me' }
+          : turnId === 't2'
+            ? { userId: 'someone-else' }
+            : undefined,
+      getGoogleServiceCredentials: async (_sessionId, _service, userId) =>
+        (userId === 'me'
+          ? { accountId: 'a', accountEmail: 'me@example.test', scopes: SCOPES }
+          : undefined) as never,
       scheduling: {
         get: async () =>
           stored
@@ -54,7 +63,7 @@ describe('scheduling tool', () => {
   });
 
   it('refuses before any card when the request is not this session’s draft', async () => {
-    const input = { projectId: 'p', sessionId: 's1', request: send };
+    const input = { projectId: 'p', sessionId: 's1', turnId: 't1', request: send };
     await expect(tool(undefined).created.authorize(input)).rejects.toThrow('not found');
     await expect(tool({ sessionId: 'other' }).created.authorize(input)).rejects.toThrow(
       'not found',
@@ -64,6 +73,14 @@ describe('scheduling tool', () => {
     await expect(tool({ googleAccountId: 'other' }).created.authorize(input)).rejects.toThrow(
       'account changed',
     );
+  });
+
+  it("does not authorize a turn run for another person with the draft owner's calendar", async () => {
+    const { created } = tool({});
+    for (const turnId of ['t2', 'not-running', undefined])
+      await expect(
+        created.authorize({ projectId: 'p', sessionId: 's1', turnId, request: send }),
+      ).rejects.toThrow('not enabled');
   });
 
   it('takes card edits only for send and only for the editable content', async () => {
@@ -76,7 +93,13 @@ describe('scheduling tool', () => {
     // Recipients, times and the request itself are not on the card's editor.
     expect(() => created.approvedEdits(send, { ...edits, guest: 'x@example.test' })).toThrow();
     expect(() => created.approvedEdits(send, { requestId: send.requestId })).toThrow();
-    await created.invoke({ projectId: 'p', sessionId: 's1', request: send, approvedEdits: edits });
+    await created.invoke({
+      projectId: 'p',
+      sessionId: 's1',
+      turnId: 't1',
+      request: send,
+      approvedEdits: edits,
+    });
     expect(serviceSend).toHaveBeenCalledWith(send.requestId, 's1', send.digest, edits);
   });
 
@@ -86,6 +109,7 @@ describe('scheduling tool', () => {
       created.authorize({
         projectId: 'p',
         sessionId: 's1',
+        turnId: 't1',
         request: { ...send, title: 'Changed by the agent' },
       }),
     ).rejects.toThrow();
@@ -94,7 +118,12 @@ describe('scheduling tool', () => {
   it('rejects arguments the schema does not know, so an agent cannot inject card content', () => {
     const { created } = tool({});
     return expect(
-      created.authorize({ projectId: 'p', sessionId: 's1', request: { ...send, scheduling: {} } }),
+      created.authorize({
+        projectId: 'p',
+        sessionId: 's1',
+        turnId: 't1',
+        request: { ...send, scheduling: {} },
+      }),
     ).rejects.toThrow();
   });
 });

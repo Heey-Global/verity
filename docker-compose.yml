@@ -4,7 +4,7 @@
 services:
   postgres:
     # renovate: datasource=docker depName=postgres
-    image: postgres:18.6-bookworm@sha256:f1ea2a1a4fb7b68d4836be1fdcb8a6466a89b072158bf9d97663600538c294c5
+    image: postgres:18.7-bookworm@sha256:1757c628698dd1ca67ff7a5fc386bfd91040afc62a45484c346c788b0cbe5402
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-verity}

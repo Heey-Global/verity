@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -15,7 +14,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   backfillInlineAttachments,
   backfillToolResultImages,
-  backfillToolResultText,
   type MessageSearchInput,
   type MessageSearchResult,
   PROJECT_MEMORY_MAX_CHARS,
@@ -38,6 +36,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await truncateAll(ctx.db);
 });
+
+const ADMIN = '00000000-0000-4000-8000-000000000001';
 
 const session = { sessionId: 's1', worktree: '/wt/agent-s1', model: 'claude-opus-4-8' };
 
@@ -325,52 +325,52 @@ describe('EventStore — linked session allowance', () => {
 describe('EventStore — session Google Slides assignment', () => {
   it('enables Gmail per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionGmail('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionGmail('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionGmail('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
     await ctx.store.disableSessionGmail('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('enables Calendar per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionCalendar('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.disableSessionCalendar('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('clears every Calendar grant while preserving Gmail access', async () => {
     await ctx.store.createSession(session);
     await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
-    await ctx.store.enableSessionCalendar('s2', 'me@example.test');
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionCalendar('s2', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.clearSessionCalendarConnections();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionCalendarConnection('s2')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s2', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
   });
 
   it('persists Calendar authorization independently of Gmail and preserves omitted settings', async () => {
@@ -394,36 +394,36 @@ describe('EventStore — session Google Slides assignment', () => {
 
   it('enables Contacts per session idempotently and cascades the grant on session deletion', async () => {
     await ctx.store.createSession(session);
-    const first = await ctx.store.enableSessionContacts('s1', 'me@example.test');
-    const second = await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    const first = await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
+    const second = await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
 
     expect(second).toEqual(first);
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toEqual(first);
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toEqual(first);
 
-    const rebound = await ctx.store.enableSessionContacts('s1', 'other@example.test');
+    const rebound = await ctx.store.enableSessionContacts('s1', 'other@example.test', ADMIN);
     expect(rebound.accountEmail).toBe('other@example.test');
 
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
-    await ctx.store.enableSessionCalendar('s1', 'me@example.test');
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionCalendar('s1', 'me@example.test', ADMIN);
     await ctx.store.disableSessionContacts('s1');
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionCalendarConnection('s1')).resolves.toBeDefined();
-    await ctx.store.enableSessionContacts('s1', 'me@example.test');
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionCalendarConnection('s1', ADMIN)).resolves.toBeDefined();
+    await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
     await ctx.store.deleteSession('s1');
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
   });
 
   it('clears every Contacts grant while preserving Gmail access', async () => {
     await ctx.store.createSession(session);
     await ctx.store.createSession({ ...session, sessionId: 's2', worktree: '/wt/agent-s2' });
-    await ctx.store.enableSessionContacts('s1', 'me@example.test');
-    await ctx.store.enableSessionContacts('s2', 'me@example.test');
-    await ctx.store.enableSessionGmail('s1', 'me@example.test');
+    await ctx.store.enableSessionContacts('s1', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionContacts('s2', 'me@example.test', ADMIN);
+    await ctx.store.enableSessionGmail('s1', 'me@example.test', ADMIN);
     await ctx.store.clearSessionContactsConnections();
-    await expect(ctx.store.getSessionContactsConnection('s1')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionContactsConnection('s2')).resolves.toBeUndefined();
-    await expect(ctx.store.getSessionGmailConnection('s1')).resolves.toBeDefined();
+    await expect(ctx.store.getSessionContactsConnection('s1', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionContactsConnection('s2', ADMIN)).resolves.toBeUndefined();
+    await expect(ctx.store.getSessionGmailConnection('s1', ADMIN)).resolves.toBeDefined();
   });
 
   it('persists Contacts authorization independently of Gmail and preserves omitted settings', async () => {
@@ -916,76 +916,6 @@ describe('EventStore — tool-result images (#115)', () => {
   });
 });
 
-describe('EventStore — large text tool results', () => {
-  const bigText = 'x'.repeat(5000); // > TOOL_TEXT_EXTERNALIZE_THRESHOLD (4096)
-  const sha256Utf8 = (s: string) =>
-    createHash('sha256').update(Buffer.from(s, 'utf8')).digest('hex');
-
-  it('appendEvent externalizes a large text output to a truncated preview + outputRef', async () => {
-    await ctx.store.createSession(session);
-    const live: AgentEvent = { t: 'tool_result', id: 'toolu_1', isError: false, output: bigText };
-    await ctx.store.appendEvent('s1', live);
-
-    // Live object untouched (full text still available for the immediate render).
-    expect(live.output).toBe(bigText);
-
-    const events = await ctx.store.getEvents('s1');
-    const stored = events.find((e) => e.t === 'tool_result');
-    if (stored?.t !== 'tool_result') throw new Error('expected a tool_result');
-    // Inline output is now a truncated preview, and an outputRef points at the full body.
-    expect(typeof stored.output === 'string' && stored.output.length).toBe(1024);
-    expect(stored.outputRef).toEqual({
-      id: sha256Utf8(JSON.stringify(bigText)),
-      bytes: expect.any(Number),
-    });
-
-    // The full body is retrievable and round-trips to the original output.
-    const blob = await ctx.store.getAttachment(stored.outputRef?.id ?? '');
-    expect(blob?.mediaType).toBe('application/json');
-    expect(JSON.parse(blob?.bytes.toString('utf8') ?? 'null')).toBe(bigText);
-  });
-
-  it('leaves small text outputs inline (no outputRef)', async () => {
-    await ctx.store.createSession(session);
-    await ctx.store.appendEvent('s1', {
-      t: 'tool_result',
-      id: 't',
-      isError: false,
-      output: 'small',
-    });
-    const events = await ctx.store.getEvents('s1');
-    const stored = events.find((e) => e.t === 'tool_result');
-    if (stored?.t !== 'tool_result') throw new Error('expected a tool_result');
-    expect(stored.output).toBe('small');
-    expect(stored.outputRef).toBeUndefined();
-  });
-
-  it('back-fills large inline text on existing tool_result events (idempotently)', async () => {
-    await ctx.store.createSession(session);
-    // Simulate a pre-existing event by inserting the full inline text directly.
-    await ctx.db
-      .insertInto('events')
-      .values({
-        session_id: 's1',
-        type: 'tool_result',
-        payload: JSON.stringify({ t: 'tool_result', id: 'old', isError: false, output: bigText }),
-      })
-      .execute();
-
-    expect(await backfillToolResultText(ctx.db)).toBe(1);
-
-    const events = await ctx.store.getEvents('s1');
-    const stored = events.find((e) => e.t === 'tool_result');
-    if (stored?.t !== 'tool_result') throw new Error('expected a tool_result');
-    expect(stored.outputRef?.id).toBe(sha256Utf8(JSON.stringify(bigText)));
-    const blob = await ctx.store.getAttachment(stored.outputRef?.id ?? '');
-    expect(JSON.parse(blob?.bytes.toString('utf8') ?? 'null')).toBe(bigText);
-
-    // Idempotent: a second run finds nothing left to migrate.
-    expect(await backfillToolResultText(ctx.db)).toBe(0);
-  });
-});
-
 describe('EventStore — sessions', () => {
   it('round-trips a session', async () => {
     await ctx.store.createSession(session);
@@ -1056,6 +986,26 @@ describe('EventStore — sessions', () => {
     await ctx.store.createSession({ sessionId: 's2', worktree: '/wt/s2', model: 'm' });
     const ids = (await ctx.store.listSessions()).map((s) => s.sessionId);
     expect(ids).toEqual(['s1', 's2']);
+  });
+
+  // A thread belongs to one person's account and sandbox. Another person's bind
+  // must not displace it, or every change of speaker would discard the thread
+  // and its files; a bind displaces only the same person's other backend.
+  it("keeps each person's backend thread beside the others'", async () => {
+    await ctx.store.createSession(session);
+    const bind = (backend: string, id: string) =>
+      ctx.store.upsertSessionBackendState({
+        sessionId: session.sessionId,
+        backend,
+        backendSessionId: id,
+        contextSeq: 0,
+      });
+    await bind('claude', 'admin-thread');
+    expect(await bind('codex#ulena', 'lena-codex')).toEqual([]);
+    const displaced = await bind('claude#ulena', 'lena-claude');
+    expect(displaced.map((row) => row.backend)).toEqual(['codex#ulena']);
+    const kept = await ctx.store.getSessionBackendStates(session.sessionId);
+    expect(kept.map((row) => row.backend).sort()).toEqual(['claude', 'claude#ulena']);
   });
 
   it('stores one active backend resume state per session', async () => {

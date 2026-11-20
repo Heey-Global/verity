@@ -7,6 +7,11 @@ import {
   persistRecoveredAudio,
   setMeetingState,
   saveSpeakerEdits,
+  meetingUploadFailure,
+  saveMeetingUploadFailure,
+  clearMeetingUploadFailure,
+  pendingMeetings,
+  importChanges,
 } from './liveMeetingStore';
 import type { STTEvent } from './liveMeetingSTT';
 import { liveMeetingSTT } from './liveMeetingSTT';
@@ -76,6 +81,7 @@ interface TestConnection {
   runAsync(sql: string, ...args: SQLInputValue[]): Promise<StatementResultingChanges>;
   getFirstAsync(sql: string, ...args: SQLInputValue[]): Promise<unknown>;
   getAllAsync(sql: string, ...args: SQLInputValue[]): Promise<unknown[]>;
+  withTransactionAsync(body: () => Promise<void>): Promise<void>;
   withExclusiveTransactionAsync(
     body: (transaction: TestConnection) => Promise<void>,
   ): Promise<void>;
@@ -94,6 +100,7 @@ const mockConnection: TestConnection = {
     mockDatabase.prepare(sql).get(...args) ?? null,
   getAllAsync: async (sql: string, ...args: SQLInputValue[]) =>
     mockDatabase.prepare(sql).all(...args),
+  withTransactionAsync: async (body) => mockConnection.withExclusiveTransactionAsync(body),
   withExclusiveTransactionAsync: async (
     body: (transaction: typeof mockConnection) => Promise<void>,
   ) => {
@@ -114,6 +121,64 @@ function event(meetingId: string, sequence: number, body: STTEvent) {
 }
 
 afterAll(() => mockDatabase.close());
+
+it('keeps rejected uploads and confirmed server finalization without replacing the local transcript', async () => {
+  const meeting = await createMeeting('blocked-sync', 'apple-speech');
+  await event(meeting.id, 1, { kind: 'snapshot', text: 'Only saved on this device', final: true });
+  const pending = (await pendingMeetings('server-1')).find((item) => item.id === meeting.id)!;
+  await saveMeetingUploadFailure('server-1', meeting.id, {
+    revision: pending.revision,
+    status: 400,
+    serverFinalized: true,
+  });
+  await saveMeetingUploadFailure('server-1', meeting.id, {
+    revision: pending.revision + 1,
+    status: 422,
+    serverFinalized: false,
+  });
+  expect(await meetingUploadFailure('server-1', meeting.id)).toEqual({
+    revision: pending.revision + 1,
+    status: 422,
+    serverFinalized: true,
+  });
+  expect(await meetingUploadFailure('another-server', meeting.id)).toBeNull();
+  await importChanges(
+    'server-1',
+    meeting.sessionId,
+    1,
+    [{ ...pending, state: 'ended', endedAt: 2, transcript: 'Older server copy' }],
+    [],
+  );
+  expect((await listMeetings(meeting.sessionId))[0]?.transcript).toBe('Only saved on this device');
+  expect((await pendingMeetings('server-1')).some((item) => item.id === meeting.id)).toBe(true);
+  await clearMeetingUploadFailure('server-1', meeting.id);
+  expect(await meetingUploadFailure('server-1', meeting.id)).toBeNull();
+});
+
+it('imports same-revision server finalization for a viewing device without reopening it', async () => {
+  const remote = {
+    id: 'remote-finalized',
+    sessionId: 'remote-finalize-session',
+    engine: 'apple-speech' as const,
+    startedAt: 1,
+    endedAt: null,
+    state: 'active' as const,
+    transcript: 'Server copy',
+    captureStatus: 'listening' as const,
+    revision: 3,
+  };
+  await importChanges('server-1', remote.sessionId, 1, [remote], []);
+  await importChanges(
+    'server-1',
+    remote.sessionId,
+    2,
+    [{ ...remote, state: 'ended', endedAt: 2 }],
+    [],
+  );
+  expect((await listMeetings(remote.sessionId))[0]?.state).toBe('ended');
+  await importChanges('server-1', remote.sessionId, 1, [remote], []);
+  expect((await listMeetings(remote.sessionId))[0]?.state).toBe('ended');
+});
 
 it('atomically persists audio-range state and cursor, retrying a failed commit without duplicates', async () => {
   const meeting = await createMeeting('native-session', 'apple-speech');
