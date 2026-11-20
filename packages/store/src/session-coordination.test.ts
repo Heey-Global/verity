@@ -1,5 +1,6 @@
+import { SessionCoordinationStore } from './session-coordination.js';
 import { sql } from 'kysely';
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { EventStore } from './store.js';
 import { createTestDb, truncateAll, type TestDb } from './testing.js';
 
@@ -59,4 +60,46 @@ it('scopes request IDs to their source and removes receipts when their source is
   await expect(
     ctx.store.sessionCoordination.update('source', 'request', { phase: 'linked' }),
   ).rejects.toThrow('unavailable');
+});
+
+it('commits links and recovery state atomically, and never restores a revoked grant on retry', async () => {
+  await ctx.store.createProject({
+    id: 'project',
+    kind: 'local',
+    owner: '__local__',
+    repo: 'project',
+    state: 'active',
+    containerName: 'project',
+  });
+  await sql`update sessions set project_id = 'project' where session_id = 'source'`.execute(ctx.db);
+  await ctx.store.createSession({
+    sessionId: 'target',
+    projectId: 'project',
+    worktree: '/target',
+    model: 'test',
+  });
+  await ctx.store.sessionCoordination.claim('source', 'request', 'hash', 'target');
+  const failure = vi
+    .spyOn(SessionCoordinationStore.prototype, 'update')
+    .mockRejectedValueOnce(new Error('receipt write failed'));
+  try {
+    await expect(ctx.store.createSessionLink('source', 'target', 'request')).rejects.toThrow(
+      'receipt write failed',
+    );
+  } finally {
+    failure.mockRestore();
+  }
+  expect(await ctx.store.listSessionLinks('source')).toEqual([]);
+  expect(await ctx.store.sessionCoordination.claim('source', 'request', 'hash', 'target')).toEqual({
+    phase: 'reserved',
+  });
+  await ctx.store.createSessionLink('source', 'target', 'request');
+  expect(await ctx.store.sessionCoordination.claim('source', 'request', 'hash', 'target')).toEqual({
+    phase: 'linked',
+  });
+  await ctx.store.deleteSessionLink('source', 'target');
+  await expect(ctx.store.createSessionLink('source', 'target', 'request')).rejects.toThrow(
+    'revoked',
+  );
+  expect(await ctx.store.listSessionLinks('source')).toEqual([]);
 });

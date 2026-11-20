@@ -207,8 +207,7 @@ export function createSessionCoordination(deps: SessionCoordinationDeps) {
         if (receipt.phase === 'delivered')
           return { ...receipt.result, targetSessionId, created: request.operation === 'start' };
         await validateSource();
-        await deps.store.createSessionLink(sourceSessionId, targetSessionId);
-        await deps.requests.update(sourceSessionId, request.requestId, { phase: 'linked' });
+        await deps.store.createSessionLink(sourceSessionId, targetSessionId, request.requestId);
         const result: Record<string, unknown> = {
           targetSessionId,
           created: request.operation === 'start',

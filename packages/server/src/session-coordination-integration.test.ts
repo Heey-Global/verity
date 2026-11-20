@@ -152,3 +152,27 @@ it('uses exact coordination approval for an exhausted allowance without a second
   await createGatewaySessionCoordination(h.deps).execute(caller);
   expect(h.dispatchTurn).toHaveBeenCalledTimes(2);
 });
+
+it('does not restore a revoked link after its committed creation response is lost', async () => {
+  const h = await setup();
+  const createLink = h.store.createSessionLink.bind(h.store);
+  const lostReply = vi
+    .spyOn(h.store, 'createSessionLink')
+    .mockImplementationOnce(async (...args) => {
+      await createLink(...args);
+      throw new Error('link response lost');
+    });
+  try {
+    await expect(h.gateway.execute(h.caller)).rejects.toThrow('link response lost');
+  } finally {
+    lostReply.mockRestore();
+  }
+  const links = await h.store.listSessionLinks('source');
+  expect(links).toHaveLength(1);
+  await h.store.deleteSessionLink('source', links[0]!.peerSessionId);
+  await expect(createGatewaySessionCoordination(h.deps).execute(h.caller)).rejects.toThrow(
+    'revoked',
+  );
+  expect(await h.store.listSessionLinks('source')).toEqual([]);
+  expect(h.dispatchTurn).not.toHaveBeenCalled();
+});

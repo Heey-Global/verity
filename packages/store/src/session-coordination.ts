@@ -36,6 +36,29 @@ export class SessionCoordinationStore {
     return { phase: row.phase, ...(row.result === null ? {} : { result: row.result }) };
   }
 
+  /** Locks the recovery receipt before a link can be created or reused. */
+  async beginLink(
+    sourceSessionId: string,
+    requestId: string,
+    targetSessionId: string,
+  ): Promise<boolean> {
+    const { rows } = await sql<{ target_session_id: string; phase: SessionCoordinationPhase }>`
+      select target_session_id, phase from session_coordination_requests
+      where source_session_id = ${sourceSessionId} and request_id = ${requestId}
+      for update`.execute(this.db);
+    const receipt = rows[0];
+    if (!receipt || receipt.target_session_id !== targetSessionId)
+      throw new Error('Session coordination request is unavailable');
+    if (receipt.phase === 'linked' || receipt.phase === 'delivered') {
+      const [left, right] = [sourceSessionId, targetSessionId].sort();
+      const existing = await sql`select 1 from session_links
+        where session_a = ${left} and session_b = ${right}`.execute(this.db);
+      if (!existing.rows.length) throw new Error('Session link was revoked');
+      return false;
+    }
+    return true;
+  }
+
   async update(
     sourceSessionId: string,
     requestId: string,

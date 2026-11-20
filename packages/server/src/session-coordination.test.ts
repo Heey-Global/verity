@@ -49,8 +49,9 @@ function harness() {
     listProjects: vi.fn(async () => [...projects.values()]),
     getSession: vi.fn(async (id: string) => sessions.get(id)),
     listSessions: vi.fn(async () => [...sessions.values()]),
-    createSessionLink: vi.fn(async (_source: string, target: string) => {
+    createSessionLink: vi.fn(async (source: string, target: string, requestId?: string) => {
       links.add(target);
+      if (requestId) receipts.get(`${source}:${requestId}`)!.phase = 'linked';
       return true;
     }),
     listSessionLinks: vi.fn(async () => [...links].map((peerSessionId) => ({ peerSessionId }))),
