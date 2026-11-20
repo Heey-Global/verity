@@ -370,8 +370,16 @@ export function PinnedPlan({
             disabled={blocked || (expanded && !complete)}
             onPress={() => {
               // Collapsed, the answers are out of sight: show them before sending.
-              if (!expanded) setExpanded(true);
-              else onAnswerDecision(planDecisionAnswers(chosen));
+              if (!expanded) {
+                setExpanded(true);
+                return;
+              }
+              onAnswerDecision(planDecisionAnswers(chosen));
+              // The agent now revises the plan: get out of the transcript's way the
+              // way a composer send does. The answers are not a composer send, so
+              // `sendNonce` never changes for them; the revision reopens the card.
+              setExpanded(false);
+              setDetails(false);
             }}
           />
         ) : (
