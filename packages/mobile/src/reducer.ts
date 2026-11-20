@@ -930,6 +930,7 @@ export class SessionReducer {
     throughSeq = Number.POSITIVE_INFINITY,
   ): void {
     const live = new Set(toolUseIds);
+    let revived = false;
     for (const id of retire ?? this.pendingPermissionIds.filter((id) => !live.has(id))) {
       this.resolvePermission(id);
     }
@@ -938,7 +939,18 @@ export class SessionReducer {
       // denied; only a later one can say it outlived the turn.
       if (droppedAt > throughSeq) continue;
       this._droppedPermissions.delete(id);
-      if (live.has(id)) this._pendingPermissions.set(id, request);
+      if (!live.has(id)) continue;
+      this._pendingPermissions.set(id, request);
+      revived = true;
+    }
+    // A revived prompt is older than any raised since its turn ended; keep the
+    // oldest first so the operator answers in the order the agent asked.
+    if (revived) {
+      const ordered = [...this._pendingPermissions.values()].sort(
+        (a, b) => a.createdAt - b.createdAt,
+      );
+      this._pendingPermissions.clear();
+      for (const request of ordered) this._pendingPermissions.set(request.toolUseId, request);
     }
   }
 
