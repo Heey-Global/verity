@@ -72,6 +72,7 @@ function statefulDocker(projectId: string, failStart?: (container: FakeContainer
   const removeContainer = vi.fn(async (ref: string) => {
     containers.delete(require(ref).id);
   });
+  const inspectContainer = vi.fn(async (ref: string) => inspect(require(ref)));
   const { client } = fakeDocker({
     createContainer: vi.fn(async (spec: ContainerSpec) => {
       if (find(spec.name) !== undefined)
@@ -97,7 +98,7 @@ function statefulDocker(projectId: string, failStart?: (container: FakeContainer
     }),
     removeContainer,
     renameContainer,
-    inspectContainer: vi.fn(async (ref: string) => inspect(require(ref))),
+    inspectContainer,
     listContainers: vi.fn(async () =>
       [...containers.values()].map((c) => ({
         id: c.id,
@@ -116,7 +117,7 @@ function statefulDocker(projectId: string, failStart?: (container: FakeContainer
       labels: { [PROJECT_ID_LABEL]: projectId, [CONTAINER_GENERATION_LABEL]: generation },
     });
   };
-  return { client, containers, seedRunning, renameContainer, removeContainer };
+  return { client, containers, seedRunning, renameContainer, removeContainer, inspectContainer };
 }
 
 /** A relay that can sleep and wake a generation, recording what it was asked. */
@@ -369,8 +370,8 @@ describe('a Sandbox parked by a recreate the Server did not finish', () => {
       }
     ).inFlightProvisions;
     const inFlight = new Promise(() => undefined);
-    const inspectContainer = vi.mocked(docker.client.inspectContainer).getMockImplementation()!;
-    vi.spyOn(docker.client, 'inspectContainer').mockImplementation(async (name) => {
+    const inspectContainer = docker.inspectContainer.getMockImplementation()!;
+    docker.inspectContainer.mockImplementation(async (name) => {
       if (name === CONTAINER_NAME) tracking.set(id, inFlight);
       return inspectContainer(name);
     });
